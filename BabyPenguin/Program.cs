@@ -24,7 +24,7 @@ public class Program
         var listener_parser = new ErrorListener<IToken>();
         lexer.AddErrorListener(listener_lexer);
         parser.AddErrorListener(listener_parser);
-        var tree = parser.file();
+        parser.compilationUnit();
         if (listener_lexer.had_error || listener_parser.had_error)
             System.Console.WriteLine("error in parse.");
         else
