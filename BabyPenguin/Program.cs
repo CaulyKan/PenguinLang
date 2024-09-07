@@ -1,39 +1,56 @@
 ﻿// See https://aka.ms/new-console-template for more information
-using Mono.Cecil;
-using Antlr4.Runtime;
 using System.Text;
+using CommandLine;
 using PenguinLangAntlr;
-
-public class Program
+namespace BabyPenguin
 {
-    static void Main(string[] args)
+    public class Options
     {
-        Try("1 + 2 + 3");
-        Try("1 2 + 3");
-        Try("1 + +");
+
+        [Value(0, Required = true, HelpText = "Input files to process")]
+        public required IEnumerable<string> Files { get; set; }
     }
 
-    static void Try(string input)
+    public class Program
     {
-        var str = new AntlrInputStream(input);
-        System.Console.WriteLine(input);
-        var lexer = new PenguinLangLexer(str);
-        var tokens = new CommonTokenStream(lexer);
-        var parser = new PenguinLangParser(tokens);
-        var listener_lexer = new ErrorListener<int>();
-        var listener_parser = new ErrorListener<IToken>();
-        lexer.AddErrorListener(listener_lexer);
-        parser.AddErrorListener(listener_parser);
-        parser.compilationUnit();
-        if (listener_lexer.had_error || listener_parser.had_error)
-            System.Console.WriteLine("error in parse.");
-        else
-            System.Console.WriteLine("parse completed.");
-    }
+        static int Main(string[] args)
+        {
+            return Parser.Default.ParseArguments<Options>(args).MapResult(
+                Run,
+                _ => -1
+            );
+        }
 
-    static string ReadAllInput(string fn)
-    {
-        var input = System.IO.File.ReadAllText(fn);
-        return input;
+        static int Run(Options options)
+        {
+            var reporter = new ErrorReporter();
+            try
+            {
+                var parsers = options.Files.Select(file => new PenguinParser(file, reporter));
+
+                var compilers = parsers.Select(parser =>
+                {
+                    if (!parser.Parse() || parser.Result == null)
+                        throw new Exception("Failed to parse input: " + parser.SourceFile);
+                    else { return new BabyPenguinCompiler(parser.SourceFile, parser.Result, reporter); }
+                });
+
+                foreach (var compiler in compilers)
+                {
+                    compiler.Compile();
+                    Console.WriteLine(compiler.PrintSemanticTree());
+                }
+
+                reporter.Write(DiagnosticLevel.Info, "All done.");
+                Console.WriteLine(reporter.GenerateReport());
+                return 0;
+            }
+            catch (Exception e)
+            {
+                reporter.Write(DiagnosticLevel.Error, e.Message);
+                Console.WriteLine(reporter.GenerateReport());
+                return -1;
+            }
+        }
     }
 }

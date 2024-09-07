@@ -5,12 +5,23 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "type": "antlr-debug",
+            "request": "launch",
+            "name": "antlr-hello_world",
+            "input": "${workspaceFolder}/Examples/HelloWorld/HelloWorld.penguin",
+            "grammar": "${workspaceFolder}/PenguinLangAntlr/PenguinLang.g4",
+            "startRule": "compilationUnit",
+            "visualParseTree": true
+        },
+        {
             "name": ".NET Core Launch (console)",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "dotnet: build",
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
-            "args": [],
+            "args": [
+                "${workspaceFolder}/Examples/HelloWorld/HelloWorld.penguin"
+            ],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "console": "internalConsole"

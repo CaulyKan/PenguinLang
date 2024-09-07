@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BabyPenguin", "BabyPenguin\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PenguinLangAntlr", "PenguinLangAntlr\PenguinLangAntlr.csproj", "{3FBF5076-58C4-4B29-87D5-18D2972FE876}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PenguinLangAntlr.Tests", "PenguinLangAntlr.Tests\PenguinLangAntlr.Tests.csproj", "{1644E680-C71D-45C1-9622-9046395AA486}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,5 +26,9 @@ Global
 		{3FBF5076-58C4-4B29-87D5-18D2972FE876}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3FBF5076-58C4-4B29-87D5-18D2972FE876}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3FBF5076-58C4-4B29-87D5-18D2972FE876}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1644E680-C71D-45C1-9622-9046395AA486}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1644E680-C71D-45C1-9622-9046395AA486}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1644E680-C71D-45C1-9622-9046395AA486}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1644E680-C71D-45C1-9622-9046395AA486}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

@@ -1,0 +1,5 @@
+val world : string = "world";
+initial {
+  var world2 : string = world + "!";
+  print("Hello, " + world2);
+}

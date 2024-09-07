@@ -4,6 +4,7 @@
     <OutputType>Library</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>PenguinLangAntlr</RootNamespace>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
   
   <ItemGroup>
