@@ -7,24 +7,6 @@ using static PenguinLangAntlr.PenguinLangParser;
 
 namespace BabyPenguin
 {
-    public interface ICompilerInfo
-    {
-        ErrorReporter Reporter { get; }
-        string FileName { get; }
-        Namespace? CurrentNamespace => NamespaceStack.Count > 0 ? NamespaceStack.Peek() : null;
-        Stack<Namespace> NamespaceStack { get; }
-        Dictionary<string, Namespace> Namespaces { get; }
-        IRoutine? CurrentRoutine { get; set; }
-        List<IRoutine> Routines { get; }
-    }
-
-    public interface IExpression
-    {
-        /// <summary>
-        /// if expression is a constant, symbol, or literal
-        /// </summary>
-        bool IsSimple { get; }
-    }
 
     public abstract class GrammarNode : IPrettyPrint
     {
@@ -71,43 +53,28 @@ namespace BabyPenguin
         }
     }
 
-    public interface IRoutine
-    {
-    }
 
-    public class Namespace : GrammarNode
+    public class Namespace : GrammarNode, IScope
     {
         public Namespace(ICompilerInfo compilerInfo, NamespaceDefinitionContext context) : base(compilerInfo, context)
         {
-            ParentNamespace = compilerInfo.CurrentNamespace;
+            Name = context.identifier().GetText();
 
-            // top namespace
-            if (ParentNamespace?.ParentNamespace is null)
-            {
-                FullName = context.identifier().GetText();
-            }
-            else
-            {
-                FullName = ParentNamespace.FullName + "." + context.identifier().GetText();
-            }
-
-            compilerInfo.Namespaces.Add(FullName, this);
-            compilerInfo.NamespaceStack.Push(this);
+            compilerInfo.PushScope(ScopeType.Namespace, this);
 
             foreach (var namespaceDeclarationContext in context.namespaceDeclaration())
             {
                 processNamespace(compilerInfo, namespaceDeclarationContext);
             }
 
-            compilerInfo.NamespaceStack.Pop();
+            compilerInfo.PopScope();
         }
 
         public Namespace(ICompilerInfo compilerInfo, CompilationUnitContext context) : base(compilerInfo, context)
         {
-            FullName = "_global@" + FileNameIdentifier;
+            Name = "_global@" + FileNameIdentifier;
 
-            compilerInfo.NamespaceStack.Push(this);
-            compilerInfo.Namespaces.Add(FullName, this);
+            compilerInfo.PushScope(ScopeType.Namespace, this);
 
             foreach (var namespaceDeclarationContext in context.namespaceDeclaration())
             {
@@ -135,12 +102,22 @@ namespace BabyPenguin
         }
 
 
-        public Namespace? ParentNamespace { get; set; }
-        public string FullName { get; set; }
-        public List<InitialRoutine> InitialRoutines { get; set; } = new();
-        public List<Declaration> Declarations { get; set; } = new();
-        public List<Namespace> SubNamespaces { get; set; } = new();
-        public List<FunctionDefinition> Functions { get; set; } = new();
+        public Namespace? ParentNamespace { get; }
+        public List<InitialRoutine> InitialRoutines { get; } = new();
+        public List<Declaration> Declarations { get; } = new();
+        public List<Namespace> SubNamespaces { get; } = new();
+        public List<FunctionDefinition> Functions { get; } = new();
+        public string Name { get; }
+
+        public string Id => Name;
+
+        public ScopeType ScopeType => ScopeType.Namespace;
+
+        public List<Symbol> Symbols { get; } = [];
+
+        public Dictionary<string, IScope> SubScopes { get; } = [];
+        public IScope? ParentScope { get; set; }
+
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
@@ -153,20 +130,30 @@ namespace BabyPenguin
         }
     }
 
-    public class InitialRoutine : GrammarNode, IRoutine
+    public class InitialRoutine : GrammarNode, IScope
     {
         public InitialRoutine(ICompilerInfo compilerInfo, InitialRoutineContext context) : base(compilerInfo, context)
         {
-            compilerInfo.CurrentRoutine = this;
+            compilerInfo.PushScope(ScopeType.InitialRoutine, this);
 
             CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
 
-            compilerInfo.CurrentRoutine = null;
+            compilerInfo.PopScope();
         }
 
-        public CodeBlock CodeBlock { get; set; }
+        public CodeBlock CodeBlock { get; }
 
         public string Name => $"initial@{FileNameIdentifier}:{RowStart}";
+
+        public string Id => Name;
+
+        public ScopeType ScopeType => ScopeType.InitialRoutine;
+
+        public List<Symbol> Symbols { get; } = [];
+
+        public Dictionary<string, IScope> SubScopes { get; } = [];
+        public IScope? ParentScope { get; set; }
+
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
@@ -175,15 +162,27 @@ namespace BabyPenguin
         }
     }
 
-    public class CodeBlock : GrammarNode
+    public class CodeBlock : GrammarNode, IScope
     {
         public CodeBlock(ICompilerInfo compilerInfo, CodeBlockContext context) : base(compilerInfo, context)
         {
+            compilerInfo.PushScope(ScopeType.CodeBlock, this);
             BlockItems = context.children.OfType<CodeBlockItemContext>()
                 .Select(x => new CodeBlockItem(compilerInfo, x)).ToList();
+            compilerInfo.PopScope();
         }
 
-        public List<CodeBlockItem> BlockItems { get; set; } = new();
+        public List<CodeBlockItem> BlockItems { get; } = new();
+
+        public string Id => $"codeblock@{FileNameIdentifier}:{RowStart}";
+
+        public ScopeType ScopeType => ScopeType.CodeBlock;
+
+        public List<Symbol> Symbols { get; } = [];
+
+        public Dictionary<string, IScope> SubScopes { get; } = [];
+
+        public IScope? ParentScope { get; set; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             => BlockItems.SelectMany(x => x.PrettyPrint(indentLevel));
@@ -203,9 +202,9 @@ namespace BabyPenguin
             }
         }
 
-        public Statement? Statement { get; set; }
+        public Statement? Statement { get; }
 
-        public Declaration? Declaration { get; set; }
+        public Declaration? Declaration { get; }
 
         public bool IsDeclaration => Declaration is not null;
 
@@ -260,24 +259,22 @@ namespace BabyPenguin
                 CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
             }
 
-            this.ParentRoutine = compilerInfo.CurrentRoutine;
         }
 
-        public Type StatementType { get; set; }
+        public Type StatementType { get; }
 
-        public CodeBlock? CodeBlock { get; set; }
+        public CodeBlock? CodeBlock { get; }
 
-        public ExpressionStatement? ExpressionStatement { get; set; }
+        public ExpressionStatement? ExpressionStatement { get; }
 
-        public SelectionStatement? SelectionStatement { get; set; }
+        public SelectionStatement? SelectionStatement { get; }
 
-        public IterationStatement? IterationStatement { get; set; }
+        public IterationStatement? IterationStatement { get; }
 
-        public JumpStatement? JumpStatement { get; set; }
+        public JumpStatement? JumpStatement { get; }
 
-        public AssignmentStatement? AssignmentStatement { get; set; }
+        public AssignmentStatement? AssignmentStatement { get; }
 
-        public IRoutine? ParentRoutine { get; set; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -300,11 +297,9 @@ namespace BabyPenguin
         {
             Expression = new Expression(compilerInfo, context.expression());
 
-            ParentRoutine = compilerInfo.CurrentRoutine;
         }
 
-        public Expression Expression { get; set; }
-        public IRoutine? ParentRoutine { get; set; }
+        public Expression Expression { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -316,27 +311,21 @@ namespace BabyPenguin
     {
         public SelectionStatement(ICompilerInfo compilerInfo, SelectionStatementContext context) : base(compilerInfo, context)
         {
-            ParentRoutine = compilerInfo.CurrentRoutine;
         }
-        public IRoutine? ParentRoutine { get; set; }
     }
 
     public class IterationStatement : GrammarNode
     {
         public IterationStatement(ICompilerInfo compilerInfo, IterationStatementContext context) : base(compilerInfo, context)
         {
-            ParentRoutine = compilerInfo.CurrentRoutine;
         }
-        public IRoutine? ParentRoutine { get; set; }
     }
 
     public class JumpStatement : GrammarNode
     {
         public JumpStatement(ICompilerInfo compilerInfo, JumpStatementContext context) : base(compilerInfo, context)
         {
-            ParentRoutine = compilerInfo.CurrentRoutine;
         }
-        public IRoutine? ParentRoutine { get; set; }
     }
 
     public class AssignmentStatement : GrammarNode
@@ -360,13 +349,11 @@ namespace BabyPenguin
                 ">>=" => AssignmentOperatorEnum.RightShiftAssign,
                 _ => throw new System.InvalidOperationException($"Invalid assignment operator: {context.assignmentOperator().GetText()}"),
             };
-            ParentRoutine = compilerInfo.CurrentRoutine;
         }
 
-        public Identifier LeftHandSide { get; set; }
-        public Expression RightHandSide { get; set; }
-        public AssignmentOperatorEnum AssignmentOperator { get; set; }
-        public IRoutine? ParentRoutine { get; set; }
+        public Identifier LeftHandSide { get; }
+        public Expression RightHandSide { get; }
+        public AssignmentOperatorEnum AssignmentOperator { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -392,13 +379,13 @@ namespace BabyPenguin
             this.LiteralName = context.GetText();
         }
 
-        public string? ResolvedFullname { get; set; }
+        public string? ResolvedFullname { get; }
 
-        public Declaration? ResolvedDeclaration { get; set; }
+        public Declaration? ResolvedDeclaration { get; }
 
-        public bool IsType { get; set; }
+        public bool IsType { get; }
 
-        public string LiteralName { get; set; }
+        public string LiteralName { get; }
 
         public string Name => LiteralName;
     }
@@ -479,9 +466,9 @@ namespace BabyPenguin
             }
         }
 
-        public TypeSpecifierEnum Type { get; set; }
+        public TypeSpecifierEnum Type { get; }
 
-        public Identifier Identifier { get; set; }
+        public Identifier Identifier { get; }
 
         public string Name => Identifier.Name;
     }
@@ -497,9 +484,9 @@ namespace BabyPenguin
                 InitializeExpression = new Expression(compilerInfo, context.expression());
         }
 
-        public Identifier Identifier { get; set; }
-        public TypeSpecifier TypeSpecifier { get; set; }
-        public Expression? InitializeExpression { get; set; }
+        public Identifier Identifier { get; }
+        public TypeSpecifier TypeSpecifier { get; }
+        public Expression? InitializeExpression { get; }
 
         public string Name => Identifier.Name;
 
@@ -517,7 +504,7 @@ namespace BabyPenguin
 
     public class Expression(ICompilerInfo compilerInfo, PenguinLangParser.ExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public LogicalOrExpression SubExpression { get; set; }
+        public LogicalOrExpression SubExpression { get; }
             = new LogicalOrExpression(compilerInfo, context.logicalOrExpression());
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -530,7 +517,7 @@ namespace BabyPenguin
 
     public class LogicalOrExpression(ICompilerInfo compilerInfo, LogicalOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<LogicalAndExpression> SubExpressions { get; set; }
+        public List<LogicalAndExpression> SubExpressions { get; }
             = context.children.OfType<LogicalAndExpressionContext>()
                .Select(x => new LogicalAndExpression(compilerInfo, x))
                .ToList();
@@ -545,7 +532,7 @@ namespace BabyPenguin
 
     public class LogicalAndExpression(ICompilerInfo compilerInfo, LogicalAndExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<InclusiveOrExpression> SubExpressions { get; set; }
+        public List<InclusiveOrExpression> SubExpressions { get; }
             = context.children.OfType<InclusiveOrExpressionContext>()
                .Select(x => new InclusiveOrExpression(compilerInfo, x))
                .ToList();
@@ -560,7 +547,7 @@ namespace BabyPenguin
 
     public class InclusiveOrExpression(ICompilerInfo compilerInfo, InclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<ExclusiveOrExpression> SubExpressions { get; set; }
+        public List<ExclusiveOrExpression> SubExpressions { get; }
             = context.children.OfType<ExclusiveOrExpressionContext>()
                .Select(x => new ExclusiveOrExpression(compilerInfo, x))
                .ToList();
@@ -575,7 +562,7 @@ namespace BabyPenguin
 
     public class ExclusiveOrExpression(ICompilerInfo compilerInfo, ExclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<AndExpression> SubExpressions { get; set; }
+        public List<AndExpression> SubExpressions { get; }
             = context.children.OfType<AndExpressionContext>()
                .Select(x => new AndExpression(compilerInfo, x))
                .ToList();
@@ -590,7 +577,7 @@ namespace BabyPenguin
 
     public class AndExpression(ICompilerInfo compilerInfo, AndExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<EqualityExpression> SubExpressions { get; set; }
+        public List<EqualityExpression> SubExpressions { get; }
             = context.children.OfType<EqualityExpressionContext>()
                .Select(x => new EqualityExpression(compilerInfo, x))
                .ToList();
@@ -605,7 +592,7 @@ namespace BabyPenguin
 
     public class EqualityExpression(ICompilerInfo compilerInfo, EqualityExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<RelationalExpression> SubExpressions { get; set; }
+        public List<RelationalExpression> SubExpressions { get; }
             = context.children.OfType<RelationalExpressionContext>()
                .Select(x => new RelationalExpression(compilerInfo, x))
                .ToList();
@@ -620,7 +607,7 @@ namespace BabyPenguin
 
     public class RelationalExpression(ICompilerInfo compilerInfo, RelationalExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<ShiftExpression> SubExpressions { get; set; }
+        public List<ShiftExpression> SubExpressions { get; }
             = context.children.OfType<ShiftExpressionContext>()
                .Select(x => new ShiftExpression(compilerInfo, x))
                .ToList();
@@ -635,7 +622,7 @@ namespace BabyPenguin
 
     public class ShiftExpression(ICompilerInfo compilerInfo, ShiftExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<AdditiveExpression> SubExpressions { get; set; }
+        public List<AdditiveExpression> SubExpressions { get; }
             = context.children.OfType<AdditiveExpressionContext>()
                .Select(x => new AdditiveExpression(compilerInfo, x))
                .ToList();
@@ -650,7 +637,7 @@ namespace BabyPenguin
 
     public class AdditiveExpression(ICompilerInfo compilerInfo, AdditiveExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<MultiplicativeExpression> SubExpressions { get; set; }
+        public List<MultiplicativeExpression> SubExpressions { get; }
             = context.children.OfType<MultiplicativeExpressionContext>()
                .Select(x => new MultiplicativeExpression(compilerInfo, x))
                .ToList();
@@ -665,7 +652,7 @@ namespace BabyPenguin
 
     public class MultiplicativeExpression(ICompilerInfo compilerInfo, MultiplicativeExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
-        public List<CastExpression> SubExpressions { get; set; }
+        public List<CastExpression> SubExpressions { get; }
             = context.children.OfType<CastExpressionContext>()
                .Select(x => new CastExpression(compilerInfo, x))
                .ToList();
@@ -693,11 +680,11 @@ namespace BabyPenguin
             }
         }
 
-        public Identifier? CastTypeIdentifier { get; set; }
+        public Identifier? CastTypeIdentifier { get; }
 
-        public CastExpression? SubCastExpression { get; set; }
+        public CastExpression? SubCastExpression { get; }
 
-        public UnaryExpression? SubUnaryExpression { get; set; }
+        public UnaryExpression? SubUnaryExpression { get; }
 
         public bool IsTypeCast => SubCastExpression is not null;
 
@@ -732,9 +719,9 @@ namespace BabyPenguin
             SubExpression = new PostfixExpression(compilerInfo, context.postfixExpression());
         }
 
-        public PostfixExpression? SubExpression { get; set; }
+        public PostfixExpression? SubExpression { get; }
 
-        public UnaryOperatorEnum? UnaryOperator { get; set; }
+        public UnaryOperatorEnum? UnaryOperator { get; }
 
         public bool HasUnaryOperator => UnaryOperator is not null;
 
@@ -787,15 +774,15 @@ namespace BabyPenguin
             }
         }
 
-        public Type PostfixExpressionType { get; set; }
+        public Type PostfixExpressionType { get; }
 
-        public PrimaryExpression? SubPrimaryExpression { get; set; }
+        public PrimaryExpression? SubPrimaryExpression { get; }
 
-        public SlicingExpression? SubSlicingExpression { get; set; }
+        public SlicingExpression? SubSlicingExpression { get; }
 
-        public FunctionCallExpression? SubFunctionCallExpression { get; set; }
+        public FunctionCallExpression? SubFunctionCallExpression { get; }
 
-        public MemberAccessExpression? SubMemberAccessExpression { get; set; }
+        public MemberAccessExpression? SubMemberAccessExpression { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -850,22 +837,22 @@ namespace BabyPenguin
             }
         }
 
-        public Type PrimaryExpressionType { get; set; }
+        public Type PrimaryExpressionType { get; }
 
-        public Identifier? Identifier { get; set; }
+        public Identifier? Identifier { get; }
 
-        public string? Literal { get; set; }
+        public string? Literal { get; }
 
-        public Expression? ParenthesizedExpression { get; set; }
+        public Expression? ParenthesizedExpression { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return PrimaryExpressionType switch
             {
-                Type.Identifier => Identifier!.PrettyPrint(indentLevel),
+                Type.Identifier => Identifier!.PrettyPrint(indentLevel, note),
                 Type.Constant => new string[] { IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal) },
                 Type.StringLiteral => new string[] { IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal) },
-                Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel),
+                Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel, note),
                 _ => throw new System.InvalidOperationException("Invalid primary expression type"),
             };
         }
@@ -888,9 +875,9 @@ namespace BabyPenguin
             IndexExpression = new Expression(compilerInfo, context.expression());
         }
 
-        public PrimaryExpression PrimaryExpression { get; set; }
+        public PrimaryExpression PrimaryExpression { get; }
 
-        public Expression IndexExpression { get; set; }
+        public Expression IndexExpression { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -910,9 +897,9 @@ namespace BabyPenguin
                .ToList();
         }
 
-        public PrimaryExpression PrimaryExpression { get; set; }
+        public PrimaryExpression PrimaryExpression { get; }
 
-        public List<Expression> ArgumentsExpression { get; set; }
+        public List<Expression> ArgumentsExpression { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -932,9 +919,9 @@ namespace BabyPenguin
             MemberIdentifier = new Identifier(compilerInfo, context.identifier(), false);
         }
 
-        public PrimaryExpression PrimaryExpression { get; set; }
+        public PrimaryExpression PrimaryExpression { get; }
 
-        public Identifier MemberIdentifier { get; set; }
+        public Identifier MemberIdentifier { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -946,15 +933,11 @@ namespace BabyPenguin
         public bool IsSimple => false;
     }
 
-    public class FunctionDefinition : GrammarNode, IRoutine
+    public class FunctionDefinition : GrammarNode, IScope
     {
         public FunctionDefinition(ICompilerInfo compilerInfo, FunctionDefinitionContext context) : base(compilerInfo, context)
         {
-            compilerInfo.CurrentRoutine = this;
-
-            if (compilerInfo.CurrentRoutine == null)
-                throw new System.InvalidOperationException("Cannot define a function outside of a routine");
-            ParentRoutine = compilerInfo.CurrentRoutine;
+            compilerInfo.PushScope(ScopeType.Function, this);
 
             this.FunctionIdentifier = new Identifier(compilerInfo, context.identifier(), false);
             this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
@@ -962,15 +945,19 @@ namespace BabyPenguin
             this.ReturnType = new TypeSpecifier(compilerInfo, context.typeSpecifier());
             this.CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
 
-            compilerInfo.CurrentRoutine = null;
+            compilerInfo.PopScope();
         }
 
-        public Identifier FunctionIdentifier { get; set; }
-        public List<Declaration> Parameters { get; set; }
-        public TypeSpecifier ReturnType { get; set; }
-        public CodeBlock CodeBlock { get; set; }
+        public Identifier FunctionIdentifier { get; }
+        public List<Declaration> Parameters { get; }
+        public TypeSpecifier ReturnType { get; }
+        public CodeBlock CodeBlock { get; }
         public string Name => FunctionIdentifier.Name;
-        public IRoutine ParentRoutine { get; set; }
+        public string Id => Name;
+        public ScopeType ScopeType => ScopeType.Function;
+        public List<Symbol> Symbols { get; } = [];
+        public Dictionary<string, IScope> SubScopes { get; } = [];
+        public IScope? ParentScope { get; set; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
