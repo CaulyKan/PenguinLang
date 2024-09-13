@@ -79,19 +79,14 @@ assignmentOperator:
 
 constantExpression: conditionalExpression;
 
-declaration: declarationSpecifiers initDeclarator ';';
-
-declarationSpecifiers: declarationSpecifier* declarationKeyword;
+declaration:
+	storageClassSpecifier* typeQualifier* declarationKeyword identifier ':' typeSpecifier (
+		'=' expression
+	)?;
 
 declarationKeyword: 'var' | 'val';
 
-declarationSpecifier:
-	storageClassSpecifier
-	| typeSpecifier
-	| typeQualifier
-	| functionSpecifier;
-
-initDeclarator: identifier ':' typeSpecifier ('=' expression)?;
+typeQualifier: 'const';
 
 storageClassSpecifier: 'extern';
 
@@ -143,26 +138,14 @@ enumerator: enumerationConstant ('=' constantExpression)?;
 
 enumerationConstant: identifier;
 
-typeQualifier: 'const';
-
-functionSpecifier: 'inline';
-
 nestedParenthesesBlock: (
 		~('(' | ')')
 		| '(' nestedParenthesesBlock ')'
 	)*;
 
-typeQualifierList: typeQualifier+;
-
-parameterTypeList: parameterList (',' '...')?;
-
-parameterList: parameterDeclaration (',' parameterDeclaration)*;
-
-parameterDeclaration: declarationSpecifiers identifier;
-
 //typeName: specifierQualifierList identifier?;
 
-blockItem: statement | declaration;
+blockItem: statement | (declaration ';');
 
 statement:
 	'{' blockItem* '}'
@@ -184,11 +167,7 @@ selectionStatement:
 
 iterationStatement:
 	'while' '(' expression ')' statement
-	| 'for' '(' forDeclaration 'in' forExpression ')' statement;
-
-forDeclaration: declarationSpecifiers identifier;
-
-forExpression: expression (',' expression)*;
+	| 'for' '(' declaration 'in' expression ')' statement;
 
 jumpStatement: ('continue' | 'break' | 'return' expression?) ';';
 
@@ -198,11 +177,15 @@ namespaceDeclaration:
 	declaration
 	| namespaceDefinition
 	| initialRoutine
-	// | functionDefinition
+	| functionDefinition
 	| ';';
 
+parameterList: declaration (',' declaration)*;
+
+functionSpecifier: 'pure' | '!pure';
+
 functionDefinition:
-	declarationSpecifiers? 'fun' identifier '{' blockItem* '}';
+	functionSpecifier* 'fun' identifier '(' parameterList ')' '->' typeSpecifier '{' blockItem* '}';
 
 initialRoutine: 'initial' '{' blockItem* '}';
 

@@ -4,9 +4,9 @@ using PenguinLangAntlr;
 
 namespace BabyPenguin
 {
-    public class BabyPenguinCompiler : ICompilerInfo
+    public class Compiler : ICompilerInfo
     {
-        public BabyPenguinCompiler(string file, PenguinLangParser.CompilationUnitContext ast, ErrorReporter reporter)
+        public Compiler(string file, PenguinLangParser.CompilationUnitContext ast, ErrorReporter reporter)
         {
             Ast = ast;
             Reporter = reporter;
@@ -32,4 +32,12 @@ namespace BabyPenguin
         public List<IRoutine> Routines { get; } = new();
     }
 
+    public class Symbol
+    {
+        public string Name { get; set; }
+        public string FullName { get; set; }
+        public bool IsLocal { get; set; }
+        public TypeSpecifierEnum TypeSpecifier { get; set; }
+        public string FullTypeName { get; set; }
+    }
 }

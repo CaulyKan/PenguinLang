@@ -32,7 +32,7 @@ namespace BabyPenguin
                 {
                     if (!parser.Parse() || parser.Result == null)
                         throw new Exception("Failed to parse input: " + parser.SourceFile);
-                    else { return new BabyPenguinCompiler(parser.SourceFile, parser.Result, reporter); }
+                    else { return new Compiler(parser.SourceFile, parser.Result, reporter); }
                 });
 
                 foreach (var compiler in compilers)

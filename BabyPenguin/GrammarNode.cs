@@ -17,7 +17,15 @@ namespace BabyPenguin
         List<IRoutine> Routines { get; }
     }
 
-    public abstract class GrammarNode
+    public interface IExpression
+    {
+        /// <summary>
+        /// if expression is a constant, symbol, or literal
+        /// </summary>
+        bool IsSimple { get; }
+    }
+
+    public abstract class GrammarNode : IPrettyPrint
     {
         public GrammarNode(ICompilerInfo compilerInfo, ParserRuleContext context)
         {
@@ -43,33 +51,23 @@ namespace BabyPenguin
                 throw new System.InvalidCastException($"Current Context {this.Context.GetType().Name}, Expected: {typeof(T).Name}");
         }
 
-
         public ParserRuleContext Context { get; }
-
-
         public int RowStart => Context.Start.Line;
-
         public int RowEnd => Context.Stop.Line;
-
         public int ColStart => Context.Start.Column;
-
         public int ColEnd => Context.Stop.Column;
 
 
         public ErrorReporter Reporter { get; }
-
         public String FileName { get; }
-
         public String FileNameIdentifier => System.IO.Path.GetFileName(FileName) + "_" + System.IO.Path.GetFullPath(FileName).GetHashCode();
-
-        public virtual string Name => GetText();
-
         public string GetText() =>
-             Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
-
-        public override string ToString() => this.GetType().Name + ": " + Name.Trim().Replace("\n", " ").Replace("\r", "");
-
-        public virtual IEnumerable<string> PrettyPrint(int indentLevel) { yield return new string(' ', indentLevel * 2) + ToString(); }
+            Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
+        public override string ToString() => this.GetType().Name + ": " + GetText().Trim().Replace("\n", " ").Replace("\r", "");
+        public virtual IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+        {
+            yield return new string(' ', indentLevel * 2) + (note ?? " ") + ToString();
+        }
     }
 
     public interface IRoutine
@@ -129,6 +127,10 @@ namespace BabyPenguin
             SubNamespaces.AddRange(
                  namespaceDeclarationContext.children.OfType<NamespaceDefinitionContext>()
                     .Select(x => new Namespace(compilerInfo, x)));
+
+            Functions.AddRange(
+                 namespaceDeclarationContext.children.OfType<FunctionDefinitionContext>()
+                    .Select(x => new FunctionDefinition(compilerInfo, x)));
         }
 
 
@@ -137,14 +139,15 @@ namespace BabyPenguin
         public List<InitialRoutine> InitialRoutines { get; set; } = new();
         public List<Declaration> Declarations { get; set; } = new();
         public List<Namespace> SubNamespaces { get; set; } = new();
-
-        public override string Name => FullName;
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public List<FunctionDefinition> Functions { get; set; } = new();
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
                 Declarations.SelectMany(x => x.PrettyPrint(indentLevel + 1))
             ).Concat(
                 InitialRoutines.SelectMany(x => x.PrettyPrint(indentLevel + 1))
+            ).Concat(
+                Functions.SelectMany(x => x.PrettyPrint(indentLevel + 1))
             );
         }
     }
@@ -163,8 +166,8 @@ namespace BabyPenguin
 
         public List<BlockItem> BlockItems { get; set; }
 
-        public override string Name => $"initial@{FileNameIdentifier}:{RowStart}";
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public string Name => $"initial@{FileNameIdentifier}:{RowStart}";
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
                 BlockItems.SelectMany(x => x.PrettyPrint(indentLevel + 1))
@@ -192,7 +195,7 @@ namespace BabyPenguin
 
         public bool IsDeclaration => Declaration is not null;
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return IsDeclaration ? Declaration!.PrettyPrint(indentLevel) : Statement!.PrettyPrint(indentLevel);
         }
@@ -263,7 +266,7 @@ namespace BabyPenguin
 
         public IRoutine? ParentRoutine { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return StatementType switch
             {
@@ -290,7 +293,7 @@ namespace BabyPenguin
         public Expression Expression { get; set; }
         public IRoutine? ParentRoutine { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return Expression.PrettyPrint(indentLevel);
         }
@@ -352,7 +355,7 @@ namespace BabyPenguin
         public AssignmentOperatorEnum AssignmentOperator { get; set; }
         public IRoutine? ParentRoutine { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
                 LeftHandSide.PrettyPrint(indentLevel + 1)
@@ -384,7 +387,7 @@ namespace BabyPenguin
 
         public string LiteralName { get; set; }
 
-        public override string Name => LiteralName;
+        public string Name => LiteralName;
     }
 
     public class TypeSpecifier : GrammarNode
@@ -467,179 +470,202 @@ namespace BabyPenguin
 
         public Identifier Identifier { get; set; }
 
-
-        public override string Name => Identifier.Name;
+        public string Name => Identifier.Name;
     }
 
     public class Declaration : GrammarNode
     {
         public Declaration(ICompilerInfo compilerInfo, PenguinLangParser.DeclarationContext context) : base(compilerInfo, context)
         {
-            Identifier = new Identifier(compilerInfo, context.initDeclarator().identifier(), false);
-            TypeSpecifier = new TypeSpecifier(compilerInfo, context.initDeclarator().typeSpecifier());
-            InitializeExpression = new Expression(compilerInfo, context.initDeclarator().expression());
+            Identifier = new Identifier(compilerInfo, context.identifier(), false);
+            TypeSpecifier = new TypeSpecifier(compilerInfo, context.typeSpecifier());
+
+            if (context.expression() != null)
+                InitializeExpression = new Expression(compilerInfo, context.expression());
         }
 
         public Identifier Identifier { get; set; }
         public TypeSpecifier TypeSpecifier { get; set; }
-        public Expression InitializeExpression { get; set; }
+        public Expression? InitializeExpression { get; set; }
 
-        public override string Name => Identifier.Name;
+        public string Name => Identifier.Name;
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
                 Identifier.PrettyPrint(indentLevel + 1)
             ).Concat(
-                TypeSpecifier.PrettyPrint(indentLevel + 1)
+                TypeSpecifier.PrettyPrint(indentLevel + 1, "(type)")
             ).Concat(
-                InitializeExpression.PrettyPrint(indentLevel + 1)
+                InitializeExpression?.PrettyPrint(indentLevel + 1, "(initializer)") ?? []
             );
         }
     }
 
-    public class Expression(ICompilerInfo compilerInfo, PenguinLangParser.ExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class Expression(ICompilerInfo compilerInfo, PenguinLangParser.ExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public LogicalOrExpression SubExpression { get; set; }
             = new LogicalOrExpression(compilerInfo, context.logicalOrExpression());
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpression.PrettyPrint(indentLevel);
         }
+
+        public bool IsSimple => SubExpression.IsSimple;
     }
 
-    public class LogicalOrExpression(ICompilerInfo compilerInfo, LogicalOrExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class LogicalOrExpression(ICompilerInfo compilerInfo, LogicalOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<LogicalAndExpression> SubExpressions { get; set; }
             = context.children.OfType<LogicalAndExpressionContext>()
                .Select(x => new LogicalAndExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class LogicalAndExpression(ICompilerInfo compilerInfo, LogicalAndExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class LogicalAndExpression(ICompilerInfo compilerInfo, LogicalAndExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<InclusiveOrExpression> SubExpressions { get; set; }
             = context.children.OfType<InclusiveOrExpressionContext>()
                .Select(x => new InclusiveOrExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class InclusiveOrExpression(ICompilerInfo compilerInfo, InclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class InclusiveOrExpression(ICompilerInfo compilerInfo, InclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<ExclusiveOrExpression> SubExpressions { get; set; }
             = context.children.OfType<ExclusiveOrExpressionContext>()
                .Select(x => new ExclusiveOrExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class ExclusiveOrExpression(ICompilerInfo compilerInfo, ExclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class ExclusiveOrExpression(ICompilerInfo compilerInfo, ExclusiveOrExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<AndExpression> SubExpressions { get; set; }
             = context.children.OfType<AndExpressionContext>()
                .Select(x => new AndExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class AndExpression(ICompilerInfo compilerInfo, AndExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class AndExpression(ICompilerInfo compilerInfo, AndExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<EqualityExpression> SubExpressions { get; set; }
             = context.children.OfType<EqualityExpressionContext>()
                .Select(x => new EqualityExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class EqualityExpression(ICompilerInfo compilerInfo, EqualityExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class EqualityExpression(ICompilerInfo compilerInfo, EqualityExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<RelationalExpression> SubExpressions { get; set; }
             = context.children.OfType<RelationalExpressionContext>()
                .Select(x => new RelationalExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class RelationalExpression(ICompilerInfo compilerInfo, RelationalExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class RelationalExpression(ICompilerInfo compilerInfo, RelationalExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<ShiftExpression> SubExpressions { get; set; }
             = context.children.OfType<ShiftExpressionContext>()
                .Select(x => new ShiftExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class ShiftExpression(ICompilerInfo compilerInfo, ShiftExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class ShiftExpression(ICompilerInfo compilerInfo, ShiftExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<AdditiveExpression> SubExpressions { get; set; }
             = context.children.OfType<AdditiveExpressionContext>()
                .Select(x => new AdditiveExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class AdditiveExpression(ICompilerInfo compilerInfo, AdditiveExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class AdditiveExpression(ICompilerInfo compilerInfo, AdditiveExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<MultiplicativeExpression> SubExpressions { get; set; }
             = context.children.OfType<MultiplicativeExpressionContext>()
                .Select(x => new MultiplicativeExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class MultiplicativeExpression(ICompilerInfo compilerInfo, MultiplicativeExpressionContext context) : GrammarNode(compilerInfo, context)
+    public class MultiplicativeExpression(ICompilerInfo compilerInfo, MultiplicativeExpressionContext context) : GrammarNode(compilerInfo, context), IExpression
     {
         public List<CastExpression> SubExpressions { get; set; }
             = context.children.OfType<CastExpressionContext>()
                .Select(x => new CastExpression(compilerInfo, x))
                .ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
+
+        public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
     }
 
-    public class CastExpression : GrammarNode
+    public class CastExpression : GrammarNode, IExpression
     {
         public CastExpression(ICompilerInfo compilerInfo, CastExpressionContext context) : base(compilerInfo, context)
         {
@@ -662,16 +688,18 @@ namespace BabyPenguin
 
         public bool IsTypeCast => SubCastExpression is not null;
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             if (IsTypeCast)
                 return base.PrettyPrint(indentLevel).Concat(SubUnaryExpression!.PrettyPrint(indentLevel + 1));
             else
                 return SubUnaryExpression!.PrettyPrint(indentLevel);
         }
+
+        public bool IsSimple => IsTypeCast ? false : SubUnaryExpression!.IsSimple;
     }
 
-    public class UnaryExpression : GrammarNode
+    public class UnaryExpression : GrammarNode, IExpression
     {
         public UnaryExpression(ICompilerInfo compilerInfo, UnaryExpressionContext context) : base(compilerInfo, context)
         {
@@ -697,16 +725,18 @@ namespace BabyPenguin
 
         public bool HasUnaryOperator => UnaryOperator is not null;
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             if (HasUnaryOperator)
                 return base.PrettyPrint(indentLevel).Concat(SubExpression!.PrettyPrint(indentLevel + 1));
             else
                 return SubExpression!.PrettyPrint(indentLevel);
         }
+
+        public bool IsSimple => HasUnaryOperator ? false : SubExpression!.IsSimple;
     }
 
-    public class PostfixExpression : GrammarNode
+    public class PostfixExpression : GrammarNode, IExpression
     {
         public enum Type
         {
@@ -754,7 +784,7 @@ namespace BabyPenguin
 
         public MemberAccessExpression? SubMemberAccessExpression { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return PostfixExpressionType switch
             {
@@ -765,9 +795,11 @@ namespace BabyPenguin
                 _ => throw new System.InvalidOperationException("Invalid postfix expression type"),
             };
         }
+
+        public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression ? SubPrimaryExpression!.IsSimple : false;
     }
 
-    public class PrimaryExpression : GrammarNode
+    public class PrimaryExpression : GrammarNode, IExpression
     {
         public enum Type
         {
@@ -813,17 +845,26 @@ namespace BabyPenguin
 
         public Expression? ParenthesizedExpression { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return PrimaryExpressionType switch
             {
                 Type.Identifier => Identifier!.PrettyPrint(indentLevel),
-                Type.Constant => new string[] { new string(' ', indentLevel * 2) + "Constant: " + Literal },
-                Type.StringLiteral => new string[] { new string(' ', indentLevel * 2) + "StringLiteral: " + Literal },
+                Type.Constant => new string[] { IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal) },
+                Type.StringLiteral => new string[] { IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal) },
                 Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel),
                 _ => throw new System.InvalidOperationException("Invalid primary expression type"),
             };
         }
+
+        public bool IsSimple => PrimaryExpressionType switch
+        {
+            Type.Identifier => true,
+            Type.Constant => true,
+            Type.StringLiteral => true,
+            Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
+            _ => throw new System.InvalidOperationException("Invalid primary expression type"),
+        };
     }
 
     public class SlicingExpression : GrammarNode
@@ -838,13 +879,15 @@ namespace BabyPenguin
 
         public Expression IndexExpression { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
-            return base.PrettyPrint(indentLevel).Concat(PrimaryExpression.PrettyPrint(indentLevel + 1)).Concat(IndexExpression.PrettyPrint(indentLevel + 1));
+            return base.PrettyPrint(indentLevel)
+                .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Slicable)"))
+                .Concat(IndexExpression.PrettyPrint(indentLevel + 1, "(Index)"));
         }
     }
 
-    public class FunctionCallExpression : GrammarNode
+    public class FunctionCallExpression : GrammarNode, IExpression
     {
         public FunctionCallExpression(ICompilerInfo compilerInfo, FunctionCallExpressionContext context) : base(compilerInfo, context)
         {
@@ -858,13 +901,17 @@ namespace BabyPenguin
 
         public List<Expression> ArgumentsExpression { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
-            return base.PrettyPrint(indentLevel).Concat(PrimaryExpression.PrettyPrint(indentLevel + 1)).Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
+            return base.PrettyPrint(indentLevel)
+                .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Function)"))
+                .Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")));
         }
+
+        public bool IsSimple => false;
     }
 
-    public class MemberAccessExpression : GrammarNode
+    public class MemberAccessExpression : GrammarNode, IExpression
     {
         public MemberAccessExpression(ICompilerInfo compilerInfo, MemberAccessExpressionContext context) : base(compilerInfo, context)
         {
@@ -876,9 +923,49 @@ namespace BabyPenguin
 
         public Identifier MemberIdentifier { get; set; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel)
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
-            return base.PrettyPrint(indentLevel).Concat(PrimaryExpression.PrettyPrint(indentLevel + 1)).Concat(MemberIdentifier.PrettyPrint(indentLevel + 1));
+            return base.PrettyPrint(indentLevel)
+                .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Object)"))
+                .Concat(MemberIdentifier.PrettyPrint(indentLevel + 1, "(Member)"));
+        }
+
+        public bool IsSimple => false;
+    }
+
+    public class FunctionDefinition : GrammarNode, IRoutine
+    {
+        public FunctionDefinition(ICompilerInfo compilerInfo, FunctionDefinitionContext context) : base(compilerInfo, context)
+        {
+            compilerInfo.CurrentRoutine = this;
+
+            if (compilerInfo.CurrentRoutine == null)
+                throw new System.InvalidOperationException("Cannot define a function outside of a routine");
+            ParentRoutine = compilerInfo.CurrentRoutine;
+
+            this.FunctionIdentifier = new Identifier(compilerInfo, context.identifier(), false);
+            this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
+                .Select(x => new Declaration(compilerInfo, x)).ToList();
+            this.ReturnType = new TypeSpecifier(compilerInfo, context.typeSpecifier());
+            this.BlockItems = context.blockItem().Select(x => new BlockItem(compilerInfo, x)).ToList();
+
+            compilerInfo.CurrentRoutine = null;
+        }
+
+        public Identifier FunctionIdentifier { get; set; }
+        public List<Declaration> Parameters { get; set; }
+        public TypeSpecifier ReturnType { get; set; }
+        public List<BlockItem> BlockItems { get; set; }
+        public string Name => FunctionIdentifier.Name;
+        public IRoutine ParentRoutine { get; set; }
+
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+        {
+            return base.PrettyPrint(indentLevel)
+                .Concat(FunctionIdentifier.PrettyPrint(indentLevel + 1, "(FunctionName)"))
+                .Concat(Parameters.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")))
+                .Concat(ReturnType.PrettyPrint(indentLevel + 1, "(ReturnType)"))
+                .Concat(BlockItems.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
         }
     }
 }

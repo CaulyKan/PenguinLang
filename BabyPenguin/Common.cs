@@ -1,6 +1,16 @@
 
 namespace BabyPenguin
 {
+    public interface IPrettyPrint
+    {
+        static string PrintText(int indentLevel, string text) => new string(' ', indentLevel * 2) + text;
+
+        IEnumerable<string> PrettyPrint(int indentLevel, string? prefix = null)
+        {
+            yield return new string(' ', indentLevel * 2) + (prefix ?? " ") + ToString();
+        }
+    }
+
     public enum TypeSpecifierEnum
     {
         Void,
