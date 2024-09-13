@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Antlr4.Runtime;
 using Antlr4.Runtime.Misc;
+using Mono.Cecil.Cil;
 using PenguinLangAntlr;
 using static PenguinLangAntlr.PenguinLangParser;
 
@@ -158,26 +159,39 @@ namespace BabyPenguin
         {
             compilerInfo.CurrentRoutine = this;
 
-            BlockItems = context.children.OfType<BlockItemContext>()
-                .Select(x => new BlockItem(compilerInfo, x)).ToList();
+            CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
 
             compilerInfo.CurrentRoutine = null;
         }
 
-        public List<BlockItem> BlockItems { get; set; }
+        public CodeBlock CodeBlock { get; set; }
 
         public string Name => $"initial@{FileNameIdentifier}:{RowStart}";
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
             return base.PrettyPrint(indentLevel).Concat(
-                BlockItems.SelectMany(x => x.PrettyPrint(indentLevel + 1))
+                CodeBlock.PrettyPrint(indentLevel + 1)
             );
         }
     }
 
-    public class BlockItem : GrammarNode
+    public class CodeBlock : GrammarNode
     {
-        public BlockItem(ICompilerInfo compilerInfo, BlockItemContext context) : base(compilerInfo, context)
+        public CodeBlock(ICompilerInfo compilerInfo, CodeBlockContext context) : base(compilerInfo, context)
+        {
+            BlockItems = context.children.OfType<CodeBlockItemContext>()
+                .Select(x => new CodeBlockItem(compilerInfo, x)).ToList();
+        }
+
+        public List<CodeBlockItem> BlockItems { get; set; } = new();
+
+        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+            => BlockItems.SelectMany(x => x.PrettyPrint(indentLevel));
+    }
+
+    public class CodeBlockItem : GrammarNode
+    {
+        public CodeBlockItem(ICompilerInfo compilerInfo, CodeBlockItemContext context) : base(compilerInfo, context)
         {
             if (context.statement() is not null)
             {
@@ -243,8 +257,7 @@ namespace BabyPenguin
             else
             {
                 StatementType = Type.SubBlock;
-                BlockItems = context.children.OfType<BlockItemContext>()
-                    .Select(x => new BlockItem(compilerInfo, x)).ToList();
+                CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
             }
 
             this.ParentRoutine = compilerInfo.CurrentRoutine;
@@ -252,7 +265,7 @@ namespace BabyPenguin
 
         public Type StatementType { get; set; }
 
-        public List<BlockItem> BlockItems { get; set; } = new();
+        public CodeBlock? CodeBlock { get; set; }
 
         public ExpressionStatement? ExpressionStatement { get; set; }
 
@@ -270,7 +283,7 @@ namespace BabyPenguin
         {
             return StatementType switch
             {
-                Type.SubBlock => new string[] { "SubBlock:" }.Concat(BlockItems.SelectMany(x => x.PrettyPrint(indentLevel + 1))),
+                Type.SubBlock => CodeBlock!.PrettyPrint(indentLevel + 1),
                 Type.ExpressionStatement => ExpressionStatement!.PrettyPrint(indentLevel),
                 Type.SelectionStatement => SelectionStatement!.PrettyPrint(indentLevel),
                 Type.IterationStatement => IterationStatement!.PrettyPrint(indentLevel),
@@ -947,7 +960,7 @@ namespace BabyPenguin
             this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
                 .Select(x => new Declaration(compilerInfo, x)).ToList();
             this.ReturnType = new TypeSpecifier(compilerInfo, context.typeSpecifier());
-            this.BlockItems = context.blockItem().Select(x => new BlockItem(compilerInfo, x)).ToList();
+            this.CodeBlock = new CodeBlock(compilerInfo, context.codeBlock());
 
             compilerInfo.CurrentRoutine = null;
         }
@@ -955,7 +968,7 @@ namespace BabyPenguin
         public Identifier FunctionIdentifier { get; set; }
         public List<Declaration> Parameters { get; set; }
         public TypeSpecifier ReturnType { get; set; }
-        public List<BlockItem> BlockItems { get; set; }
+        public CodeBlock CodeBlock { get; set; }
         public string Name => FunctionIdentifier.Name;
         public IRoutine ParentRoutine { get; set; }
 
@@ -965,7 +978,7 @@ namespace BabyPenguin
                 .Concat(FunctionIdentifier.PrettyPrint(indentLevel + 1, "(FunctionName)"))
                 .Concat(Parameters.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")))
                 .Concat(ReturnType.PrettyPrint(indentLevel + 1, "(ReturnType)"))
-                .Concat(BlockItems.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
+                .Concat(CodeBlock.PrettyPrint(indentLevel + 1));
         }
     }
 }

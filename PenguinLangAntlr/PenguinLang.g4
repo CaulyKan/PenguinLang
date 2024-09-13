@@ -145,10 +145,12 @@ nestedParenthesesBlock: (
 
 //typeName: specifierQualifierList identifier?;
 
-blockItem: statement | (declaration ';');
+codeBlock: '{' codeBlockItem* '}';
+
+codeBlockItem: statement | (declaration ';');
 
 statement:
-	'{' blockItem* '}'
+	codeBlock
 	| expressionStatement
 	| selectionStatement
 	| iterationStatement
@@ -185,9 +187,9 @@ parameterList: declaration (',' declaration)*;
 functionSpecifier: 'pure' | '!pure';
 
 functionDefinition:
-	functionSpecifier* 'fun' identifier '(' parameterList ')' '->' typeSpecifier '{' blockItem* '}';
+	functionSpecifier* 'fun' identifier '(' parameterList ')' '->' typeSpecifier codeBlock;
 
-initialRoutine: 'initial' '{' blockItem* '}';
+initialRoutine: 'initial' codeBlock;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';

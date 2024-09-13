@@ -32,12 +32,12 @@ namespace BabyPenguin
         public List<IRoutine> Routines { get; } = new();
     }
 
-    public class Symbol
+    public class Symbol(string name, string full_name, bool is_local, TypeSpecifierEnum type_specifier, string type_name)
     {
-        public string Name { get; set; }
-        public string FullName { get; set; }
-        public bool IsLocal { get; set; }
-        public TypeSpecifierEnum TypeSpecifier { get; set; }
-        public string FullTypeName { get; set; }
+        public string Name { get; } = name;
+        public string FullName { get; } = full_name;
+        public bool IsLocal { get; } = is_local;
+        public TypeSpecifierEnum TypeSpecifier { get; } = type_specifier;
+        public string TypeName { get; } = type_name;
     }
 }
