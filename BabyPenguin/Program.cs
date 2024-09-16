@@ -32,23 +32,28 @@ namespace BabyPenguin
                 {
                     if (!parser.Parse() || parser.Result == null)
                         throw new Exception("Failed to parse input: " + parser.SourceFile);
-                    else { return new Compiler(parser.SourceFile, parser.Result, reporter); }
-                });
+                    else
+                        return new SyntaxCompiler(parser.SourceFile, parser.Result, reporter);
+                }).ToList();
 
                 foreach (var compiler in compilers)
                 {
                     compiler.Compile();
-                    Console.WriteLine(compiler.PrintSemanticTree());
+                    Console.WriteLine($"Syntax Tree for {compiler.FileName}:");
+                    Console.WriteLine(compiler.PrintSyntaxTree());
                 }
 
+                var semanticCompiler = new SemanticModel(reporter);
+                semanticCompiler.Compile(compilers);
+                // Console.WriteLine("\nSymbol Table:");
+                // Console.WriteLine(semanticCompiler.PrintSymbolTable());
+
                 reporter.Write(DiagnosticLevel.Info, "All done.");
-                Console.WriteLine(reporter.GenerateReport());
                 return 0;
             }
             catch (Exception e)
             {
                 reporter.Write(DiagnosticLevel.Error, e.Message);
-                Console.WriteLine(reporter.GenerateReport());
                 return -1;
             }
         }

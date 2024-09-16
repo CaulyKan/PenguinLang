@@ -11,7 +11,7 @@ namespace BabyPenguin
         }
     }
 
-    public enum TypeSpecifierEnum
+    public enum TypeEnum
     {
         Void,
         U8,
@@ -26,7 +26,9 @@ namespace BabyPenguin
         Double,
         String,
         Bool,
-        Other
+        Char,
+        Fun,
+        Other,
     }
 
     public enum UnaryOperatorEnum

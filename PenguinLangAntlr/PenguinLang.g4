@@ -104,29 +104,10 @@ typeSpecifier:
 	| 'double'
 	| 'string'
 	| 'bool'
-	// | structOrUnionSpecifier | enumSpecifier
+	| 'char'
 	| identifier;
 
-structOrUnionSpecifier:
-	structOrUnion identifier? '{' structDeclarationList '}'
-	| structOrUnion identifier;
-
-structOrUnion: 'struct' | 'union';
-
-structDeclarationList: structDeclaration+;
-
-structDeclaration:
-	// The first two rules have priority order and cannot be simplified to one expression.
-	specifierQualifierList structDeclaratorList ';'
-	| specifierQualifierList ';';
-
-specifierQualifierList: (typeSpecifier | typeQualifier) specifierQualifierList?;
-
-structDeclaratorList: structDeclarator (',' structDeclarator)*;
-
-structDeclarator:
-	identifier
-	| identifier? ':' constantExpression;
+classDefinition: 'class' identifier '{' '}';
 
 enumSpecifier:
 	'enum' identifier? '{' enumeratorList ','? '}'
@@ -180,6 +161,7 @@ namespaceDeclaration:
 	| namespaceDefinition
 	| initialRoutine
 	| functionDefinition
+	| classDefinition
 	| ';';
 
 parameterList: declaration (',' declaration)*;

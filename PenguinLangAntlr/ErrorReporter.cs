@@ -1,18 +1,28 @@
+using System;
 using System.Collections.Generic;
 
 namespace PenguinLangAntlr
 {
+    public record SourceLocation(string FileName, string FileNameIdentifier, int RowStart, int RowEnd, int ColStart, int ColEnd)
+    {
+    }
+
     public class ErrorReporter
     {
         public List<DiagnosticMessage> Errors { get; set; } = new List<DiagnosticMessage>();
 
-        public void Write(DiagnosticLevel level, string message, int line, int column, string file)
+        public void Write(DiagnosticLevel level, string message, SourceLocation sourceLocation)
         {
-            this.Errors.Add(new DiagnosticMessage(level, message, line, column, file));
+            var msg = new DiagnosticMessage(level, message, sourceLocation);
+            Console.WriteLine(msg.ToString());
+            this.Errors.Add(msg);
         }
+
         public void Write(DiagnosticLevel level, string message)
         {
-            this.Errors.Add(new DiagnosticMessage(level, message));
+            var msg = new DiagnosticMessage(level, message);
+            Console.WriteLine(msg.ToString());
+            this.Errors.Add(msg);
         }
 
         public string GenerateReport()
@@ -20,9 +30,7 @@ namespace PenguinLangAntlr
             string report = "";
             foreach (var error in this.Errors)
             {
-                if (error.HasSource)
-                    report += $"{error.Level}: {error.Message} (at {error.File}:{error.Line},{error.Column})\n";
-                else report += $"{error.Level}: {error.Message}\n";
+                report += error.ToString() + Environment.NewLine;
             }
             return report;
         }
@@ -37,28 +45,22 @@ namespace PenguinLangAntlr
 
     public class DiagnosticMessage
     {
-        public DiagnosticMessage(DiagnosticLevel level, string message)
+        public DiagnosticMessage(DiagnosticLevel level, string message, SourceLocation? sourceLocation = null)
         {
             Level = level;
             Message = message;
-            HasSource = false;
-            File = "";
-        }
-        public DiagnosticMessage(DiagnosticLevel level, string message, int line, int column, string file)
-        {
-            Level = level;
-            Message = message;
-            Line = line;
-            Column = column;
-            File = file;
-            HasSource = true;
+            SourceLocation = sourceLocation;
         }
 
         public DiagnosticLevel Level { get; set; }
         public string Message { get; set; }
-        public int Line { get; set; }
-        public int Column { get; set; }
-        public string File { get; set; }
-        public bool HasSource { get; set; }
+        public SourceLocation? SourceLocation { get; set; }
+        public override string ToString()
+        {
+            if (SourceLocation != null)
+                return $"{Level}: {Message} (at {SourceLocation.FileName}:{SourceLocation.RowStart},{SourceLocation.ColStart})";
+            else
+                return $"{Level}: {Message}";
+        }
     }
 }

@@ -25,7 +25,8 @@
             int col, string msg, RecognitionException e)
         {
             HasError = true;
-            Reporter.Write(DiagnosticLevel.Error, msg, line, col, File);
+            var loc = new SourceLocation(File, "", line, line, col, col);
+            Reporter.Write(DiagnosticLevel.Error, msg, loc);
             // base.SyntaxError(output, recognizer, offendingSymbol, line, col, msg, e);
         }
     }
