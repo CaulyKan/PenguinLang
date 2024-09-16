@@ -40,7 +40,8 @@ namespace PenguinLangAntlr
     {
         Error,
         Warning,
-        Info
+        Info,
+        Debug
     }
 
     public class DiagnosticMessage

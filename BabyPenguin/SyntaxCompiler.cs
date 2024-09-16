@@ -13,13 +13,8 @@ namespace BabyPenguin
             var walker = new SyntaxWalker(FileName, Reporter);
             _ = new Namespace(walker, Ast);
             Namespaces = walker.Namespaces;
+            Reporter.Write(DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => x.PrettyPrint(0))));
         }
-
-        public string PrintSyntaxTree()
-        {
-            return string.Join("\n", Namespaces.SelectMany(x => x.PrettyPrint(0)));
-        }
-
         public PenguinLangParser.CompilationUnitContext Ast { get; } = ast;
         public ErrorReporter Reporter { get; } = reporter;
         public string FileName { get; } = file;
@@ -68,7 +63,7 @@ namespace BabyPenguin
 
                 case SyntaxScopeType.InitialRoutine:
                     {
-                        var _ = scope as InitialRoutine ?? throw new ArgumentException("Scope must be of type InitialRoutine");
+                        var _ = scope as Syntax.InitialRoutine ?? throw new ArgumentException("Scope must be of type InitialRoutine");
                         break;
                     }
 

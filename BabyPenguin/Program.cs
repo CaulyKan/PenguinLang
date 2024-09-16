@@ -39,8 +39,6 @@ namespace BabyPenguin
                 foreach (var compiler in compilers)
                 {
                     compiler.Compile();
-                    Console.WriteLine($"Syntax Tree for {compiler.FileName}:");
-                    Console.WriteLine(compiler.PrintSyntaxTree());
                 }
 
                 var semanticCompiler = new SemanticModel(reporter);
