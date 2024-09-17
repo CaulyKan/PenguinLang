@@ -5,110 +5,27 @@ using BabyPenguin.Semantic;
 using PenguinLangAntlr;
 using static PenguinLangAntlr.PenguinLangParser;
 using System.Text;
+using BabyPenguin;
 
-namespace BabyPenguin
+namespace BabyPenguin.Semantic
 {
-    using BabyPenguin.Syntax;
-    using Semantic;
-
-    public class SemanticModel
+    public class TypeInfo
     {
-        public SemanticModel(ErrorReporter reporter)
+        public string FullName
         {
-            Reporter = reporter;
-        }
-
-        public void Compile(IEnumerable<SyntaxCompiler> compilers)
-        {
-            foreach (var compiler in compilers)
+            get
             {
-                foreach (var ns in compiler.Namespaces)
+                var n = string.IsNullOrWhiteSpace(Namespace) ? Name : $"{Namespace}.{Name}";
+                if (GenericArguments.Count > 0)
                 {
-                    Namespaces.Add(new Semantic.Namespace(this, ns));
+                    n += "<" + string.Join(",", GenericArguments.Select(t => t.FullName)) + ">";
                 }
-            }
-
-            Namespaces.ForEach(ns => ns.ResolveSyntaxSymbols());
-
-            Reporter.Write(DiagnosticLevel.Debug, $"Type Table:\n" + string.Join("\n", Types.Select(t => "\t" + t.FullName)));
-
-            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + string.Join("\n", Symbols.Select(t => "\t" + t.FullName + ": " + t.Type.FullName)));
-        }
-
-        public TypeInfo? ResolveType(string name, ISyntaxScope? syntaxScope = null)
-        {
-            var builtin = TypeInfo.BuiltinTypes.FirstOrDefault(t => t.Name == name);
-            if (builtin != null)
-            {
-                return builtin;
-            }
-
-            if (syntaxScope == null)
-            {
-                return Types.FirstOrDefault(t => t.FullName == name);
-            }
-            else
-            {
-                // TODO: resolve relative type name
-                throw new NotImplementedException();
+                return n;
             }
         }
 
-        public TypeInfo CreateType(string name, string namespace_, List<TypeInfo> genericArguments)
-        {
-            var type = new TypeInfo(name, namespace_, genericArguments);
-            if (Types.Any(t => t.FullName == type.FullName))
-            {
-                Reporter.Write(DiagnosticLevel.Error, $"Type '{type.FullName}' already exists");
-                throw new InvalidOperationException($"Type '{type.FullName}' already exists");
-            }
-            Types.Add(type);
-            return type;
-        }
-
-        public TypeInfo ResolveOrCreateType(string name, string namespace_, List<TypeInfo> genericArguments)
-        {
-            var type = new TypeInfo(name, namespace_, genericArguments);
-            var existingType = Types.FirstOrDefault(t => t.FullName == type.FullName);
-            if (existingType != null)
-            {
-                return existingType;
-            }
-            else
-            {
-                Types.Add(type);
-                return type;
-            }
-        }
-
-        public List<Semantic.Namespace> Namespaces { get; } = [];
-        public List<Class> Classes { get; } = [];
-        public List<Function> Functions { get; } = [];
-        public List<TypeInfo> Types { get; } = [];
-        public List<ISymbol> Symbols { get; } = [];
-        public ErrorReporter Reporter { get; }
-    }
-
-    namespace Semantic
-    {
-
-        public class TypeInfo
-        {
-            public string FullName
-            {
-                get
-                {
-                    var n = string.IsNullOrWhiteSpace(Namespace) ? Name : $"{Namespace}.{Name}";
-                    if (GenericArguments.Count > 0)
-                    {
-                        n += "<" + string.Join(",", GenericArguments.Select(t => t.FullName)) + ">";
-                    }
-                    return n;
-                }
-            }
-
-            public static readonly TypeInfo[] BuiltinTypes = [
-                new TypeInfo( "bool", "", []),
+        public static readonly TypeInfo[] BuiltinTypes = [
+            new TypeInfo( "bool", "", []),
             new TypeInfo( "double", "", []),
             new TypeInfo( "float", "", []),
             new TypeInfo( "string", "", []),
@@ -124,289 +41,288 @@ namespace BabyPenguin
             new TypeInfo( "char","", []),
         ];
 
-            public string Name { get; }
-            public string Namespace { get; }
-            public TypeEnum Type { get; }
-            public List<TypeInfo> GenericArguments { get; } = [];
+        public string Name { get; }
+        public string Namespace { get; }
+        public TypeEnum Type { get; }
+        public List<TypeInfo> GenericArguments { get; } = [];
 
-            public TypeInfo(string name, string namespace_, List<TypeInfo> genericArguments)
+        public TypeInfo(string name, string namespace_, List<TypeInfo> genericArguments)
+        {
+            if (Enum.GetNames<TypeEnum>().FirstOrDefault(i => i.Equals(name, StringComparison.CurrentCultureIgnoreCase)) is string n)
             {
-                if (Enum.GetNames<TypeEnum>().FirstOrDefault(i => i.Equals(name, StringComparison.CurrentCultureIgnoreCase)) is string n)
+                Type = (TypeEnum)Enum.Parse(typeof(TypeEnum), n);
+            }
+            else
+            {
+                Type = TypeEnum.Other;
+            }
+
+            Name = name;
+            Namespace = namespace_;
+            GenericArguments = genericArguments;
+        }
+    }
+
+    public interface ISymbol
+    {
+        string FullName => Parent.FullName + "." + Name;
+        string Name { get; }
+        ISymbolContainer Parent { get; }
+        TypeInfo Type { get; }
+        SourceLocation SourceLocation { get; }
+        bool IsLocal { get; }
+    }
+
+    public class VaraibleSymbol : ISymbol
+    {
+        public VaraibleSymbol(ISymbolContainer parent, bool isLocal, string name, TypeInfo type, SourceLocation sourceLocation)
+        {
+            Parent = parent;
+            Name = name;
+            Type = type;
+            SourceLocation = sourceLocation;
+            IsLocal = isLocal;
+        }
+
+        public string FullName => Parent.FullName + "." + Name;
+        public string Name { get; }
+        public ISymbolContainer Parent { get; }
+        public TypeInfo Type { get; }
+        public SourceLocation SourceLocation { get; }
+        public bool IsLocal { get; }
+    }
+
+    public class FunctionSymbol : ISymbol
+    {
+        public FunctionSymbol(ISymbolContainer parent, bool isLocal, string name, SourceLocation sourceLocation, TypeInfo returnType, Dictionary<string, TypeInfo> parameters)
+        {
+            Parent = parent;
+            Name = name;
+            ReturnType = returnType;
+            SourceLocation = sourceLocation;
+            Parameters = parameters;
+            IsLocal = isLocal;
+
+            var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values).ToList();
+            Type = parent.Model.ResolveOrCreateType("fun", "", funTypeGenericArguments);
+        }
+
+        public string FullName => Parent.FullName + "." + Name;
+        public string Name { get; }
+        public ISymbolContainer Parent { get; }
+        public TypeInfo ReturnType { get; }
+        public Dictionary<string, TypeInfo> Parameters { get; }
+        public SourceLocation SourceLocation { get; }
+        public TypeInfo Type { get; }
+        public bool IsLocal { get; }
+    }
+
+    public abstract class SemanticNode : IPrettyPrint
+    {
+        public SemanticModel Model { get; }
+        public SourceLocation SourceLocation { get; }
+        public Syntax.SyntaxNode? SyntaxNode { get; }
+        public SemanticNode(SemanticModel model)
+        {
+            Model = model;
+            SourceLocation = new SourceLocation("<annonymous>", "<annonymous>_" + Guid.NewGuid().ToString().Replace("-", ""), 0, 0, 0, 0);
+        }
+
+        public SemanticNode(SemanticModel model, Syntax.SyntaxNode syntaxNode)
+        {
+            Model = model;
+            SourceLocation = syntaxNode.SourceLocation;
+            SyntaxNode = syntaxNode;
+        }
+    }
+
+    public abstract class CodeContainer(SemanticModel model, Syntax.SyntaxNode syntaxNode) : SemanticNode(model, syntaxNode)
+    {
+        public List<IStatement> Statements { get; } = [];
+        public List<Syntax.Declaration> Declarations { get; } = [];
+        public void AddCodeBlock(Syntax.CodeBlock codeBlock)
+        {
+
+            // foreach (var item in codeBlock.BlockItems)
+            // {
+            //     if (item.IsDeclaration)
+            //     {
+            //         Declarations.Add(new Declaration(item.Declaration!));
+            //     }
+            //     else
+            //     {
+            //         switch (item.Statement!.StatementType)
+            //         {
+            //             case Statement.Type.AssignmentStatement:
+            //                 Statements.Add(new AssignmentStatement(item.Statement!.AssignmentStatement!));
+            //                 break;
+            //             case Statement.Type.ExpressionStatement:
+            //                 Statements.Add(new ExpressionStatement(item.Statement!.ExpressionStatement!));
+            //                 break;
+            //             case Statement.Type.SubBlock:
+            //                 AddCodeBlock(item.Statement!.CodeBlock!);
+            //                 break;
+            //             default:
+            //                 throw new NotImplementedException();
+            //         }
+            //     }
+            // }
+        }
+    }
+
+    public interface ISymbolContainer
+    {
+        string FullName { get; }
+
+        List<ISymbol> Symbols { get; }
+
+        ErrorReporter Reporter => Model.Reporter;
+
+        SemanticModel Model { get; }
+
+        void ResolveSyntaxSymbols();
+
+        void AddSymbol(string Name, bool isLocal, string typeName, SourceLocation SourceLocation, ISyntaxScope? scope = null)
+        {
+            var type = Model.ResolveType(typeName, scope);
+            if (type == null)
+            {
+                Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve type '{typeName}' for '{Name}'", SourceLocation);
+                throw new InvalidDataException();
+            }
+            AddSymbol(Name, isLocal, type, SourceLocation);
+        }
+
+        void AddSymbol(string Name, bool isLocal, TypeInfo Type, SourceLocation SourceLocation)
+        {
+            var symbol = new VaraibleSymbol(this, isLocal, Name, Type, SourceLocation);
+            if (!isLocal)
+            {
+                if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
                 {
-                    Type = (TypeEnum)Enum.Parse(typeof(TypeEnum), n);
-                }
-                else
-                {
-                    Type = TypeEnum.Other;
-                }
-
-                Name = name;
-                Namespace = namespace_;
-                GenericArguments = genericArguments;
-            }
-        }
-
-        public interface ISymbol
-        {
-            string FullName => Parent.FullName + "." + Name;
-            string Name { get; }
-            ISymbolContainer Parent { get; }
-            TypeInfo Type { get; }
-            SourceLocation SourceLocation { get; }
-            bool IsLocal { get; }
-        }
-
-        public class VaraibleSymbol : ISymbol
-        {
-            public VaraibleSymbol(ISymbolContainer parent, bool isLocal, string name, TypeInfo type, SourceLocation sourceLocation)
-            {
-                Parent = parent;
-                Name = name;
-                Type = type;
-                SourceLocation = sourceLocation;
-                IsLocal = isLocal;
-            }
-
-            public string FullName => Parent.FullName + "." + Name;
-            public string Name { get; }
-            public ISymbolContainer Parent { get; }
-            public TypeInfo Type { get; }
-            public SourceLocation SourceLocation { get; }
-            public bool IsLocal { get; }
-        }
-
-        public class FunctionSymbol : ISymbol
-        {
-            public FunctionSymbol(ISymbolContainer parent, bool isLocal, string name, SourceLocation sourceLocation, TypeInfo returnType, Dictionary<string, TypeInfo> parameters)
-            {
-                Parent = parent;
-                Name = name;
-                ReturnType = returnType;
-                SourceLocation = sourceLocation;
-                Parameters = parameters;
-                IsLocal = isLocal;
-
-                var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values).ToList();
-                Type = parent.Model.ResolveOrCreateType("fun", "", funTypeGenericArguments);
-            }
-
-            public string FullName => Parent.FullName + "." + Name;
-            public string Name { get; }
-            public ISymbolContainer Parent { get; }
-            public TypeInfo ReturnType { get; }
-            public Dictionary<string, TypeInfo> Parameters { get; }
-            public SourceLocation SourceLocation { get; }
-            public TypeInfo Type { get; }
-            public bool IsLocal { get; }
-        }
-
-        public abstract class SemanticNode : IPrettyPrint
-        {
-            public SemanticModel Model { get; }
-            public SourceLocation SourceLocation { get; }
-            public Syntax.SyntaxNode? SyntaxNode { get; }
-            public SemanticNode(SemanticModel model)
-            {
-                Model = model;
-                SourceLocation = new SourceLocation("<annonymous>", "<annonymous>_" + Guid.NewGuid().ToString().Replace("-", ""), 0, 0, 0, 0);
-            }
-
-            public SemanticNode(SemanticModel model, Syntax.SyntaxNode syntaxNode)
-            {
-                Model = model;
-                SourceLocation = syntaxNode.SourceLocation;
-                SyntaxNode = syntaxNode;
-            }
-        }
-
-        public abstract class CodeContainer(SemanticModel model, SyntaxNode syntaxNode) : SemanticNode(model, syntaxNode)
-        {
-            public List<IStatement> Statements { get; } = [];
-            public List<Declaration> Declarations { get; } = [];
-            public void AddCodeBlock(Syntax.CodeBlock codeBlock)
-            {
-
-                // foreach (var item in codeBlock.BlockItems)
-                // {
-                //     if (item.IsDeclaration)
-                //     {
-                //         Declarations.Add(new Declaration(item.Declaration!));
-                //     }
-                //     else
-                //     {
-                //         switch (item.Statement!.StatementType)
-                //         {
-                //             case Statement.Type.AssignmentStatement:
-                //                 Statements.Add(new AssignmentStatement(item.Statement!.AssignmentStatement!));
-                //                 break;
-                //             case Statement.Type.ExpressionStatement:
-                //                 Statements.Add(new ExpressionStatement(item.Statement!.ExpressionStatement!));
-                //                 break;
-                //             case Statement.Type.SubBlock:
-                //                 AddCodeBlock(item.Statement!.CodeBlock!);
-                //                 break;
-                //             default:
-                //                 throw new NotImplementedException();
-                //         }
-                //     }
-                // }
-            }
-        }
-
-        public interface ISymbolContainer
-        {
-            string FullName { get; }
-
-            List<ISymbol> Symbols { get; }
-
-            ErrorReporter Reporter => Model.Reporter;
-
-            SemanticModel Model { get; }
-
-            void ResolveSyntaxSymbols();
-
-            void AddSymbol(string Name, bool isLocal, string typeName, SourceLocation SourceLocation, ISyntaxScope? scope = null)
-            {
-                var type = Model.ResolveType(typeName, scope);
-                if (type == null)
-                {
-                    Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve type '{typeName}' for '{Name}'", SourceLocation);
+                    Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                     throw new InvalidDataException();
                 }
-                AddSymbol(Name, isLocal, type, SourceLocation);
+                Model.Symbols.Add(symbol);
             }
-
-            void AddSymbol(string Name, bool isLocal, TypeInfo Type, SourceLocation SourceLocation)
-            {
-                var symbol = new VaraibleSymbol(this, isLocal, Name, Type, SourceLocation);
-                if (!isLocal)
-                {
-                    if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
-                    {
-                        Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
-                        throw new InvalidDataException();
-                    }
-                    Model.Symbols.Add(symbol);
-                }
-                Symbols.Add(symbol);
-            }
-
-            void AddFunctionSymbol(string name, bool isLocal, TypeInfo returnType, Dictionary<string, TypeInfo> parameters, SourceLocation sourceLocation)
-            {
-                var symbol = new FunctionSymbol(this, isLocal, name, sourceLocation, returnType, parameters);
-                if (!isLocal)
-                {
-                    if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
-                    {
-                        Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
-                        throw new InvalidDataException();
-                    }
-                    Model.Symbols.Add(symbol);
-                }
-                Symbols.Add(symbol);
-            }
+            Symbols.Add(symbol);
         }
 
-        public interface IClassContainer
+        void AddFunctionSymbol(string name, bool isLocal, TypeInfo returnType, Dictionary<string, TypeInfo> parameters, SourceLocation sourceLocation)
         {
-            Class AddClass(string name)
+            var symbol = new FunctionSymbol(this, isLocal, name, sourceLocation, returnType, parameters);
+            if (!isLocal)
             {
-                var class_ = new Class(Model, this, name);
-
-                return AddClass(class_);
-            }
-
-            Class AddClass(ClassDefinition syntaxNode)
-            {
-                var class_ = new Class(Model, this, syntaxNode);
-
-                return AddClass(class_);
-            }
-
-            Class AddClass(Class class_)
-            {
-                if (this.Classes.Any(c => c.Name == class_.Name))
+                if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
                 {
-                    Reporter.Write(DiagnosticLevel.Error, $"Class '{class_.Name}' already exists in '{FullName}'", class_.SourceLocation);
+                    Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                     throw new InvalidDataException();
                 }
-
-                Classes.Add(class_);
-                Model.Classes.Add(class_);
-                Model.CreateType(class_.Name, FullName, []);
-
-                return class_;
+                Model.Symbols.Add(symbol);
             }
+            Symbols.Add(symbol);
+        }
+    }
 
-            ErrorReporter Reporter => Model.Reporter;
-            SemanticModel Model { get; }
-            List<Class> Classes { get; }
-            string FullName { get; }
+    public interface IClassContainer
+    {
+        Class AddClass(string name)
+        {
+            var class_ = new Class(Model, this, name);
+
+            return AddClass(class_);
         }
 
-        public class Namespace : SemanticNode, IClassContainer, ISymbolContainer
+        Class AddClass(Syntax.ClassDefinition syntaxNode)
         {
-            public string Name { get; }
-            public string FullName => Name;
-            public List<Declaration> Declarations { get; } = [];
-            public List<InitialRoutine> InitialRoutines { get; } = [];
-            public List<Function> Functions { get; } = [];
-            public List<Class> Classes { get; } = [];
-            public List<ISymbol> Symbols { get; } = [];
+            var class_ = new Class(Model, this, syntaxNode);
 
-            public Namespace(SemanticModel model, string name) : base(model)
+            return AddClass(class_);
+        }
+
+        Class AddClass(Class class_)
+        {
+            if (this.Classes.Any(c => c.Name == class_.Name))
             {
-                Name = name;
+                Reporter.Write(DiagnosticLevel.Error, $"Class '{class_.Name}' already exists in '{FullName}'", class_.SourceLocation);
+                throw new InvalidDataException();
             }
 
-            public Namespace(SemanticModel model, Syntax.Namespace syntaxNode) : base(model, syntaxNode)
-            {
-                Name = syntaxNode.Name;
-                foreach (var classNode in syntaxNode.Classes)
-                    (this as IClassContainer).AddClass(classNode);
-            }
+            Classes.Add(class_);
+            Model.Classes.Add(class_);
+            Model.CreateType(class_.Name, FullName, []);
 
-            public void ResolveSyntaxSymbols()
+            return class_;
+        }
+
+        ErrorReporter Reporter => Model.Reporter;
+        SemanticModel Model { get; }
+        List<Class> Classes { get; }
+        string FullName { get; }
+    }
+
+    public class Namespace : SemanticNode, IClassContainer, ISymbolContainer
+    {
+        public string Name { get; }
+        public string FullName => Name;
+        public List<Syntax.Declaration> Declarations { get; } = [];
+        public List<InitialRoutine> InitialRoutines { get; } = [];
+        public List<Function> Functions { get; } = [];
+        public List<Class> Classes { get; } = [];
+        public List<ISymbol> Symbols { get; } = [];
+
+        public Namespace(SemanticModel model, string name) : base(model)
+        {
+            Name = name;
+        }
+
+        public Namespace(SemanticModel model, Syntax.Namespace syntaxNode) : base(model, syntaxNode)
+        {
+            Name = syntaxNode.Name;
+            foreach (var classNode in syntaxNode.Classes)
+                (this as IClassContainer).AddClass(classNode);
+        }
+
+        public void ResolveSyntaxSymbols()
+        {
+            if (SyntaxNode is Syntax.Namespace syntax)
             {
-                if (SyntaxNode is Syntax.Namespace syntax)
+                foreach (var decl in syntax.Declarations)
                 {
-                    foreach (var decl in syntax.Declarations)
-                    {
-                        (this as ISymbolContainer).AddSymbol(decl.Name, false, decl.TypeSpecifier.Name, decl.SourceLocation, decl.Scope);
-                    }
+                    (this as ISymbolContainer).AddSymbol(decl.Name, false, decl.TypeSpecifier.Name, decl.SourceLocation, decl.Scope);
+                }
 
-                    foreach (var func in syntax.Functions)
+                foreach (var func in syntax.Functions)
+                {
+                    var returnType = Model.ResolveType(func.ReturnType.Name, func.ReturnType.Scope);
+                    if (returnType == null)
                     {
-                        var returnType = Model.ResolveType(func.ReturnType.Name, func.ReturnType.Scope);
-                        if (returnType == null)
+                        Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve return type '{func.ReturnType.Name}' for function '{func.Name}'", func.SourceLocation);
+                        throw new InvalidOperationException($"Cant resolve return type '{func.ReturnType.Name}' for function '{func.Name}'");
+                    }
+                    var parameters = new Dictionary<string, TypeInfo>();
+                    foreach (var param in func.Parameters)
+                    {
+                        if (parameters.ContainsKey(param.Name))
                         {
-                            Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve return type '{func.ReturnType.Name}' for function '{func.Name}'", func.SourceLocation);
-                            throw new InvalidOperationException($"Cant resolve return type '{func.ReturnType.Name}' for function '{func.Name}'");
+                            Model.Reporter.Write(DiagnosticLevel.Error, $"Duplicate parameter name '{param.Name}' for function '{func.Name}'", param.SourceLocation);
+                            throw new InvalidOperationException($"Duplicate parameter name '{param.Name}' for function '{func.Name}'");
                         }
-                        var parameters = new Dictionary<string, TypeInfo>();
-                        foreach (var param in func.Parameters)
+                        else
                         {
-                            if (parameters.ContainsKey(param.Name))
+                            var paramType = Model.ResolveType(param.TypeSpecifier.Name, param.TypeSpecifier.Scope);
+                            if (paramType == null)
                             {
-                                Model.Reporter.Write(DiagnosticLevel.Error, $"Duplicate parameter name '{param.Name}' for function '{func.Name}'", param.SourceLocation);
-                                throw new InvalidOperationException($"Duplicate parameter name '{param.Name}' for function '{func.Name}'");
+                                Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'", param.SourceLocation);
+                                throw new InvalidOperationException($"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'");
                             }
                             else
                             {
-                                var paramType = Model.ResolveType(param.TypeSpecifier.Name, param.TypeSpecifier.Scope);
-                                if (paramType == null)
-                                {
-                                    Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'", param.SourceLocation);
-                                    throw new InvalidOperationException($"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'");
-                                }
-                                else
-                                {
-                                    parameters.Add(param.Name, paramType);
-                                }
+                                parameters.Add(param.Name, paramType);
                             }
                         }
-                        (this as ISymbolContainer).AddFunctionSymbol(func.Name, false, returnType, parameters, func.SourceLocation);
                     }
+                    (this as ISymbolContainer).AddFunctionSymbol(func.Name, false, returnType, parameters, func.SourceLocation);
                 }
             }
         }
@@ -414,7 +330,7 @@ namespace BabyPenguin
 
     public class Class : SemanticNode
     {
-        public Class(SemanticModel model, IClassContainer ns, ClassDefinition syntaxNode) : base(model, syntaxNode)
+        public Class(SemanticModel model, IClassContainer ns, Syntax.ClassDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Parent = ns;
@@ -467,4 +383,5 @@ namespace BabyPenguin
 
         }
     }
+
 }
