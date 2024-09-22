@@ -11,14 +11,16 @@ namespace BabyPenguin
     using BabyPenguin.Syntax;
     using Semantic;
 
-    public class SemanticModel
+    public partial class SemanticModel
     {
         public SemanticModel(ErrorReporter reporter)
         {
+            BuiltinNamespace = AddBuiltins();
+
             Reporter = reporter;
         }
 
-        public void Compile(IEnumerable<SyntaxCompiler> compilers)
+        public void CompileSyntax(IEnumerable<SyntaxCompiler> compilers)
         {
             foreach (var compiler in compilers)
             {
@@ -79,6 +81,7 @@ namespace BabyPenguin
             }
         }
 
+        public Semantic.Namespace BuiltinNamespace { get; }
         public List<Semantic.Namespace> Namespaces { get; } = [];
         public List<Class> Classes { get; } = [];
         public List<Function> Functions { get; } = [];
@@ -86,5 +89,54 @@ namespace BabyPenguin
         public List<ISymbol> Symbols { get; } = [];
         public ErrorReporter Reporter { get; }
         public List<ICompilable> CompileTasks { get; } = [];
+    }
+
+    public class SemanticCompiler
+    {
+        public SemanticCompiler()
+        {
+
+        }
+
+        ErrorReporter Reporter { get; } = new ErrorReporter();
+
+        public List<PenguinParser> Parsers { get; } = [];
+
+        private static ulong counter = 0;
+
+        public SemanticCompiler AddFile(string filePath)
+        {
+            var parser = new PenguinParser(filePath, Reporter);
+            Parsers.Add(parser);
+            return this;
+        }
+
+        public SemanticCompiler AddSource(string source, string? fileName = null)
+        {
+            var parser = new PenguinParser(source, fileName ?? $"<anonymous_{counter++}>", Reporter);
+            Parsers.Add(parser);
+            return this;
+        }
+
+        public SemanticModel Compile()
+        {
+
+            var syntaxCompilers = Parsers.Select(parser =>
+            {
+                if (!parser.Parse() || parser.Result == null)
+                    throw new Exception("Failed to parse input: " + parser.SourceFile + "\n" + Reporter.GenerateReport());
+                else
+                    return new SyntaxCompiler(parser.SourceFile, parser.Result, Reporter);
+            }).ToList();
+
+            foreach (var compiler in syntaxCompilers)
+            {
+                compiler.Compile();
+            }
+
+            var model = new SemanticModel(Reporter);
+            model.CompileSyntax(syntaxCompilers);
+            return model;
+        }
     }
 }

@@ -23,35 +23,21 @@ namespace BabyPenguin
 
         static int Run(Options options)
         {
-            var reporter = new ErrorReporter();
             try
             {
-                var parsers = options.Files.Select(file => new PenguinParser(file, reporter));
-
-                var compilers = parsers.Select(parser =>
+                var compiler = new SemanticCompiler();
+                foreach (var file in options.Files)
                 {
-                    if (!parser.Parse() || parser.Result == null)
-                        throw new Exception("Failed to parse input: " + parser.SourceFile);
-                    else
-                        return new SyntaxCompiler(parser.SourceFile, parser.Result, reporter);
-                }).ToList();
-
-                foreach (var compiler in compilers)
-                {
-                    compiler.Compile();
+                    compiler.AddFile(file);
                 }
 
-                var semanticCompiler = new SemanticModel(reporter);
-                semanticCompiler.Compile(compilers);
-                // Console.WriteLine("\nSymbol Table:");
-                // Console.WriteLine(semanticCompiler.PrintSymbolTable());
+                compiler.Compile();
 
-                reporter.Write(DiagnosticLevel.Info, "All done.");
                 return 0;
             }
             catch (Exception e)
             {
-                reporter.Write(DiagnosticLevel.Error, e.Message);
+                Console.WriteLine(e.Message);
                 return -1;
             }
         }

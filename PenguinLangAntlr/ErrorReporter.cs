@@ -5,6 +5,9 @@ namespace PenguinLangAntlr
 {
     public record SourceLocation(string FileName, string FileNameIdentifier, int RowStart, int RowEnd, int ColStart, int ColEnd)
     {
+        private static ulong count = 0;
+
+        public static SourceLocation Empty() => new SourceLocation("<anonymous>", $"anonymous_{count++}", 0, 0, 0, 0);
     }
 
     public class ErrorReporter

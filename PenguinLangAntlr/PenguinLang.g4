@@ -1,9 +1,10 @@
 ﻿grammar PenguinLang;
 
 primaryExpression:
-	identifier
-	| Constant
+	Constant
 	| StringLiteral+
+	| boolLiteral
+	| identifier
 	| '(' expression ')';
 
 postfixExpression:
@@ -174,12 +175,14 @@ namespaceDeclaration:
 	| classDefinition
 	| ';';
 
-parameterList: declaration (',' declaration)*;
+parameterList: declaration? (',' declaration)* ','?;
 
 functionSpecifier: 'pure' | '!pure';
 
 functionDefinition:
-	functionSpecifier* 'fun' identifier '(' parameterList ')' '->' typeSpecifier codeBlock;
+	functionSpecifier* 'fun' identifier '(' parameterList ')' (
+		'->' typeSpecifier
+	)? codeBlock;
 
 initialRoutine: 'initial' codeBlock;
 
@@ -303,6 +306,8 @@ fragment OctalEscapeSequence:
 fragment HexadecimalEscapeSequence: '\\x' HexadecimalDigit+;
 
 StringLiteral: EncodingPrefix? '"' SCharSequence? '"';
+
+boolLiteral: 'true' | 'false';
 
 fragment EncodingPrefix: 'u8' | 'u' | 'U' | 'L';
 

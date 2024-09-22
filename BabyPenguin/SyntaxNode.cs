@@ -402,12 +402,16 @@ namespace BabyPenguin
         {
             public TypeSpecifier(SyntaxWalker walker, TypeSpecifierContext context) : base(walker, context)
             {
-                Identifier = new Identifier(walker, context.GetText(), context, true);
+                var identifier = new Identifier(walker, context.GetText(), context, true);
+                Name = identifier.Name;
             }
 
-            public Identifier Identifier { get; }
+            public TypeSpecifier(SyntaxWalker walker, string liternalName, ParserRuleContext context) : base(walker, context)
+            {
+                Name = liternalName;
+            }
 
-            public string Name => Identifier.Name;
+            public string Name { get; }
         }
 
         public class Declaration : SyntaxNode
@@ -416,7 +420,7 @@ namespace BabyPenguin
             {
                 Identifier = new Identifier(walker, context.identifier(), false);
                 TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
-
+                IsReadonly = context.declarationKeyword().GetText() == "val";
                 walker.DefineSymbol(Name, TypeSpecifier.Name, this);
 
                 if (context.expression() != null)
@@ -426,7 +430,7 @@ namespace BabyPenguin
             public Identifier Identifier { get; }
             public TypeSpecifier TypeSpecifier { get; }
             public Expression? InitializeExpression { get; }
-
+            public bool IsReadonly;
             public string Name => Identifier.Name;
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -782,6 +786,7 @@ namespace BabyPenguin
                 Identifier,
                 Constant,
                 StringLiteral,
+                BoolLiteral,
                 ParenthesizedExpression,
             }
 
@@ -801,6 +806,11 @@ namespace BabyPenguin
                 {
                     Literal = context.GetText();
                     PrimaryExpressionType = Type.StringLiteral;
+                }
+                else if (context.boolLiteral() != null)
+                {
+                    Literal = context.GetText();
+                    PrimaryExpressionType = Type.BoolLiteral;
                 }
                 else if (context.children.OfType<ExpressionContext>().Any())
                 {
@@ -826,10 +836,11 @@ namespace BabyPenguin
                 return PrimaryExpressionType switch
                 {
                     Type.Identifier => Identifier!.PrettyPrint(indentLevel, note),
-                    Type.Constant => new string[] { IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal) },
-                    Type.StringLiteral => new string[] { IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal) },
+                    Type.Constant => [IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal)],
+                    Type.StringLiteral => [IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal)],
+                    Type.BoolLiteral => [IPrettyPrint.PrintText(indentLevel, "BoolLiteral: " + Literal)],
                     Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel, note),
-                    _ => throw new System.InvalidOperationException("Invalid primary expression type"),
+                    _ => throw new NotImplementedException(),
                 };
             }
 
@@ -838,6 +849,7 @@ namespace BabyPenguin
                 Type.Identifier => true,
                 Type.Constant => true,
                 Type.StringLiteral => true,
+                Type.BoolLiteral => true,
                 Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
                 _ => throw new System.InvalidOperationException("Invalid primary expression type"),
             };
@@ -921,9 +933,24 @@ namespace BabyPenguin
 
                 walker.DefineSymbol(this.Name, "fun", this);
 
-                this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
-                    .Select(x => new Declaration(walker, x)).ToList();
-                this.ReturnType = new TypeSpecifier(walker, context.typeSpecifier());
+                if (context.parameterList().children == null)
+                {
+                    this.Parameters = [];
+                }
+                else
+                {
+                    this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
+                        .Select(x => new Declaration(walker, x)).ToList();
+                }
+
+                if (context.typeSpecifier() == null)
+                {
+                    this.ReturnType = new TypeSpecifier(walker, "void", context);
+                }
+                else
+                {
+                    this.ReturnType = new TypeSpecifier(walker, context.typeSpecifier());
+                }
                 this.CodeBlock = new CodeBlock(walker, context.codeBlock());
 
                 walker.PopScope();
