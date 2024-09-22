@@ -19,7 +19,7 @@ initial {
   var world1 : string = "";
   {
     var world1 : string = world + "!";
-    hello(world);
+    hello(world1);
   }
 }
 

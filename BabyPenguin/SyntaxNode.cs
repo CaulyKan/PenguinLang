@@ -107,6 +107,8 @@ namespace BabyPenguin
 
             public bool IsAnonymous { get; private set; }
 
+            public uint ScopeDepth { get; set; } = 0;
+
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return base.PrettyPrint(indentLevel).Concat(
@@ -132,7 +134,7 @@ namespace BabyPenguin
                 walker.PopScope();
             }
 
-            static int counter = 0;
+            static UInt64 counter = 0;
 
             public CodeBlock CodeBlock { get; }
 
@@ -145,6 +147,8 @@ namespace BabyPenguin
             public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
             public ISyntaxScope? ParentScope { get; set; }
             public bool IsAnonymous => false;
+
+            public uint ScopeDepth { get; set; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
@@ -164,7 +168,7 @@ namespace BabyPenguin
                 walker.PopScope();
             }
 
-            static int counter = 0;
+            static UInt64 counter = 0;
 
             public List<CodeBlockItem> BlockItems { get; } = new();
 
@@ -179,6 +183,8 @@ namespace BabyPenguin
             public ISyntaxScope? ParentScope { get; set; }
 
             public bool IsAnonymous => true;
+
+            public uint ScopeDepth { get; set; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
                 => BlockItems.SelectMany(x => x.PrettyPrint(indentLevel));
@@ -530,6 +536,13 @@ namespace BabyPenguin
                    .Select(x => new RelationalExpression(walker, x))
                    .ToList();
 
+            public List<BinaryOperatorEnum> Operators { get; } = context.equalityOperator().Select(x => x.GetText() switch
+            {
+                "==" => BinaryOperatorEnum.Equal,
+                "!=" => BinaryOperatorEnum.NotEqual,
+                _ => throw new System.InvalidOperationException("Invalid equality operator"),
+            }).ToList();
+
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
@@ -538,12 +551,20 @@ namespace BabyPenguin
             public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
         }
 
-        public class RelationalExpression(SyntaxWalker walker, RelationalExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
+        public class RelationalExpression(SyntaxWalker walker, PenguinLangParser.RelationalExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
         {
-            public List<ShiftExpression> SubExpressions { get; }
-                = context.children.OfType<ShiftExpressionContext>()
+            public List<ShiftExpression> SubExpressions { get; } = context.children.OfType<ShiftExpressionContext>()
                    .Select(x => new ShiftExpression(walker, x))
                    .ToList();
+
+            public List<BinaryOperatorEnum> Operators { get; } = context.relationalOperator().Select(x => x.GetText() switch
+                    {
+                        "<" => BinaryOperatorEnum.LessThan,
+                        ">" => BinaryOperatorEnum.GreaterThan,
+                        "<=" => BinaryOperatorEnum.LessThanOrEqual,
+                        ">=" => BinaryOperatorEnum.GreaterThanOrEqual,
+                        _ => throw new System.InvalidOperationException("Invalid relational operator")
+                    }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
@@ -560,6 +581,13 @@ namespace BabyPenguin
                    .Select(x => new AdditiveExpression(walker, x))
                    .ToList();
 
+            public List<BinaryOperatorEnum> Operators { get; } = context.shiftOperator().Select(x => x.GetText() switch
+                    {
+                        "<<" => BinaryOperatorEnum.LeftShift,
+                        ">>" => BinaryOperatorEnum.RightShift,
+                        _ => throw new System.InvalidOperationException("Invalid shift operator")
+                    }).ToList();
+
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
@@ -575,6 +603,13 @@ namespace BabyPenguin
                    .Select(x => new MultiplicativeExpression(walker, x))
                    .ToList();
 
+            public List<BinaryOperatorEnum> Operators { get; } = context.additiveOperator().Select(x => x.GetText() switch
+                    {
+                        "+" => BinaryOperatorEnum.Add,
+                        "-" => BinaryOperatorEnum.Subtract,
+                        _ => throw new System.InvalidOperationException("Invalid additive operator")
+                    }).ToList();
+
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
@@ -589,6 +624,14 @@ namespace BabyPenguin
                 = context.children.OfType<CastExpressionContext>()
                    .Select(x => new CastExpression(walker, x))
                    .ToList();
+
+            public List<BinaryOperatorEnum> Operators { get; } = context.multiplicativeOperator().Select(x => x.GetText() switch
+                    {
+                        "*" => BinaryOperatorEnum.Multiply,
+                        "/" => BinaryOperatorEnum.Divide,
+                        "%" => BinaryOperatorEnum.Modulo,
+                        _ => throw new System.InvalidOperationException("Invalid multiplicative operator")
+                    }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
@@ -652,7 +695,7 @@ namespace BabyPenguin
                 SubExpression = new PostfixExpression(walker, context.postfixExpression());
             }
 
-            public PostfixExpression? SubExpression { get; }
+            public PostfixExpression SubExpression { get; }
 
             public UnaryOperatorEnum? UnaryOperator { get; }
 
@@ -800,7 +843,7 @@ namespace BabyPenguin
             };
         }
 
-        public class SlicingExpression : SyntaxNode
+        public class SlicingExpression : SyntaxNode, ISyntaxExpression
         {
             public SlicingExpression(SyntaxWalker walker, SlicingExpressionContext context) : base(walker, context)
             {
@@ -811,6 +854,8 @@ namespace BabyPenguin
             public PrimaryExpression PrimaryExpression { get; }
 
             public Expression IndexExpression { get; }
+
+            public bool IsSimple => false;
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
@@ -893,6 +938,7 @@ namespace BabyPenguin
             public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
             public ISyntaxScope? ParentScope { get; set; }
             public bool IsAnonymous => false;
+            public uint ScopeDepth { get; set; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
@@ -924,6 +970,7 @@ namespace BabyPenguin
             public bool IsAnonymous => false;
             public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
             public ISyntaxScope? ParentScope { get; set; }
+            public uint ScopeDepth { get; set; }
         }
     }
 }

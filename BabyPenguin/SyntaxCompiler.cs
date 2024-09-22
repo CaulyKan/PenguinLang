@@ -40,6 +40,7 @@ namespace BabyPenguin
         public void PushScope(SyntaxScopeType type, ISyntaxScope scope)
         {
             scope.ParentScope = ScopeStack.Count > 0 ? CurrentScope : null;
+            scope.ScopeDepth = (scope.ParentScope?.ScopeDepth ?? 0) + 1;
 
             switch (type)
             {
@@ -86,6 +87,8 @@ namespace BabyPenguin
         /// if expression is a constant, symbol, or literal
         /// </summary>
         bool IsSimple { get; }
+
+        SourceLocation SourceLocation { get; }
     }
 
     public enum SyntaxScopeType
@@ -126,6 +129,11 @@ namespace BabyPenguin
         Dictionary<string, ISyntaxScope> SubScopes { get; }
 
         bool IsAnonymous { get; }
+
+        /// <summary>
+        /// Scope depth of the symbol, each '{}' block increases the depth by 1.
+        /// </summary>
+        uint ScopeDepth { get; set; }
 
         ISyntaxScope? ParentScope { get; set; }
     }

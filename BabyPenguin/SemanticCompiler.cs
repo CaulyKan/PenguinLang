@@ -28,30 +28,28 @@ namespace BabyPenguin
                 }
             }
 
-            Namespaces.ForEach(ns => ns.ResolveSyntaxSymbols());
+            Reporter.Write(DiagnosticLevel.Debug, $"Semantic Scopes:\n" + string.Join("\n", Namespaces.OfType<IPrettyPrint>().SelectMany(s => s.PrettyPrint(0))));
 
             Reporter.Write(DiagnosticLevel.Debug, $"Type Table:\n" + string.Join("\n", Types.Select(t => "\t" + t.FullName)));
 
+            Namespaces.ForEach(ns => ns.ElabSyntaxSymbols());
+
             Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + string.Join("\n", Symbols.Select(t => "\t" + t.FullName + ": " + t.Type.FullName)));
+
+            foreach (var task in CompileTasks)
+            {
+                task.CompileSyntaxStatements();
+            }
         }
 
-        public TypeInfo? ResolveType(string name, ISyntaxScope? syntaxScope = null)
+        public TypeInfo? ResolveType(string name)
         {
-            var builtin = TypeInfo.BuiltinTypes.FirstOrDefault(t => t.Name == name);
-            if (builtin != null)
+            if (TypeInfo.BuiltinTypes.TryGetValue(name, out TypeInfo? value))
             {
-                return builtin;
+                return value;
             }
 
-            if (syntaxScope == null)
-            {
-                return Types.FirstOrDefault(t => t.FullName == name);
-            }
-            else
-            {
-                // TODO: resolve relative type name
-                throw new NotImplementedException();
-            }
+            return Types.FirstOrDefault(t => t.FullName == name);
         }
 
         public TypeInfo CreateType(string name, string namespace_, List<TypeInfo> genericArguments)
@@ -87,5 +85,6 @@ namespace BabyPenguin
         public List<TypeInfo> Types { get; } = [];
         public List<ISymbol> Symbols { get; } = [];
         public ErrorReporter Reporter { get; }
+        public List<ICompilable> CompileTasks { get; } = [];
     }
 }

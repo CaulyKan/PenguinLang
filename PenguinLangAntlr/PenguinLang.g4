@@ -30,21 +30,31 @@ castExpression:
 	| unaryExpression;
 
 multiplicativeExpression:
-	castExpression (('*' | '/' | '%') castExpression)*;
+	castExpression (multiplicativeOperator castExpression)*;
+
+multiplicativeOperator: '*' | '/' | '%';
 
 additiveExpression:
 	multiplicativeExpression (
-		('+' | '-') multiplicativeExpression
+		additiveOperator multiplicativeExpression
 	)*;
 
+additiveOperator: '+' | '-';
+
 shiftExpression:
-	additiveExpression (('<<' | '>>') additiveExpression)*;
+	additiveExpression (shiftOperator additiveExpression)*;
+
+shiftOperator: '<<' | '>>';
 
 relationalExpression:
-	shiftExpression (('<' | '>' | '<=' | '>=') shiftExpression)*;
+	shiftExpression (relationalOperator shiftExpression)*;
+
+relationalOperator: '<' | '>' | '<=' | '>=';
 
 equalityExpression:
-	relationalExpression (('==' | '!=') relationalExpression)*;
+	relationalExpression (equalityOperator relationalExpression)*;
+
+equalityOperator: '==' | '!=';
 
 andExpression: equalityExpression ('&' equalityExpression)*;
 

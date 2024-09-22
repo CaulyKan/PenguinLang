@@ -30,6 +30,27 @@ namespace BabyPenguin
         Fun,
         Other,
     }
+    public enum BinaryOperatorEnum
+    {
+        Add,
+        Subtract,
+        Multiply,
+        Divide,
+        Modulo,
+        LessThan,
+        GreaterThan,
+        LessThanOrEqual,
+        GreaterThanOrEqual,
+        Equal,
+        NotEqual,
+        LogicalAnd,
+        LogicalOr,
+        BitwiseAnd,
+        BitwiseOr,
+        BitwiseXor,
+        LeftShift,
+        RightShift
+    }
 
     public enum UnaryOperatorEnum
     {
@@ -38,7 +59,7 @@ namespace BabyPenguin
         Plus,
         Minus,
         BitwiseNot,
-        LogicalNot
+        LogicalNot,
     }
 
     public enum AssignmentOperatorEnum

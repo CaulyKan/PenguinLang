@@ -18,6 +18,14 @@ namespace PenguinLangAntlr
             this.Errors.Add(msg);
         }
 
+        public void Throw(string message, SourceLocation sourceLocation)
+        {
+            var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation);
+            Console.WriteLine(msg.ToString());
+            this.Errors.Add(msg);
+            throw new Exception(msg.ToString());
+        }
+
         public void Write(DiagnosticLevel level, string message)
         {
             var msg = new DiagnosticMessage(level, message);
