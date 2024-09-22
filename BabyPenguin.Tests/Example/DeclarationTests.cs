@@ -120,6 +120,7 @@ public class HelloWorldTest
         Assert.Single(model.Namespaces[0].InitialRoutines);
         Assert.Single(model.Namespaces[1].InitialRoutines);
     }
+
     [Fact]
     public void InitialVarDeclare()
     {
@@ -136,18 +137,63 @@ public class HelloWorldTest
         var model = compiler.Compile();
 
         Assert.Single(model.Namespaces[0].InitialRoutines);
-        var symbols = model.Namespaces[0].InitialRoutines[0].Symbols;
+        var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
         Assert.Equal(5, symbols.Count);
         Assert.Equal("test1", symbols[0].Name);
         Assert.True(symbols[0].Type.IsStringType);
         Assert.True(symbols[0].IsLocal);
-        Assert.True(model.Symbols[1].Type.FullName == "u8");
-        Assert.Equal("test2", model.Symbols[1].Name);
-        Assert.True(model.Symbols[2].Type.FullName == "i32");
-        Assert.Equal("test3", model.Symbols[2].Name);
-        Assert.True(model.Symbols[3].Type.IsBoolType);
-        Assert.Equal("test4", model.Symbols[3].Name);
-        Assert.True(model.Symbols[4].Type.IsFloatType);
-        Assert.Equal("test5", model.Symbols[4].Name);
+        Assert.True(symbols[1].Type.FullName == "u8");
+        Assert.Equal("test2", symbols[1].Name);
+        Assert.True(symbols[2].Type.FullName == "i32");
+        Assert.Equal("test3", symbols[2].Name);
+        Assert.True(symbols[3].Type.IsBoolType);
+        Assert.Equal("test4", symbols[3].Name);
+        Assert.True(symbols[4].Type.IsFloatType);
+        Assert.Equal("test5", symbols[4].Name);
+    }
+
+    [Fact]
+    public void FunVarDeclare()
+    {
+        var compiler = new SemanticCompiler();
+        compiler.AddSource(@"
+            fun test(val param1: u64, var param2: char) {
+                var test1 : string = "" "";
+                val test2 : u8 = 1;
+                val test3 : i32 = 1;
+                val test4 : bool = true;
+                val test5 : float = 3.14159;
+            }
+        ");
+        var model = compiler.Compile();
+
+        Assert.Single(model.Namespaces[0].Functions);
+        var symbols = model.Namespaces[0].Functions[0].Symbols.Where(x => !x.IsTemp).ToList();
+        Assert.Equal(7, symbols.Count);
+        Assert.Equal("param1", symbols[0].Name);
+        Assert.Equal("u64", symbols[0].Type.FullName);
+        Assert.True(symbols[0].IsReadonly);
+        Assert.True(symbols[0].IsParameter);
+
+        Assert.Equal("param2", symbols[1].Name);
+        Assert.Equal("char", symbols[1].Type.FullName);
+        Assert.False(symbols[1].IsReadonly);
+        Assert.True(symbols[1].IsParameter);
+
+        Assert.True(symbols[2].Type.IsStringType);
+        Assert.True(symbols[2].IsLocal);
+
+        Assert.True(symbols[3].Type.FullName == "u8");
+        Assert.False(symbols[3].IsParameter);
+        Assert.Equal("test2", symbols[3].Name);
+
+        Assert.True(symbols[4].Type.FullName == "i32");
+        Assert.Equal("test3", symbols[4].Name);
+
+        Assert.True(symbols[5].Type.IsBoolType);
+        Assert.Equal("test4", symbols[5].Name);
+
+        Assert.True(symbols[6].Type.IsFloatType);
+        Assert.Equal("test5", symbols[6].Name);
     }
 }

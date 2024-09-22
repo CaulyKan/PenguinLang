@@ -169,29 +169,24 @@ namespace BabyPenguin.Semantic
         TypeInfo Type { get; }
         SourceLocation SourceLocation { get; }
         bool IsLocal { get; }
+        bool IsTemp { get; }
+        bool IsParameter { get; }
+        bool IsReadonly { get; }
     }
 
-    public class VaraibleSymbol : ISymbol
+    public class VaraibleSymbol(ISymbolContainer parent, bool isLocal, string name, TypeInfo type, SourceLocation sourceLocation, uint scopeDepth, string originName, bool isTemp, bool isParam, bool isReadonly) : ISymbol
     {
-        public VaraibleSymbol(ISymbolContainer parent, bool isLocal, string name, TypeInfo type, SourceLocation sourceLocation, uint scopeDepth, string originName)
-        {
-            Parent = parent;
-            Name = name;
-            Type = type;
-            SourceLocation = sourceLocation;
-            IsLocal = isLocal;
-            ScopeDepth = scopeDepth;
-            OriginName = originName;
-        }
-
         public string FullName => Parent.FullName + "." + Name;
-        public string Name { get; }
-        public ISymbolContainer Parent { get; }
-        public TypeInfo Type { get; }
-        public SourceLocation SourceLocation { get; }
-        public bool IsLocal { get; }
-        public string OriginName { get; }
-        public uint ScopeDepth { get; }
+        public string Name { get; } = name;
+        public ISymbolContainer Parent { get; } = parent;
+        public TypeInfo Type { get; } = type;
+        public SourceLocation SourceLocation { get; } = sourceLocation;
+        public bool IsLocal { get; } = isLocal;
+        public string OriginName { get; } = originName;
+        public uint ScopeDepth { get; } = scopeDepth;
+        public bool IsTemp { get; } = isTemp;
+        public bool IsParameter { get; } = isParam;
+        public bool IsReadonly { get; set; } = isReadonly;
 
         public override string ToString()
         {
@@ -203,7 +198,7 @@ namespace BabyPenguin.Semantic
 
     public class FunctionSymbol : ISymbol
     {
-        public FunctionSymbol(ISymbolContainer parent, bool isLocal, string name, SourceLocation sourceLocation, TypeInfo returnType, Dictionary<string, FunctionParameter> parameters, uint scopeDepth, string originName)
+        public FunctionSymbol(ISymbolContainer parent, bool isLocal, string name, SourceLocation sourceLocation, TypeInfo returnType, Dictionary<string, FunctionParameter> parameters, uint scopeDepth, string originName, bool isTemp, bool isParam, bool isReadonly)
         {
             Parent = parent;
             Name = name;
@@ -213,6 +208,9 @@ namespace BabyPenguin.Semantic
             IsLocal = isLocal;
             ScopeDepth = scopeDepth;
             OriginName = originName;
+            IsParameter = isParam;
+            IsTemp = isTemp;
+            IsReadonly = isReadonly;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values.Select(p => p.Type)).ToList();
             Type = parent.Model.ResolveOrCreateType("fun", "", funTypeGenericArguments);
@@ -228,12 +226,17 @@ namespace BabyPenguin.Semantic
         public bool IsLocal { get; }
         public string OriginName { get; }
         public uint ScopeDepth { get; }
+        public bool IsTemp { get; }
+        public bool IsParameter { get; }
+
+        public bool IsReadonly { get; set; }
 
         public override string ToString()
         {
             return $"{Name} ({Type})";
         }
     }
+
 
     public abstract class SemanticNode : IPrettyPrint
     {
@@ -282,7 +285,9 @@ namespace BabyPenguin.Semantic
         ISymbol AllocTempSymbol(TypeInfo type, SourceLocation sourceLocation)
         {
             var name = $"__temp_{counter++}";
-            return new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name);
+            var temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, false, false);
+            this.Symbols.Add(temp);
+            return temp;
         }
 
         ISymbol? ResolveSymbol(string name, uint scopeDepth, bool isOriginName = true)
@@ -313,7 +318,7 @@ namespace BabyPenguin.Semantic
             return symbol;
         }
 
-        ISymbol AddSymbol(string Name, bool isLocal, string typeName, SourceLocation sourceLocation, uint scopeDepth)
+        ISymbol AddSymbol(string Name, bool isLocal, string typeName, SourceLocation sourceLocation, uint scopeDepth, bool isParam, bool isReadonly)
         {
             var type = Model.ResolveType(typeName);
             if (type == null)
@@ -321,10 +326,10 @@ namespace BabyPenguin.Semantic
                 Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve type '{typeName}' for '{Name}'", sourceLocation);
                 throw new InvalidDataException();
             }
-            return AddSymbol(Name, isLocal, type, sourceLocation, scopeDepth);
+            return AddSymbol(Name, isLocal, type, sourceLocation, scopeDepth, isParam, isReadonly);
         }
 
-        ISymbol AddSymbol(string name, bool isLocal, TypeInfo type, SourceLocation sourceLocation, uint scopeDepth)
+        ISymbol AddSymbol(string name, bool isLocal, TypeInfo type, SourceLocation sourceLocation, uint scopeDepth, bool isParam, bool isReadonly)
         {
             var originName = name;
             if (isLocal)
@@ -340,7 +345,7 @@ namespace BabyPenguin.Semantic
                 }
             }
 
-            var symbol = new VaraibleSymbol(this, isLocal, name, type, sourceLocation, scopeDepth, originName);
+            var symbol = new VaraibleSymbol(this, isLocal, name, type, sourceLocation, scopeDepth, originName, false, isParam, isReadonly);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
@@ -354,7 +359,7 @@ namespace BabyPenguin.Semantic
             return symbol;
         }
 
-        ISymbol AddFunctionSymbol(string name, bool isLocal, TypeInfo returnType, Dictionary<string, FunctionParameter> parameters, SourceLocation sourceLocation, uint scopeDepth)
+        ISymbol AddFunctionSymbol(string name, bool isLocal, TypeInfo returnType, Dictionary<string, FunctionParameter> parameters, SourceLocation sourceLocation, uint scopeDepth, bool isParam, bool isReadonly)
         {
             var originName = name;
             if (isLocal)
@@ -370,7 +375,7 @@ namespace BabyPenguin.Semantic
                 }
             }
 
-            var symbol = new FunctionSymbol(this, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName);
+            var symbol = new FunctionSymbol(this, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, isParam, isReadonly);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
@@ -383,11 +388,6 @@ namespace BabyPenguin.Semantic
             Symbols.Add(symbol);
             return symbol;
         }
-    }
-
-    public interface ICompilable
-    {
-        void CompileSyntaxStatements();
     }
 
     public interface IRoutineContainer : ISemanticScope, ISymbolContainer
@@ -487,7 +487,7 @@ namespace BabyPenguin.Semantic
             {
                 foreach (var decl in syntax.Declarations)
                 {
-                    (this as ISymbolContainer).AddSymbol(decl.Name, false, decl.TypeSpecifier.Name, decl.SourceLocation, decl.Scope.ScopeDepth);
+                    (this as ISymbolContainer).AddSymbol(decl.Name, false, decl.TypeSpecifier.Name, decl.SourceLocation, decl.Scope.ScopeDepth, false, decl.IsReadonly);
                 }
 
             }
@@ -542,53 +542,22 @@ namespace BabyPenguin.Semantic
         }
     }
 
-    public class CodeContainer : SemanticNode, ICompilable, ISymbolContainer
+    public interface ICodeContainer : ISymbolContainer
     {
-        public CodeContainer(SemanticModel model, ISemanticScope parent, Syntax.CodeBlock codeBlock) : base(model, codeBlock)
+        List<ISemanticCommand> Commands { get; }
+
+        Syntax.SyntaxNode? CodeSyntaxNode { get; }
+
+        void CompileSyntaxStatements()
         {
-            Parent = parent;
-            Parent.Children.Add(this);
-            Model.CompileTasks.Add(this);
-        }
-
-        public CodeContainer(SemanticModel model, ISemanticScope parent, Syntax.Statement codeBlock) : base(model, codeBlock)
-        {
-            Parent = parent;
-            Parent.Children.Add(this);
-            Model.CompileTasks.Add(this);
-        }
-
-        public CodeContainer(SemanticModel model, ISemanticScope parent) : base(model)
-        {
-            Parent = parent;
-            Parent.Children.Add(this);
-            Model.CompileTasks.Add(this);
-        }
-
-        public List<ISemanticCommand> Statements { get; } = [];
-
-        public List<ISymbol> Symbols { get; } = [];
-
-        public ISemanticScope? Parent { get; }
-
-        public List<ISemanticCommand> Commands { get; } = [];
-
-        static ulong counter = 0;
-
-        public string Name { get; } = $"CodeContainer_{counter++}";
-
-        public List<ISemanticScope> Children { get; } = [];
-
-        public void CompileSyntaxStatements()
-        {
-            if (SyntaxNode is Syntax.CodeBlock codeBlock)
+            if (CodeSyntaxNode is Syntax.CodeBlock codeBlock)
             {
                 foreach (var item in codeBlock.BlockItems)
                 {
                     AddCodeBlockItem(item);
                 }
             }
-            else if (SyntaxNode is Syntax.Statement statement)
+            else if (CodeSyntaxNode is Syntax.Statement statement)
             {
                 AddStatement(statement);
             }
@@ -602,7 +571,7 @@ namespace BabyPenguin.Semantic
         {
             if (item.IsDeclaration)
             {
-                AddDeclearation(item.Declaration!);
+                AddDeclearation(item.Declaration!, false);
             }
             else
             {
@@ -610,12 +579,12 @@ namespace BabyPenguin.Semantic
             }
         }
 
-        public void AddDeclearation(Syntax.Declaration item)
+        public void AddDeclearation(Syntax.Declaration item, bool isParam)
         {
-            var symbol = (this as ISymbolContainer).AddSymbol(item.Name, true, item.TypeSpecifier.Name, item.SourceLocation, item.Scope.ScopeDepth);
+            var symbol = AddSymbol(item.Name, true, item.TypeSpecifier.Name, item.SourceLocation, item.Scope.ScopeDepth, isParam, item.IsReadonly);
             if (item.InitializeExpression != null)
             {
-                var temp = this.AddExpression(item.InitializeExpression);
+                var temp = AddExpression(item.InitializeExpression);
                 Commands.Add(new AssignmentCommand(temp, symbol));
             }
         }
@@ -625,8 +594,8 @@ namespace BabyPenguin.Semantic
             switch (item.StatementType)
             {
                 case Syntax.Statement.Type.AssignmentStatement:
-                    var right_var = this.AddExpression(item.AssignmentStatement!.RightHandSide);
-                    var target = (this as ISymbolContainer).ResolveSymbol(item.AssignmentStatement.LeftHandSide.Name, item.Scope.ScopeDepth);
+                    var right_var = AddExpression(item.AssignmentStatement!.RightHandSide);
+                    var target = ResolveSymbol(item.AssignmentStatement.LeftHandSide.Name, item.Scope.ScopeDepth);
                     if (target == null)
                     {
                         Model.Reporter.Throw($"Cant resolve symbol '{item.AssignmentStatement.LeftHandSide.Name}'", item.AssignmentStatement.LeftHandSide.SourceLocation);
@@ -653,7 +622,7 @@ namespace BabyPenguin.Semantic
                                 AssignmentOperatorEnum.RightShiftAssign => BinaryOperatorEnum.RightShift,
                                 _ => throw new NotImplementedException(),
                             };
-                            var temp = (this as ISymbolContainer).AllocTempSymbol(target.Type, item.SourceLocation);
+                            var temp = AllocTempSymbol(target.Type, item.SourceLocation);
                             AddCommand(new BinaryOperationCommand(op, right_var, target, temp));
                             AddCommand(new AssignmentCommand(temp, target));
                             break;
@@ -1108,26 +1077,20 @@ namespace BabyPenguin.Semantic
         {
             Commands.Add(command);
         }
-
-        public void ElabSyntaxSymbols()
-        {
-            // Do nothing
-        }
     }
 
-    public class InitialRoutine : SemanticNode, ISemanticScope, ISymbolContainer
+    public class InitialRoutine : SemanticNode, ISemanticScope, ISymbolContainer, ICodeContainer
     {
         public InitialRoutine(SemanticModel model, IRoutineContainer parent, Syntax.InitialRoutine syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Parent = parent;
             Parent.Children.Add(this);
-            Code = new CodeContainer(model, this, syntaxNode.CodeBlock);
+            Model.CompileTasks.Add(this);
+            CodeSyntaxNode = syntaxNode.CodeBlock;
         }
 
         public string Name { get; }
-
-        public CodeContainer Code { get; }
 
         public ISemanticScope? Parent { get; }
 
@@ -1135,6 +1098,10 @@ namespace BabyPenguin.Semantic
 
         public List<ISymbol> Symbols { get; } = [];
 
+        public List<ISemanticCommand> Commands { get; } = [];
+
+        public Syntax.SyntaxNode? CodeSyntaxNode { get; }
+
         public void ElabSyntaxSymbols()
         {
             // Do nothing
@@ -1142,14 +1109,15 @@ namespace BabyPenguin.Semantic
     }
 
 
-    public class Function : SemanticNode, ISemanticScope, ISymbolContainer
+    public class Function : SemanticNode, ISemanticScope, ISymbolContainer, ICodeContainer
     {
         public Function(SemanticModel model, IRoutineContainer parent, Syntax.FunctionDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Parent = parent;
             Parent.Children.Add(this);
-            Code = new CodeContainer(model, this, syntaxNode.CodeBlock);
+            Model.CompileTasks.Add(this);
+            CodeSyntaxNode = syntaxNode.CodeBlock;
         }
 
         public Function(SemanticModel model, IRoutineContainer parent, string name, Dictionary<string, FunctionParameter> parameters, TypeInfo returnType) : base(model)
@@ -1159,15 +1127,13 @@ namespace BabyPenguin.Semantic
             Parent.Children.Add(this);
             Parameters = parameters;
             ReturnType = returnType;
-            Parent.AddFunctionSymbol(name, false, ReturnType, parameters, SourceLocation.Empty(), 0);
+            Parent.AddFunctionSymbol(name, false, ReturnType, parameters, SourceLocation.Empty(), 0, false, true);
             foreach (var param in parameters.Values)
             {
-                (this as ISymbolContainer).AddSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0);
+                (this as ISymbolContainer).AddSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, true, param.IsReadonly);
             }
-            Code = new CodeContainer(model, this);
+            Model.CompileTasks.Add(this);
         }
-
-        public CodeContainer Code { get; }
 
         public string Name { get; }
 
@@ -1184,6 +1150,10 @@ namespace BabyPenguin.Semantic
         public List<ISymbol> Symbols { get; } = [];
 
         public FunctionSymbol? FunctionSymbol { get; private set; } = null;
+
+        public List<ISemanticCommand> Commands { get; } = [];
+
+        public Syntax.SyntaxNode? CodeSyntaxNode { get; }
 
         public void ElabSyntaxSymbols()
         {
@@ -1218,11 +1188,11 @@ namespace BabyPenguin.Semantic
                         else
                         {
                             parameters.Add(param.Name, new FunctionParameter(param.Name, paramType, param.IsReadonly));
-                            (this as ISymbolContainer).AddSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth);
+                            (this as ISymbolContainer).AddSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth, true, param.IsReadonly);
                         }
                     }
                 }
-                var func_symbol = Parent.AddFunctionSymbol(func.Name, false, ReturnType, parameters, func.SourceLocation, func.Scope.ScopeDepth);
+                var func_symbol = Parent.AddFunctionSymbol(func.Name, false, ReturnType, parameters, func.SourceLocation, func.Scope.ScopeDepth, false, true);
                 FunctionSymbol = (FunctionSymbol)func_symbol;
             }
         }

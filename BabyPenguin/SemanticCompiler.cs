@@ -88,7 +88,7 @@ namespace BabyPenguin
         public List<TypeInfo> Types { get; } = [];
         public List<ISymbol> Symbols { get; } = [];
         public ErrorReporter Reporter { get; }
-        public List<ICompilable> CompileTasks { get; } = [];
+        public List<ICodeContainer> CompileTasks { get; } = [];
     }
 
     public class SemanticCompiler
