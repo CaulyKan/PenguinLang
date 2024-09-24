@@ -46,25 +46,25 @@ namespace BabyPenguin
             {
                 case SyntaxScopeType.Namespace:
                     {
-                        var ns = scope as Namespace ?? throw new ArgumentException("Scope must be of type Namespace");
+                        var ns = scope as Namespace ?? throw new NotImplementedException();
                         Namespaces.Add(ns);
                         break;
                     }
 
                 case SyntaxScopeType.Class:
                     {
-                        var _ = scope as ClassDefinition ?? throw new ArgumentException("Scope must be of type ClassDefinition");
+                        var _ = scope as ClassDefinition ?? throw new NotImplementedException();
                         break;
                     }
                 case SyntaxScopeType.Function:
                     {
-                        var _ = scope as FunctionDefinition ?? throw new ArgumentException("Scope must be of type FunctionDefinition");
+                        var _ = scope as FunctionDefinition ?? throw new NotImplementedException();
                         break;
                     }
 
                 case SyntaxScopeType.InitialRoutine:
                     {
-                        var _ = scope as Syntax.InitialRoutine ?? throw new ArgumentException("Scope must be of type InitialRoutine");
+                        var _ = scope as Syntax.InitialRoutine ?? throw new NotImplementedException();
                         break;
                     }
 

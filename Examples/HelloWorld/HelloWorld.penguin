@@ -12,18 +12,3 @@ fun hello(val name : string) -> void {
 }
 
 class Test{}
-
-namespace std {
-val world : string = "world";
-initial {
-  var world1 : string = "";
-  {
-    var world1 : string = world + "!";
-    hello(world1);
-  }
-}
-
-fun hello(val name : string) -> void {
-  print("Hello, " + name);
-}
-}

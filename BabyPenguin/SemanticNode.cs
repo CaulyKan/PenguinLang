@@ -323,10 +323,9 @@ namespace BabyPenguin.Semantic
             var type = Model.ResolveType(typeName);
             if (type == null)
             {
-                Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve type '{typeName}' for '{Name}'", sourceLocation);
-                throw new InvalidDataException();
+                Model.Reporter.Throw($"Cant resolve type '{typeName}' for '{Name}'", sourceLocation);
             }
-            return AddSymbol(Name, isLocal, type, sourceLocation, scopeDepth, isParam, isReadonly);
+            return AddSymbol(Name, isLocal, type!, sourceLocation, scopeDepth, isParam, isReadonly);
         }
 
         ISymbol AddSymbol(string name, bool isLocal, TypeInfo type, SourceLocation sourceLocation, uint scopeDepth, bool isParam, bool isReadonly)
@@ -350,8 +349,7 @@ namespace BabyPenguin.Semantic
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
                 {
-                    Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
-                    throw new InvalidDataException();
+                    Reporter.Throw($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                 }
                 Model.Symbols.Add(symbol);
             }
@@ -380,8 +378,7 @@ namespace BabyPenguin.Semantic
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
                 {
-                    Reporter.Write(DiagnosticLevel.Error, $"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
-                    throw new InvalidDataException();
+                    Reporter.Throw($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                 }
                 Model.Symbols.Add(symbol);
             }
@@ -438,8 +435,7 @@ namespace BabyPenguin.Semantic
         {
             if (this.Classes.Any(c => c.Name == class_.Name))
             {
-                Reporter.Write(DiagnosticLevel.Error, $"Class '{class_.Name}' already exists in '{FullName}'", class_.SourceLocation);
-                throw new InvalidDataException();
+                Reporter.Throw($"Class '{class_.Name}' already exists in '{FullName}'", class_.SourceLocation);
             }
 
             Classes.Add(class_);
@@ -1174,16 +1170,14 @@ namespace BabyPenguin.Semantic
                 {
                     if (parameters.ContainsKey(param.Name))
                     {
-                        Model.Reporter.Write(DiagnosticLevel.Error, $"Duplicate parameter name '{param.Name}' for function '{func.Name}'", param.SourceLocation);
-                        throw new InvalidOperationException($"Duplicate parameter name '{param.Name}' for function '{func.Name}'");
+                        Model.Reporter.Throw($"Duplicate parameter name '{param.Name}' for function '{func.Name}'", param.SourceLocation);
                     }
                     else
                     {
                         var paramType = Model.ResolveType(param.TypeSpecifier.Name);
                         if (paramType == null)
                         {
-                            Model.Reporter.Write(DiagnosticLevel.Error, $"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'", param.SourceLocation);
-                            throw new InvalidOperationException($"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'");
+                            Model.Reporter.Throw($"Cant resolve parameter type '{param.TypeSpecifier.Name}' for param '{param.Name}'", param.SourceLocation);
                         }
                         else
                         {

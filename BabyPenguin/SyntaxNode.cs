@@ -14,7 +14,7 @@ namespace BabyPenguin
         {
             public SyntaxNode(SyntaxWalker walker, ParserRuleContext context)
             {
-                Scope = walker.CurrentScope ?? this as Namespace ?? throw new System.InvalidOperationException("Namespace cannot be null");
+                Scope = walker.CurrentScope ?? this as Namespace ?? throw new NotImplementedException();
                 Context = context;
                 Reporter = walker.Reporter;
 
@@ -288,7 +288,7 @@ namespace BabyPenguin
                     Type.IterationStatement => IterationStatement!.PrettyPrint(indentLevel),
                     Type.JumpStatement => JumpStatement!.PrettyPrint(indentLevel),
                     Type.AssignmentStatement => AssignmentStatement!.PrettyPrint(indentLevel),
-                    _ => throw new System.InvalidOperationException($"Invalid statement type: {StatementType}"),
+                    _ => throw new System.NotImplementedException($"Invalid statement type: {StatementType}"),
                 };
             }
         }
@@ -349,7 +349,7 @@ namespace BabyPenguin
                     "^=" => AssignmentOperatorEnum.BitwiseXorAssign,
                     "<<=" => AssignmentOperatorEnum.LeftShiftAssign,
                     ">>=" => AssignmentOperatorEnum.RightShiftAssign,
-                    _ => throw new System.InvalidOperationException($"Invalid assignment operator: {context.assignmentOperator().GetText()}"),
+                    _ => throw new System.NotImplementedException($"Invalid assignment operator: {context.assignmentOperator().GetText()}"),
                 };
             }
 
@@ -544,7 +544,7 @@ namespace BabyPenguin
             {
                 "==" => BinaryOperatorEnum.Equal,
                 "!=" => BinaryOperatorEnum.NotEqual,
-                _ => throw new System.InvalidOperationException("Invalid equality operator"),
+                _ => throw new System.NotImplementedException("Invalid equality operator"),
             }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -567,7 +567,7 @@ namespace BabyPenguin
                         ">" => BinaryOperatorEnum.GreaterThan,
                         "<=" => BinaryOperatorEnum.LessThanOrEqual,
                         ">=" => BinaryOperatorEnum.GreaterThanOrEqual,
-                        _ => throw new System.InvalidOperationException("Invalid relational operator")
+                        _ => throw new System.NotImplementedException("Invalid relational operator")
                     }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -589,7 +589,7 @@ namespace BabyPenguin
                     {
                         "<<" => BinaryOperatorEnum.LeftShift,
                         ">>" => BinaryOperatorEnum.RightShift,
-                        _ => throw new System.InvalidOperationException("Invalid shift operator")
+                        _ => throw new System.NotImplementedException("Invalid shift operator")
                     }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -611,7 +611,7 @@ namespace BabyPenguin
                     {
                         "+" => BinaryOperatorEnum.Add,
                         "-" => BinaryOperatorEnum.Subtract,
-                        _ => throw new System.InvalidOperationException("Invalid additive operator")
+                        _ => throw new System.NotImplementedException("Invalid additive operator")
                     }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -634,7 +634,7 @@ namespace BabyPenguin
                         "*" => BinaryOperatorEnum.Multiply,
                         "/" => BinaryOperatorEnum.Divide,
                         "%" => BinaryOperatorEnum.Modulo,
-                        _ => throw new System.InvalidOperationException("Invalid multiplicative operator")
+                        _ => throw new System.NotImplementedException("Invalid multiplicative operator")
                     }).ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -693,7 +693,7 @@ namespace BabyPenguin
                         "-" => (UnaryOperatorEnum?)UnaryOperatorEnum.Minus,
                         "!" => (UnaryOperatorEnum?)UnaryOperatorEnum.LogicalNot,
                         "~" => (UnaryOperatorEnum?)UnaryOperatorEnum.BitwiseNot,
-                        _ => throw new System.InvalidOperationException("Invalid unary operator"),
+                        _ => throw new System.NotImplementedException("Invalid unary operator"),
                     };
                 }
                 SubExpression = new PostfixExpression(walker, context.postfixExpression());
@@ -750,7 +750,7 @@ namespace BabyPenguin
                 }
                 else
                 {
-                    throw new System.InvalidOperationException("Invalid postfix expression");
+                    throw new System.NotImplementedException("Invalid postfix expression");
                 }
             }
 
@@ -772,7 +772,7 @@ namespace BabyPenguin
                     Type.Slicing => SubSlicingExpression!.PrettyPrint(indentLevel),
                     Type.FunctionCall => SubFunctionCallExpression!.PrettyPrint(indentLevel),
                     Type.MemberAccess => SubMemberAccessExpression!.PrettyPrint(indentLevel),
-                    _ => throw new System.InvalidOperationException("Invalid postfix expression type"),
+                    _ => throw new System.NotImplementedException("Invalid postfix expression type"),
                 };
             }
 
@@ -819,7 +819,7 @@ namespace BabyPenguin
                 }
                 else
                 {
-                    throw new System.InvalidOperationException("Invalid primary expression");
+                    throw new System.NotImplementedException("Invalid primary expression");
                 }
             }
 
@@ -851,7 +851,7 @@ namespace BabyPenguin
                 Type.StringLiteral => true,
                 Type.BoolLiteral => true,
                 Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
-                _ => throw new System.InvalidOperationException("Invalid primary expression type"),
+                _ => throw new System.NotImplementedException("Invalid primary expression type"),
             };
         }
 

@@ -1,8 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace PenguinLangAntlr
 {
+    public class PenguinLangException(string message) : Exception(message)
+    {
+    }
+
+
     public record SourceLocation(string FileName, string FileNameIdentifier, int RowStart, int RowEnd, int ColStart, int ColEnd)
     {
         private static ulong count = 0;
@@ -21,12 +27,13 @@ namespace PenguinLangAntlr
             this.Errors.Add(msg);
         }
 
-        public void Throw(string message, SourceLocation sourceLocation)
+        [DoesNotReturn]
+        public void Throw(string message, SourceLocation? sourceLocation = null)
         {
-            var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation);
+            var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation ?? SourceLocation.Empty());
             Console.WriteLine(msg.ToString());
             this.Errors.Add(msg);
-            throw new Exception(msg.ToString());
+            throw new PenguinLangException(msg.ToString());
         }
 
         public void Write(DiagnosticLevel level, string message)

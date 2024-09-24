@@ -196,4 +196,61 @@ public class HelloWorldTest
         Assert.True(symbols[6].Type.IsFloatType);
         Assert.Equal("test5", symbols[6].Name);
     }
+
+    [Fact]
+    public void ShadowDeclare()
+    {
+        var compiler = new SemanticCompiler();
+        compiler.AddSource(@"
+            initial {
+                var test1 : string = "" "";
+                var test1 : string = "" "";
+                {
+                    var test1 : string = "" "";
+                }
+            }
+        ");
+        var model = compiler.Compile();
+
+        Assert.Single(model.Namespaces[0].InitialRoutines);
+        var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+        Assert.Equal(3, symbols.Count);
+        Assert.Equal("test1", symbols[0].Name);
+        Assert.Equal("test1", symbols[0].OriginName);
+        Assert.True(symbols[0].Type.IsStringType);
+        Assert.True(symbols[0].IsLocal);
+
+        Assert.NotEqual("test1", symbols[1].Name);
+        Assert.Equal("test1", symbols[1].OriginName);
+        Assert.True(symbols[1].Type.IsStringType);
+        Assert.True(symbols[1].IsLocal);
+        Assert.Equal(symbols[0].ScopeDepth, symbols[1].ScopeDepth);
+
+        Assert.NotEqual("test1", symbols[2].Name);
+        Assert.Equal("test1", symbols[2].OriginName);
+        Assert.True(symbols[2].Type.IsStringType);
+        Assert.True(symbols[2].IsLocal);
+        Assert.Equal(symbols[0].ScopeDepth + 1, symbols[2].ScopeDepth);
+    }
+
+    [Fact]
+    public void DuplicateClassDeclare()
+    {
+        var compiler = new SemanticCompiler();
+        compiler.AddSource(@"
+            class A {}
+            class A {}
+        ");
+        Assert.Throws<PenguinLangException>(compiler.Compile);
+    }
+
+    [Fact]
+    public void DuplicateFunctionParam()
+    {
+        var compiler = new SemanticCompiler();
+        compiler.AddSource(@"
+            fun test(val param1: u64, var param1: char){}
+        ");
+        Assert.Throws<PenguinLangException>(compiler.Compile);
+    }
 }

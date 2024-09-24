@@ -59,8 +59,7 @@ namespace BabyPenguin
             var type = new TypeInfo(name, namespace_, genericArguments);
             if (Types.Any(t => t.FullName == type.FullName))
             {
-                Reporter.Write(DiagnosticLevel.Error, $"Type '{type.FullName}' already exists");
-                throw new InvalidOperationException($"Type '{type.FullName}' already exists");
+                Reporter.Throw($"Type '{type.FullName}' already exists", SourceLocation.Empty());
             }
             Types.Add(type);
             return type;
@@ -120,11 +119,13 @@ namespace BabyPenguin
 
         public SemanticModel Compile()
         {
-
             var syntaxCompilers = Parsers.Select(parser =>
             {
                 if (!parser.Parse() || parser.Result == null)
-                    throw new Exception("Failed to parse input: " + parser.SourceFile + "\n" + Reporter.GenerateReport());
+                {
+                    Reporter.Throw("Failed to parse input: " + parser.SourceFile + "\n");
+                    throw new NotImplementedException(); // never reached
+                }
                 else
                     return new SyntaxCompiler(parser.SourceFile, parser.Result, Reporter);
             }).ToList();
