@@ -31,7 +31,12 @@ namespace BabyPenguin
                     compiler.AddFile(file);
                 }
 
-                compiler.Compile();
+                var model = compiler.Compile();
+
+                var vm = new VirtualMachine(model);
+
+                Console.WriteLine("----------- Start Execution -----------");
+                vm.Run();
 
                 return 0;
             }

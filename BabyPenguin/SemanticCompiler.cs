@@ -36,7 +36,7 @@ namespace BabyPenguin
 
             Namespaces.ForEach(ns => ns.ElabSyntaxSymbols());
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + string.Join("\n", Symbols.Select(t => "\t" + t.FullName + ": " + t.Type.FullName)));
+            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + string.Join("\n", Symbols.Select(t => "\t" + t.FullName + ": " + t.TypeInfo.FullName)));
 
             foreach (var task in CompileTasks)
             {

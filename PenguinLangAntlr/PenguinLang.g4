@@ -177,7 +177,7 @@ namespaceDeclaration:
 
 parameterList: declaration? (',' declaration)* ','?;
 
-functionSpecifier: 'pure' | '!pure';
+functionSpecifier: 'pure' | '!pure' | 'extern';
 
 functionDefinition:
 	functionSpecifier* 'fun' identifier '(' parameterList ')' (

@@ -951,6 +951,24 @@ namespace BabyPenguin
                 {
                     this.ReturnType = new TypeSpecifier(walker, context.typeSpecifier());
                 }
+
+                this.IsExtern = false;
+                foreach (var specifierContext in context.children.OfType<FunctionSpecifierContext>())
+                {
+                    if (specifierContext.GetText() == "extern")
+                    {
+                        this.IsExtern = true;
+                    }
+                    else if (specifierContext.GetText() == "pure")
+                    {
+                        this.IsPure = true;
+                    }
+                    else if (specifierContext.GetText() == "!pure")
+                    {
+                        this.IsPure = false;
+                    }
+                }
+
                 this.CodeBlock = new CodeBlock(walker, context.codeBlock());
 
                 walker.PopScope();
@@ -966,6 +984,8 @@ namespace BabyPenguin
             public ISyntaxScope? ParentScope { get; set; }
             public bool IsAnonymous => false;
             public uint ScopeDepth { get; set; }
+            public bool IsExtern { get; }
+            public bool? IsPure { get; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {

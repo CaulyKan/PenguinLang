@@ -19,15 +19,15 @@ public class HelloWorldTest
         ");
         var model = compiler.Compile();
         Assert.Equal(5, model.Namespaces[0].Symbols.Count);
-        Assert.True(model.Namespaces[0].Symbols[0].Type.IsStringType);
+        Assert.True(model.Namespaces[0].Symbols[0].TypeInfo.IsStringType);
         Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
-        Assert.True(model.Namespaces[0].Symbols[1].Type.FullName == "u8");
+        Assert.True(model.Namespaces[0].Symbols[1].TypeInfo.FullName == "u8");
         Assert.Equal("test2", model.Namespaces[0].Symbols[1].Name);
-        Assert.True(model.Namespaces[0].Symbols[2].Type.FullName == "i32");
+        Assert.True(model.Namespaces[0].Symbols[2].TypeInfo.FullName == "i32");
         Assert.Equal("test3", model.Namespaces[0].Symbols[2].Name);
-        Assert.True(model.Namespaces[0].Symbols[3].Type.IsBoolType);
+        Assert.True(model.Namespaces[0].Symbols[3].TypeInfo.IsBoolType);
         Assert.Equal("test4", model.Namespaces[0].Symbols[3].Name);
-        Assert.True(model.Namespaces[0].Symbols[4].Type.IsFloatType);
+        Assert.True(model.Namespaces[0].Symbols[4].TypeInfo.IsFloatType);
         Assert.Equal("test5", model.Namespaces[0].Symbols[4].Name);
     }
 
@@ -47,15 +47,15 @@ public class HelloWorldTest
         var model = compiler.Compile();
         var ns = model.Namespaces.Find(x => x.Name == "Test");
         Assert.Equal(5, ns!.Symbols.Count);
-        Assert.True(ns.Symbols[0].Type.IsStringType);
+        Assert.True(ns.Symbols[0].TypeInfo.IsStringType);
         Assert.True(ns.Symbols[0].FullName == "Test.test1");
-        Assert.True(ns.Symbols[1].Type.FullName == "u8");
+        Assert.True(ns.Symbols[1].TypeInfo.FullName == "u8");
         Assert.True(ns.Symbols[1].FullName == "Test.test2");
-        Assert.True(ns.Symbols[2].Type.FullName == "i32");
+        Assert.True(ns.Symbols[2].TypeInfo.FullName == "i32");
         Assert.True(ns.Symbols[2].FullName == "Test.test3");
-        Assert.True(ns.Symbols[3].Type.IsBoolType);
+        Assert.True(ns.Symbols[3].TypeInfo.IsBoolType);
         Assert.True(ns.Symbols[3].FullName == "Test.test4");
-        Assert.True(ns.Symbols[4].Type.IsFloatType);
+        Assert.True(ns.Symbols[4].TypeInfo.IsFloatType);
         Assert.True(ns.Symbols[4].FullName == "Test.test5");
     }
 
@@ -93,13 +93,13 @@ public class HelloWorldTest
         Assert.Single(model.Namespaces[0].Functions);
         Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
         Assert.True(model.Namespaces[0].Symbols[0] is FunctionSymbol);
-        Assert.True(((FunctionSymbol)model.Namespaces[0].Symbols[0]).ReturnType.IsStringType);
+        Assert.True(((FunctionSymbol)model.Namespaces[0].Symbols[0]).ReturnTypeInfo.IsStringType);
         Assert.True(((FunctionSymbol)model.Namespaces[0].Symbols[0]).Parameters.Count == 0);
         Assert.Single(model.Namespaces[1].Symbols);
         Assert.Single(model.Namespaces[1].Functions);
         Assert.Equal("Test.test1", model.Namespaces[1].Symbols[0].FullName);
         Assert.True(model.Namespaces[1].Symbols[0] is FunctionSymbol);
-        Assert.True(((FunctionSymbol)model.Namespaces[1].Symbols[0]).ReturnType.IsVoidType);
+        Assert.True(((FunctionSymbol)model.Namespaces[1].Symbols[0]).ReturnTypeInfo.IsVoidType);
         Assert.True(((FunctionSymbol)model.Namespaces[1].Symbols[0]).Parameters.Count == 0);
     }
 
@@ -140,15 +140,15 @@ public class HelloWorldTest
         var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
         Assert.Equal(5, symbols.Count);
         Assert.Equal("test1", symbols[0].Name);
-        Assert.True(symbols[0].Type.IsStringType);
+        Assert.True(symbols[0].TypeInfo.IsStringType);
         Assert.True(symbols[0].IsLocal);
-        Assert.True(symbols[1].Type.FullName == "u8");
+        Assert.True(symbols[1].TypeInfo.FullName == "u8");
         Assert.Equal("test2", symbols[1].Name);
-        Assert.True(symbols[2].Type.FullName == "i32");
+        Assert.True(symbols[2].TypeInfo.FullName == "i32");
         Assert.Equal("test3", symbols[2].Name);
-        Assert.True(symbols[3].Type.IsBoolType);
+        Assert.True(symbols[3].TypeInfo.IsBoolType);
         Assert.Equal("test4", symbols[3].Name);
-        Assert.True(symbols[4].Type.IsFloatType);
+        Assert.True(symbols[4].TypeInfo.IsFloatType);
         Assert.Equal("test5", symbols[4].Name);
     }
 
@@ -171,29 +171,29 @@ public class HelloWorldTest
         var symbols = model.Namespaces[0].Functions[0].Symbols.Where(x => !x.IsTemp).ToList();
         Assert.Equal(7, symbols.Count);
         Assert.Equal("param1", symbols[0].Name);
-        Assert.Equal("u64", symbols[0].Type.FullName);
+        Assert.Equal("u64", symbols[0].TypeInfo.FullName);
         Assert.True(symbols[0].IsReadonly);
         Assert.True(symbols[0].IsParameter);
 
         Assert.Equal("param2", symbols[1].Name);
-        Assert.Equal("char", symbols[1].Type.FullName);
+        Assert.Equal("char", symbols[1].TypeInfo.FullName);
         Assert.False(symbols[1].IsReadonly);
         Assert.True(symbols[1].IsParameter);
 
-        Assert.True(symbols[2].Type.IsStringType);
+        Assert.True(symbols[2].TypeInfo.IsStringType);
         Assert.True(symbols[2].IsLocal);
 
-        Assert.True(symbols[3].Type.FullName == "u8");
+        Assert.True(symbols[3].TypeInfo.FullName == "u8");
         Assert.False(symbols[3].IsParameter);
         Assert.Equal("test2", symbols[3].Name);
 
-        Assert.True(symbols[4].Type.FullName == "i32");
+        Assert.True(symbols[4].TypeInfo.FullName == "i32");
         Assert.Equal("test3", symbols[4].Name);
 
-        Assert.True(symbols[5].Type.IsBoolType);
+        Assert.True(symbols[5].TypeInfo.IsBoolType);
         Assert.Equal("test4", symbols[5].Name);
 
-        Assert.True(symbols[6].Type.IsFloatType);
+        Assert.True(symbols[6].TypeInfo.IsFloatType);
         Assert.Equal("test5", symbols[6].Name);
     }
 
@@ -217,18 +217,18 @@ public class HelloWorldTest
         Assert.Equal(3, symbols.Count);
         Assert.Equal("test1", symbols[0].Name);
         Assert.Equal("test1", symbols[0].OriginName);
-        Assert.True(symbols[0].Type.IsStringType);
+        Assert.True(symbols[0].TypeInfo.IsStringType);
         Assert.True(symbols[0].IsLocal);
 
         Assert.NotEqual("test1", symbols[1].Name);
         Assert.Equal("test1", symbols[1].OriginName);
-        Assert.True(symbols[1].Type.IsStringType);
+        Assert.True(symbols[1].TypeInfo.IsStringType);
         Assert.True(symbols[1].IsLocal);
         Assert.Equal(symbols[0].ScopeDepth, symbols[1].ScopeDepth);
 
         Assert.NotEqual("test1", symbols[2].Name);
         Assert.Equal("test1", symbols[2].OriginName);
-        Assert.True(symbols[2].Type.IsStringType);
+        Assert.True(symbols[2].TypeInfo.IsStringType);
         Assert.True(symbols[2].IsLocal);
         Assert.Equal(symbols[0].ScopeDepth + 1, symbols[2].ScopeDepth);
     }

@@ -12,7 +12,6 @@ namespace BabyPenguin.Semantic
 
     public interface ISemanticCommand { }
 
-    public record ConditonalCommand(ISymbol TruthConditionSymbol, ISymbol FalseConditionSymbol, ISymbol ConditionSymbol, ISymbol Target) : ISemanticCommand;
 
     public record BinaryOperationCommand(BinaryOperatorEnum Operator, ISymbol LeftSymbol, ISymbol RightSymbol, ISymbol Target) : ISemanticCommand
     {
@@ -34,9 +33,9 @@ namespace BabyPenguin.Semantic
         public override string ToString() => $"LITERAL {LiteralValue} -> {Target}";
     }
 
-    public record FunctionCallCommand(ISymbol FunctionName, List<ISymbol> Arguments, ISymbol Target) : ISemanticCommand
+    public record FunctionCallCommand(ISymbol FunctionSymbol, List<ISymbol> Arguments, ISymbol Target) : ISemanticCommand
     {
-        public override string ToString() => $"CALL {FunctionName} (${string.Join(", ", Arguments)}) -> {Target}";
+        public override string ToString() => $"CALL {FunctionSymbol} (${string.Join(", ", Arguments)}) -> {Target}";
     }
 
     public record SlicingCommand(ISymbol Slicable, ISymbol Index, ISymbol Target) : ISemanticCommand
