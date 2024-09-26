@@ -649,10 +649,10 @@ namespace BabyPenguin
         {
             public CastExpression(SyntaxWalker walker, CastExpressionContext context) : base(walker, context)
             {
-                if (context.children.OfType<CastExpressionContext>().Any())
+                if (context.typeSpecifier() != null)
                 {
-                    SubCastExpression = new CastExpression(walker, context.castExpression());
-                    CastTypeIdentifier = new Identifier(walker, context.identifier(), true);
+                    SubUnaryExpression = new UnaryExpression(walker, context.unaryExpression());
+                    CastTypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
                 }
                 else
                 {
@@ -660,23 +660,21 @@ namespace BabyPenguin
                 }
             }
 
-            public Identifier? CastTypeIdentifier { get; }
+            public TypeSpecifier? CastTypeSpecifier { get; }
 
-            public CastExpression? SubCastExpression { get; }
+            public UnaryExpression SubUnaryExpression { get; }
 
-            public UnaryExpression? SubUnaryExpression { get; }
-
-            public bool IsTypeCast => SubCastExpression is not null;
+            public bool IsTypeCast => CastTypeSpecifier is not null;
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 if (IsTypeCast)
-                    return base.PrettyPrint(indentLevel).Concat(SubUnaryExpression!.PrettyPrint(indentLevel + 1));
+                    return base.PrettyPrint(indentLevel).Concat(SubUnaryExpression.PrettyPrint(indentLevel + 1));
                 else
-                    return SubUnaryExpression!.PrettyPrint(indentLevel);
+                    return SubUnaryExpression.PrettyPrint(indentLevel);
             }
 
-            public bool IsSimple => IsTypeCast ? false : SubUnaryExpression!.IsSimple;
+            public bool IsSimple => IsTypeCast ? false : SubUnaryExpression.IsSimple;
         }
 
         public class UnaryExpression : SyntaxNode, ISyntaxExpression

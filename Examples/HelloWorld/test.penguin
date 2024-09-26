@@ -1,0 +1,5 @@
+            initial {
+                    var a : u8 = 1 + 2 - 4 * 3 / 2;
+                    var b : string = a as string;
+                    print(b);
+            }

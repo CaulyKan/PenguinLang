@@ -76,11 +76,134 @@ namespace BabyPenguin.Semantic
             return other.FullName == FullName;
         }
 
+        static readonly Dictionary<TypeEnum, List<TypeEnum>> implicitlyCastOrders = new Dictionary<TypeEnum, List<TypeEnum>>{
+            {
+                TypeEnum.I8,
+                [
+                    TypeEnum.I16,
+                    TypeEnum.I32,
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.I16,
+                [
+                    TypeEnum.I32,
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.I32,
+                [
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.I64,
+                [
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.U8,
+                [
+                    TypeEnum.U16,
+                    TypeEnum.U32,
+                    TypeEnum.U64,
+                    TypeEnum.I16,
+                    TypeEnum.I32,
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.U16,
+                [
+                    TypeEnum.U32,
+                    TypeEnum.U64,
+                    TypeEnum.I32,
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.U32,
+                [
+                    TypeEnum.U64,
+                    TypeEnum.I64,
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.U64,
+                [
+                    TypeEnum.Float,
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.Float,
+                [
+                    TypeEnum.Double,
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.Double,
+                [
+                    TypeEnum.String
+                ]
+            },
+            {
+                TypeEnum.Bool,
+                [
+                    TypeEnum.String
+                ]
+            },
+        };
+
+        public bool CanImplicitlyCastTo(TypeInfo other)
+        {
+            if (this == other) return true;
+            return implicitlyCastOrders.ContainsKey(Type) && implicitlyCastOrders[Type].Contains(other.Type);
+        }
+
+        public static TypeInfo? ImplictlyCastResult(TypeInfo one, TypeInfo another)
+        {
+            if (one == another)
+                return one;
+
+            if (one.CanImplicitlyCastTo(another))
+                return another;
+            else if (another.CanImplicitlyCastTo(one))
+                return one;
+            else
+                return null;
+        }
+
         public override string ToString() => FullName;
 
         public bool IsStringType => Type == TypeEnum.String;
         public bool IsSignedIntType => Type == TypeEnum.I8 || Type == TypeEnum.I16 || Type == TypeEnum.I32 || Type == TypeEnum.I64;
-        public bool IsUnsignedIntType => Type == TypeEnum.I8 || Type == TypeEnum.I16 || Type == TypeEnum.I32 || Type == TypeEnum.I64;
+        public bool IsUnsignedIntType => Type == TypeEnum.U8 || Type == TypeEnum.U16 || Type == TypeEnum.U32 || Type == TypeEnum.U64;
         public bool IsIntType => IsSignedIntType || IsUnsignedIntType;
         public bool IsFloatType => Type == TypeEnum.Float || Type == TypeEnum.Double;
         public bool IsNumericType => IsIntType || IsFloatType;
@@ -93,14 +216,6 @@ namespace BabyPenguin.Semantic
             if (literal.StartsWith('"') && literal.EndsWith('"'))
             {
                 return BuiltinTypes["string"];
-            }
-            else if (float.TryParse(literal, out var _))
-            {
-                return BuiltinTypes["float"];
-            }
-            else if (double.TryParse(literal, out var _))
-            {
-                return BuiltinTypes["double"];
             }
             else if (byte.TryParse(literal, out var _))
             {
@@ -141,6 +256,14 @@ namespace BabyPenguin.Semantic
             else if (literal.StartsWith('\'') && literal.EndsWith('\''))
             {
                 return BuiltinTypes["char"];
+            }
+            else if (float.TryParse(literal, out var _))
+            {
+                return BuiltinTypes["float"];
+            }
+            else if (double.TryParse(literal, out var _))
+            {
+                return BuiltinTypes["double"];
             }
             else
             {
@@ -647,7 +770,7 @@ namespace BabyPenguin.Semantic
                                 _ => throw new NotImplementedException(),
                             };
                             var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(op, right_var, target, temp));
+                            AddCommand(new BinaryOperationCommand(op, target, right_var, temp));
                             AddCommand(new AssignmentCommand(temp, target));
                             break;
                         }
@@ -735,8 +858,8 @@ namespace BabyPenguin.Semantic
                 case Syntax.CastExpression exp:
                     if (exp.IsTypeCast)
                     {
-                        var t = Model.ResolveType(exp.CastTypeIdentifier!.Name);
-                        if (t == null) Model.Reporter.Throw($"Cant resolve type '{exp.CastTypeIdentifier.Name}'", exp.CastTypeIdentifier.SourceLocation);
+                        var t = Model.ResolveType(exp.CastTypeSpecifier!.Name);
+                        if (t == null) Model.Reporter.Throw($"Cant resolve type '{exp.CastTypeSpecifier.Name}'", exp.CastTypeSpecifier.SourceLocation);
                         else return t;
                     }
                     else
@@ -753,6 +876,14 @@ namespace BabyPenguin.Semantic
                             case UnaryOperatorEnum.Ref:
                                 throw new NotImplementedException();
                             case UnaryOperatorEnum.Minus:
+                                var type = ResolveExpressionType(exp.SubExpression);
+                                return type.Type switch
+                                {
+                                    TypeEnum.U8 => TypeInfo.BuiltinTypes["i16"],
+                                    TypeEnum.U16 => TypeInfo.BuiltinTypes["i32"],
+                                    TypeEnum.U32 => TypeInfo.BuiltinTypes["i64"],
+                                    _ => type
+                                };
                             case UnaryOperatorEnum.Plus:
                             case UnaryOperatorEnum.BitwiseNot:
                                 return ResolveExpressionType(exp.SubExpression);
@@ -919,7 +1050,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_vars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator();
+                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
@@ -939,7 +1070,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_vars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator();
+                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
@@ -959,7 +1090,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_vars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator();
+                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
@@ -979,7 +1110,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_vars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator();
+                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
@@ -999,7 +1130,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_vars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator();
+                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
@@ -1018,7 +1149,7 @@ namespace BabyPenguin.Semantic
                     if (exp.IsTypeCast)
                     {
                         var type = ResolveExpressionType(exp);
-                        var temp_var = AddExpression(exp.SubCastExpression!);
+                        var temp_var = AddExpression(exp.SubUnaryExpression!);
                         AddCommand(new CastCommand(temp_var, type, to));
                     }
                     else

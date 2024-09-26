@@ -27,7 +27,7 @@ unaryExpression:
 unaryOperator: '&' | '*' | '+' | '-' | '~' | '!';
 
 castExpression:
-	'(' identifier ')' castExpression
+	unaryExpression 'as' typeSpecifier
 	| unaryExpression;
 
 multiplicativeExpression:

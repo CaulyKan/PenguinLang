@@ -43,8 +43,8 @@ namespace BabyPenguin.Semantic
         public override string ToString() => $"SLICE {Slicable} [${Index}] -> {Target}";
     }
 
-    public record CastCommand(ISymbol Operand, TypeInfo Type, ISymbol Target) : ISemanticCommand
+    public record CastCommand(ISymbol Operand, TypeInfo TypeInfo, ISymbol Target) : ISemanticCommand
     {
-        public override string ToString() => $"CAST {Operand} (${Type}) -> {Target}";
+        public override string ToString() => $"CAST {Operand} (${TypeInfo}) -> {Target}";
     }
 }
