@@ -2,15 +2,16 @@ using System.Diagnostics.SymbolStore;
 using BabyPenguin;
 using BabyPenguin.Semantic;
 using PenguinLangAntlr;
+using Xunit.Abstractions;
 
 namespace BabyPenguin.Tests
 {
-    public class HelloWorldTest
+    public class HelloWorldTest(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
         public void GlobalDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             val test1 : string = "" "";
             val test2 : u8 = 1;
@@ -35,7 +36,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void NamesapceDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
         namespace Test {
             val test1 : string = "" "";
@@ -63,7 +64,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void ClassDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
         class TestClass {}
         namespace Test {
@@ -82,7 +83,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void FunctionDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             fun test1() -> string {}
             namespace Test {
@@ -107,7 +108,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void InitialDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             initial {
 
@@ -125,7 +126,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void InitialVarDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             initial {
                 var test1 : string = "" "";
@@ -156,7 +157,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void FunVarDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             fun test(val param1: u64, var param2: char) {
                 var test1 : string = "" "";
@@ -201,7 +202,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void ShadowDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             initial {
                 var test1 : string = "" "";
@@ -237,7 +238,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void DuplicateClassDeclare()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             class A {}
             class A {}
@@ -248,7 +249,7 @@ namespace BabyPenguin.Tests
         [Fact]
         public void DuplicateFunctionParam()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
             fun test(val param1: u64, var param1: char){}
         ");

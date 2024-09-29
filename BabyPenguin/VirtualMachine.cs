@@ -56,6 +56,8 @@ namespace BabyPenguin
         public Dictionary<string, RuntimeVar> GlobalVariables { get; } = [];
 
         public Dictionary<string, Action<RuntimeVar, List<RuntimeVar>>> ExternFunctions { get; } = [];
+        public bool EnableDebugPrint { get; set; } = false;
+        public TextWriter DebugWriter { get; set; } = Console.Out;
     }
 
     public class RuntimeFrame
@@ -79,8 +81,15 @@ namespace BabyPenguin
 
         public Dictionary<string, RuntimeVar> LocalVariables { get; } = [];
         public RuntimeGlobal Global { get; }
-
         public ICodeContainer CodeContainer { get; }
+
+        private void DebugPrint(SemanticInstruction inst, params object[] args)
+        {
+            if (Global.EnableDebugPrint)
+            {
+                Global.DebugWriter.WriteLine(inst.ToString() + " " + string.Join(", ", args));
+            }
+        }
 
         public RuntimeVar Run()
         {
@@ -104,20 +113,35 @@ namespace BabyPenguin
                 return result!;
             }
 
-            foreach (var command in CodeContainer.Commands)
+            int findLabel(string label)
             {
+                for (int i = 0; i < CodeContainer.Instructions.Count; i++)
+                {
+                    if (CodeContainer.Instructions[i].Labels.Contains(label))
+                    {
+                        return i;
+                    }
+                }
+                throw new BabyPenguinRuntimeException("Cannot find label " + label);
+            }
+
+            for (int i = 0; i < CodeContainer.Instructions.Count; i++)
+            {
+                var command = CodeContainer.Instructions[i];
                 switch (command)
                 {
-                    case AssignmentCommand cmd:
+                    case AssignmentInstruction cmd:
                         {
                             RuntimeVar right_var = resolveVariable(cmd.RightHandSymbol);
                             RuntimeVar result_var = resolveVariable(cmd.LeftHandSymbol);
+                            DebugPrint(cmd, $"right_var={right_var}");
                             result_var.AssignFrom(right_var);
                             break;
                         }
-                    case AssignLiteralToSymbolCommand cmd:
+                    case AssignLiteralToSymbolInstruction cmd:
                         {
                             RuntimeVar result_var = resolveVariable(cmd.Target);
+                            DebugPrint(cmd);
                             switch (result_var.Type)
                             {
                                 case TypeEnum.Bool:
@@ -169,12 +193,13 @@ namespace BabyPenguin
                             }
                             break;
                         }
-                    case FunctionCallCommand cmd:
+                    case FunctionCallInstruction cmd:
                         {
                             FunctionSymbol fun_var = resolveVariable(cmd.FunctionSymbol).FunctionSymbol ??
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
                             RuntimeVar ret_var = resolveVariable(cmd.Target);
                             List<RuntimeVar> args = cmd.Arguments.Select(arg => arg.IsReadonly ? resolveVariable(arg).Clone() : resolveVariable(arg)).ToList();
+                            DebugPrint(cmd, $"fun_var={fun_var}, args={string.Join(", ", args.Select(arg => arg.ToString()))}");
                             if (!fun_var.SemanticFunction.IsExtern)
                             {
                                 var new_frame = new RuntimeFrame(fun_var.SemanticFunction, Global, args);
@@ -193,12 +218,13 @@ namespace BabyPenguin
                             }
                             break;
                         }
-                    case SlicingCommand cmd:
+                    case SlicingInstruction cmd:
                         throw new NotImplementedException();
-                    case CastCommand cmd:
+                    case CastInstruction cmd:
                         {
                             RuntimeVar result_var = resolveVariable(cmd.Target);
                             RuntimeVar right_var = resolveVariable(cmd.Operand);
+                            DebugPrint(cmd, $"right_var={right_var}");
                             if (result_var.TypeInfo != cmd.TypeInfo)
                             {
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {cmd.TypeInfo} to type {result_var.TypeInfo}");
@@ -260,10 +286,11 @@ namespace BabyPenguin
                             }
                             break;
                         }
-                    case UnaryOperationCommand cmd:
+                    case UnaryOperationInstruction cmd:
                         {
                             RuntimeVar result_var = resolveVariable(cmd.Target);
                             RuntimeVar right_var = resolveVariable(cmd.Operand);
+                            DebugPrint(cmd, $"right_var={right_var}");
                             if (!right_var.TypeInfo.CanImplicitlyCastTo(result_var.TypeInfo))
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {right_var.TypeInfo} to type {result_var.TypeInfo}");
                             switch (cmd.Operator)
@@ -286,10 +313,11 @@ namespace BabyPenguin
                             }
                             break;
                         }
-                    case BinaryOperationCommand cmd:
+                    case BinaryOperationInstruction cmd:
                         {
                             RuntimeVar left_var = resolveVariable(cmd.LeftSymbol);
                             RuntimeVar right_var = resolveVariable(cmd.RightSymbol);
+                            DebugPrint(cmd, $"left_var={left_var}, right_var={right_var}");
                             RuntimeVar result_var = resolveVariable(cmd.Target);
                             if (!left_var.TypeInfo.CanImplicitlyCastTo(right_var.TypeInfo)
                                 && !right_var.TypeInfo.CanImplicitlyCastTo(left_var.TypeInfo))
@@ -389,6 +417,32 @@ namespace BabyPenguin
                             }
                             break;
                         }
+                    case GotoInstruction cmd:
+                        {
+                            if (cmd.Condition != null)
+                            {
+                                RuntimeVar cond_var = resolveVariable(cmd.Condition);
+                                DebugPrint(cmd, $"cond_var={cond_var}");
+                                if (!cond_var.TypeInfo.IsBoolType)
+                                    throw new BabyPenguinRuntimeException($"Cannot use type {cond_var.TypeInfo} as a condition");
+                                if (cmd.JumpOnCondition != (bool)cond_var.Value!)
+                                {
+                                    break;
+                                }
+                                else
+                                {
+                                    i = findLabel(cmd.TargetLabel);
+                                }
+                            }
+                            else
+                            {
+                                i = findLabel(cmd.TargetLabel);
+                            }
+                            break;
+                        }
+                    case NopInstuction cmd:
+                        DebugPrint(cmd);
+                        break;
                     default:
                         throw new NotImplementedException();
                 }

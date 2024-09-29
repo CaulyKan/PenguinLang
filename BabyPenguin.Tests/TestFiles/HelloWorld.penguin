@@ -1,4 +1,4 @@
-val world : string = "wor"+"ld";
+val world : string = "Wor"+"ld";
 initial {
   var world1 : string = "";
   {
@@ -6,8 +6,8 @@ initial {
     hello(world1);
   }
 }
+
 fun hello(val name : string) -> void {
   println("Hello, " + name);
 }
 
-class Test{}

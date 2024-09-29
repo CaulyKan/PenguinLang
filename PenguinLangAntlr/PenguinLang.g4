@@ -144,10 +144,12 @@ codeBlockItem: statement | (declaration ';');
 statement:
 	codeBlock
 	| expressionStatement
-	| selectionStatement
-	| iterationStatement
+	| ifStatement
+	| whileStatement
+	| forStatement
 	| assignmentStatement
 	| jumpStatement
+	| returnStatement
 	| ';';
 
 assignmentStatement:
@@ -155,15 +157,18 @@ assignmentStatement:
 
 expressionStatement: expression ';';
 
-selectionStatement:
-	'if' '(' expression ')' statement ('else' statement)?
-	| 'switch' '(' expression ')' statement;
+ifStatement:
+	'if' '(' expression ')' statement ('else' statement)?;
+//| 'switch' '(' expression ')' statement;
 
-iterationStatement:
-	'while' '(' expression ')' statement
-	| 'for' '(' declaration 'in' expression ')' statement;
+whileStatement: 'while' '(' expression ')' statement;
 
-jumpStatement: ('continue' | 'break' | 'return' expression?) ';';
+forStatement:
+	'for' '(' declaration 'in' expression ')' statement;
+
+jumpStatement: ('continue' | 'break') ';';
+
+returnStatement: 'return' expression? ';';
 
 compilationUnit: namespaceDeclaration* EOF;
 

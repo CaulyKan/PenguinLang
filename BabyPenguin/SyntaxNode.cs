@@ -222,10 +222,12 @@ namespace BabyPenguin
             {
                 SubBlock,
                 ExpressionStatement,
-                SelectionStatement,
-                IterationStatement,
+                IfStatement,
+                WhileStatement,
+                ForStatement,
                 JumpStatement,
-                AssignmentStatement
+                AssignmentStatement,
+                ReturnStatement
             }
 
             public Statement(SyntaxWalker walker, StatementContext context) : base(walker, context)
@@ -235,15 +237,20 @@ namespace BabyPenguin
                     StatementType = Type.ExpressionStatement;
                     ExpressionStatement = new ExpressionStatement(walker, context.expressionStatement());
                 }
-                else if (context.selectionStatement() is not null)
+                else if (context.ifStatement() is not null)
                 {
-                    StatementType = Type.SelectionStatement;
-                    SelectionStatement = new SelectionStatement(walker, context.selectionStatement());
+                    StatementType = Type.IfStatement;
+                    IfStatement = new IfStatement(walker, context.ifStatement());
                 }
-                else if (context.iterationStatement() is not null)
+                else if (context.whileStatement() is not null)
                 {
-                    StatementType = Type.IterationStatement;
-                    IterationStatement = new IterationStatement(walker, context.iterationStatement());
+                    StatementType = Type.WhileStatement;
+                    WhileStatement = new WhileStatement(walker, context.whileStatement());
+                }
+                else if (context.forStatement() is not null)
+                {
+                    StatementType = Type.ForStatement;
+                    ForStatement = new ForStatement(walker, context.forStatement());
                 }
                 else if (context.jumpStatement() is not null)
                 {
@@ -254,6 +261,11 @@ namespace BabyPenguin
                 {
                     StatementType = Type.AssignmentStatement;
                     AssignmentStatement = new AssignmentStatement(walker, context.assignmentStatement());
+                }
+                else if (context.returnStatement() is not null)
+                {
+                    StatementType = Type.ReturnStatement;
+                    ReturnStatement = new ReturnStatement(walker, context.returnStatement());
                 }
                 else
                 {
@@ -269,13 +281,17 @@ namespace BabyPenguin
 
             public ExpressionStatement? ExpressionStatement { get; }
 
-            public SelectionStatement? SelectionStatement { get; }
+            public IfStatement? IfStatement { get; }
 
-            public IterationStatement? IterationStatement { get; }
+            public ForStatement? ForStatement { get; }
+
+            public WhileStatement? WhileStatement { get; }
 
             public JumpStatement? JumpStatement { get; }
 
             public AssignmentStatement? AssignmentStatement { get; }
+
+            public ReturnStatement? ReturnStatement { get; }
 
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -284,11 +300,13 @@ namespace BabyPenguin
                 {
                     Type.SubBlock => CodeBlock!.PrettyPrint(indentLevel + 1),
                     Type.ExpressionStatement => ExpressionStatement!.PrettyPrint(indentLevel),
-                    Type.SelectionStatement => SelectionStatement!.PrettyPrint(indentLevel),
-                    Type.IterationStatement => IterationStatement!.PrettyPrint(indentLevel),
+                    Type.IfStatement => IfStatement!.PrettyPrint(indentLevel),
+                    Type.ForStatement => ForStatement!.PrettyPrint(indentLevel),
+                    Type.WhileStatement => WhileStatement!.PrettyPrint(indentLevel),
                     Type.JumpStatement => JumpStatement!.PrettyPrint(indentLevel),
                     Type.AssignmentStatement => AssignmentStatement!.PrettyPrint(indentLevel),
-                    _ => throw new System.NotImplementedException($"Invalid statement type: {StatementType}"),
+                    Type.ReturnStatement => ReturnStatement!.PrettyPrint(indentLevel),
+                    _ => throw new NotImplementedException($"Invalid statement type: {StatementType}"),
                 };
             }
         }
@@ -309,25 +327,100 @@ namespace BabyPenguin
             }
         }
 
-        public class SelectionStatement : SyntaxNode
+        public class IfStatement : SyntaxNode
         {
-            public SelectionStatement(SyntaxWalker walker, SelectionStatementContext context) : base(walker, context)
+            public IfStatement(SyntaxWalker walker, IfStatementContext context) : base(walker, context)
             {
+                Condition = new Expression(walker, context.expression());
+                var statements = context.children.OfType<StatementContext>().ToList();
+                if (statements.Count == 1)
+                {
+                    MainStatement = new Statement(walker, statements[0]);
+                }
+                else if (statements.Count == 2)
+                {
+                    MainStatement = new Statement(walker, statements[0]);
+                    ElseStatement = new Statement(walker, statements[1]);
+                }
+                else
+                {
+                    throw new System.NotImplementedException("Invalid number of statements in if statement");
+                }
+            }
+
+            public Expression Condition { get; }
+
+            public Statement MainStatement { get; }
+
+            public Statement? ElseStatement { get; }
+
+            public bool HasElse => ElseStatement is not null;
+
+            public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+            {
+                return base.PrettyPrint(indentLevel).Concat(
+                    Condition.PrettyPrint(indentLevel + 1, "(condition)")
+                ).Concat(
+                    MainStatement.PrettyPrint(indentLevel + 1, "(main statement)")
+                ).Concat(
+                    HasElse ? ElseStatement!.PrettyPrint(indentLevel + 1, "(else statement)") : []
+                );
             }
         }
 
-        public class IterationStatement : SyntaxNode
+        public class WhileStatement(SyntaxWalker walker, WhileStatementContext context) : SyntaxNode(walker, context)
         {
-            public IterationStatement(SyntaxWalker walker, IterationStatementContext context) : base(walker, context)
+            public Expression Condition { get; } = new Expression(walker, context.expression());
+
+            public Statement BodyStatement { get; } = new Statement(walker, context.statement());
+
+            override public IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+            {
+                return base.PrettyPrint(indentLevel).Concat(
+                    Condition.PrettyPrint(indentLevel + 1, "(condition)")
+                ).Concat(
+                    BodyStatement.PrettyPrint(indentLevel + 1, "(body)")
+                );
+            }
+        }
+
+        public class ForStatement : SyntaxNode
+        {
+            public ForStatement(SyntaxWalker walker, ForStatementContext context) : base(walker, context)
             {
             }
         }
 
         public class JumpStatement : SyntaxNode
         {
+            public enum Type
+            {
+                Break,
+                Continue
+            }
+
             public JumpStatement(SyntaxWalker walker, JumpStatementContext context) : base(walker, context)
             {
+                if (context.GetText() == "break")
+                {
+                    JumpType = Type.Break;
+                }
+                else if (context.GetText() == "continue")
+                {
+                    JumpType = Type.Continue;
+                }
+                else
+                {
+                    throw new NotImplementedException("Invalid jump statement type");
+                }
             }
+
+            public Type JumpType { get; }
+        }
+
+        public class ReturnStatement(SyntaxWalker walker, ReturnStatementContext context) : SyntaxNode(walker, context)
+        {
+            public Expression? ReturnExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
         }
 
         public class AssignmentStatement : SyntaxNode

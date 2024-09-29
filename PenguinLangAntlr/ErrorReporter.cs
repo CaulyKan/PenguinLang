@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
 
 namespace PenguinLangAntlr
 {
@@ -14,32 +15,39 @@ namespace PenguinLangAntlr
         private static ulong count = 0;
 
         public static SourceLocation Empty() => new SourceLocation("<anonymous>", $"anonymous_{count++}", 0, 0, 0, 0);
+
+        public override string ToString()
+        {
+            return $"{FileName}:{RowStart},{ColStart}";
+        }
     }
 
-    public class ErrorReporter
+    public class ErrorReporter(TextWriter? writer = null)
     {
-        public List<DiagnosticMessage> Errors { get; set; } = new List<DiagnosticMessage>();
+        private readonly TextWriter writer = writer ?? Console.Out;
+
+        public List<DiagnosticMessage> Errors { get; set; } = [];
 
         public void Write(DiagnosticLevel level, string message, SourceLocation sourceLocation)
         {
             var msg = new DiagnosticMessage(level, message, sourceLocation);
-            Console.WriteLine(msg.ToString());
-            this.Errors.Add(msg);
+            writer.WriteLine(msg.ToString());
+            Errors.Add(msg);
         }
 
         [DoesNotReturn]
         public void Throw(string message, SourceLocation? sourceLocation = null)
         {
             var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation ?? SourceLocation.Empty());
-            Console.WriteLine(msg.ToString());
-            this.Errors.Add(msg);
+            writer.WriteLine(msg.ToString());
+            Errors.Add(msg);
             throw new PenguinLangException(msg.ToString());
         }
 
         public void Write(DiagnosticLevel level, string message)
         {
             var msg = new DiagnosticMessage(level, message);
-            Console.WriteLine(msg.ToString());
+            writer.WriteLine(msg.ToString());
             this.Errors.Add(msg);
         }
 

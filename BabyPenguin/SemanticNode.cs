@@ -7,6 +7,7 @@ using static PenguinLangAntlr.PenguinLangParser;
 using System.Text;
 using BabyPenguin;
 using System.Reflection.Metadata.Ecma335;
+using ConsoleTables;
 
 namespace BabyPenguin.Semantic
 {
@@ -315,7 +316,7 @@ namespace BabyPenguin.Semantic
 
         public override string ToString()
         {
-            return $"{Name} ({TypeInfo})";
+            return $"{Name}({TypeInfo})";
         }
     }
 
@@ -361,7 +362,7 @@ namespace BabyPenguin.Semantic
 
         public override string ToString()
         {
-            return $"{Name} ({TypeInfo})";
+            return $"{Name}({TypeInfo})";
         }
     }
 
@@ -590,7 +591,7 @@ namespace BabyPenguin.Semantic
         public ISemanticScope? Parent => null;
         public List<ISemanticScope> Children { get; } = [];
 
-        public List<ISemanticCommand> Commands { get; } = [];
+        public List<SemanticInstruction> Instructions { get; } = [];
 
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
 
@@ -678,7 +679,7 @@ namespace BabyPenguin.Semantic
 
     public interface ICodeContainer : ISymbolContainer
     {
-        List<ISemanticCommand> Commands { get; }
+        List<SemanticInstruction> Instructions { get; }
 
         Syntax.SyntaxNode? CodeSyntaxNode { get; }
 
@@ -709,10 +710,19 @@ namespace BabyPenguin.Semantic
                 }
             }
 
-            var msg = "\n\t" + string.Join("\n\t", Commands.Select(c => c.ToString()));
-            Model.Reporter.Write(DiagnosticLevel.Debug, $"Compile Result For {(this as ISemanticScope).FullName}: {msg}");
+            if (Instructions.Count > 0)
+                Model.Reporter.Write(DiagnosticLevel.Debug, $"Compile Result For {FullName}: \n" + PrintInstructionsTable());
         }
 
+        public string PrintInstructionsTable()
+        {
+            var table = new ConsoleTable("Instruction", "OP1", "OP2", "Result", "Labels");
+            foreach (var ins in Instructions)
+            {
+                table.AddRow(ins.StringCommand, ins.StringOP1, ins.StringOP2, ins.StringResult, ins.StringLabels);
+            }
+            return table.ToMarkDownString();
+        }
 
         public void AddCodeBlockItem(Syntax.CodeBlockItem item)
         {
@@ -732,9 +742,11 @@ namespace BabyPenguin.Semantic
             if (item.InitializeExpression != null)
             {
                 var temp = AddExpression(item.InitializeExpression);
-                Commands.Add(new AssignmentCommand(temp, symbol));
+                Instructions.Add(new AssignmentInstruction(temp, symbol));
             }
         }
+
+        public string CreateLabel() => $"{Name}_{counter++}";
 
         public void AddStatement(Syntax.Statement item)
         {
@@ -751,7 +763,7 @@ namespace BabyPenguin.Semantic
                     {
                         if (item.AssignmentStatement.AssignmentOperator == AssignmentOperatorEnum.Assign)
                         {
-                            AddCommand(new AssignmentCommand(right_var, target));
+                            AddInstruction(new AssignmentInstruction(right_var, target));
                         }
                         else
                         {
@@ -770,8 +782,8 @@ namespace BabyPenguin.Semantic
                                 _ => throw new NotImplementedException(),
                             };
                             var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(op, target, right_var, temp));
-                            AddCommand(new AssignmentCommand(temp, target));
+                            AddInstruction(new BinaryOperationInstruction(op, target, right_var, temp));
+                            AddInstruction(new AssignmentInstruction(temp, target));
                             break;
                         }
                     }
@@ -785,6 +797,47 @@ namespace BabyPenguin.Semantic
                         AddCodeBlockItem(subItem);
                     }
                     break;
+                case Syntax.Statement.Type.IfStatement:
+                    var if_statement = item.IfStatement!;
+                    var condition_var = AddExpression(if_statement.Condition);
+                    if (!condition_var.TypeInfo.IsBoolType)
+                        Reporter.Throw($"If condition must be bool type, but got '{condition_var.TypeInfo}'", if_statement.SourceLocation);
+                    if (if_statement.HasElse)
+                    {
+                        var else_label = CreateLabel();
+                        var endif_label = CreateLabel();
+                        AddInstruction(new GotoInstruction(else_label, condition_var, false));
+                        AddStatement(if_statement.MainStatement);
+                        AddInstruction(new GotoInstruction(endif_label));
+                        AddInstruction(new NopInstuction().WithLabel(else_label));
+                        AddStatement(if_statement.ElseStatement!);
+                        AddInstruction(new NopInstuction().WithLabel(endif_label));
+                    }
+                    else
+                    {
+                        var endif_label = CreateLabel();
+                        AddInstruction(new GotoInstruction(endif_label, condition_var, false));
+                        AddStatement(if_statement.MainStatement);
+                        AddInstruction(new NopInstuction().WithLabel(endif_label));
+                    }
+                    break;
+                case Syntax.Statement.Type.WhileStatement:
+                    var while_statement = item.WhileStatement!;
+                    var begin_label = CreateLabel();
+                    AddInstruction(new NopInstuction().WithLabel(begin_label));
+                    var cond_var = AddExpression(while_statement.Condition);
+                    if (!cond_var.TypeInfo.IsBoolType)
+                        Reporter.Throw($"While condition must be bool type, but got '{cond_var.TypeInfo}'", while_statement.SourceLocation);
+                    var end_label = CreateLabel();
+                    AddInstruction(new GotoInstruction(end_label, cond_var, false));
+                    AddStatement(while_statement.BodyStatement);
+                    AddInstruction(new GotoInstruction(begin_label));
+                    AddInstruction(new NopInstuction().WithLabel(end_label));
+                    break;
+                case Syntax.Statement.Type.ForStatement:
+                    throw new NotImplementedException();
+                case Syntax.Statement.Type.ReturnStatement:
+                    throw new NotImplementedException();
                 default:
                     throw new NotImplementedException();
             }
@@ -963,10 +1016,10 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(BinaryOperatorEnum.LogicalOr, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalOr, a, b, res));
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -981,10 +1034,10 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(BinaryOperatorEnum.LogicalAnd, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalAnd, a, b, res));
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -999,10 +1052,10 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(BinaryOperatorEnum.BitwiseOr, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseOr, a, b, res));
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1017,10 +1070,10 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(BinaryOperatorEnum.BitwiseXor, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseXor, a, b, res));
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1035,10 +1088,10 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(BinaryOperatorEnum.BitwiseAnd, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseAnd, a, b, res));
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1054,11 +1107,11 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1074,11 +1127,11 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1094,11 +1147,11 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1114,11 +1167,11 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1134,11 +1187,11 @@ namespace BabyPenguin.Semantic
                         var res_var = temp_vars.Aggregate((a, b) =>
                         {
                             var res = (this as ISymbolContainer).AllocTempSymbol(type, expression.SourceLocation);
-                            AddCommand(new BinaryOperationCommand(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddCommand(new AssignmentCommand(res_var, to));
+                        this.AddInstruction(new AssignmentInstruction(res_var, to));
                     }
                     else
                     {
@@ -1150,7 +1203,7 @@ namespace BabyPenguin.Semantic
                     {
                         var type = ResolveExpressionType(exp);
                         var temp_var = AddExpression(exp.SubUnaryExpression!);
-                        AddCommand(new CastCommand(temp_var, type, to));
+                        AddInstruction(new CastInstruction(temp_var, type, to));
                     }
                     else
                     {
@@ -1161,7 +1214,7 @@ namespace BabyPenguin.Semantic
                     if (exp.HasUnaryOperator)
                     {
                         var temp_var = AddExpression(exp.SubExpression);
-                        AddCommand(new UnaryOperationCommand((UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
+                        AddInstruction(new UnaryOperationInstruction((UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
                     }
                     else
                     {
@@ -1192,7 +1245,7 @@ namespace BabyPenguin.Semantic
                     {
                         Model.Reporter.Throw($"Function call expects function symbol as primary expression, but got '{func_var.TypeInfo}'", exp.SourceLocation);
                     }
-                    AddCommand(new FunctionCallCommand(func_var, param_vars, to));
+                    AddInstruction(new FunctionCallInstruction(func_var, param_vars, to));
                     break;
                 case Syntax.MemberAccessExpression exp:
                     throw new NotImplementedException();
@@ -1204,18 +1257,18 @@ namespace BabyPenguin.Semantic
                         case Syntax.PrimaryExpression.Type.Identifier:
                             var symbol = ResolveSymbol(exp.Identifier!.Name, exp.Scope.ScopeDepth);
                             if (symbol == null) Model.Reporter.Throw($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
-                            else AddCommand(new AssignmentCommand(symbol, to));
+                            else AddInstruction(new AssignmentInstruction(symbol, to));
                             break;
                         case Syntax.PrimaryExpression.Type.Constant:
                             var t = TypeInfo.ResolveLiteralType(exp.Literal!);
                             if (t == null) Model.Reporter.Throw($"Cant resolve Type '{exp.Literal}'", exp.SourceLocation);
-                            else AddCommand(new AssignLiteralToSymbolCommand(to, t, exp.Literal!));
+                            else AddInstruction(new AssignLiteralToSymbolInstruction(to, t, exp.Literal!));
                             break;
                         case Syntax.PrimaryExpression.Type.StringLiteral:
-                            AddCommand(new AssignLiteralToSymbolCommand(to, TypeInfo.BuiltinTypes["string"], exp.Literal!));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(to, TypeInfo.BuiltinTypes["string"], exp.Literal!));
                             break;
                         case Syntax.PrimaryExpression.Type.BoolLiteral:
-                            AddCommand(new AssignLiteralToSymbolCommand(to, TypeInfo.BuiltinTypes["bool"], exp.Literal!));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(to, TypeInfo.BuiltinTypes["bool"], exp.Literal!));
                             break;
                         case Syntax.PrimaryExpression.Type.ParenthesizedExpression:
                             AddExpression(exp.ParenthesizedExpression!, to);
@@ -1228,9 +1281,9 @@ namespace BabyPenguin.Semantic
             return to;
         }
 
-        public void AddCommand(ISemanticCommand command)
+        public void AddInstruction(SemanticInstruction instruction)
         {
-            Commands.Add(command);
+            Instructions.Add(instruction);
         }
     }
 
@@ -1253,7 +1306,7 @@ namespace BabyPenguin.Semantic
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public List<ISemanticCommand> Commands { get; } = [];
+        public List<SemanticInstruction> Instructions { get; } = [];
 
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
 
@@ -1311,7 +1364,7 @@ namespace BabyPenguin.Semantic
 
         public FunctionSymbol? FunctionSymbol { get; private set; } = null;
 
-        public List<ISemanticCommand> Commands { get; } = [];
+        public List<SemanticInstruction> Instructions { get; } = [];
 
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
 

@@ -2,15 +2,16 @@ using System.Diagnostics.SymbolStore;
 using BabyPenguin;
 using BabyPenguin.Semantic;
 using PenguinLangAntlr;
+using Xunit.Abstractions;
 
 namespace BabyPenguin.Tests
 {
-    public class CalculationTest
+    public class CalculationTest(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
         public void AdditionTest()
         {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
                     var a : u8 = 1 + 2 - 4 * 3 / 2;

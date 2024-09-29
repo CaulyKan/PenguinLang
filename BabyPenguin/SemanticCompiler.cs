@@ -9,6 +9,7 @@ using System.Text;
 namespace BabyPenguin
 {
     using BabyPenguin.Syntax;
+    using ConsoleTables;
     using Semantic;
 
     public partial class SemanticModel
@@ -22,7 +23,10 @@ namespace BabyPenguin
 
         public void CompileSyntax(IEnumerable<SyntaxCompiler> compilers)
         {
-            foreach (var compiler in compilers)
+            var compilersList = compilers.ToList();
+            SyntaxCopmilers.AddRange(compilersList);
+
+            foreach (var compiler in compilersList)
             {
                 foreach (var ns in compiler.Namespaces)
                 {
@@ -32,16 +36,30 @@ namespace BabyPenguin
 
             Reporter.Write(DiagnosticLevel.Debug, $"Semantic Scopes:\n" + string.Join("\n", Namespaces.OfType<IPrettyPrint>().SelectMany(s => s.PrettyPrint(0))));
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Type Table:\n" + string.Join("\n", Types.Select(t => "\t" + t.FullName)));
+            Reporter.Write(DiagnosticLevel.Debug, $"Type Table:\n" + PrintTypeTable());
 
             Namespaces.ForEach(ns => ns.ElabSyntaxSymbols());
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + string.Join("\n", Symbols.Select(t => "\t" + t.FullName + ": " + t.TypeInfo.FullName)));
+            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + PrintSymbolTable());
 
             foreach (var task in CompileTasks)
             {
                 task.CompileSyntaxStatements();
             }
+        }
+
+        public string PrintTypeTable()
+        {
+            var table = new ConsoleTable("Name");
+            Types.ForEach(s => table.AddRow(s.FullName));
+            return table.ToMarkDownString();
+        }
+
+        public string PrintSymbolTable()
+        {
+            var table = new ConsoleTable("Name", "Type", "Source");
+            Symbols.ForEach(s => table.AddRow(s.FullName, s.TypeInfo.ToString(), s.SourceLocation.ToString()));
+            return table.ToMarkDownString();
         }
 
         public TypeInfo? ResolveType(string name)
@@ -88,16 +106,17 @@ namespace BabyPenguin
         public List<ISymbol> Symbols { get; } = [];
         public ErrorReporter Reporter { get; }
         public List<ICodeContainer> CompileTasks { get; } = [];
+        public List<SyntaxCompiler> SyntaxCopmilers { get; } = [];
     }
 
     public class SemanticCompiler
     {
-        public SemanticCompiler()
+        public SemanticCompiler(ErrorReporter? reporter = null)
         {
-
+            Reporter = reporter ?? new ErrorReporter();
         }
 
-        ErrorReporter Reporter { get; } = new ErrorReporter();
+        public ErrorReporter Reporter { get; }
 
         public List<PenguinParser> Parsers { get; } = [];
 
