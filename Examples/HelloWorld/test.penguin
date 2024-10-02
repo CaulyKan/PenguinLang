@@ -1,5 +1,7 @@
-            initial {
-                    var a : u8 = 1 + 2 - 4 * 3 / 2;
-                    var b : string = a as string;
-                    print(b);
-            }
+                initial {
+                    add(1,2);
+                } 
+
+                fun add(val a : u8, val b : u8) {
+                    print((a + b) as string);
+                }

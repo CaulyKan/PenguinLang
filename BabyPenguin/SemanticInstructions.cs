@@ -39,6 +39,12 @@ namespace BabyPenguin.Semantic
         override public string StringResult => TargetLabel;
     }
 
+    public record ReturnInstruction(ISymbol? RetValue = null) : SemanticInstruction
+    {
+        override public string StringCommand => "RETN";
+        override public string StringOP1 => (RetValue == null) ? "" : RetValue.ToString()!;
+    }
+
     public record BinaryOperationInstruction(BinaryOperatorEnum Operator, ISymbol LeftSymbol, ISymbol RightSymbol, ISymbol Target) : SemanticInstruction
     {
         override public string StringCommand => Operator.ToString().ToUpper();

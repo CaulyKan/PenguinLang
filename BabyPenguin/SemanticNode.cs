@@ -753,91 +753,113 @@ namespace BabyPenguin.Semantic
             switch (item.StatementType)
             {
                 case Syntax.Statement.Type.AssignmentStatement:
-                    var right_var = AddExpression(item.AssignmentStatement!.RightHandSide);
-                    var target = ResolveSymbol(item.AssignmentStatement.LeftHandSide.Name, item.Scope.ScopeDepth);
-                    if (target == null)
                     {
-                        Model.Reporter.Throw($"Cant resolve symbol '{item.AssignmentStatement.LeftHandSide.Name}'", item.AssignmentStatement.LeftHandSide.SourceLocation);
-                    }
-                    else
-                    {
-                        if (item.AssignmentStatement.AssignmentOperator == AssignmentOperatorEnum.Assign)
+                        var right_var = AddExpression(item.AssignmentStatement!.RightHandSide);
+                        var target = ResolveSymbol(item.AssignmentStatement.LeftHandSide.Name, item.Scope.ScopeDepth);
+                        if (target == null)
                         {
-                            AddInstruction(new AssignmentInstruction(right_var, target));
+                            Model.Reporter.Throw($"Cant resolve symbol '{item.AssignmentStatement.LeftHandSide.Name}'", item.AssignmentStatement.LeftHandSide.SourceLocation);
                         }
                         else
                         {
-                            var op = item.AssignmentStatement.AssignmentOperator switch
+                            if (item.AssignmentStatement.AssignmentOperator == AssignmentOperatorEnum.Assign)
                             {
-                                AssignmentOperatorEnum.AddAssign => BinaryOperatorEnum.Add,
-                                AssignmentOperatorEnum.SubtractAssign => BinaryOperatorEnum.Subtract,
-                                AssignmentOperatorEnum.MultiplyAssign => BinaryOperatorEnum.Multiply,
-                                AssignmentOperatorEnum.DivideAssign => BinaryOperatorEnum.Divide,
-                                AssignmentOperatorEnum.ModuloAssign => BinaryOperatorEnum.Modulo,
-                                AssignmentOperatorEnum.BitwiseAndAssign => BinaryOperatorEnum.BitwiseAnd,
-                                AssignmentOperatorEnum.BitwiseOrAssign => BinaryOperatorEnum.BitwiseOr,
-                                AssignmentOperatorEnum.BitwiseXorAssign => BinaryOperatorEnum.BitwiseXor,
-                                AssignmentOperatorEnum.LeftShiftAssign => BinaryOperatorEnum.LeftShift,
-                                AssignmentOperatorEnum.RightShiftAssign => BinaryOperatorEnum.RightShift,
-                                _ => throw new NotImplementedException(),
-                            };
-                            var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(op, target, right_var, temp));
-                            AddInstruction(new AssignmentInstruction(temp, target));
-                            break;
+                                AddInstruction(new AssignmentInstruction(right_var, target));
+                            }
+                            else
+                            {
+                                var op = item.AssignmentStatement.AssignmentOperator switch
+                                {
+                                    AssignmentOperatorEnum.AddAssign => BinaryOperatorEnum.Add,
+                                    AssignmentOperatorEnum.SubtractAssign => BinaryOperatorEnum.Subtract,
+                                    AssignmentOperatorEnum.MultiplyAssign => BinaryOperatorEnum.Multiply,
+                                    AssignmentOperatorEnum.DivideAssign => BinaryOperatorEnum.Divide,
+                                    AssignmentOperatorEnum.ModuloAssign => BinaryOperatorEnum.Modulo,
+                                    AssignmentOperatorEnum.BitwiseAndAssign => BinaryOperatorEnum.BitwiseAnd,
+                                    AssignmentOperatorEnum.BitwiseOrAssign => BinaryOperatorEnum.BitwiseOr,
+                                    AssignmentOperatorEnum.BitwiseXorAssign => BinaryOperatorEnum.BitwiseXor,
+                                    AssignmentOperatorEnum.LeftShiftAssign => BinaryOperatorEnum.LeftShift,
+                                    AssignmentOperatorEnum.RightShiftAssign => BinaryOperatorEnum.RightShift,
+                                    _ => throw new NotImplementedException(),
+                                };
+                                var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
+                                AddInstruction(new BinaryOperationInstruction(op, target, right_var, temp));
+                                AddInstruction(new AssignmentInstruction(temp, target));
+                                break;
+                            }
                         }
+                        break;
                     }
-                    break;
                 case Syntax.Statement.Type.ExpressionStatement:
-                    this.AddExpression(item.ExpressionStatement!.Expression);
-                    break;
+                    {
+                        this.AddExpression(item.ExpressionStatement!.Expression);
+                        break;
+                    }
                 case Syntax.Statement.Type.SubBlock:
-                    foreach (var subItem in item.CodeBlock!.BlockItems)
                     {
-                        AddCodeBlockItem(subItem);
+                        foreach (var subItem in item.CodeBlock!.BlockItems)
+                        {
+                            AddCodeBlockItem(subItem);
+                        }
+                        break;
                     }
-                    break;
                 case Syntax.Statement.Type.IfStatement:
-                    var if_statement = item.IfStatement!;
-                    var condition_var = AddExpression(if_statement.Condition);
-                    if (!condition_var.TypeInfo.IsBoolType)
-                        Reporter.Throw($"If condition must be bool type, but got '{condition_var.TypeInfo}'", if_statement.SourceLocation);
-                    if (if_statement.HasElse)
                     {
-                        var else_label = CreateLabel();
-                        var endif_label = CreateLabel();
-                        AddInstruction(new GotoInstruction(else_label, condition_var, false));
-                        AddStatement(if_statement.MainStatement);
-                        AddInstruction(new GotoInstruction(endif_label));
-                        AddInstruction(new NopInstuction().WithLabel(else_label));
-                        AddStatement(if_statement.ElseStatement!);
-                        AddInstruction(new NopInstuction().WithLabel(endif_label));
+                        var if_statement = item.IfStatement!;
+                        var condition_var = AddExpression(if_statement.Condition);
+                        if (!condition_var.TypeInfo.IsBoolType)
+                            Reporter.Throw($"If condition must be bool type, but got '{condition_var.TypeInfo}'", if_statement.SourceLocation);
+                        if (if_statement.HasElse)
+                        {
+                            var else_label = CreateLabel();
+                            var endif_label = CreateLabel();
+                            AddInstruction(new GotoInstruction(else_label, condition_var, false));
+                            AddStatement(if_statement.MainStatement);
+                            AddInstruction(new GotoInstruction(endif_label));
+                            AddInstruction(new NopInstuction().WithLabel(else_label));
+                            AddStatement(if_statement.ElseStatement!);
+                            AddInstruction(new NopInstuction().WithLabel(endif_label));
+                        }
+                        else
+                        {
+                            var endif_label = CreateLabel();
+                            AddInstruction(new GotoInstruction(endif_label, condition_var, false));
+                            AddStatement(if_statement.MainStatement);
+                            AddInstruction(new NopInstuction().WithLabel(endif_label));
+                        }
+                        break;
                     }
-                    else
-                    {
-                        var endif_label = CreateLabel();
-                        AddInstruction(new GotoInstruction(endif_label, condition_var, false));
-                        AddStatement(if_statement.MainStatement);
-                        AddInstruction(new NopInstuction().WithLabel(endif_label));
-                    }
-                    break;
                 case Syntax.Statement.Type.WhileStatement:
-                    var while_statement = item.WhileStatement!;
-                    var begin_label = CreateLabel();
-                    AddInstruction(new NopInstuction().WithLabel(begin_label));
-                    var cond_var = AddExpression(while_statement.Condition);
-                    if (!cond_var.TypeInfo.IsBoolType)
-                        Reporter.Throw($"While condition must be bool type, but got '{cond_var.TypeInfo}'", while_statement.SourceLocation);
-                    var end_label = CreateLabel();
-                    AddInstruction(new GotoInstruction(end_label, cond_var, false));
-                    AddStatement(while_statement.BodyStatement);
-                    AddInstruction(new GotoInstruction(begin_label));
-                    AddInstruction(new NopInstuction().WithLabel(end_label));
-                    break;
+                    {
+                        var while_statement = item.WhileStatement!;
+                        var begin_label = CreateLabel();
+                        AddInstruction(new NopInstuction().WithLabel(begin_label));
+                        var cond_var = AddExpression(while_statement.Condition);
+                        if (!cond_var.TypeInfo.IsBoolType)
+                            Reporter.Throw($"While condition must be bool type, but got '{cond_var.TypeInfo}'", while_statement.SourceLocation);
+                        var end_label = CreateLabel();
+                        AddInstruction(new GotoInstruction(end_label, cond_var, false));
+                        AddStatement(while_statement.BodyStatement);
+                        AddInstruction(new GotoInstruction(begin_label));
+                        AddInstruction(new NopInstuction().WithLabel(end_label));
+                        break;
+                    }
                 case Syntax.Statement.Type.ForStatement:
                     throw new NotImplementedException();
                 case Syntax.Statement.Type.ReturnStatement:
-                    throw new NotImplementedException();
+                    {
+                        var return_statement = item.ReturnStatement!;
+                        if (return_statement.ReturnExpression != null)
+                        {
+                            var ret_var = AddExpression(return_statement.ReturnExpression);
+                            AddInstruction(new ReturnInstruction(ret_var));
+                        }
+                        else
+                        {
+                            AddInstruction(new ReturnInstruction(null));
+                        }
+                        break;
+                    }
                 default:
                     throw new NotImplementedException();
             }
@@ -845,11 +867,26 @@ namespace BabyPenguin.Semantic
 
         public TypeInfo ResolveExpressionType(ISyntaxExpression expression)
         {
-            TypeInfo check_types(List<TypeInfo> types)
+            TypeInfo check_types(List<TypeInfo> types, bool allow_implicit_conversion = true)
             {
-                foreach (var t in types.Skip(1))
-                    if (t != types.First())
-                        Model.Reporter.Throw($"Incompatible types in logical or expression, expected '{types.First()}' but got '{t}'", expression.SourceLocation);
+                if (!allow_implicit_conversion)
+                {
+                    foreach (var t in types.Skip(1))
+                        if (t != types.First())
+                            Model.Reporter.Throw($"Incompatible types in expression, expected '{types.First()}' but got '{t}'", expression.SourceLocation);
+                }
+                else
+                {
+                    return types.Aggregate((a, b) =>
+                    {
+                        if (a.CanImplicitlyCastTo(b)) return b;
+                        else if (b.CanImplicitlyCastTo(a)) return a;
+                        else
+                        {
+                            Model.Reporter.Throw($"Incompatible types in expression, expected '{a}' but got '{b}'", expression.SourceLocation); return a;
+                        }
+                    });
+                }
                 return types.First();
             }
 
@@ -859,34 +896,34 @@ namespace BabyPenguin.Semantic
                     return ResolveExpressionType(exp.SubExpression);
                 case Syntax.LogicalOrExpression exp:
                     var or_types = exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList();
-                    check_types(or_types);
+                    check_types(or_types, true);
                     if (exp.SubExpressions.Count > 1)
                         return TypeInfo.BuiltinTypes["bool"];
                     else
                         return or_types.First();
                 case Syntax.LogicalAndExpression exp:
                     var and_types = exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList();
-                    check_types(and_types);
+                    check_types(and_types, true);
                     if (exp.SubExpressions.Count > 1)
                         return TypeInfo.BuiltinTypes["bool"];
                     else
                         return and_types.First();
                 case Syntax.InclusiveOrExpression exp:
-                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList());
+                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList(), true);
                 case Syntax.ExclusiveOrExpression exp:
-                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList());
+                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList(), true);
                 case Syntax.AndExpression exp:
-                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList());
+                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList(), true);
                 case Syntax.EqualityExpression exp:
                     var equality_types = exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList();
-                    check_types(equality_types);
+                    check_types(equality_types, true);
                     if (exp.SubExpressions.Count > 1)
                         return TypeInfo.BuiltinTypes["bool"];
                     else
                         return equality_types.First();
                 case Syntax.RelationalExpression exp:
                     var relational_types = exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList();
-                    check_types(relational_types);
+                    check_types(relational_types, true);
                     if (exp.SubExpressions.Count > 1)
                         return TypeInfo.BuiltinTypes["bool"];
                     else
@@ -905,9 +942,9 @@ namespace BabyPenguin.Semantic
                         return ResolveExpressionType(exp.SubExpressions[0]);
                     }
                 case Syntax.AdditiveExpression exp:
-                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList());
+                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList(), true);
                 case Syntax.MultiplicativeExpression exp:
-                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList());
+                    return check_types(exp.SubExpressions.Select(e => ResolveExpressionType(e)).ToList(), true);
                 case Syntax.CastExpression exp:
                     if (exp.IsTypeCast)
                     {

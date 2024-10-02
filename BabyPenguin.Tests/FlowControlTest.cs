@@ -116,10 +116,97 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
             var vm = new VirtualMachine(model);
-            vm.Global.EnableDebugPrint = true;
-            vm.Global.DebugWriter = this;
             vm.Run();
             Assert.Equal("0011", vm.CollectOutput());
         }
+
+        [Fact]
+        public void FunctionBasicTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    add(1,2);
+                } 
+
+                fun add(val a : u8, val b : u8) {
+                    print((a + b) as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void FunctionReturnTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u8 = add(1,2);
+                    print(res as string);
+                } 
+
+                fun add(val a : u8, val b : u8) -> u8 {
+                    return a + b;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
+
+
+        [Fact]
+        public void FunctionNotAllPathReturnErrorTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u8 = add(1,2);
+                    print(res as string);
+                } 
+
+                fun add(val a : u8, val b : u8) -> u8 {
+                    if (false) {
+                        return 0;
+                    } else 
+                    {
+                    }
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
+
+        [Fact]
+        public void FunctionRecursionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u32 = fib(10);
+                    print(res as string);
+                } 
+
+                fun fib(val n: u32) -> u32 {
+                    if (n == 0) {
+                        return 0;
+                    } else if (n == 1) {
+                        return 1;
+                    } else {
+                        return fib(n-1) + fib(n-2);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("55", vm.CollectOutput());
+        }
+
     }
 }

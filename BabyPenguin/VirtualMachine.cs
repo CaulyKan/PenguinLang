@@ -440,6 +440,15 @@ namespace BabyPenguin
                             }
                             break;
                         }
+                    case ReturnInstruction cmd:
+                        {
+                            if (cmd.RetValue != null)
+                            {
+                                RuntimeVar ret_var = resolveVariable(cmd.RetValue);
+                                return ret_var;
+                            }
+                            break;
+                        }
                     case NopInstuction cmd:
                         DebugPrint(cmd);
                         break;
@@ -453,7 +462,7 @@ namespace BabyPenguin
             }
             else
             {
-                throw new NotImplementedException();
+                throw new BabyPenguinRuntimeException("Function does not return a value");
             }
         }
     }
