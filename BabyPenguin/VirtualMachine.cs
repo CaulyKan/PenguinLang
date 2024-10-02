@@ -18,7 +18,7 @@ namespace BabyPenguin
 
             foreach (var symbol in model.Symbols)
             {
-                Global.GlobalVariables.Add(symbol.FullName, new RuntimeVar(symbol.TypeInfo, symbol));
+                Global.GlobalVariables.Add(symbol.FullName, new RuntimeVar(model, symbol.TypeInfo, symbol));
             }
 
             Global.ExternFunctions.Add("__builtin.print", (result, args) => { Output.Append(args[0].Value); Console.Write(args[0].Value); });
@@ -74,7 +74,7 @@ namespace BabyPenguin
                 }
                 else
                 {
-                    LocalVariables.Add(local.FullName, new RuntimeVar(local.TypeInfo, local));
+                    LocalVariables.Add(local.FullName, new RuntimeVar(container.Model, local.TypeInfo, local));
                 }
             }
         }
@@ -188,7 +188,7 @@ namespace BabyPenguin
                                     break;
                                 case TypeEnum.Fun:
                                     throw new BabyPenguinRuntimeException("A function cannot be a literal value");
-                                case TypeEnum.Other:
+                                case TypeEnum.Class:
                                     throw new BabyPenguinRuntimeException("A complex typecannot be a literal value");
                             }
                             break;
@@ -218,8 +218,8 @@ namespace BabyPenguin
                             }
                             break;
                         }
-                    case SlicingInstruction cmd:
-                        throw new NotImplementedException();
+                    // case SlicingInstruction cmd:
+                    //     throw new NotImplementedException();
                     case CastInstruction cmd:
                         {
                             RuntimeVar result_var = resolveVariable(cmd.Target);
@@ -281,7 +281,7 @@ namespace BabyPenguin
                                     result_var.Value = (bool)right_var.Value!;
                                     break;
                                 case TypeEnum.Fun:
-                                case TypeEnum.Other:
+                                case TypeEnum.Class:
                                     throw new NotImplementedException();
                             }
                             break;
@@ -449,6 +449,28 @@ namespace BabyPenguin
                             }
                             break;
                         }
+                    case NewInstanceInstruction cmd:
+                        // do nothing
+                        break;
+                    case ReadMemberInstruction cmd:
+                        {
+                            RuntimeVar result_var = resolveVariable(cmd.Target);
+                            var owner = resolveVariable(cmd.MemberOwnerSymbol);
+                            var members = (owner.Value as Dictionary<string, RuntimeVar>)!;
+                            var member_var = members[cmd.Member.Name]!;
+                            DebugPrint(cmd, $"right_var={member_var}");
+                            result_var.AssignFrom(member_var);
+                        }
+                        break;
+                    case WriteMemberInstruction cmd:
+                        {
+                            var right_var = resolveVariable(cmd.Value);
+                            var owner = resolveVariable(cmd.MemberOwnerSymbol);
+                            var members = (owner.Value as Dictionary<string, RuntimeVar>)!;
+                            DebugPrint(cmd, $"right_var={right_var}");
+                            members[cmd.Member.Name]!.AssignFrom(right_var);
+                        }
+                        break;
                     case NopInstuction cmd:
                         DebugPrint(cmd);
                         break;
@@ -469,12 +491,13 @@ namespace BabyPenguin
 
     public class RuntimeVar
     {
-        public RuntimeVar(TypeInfo typeInfo, ISymbol? symbol)
+        public RuntimeVar(SemanticModel? model, TypeInfo typeInfo, ISymbol? symbol)
         {
             TypeInfo = typeInfo;
             Symbol = symbol;
             FunctionSymbol = symbol as FunctionSymbol;
             Type = typeInfo.Type;
+            Model = model;
             switch (Type)
             {
                 case TypeEnum.Bool:
@@ -504,13 +527,16 @@ namespace BabyPenguin
                     break;
                 case TypeEnum.Fun:
                     break;
-                case TypeEnum.Other:
+                case TypeEnum.Class:
+                    var symbols = Model!.ResolveClassSymbols(typeInfo);
+                    Value = symbols.ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
                     break;
             }
         }
 
         public TypeInfo TypeInfo { get; }
         public TypeEnum Type { get; }
+        public SemanticModel? Model { get; }
         public object? Value { get; set; }
         public ISymbol? Symbol { get; }
         public FunctionSymbol? FunctionSymbol { get; private set; }
@@ -525,12 +551,12 @@ namespace BabyPenguin
 
         public static RuntimeVar Void()
         {
-            return new RuntimeVar(TypeInfo.BuiltinTypes["void"], null);
+            return new RuntimeVar(null, TypeInfo.BuiltinTypes["void"], null);
         }
 
         public RuntimeVar Clone()
         {
-            RuntimeVar result = new(TypeInfo, Symbol)
+            RuntimeVar result = new(Model, TypeInfo, Symbol)
             {
                 Value = Value
             };

@@ -28,9 +28,9 @@ namespace BabyPenguin
             public virtual SourceLocation SourceLocation { get; }
 
             public ErrorReporter Reporter { get; }
-            public virtual string GetText() =>
+            public virtual string Text =>
                 Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
-            public override string ToString() => this.GetType().Name + ": " + shorten(GetText().Trim().Replace("\n", " ").Replace("\r", ""));
+            public override string ToString() => this.GetType().Name + ": " + shorten(Text.Trim().Replace("\n", " ").Replace("\r", ""));
             public virtual IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 yield return new string(' ', indentLevel * 2) + (note ?? " ") + ToString();
@@ -423,11 +423,42 @@ namespace BabyPenguin
             public Expression? ReturnExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
         }
 
+        public class IdentifierOrMemberAccess : SyntaxNode
+        {
+            public IdentifierOrMemberAccess(SyntaxWalker walker, IdentifierOrMemberAccessContext context) : base(walker, context)
+            {
+                if (context.identifier() is not null)
+                {
+                    Identifier = new Identifier(walker, context.identifier(), false);
+                }
+                else if (context.memberAccessExpression() is not null)
+                {
+                    MemberAccess = new MemberAccessExpression(walker, context.memberAccessExpression(), true);
+                }
+                else
+                {
+                    throw new NotImplementedException("Invalid identifier or member access");
+                }
+            }
+
+            public Identifier? Identifier { get; }
+
+            public MemberAccessExpression? MemberAccess { get; }
+
+            public bool IsIdentifier => Identifier is not null;
+            public bool IsMemberAccess => MemberAccess is not null;
+
+            public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+            {
+                return Identifier is not null ? Identifier.PrettyPrint(indentLevel) : MemberAccess!.PrettyPrint(indentLevel + 1);
+            }
+        }
+
         public class AssignmentStatement : SyntaxNode
         {
             public AssignmentStatement(SyntaxWalker walker, AssignmentStatementContext context) : base(walker, context)
             {
-                LeftHandSide = new Identifier(walker, context.identifier(), false);
+                LeftHandSide = new IdentifierOrMemberAccess(walker, context.identifierOrMemberAccess());
                 RightHandSide = new Expression(walker, context.expression());
                 AssignmentOperator = context.assignmentOperator().GetText() switch
                 {
@@ -446,7 +477,7 @@ namespace BabyPenguin
                 };
             }
 
-            public Identifier LeftHandSide { get; }
+            public IdentifierOrMemberAccess LeftHandSide { get; }
             public Expression RightHandSide { get; }
             public AssignmentOperatorEnum AssignmentOperator { get; }
 
@@ -568,9 +599,9 @@ namespace BabyPenguin
 
         public class LogicalAndExpression(SyntaxWalker walker, LogicalAndExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
         {
-            public List<InclusiveOrExpression> SubExpressions { get; }
+            public List<BitWiseOrExpression> SubExpressions { get; }
                 = context.children.OfType<InclusiveOrExpressionContext>()
-                   .Select(x => new InclusiveOrExpression(walker, x))
+                   .Select(x => new BitWiseOrExpression(walker, x))
                    .ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -581,11 +612,11 @@ namespace BabyPenguin
             public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
         }
 
-        public class InclusiveOrExpression(SyntaxWalker walker, InclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
+        public class BitWiseOrExpression(SyntaxWalker walker, InclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
         {
-            public List<ExclusiveOrExpression> SubExpressions { get; }
+            public List<BitwiseXorExpression> SubExpressions { get; }
                 = context.children.OfType<ExclusiveOrExpressionContext>()
-                   .Select(x => new ExclusiveOrExpression(walker, x))
+                   .Select(x => new BitwiseXorExpression(walker, x))
                    .ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -596,11 +627,11 @@ namespace BabyPenguin
             public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
         }
 
-        public class ExclusiveOrExpression(SyntaxWalker walker, ExclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
+        public class BitwiseXorExpression(SyntaxWalker walker, ExclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
         {
-            public List<AndExpression> SubExpressions { get; }
+            public List<BitwiseAndExpression> SubExpressions { get; }
                 = context.children.OfType<AndExpressionContext>()
-                   .Select(x => new AndExpression(walker, x))
+                   .Select(x => new BitwiseAndExpression(walker, x))
                    .ToList();
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -611,7 +642,7 @@ namespace BabyPenguin
             public bool IsSimple => SubExpressions.Count == 1 ? SubExpressions[0].IsSimple : false;
         }
 
-        public class AndExpression(SyntaxWalker walker, AndExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
+        public class BitwiseAndExpression(SyntaxWalker walker, AndExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
         {
             public List<EqualityExpression> SubExpressions { get; }
                 = context.children.OfType<EqualityExpressionContext>()
@@ -812,36 +843,42 @@ namespace BabyPenguin
             public enum Type
             {
                 PrimaryExpression,
-                Slicing,
+                // Slicing,
                 FunctionCall,
                 MemberAccess,
+                New,
             }
 
             public PostfixExpression(SyntaxWalker walker, PostfixExpressionContext context) : base(walker, context)
             {
-                if (context.children.OfType<PrimaryExpressionContext>().Any())
+                if (context.primaryExpression() != null)
                 {
                     SubPrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
                     PostfixExpressionType = Type.PrimaryExpression;
                 }
-                else if (context.children.OfType<SlicingExpressionContext>().Any())
-                {
-                    SubSlicingExpression = new SlicingExpression(walker, context.slicingExpression());
-                    PostfixExpressionType = Type.Slicing;
-                }
-                else if (context.children.OfType<FunctionCallExpressionContext>().Any())
+                // else if (context.children.OfType<SlicingExpressionContext>().Any())
+                // {
+                //     SubSlicingExpression = new SlicingExpression(walker, context.slicingExpression());
+                //     PostfixExpressionType = Type.Slicing;
+                // }
+                else if (context.functionCallExpression() != null)
                 {
                     SubFunctionCallExpression = new FunctionCallExpression(walker, context.functionCallExpression());
                     PostfixExpressionType = Type.FunctionCall;
                 }
-                else if (context.children.OfType<MemberAccessExpressionContext>().Any())
+                else if (context.memberAccessExpression() != null)
                 {
-                    SubMemberAccessExpression = new MemberAccessExpression(walker, context.memberAccessExpression());
+                    SubMemberAccessExpression = new MemberAccessExpression(walker, context.memberAccessExpression(), false);
                     PostfixExpressionType = Type.MemberAccess;
+                }
+                else if (context.newExpression() != null)
+                {
+                    SubNewExpression = new NewExpression(walker, context.newExpression());
+                    PostfixExpressionType = Type.New;
                 }
                 else
                 {
-                    throw new System.NotImplementedException("Invalid postfix expression");
+                    throw new NotImplementedException("Invalid postfix expression");
                 }
             }
 
@@ -849,21 +886,24 @@ namespace BabyPenguin
 
             public PrimaryExpression? SubPrimaryExpression { get; }
 
-            public SlicingExpression? SubSlicingExpression { get; }
+            // public SlicingExpression? SubSlicingExpression { get; }
 
             public FunctionCallExpression? SubFunctionCallExpression { get; }
 
             public MemberAccessExpression? SubMemberAccessExpression { get; }
+
+            public NewExpression? SubNewExpression { get; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return PostfixExpressionType switch
                 {
                     Type.PrimaryExpression => SubPrimaryExpression!.PrettyPrint(indentLevel),
-                    Type.Slicing => SubSlicingExpression!.PrettyPrint(indentLevel),
+                    // Type.Slicing => SubSlicingExpression!.PrettyPrint(indentLevel),
                     Type.FunctionCall => SubFunctionCallExpression!.PrettyPrint(indentLevel),
                     Type.MemberAccess => SubMemberAccessExpression!.PrettyPrint(indentLevel),
-                    _ => throw new System.NotImplementedException("Invalid postfix expression type"),
+                    Type.New => SubNewExpression!.PrettyPrint(indentLevel),
+                    _ => throw new NotImplementedException("Invalid postfix expression type"),
                 };
             }
 
@@ -946,26 +986,51 @@ namespace BabyPenguin
             };
         }
 
-        public class SlicingExpression : SyntaxNode, ISyntaxExpression
+        // public class SlicingExpression : SyntaxNode, ISyntaxExpression
+        // {
+        //     public SlicingExpression(SyntaxWalker walker, SlicingExpressionContext context) : base(walker, context)
+        //     {
+        //         PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
+        //         IndexExpression = new Expression(walker, context.expression());
+        //     }
+
+        //     public PrimaryExpression PrimaryExpression { get; }
+
+        //     public Expression IndexExpression { get; }
+
+        //     public bool IsSimple => false;
+
+        //     public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
+        //     {
+        //         return base.PrettyPrint(indentLevel)
+        //             .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Slicable)"))
+        //             .Concat(IndexExpression.PrettyPrint(indentLevel + 1, "(Index)"));
+        //     }
+        // }
+
+        public class NewExpression : SyntaxNode, ISyntaxExpression
         {
-            public SlicingExpression(SyntaxWalker walker, SlicingExpressionContext context) : base(walker, context)
+            public NewExpression(SyntaxWalker walker, NewExpressionContext context) : base(walker, context)
             {
-                PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
-                IndexExpression = new Expression(walker, context.expression());
+                TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
+                ArgumentsExpression = context.children.OfType<ExpressionContext>()
+                   .Select(x => new Expression(walker, x))
+                   .ToList();
             }
 
-            public PrimaryExpression PrimaryExpression { get; }
+            public TypeSpecifier TypeSpecifier { get; }
 
-            public Expression IndexExpression { get; }
+            public List<Expression> ArgumentsExpression { get; }
 
-            public bool IsSimple => false;
+            public override string ToString() => "new " + TypeSpecifier.Name;
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return base.PrettyPrint(indentLevel)
-                    .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Slicable)"))
-                    .Concat(IndexExpression.PrettyPrint(indentLevel + 1, "(Index)"));
+                    .Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")));
             }
+
+            public bool IsSimple => false;
         }
 
         public class FunctionCallExpression : SyntaxNode, ISyntaxExpression
@@ -994,24 +1059,28 @@ namespace BabyPenguin
 
         public class MemberAccessExpression : SyntaxNode, ISyntaxExpression
         {
-            public MemberAccessExpression(SyntaxWalker walker, MemberAccessExpressionContext context) : base(walker, context)
+            public MemberAccessExpression(SyntaxWalker walker, MemberAccessExpressionContext context, bool isWrite) : base(walker, context)
             {
                 PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
-                MemberIdentifier = new Identifier(walker, context.identifier(), false);
+                MemberIdentifiers = context.children.OfType<IdentifierContext>()
+                   .Select(x => new Identifier(walker, x, false))
+                   .ToList();
+                IsWrite = isWrite;
             }
 
             public PrimaryExpression PrimaryExpression { get; }
 
-            public Identifier MemberIdentifier { get; }
+            public List<Identifier> MemberIdentifiers { get; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return base.PrettyPrint(indentLevel)
                     .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Object)"))
-                    .Concat(MemberIdentifier.PrettyPrint(indentLevel + 1, "(Member)"));
+                    .Concat(MemberIdentifiers.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Member)")));
             }
 
             public bool IsSimple => false;
+            public bool IsWrite { get; }
         }
 
         public class FunctionDefinition : SyntaxNode, ISyntaxScope
@@ -1094,21 +1163,44 @@ namespace BabyPenguin
             {
                 walker.PushScope(SyntaxScopeType.Class, this);
 
-                this.ClassIdentifier = new Identifier(walker, context.identifier(), false);
+                ClassIdentifier = new Identifier(walker, context.identifier(), false);
+                ClassDeclarations = context.children.OfType<ClassDeclarationContext>()
+                   .Select(x => new ClassDeclaration(walker, x))
+                   .ToList();
 
                 walker.PopScope();
             }
 
             public Identifier ClassIdentifier { get; }
-
             public string Name => ClassIdentifier.Name;
-
             public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
             public List<SyntaxSymbol> Symbols { get; } = [];
             public bool IsAnonymous => false;
             public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
             public ISyntaxScope? ParentScope { get; set; }
             public uint ScopeDepth { get; set; }
+            public List<ClassDeclaration> ClassDeclarations { get; } = [];
+        }
+
+        public class ClassDeclaration : SyntaxNode, ISyntaxScope
+        {
+            public ClassDeclaration(SyntaxWalker walker, ClassDeclarationContext context) : base(walker, context)
+            {
+                Identifier = new Identifier(walker, context.identifier(), false);
+                TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
+                IsReadonly = context.declarationKeyword().GetText() == "val";
+            }
+
+            public Identifier Identifier { get; }
+            public TypeSpecifier TypeSpecifier { get; }
+            public string Name => Identifier.Name;
+            public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
+            public List<SyntaxSymbol> Symbols { get; } = [];
+            public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+            public bool IsAnonymous => false;
+            public uint ScopeDepth { get; set; }
+            public ISyntaxScope? ParentScope { get; set; }
+            public bool IsReadonly { get; }
         }
     }
 }

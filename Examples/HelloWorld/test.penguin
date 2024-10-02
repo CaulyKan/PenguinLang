@@ -1,7 +1,19 @@
                 initial {
-                    add(1,2);
-                } 
+                    var test : Test2 = new Test2();
+                    test.test1 = new Test1();
+                    test.test1.a = 1;
+                    test.test1.b = 1;
+                    test.test1.b += 1;
+                    print(test.test1.a as string);
+                    print(test.test1.b as string);
+                    print((test.test1.a + test.test1.b) as string);
+                }
 
-                fun add(val a : u8, val b : u8) {
-                    print((a + b) as string);
+                class Test1 {
+                    var a : u8;
+                    var b : u8;
+                }
+
+                class Test2 {
+                    var test1: Test1;
                 }

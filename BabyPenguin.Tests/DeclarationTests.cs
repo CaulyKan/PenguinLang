@@ -13,12 +13,12 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            val test1 : string = "" "";
-            val test2 : u8 = 1;
-            val test3 : i32 = 1;
-            val test4 : bool = true;
-            val test5 : float = 3.14159;
-        ");
+                val test1 : string = "" "";
+                val test2 : u8 = 1;
+                val test3 : i32 = 1;
+                val test4 : bool = true;
+                val test5 : float = 3.14159;
+            ");
             var model = compiler.Compile();
             Assert.Equal(5, model.Namespaces[0].Symbols.Count);
             Assert.True(model.Namespaces[0].Symbols[0].TypeInfo.IsStringType);
@@ -38,14 +38,14 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-        namespace Test {
-            val test1 : string = "" "";
-            val test2 : u8 = 1;
-            val test3 : i32 = 1;
-            val test4 : bool = true;
-            val test5 : float = 3.14159;
-        }
-        ");
+                namespace Test {
+                    val test1 : string = "" "";
+                    val test2 : u8 = 1;
+                    val test3 : i32 = 1;
+                    val test4 : bool = true;
+                    val test5 : float = 3.14159;
+                }
+            ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name == "Test");
             Assert.Equal(5, ns!.Symbols.Count);
@@ -66,12 +66,12 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-        class TestClass {}
-        namespace Test {
-            class TestClass {}
-            class TestClass2 {}
-        }
-        ");
+                class TestClass {}
+                namespace Test {
+                    class TestClass {}
+                    class TestClass2 {}
+                }
+            ");
             var model = compiler.Compile();
             Assert.Equal(2, model.Namespaces.Count);
             Assert.Single(model.Namespaces.First().Classes);
@@ -85,11 +85,11 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            fun test1() -> string {}
-            namespace Test {
-               fun test1() {}
-            }
-        ");
+                fun test1() -> string {}
+                namespace Test {
+                fun test1() {}
+                }
+            ");
             var model = compiler.Compile();
             Assert.Single(model.Namespaces[0].Symbols);
             Assert.Single(model.Namespaces[0].Functions);
@@ -110,13 +110,13 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            initial {
+                initial {
 
-            }
-            namespace Test {
-               initial {}
-            }
-        ");
+                }
+                namespace Test {
+                initial {}
+                }
+            ");
             var model = compiler.Compile();
 
             Assert.Single(model.Namespaces[0].InitialRoutines);
@@ -128,14 +128,14 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            initial {
-                var test1 : string = "" "";
-                val test2 : u8 = 1;
-                val test3 : i32 = 1;
-                val test4 : bool = true;
-                val test5 : float = 3.14159;
-            }
-        ");
+                initial {
+                    var test1 : string = "" "";
+                    val test2 : u8 = 1;
+                    val test3 : i32 = 1;
+                    val test4 : bool = true;
+                    val test5 : float = 3.14159;
+                }
+            ");
             var model = compiler.Compile();
 
             Assert.Single(model.Namespaces[0].InitialRoutines);
@@ -159,14 +159,14 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            fun test(val param1: u64, var param2: char) {
-                var test1 : string = "" "";
-                val test2 : u8 = 1;
-                val test3 : i32 = 1;
-                val test4 : bool = true;
-                val test5 : float = 3.14159;
-            }
-        ");
+                fun test(val param1: u64, var param2: char) {
+                    var test1 : string = "" "";
+                    val test2 : u8 = 1;
+                    val test3 : i32 = 1;
+                    val test4 : bool = true;
+                    val test5 : float = 3.14159;
+                }
+            ");
             var model = compiler.Compile();
 
             Assert.Single(model.Namespaces[0].Functions);
@@ -204,14 +204,14 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            initial {
-                var test1 : string = "" "";
-                var test1 : string = "" "";
-                {
+                initial {
                     var test1 : string = "" "";
+                    var test1 : string = "" "";
+                    {
+                        var test1 : string = "" "";
+                    }
                 }
-            }
-        ");
+            ");
             var model = compiler.Compile();
 
             Assert.Single(model.Namespaces[0].InitialRoutines);
@@ -240,9 +240,9 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            class A {}
-            class A {}
-        ");
+                class A {}
+                class A {}
+            ");
             Assert.Throws<PenguinLangException>(compiler.Compile);
         }
 
@@ -251,9 +251,42 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-            fun test(val param1: u64, var param1: char){}
-        ");
+                fun test(val param1: u64, var param1: char){}
+            ");
             Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void ClassMemberDeclare()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Test {
+                    var test1 : string = "" "";
+                    var test2 : u8 = 1;
+                    var test3 : i32 = 1;
+                    val test4 : bool = true;
+                    val test5 : float = 3.14159;
+                }
+            ");
+            var model = compiler.Compile();
+
+            Assert.Single(model.Namespaces[0].Classes);
+            var symbols = model.Namespaces[0].Classes[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Equal(5, symbols.Count);
+            Assert.Equal("test1", symbols[0].Name);
+            Assert.True(symbols[0].TypeInfo.IsStringType);
+            Assert.True(symbols[0].IsClassMember);
+            Assert.False(symbols[0].IsReadonly);
+            Assert.True(symbols[1].TypeInfo.FullName == "u8");
+            Assert.Equal("test2", symbols[1].Name);
+            Assert.True(symbols[2].TypeInfo.FullName == "i32");
+            Assert.Equal("test3", symbols[2].Name);
+            Assert.True(symbols[3].TypeInfo.IsBoolType);
+            Assert.Equal("test4", symbols[3].Name);
+            Assert.True(symbols[4].TypeInfo.IsFloatType);
+            Assert.Equal("test5", symbols[4].Name);
+            Assert.True(symbols[4].IsReadonly);
         }
     }
 }

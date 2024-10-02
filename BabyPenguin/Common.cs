@@ -29,7 +29,7 @@ namespace BabyPenguin
         Bool,
         Char,
         Fun,
-        Other,
+        Class,
     }
     public enum BinaryOperatorEnum
     {

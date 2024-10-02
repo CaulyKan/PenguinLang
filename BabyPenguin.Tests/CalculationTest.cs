@@ -218,5 +218,65 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal((~1).ToString(), vm.CollectOutput());
         }
+
+        [Fact]
+        public void ClassMemberTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    var test : Test = new Test();
+                    test.a = 1;
+                    test.b = 1;
+                    test.b += 1;
+                    print(test.a as string);
+                    print(test.b as string);
+                    print((test.a + test.b) as string);
+                }
+
+                class Test {
+                    var a : u8;
+                    var b : u8;
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("123", vm.CollectOutput());
+        }
+
+
+        [Fact]
+        public void ClassMemberCascadeTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    var test : Test2 = new Test2();
+                    test.test1 = new Test1();
+                    test.test1.a = 1;
+                    test.test1.b = 1;
+                    test.test1.b += 1;
+                    print(test.test1.a as string);
+                    print(test.test1.b as string);
+                    print((test.test1.a + test.test1.b) as string);
+                }
+
+                class Test1 {
+                    var a : u8;
+                    var b : u8;
+                }
+
+                class Test2 {
+                    var test1: Test1;
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("123", vm.CollectOutput());
+        }
     }
 }

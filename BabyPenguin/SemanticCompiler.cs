@@ -62,11 +62,39 @@ namespace BabyPenguin
             return table.ToMarkDownString();
         }
 
-        public TypeInfo? ResolveType(string name)
+        public List<ISymbol> ResolveClassSymbols(TypeInfo classType)
+        {
+            if (classType.IsClassType)
+            {
+                return Symbols.Where(s => s.Parent.FullName == classType.FullName).ToList();
+            }
+            else
+            {
+                throw new PenguinLangException("Parameter for ResolveClassSymbols must be a class type");
+            }
+        }
+
+        public ISymbol? ResolveSymbol(string name)
+        {
+            return Symbols.FirstOrDefault(s => s.FullName == name);
+        }
+
+        public TypeInfo? ResolveType(string name, ISemanticScope? scope = null)
         {
             if (TypeInfo.BuiltinTypes.TryGetValue(name, out TypeInfo? value))
             {
                 return value;
+            }
+
+            if (scope != null)
+            {
+                while (scope as Semantic.Namespace == null)
+                {
+                    scope = scope!.Parent;
+                }
+
+                var ns = scope as Semantic.Namespace;
+                return Types.FirstOrDefault(t => t.FullName == ns!.FullName + "." + name);
             }
 
             return Types.FirstOrDefault(t => t.FullName == name);

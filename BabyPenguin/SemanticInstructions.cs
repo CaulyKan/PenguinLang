@@ -60,11 +60,33 @@ namespace BabyPenguin.Semantic
         override public string StringResult => Target.ToString() ?? "";
     }
 
+    public record NewInstanceInstruction(ISymbol Target) : SemanticInstruction
+    {
+        override public string StringCommand => "NEW";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
     public record AssignmentInstruction(ISymbol RightHandSymbol, ISymbol LeftHandSymbol) : SemanticInstruction
     {
         override public string StringCommand => "ASSIGN";
         override public string StringOP1 => RightHandSymbol.ToString() ?? "";
         override public string StringResult => LeftHandSymbol.ToString() ?? "";
+    }
+
+    public record ReadMemberInstruction(ISymbol Member, ISymbol MemberOwnerSymbol, ISymbol Target) : SemanticInstruction
+    {
+        override public string StringCommand => "RDMBR";
+        override public string StringOP1 => Member.ToString() ?? "";
+        override public string StringOP2 => MemberOwnerSymbol.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
+    public record WriteMemberInstruction(ISymbol Member, ISymbol Value, ISymbol MemberOwnerSymbol) : SemanticInstruction
+    {
+        override public string StringCommand => "WRMBR";
+        override public string StringOP1 => Member.ToString() ?? "";
+        override public string StringOP2 => Value.ToString() ?? "";
+        override public string StringResult => MemberOwnerSymbol.ToString() ?? "";
     }
 
     public record AssignLiteralToSymbolInstruction(ISymbol Target, TypeInfo Type, string LiteralValue) : SemanticInstruction
@@ -82,13 +104,13 @@ namespace BabyPenguin.Semantic
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record SlicingInstruction(ISymbol Slicable, ISymbol Index, ISymbol Target) : SemanticInstruction
-    {
-        override public string StringCommand => "SLICE";
-        override public string StringOP1 => Slicable.ToString() ?? "";
-        override public string StringOP2 => $"{Index}";
-        override public string StringResult => Target.ToString() ?? "";
-    }
+    // public record SlicingInstruction(ISymbol Slicable, ISymbol Index, ISymbol Target) : SemanticInstruction
+    // {
+    //     override public string StringCommand => "SLICE";
+    //     override public string StringOP1 => Slicable.ToString() ?? "";
+    //     override public string StringOP2 => $"{Index}";
+    //     override public string StringResult => Target.ToString() ?? "";
+    // }
 
     public record CastInstruction(ISymbol Operand, TypeInfo TypeInfo, ISymbol Target) : SemanticInstruction
     {

@@ -9,16 +9,20 @@ primaryExpression:
 
 postfixExpression:
 	primaryExpression
-	| slicingExpression
+	//	| slicingExpression
+	| newExpression
 	| functionCallExpression
 	| memberAccessExpression;
 
-slicingExpression: primaryExpression '[' expression ']';
+//slicingExpression: primaryExpression '[' expression ']';
+
+newExpression:
+	'new' typeSpecifier '(' expression? (',' expression)* ')';
 
 functionCallExpression:
 	primaryExpression '(' expression? (',' expression)* ')';
 
-memberAccessExpression: primaryExpression '.' identifier;
+memberAccessExpression: primaryExpression ('.' identifier)+;
 
 unaryExpression:
 	postfixExpression
@@ -118,7 +122,12 @@ typeSpecifier:
 	| 'char'
 	| identifier;
 
-classDefinition: 'class' identifier '{' '}';
+classDefinition: 'class' identifier '{' classDeclaration* '}';
+
+classDeclaration:
+	declarationKeyword identifier ':' typeSpecifier (
+		'=' expression
+	)? ';';
 
 enumSpecifier:
 	'enum' identifier? '{' enumeratorList ','? '}'
@@ -152,8 +161,10 @@ statement:
 	| returnStatement
 	| ';';
 
+identifierOrMemberAccess: identifier | memberAccessExpression;
+
 assignmentStatement:
-	identifier assignmentOperator expression ';';
+	identifierOrMemberAccess assignmentOperator expression ';';
 
 expressionStatement: expression ';';
 
