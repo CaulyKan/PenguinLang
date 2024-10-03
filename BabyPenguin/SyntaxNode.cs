@@ -540,19 +540,26 @@ namespace BabyPenguin
 
         public class Declaration : SyntaxNode
         {
-            public Declaration(SyntaxWalker walker, PenguinLangParser.DeclarationContext context) : base(walker, context)
+            public Declaration(SyntaxWalker walker, DeclarationContext context) : base(walker, context)
             {
                 Identifier = new Identifier(walker, context.identifier(), false);
-                TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
+                if (context.typeSpecifier() != null)
+                {
+                    TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
+                    walker.DefineSymbol(Name, TypeSpecifier.Name, this);
+                }
+                else
+                {
+                    throw new NotImplementedException("Type infer is not supported yet");
+                }
                 IsReadonly = context.declarationKeyword().GetText() == "val";
-                walker.DefineSymbol(Name, TypeSpecifier.Name, this);
 
                 if (context.expression() != null)
                     InitializeExpression = new Expression(walker, context.expression());
             }
 
             public Identifier Identifier { get; }
-            public TypeSpecifier TypeSpecifier { get; }
+            public TypeSpecifier? TypeSpecifier { get; }
             public Expression? InitializeExpression { get; }
             public bool IsReadonly;
             public string Name => Identifier.Name;
@@ -562,7 +569,7 @@ namespace BabyPenguin
                 return base.PrettyPrint(indentLevel).Concat(
                     Identifier.PrettyPrint(indentLevel + 1)
                 ).Concat(
-                    TypeSpecifier.PrettyPrint(indentLevel + 1, "(type)")
+                    TypeSpecifier?.PrettyPrint(indentLevel + 1, "(type)") ?? []
                 ).Concat(
                     InitializeExpression?.PrettyPrint(indentLevel + 1, "(initializer)") ?? []
                 );
@@ -1037,20 +1044,31 @@ namespace BabyPenguin
         {
             public FunctionCallExpression(SyntaxWalker walker, FunctionCallExpressionContext context) : base(walker, context)
             {
-                PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
+                if (context.primaryExpression() != null)
+                {
+                    PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
+                }
+                else if (context.memberAccessExpression() != null)
+                {
+                    MemberAccessExpression = new MemberAccessExpression(walker, context.memberAccessExpression(), false);
+                }
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
                    .Select(x => new Expression(walker, x))
                    .ToList();
             }
 
-            public PrimaryExpression PrimaryExpression { get; }
+            public PrimaryExpression? PrimaryExpression { get; }
+
+            public MemberAccessExpression? MemberAccessExpression { get; }
+
+            public bool IsMemberAccess => MemberAccessExpression is not null;
 
             public List<Expression> ArgumentsExpression { get; }
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {
                 return base.PrettyPrint(indentLevel)
-                    .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Function)"))
+                    .Concat(IsMemberAccess ? MemberAccessExpression!.PrettyPrint(indentLevel + 1, "(Function)") : PrimaryExpression!.PrettyPrint(indentLevel + 1, "(Function)"))
                     .Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")));
             }
 
@@ -1168,6 +1186,10 @@ namespace BabyPenguin
                    .Select(x => new ClassDeclaration(walker, x))
                    .ToList();
 
+                Functions = context.children.OfType<FunctionDefinitionContext>()
+                   .Select(x => new FunctionDefinition(walker, x))
+                   .ToList();
+
                 walker.PopScope();
             }
 
@@ -1175,6 +1197,8 @@ namespace BabyPenguin
             public string Name => ClassIdentifier.Name;
             public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
             public List<SyntaxSymbol> Symbols { get; } = [];
+            public List<FunctionDefinition> Functions { get; } = [];
+            public List<InitialRoutine> InitialRoutines { get; } = [];
             public bool IsAnonymous => false;
             public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
             public ISyntaxScope? ParentScope { get; set; }

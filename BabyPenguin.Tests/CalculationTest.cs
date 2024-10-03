@@ -220,6 +220,49 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ShadowTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    var a : u8 = 1;
+                    {
+                        var a : u8 = 2;
+                        print(a as string);
+                    }
+                    print(a as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("21", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ShadowTest2()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                var a : u8 = 1;
+                initial {
+                    var a : u8 = 2;
+                    print(a as string);
+                }
+
+                initial {
+                    print(a as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("21", vm.CollectOutput());
+        }
+
+        [Fact]
         public void ClassMemberTest()
         {
             var compiler = new SemanticCompiler();
@@ -278,5 +321,92 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
         }
+
+        [Fact]
+        public void ClassMethodTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test = new Test();
+                        test.a = 1;
+                        test.b = 1;
+                        test.print_sum();
+                    }
+
+                    class Test {
+                        var a : u8;
+                        var b : u8;
+
+                        fun print_sum(val this: Test) {
+                            print((this.a + this.b) as string);
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("2", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ClassMethodCascadeTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    var test : Test2 = new Test2();
+                    test.test1 = new Test1();
+                    test.test1.a = 1;
+                    test.test1.b = 1;
+                    test.test1.print_sum();
+                }
+
+                class Test1 {
+                    var a : u8;
+                    var b : u8;
+                    fun print_sum(val this: Test1) {
+                        print((this.a + this.b) as string);
+                    }
+                }
+
+                class Test2 {
+                    var test1: Test1;
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("2", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ClassMethodWrongOwnerTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    var test : Test2 = new Test2();
+                    test.print_sum();
+                }
+
+                class Test1 {
+                    var a : u8;
+                    var b : u8;
+                    fun print_sum(val this: Test1) {
+                        print((this.a + this.b) as string);
+                    }
+                }
+
+                class Test2 {
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
     }
 }

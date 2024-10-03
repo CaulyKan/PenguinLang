@@ -104,24 +104,6 @@ namespace BabyPenguin
     {
         public string Name { get; }
 
-        public string GetScopeName()
-        {
-            if (ParentScope == null)
-            {
-                return Name;
-            }
-            else if
-                (ParentScope.ScopeType == SyntaxScopeType.Namespace &&
-                    ParentScope.IsAnonymous && this.ScopeType == SyntaxScopeType.Namespace)
-            {
-                return Name;
-            }
-            else
-            {
-                return ParentScope.GetScopeName() + "." + Name;
-            }
-        }
-
         SyntaxScopeType ScopeType { get; }
 
         List<SyntaxSymbol> Symbols { get; }

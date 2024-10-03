@@ -1,19 +1,17 @@
-                initial {
-                    var test : Test2 = new Test2();
-                    test.test1 = new Test1();
-                    test.test1.a = 1;
-                    test.test1.b = 1;
-                    test.test1.b += 1;
-                    print(test.test1.a as string);
-                    print(test.test1.b as string);
-                    print((test.test1.a + test.test1.b) as string);
-                }
+                namespace ns {
+                    initial {
+                        var test : Test = new Test();
+                        test.a = 1;
+                        test.b = 1;
+                        test.print_sum();
+                    }
 
-                class Test1 {
-                    var a : u8;
-                    var b : u8;
-                }
+                    class Test {
+                        var a : u8;
+                        var b : u8;
 
-                class Test2 {
-                    var test1: Test1;
+                        fun print_sum(val this: Test) {
+                            print((this.a + this.b) as string);
+                        }
+                    }
                 }

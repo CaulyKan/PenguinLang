@@ -209,5 +209,56 @@ namespace BabyPenguin.Tests
             Assert.Equal("55", vm.CollectOutput());
         }
 
+        [Fact]
+        public void FunctionWrongArgument1()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u8 = add(1);
+                    print(res as string);
+                } 
+
+                fun add(val a : u8, val b : u8) -> u8 {
+                    return a + b;
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void FunctionWrongArgument2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u8 = add(1,2,3);
+                    print(res as string);
+                } 
+
+                fun add(val a : u8, val b : u8) -> u8 {
+                    return a + b;
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void FunctionWrongArgument3()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val res : u8 = add(1, 2 as string);
+                    print(res as string);
+                } 
+
+                fun add(val a : u8, val b : u8) -> u8 {
+                    return a + b;
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
     }
 }

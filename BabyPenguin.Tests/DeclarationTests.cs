@@ -62,6 +62,19 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void NamesapceDuplicateDeclare()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace Test {
+                    val test1 : string = "" "";
+                    val test1 : u8 = 1;
+                }
+            ");
+            Assert.Throws<PenguinLangException>(compiler.Compile);
+        }
+
+        [Fact]
         public void ClassDeclare()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -233,6 +246,30 @@ namespace BabyPenguin.Tests
             Assert.True(symbols[2].TypeInfo.IsStringType);
             Assert.True(symbols[2].IsLocal);
             Assert.Equal(symbols[0].ScopeDepth + 1, symbols[2].ScopeDepth);
+        }
+
+        [Fact]
+        public void ShadowDeclare2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                var test1 : string = "" "";
+                initial {
+                    var test1 : string = "" "";
+                }
+            ");
+            var model = compiler.Compile();
+
+            Assert.Single(model.Namespaces[0].Symbols);
+            Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
+
+            Assert.Single(model.Namespaces[0].InitialRoutines);
+            var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Single(symbols);
+            Assert.NotEqual("test1", symbols[0].Name);
+            Assert.Equal("test1", symbols[0].OriginName);
+            Assert.True(symbols[0].TypeInfo.IsStringType);
+            Assert.True(symbols[0].IsLocal);
         }
 
         [Fact]

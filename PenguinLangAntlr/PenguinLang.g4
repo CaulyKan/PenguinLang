@@ -20,7 +20,9 @@ newExpression:
 	'new' typeSpecifier '(' expression? (',' expression)* ')';
 
 functionCallExpression:
-	primaryExpression '(' expression? (',' expression)* ')';
+	(memberAccessExpression | primaryExpression) '(' expression? (
+		',' expression
+	)* ')';
 
 memberAccessExpression: primaryExpression ('.' identifier)+;
 
@@ -95,9 +97,9 @@ assignmentOperator:
 constantExpression: conditionalExpression;
 
 declaration:
-	storageClassSpecifier* typeQualifier* declarationKeyword identifier ':' typeSpecifier (
-		'=' expression
-	)?;
+	storageClassSpecifier* typeQualifier* declarationKeyword identifier (
+		':' typeSpecifier
+	)? ('=' expression)?;
 
 declarationKeyword: 'var' | 'val';
 
@@ -122,7 +124,11 @@ typeSpecifier:
 	| 'char'
 	| identifier;
 
-classDefinition: 'class' identifier '{' classDeclaration* '}';
+classDefinition:
+	'class' identifier '{' (
+		classDeclaration
+		| functionDefinition
+	)* '}';
 
 classDeclaration:
 	declarationKeyword identifier ':' typeSpecifier (
