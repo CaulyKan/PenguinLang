@@ -1720,7 +1720,7 @@ namespace BabyPenguin.Semantic
         {
             if (SyntaxNode is Syntax.FunctionDefinition func)
             {
-                var retType = Model.ResolveType(func.ReturnType.Name);
+                var retType = Model.ResolveType(func.ReturnType.Name, this);
                 if (retType == null)
                 {
                     Model.Reporter.Throw($"Cant resolve return type '{func.ReturnType.Name}'", func.SourceLocation);

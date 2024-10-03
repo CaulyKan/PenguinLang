@@ -385,6 +385,37 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ClassMethodWithReturnedOwnerTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    (foo()).print_sum();
+                }
+
+                class Test {
+                    var a : u8;
+                    var b : u8;
+                    fun print_sum(val this: Test) {
+                        print((this.a + this.b) as string);
+                    }
+                }
+
+                fun foo() -> Test {
+                    var test : Test = new Test();
+                    test.a = 1;
+                    test.b = 1;
+                    return test;
+                }
+            ");
+            var model = compiler.Compile();
+            var test = model.Reporter.GenerateReport();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("2", vm.CollectOutput());
+        }
+
+        [Fact]
         public void ClassMethodWrongOwnerTest()
         {
             var compiler = new SemanticCompiler();
