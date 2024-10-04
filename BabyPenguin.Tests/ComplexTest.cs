@@ -18,5 +18,16 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("Hello, World!\n", vm.CollectOutput());
         }
+
+        //[Fact]
+        public void LinkedListTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddFile("TestFiles/LinkedList.penguin");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("1, 2, 3\n", vm.CollectOutput());
+        }
     }
 }

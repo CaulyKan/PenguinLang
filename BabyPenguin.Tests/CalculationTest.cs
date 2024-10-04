@@ -234,7 +234,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("21", vm.CollectOutput());
@@ -256,7 +255,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("21", vm.CollectOutput());
@@ -283,7 +281,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
@@ -316,7 +313,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
@@ -346,7 +342,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
@@ -378,7 +373,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
@@ -409,7 +403,6 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
@@ -439,5 +432,62 @@ namespace BabyPenguin.Tests
             Assert.Throws<PenguinLangException>(compiler.Compile);
         }
 
+        [Fact]
+        public void ClassDefaultConstructorTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test = new Test();
+                        test.print_sum();
+                    }
+
+                    class Test {
+                        var a : u8=1;
+                        var b : u8=1+1;
+
+                        fun print_sum(val this: Test) {
+                            print((this.a + this.b) as string);
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ClassConstructorTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test = new Test(2);
+                        test.print_sum();
+                    }
+
+                    class Test {
+                        var a : u8=1;
+                        var b : u8;
+
+                        fun print_sum(val this: Test) {
+                            print((this.a + this.b) as string);
+                        }
+
+                        fun new(var this: Test, val b: u8) {
+                            this.b = b;
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
     }
 }

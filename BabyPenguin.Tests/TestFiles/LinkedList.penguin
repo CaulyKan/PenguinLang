@@ -1,0 +1,49 @@
+namespace ll {
+    class LinkedList {
+        var head: LinkedListNode;
+        var tail: LinkedListNode;
+        var size: u32 = 0;
+
+        fun add(var this: LinkedList, val v: i32) {
+            if (size == 0) {
+               this.head = new LinkedListNode();
+               this.head.value = v;
+               this.head.hasNext = false;
+               this.tail = this.head;
+            } else {
+               var newNode : LinkedListNode= new LinkedListNode();
+               newNode.value = v;
+               newNode.hasNext = false;
+               this.tail.hasNext = true;
+               this.tail.next = newNode;
+               this.tail = newNode;
+            }
+        }
+
+        fun print_all(val this: LinkedList) {
+            if (this.size > 0) {
+                var current : LinkedListNode = head;
+                print(current.value);
+                while (current.hasNext) {
+                    current = current.next;
+                    print(", ");
+                    print(current.value);
+                }
+            }
+        }
+    }
+
+    class LinkedListNode {
+        var value: i32;
+        var next: LinkedListNode;
+        var hasNext: bool;
+    }
+
+    initial {
+        var ll : LinkedList = new LinkedList();
+        ll.add(1);
+        ll.add(2);
+        ll.add(3);
+        ll.print_all();
+    }
+}

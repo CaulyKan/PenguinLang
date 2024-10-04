@@ -34,13 +34,13 @@ namespace BabyPenguin
                 }
             }
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Semantic Scopes:\n" + string.Join("\n", Namespaces.OfType<IPrettyPrint>().SelectMany(s => s.PrettyPrint(0))));
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Semantic Scopes:\n" + string.Join("\n", Namespaces.OfType<IPrettyPrint>().SelectMany(s => s.PrettyPrint(0))));
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Type Table:\n" + PrintTypeTable());
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Type Table:\n" + PrintTypeTable());
 
             Namespaces.ForEach(ns => ns.ElabSyntaxSymbols());
 
-            Reporter.Write(DiagnosticLevel.Debug, $"Symbol Table:\n" + PrintSymbolTable());
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol Table:\n" + PrintSymbolTable());
 
             foreach (var task in CompileTasks)
             {
@@ -79,13 +79,8 @@ namespace BabyPenguin
             return Symbols.FirstOrDefault(s => s.FullName == name);
         }
 
-        public TypeInfo? ResolveType(string name, ISemanticScope? scope = null)
+        static string BuildFullName(string name, ISemanticScope? scope = null)
         {
-            if (TypeInfo.BuiltinTypes.TryGetValue(name, out TypeInfo? value))
-            {
-                return value;
-            }
-
             if (scope != null)
             {
                 while (scope as Semantic.Namespace == null)
@@ -94,10 +89,23 @@ namespace BabyPenguin
                 }
 
                 var ns = scope as Semantic.Namespace;
-                return Types.FirstOrDefault(t => t.FullName == ns!.FullName + "." + name);
+                return ns!.FullName + "." + name;
             }
+            else return name;
+        }
 
-            return Types.FirstOrDefault(t => t.FullName == name);
+        public TypeInfo? ResolveType(string name, ISemanticScope? scope = null)
+        {
+            if (TypeInfo.BuiltinTypes.TryGetValue(name, out TypeInfo? value))
+                return value;
+
+            return Types.FirstOrDefault(t => t.FullName == BuildFullName(name, scope));
+        }
+
+        public Class? ResolveClass(string name, ISemanticScope? scope = null)
+        {
+            var fullname = BuildFullName(name, scope);
+            return Classes.FirstOrDefault(c => (c as ISemanticScope).FullName == fullname);
         }
 
         public TypeInfo CreateType(string name, string namespace_, List<TypeInfo> genericArguments)

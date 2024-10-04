@@ -1107,43 +1107,46 @@ namespace BabyPenguin
             {
                 walker.PushScope(SyntaxScopeType.Function, this);
 
-                this.FunctionIdentifier = new Identifier(walker, context.identifier(), false);
+                if (context.identifier() != null)
+                    FunctionIdentifier = new Identifier(walker, context.identifier(), false);
+                else
+                    FunctionIdentifier = new Identifier(walker, "new", context, false);
 
-                walker.DefineSymbol(this.Name, "fun", this);
+                walker.DefineSymbol(Name, "fun", this);
 
                 if (context.parameterList().children == null)
                 {
-                    this.Parameters = [];
+                    Parameters = [];
                 }
                 else
                 {
-                    this.Parameters = context.parameterList().children.OfType<DeclarationContext>()
+                    Parameters = context.parameterList().children.OfType<DeclarationContext>()
                         .Select(x => new Declaration(walker, x)).ToList();
                 }
 
                 if (context.typeSpecifier() == null)
                 {
-                    this.ReturnType = new TypeSpecifier(walker, "void", context);
+                    ReturnType = new TypeSpecifier(walker, "void", context);
                 }
                 else
                 {
-                    this.ReturnType = new TypeSpecifier(walker, context.typeSpecifier());
+                    ReturnType = new TypeSpecifier(walker, context.typeSpecifier());
                 }
 
-                this.IsExtern = false;
+                IsExtern = false;
                 foreach (var specifierContext in context.children.OfType<FunctionSpecifierContext>())
                 {
                     if (specifierContext.GetText() == "extern")
                     {
-                        this.IsExtern = true;
+                        IsExtern = true;
                     }
                     else if (specifierContext.GetText() == "pure")
                     {
-                        this.IsPure = true;
+                        IsPure = true;
                     }
                     else if (specifierContext.GetText() == "!pure")
                     {
-                        this.IsPure = false;
+                        IsPure = false;
                     }
                 }
 
@@ -1213,10 +1216,12 @@ namespace BabyPenguin
                 Identifier = new Identifier(walker, context.identifier(), false);
                 TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
                 IsReadonly = context.declarationKeyword().GetText() == "val";
+                Initializer = context.expression() != null ? new Expression(walker, context.expression()) : null;
             }
 
             public Identifier Identifier { get; }
             public TypeSpecifier TypeSpecifier { get; }
+            public Expression? Initializer { get; }
             public string Name => Identifier.Name;
             public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
             public List<SyntaxSymbol> Symbols { get; } = [];

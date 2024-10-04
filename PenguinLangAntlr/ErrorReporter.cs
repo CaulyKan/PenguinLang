@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Text;
 
 namespace PenguinLangAntlr
 {
@@ -28,11 +29,14 @@ namespace PenguinLangAntlr
 
         public List<DiagnosticMessage> Errors { get; set; } = [];
 
+        StringBuilder stringBuilder = new StringBuilder();
+
         public void Write(DiagnosticLevel level, string message, SourceLocation sourceLocation)
         {
             var msg = new DiagnosticMessage(level, message, sourceLocation);
             writer.WriteLine(msg.ToString());
             Errors.Add(msg);
+            stringBuilder.AppendLine(msg.ToString());
         }
 
         [DoesNotReturn]
@@ -41,6 +45,7 @@ namespace PenguinLangAntlr
             var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation ?? SourceLocation.Empty());
             writer.WriteLine(msg.ToString());
             Errors.Add(msg);
+            stringBuilder.AppendLine(msg.ToString());
             throw new PenguinLangException(msg.ToString());
         }
 
@@ -48,46 +53,39 @@ namespace PenguinLangAntlr
         {
             var msg = new DiagnosticMessage(level, message);
             writer.WriteLine(msg.ToString());
-            this.Errors.Add(msg);
+            Errors.Add(msg);
+            stringBuilder.AppendLine(msg.ToString());
         }
 
-        public string GenerateReport()
+        public string Report => stringBuilder.ToString();
+
+        public enum DiagnosticLevel
         {
-            string report = "";
-            foreach (var error in this.Errors)
+            Error,
+            Warning,
+            Info,
+            Debug
+        }
+
+        public class DiagnosticMessage
+        {
+            public DiagnosticMessage(DiagnosticLevel level, string message, SourceLocation? sourceLocation = null)
             {
-                report += error.ToString() + Environment.NewLine;
+                Level = level;
+                Message = message;
+                SourceLocation = sourceLocation;
             }
-            return report;
-        }
-    }
 
-    public enum DiagnosticLevel
-    {
-        Error,
-        Warning,
-        Info,
-        Debug
-    }
-
-    public class DiagnosticMessage
-    {
-        public DiagnosticMessage(DiagnosticLevel level, string message, SourceLocation? sourceLocation = null)
-        {
-            Level = level;
-            Message = message;
-            SourceLocation = sourceLocation;
-        }
-
-        public DiagnosticLevel Level { get; set; }
-        public string Message { get; set; }
-        public SourceLocation? SourceLocation { get; set; }
-        public override string ToString()
-        {
-            if (SourceLocation != null)
-                return $"{Level}: {Message} (at {SourceLocation.FileName}:{SourceLocation.RowStart},{SourceLocation.ColStart})";
-            else
-                return $"{Level}: {Message}";
+            public DiagnosticLevel Level { get; set; }
+            public string Message { get; set; }
+            public SourceLocation? SourceLocation { get; set; }
+            public override string ToString()
+            {
+                if (SourceLocation != null)
+                    return $"{Level}: {Message} (at {SourceLocation.FileName}:{SourceLocation.RowStart},{SourceLocation.ColStart})";
+                else
+                    return $"{Level}: {Message}";
+            }
         }
     }
 }

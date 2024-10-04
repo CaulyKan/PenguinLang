@@ -96,12 +96,12 @@ namespace BabyPenguin.Semantic
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record FunctionCallInstruction(ISymbol FunctionSymbol, List<ISymbol> Arguments, ISymbol Target) : SemanticInstruction
+    public record FunctionCallInstruction(ISymbol FunctionSymbol, List<ISymbol> Arguments, ISymbol? Target) : SemanticInstruction
     {
         override public string StringCommand => "CALL";
         override public string StringOP1 => FunctionSymbol.ToString() ?? "";
-        override public string StringOP2 => $"${string.Join(", ", Arguments)}";
-        override public string StringResult => Target.ToString() ?? "";
+        override public string StringOP2 => string.Join(", ", Arguments);
+        override public string StringResult => Target?.ToString() ?? "";
     }
 
     // public record SlicingInstruction(ISymbol Slicable, ISymbol Index, ISymbol Target) : SemanticInstruction

@@ -26,7 +26,7 @@
         {
             HasError = true;
             var loc = new SourceLocation(File, "", line, line, col, col);
-            Reporter.Write(DiagnosticLevel.Error, msg, loc);
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Error, msg, loc);
             // base.SyntaxError(output, recognizer, offendingSymbol, line, col, msg, e);
         }
     }
@@ -56,7 +56,7 @@
         public bool Parse()
         {
             bool success = true;
-            Reporter.Write(DiagnosticLevel.Info, "parsing " + SourceFile);
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Info, "parsing " + SourceFile);
 
             var str = new AntlrInputStream(Source);
             var lexer = new PenguinLangLexer(str);

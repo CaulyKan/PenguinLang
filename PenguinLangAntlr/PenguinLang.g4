@@ -202,7 +202,7 @@ parameterList: declaration? (',' declaration)* ','?;
 functionSpecifier: 'pure' | '!pure' | 'extern';
 
 functionDefinition:
-	functionSpecifier* 'fun' identifier '(' parameterList ')' (
+	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (
 		'->' typeSpecifier
 	)? codeBlock;
 

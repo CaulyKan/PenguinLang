@@ -445,7 +445,7 @@ namespace BabyPenguin.Semantic
             return temp;
         }
 
-        ISymbol? ResolveSymbol(string name, uint scopeDepth, bool isOriginName = true)
+        ISymbol? ResolveSymbol(string name, uint scopeDepth = uint.MaxValue, bool isOriginName = true)
         {
             var symbol = Symbols.OrderByDescending(s => s.ScopeDepth).FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth);
             if (symbol == null)
@@ -463,7 +463,7 @@ namespace BabyPenguin.Semantic
             return symbol;
         }
 
-        ISymbol? ResolveFunctionSymbol(string name, uint scopeDepth, bool isOriginName = true)
+        ISymbol? ResolveFunctionSymbol(string name, uint scopeDepth = uint.MaxValue, bool isOriginName = true)
         {
             var symbol = Symbols.FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && s is FunctionSymbol);
             if (symbol == null && Parent is ISymbolContainer parentContainer)
@@ -619,7 +619,7 @@ namespace BabyPenguin.Semantic
 
             Classes.Add(class_);
             Model.Classes.Add(class_);
-            Model.CreateType(class_.Name, FullName, []);
+            class_.TypeInfo = Model.CreateType(class_.Name, FullName, []);
 
             return class_;
         }
@@ -662,7 +662,7 @@ namespace BabyPenguin.Semantic
             }
 
             if (Instructions.Count > 0)
-                Model.Reporter.Write(DiagnosticLevel.Debug, $"Compile Result For {FullName}: \n" + PrintInstructionsTable());
+                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Compile Result For {FullName}: \n" + PrintInstructionsTable());
         }
 
         public string PrintInstructionsTable()
@@ -1476,6 +1476,15 @@ namespace BabyPenguin.Semantic
                 case Syntax.NewExpression exp:
                     {
                         AddInstruction(new NewInstanceInstruction(to));
+                        var constructorFunc = Model.ResolveClass(exp.TypeSpecifier.Name, this)?.Constructor;
+                        if (constructorFunc == null)
+                            Model.Reporter.Throw($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                        var constructorSymbol = constructorFunc.FunctionSymbol;
+                        if (constructorSymbol == null)
+                            Model.Reporter.Throw($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                        var paramVars = new List<ISymbol> { to };
+                        paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
+                        AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
                     }
                     break;
                 // case Syntax.SlicingExpression exp:
@@ -1638,6 +1647,8 @@ namespace BabyPenguin.Semantic
         public List<ISemanticScope> Children { get; } = [];
         public List<InitialRoutine> InitialRoutines { get; } = [];
         ISemanticScope? ISemanticScope.Parent => Parent;
+        public Function? Constructor { get; set; }
+        public TypeInfo? TypeInfo { get; set; }
 
         public void ElabSyntaxSymbols()
         {
@@ -1656,6 +1667,38 @@ namespace BabyPenguin.Semantic
                 foreach (var initialRoutine in InitialRoutines)
                 {
                     initialRoutine.ElabSyntaxSymbols();
+                }
+
+                if (Functions.Find(i => i.Name == "new") is Function constructorFunc)
+                {
+                    if (constructorFunc.Parameters.Count > 0 &&
+                        constructorFunc.Parameters.First().Value.Type == TypeInfo!)
+                    {
+                        Constructor = constructorFunc;
+                    }
+                    else
+                    {
+                        Model.Reporter.Throw($"Constructor function of class '{Name}' should have first parameter of type '{TypeInfo!}'", syntaxNode.SourceLocation);
+                    }
+                }
+                else
+                {
+                    var param = new Dictionary<string, FunctionParameter>() {
+                        {"this", new FunctionParameter("this",TypeInfo!, false, 0)}
+                    };
+                    Constructor = new Function(Model, this, "new", param, TypeInfo.BuiltinTypes["void"], false, false);
+                }
+
+                var constructorBody = (Constructor as ICodeContainer)!;
+                foreach (var varDecl in syntaxNode.ClassDeclarations)
+                {
+                    if (varDecl.Initializer is Syntax.Expression initializer)
+                    {
+                        var memberSymbol = (this as ISymbolContainer).ResolveSymbol(varDecl.Name)!;
+                        var thisSymbol = constructorBody.ResolveSymbol("this")!;
+                        var temp = constructorBody.AddExpression(initializer);
+                        constructorBody.AddInstruction(new WriteMemberInstruction(memberSymbol, temp, thisSymbol));
+                    }
                 }
             }
         }
@@ -1683,7 +1726,7 @@ namespace BabyPenguin.Semantic
             Parent.Children.Add(this);
             Parameters = parameters;
             ReturnTypeInfo = returnType;
-            Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, parameters, SourceLocation.Empty(), 0, null, true, false);
+            FunctionSymbol = Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, parameters, SourceLocation.Empty(), 0, null, true, false) as FunctionSymbol;
             foreach (var param in parameters.Values)
             {
                 (this as ISymbolContainer).AddSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, param.Index, param.IsReadonly, false);
@@ -1715,7 +1758,6 @@ namespace BabyPenguin.Semantic
 
         public bool? IsPure { get; }
 
-
         public void ElabSyntaxSymbols()
         {
             if (SyntaxNode is Syntax.FunctionDefinition func)
@@ -1730,11 +1772,11 @@ namespace BabyPenguin.Semantic
                     ReturnTypeInfo = retType;
                 }
 
-                var parameters = new Dictionary<string, FunctionParameter>();
+                Parameters = [];
                 int i = 0;
                 foreach (var param in func.Parameters)
                 {
-                    if (parameters.ContainsKey(param.Name))
+                    if (Parameters.ContainsKey(param.Name))
                     {
                         Model.Reporter.Throw($"Duplicate parameter name '{param.Name}' for function '{func.Name}'", param.SourceLocation);
                     }
@@ -1748,13 +1790,13 @@ namespace BabyPenguin.Semantic
                         }
                         else
                         {
-                            parameters.Add(param.Name, new FunctionParameter(param.Name, paramType, param.IsReadonly, i));
+                            Parameters.Add(param.Name, new FunctionParameter(param.Name, paramType, param.IsReadonly, i));
                             (this as ISymbolContainer).AddSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth, i, param.IsReadonly, false);
                         }
                     }
                     i++;
                 }
-                var funcSymbol = Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false);
+                var funcSymbol = Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false);
                 FunctionSymbol = (FunctionSymbol)funcSymbol;
             }
         }

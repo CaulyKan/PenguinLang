@@ -90,7 +90,6 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var test = model.Reporter.GenerateReport();
             var vm = new VirtualMachine(model);
             vm.Run();
             Assert.Equal("012", vm.CollectOutput());

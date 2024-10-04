@@ -309,7 +309,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             Assert.Single(model.Namespaces[0].Classes);
-            var symbols = model.Namespaces[0].Classes[0].Symbols.Where(x => !x.IsTemp).ToList();
+            var symbols = model.Namespaces[0].Classes[0].Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
             Assert.Equal(5, symbols.Count);
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
