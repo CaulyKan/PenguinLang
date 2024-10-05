@@ -18,15 +18,14 @@ namespace BabyPenguin
                 Context = context;
                 Reporter = walker.Reporter;
 
-                var fileNameIdentifier = System.IO.Path.GetFileNameWithoutExtension(walker.FileName) + "_" + (uint)System.IO.Path.GetFullPath(walker.FileName).GetHashCode();
+                var fileNameIdentifier = Path.GetFileNameWithoutExtension(walker.FileName) + counter++;
                 SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Start.Column, context.Stop.Line, context.Stop.Column);
             }
 
+            static ulong counter = 0;
             public ISyntaxScope Scope { get; }
             public ParserRuleContext Context { get; }
-
             public virtual SourceLocation SourceLocation { get; }
-
             public ErrorReporter Reporter { get; }
             public virtual string Text =>
                 Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
@@ -526,16 +525,29 @@ namespace BabyPenguin
         {
             public TypeSpecifier(SyntaxWalker walker, TypeSpecifierContext context) : base(walker, context)
             {
-                var identifier = new Identifier(walker, context.GetText(), context, true);
-                Name = identifier.Name;
+                Name = context.identifierWithDots()?.GetText() ?? context.GetText();
+                GenericArguments = context.genericArguments() is not null ? new GenericArguments(walker, context.genericArguments()) : null;
+                if (GenericArguments != null && GenericArguments.TypeParameters.Count > 0)
+                {
+                    Name += "<" + string.Join(", ", GenericArguments.TypeParameters.Select(x => x.Name)) + ">";
+                }
             }
 
-            public TypeSpecifier(SyntaxWalker walker, string liternalName, ParserRuleContext context) : base(walker, context)
+            public TypeSpecifier(SyntaxWalker walker, string liternalName, ParserRuleContext context, GenericArguments? genericArguments = null) : base(walker, context)
             {
                 Name = liternalName;
+                GenericArguments = genericArguments;
+                if (GenericArguments != null && GenericArguments.TypeParameters.Count > 0)
+                {
+                    Name += "<" + string.Join(", ", GenericArguments.TypeParameters.Select(x => x.Name)) + ">";
+                }
             }
 
             public string Name { get; }
+
+            public GenericArguments? GenericArguments { get; }
+
+            public bool IsGeneric => GenericArguments is not null && GenericArguments.TypeParameters.Count != 0;
         }
 
         public class Declaration : SyntaxNode
@@ -1188,10 +1200,10 @@ namespace BabyPenguin
                 ClassDeclarations = context.children.OfType<ClassDeclarationContext>()
                    .Select(x => new ClassDeclaration(walker, x))
                    .ToList();
-
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => new FunctionDefinition(walker, x))
                    .ToList();
+                GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
 
                 walker.PopScope();
             }
@@ -1207,6 +1219,31 @@ namespace BabyPenguin
             public ISyntaxScope? ParentScope { get; set; }
             public uint ScopeDepth { get; set; }
             public List<ClassDeclaration> ClassDeclarations { get; } = [];
+            public GenericDefinitions? GenericDefinitions { get; } = null;
+        }
+
+        public class GenericDefinitions : SyntaxNode
+        {
+            public GenericDefinitions(SyntaxWalker walker, GenericDefinitionsContext context) : base(walker, context)
+            {
+                TypeParameters = context.children.OfType<IdentifierContext>()
+                   .Select(x => new Identifier(walker, x, false))
+                   .ToList();
+            }
+
+            public List<Identifier> TypeParameters { get; } = [];
+        }
+
+        public class GenericArguments : SyntaxNode
+        {
+            public GenericArguments(SyntaxWalker walker, GenericArgumentsContext context) : base(walker, context)
+            {
+                TypeParameters = context.children.OfType<TypeSpecifierContext>()
+                   .Select(x => new TypeSpecifier(walker, x))
+                   .ToList();
+            }
+
+            public List<TypeSpecifier> TypeParameters { get; } = [];
         }
 
         public class ClassDeclaration : SyntaxNode, ISyntaxScope

@@ -16,10 +16,10 @@ namespace BabyPenguin
         {
             var ns = new Namespace(this, "__builtin");
 
-            var println = new Function(this, ns, "println",
+            var println = new Function(this, "println",
                 new Dictionary<string, FunctionParameter>() { { "text", new FunctionParameter("text", TypeInfo.BuiltinTypes["string"], true, 0) } },
                 TypeInfo.BuiltinTypes["void"], true);
-            var print = new Function(this, ns, "print",
+            var print = new Function(this, "print",
                 new Dictionary<string, FunctionParameter>() { { "text", new FunctionParameter("text", TypeInfo.BuiltinTypes["string"], true, 0) } },
                 TypeInfo.BuiltinTypes["void"], true);
 

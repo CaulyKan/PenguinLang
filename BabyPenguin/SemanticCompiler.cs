@@ -8,6 +8,7 @@ using System.Text;
 
 namespace BabyPenguin
 {
+    using System.Text.RegularExpressions;
     using BabyPenguin.Syntax;
     using ConsoleTables;
     using Semantic;
@@ -35,17 +36,25 @@ namespace BabyPenguin
             }
 
             Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Semantic Scopes:\n" + string.Join("\n", Namespaces.OfType<IPrettyPrint>().SelectMany(s => s.PrettyPrint(0))));
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Type Table Before Specializations:\n" + PrintTypeTable());
 
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Type Table:\n" + PrintTypeTable());
-
+            BuiltinNamespace.ElabSyntaxSymbols();
             Namespaces.ForEach(ns => ns.ElabSyntaxSymbols());
 
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol Table:\n" + PrintSymbolTable());
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol Table Before Specializations:\n" + PrintSymbolTable());
 
-            foreach (var task in CompileTasks)
+            while (CompileTasks.Count > 0)
             {
-                task.CompileSyntaxStatements();
+                var tasks = CompileTasks.ToList();
+                CompileTasks.Clear();
+                foreach (var task in tasks)
+                {
+                    task.CompileSyntaxStatements();
+                }
             }
+
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Type Table After Specializations:\n" + PrintTypeTable());
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol Table After Specializations:\n" + PrintSymbolTable());
         }
 
         public string PrintTypeTable()
@@ -79,38 +88,181 @@ namespace BabyPenguin
             return Symbols.FirstOrDefault(s => s.FullName == name);
         }
 
-        static string BuildFullName(string name, ISemanticScope? scope = null)
+        public string BuildFullTypeName(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
         {
-            if (scope != null)
+            bool isValidType(string s)
             {
-                while (scope as Semantic.Namespace == null)
+                if (TypeInfo.BuiltinTypes.ContainsKey(s)) return true;
+                var currentScope = scope;
+                while (currentScope != null)
                 {
-                    scope = scope!.Parent;
+                    if (currentScope is IGenericContainer genericContainer && genericContainer.GenericDefinitions.Contains(name) && genericContainer.IsSpecialized)
+                        return true;
+                    currentScope = currentScope.Parent;
                 }
-
-                var ns = scope as Semantic.Namespace;
-                return ns!.FullName + "." + name;
+                return Types.Exists(t => t.NameComponents.NameWithPrefix == s);
             }
-            else return name;
+
+            if (scope == null) return name;
+            var nameComponents = NameComponents.ParseName(name);
+            var prefix = nameComponents.Prefix;
+            if (!isValidType(nameComponents.NameWithPrefix))
+            {
+                var currentScope = scope;
+                while (currentScope as Semantic.Namespace == null)
+                {
+                    currentScope = currentScope!.Parent;
+                }
+                var ns = currentScope as Semantic.Namespace;
+                var namespaceName = ns!.FullName;
+                if (isValidType(namespaceName + "." + nameComponents.NameWithPrefix))
+                    prefix = namespaceName.Split('.').Concat(nameComponents.Prefix).ToList();
+                else
+                    Reporter.Throw($"Could not resolve type '{name}'", sourceLocation ?? SourceLocation.Empty());
+            }
+
+            var newComponents = nameComponents with
+            {
+                Prefix = prefix,
+                Generics = nameComponents.Generics.Select(i => BuildFullTypeName(i, scope, sourceLocation)).ToList()
+            };
+            return newComponents.ToString();
         }
 
-        public TypeInfo? ResolveType(string name, ISemanticScope? scope = null)
+        public TypeInfo? ResolveType(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
         {
             if (TypeInfo.BuiltinTypes.TryGetValue(name, out TypeInfo? value))
                 return value;
 
-            return Types.FirstOrDefault(t => t.FullName == BuildFullName(name, scope));
+            var nameComponents = NameComponents.ParseName(scope == null ? name : BuildFullTypeName(name, scope, sourceLocation));
+
+            var exactType = Types.FirstOrDefault(t => t.FullName == nameComponents.ToString());
+            if (exactType != null) return exactType;
+
+            var baseType = Types.FirstOrDefault(t => t.NameComponents.NameWithPrefix == nameComponents.NameWithPrefix && t.IsGeneric && !t.IsSpecialized);
+
+            if (baseType == null)
+            {
+                var currentScope = scope;
+                while (currentScope != null)
+                {
+                    if (currentScope is IGenericContainer genericContainer && genericContainer.GenericDefinitions.Contains(name))
+                    {
+                        if (!genericContainer.IsSpecialized)
+                            Reporter.Throw($"Cannot specialize non-specialized generic container '{genericContainer.FullName}'", SourceLocation.Empty());
+                        baseType = genericContainer.GenericArguments[genericContainer.GenericDefinitions.IndexOf(name)];
+                        break;
+                    }
+                    currentScope = currentScope.Parent;
+                }
+            }
+
+            if (baseType == null) return null;
+
+            if (baseType.IsGeneric && !baseType.IsSpecialized)
+            {
+                var genericArguments = nameComponents.Generics.Select(genericTypeName =>
+                {
+                    var t = ResolveType(genericTypeName, scope, sourceLocation);
+                    if (t == null) Reporter.Throw($"Could not resolve generic argument '{genericTypeName}' for type '{baseType.FullName}'", SourceLocation.Empty());
+                    return t!;
+                }).ToList();
+
+                var specializedType = ResolveOrCreateSpecializedType(baseType, genericArguments);
+
+                return specializedType;
+            }
+            else
+            {
+                return baseType;
+            }
         }
 
-        public Class? ResolveClass(string name, ISemanticScope? scope = null)
+        public Class? ResolveClass(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
         {
-            var fullname = BuildFullName(name, scope);
-            return Classes.FirstOrDefault(c => (c as ISemanticScope).FullName == fullname);
+            var fullname = scope == null ? name : BuildFullTypeName(name, scope, sourceLocation);
+            var exactClass = Classes.FirstOrDefault(c => c.TypeInfo!.FullName == fullname);
+
+            if (exactClass != null) return exactClass;
+
+            var nameComponents = NameComponents.ParseName(fullname);
+            var baseClass = Classes.FirstOrDefault(c => c.TypeInfo!.NameComponents.NameWithPrefix == nameComponents.NameWithPrefix && c.IsGeneric && !c.IsSpecialized);
+
+            if (baseClass == null) return null;
+
+            if (baseClass.IsGeneric && !baseClass.IsSpecialized)
+            {
+                var genericArguments = nameComponents.Generics.Select(genericTypeName =>
+                {
+                    var t = ResolveType(genericTypeName, scope, sourceLocation);
+                    if (t == null) Reporter.Throw($"Could not resolve generic argument '{genericTypeName}' for type '{baseClass.FullName}'", SourceLocation.Empty());
+                    return t!;
+                }).ToList();
+
+                var specializedClass = ResolveOrCreateSpecializedClass(baseClass, genericArguments, sourceLocation);
+                return specializedClass;
+            }
+            else
+            {
+                return baseClass;
+            }
         }
 
-        public TypeInfo CreateType(string name, string namespace_, List<TypeInfo> genericArguments)
+        public Class CreateClass(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinitions = null)
         {
-            var type = new TypeInfo(name, namespace_, genericArguments);
+            var ns = namespace_.IsLeft ? Namespaces.FirstOrDefault(n => n.Name == namespace_.Left) : namespace_.Right;
+            if (ns == null)
+                Reporter.Throw($"Namespace '{namespace_}' does not exist", SourceLocation.Empty());
+            if (ns.Classes.Any(c => c.Name == name))
+                Reporter.Throw($"Class '{name}' already exists in namespace '{namespace_}'", SourceLocation.Empty());
+
+            var class_ = new Class(this, ns, name, genericDefinitions);
+            class_.TypeInfo = CreateType(class_.Name, ns, class_.GenericDefinitions);
+            ns.Classes.Add(class_);
+            Classes.Add(class_);
+            return class_;
+        }
+
+        public Class CreateClass(Or<string, Semantic.Namespace> namespace_, Syntax.ClassDefinition syntaxNode)
+        {
+            var ns = namespace_.IsLeft ? Namespaces.FirstOrDefault(n => n.Name == namespace_.Left) : namespace_.Right;
+            if (ns == null)
+                Reporter.Throw($"Namespace '{namespace_}' does not exist", SourceLocation.Empty());
+
+            var class_ = new Class(this, ns, syntaxNode);
+            if (ns.Classes.Any(c => c.Name == class_.Name))
+                Reporter.Throw($"Class '{class_.Name}' already exists in namespace '{namespace_}'", SourceLocation.Empty());
+            class_.TypeInfo = CreateType(class_.Name, namespace_, class_.GenericDefinitions);
+            Classes.Add(class_);
+            return class_;
+        }
+
+        public Class ResolveOrCreateSpecializedClass(Class class_, List<TypeInfo> genericArguments, SourceLocation? sourceLocation = null)
+        {
+            var baseType = class_.TypeInfo!;
+            if (!baseType.IsGeneric && genericArguments.Count > 0)
+                Reporter.Throw($"Cannot specialize non-generic type '{baseType.FullName}'", sourceLocation);
+            if (baseType.IsSpecialized)
+                return class_;
+
+            var type = new TypeInfo(baseType.Name, baseType.Namespace, baseType.GenericDefinitions, genericArguments);
+            if (Classes.Find(c => c.TypeInfo == type) is Class existingClass)
+                return existingClass;
+
+            var newClass = class_.Specialize(type);
+            if (!Types.Contains(type))
+                Types.Add(type);
+            Classes.Add(newClass);
+
+            newClass.ElabSyntaxSymbols();
+
+            return newClass;
+        }
+
+        public TypeInfo CreateType(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
+        {
+            var namespaceName = namespace_.IsLeft ? namespace_.Left! : namespace_.Right!.FullName;
+            var type = new TypeInfo(name, namespaceName, genericDefinition, genericArguments);
             if (Types.Any(t => t.FullName == type.FullName))
             {
                 Reporter.Throw($"Type '{type.FullName}' already exists", SourceLocation.Empty());
@@ -119,18 +271,36 @@ namespace BabyPenguin
             return type;
         }
 
-        public TypeInfo ResolveOrCreateType(string name, string namespace_, List<TypeInfo> genericArguments)
+        public TypeInfo ResolveOrCreateType(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
         {
-            var type = new TypeInfo(name, namespace_, genericArguments);
-            var existingType = Types.FirstOrDefault(t => t.FullName == type.FullName);
+            var namespaceName = namespace_.IsLeft ? namespace_.Left! : namespace_.Right!.FullName;
+            var components = new NameComponents([.. namespaceName.Split('.')], name, (genericArguments ?? []).Select(i => i.FullName).ToList());
+            var existingType = ResolveType(components.ToString());
             if (existingType != null)
             {
                 return existingType;
             }
             else
             {
+                var type = new TypeInfo(name, namespaceName, genericDefinition, genericArguments);
                 Types.Add(type);
                 return type;
+            }
+        }
+
+        public TypeInfo ResolveOrCreateSpecializedType(TypeInfo baseType, List<TypeInfo> genericArguments)
+        {
+            var type = new TypeInfo(baseType.Name, baseType.Namespace, baseType.GenericDefinitions, genericArguments);
+            if (Types.Contains(type))
+            {
+                return type;
+            }
+            else
+            {
+                var class_ = Classes.FirstOrDefault(c => c.TypeInfo == baseType);
+                if (class_ == null)
+                    Reporter.Throw($"Cannot specialize non-class type '{baseType.FullName}'", SourceLocation.Empty());
+                return ResolveOrCreateSpecializedClass(class_, genericArguments).TypeInfo!;
             }
         }
 

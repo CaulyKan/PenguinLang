@@ -51,7 +51,9 @@ additiveOperator: '+' | '-';
 shiftExpression:
 	additiveExpression (shiftOperator additiveExpression)*;
 
-shiftOperator: '<<' | '>>';
+shiftOperator: '<<' | rightShift;
+rightShift:
+	first = '>' second = '>' {$first.index + 1 == $second.index}?; // Nothing between the tokens?
 
 relationalExpression:
 	shiftExpression (relationalOperator shiftExpression)*;
@@ -122,10 +124,16 @@ typeSpecifier:
 	| 'string'
 	| 'bool'
 	| 'char'
-	| identifier;
+	| identifierWithDots genericArguments?;
+
+identifierWithDots: identifier ('.' identifier)*;
+
+genericArguments: '<' typeSpecifier (',' typeSpecifier)* '>';
+
+genericDefinitions: '<' identifier (',' identifier)* '>';
 
 classDefinition:
-	'class' identifier '{' (
+	'class' identifier genericDefinitions? '{' (
 		classDeclaration
 		| functionDefinition
 	)* '}';

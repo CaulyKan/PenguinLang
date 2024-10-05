@@ -24,13 +24,22 @@ namespace BabyPenguin.Semantic
             get
             {
                 var n = string.IsNullOrWhiteSpace(Namespace) ? Name : $"{Namespace}.{Name}";
-                if (GenericArguments.Count > 0)
+                if (IsGeneric)
                 {
-                    n += "<" + string.Join(",", GenericArguments.Select(t => t.FullName)) + ">";
+                    if (IsSpecialized)
+                    {
+                        n += "<" + string.Join(",", GenericArguments.Select((t, i) => t.FullName)) + ">";
+                    }
+                    else if (GenericDefinitions.Count > 0)
+                    {
+                        n += "<" + string.Join(",", GenericDefinitions.Select(t => "?")) + ">";
+                    }
                 }
                 return n;
             }
         }
+
+        public NameComponents NameComponents => NameComponents.ParseName(FullName);
 
         public static readonly Dictionary<string, TypeInfo> BuiltinTypes = new Dictionary<string, TypeInfo> {
             { "bool", new TypeInfo( "bool", "", []) },
@@ -53,21 +62,30 @@ namespace BabyPenguin.Semantic
         public string Namespace { get; }
         public TypeEnum Type { get; }
         public List<TypeInfo> GenericArguments { get; } = [];
+        public List<string> GenericDefinitions { get; } = [];
+        public bool IsGeneric => GenericDefinitions.Count > 0;
+        public bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
 
-        public TypeInfo(string name, string namespace_, List<TypeInfo> genericArguments)
+        public TypeInfo(string name, string namespace_, List<string>? genericDefinitions, List<TypeInfo>? genericArguments = null)
         {
             if (Enum.GetNames<TypeEnum>().FirstOrDefault(i => i.Equals(name, StringComparison.CurrentCultureIgnoreCase)) is string n)
-            {
                 Type = (TypeEnum)Enum.Parse(typeof(TypeEnum), n);
-            }
             else
-            {
                 Type = TypeEnum.Class;
-            }
 
             Name = name;
             Namespace = namespace_;
-            GenericArguments = genericArguments;
+            GenericDefinitions = genericDefinitions ?? [];
+            GenericArguments = genericArguments ?? [];
+            if (Type == TypeEnum.Fun)
+            {
+                GenericDefinitions.Add("TReturn");
+                GenericDefinitions.AddRange(GenericArguments.Skip(1).Select((_, i) => $"TParam{i}"));
+            }
+            if (GenericArguments.Count > 0 && GenericDefinitions.Count == 0)
+                throw new ArgumentException("Generic arguments provided without generic definitions.");
+            else if (GenericArguments.Count > 0 && GenericArguments.Count != GenericDefinitions.Count)
+                throw new ArgumentException("Count of generic arguments and definitions do not match.");
         }
 
         bool IEquatable<TypeInfo>.Equals(TypeInfo? other)
@@ -75,6 +93,13 @@ namespace BabyPenguin.Semantic
             if (other == null) return false;
 
             return other.FullName == FullName;
+        }
+
+        public override bool Equals(object? other)
+        {
+            if (other as TypeInfo == null) return false;
+
+            return ((TypeInfo)other).FullName == FullName;
         }
 
         static readonly Dictionary<TypeEnum, List<TypeEnum>> implicitlyCastOrders = new Dictionary<TypeEnum, List<TypeEnum>>{
@@ -183,7 +208,7 @@ namespace BabyPenguin.Semantic
 
         public bool CanImplicitlyCastTo(TypeInfo other)
         {
-            if (this == other) return true;
+            if (this.Equals(other)) return true;
             return implicitlyCastOrders.ContainsKey(Type) && implicitlyCastOrders[Type].Contains(other.Type);
         }
 
@@ -299,6 +324,11 @@ namespace BabyPenguin.Semantic
         int ParameterIndex { get; }
         bool IsReadonly { get; }
         bool IsClassMember { get; }
+
+        List<TypeInfo> GenericArguments { get; }
+        List<string> GenericDefinitions { get; }
+        bool IsGeneric => GenericDefinitions.Count > 0;
+        bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
     }
 
     public class VaraibleSymbol(ISymbolContainer parent,
@@ -326,6 +356,8 @@ namespace BabyPenguin.Semantic
         public int ParameterIndex { get; } = paramIndex ?? -1;
         public bool IsReadonly { get; set; } = isReadonly;
         public bool IsClassMember { get; } = isClassMember;
+        public List<TypeInfo> GenericArguments { get; } = [];
+        public List<string> GenericDefinitions { get; } = [];
 
         public override string ToString()
         {
@@ -366,7 +398,7 @@ namespace BabyPenguin.Semantic
             SemanticFunction = func;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values.Select(p => p.Type)).ToList();
-            TypeInfo = parent.Model.ResolveOrCreateType("fun", "", funTypeGenericArguments);
+            TypeInfo = parent.Model.ResolveOrCreateType("fun", "", [], funTypeGenericArguments);
         }
 
         public string FullName => Parent.FullName + "." + Name;
@@ -385,6 +417,8 @@ namespace BabyPenguin.Semantic
         public bool IsReadonly { get; set; }
         public Function SemanticFunction { get; }
         public bool IsClassMember { get; }
+        public List<TypeInfo> GenericArguments { get; } = [];
+        public List<string> GenericDefinitions { get; } = [];
 
         public override string ToString()
         {
@@ -415,10 +449,11 @@ namespace BabyPenguin.Semantic
     public interface ISemanticScope : IPrettyPrint
     {
         SemanticModel Model { get; }
-        ISemanticScope? Parent { get; }
+        ISemanticScope? Parent { get; set; }
         List<ISemanticScope> Children { get; }
         string Name { get; }
-        string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+        string FullName { get; }
+
 
         IEnumerable<string> IPrettyPrint.PrettyPrint(int indentLevel, string? prefix)
         {
@@ -473,27 +508,9 @@ namespace BabyPenguin.Semantic
             return symbol;
         }
 
-        ISymbol AddSymbol(string Name,
-            bool isLocal,
-            string typeName,
-            SourceLocation sourceLocation,
-            uint scopeDepth,
-            int? paramIndex,
-            bool isReadonly,
-            bool isClassMember)
-        {
-            var type = Model.ResolveType(typeName, this);
-
-            if (type == null)
-            {
-                Model.Reporter.Throw($"Cant resolve type '{typeName}' for '{Name}'", sourceLocation);
-            }
-            return AddSymbol(Name, isLocal, type!, sourceLocation, scopeDepth, paramIndex, isReadonly, isClassMember);
-        }
-
         ISymbol AddSymbol(string name,
             bool isLocal,
-            TypeInfo type,
+            Or<string, TypeInfo> type,
             SourceLocation sourceLocation,
             uint scopeDepth,
             int? paramIndex,
@@ -514,7 +531,14 @@ namespace BabyPenguin.Semantic
                 }
             }
 
-            var symbol = new VaraibleSymbol(this, isLocal, name, type, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
+            var typeinfo = type.IsLeft ? Model.ResolveType(type.Left!, this, sourceLocation) : type.Right;
+
+            if (typeinfo == null)
+            {
+                Model.Reporter.Throw($"Cant resolve type '{type}' for '{Name}'", sourceLocation);
+            }
+
+            var symbol = new VaraibleSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
@@ -566,6 +590,14 @@ namespace BabyPenguin.Semantic
         }
     }
 
+    public interface IGenericContainer : ISemanticScope
+    {
+        public List<string> GenericDefinitions { get; }
+        public List<TypeInfo> GenericArguments { get; set; }
+        public bool IsGeneric => GenericDefinitions.Count > 0;
+        public bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
+    }
+
     public interface IRoutineContainer : ISemanticScope, ISymbolContainer
     {
         List<InitialRoutine> InitialRoutines { get; }
@@ -574,58 +606,43 @@ namespace BabyPenguin.Semantic
         void AddInitialRoutine(Syntax.InitialRoutine syntaxNode)
         {
             var init = new InitialRoutine(Model, this, syntaxNode);
+            Children.Add(init);
+            init.Parent = this;
             AddInitialRoutine(init);
         }
 
         void AddInitialRoutine(InitialRoutine routine)
         {
+            Children.Add(routine);
+            routine.Parent = this;
             InitialRoutines.Add(routine);
         }
 
         void AddFunction(Syntax.FunctionDefinition func)
         {
-            var funcInst = new Function(Model, this, func);
+            var funcInst = new Function(Model, func);
+            Children.Add(funcInst);
+            funcInst.Parent = this;
             AddFunction(funcInst);
         }
 
         void AddFunction(Function func)
         {
+            Children.Add(func);
+            func.Parent = this;
             Functions.Add(func);
         }
     }
 
     public interface IClassContainer : ISemanticScope
     {
-        Class AddClass(string name)
-        {
-            var class_ = new Class(Model, this, name);
-
-            return AddClass(class_);
-        }
-
-        Class AddClass(Syntax.ClassDefinition syntaxNode)
-        {
-            var class_ = new Class(Model, this, syntaxNode);
-
-            return AddClass(class_);
-        }
-
-        Class AddClass(Class class_)
-        {
-            if (this.Classes.Any(c => c.Name == class_.Name))
-            {
-                Reporter.Throw($"Class '{class_.Name}' already exists in '{FullName}'", class_.SourceLocation);
-            }
-
-            Classes.Add(class_);
-            Model.Classes.Add(class_);
-            class_.TypeInfo = Model.CreateType(class_.Name, FullName, []);
-
-            return class_;
-        }
-
         ErrorReporter Reporter => Model.Reporter;
         List<Class> Classes { get; }
+
+        public void AddClass(Class class_)
+        {
+            Classes.Add(class_);
+        }
     }
 
     public interface ICodeContainer : ISymbolContainer
@@ -1013,7 +1030,7 @@ namespace BabyPenguin.Semantic
                 case Syntax.CastExpression exp:
                     if (exp.IsTypeCast)
                     {
-                        var t = Model.ResolveType(exp.CastTypeSpecifier!.Name);
+                        var t = Model.ResolveType(exp.CastTypeSpecifier!.Name, sourceLocation: exp.SourceLocation);
                         if (t == null) Model.Reporter.Throw($"Cant resolve type '{exp.CastTypeSpecifier.Name}'", exp.CastTypeSpecifier.SourceLocation);
                         else return t;
                     }
@@ -1064,7 +1081,7 @@ namespace BabyPenguin.Semantic
                             return ResolveExpressionType(exp.SubPrimaryExpression!);
                         case Syntax.PostfixExpression.Type.New:
                             {
-                                var res = Model.ResolveType(exp.SubNewExpression!.TypeSpecifier.Name, this);
+                                var res = Model.ResolveType(exp.SubNewExpression!.TypeSpecifier.Name, this, exp.SourceLocation);
                                 if (res == null)
                                 {
                                     Model.Reporter.Throw($"Cant resolve type '{exp.SubNewExpression!.TypeSpecifier.Name}'", exp.SubNewExpression!.TypeSpecifier.SourceLocation);
@@ -1085,16 +1102,19 @@ namespace BabyPenguin.Semantic
                         {
                             var expectedType = funcType.GenericArguments[i + 1];
                             TypeInfo actualType;
+                            SourceLocation sourceLocation;
                             if (i == 0 && exp.IsMemberAccess)
                             {
                                 actualType = ResolveMemberAccessExpressionOwnerType(exp.MemberAccessExpression!);
+                                sourceLocation = exp.SourceLocation;
                             }
                             else
                             {
                                 actualType = ResolveExpressionType(exp.ArgumentsExpression[exp.IsMemberAccess ? i - 1 : i]);
+                                sourceLocation = exp.ArgumentsExpression[exp.IsMemberAccess ? i - 1 : i].SourceLocation;
                             }
                             if (!actualType.CanImplicitlyCastTo(expectedType))
-                                Model.Reporter.Throw($"Function expects {expectedType} param, but got '{actualType}'", exp.ArgumentsExpression[i].SourceLocation);
+                                Model.Reporter.Throw($"Function expects {expectedType} param, but got '{actualType}'", sourceLocation);
                         }
                         return funcType.GenericArguments.First();
                     }
@@ -1139,7 +1159,7 @@ namespace BabyPenguin.Semantic
                     break;
                 case Syntax.NewExpression exp:
                     {
-                        var res = Model.ResolveType(exp.TypeSpecifier.Name, this);
+                        var res = Model.ResolveType(exp.TypeSpecifier.Name, this, exp.SourceLocation);
                         if (res == null)
                             Model.Reporter.Throw($"Cant resolve type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
                         return res;
@@ -1476,7 +1496,10 @@ namespace BabyPenguin.Semantic
                 case Syntax.NewExpression exp:
                     {
                         AddInstruction(new NewInstanceInstruction(to));
-                        var constructorFunc = Model.ResolveClass(exp.TypeSpecifier.Name, this)?.Constructor;
+                        var class_ = Model.ResolveClass(exp.TypeSpecifier.Name, this, exp.SourceLocation);
+                        if (class_ == null)
+                            Model.Reporter.Throw($"Cant resolve class '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                        var constructorFunc = class_.Constructor;
                         if (constructorFunc == null)
                             Model.Reporter.Throw($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
                         var constructorSymbol = constructorFunc.FunctionSymbol;
@@ -1534,7 +1557,7 @@ namespace BabyPenguin.Semantic
         public List<Function> Functions { get; } = [];
         public List<Class> Classes { get; } = [];
         public List<ISymbol> Symbols { get; } = [];
-        public ISemanticScope? Parent => null;
+        public ISemanticScope? Parent { get; set; }
         public List<ISemanticScope> Children { get; } = [];
         public List<SemanticInstruction> Instructions { get; } = [];
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
@@ -1551,7 +1574,7 @@ namespace BabyPenguin.Semantic
             Name = syntaxNode.Name;
             CodeSyntaxNode = syntaxNode;
             foreach (var classNode in syntaxNode.Classes)
-                (this as IClassContainer).AddClass(classNode);
+                (this as IClassContainer).AddClass(Model.CreateClass(this, classNode));
             foreach (var initialRoutine in syntaxNode.InitialRoutines)
                 (this as IRoutineContainer).AddInitialRoutine(initialRoutine);
             foreach (var func in syntaxNode.Functions)
@@ -1601,7 +1624,7 @@ namespace BabyPenguin.Semantic
 
         public string Name { get; }
 
-        public ISemanticScope? Parent { get; }
+        public ISemanticScope? Parent { get; set; }
 
         public List<ISemanticScope> Children { get; } = [];
 
@@ -1613,91 +1636,129 @@ namespace BabyPenguin.Semantic
 
         public TypeInfo ReturnTypeInfo { get; } = TypeInfo.BuiltinTypes["void"];
 
+        public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+
         public void ElabSyntaxSymbols()
         {
             // Do nothing
         }
     }
 
-    public class Class : SemanticNode, ISymbolContainer, IRoutineContainer
+    public class Class : SemanticNode, ISymbolContainer, IRoutineContainer, IGenericContainer
     {
-        public Class(SemanticModel model, IClassContainer ns, Syntax.ClassDefinition syntaxNode) : base(model, syntaxNode)
+        public Class(SemanticModel model, IClassContainer ns, Syntax.ClassDefinition syntaxNode, List<TypeInfo>? genericArguments = null) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
+            GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(i => i.Name).ToList() ?? [];
+            GenericArguments = genericArguments ?? [];
             Parent = ns;
-            Parent.Children.Add(this);
             foreach (var func in syntaxNode.Functions)
                 (this as IRoutineContainer).AddFunction(func);
-
             foreach (var initialRoutine in syntaxNode.InitialRoutines)
                 (this as IRoutineContainer).AddInitialRoutine(initialRoutine);
         }
 
-        public Class(SemanticModel model, IClassContainer ns, string name) : base(model)
+        public Class(SemanticModel model, IClassContainer ns, string name, List<string>? genericDefinitions = null, List<TypeInfo>? genericArguments = null) : base(model)
         {
             Name = name;
+            GenericDefinitions = genericDefinitions ?? [];
+            GenericArguments = genericArguments ?? [];
             Parent = ns;
-            Parent.Children.Add(this);
+            if (GenericArguments.Count > 0 && GenericDefinitions.Count == 0)
+                throw new ArgumentException("Generic arguments provided without generic definitions.");
+            else if (GenericArguments.Count > 0 && GenericArguments.Count != GenericDefinitions.Count)
+                throw new ArgumentException("Count of generic arguments and definitions do not match.");
+        }
+
+        public Class Specialize(TypeInfo specializationTypeInfo)
+        {
+            Class result;
+            var genericArguments = specializationTypeInfo.GenericArguments;
+            if (SyntaxNode is Syntax.ClassDefinition syntax)
+            {
+                result = new Class(Model, (IClassContainer)Parent!, syntax, genericArguments);
+                result.TypeInfo = specializationTypeInfo;
+            }
+            else
+            {
+                result = new Class(Model, (IClassContainer)Parent!, Name, GenericDefinitions, genericArguments);
+                result.TypeInfo = specializationTypeInfo;
+            }
+
+            return result;
         }
 
         public string Name { get; }
         public List<ISymbol> Symbols { get; } = [];
         public List<Function> Functions { get; } = [];
-        public IClassContainer Parent { get; }
+        public ISemanticScope? Parent { get; set; }
         public List<ISemanticScope> Children { get; } = [];
         public List<InitialRoutine> InitialRoutines { get; } = [];
-        ISemanticScope? ISemanticScope.Parent => Parent;
         public Function? Constructor { get; set; }
         public TypeInfo? TypeInfo { get; set; }
+        public List<string> GenericDefinitions { get; }
+        public List<TypeInfo> GenericArguments { get; set; } = [];
+        public bool IsGeneric => GenericDefinitions.Count > 0;
+        public bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
+        public string FullName => TypeInfo!.FullName;
 
         public void ElabSyntaxSymbols()
         {
-            if (SyntaxNode is Syntax.ClassDefinition syntaxNode)
+            if (IsGeneric && !IsSpecialized)
             {
-                foreach (var member in syntaxNode.ClassDeclarations)
+                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, "ElabSyntaxSymbols for class '{Name}' is skipped now because it is generic");
+            }
+            else
+            {
+                if (SyntaxNode is Syntax.ClassDefinition syntaxNode)
                 {
-                    (this as ISymbolContainer).AddSymbol(member.Name, false, member.TypeSpecifier.Name, member.SourceLocation, member.Scope.ScopeDepth, null, member.IsReadonly, true);
-                }
-
-                foreach (var func in Functions)
-                {
-                    func.ElabSyntaxSymbols();
-                }
-
-                foreach (var initialRoutine in InitialRoutines)
-                {
-                    initialRoutine.ElabSyntaxSymbols();
-                }
-
-                if (Functions.Find(i => i.Name == "new") is Function constructorFunc)
-                {
-                    if (constructorFunc.Parameters.Count > 0 &&
-                        constructorFunc.Parameters.First().Value.Type == TypeInfo!)
+                    foreach (var member in syntaxNode.ClassDeclarations)
                     {
-                        Constructor = constructorFunc;
+                        (this as ISymbolContainer).AddSymbol(member.Name, false, member.TypeSpecifier.Name, member.SourceLocation, member.Scope.ScopeDepth, null, member.IsReadonly, true);
+                    }
+
+                    foreach (var func in Functions)
+                    {
+                        func.ElabSyntaxSymbols();
+                    }
+
+                    foreach (var initialRoutine in InitialRoutines)
+                    {
+                        initialRoutine.ElabSyntaxSymbols();
+                    }
+
+                    if (Functions.Find(i => i.Name == "new") is Function constructorFunc)
+                    {
+                        if (constructorFunc.Parameters.Count > 0 &&
+                            constructorFunc.Parameters.First().Value.Type == TypeInfo!)
+                        {
+                            Constructor = constructorFunc;
+                        }
+                        else
+                        {
+                            Model.Reporter.Throw($"Constructor function of class '{Name}' should have first parameter of type '{TypeInfo!}'", syntaxNode.SourceLocation);
+                        }
                     }
                     else
                     {
-                        Model.Reporter.Throw($"Constructor function of class '{Name}' should have first parameter of type '{TypeInfo!}'", syntaxNode.SourceLocation);
+                        var param = new Dictionary<string, FunctionParameter>() {
+                            {"this", new FunctionParameter("this",TypeInfo!, false, 0)}
+                        };
+                        Constructor = new Function(Model, "new", param, TypeInfo.BuiltinTypes["void"], false, false);
+                        (this as IRoutineContainer).AddFunction(Constructor);
+                        Constructor.ElabSyntaxSymbols();
                     }
-                }
-                else
-                {
-                    var param = new Dictionary<string, FunctionParameter>() {
-                        {"this", new FunctionParameter("this",TypeInfo!, false, 0)}
-                    };
-                    Constructor = new Function(Model, this, "new", param, TypeInfo.BuiltinTypes["void"], false, false);
-                }
 
-                var constructorBody = (Constructor as ICodeContainer)!;
-                foreach (var varDecl in syntaxNode.ClassDeclarations)
-                {
-                    if (varDecl.Initializer is Syntax.Expression initializer)
+                    var constructorBody = (Constructor as ICodeContainer)!;
+                    foreach (var varDecl in syntaxNode.ClassDeclarations)
                     {
-                        var memberSymbol = (this as ISymbolContainer).ResolveSymbol(varDecl.Name)!;
-                        var thisSymbol = constructorBody.ResolveSymbol("this")!;
-                        var temp = constructorBody.AddExpression(initializer);
-                        constructorBody.AddInstruction(new WriteMemberInstruction(memberSymbol, temp, thisSymbol));
+                        if (varDecl.Initializer is Syntax.Expression initializer)
+                        {
+                            var memberSymbol = (this as ISymbolContainer).ResolveSymbol(varDecl.Name)!;
+                            var thisSymbol = constructorBody.ResolveSymbol("this")!;
+                            var temp = constructorBody.AddExpression(initializer);
+                            constructorBody.AddInstruction(new WriteMemberInstruction(memberSymbol, temp, thisSymbol));
+                        }
                     }
                 }
             }
@@ -1706,39 +1767,30 @@ namespace BabyPenguin.Semantic
 
     public class Function : SemanticNode, ISemanticScope, ISymbolContainer, ICodeContainer
     {
-        public Function(SemanticModel model, IRoutineContainer parent, Syntax.FunctionDefinition syntaxNode) : base(model, syntaxNode)
+        public Function(SemanticModel model, Syntax.FunctionDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             IsExtern = syntaxNode.IsExtern;
             IsPure = syntaxNode.IsPure;
-            Parent = parent;
-            Parent.Children.Add(this);
-            Model.CompileTasks.Add(this);
             CodeSyntaxNode = syntaxNode.CodeBlock;
         }
 
-        public Function(SemanticModel model, IRoutineContainer parent, string name, Dictionary<string, FunctionParameter> parameters, TypeInfo returnType, bool isExtern = false, bool? isPure = null) : base(model)
+        public Function(SemanticModel model, string name, Dictionary<string, FunctionParameter> parameters, TypeInfo returnType, bool isExtern = false, bool? isPure = null) : base(model)
         {
             Name = name;
             IsExtern = isExtern;
             IsPure = isPure;
-            Parent = parent;
-            Parent.Children.Add(this);
             Parameters = parameters;
             ReturnTypeInfo = returnType;
-            FunctionSymbol = Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, parameters, SourceLocation.Empty(), 0, null, true, false) as FunctionSymbol;
             foreach (var param in parameters.Values)
             {
                 (this as ISymbolContainer).AddSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, param.Index, param.IsReadonly, false);
             }
-            Model.CompileTasks.Add(this);
         }
 
         public string Name { get; }
 
-        ISemanticScope? ISemanticScope.Parent => Parent;
-
-        public IRoutineContainer Parent { get; }
+        public ISemanticScope? Parent { get; set; }
 
         public List<ISemanticScope> Children { get; } = [];
 
@@ -1758,11 +1810,13 @@ namespace BabyPenguin.Semantic
 
         public bool? IsPure { get; }
 
+        public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+
         public void ElabSyntaxSymbols()
         {
             if (SyntaxNode is Syntax.FunctionDefinition func)
             {
-                var retType = Model.ResolveType(func.ReturnType.Name, this);
+                var retType = Model.ResolveType(func.ReturnType.Name, this, func.SourceLocation);
                 if (retType == null)
                 {
                     Model.Reporter.Throw($"Cant resolve return type '{func.ReturnType.Name}'", func.SourceLocation);
@@ -1783,7 +1837,7 @@ namespace BabyPenguin.Semantic
                     else
                     {
                         var paramTypeName = param.TypeSpecifier!.Name; // TODO: type inference
-                        var paramType = Model.ResolveType(paramTypeName, this);
+                        var paramType = Model.ResolveType(paramTypeName, this, func.SourceLocation);
                         if (paramType == null)
                         {
                             Model.Reporter.Throw($"Cant resolve parameter type '{paramTypeName}' for param '{param.Name}'", param.SourceLocation);
@@ -1796,9 +1850,14 @@ namespace BabyPenguin.Semantic
                     }
                     i++;
                 }
-                var funcSymbol = Parent.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false);
+                var funcSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false);
                 FunctionSymbol = (FunctionSymbol)funcSymbol;
             }
+            else
+            {
+                FunctionSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, SourceLocation.Empty(), 0, null, true, false) as FunctionSymbol;
+            }
+            Model.CompileTasks.Add(this);
         }
     }
 }

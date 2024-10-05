@@ -20,7 +20,7 @@
             "preLaunchTask": "dotnet: build",
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
             "args": [
-                "${workspaceFolder}/Examples/HelloWorld/HelloWorld.penguin"
+                "${workspaceFolder}/Examples/HelloWorld/test.penguin"
             ],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,

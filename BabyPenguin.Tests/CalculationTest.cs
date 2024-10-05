@@ -489,5 +489,120 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
+
+        [Fact]
+        public void GenericTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    class Test <T> {
+                        var x: T;
+                    }
+
+                    initial {
+                        val t : Test<u8> = new Test<u8>();
+                        t.x = 1;
+                        print(t.x as string);
+
+                        val t2 : Test<string> = new Test<string>();
+                        t2.x = ""2"";
+                        print(t2.x);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void GenericCascadeTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    class Test <T> {
+                        var x: T;
+                    }
+
+                    class Test2 <T> {
+                        var y: T;
+                    }
+
+                    initial {
+                        val t : Test<Test2<u8>> = new Test<Test2<u8>>();
+                        t.x = new Test2<u8>();
+                        t.x.y = 1;
+                        print(t.x.y as string);
+
+                        val t2 : Test<Test2<string>> = new Test<Test2<string>>();
+                        t2.x = new Test2<string>();
+                        t2.x.y = ""2"";
+                        print(t2.x.y);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
+
+
+        [Fact]
+        public void GenericMutliParamTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    class Test <T, U> {
+                        var x: T;
+                        var y: U;
+                    }
+
+                    initial {
+                        val t : Test<u8, string> = new Test<u8, string>();
+                        t.x = 1;
+                        t.y = ""2"";
+                        print(t.x as string);
+                        print(t.y as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void GenericMethodTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    class Test <T, U> {
+                        var x: T;
+                        var y: U;
+                        fun print_sum(val this: Test<T, U>) {
+                            print((this.x + this.y) as string);
+                        }
+                    }
+
+                    initial {
+                        val t : Test<u8, u16> = new Test<u8, u16>();
+                        t.x = 1;
+                        t.y = 2;
+                        t.print_sum();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
     }
 }

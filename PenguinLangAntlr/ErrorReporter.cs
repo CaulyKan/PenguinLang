@@ -15,7 +15,7 @@ namespace PenguinLangAntlr
     {
         private static ulong count = 0;
 
-        public static SourceLocation Empty() => new SourceLocation("<anonymous>", $"anonymous_{count++}", 0, 0, 0, 0);
+        public static SourceLocation Empty() => new SourceLocation("_anonymous", $"anonymous_{count++}", 0, 0, 0, 0);
 
         public override string ToString()
         {
