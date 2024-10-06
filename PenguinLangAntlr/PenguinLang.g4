@@ -143,15 +143,10 @@ classDeclaration:
 		'=' expression
 	)? ';';
 
-enumSpecifier:
-	'enum' identifier? '{' enumeratorList ','? '}'
-	| 'enum' identifier;
+enumDefinition:
+	'enum' identifier? '{' (enumDeclaration | functionDefinition)* ','? '}';
 
-enumeratorList: enumerator (',' enumerator)*;
-
-enumerator: enumerationConstant ('=' constantExpression)?;
-
-enumerationConstant: identifier;
+enumDeclaration: identifier (':' typeSpecifier)? ';';
 
 nestedParenthesesBlock: (
 		~('(' | ')')
@@ -191,7 +186,9 @@ whileStatement: 'while' '(' expression ')' statement;
 forStatement:
 	'for' '(' declaration 'in' expression ')' statement;
 
-jumpStatement: ('continue' | 'break') ';';
+jumpStatement: jumpKeyword ';';
+
+jumpKeyword: 'continue' | 'break';
 
 returnStatement: 'return' expression? ';';
 

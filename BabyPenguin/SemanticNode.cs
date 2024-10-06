@@ -716,6 +716,14 @@ namespace BabyPenguin.Semantic
 
         public string CreateLabel() => $"{Name}_{counter++}";
 
+        public class CodeContainerStorage
+        {
+            public Stack<CurrentWhileLoopInfo> CurrentWhileLoop { get; } = new Stack<CurrentWhileLoopInfo>();
+        }
+        public record CurrentWhileLoopInfo(string BeginLabel, string EndLabel) { }
+
+        public CodeContainerStorage CodeContainerData { get; }
+
         public void AddStatement(Syntax.Statement item)
         {
             switch (item.StatementType)
@@ -858,9 +866,15 @@ namespace BabyPenguin.Semantic
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
                         var endLabel = CreateLabel();
+
+                        CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
+
                         AddInstruction(new GotoInstruction(endLabel, conditionVar, false));
                         AddStatement(whileStatement.BodyStatement);
                         AddInstruction(new GotoInstruction(beginLabel));
+
+                        CodeContainerData.CurrentWhileLoop.Pop();
+
                         AddInstruction(new NopInstuction().WithLabel(endLabel));
                         break;
                     }
@@ -878,6 +892,27 @@ namespace BabyPenguin.Semantic
                         {
                             AddInstruction(new ReturnInstruction(null));
                         }
+                        break;
+                    }
+                case Syntax.Statement.Type.JumpStatement:
+                    {
+                        var jumpStatement = item.JumpStatement!;
+                        if (jumpStatement.JumpType == Syntax.JumpStatement.Type.Break)
+                        {
+                            if (CodeContainerData.CurrentWhileLoop.Count == 0)
+                                Model.Reporter.Throw("Break statement outside of while loop", jumpStatement.SourceLocation);
+                            var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
+                            AddInstruction(new GotoInstruction(currentWhileLoop.EndLabel));
+                        }
+                        else if (jumpStatement.JumpType == Syntax.JumpStatement.Type.Continue)
+                        {
+                            if (CodeContainerData.CurrentWhileLoop.Count == 0)
+                                Model.Reporter.Throw("Continue statement outside of while loop", jumpStatement.SourceLocation);
+                            var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
+                            AddInstruction(new GotoInstruction(currentWhileLoop.BeginLabel));
+                        }
+                        else
+                            throw new NotImplementedException();
                         break;
                     }
                 default:
@@ -1562,6 +1597,7 @@ namespace BabyPenguin.Semantic
         public List<SemanticInstruction> Instructions { get; } = [];
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
         public TypeInfo ReturnTypeInfo => TypeInfo.BuiltinTypes["void"];
+        public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
         public Namespace(SemanticModel model, string name) : base(model)
         {
@@ -1637,6 +1673,9 @@ namespace BabyPenguin.Semantic
         public TypeInfo ReturnTypeInfo { get; } = TypeInfo.BuiltinTypes["void"];
 
         public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+
+        public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
+
 
         public void ElabSyntaxSymbols()
         {
@@ -1811,6 +1850,9 @@ namespace BabyPenguin.Semantic
         public bool? IsPure { get; }
 
         public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+
+        public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
+
 
         public void ElabSyntaxSymbols()
         {

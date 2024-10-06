@@ -121,6 +121,73 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void WhileBreakTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var i : u8 = 0;
+                    while (i < 3) {
+                        print(i as string);
+                        if (i == 1) break;
+                        i += 1;
+                    }
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("01", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void WhileContinueTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var i : u8 = 0;
+                    while (i < 3) {
+                        i += 1;
+                        if (i == 2) continue;
+                        print(i as string);
+                    }
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("13", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void WhileCascadeBreakContinueTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var i : u8 = 0;
+                    var j : u8 = 0;
+                    while (i < 3) {
+                        i += 1;
+                        j = 0;
+                        while (j < 5) {
+                            j += 1;
+                            if (j == 2) continue;
+                            if (j == 4) break;
+                            print(j as string);
+                        }
+                        if (i == 2) break;
+                    }
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("1313", vm.CollectOutput());
+        }
+
+        [Fact]
         public void FunctionBasicTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

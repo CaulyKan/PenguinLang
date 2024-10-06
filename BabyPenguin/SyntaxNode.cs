@@ -400,11 +400,11 @@ namespace BabyPenguin
 
             public JumpStatement(SyntaxWalker walker, JumpStatementContext context) : base(walker, context)
             {
-                if (context.GetText() == "break")
+                if (context.jumpKeyword().GetText() == "break")
                 {
                     JumpType = Type.Break;
                 }
-                else if (context.GetText() == "continue")
+                else if (context.jumpKeyword().GetText() == "continue")
                 {
                     JumpType = Type.Continue;
                 }
