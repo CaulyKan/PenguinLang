@@ -1022,6 +1022,29 @@ namespace BabyPenguin.Semantic
             throw new NotImplementedException();
         }
 
+        public bool CheckMemberAccessExpressionIsStatic(Syntax.MemberAccessExpression exp)
+        {
+            TypeInfo? t = null;
+            try
+            {
+                t = ResolveExpressionType(exp.PrimaryExpression);
+            }
+            catch
+            { // ok, try resolve type instead 
+            }
+            if (t == null)
+            {
+                var type = Model.ResolveType(exp.Text, this, exp.SourceLocation);
+                if (type == null)
+                {
+                    Model.Reporter.Throw($"Cant resolve owner type of member access expression", exp.SourceLocation);
+                    throw new NotImplementedException();
+                }
+                else return true;
+            }
+            else return false;
+        }
+
         public TypeInfo ResolveMemberAccessExpressionOwnerType(Syntax.MemberAccessExpression expression)
         {
             var t = ResolveExpressionType(expression.PrimaryExpression);
@@ -1132,10 +1155,31 @@ namespace BabyPenguin.Semantic
                     break;
                 case Syntax.FunctionCallExpression exp:
                     {
-                        var funcType = ResolveExpressionType(exp.IsMemberAccess ? exp.MemberAccessExpression! : exp.PrimaryExpression!);
+                        TypeInfo funcType;
+                        bool isInstanceCall = false;
+                        if (exp.IsMemberAccess)
+                        {
+                            if (CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
+                            {
+                                var symbol = ResolveSymbol(exp.Text);
+                                if (symbol == null)
+                                    Model.Reporter.Throw($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
+                                funcType = symbol.TypeInfo;
+                                isInstanceCall = false;
+                            }
+                            else
+                            {
+                                funcType = ResolveExpressionType(exp.MemberAccessExpression!);
+                                isInstanceCall = true;
+                            }
+                        }
+                        else
+                        {
+                            funcType = ResolveExpressionType(exp.PrimaryExpression!);
+                        }
                         if (!funcType.IsFunctionType)
                             Model.Reporter.Throw($"Function call expects function symbol, but got '{funcType}'", expression.SourceLocation);
-                        var actualParamsCount = exp.IsMemberAccess ? exp.ArgumentsExpression.Count + 1 : exp.ArgumentsExpression.Count;
+                        var actualParamsCount = isInstanceCall ? exp.ArgumentsExpression.Count + 1 : exp.ArgumentsExpression.Count;
                         if (funcType.GenericArguments.Count - 1 != actualParamsCount)
                             Model.Reporter.Throw($"Function expects {funcType.GenericArguments.Count - 1} params, but got '{actualParamsCount}'", expression.SourceLocation);
                         for (int i = 0; i < funcType.GenericArguments.Count - 1; i++)
@@ -1143,7 +1187,7 @@ namespace BabyPenguin.Semantic
                             var expectedType = funcType.GenericArguments[i + 1];
                             TypeInfo actualType;
                             SourceLocation sourceLocation;
-                            if (i == 0 && exp.IsMemberAccess)
+                            if (i == 0 && isInstanceCall)
                             {
                                 actualType = ResolveMemberAccessExpressionOwnerType(exp.MemberAccessExpression!);
                                 sourceLocation = exp.SourceLocation;
@@ -1162,15 +1206,25 @@ namespace BabyPenguin.Semantic
                     {
                         var t = ResolveExpressionType(exp.PrimaryExpression);
                         if (t == null)
-                            Model.Reporter.Throw($"Cant resolve owner type of member access expression", exp.SourceLocation);
-                        var ma = exp;
-                        for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
                         {
-                            var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                            var member = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
-                            if (member == null)
-                                Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
-                            t = member.TypeInfo;
+                            var type = Model.ResolveType(exp.Text, this, exp.SourceLocation);
+                            if (type == null)
+                            {
+                                Model.Reporter.Throw($"Cant resolve owner type of member access expression", exp.SourceLocation);
+                            }
+                            else t = type;
+                        }
+                        else
+                        {
+                            var ma = exp;
+                            for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
+                            {
+                                var isLastRound = i == ma.MemberIdentifiers.Count - 1;
+                                var member = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
+                                if (member == null)
+                                    Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
+                                t = member.TypeInfo;
+                            }
                         }
                         return t;
                     }
@@ -1211,19 +1265,30 @@ namespace BabyPenguin.Semantic
             throw new NotImplementedException();
         }
 
-        public ISymbol AddMemberAccessExpression(Syntax.MemberAccessExpression exp, ISymbol to, out ISymbol owner)
+        public ISymbol AddMemberAccessExpression(Syntax.MemberAccessExpression exp, ISymbol to, out ISymbol? owner)
         {
             ISymbol owner_var;
-            if (exp.PrimaryExpression.IsSimple)
+            if (CheckMemberAccessExpressionIsStatic(exp))
             {
-                var temp = ResolveSymbol(exp.PrimaryExpression.Text, exp.Scope.ScopeDepth);
-                if (temp == null)
-                    Model.Reporter.Throw($"Cant resolve symbol '{exp.PrimaryExpression.Text}'", exp.PrimaryExpression.SourceLocation);
-                owner_var = temp;
+                owner = null;
+                var res = ResolveSymbol(exp.Text);
+                if (res == null)
+                    Model.Reporter.Throw($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
+                return res;
             }
             else
             {
-                owner_var = AddExpression(exp.PrimaryExpression);
+                if (exp.PrimaryExpression.IsSimple)
+                {
+                    var temp = ResolveSymbol(exp.PrimaryExpression.Text, exp.Scope.ScopeDepth);
+                    if (temp == null)
+                        Model.Reporter.Throw($"Cant resolve symbol '{exp.PrimaryExpression.Text}'", exp.PrimaryExpression.SourceLocation);
+                    owner_var = temp;
+                }
+                else
+                {
+                    owner_var = AddExpression(exp.PrimaryExpression);
+                }
             }
 
             var ma = exp;
@@ -1510,11 +1575,12 @@ namespace BabyPenguin.Semantic
                     {
                         if (exp.IsMemberAccess)
                         {
+                            var isStatic = CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!);
                             var temp = AllocTempSymbol(ResolveExpressionType(exp.MemberAccessExpression!), expression.SourceLocation);
-                            var func_var = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out ISymbol owner_var);
+                            var func_var = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out ISymbol? owner_var);
                             if (!func_var.TypeInfo.IsFunctionType)
                                 Model.Reporter.Throw($"Function call expects function symbol, but got '{func_var.TypeInfo}'", exp.MemberAccessExpression!.SourceLocation);
-                            var param_vars = new List<ISymbol> { owner_var };
+                            var param_vars = isStatic ? [] : new List<ISymbol> { owner_var! };
                             param_vars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
                             AddInstruction(new FunctionCallInstruction(func_var, param_vars, to));
                         }
@@ -1530,7 +1596,7 @@ namespace BabyPenguin.Semantic
                     break;
                 case Syntax.MemberAccessExpression exp:
                     {
-                        AddMemberAccessExpression(exp, to, out ISymbol owner_var);
+                        AddMemberAccessExpression(exp, to, out ISymbol? owner_var);
                     }
                     break;
                 case Syntax.NewExpression exp:

@@ -698,6 +698,7 @@ namespace BabyPenguin
             {
                 "==" => BinaryOperatorEnum.Equal,
                 "!=" => BinaryOperatorEnum.NotEqual,
+                "is" => BinaryOperatorEnum.Is,
                 _ => throw new System.NotImplementedException("Invalid equality operator"),
             }).ToList();
 

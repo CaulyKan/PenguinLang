@@ -125,7 +125,8 @@ namespace BabyPenguin
         BitwiseOr,
         BitwiseXor,
         LeftShift,
-        RightShift
+        RightShift,
+        Is
     }
 
     public enum UnaryOperatorEnum

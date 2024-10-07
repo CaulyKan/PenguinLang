@@ -460,6 +460,35 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void EnumBasicTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test = Test.a();
+                        if (test is Test.a) {
+                            print(""a"");
+                        }
+                        test = Test.b(2);
+                        if (test is Test.b) {
+                            print(test.b as string);
+                        }
+                    }
+
+                    enum Test {
+                        a;
+                        b : u8;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("a2", vm.CollectOutput());
+        }
+
+        [Fact]
         public void ClassConstructorTest()
         {
             var compiler = new SemanticCompiler();
