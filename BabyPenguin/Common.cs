@@ -104,6 +104,7 @@ namespace BabyPenguin
         Char,
         Fun,
         Class,
+        Enum,
     }
     public enum BinaryOperatorEnum
     {

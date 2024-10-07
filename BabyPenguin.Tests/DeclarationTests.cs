@@ -325,5 +325,33 @@ namespace BabyPenguin.Tests
             Assert.Equal("test5", symbols[4].Name);
             Assert.True(symbols[4].IsReadonly);
         }
+
+
+        [Fact]
+        public void EnumDeclare()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                enum Test {
+                    a;
+                    b;
+                    c: u8;
+                    d: string;
+                }
+            ");
+            var model = compiler.Compile();
+
+            Assert.Single(model.Namespaces[0].Enums);
+            Assert.Equal("Test", model.Namespaces[0].Enums[0].Name);
+            Assert.Equal(4, model.Namespaces[0].Enums[0].EnumDeclarations.Count);
+            Assert.Equal("a", model.Namespaces[0].Enums[0].EnumDeclarations[0].Name);
+            Assert.Equal("void", model.Namespaces[0].Enums[0].EnumDeclarations[0].TypeInfo.Name);
+            Assert.Equal("b", model.Namespaces[0].Enums[0].EnumDeclarations[1].Name);
+            Assert.Equal("void", model.Namespaces[0].Enums[0].EnumDeclarations[1].TypeInfo.Name);
+            Assert.Equal("c", model.Namespaces[0].Enums[0].EnumDeclarations[2].Name);
+            Assert.Equal("u8", model.Namespaces[0].Enums[0].EnumDeclarations[2].TypeInfo.Name);
+            Assert.Equal("d", model.Namespaces[0].Enums[0].EnumDeclarations[3].Name);
+            Assert.Equal("string", model.Namespaces[0].Enums[0].EnumDeclarations[3].TypeInfo.Name);
+        }
     }
 }

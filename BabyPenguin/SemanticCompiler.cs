@@ -208,16 +208,30 @@ namespace BabyPenguin
             }
         }
 
+        public Enum CreateEnum(Or<string, Semantic.Namespace> namespace_, Syntax.EnumDefinition syntaxNode)
+        {
+            var ns = namespace_.IsLeft ? Namespaces.FirstOrDefault(n => n.Name == namespace_.Left) : namespace_.Right;
+            if (ns == null)
+                Reporter.Throw($"Namespace '{namespace_}' does not exist", SourceLocation.Empty());
+
+            var enum_ = new Enum(this, ns, syntaxNode);
+            if (ns.Enums.Any(c => c.Name == enum_.Name) || ns.Classes.Any(c => c.Name == enum_.Name))
+                Reporter.Throw($"Class '{enum_.Name}' already exists in namespace '{namespace_}'", SourceLocation.Empty());
+            enum_.TypeInfo = CreateType(enum_.Name, TypeEnum.Enum, namespace_, enum_.GenericDefinitions);
+            Enums.Add(enum_);
+            return enum_;
+        }
+
         public Class CreateClass(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinitions = null)
         {
             var ns = namespace_.IsLeft ? Namespaces.FirstOrDefault(n => n.Name == namespace_.Left) : namespace_.Right;
             if (ns == null)
                 Reporter.Throw($"Namespace '{namespace_}' does not exist", SourceLocation.Empty());
-            if (ns.Classes.Any(c => c.Name == name))
+            if (ns.Classes.Any(c => c.Name == name) || ns.Enums.Any(c => c.Name == name))
                 Reporter.Throw($"Class '{name}' already exists in namespace '{namespace_}'", SourceLocation.Empty());
 
             var class_ = new Class(this, ns, name, genericDefinitions);
-            class_.TypeInfo = CreateType(class_.Name, ns, class_.GenericDefinitions);
+            class_.TypeInfo = CreateType(class_.Name, TypeEnum.Class, ns, class_.GenericDefinitions);
             ns.Classes.Add(class_);
             Classes.Add(class_);
             return class_;
@@ -230,9 +244,9 @@ namespace BabyPenguin
                 Reporter.Throw($"Namespace '{namespace_}' does not exist", SourceLocation.Empty());
 
             var class_ = new Class(this, ns, syntaxNode);
-            if (ns.Classes.Any(c => c.Name == class_.Name))
+            if (ns.Classes.Any(c => c.Name == class_.Name || c.TypeInfo!.Name == class_.Name))
                 Reporter.Throw($"Class '{class_.Name}' already exists in namespace '{namespace_}'", SourceLocation.Empty());
-            class_.TypeInfo = CreateType(class_.Name, namespace_, class_.GenericDefinitions);
+            class_.TypeInfo = CreateType(class_.Name, TypeEnum.Class, namespace_, class_.GenericDefinitions);
             Classes.Add(class_);
             return class_;
         }
@@ -245,7 +259,7 @@ namespace BabyPenguin
             if (baseType.IsSpecialized)
                 return class_;
 
-            var type = new TypeInfo(baseType.Name, baseType.Namespace, baseType.GenericDefinitions, genericArguments);
+            var type = new TypeInfo(baseType.Name, baseType.Namespace, TypeEnum.Class, baseType.GenericDefinitions, genericArguments);
             if (Classes.Find(c => c.TypeInfo == type) is Class existingClass)
                 return existingClass;
 
@@ -259,10 +273,10 @@ namespace BabyPenguin
             return newClass;
         }
 
-        public TypeInfo CreateType(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
+        public TypeInfo CreateType(string name, TypeEnum typeEnum, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
         {
             var namespaceName = namespace_.IsLeft ? namespace_.Left! : namespace_.Right!.FullName;
-            var type = new TypeInfo(name, namespaceName, genericDefinition, genericArguments);
+            var type = new TypeInfo(name, namespaceName, typeEnum, genericDefinition, genericArguments);
             if (Types.Any(t => t.FullName == type.FullName))
             {
                 Reporter.Throw($"Type '{type.FullName}' already exists", SourceLocation.Empty());
@@ -271,7 +285,7 @@ namespace BabyPenguin
             return type;
         }
 
-        public TypeInfo ResolveOrCreateType(string name, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
+        public TypeInfo ResolveOrCreateType(string name, TypeEnum typeEnum, Or<string, Semantic.Namespace> namespace_, List<string>? genericDefinition = null, List<TypeInfo>? genericArguments = null)
         {
             var namespaceName = namespace_.IsLeft ? namespace_.Left! : namespace_.Right!.FullName;
             var components = new NameComponents([.. namespaceName.Split('.')], name, (genericArguments ?? []).Select(i => i.FullName).ToList());
@@ -282,7 +296,7 @@ namespace BabyPenguin
             }
             else
             {
-                var type = new TypeInfo(name, namespaceName, genericDefinition, genericArguments);
+                var type = new TypeInfo(name, namespaceName, typeEnum, genericDefinition, genericArguments);
                 Types.Add(type);
                 return type;
             }
@@ -290,7 +304,7 @@ namespace BabyPenguin
 
         public TypeInfo ResolveOrCreateSpecializedType(TypeInfo baseType, List<TypeInfo> genericArguments)
         {
-            var type = new TypeInfo(baseType.Name, baseType.Namespace, baseType.GenericDefinitions, genericArguments);
+            var type = new TypeInfo(baseType.Name, baseType.Namespace, baseType.Type, baseType.GenericDefinitions, genericArguments);
             if (Types.Contains(type))
             {
                 return type;
@@ -307,6 +321,7 @@ namespace BabyPenguin
         public Semantic.Namespace BuiltinNamespace { get; }
         public List<Semantic.Namespace> Namespaces { get; } = [];
         public List<Class> Classes { get; } = [];
+        public List<Semantic.Enum> Enums { get; } = [];
         public List<Function> Functions { get; } = [];
         public List<TypeInfo> Types { get; } = [];
         public List<ISymbol> Symbols { get; } = [];

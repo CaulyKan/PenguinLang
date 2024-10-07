@@ -56,6 +56,13 @@ namespace BabyPenguin
                         var _ = scope as ClassDefinition ?? throw new NotImplementedException();
                         break;
                     }
+
+                case SyntaxScopeType.Enum:
+                    {
+                        var _ = scope as Syntax.EnumDefinition ?? throw new NotImplementedException();
+                        break;
+                    }
+
                 case SyntaxScopeType.Function:
                     {
                         var _ = scope as FunctionDefinition ?? throw new NotImplementedException();
@@ -98,6 +105,7 @@ namespace BabyPenguin
         Function,
         InitialRoutine,
         CodeBlock,
+        Enum,
     }
 
     public interface ISyntaxScope

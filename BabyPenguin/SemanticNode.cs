@@ -42,20 +42,20 @@ namespace BabyPenguin.Semantic
         public NameComponents NameComponents => NameComponents.ParseName(FullName);
 
         public static readonly Dictionary<string, TypeInfo> BuiltinTypes = new Dictionary<string, TypeInfo> {
-            { "bool", new TypeInfo( "bool", "", []) },
-            { "double", new TypeInfo( "double", "", []) },
-            {"float", new TypeInfo( "float", "", [])},
-            {"string", new TypeInfo( "string", "", [])},
-            {"void", new TypeInfo( "void", "", [])},
-            {"u8", new TypeInfo( "u8", "", [])},
-            {"u16", new TypeInfo( "u16", "", [])},
-            {"u32", new TypeInfo( "u32", "", [])},
-            {"u64", new TypeInfo( "u64", "", [])},
-            {"i8", new TypeInfo( "i8", "", [])},
-            {"i16", new TypeInfo( "i16", "", [])},
-            {"i32", new TypeInfo( "i32", "", [])},
-            {"i64", new TypeInfo( "i64", "", [])},
-            {"char", new TypeInfo( "char","", [])},
+            { "bool", new TypeInfo( "bool", "", TypeEnum.Bool, []) },
+            { "double", new TypeInfo( "double", "", TypeEnum.Double, []) },
+            {"float", new TypeInfo( "float", "", TypeEnum.Float, []) },
+            {"string", new TypeInfo( "string", "", TypeEnum.String, []) },
+            {"void", new TypeInfo( "void", "", TypeEnum.Void, []) },
+            {"u8", new TypeInfo( "u8", "", TypeEnum.U8, [])},
+            {"u16", new TypeInfo( "u16", "", TypeEnum.U16, [])},
+            {"u32", new TypeInfo( "u32", "", TypeEnum.U32, [])},
+            {"u64", new TypeInfo( "u64", "", TypeEnum.U64, [])},
+            {"i8", new TypeInfo( "i8", "", TypeEnum.I8, [])},
+            {"i16", new TypeInfo( "i16", "", TypeEnum.I16, [])},
+            {"i32", new TypeInfo( "i32", "", TypeEnum.I32, [])},
+            {"i64", new TypeInfo( "i64", "", TypeEnum.I64, [])},
+            {"char", new TypeInfo( "char","", TypeEnum.Char, [])},
         };
 
         public string Name { get; }
@@ -66,13 +66,9 @@ namespace BabyPenguin.Semantic
         public bool IsGeneric => GenericDefinitions.Count > 0;
         public bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
 
-        public TypeInfo(string name, string namespace_, List<string>? genericDefinitions, List<TypeInfo>? genericArguments = null)
+        public TypeInfo(string name, string namespace_, TypeEnum type, List<string>? genericDefinitions, List<TypeInfo>? genericArguments = null)
         {
-            if (Enum.GetNames<TypeEnum>().FirstOrDefault(i => i.Equals(name, StringComparison.CurrentCultureIgnoreCase)) is string n)
-                Type = (TypeEnum)Enum.Parse(typeof(TypeEnum), n);
-            else
-                Type = TypeEnum.Class;
-
+            Type = type;
             Name = name;
             Namespace = namespace_;
             GenericDefinitions = genericDefinitions ?? [];
@@ -87,6 +83,8 @@ namespace BabyPenguin.Semantic
             else if (GenericArguments.Count > 0 && GenericArguments.Count != GenericDefinitions.Count)
                 throw new ArgumentException("Count of generic arguments and definitions do not match.");
         }
+
+        public override int GetHashCode() => FullName.GetHashCode();
 
         bool IEquatable<TypeInfo>.Equals(TypeInfo? other)
         {
@@ -297,6 +295,7 @@ namespace BabyPenguin.Semantic
                 return null;
             }
         }
+
     }
 
     public interface ISymbol
@@ -398,7 +397,7 @@ namespace BabyPenguin.Semantic
             SemanticFunction = func;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values.Select(p => p.Type)).ToList();
-            TypeInfo = parent.Model.ResolveOrCreateType("fun", "", [], funTypeGenericArguments);
+            TypeInfo = parent.Model.ResolveOrCreateType("fun", TypeEnum.Fun, "", [], funTypeGenericArguments);
         }
 
         public string FullName => Parent.FullName + "." + Name;
@@ -638,6 +637,12 @@ namespace BabyPenguin.Semantic
     {
         ErrorReporter Reporter => Model.Reporter;
         List<Class> Classes { get; }
+        List<Semantic.Enum> Enums { get; }
+
+        public void AddEnum(Enum enum_)
+        {
+            Enums.Add(enum_);
+        }
 
         public void AddClass(Class class_)
         {
@@ -1591,6 +1596,7 @@ namespace BabyPenguin.Semantic
         public List<InitialRoutine> InitialRoutines { get; } = [];
         public List<Function> Functions { get; } = [];
         public List<Class> Classes { get; } = [];
+        public List<Enum> Enums { get; } = [];
         public List<ISymbol> Symbols { get; } = [];
         public ISemanticScope? Parent { get; set; }
         public List<ISemanticScope> Children { get; } = [];
@@ -1615,6 +1621,9 @@ namespace BabyPenguin.Semantic
                 (this as IRoutineContainer).AddInitialRoutine(initialRoutine);
             foreach (var func in syntaxNode.Functions)
                 (this as IRoutineContainer).AddFunction(func);
+            foreach (var enum_ in syntaxNode.Enums)
+                (this as IClassContainer).AddEnum(Model.CreateEnum(this, enum_));
+
             Model.CompileTasks.Add(this);
         }
 
@@ -1642,6 +1651,11 @@ namespace BabyPenguin.Semantic
             foreach (var func in Functions)
             {
                 func.ElabSyntaxSymbols();
+            }
+
+            foreach (var enum_ in Enums)
+            {
+                enum_.ElabSyntaxSymbols();
             }
         }
 
@@ -1828,31 +1842,18 @@ namespace BabyPenguin.Semantic
         }
 
         public string Name { get; }
-
         public ISemanticScope? Parent { get; set; }
-
         public List<ISemanticScope> Children { get; } = [];
-
         public Dictionary<string, FunctionParameter> Parameters = [];
-
         public TypeInfo ReturnTypeInfo { get; private set; } = TypeInfo.BuiltinTypes["void"];
-
         public List<ISymbol> Symbols { get; } = [];
-
         public FunctionSymbol? FunctionSymbol { get; private set; } = null;
-
         public List<SemanticInstruction> Instructions { get; } = [];
-
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
-
         public bool IsExtern { get; }
-
         public bool? IsPure { get; }
-
         public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
-
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
-
 
         public void ElabSyntaxSymbols()
         {
@@ -1900,6 +1901,76 @@ namespace BabyPenguin.Semantic
                 FunctionSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, SourceLocation.Empty(), 0, null, true, false) as FunctionSymbol;
             }
             Model.CompileTasks.Add(this);
+        }
+    }
+
+    public class Enum : SemanticNode, ISymbolContainer, IRoutineContainer, IGenericContainer
+    {
+        public Enum(SemanticModel model, IClassContainer ns, Syntax.EnumDefinition syntaxNode) : base(model, syntaxNode)
+        {
+            Name = syntaxNode.Name;
+            Parent = ns;
+            foreach (var func in syntaxNode.Functions)
+                (this as IRoutineContainer).AddFunction(func);
+            foreach (var initialRoutine in syntaxNode.InitialRoutines)
+                (this as IRoutineContainer).AddInitialRoutine(initialRoutine);
+        }
+
+        public List<ISymbol> Symbols { get; } = [];
+        public IClassContainer Parent { get; }
+        public List<ISemanticScope> Children { get; } = [];
+        public string Name { get; }
+        public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+        public List<InitialRoutine> InitialRoutines { get; } = [];
+        public List<Function> Functions { get; } = [];
+        public List<string> GenericDefinitions { get; } = [];
+        public List<TypeInfo> GenericArguments { get; set; } = [];
+        public List<EnumDeclaration> EnumDeclarations { get; set; } = [];
+        ISemanticScope? ISemanticScope.Parent { get; set; }
+        public TypeInfo? TypeInfo { get; set; }
+
+        public void ElabSyntaxSymbols()
+        {
+            if (SyntaxNode is Syntax.EnumDefinition syntax)
+            {
+                EnumDeclarations = syntax.EnumDeclarations.Select(i => new EnumDeclaration(Model, this, i)).ToList();
+            }
+
+            EnumDeclarations.ForEach(i => i.ElabSyntaxSymbols());
+        }
+    }
+
+    public class EnumDeclaration : SemanticNode
+    {
+        public EnumDeclaration(SemanticModel model, Enum enum_, string name, TypeInfo? typeInfo = null) : base(model)
+        {
+            Name = name;
+            TypeInfo = typeInfo ?? TypeInfo.BuiltinTypes["void"];
+            Enum = enum_;
+        }
+
+        public EnumDeclaration(SemanticModel model, Enum enum_, Syntax.EnumDeclaration syntaxNode) : base(model, syntaxNode)
+        {
+            Name = syntaxNode.Name;
+            Enum = enum_;
+            TypeInfo = TypeInfo.BuiltinTypes["void"];
+        }
+
+        public string Name { get; }
+        public TypeInfo TypeInfo { get; private set; }
+        public Enum Enum { get; }
+
+        public void ElabSyntaxSymbols()
+        {
+            if (SyntaxNode is Syntax.EnumDeclaration syntax)
+            {
+                if (syntax.TypeSpecifier != null)
+                {
+                    var type = Model.ResolveType(syntax.TypeSpecifier.Name, Enum, syntax.SourceLocation);
+                    if (type == null) Model.Reporter.Throw($"Cant resolve type '{syntax.TypeSpecifier.Name}'", syntax.SourceLocation);
+                    TypeInfo = type;
+                }
+            }
         }
     }
 }

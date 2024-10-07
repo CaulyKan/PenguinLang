@@ -4,8 +4,10 @@ primaryExpression:
 	Constant
 	| StringLiteral+
 	| boolLiteral
-	| identifier
+	| identifierWithGeneric
 	| '(' expression ')';
+
+identifierWithGeneric: identifier genericArguments?;
 
 postfixExpression:
 	primaryExpression
@@ -24,7 +26,8 @@ functionCallExpression:
 		',' expression
 	)* ')';
 
-memberAccessExpression: primaryExpression ('.' identifier)+;
+memberAccessExpression:
+	primaryExpression ('.' identifierWithGeneric)+;
 
 unaryExpression:
 	postfixExpression
@@ -144,7 +147,10 @@ classDeclaration:
 	)? ';';
 
 enumDefinition:
-	'enum' identifier? '{' (enumDeclaration | functionDefinition)* ','? '}';
+	'enum' identifier genericDefinitions? '{' (
+		enumDeclaration
+		| functionDefinition
+	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
 
@@ -200,6 +206,7 @@ namespaceDeclaration:
 	| initialRoutine
 	| functionDefinition
 	| classDefinition
+	| enumDefinition
 	| ';';
 
 parameterList: declaration? (',' declaration)* ','?;

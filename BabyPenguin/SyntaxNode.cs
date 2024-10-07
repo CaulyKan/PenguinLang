@@ -88,13 +88,18 @@ namespace BabyPenguin
                 Classes.AddRange(
                      namespaceDeclarationContext.children.OfType<ClassDefinitionContext>()
                         .Select(x => new ClassDefinition(walker, x)));
+
+                Enums.AddRange(
+                     namespaceDeclarationContext.children.OfType<EnumDefinitionContext>()
+                        .Select(x => new EnumDefinition(walker, x)));
             }
 
-            public List<InitialRoutine> InitialRoutines { get; } = new();
-            public List<Declaration> Declarations { get; } = new();
-            public List<Namespace> SubNamespaces { get; } = new();
-            public List<FunctionDefinition> Functions { get; } = new();
-            public List<ClassDefinition> Classes { get; } = new();
+            public List<InitialRoutine> InitialRoutines { get; } = [];
+            public List<Declaration> Declarations { get; } = [];
+            public List<Namespace> SubNamespaces { get; } = [];
+            public List<FunctionDefinition> Functions { get; } = [];
+            public List<ClassDefinition> Classes { get; } = [];
+            public List<EnumDefinition> Enums { get; } = [];
             public string Name { get; }
 
             public SyntaxScopeType ScopeType => SyntaxScopeType.Namespace;
@@ -508,6 +513,12 @@ namespace BabyPenguin
             {
                 this.IsType = isType;
                 this.LiteralName = liternalName;
+            }
+
+            public Identifier(SyntaxWalker walker, IdentifierWithGenericContext context, bool isType) : base(walker, context)
+            {
+                this.IsType = isType;
+                this.LiteralName = context.GetText();
             }
 
             public string? ResolvedFullname { get; }
@@ -942,9 +953,9 @@ namespace BabyPenguin
 
             public PrimaryExpression(SyntaxWalker walker, PrimaryExpressionContext context) : base(walker, context)
             {
-                if (context.children.OfType<IdentifierContext>().Any())
+                if (context.children.OfType<IdentifierWithGenericContext>().Any())
                 {
-                    Identifier = new Identifier(walker, context.identifier(), false);
+                    Identifier = new Identifier(walker, context.identifierWithGeneric(), false);
                     PrimaryExpressionType = Type.Identifier;
                 }
                 else if (context.Constant() != null)
@@ -1092,7 +1103,7 @@ namespace BabyPenguin
             public MemberAccessExpression(SyntaxWalker walker, MemberAccessExpressionContext context, bool isWrite) : base(walker, context)
             {
                 PrimaryExpression = new PrimaryExpression(walker, context.primaryExpression());
-                MemberIdentifiers = context.children.OfType<IdentifierContext>()
+                MemberIdentifiers = context.children.OfType<IdentifierWithGenericContext>()
                    .Select(x => new Identifier(walker, x, false))
                    .ToList();
                 IsWrite = isWrite;
@@ -1268,5 +1279,61 @@ namespace BabyPenguin
             public ISyntaxScope? ParentScope { get; set; }
             public bool IsReadonly { get; }
         }
+
+
+        public class EnumDefinition : SyntaxNode, ISyntaxScope
+        {
+            public EnumDefinition(SyntaxWalker walker, EnumDefinitionContext context) : base(walker, context)
+            {
+                walker.PushScope(SyntaxScopeType.Enum, this);
+
+                EnumIdentifier = new Identifier(walker, context.identifier(), false);
+                EnumDeclarations = context.children.OfType<EnumDeclarationContext>()
+                   .Select(x => new EnumDeclaration(walker, x))
+                   .ToList();
+                Functions = context.children.OfType<FunctionDefinitionContext>()
+                   .Select(x => new FunctionDefinition(walker, x))
+                   .ToList();
+                InitialRoutines = context.children.OfType<InitialRoutineContext>()
+                                   .Select(x => new InitialRoutine(walker, x))
+                                   .ToList();
+                GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
+
+                walker.PopScope();
+            }
+
+            public Identifier EnumIdentifier { get; }
+            public string Name => EnumIdentifier.Name;
+            public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
+            public List<SyntaxSymbol> Symbols { get; } = [];
+            public List<FunctionDefinition> Functions { get; } = [];
+            public List<InitialRoutine> InitialRoutines { get; } = [];
+            public bool IsAnonymous => false;
+            public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+            public ISyntaxScope? ParentScope { get; set; }
+            public uint ScopeDepth { get; set; }
+            public List<EnumDeclaration> EnumDeclarations { get; } = [];
+            public GenericDefinitions? GenericDefinitions { get; } = null;
+        }
+
+        public class EnumDeclaration : SyntaxNode, ISyntaxScope
+        {
+            public EnumDeclaration(SyntaxWalker walker, EnumDeclarationContext context) : base(walker, context)
+            {
+                Identifier = new Identifier(walker, context.identifier(), false);
+                TypeSpecifier = context.typeSpecifier() != null ? new TypeSpecifier(walker, context.typeSpecifier()) : null;
+            }
+
+            public Identifier Identifier { get; }
+            public TypeSpecifier? TypeSpecifier { get; }
+            public string Name => Identifier.Name;
+            public SyntaxScopeType ScopeType => SyntaxScopeType.Enum;
+            public List<SyntaxSymbol> Symbols { get; } = [];
+            public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+            public bool IsAnonymous => false;
+            public uint ScopeDepth { get; set; }
+            public ISyntaxScope? ParentScope { get; set; }
+        }
+
     }
 }
