@@ -64,7 +64,7 @@ relationalExpression:
 relationalOperator: '<' | '>' | '<=' | '>=';
 
 equalityExpression:
-	relationalExpression (equalityOperator relationalExpression)*;
+	relationalExpression (equalityOperator relationalExpression)?;
 
 equalityOperator: '==' | '!=' | 'is';
 

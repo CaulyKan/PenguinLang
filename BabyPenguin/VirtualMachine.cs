@@ -16,7 +16,7 @@ namespace BabyPenguin
         {
             Model = model;
 
-            foreach (var symbol in model.Symbols)
+            foreach (var symbol in model.Symbols.Where(s => !s.IsEnum))
             {
                 Global.GlobalVariables.Add(symbol.FullName, new RuntimeVar(model, symbol.TypeInfo, symbol));
             }
@@ -472,6 +472,24 @@ namespace BabyPenguin
                             members[cmd.Member.Name]!.AssignFrom(rightVar);
                         }
                         break;
+                    case WriteEnumInstruction cmd:
+                        {
+                            var rightVar = resolveVariable(cmd.Value);
+                            var enumVar = resolveVariable(cmd.TargetEnum);
+                            DebugPrint(cmd, $"rightVar={rightVar}");
+                            enumVar.EnumValue = rightVar;
+                            break;
+                        }
+                    case ReadEnumInstruction cmd:
+                        {
+                            var resultVar = resolveVariable(cmd.TargetValue);
+                            var enumVar = resolveVariable(cmd.Enum);
+                            DebugPrint(cmd, $"enumVar={enumVar}");
+                            if (enumVar.EnumValue == null)
+                                throw new BabyPenguinRuntimeException($"Enum {enumVar.TypeInfo} has no value");
+                            resultVar.AssignFrom(enumVar.EnumValue);
+                            break;
+                        }
                     case NopInstuction cmd:
                         DebugPrint(cmd);
                         break;
@@ -529,9 +547,12 @@ namespace BabyPenguin
                 case TypeEnum.Fun:
                     break;
                 case TypeEnum.Class:
-                    var symbols = Model!.ResolveClassSymbols(typeInfo);
-                    Value = symbols.ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
-                    break;
+                case TypeEnum.Enum:
+                    {
+                        var symbols = Model!.ResolveClassSymbols(typeInfo);
+                        Value = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
+                        break;
+                    }
             }
         }
 
@@ -539,14 +560,17 @@ namespace BabyPenguin
         public TypeEnum Type { get; }
         public SemanticModel? Model { get; }
         public object? Value { get; set; }
+        public RuntimeVar? EnumValue { get; set; }
         public ISymbol? Symbol { get; }
         public FunctionSymbol? FunctionSymbol { get; private set; }
 
         public void AssignFrom(RuntimeVar other)
         {
-            if (!other.TypeInfo.CanImplicitlyCastTo(this.TypeInfo))
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.Type} to type {Type}");
+            if (!other.TypeInfo.IsEnumType && this.TypeInfo.IsEnumType)
+                if (!other.TypeInfo.CanImplicitlyCastTo(this.TypeInfo))
+                    throw new BabyPenguinRuntimeException($"Cannot assign type {other.Type} to type {Type}");
             Value = other.Value;
+            EnumValue = other.EnumValue;
             FunctionSymbol = other.FunctionSymbol;
         }
 

@@ -1,4 +1,4 @@
-                namespace ns {
+namespace ns {
                     initial {
                         var test : Test = Test.a();
                         if (test is Test.a) {

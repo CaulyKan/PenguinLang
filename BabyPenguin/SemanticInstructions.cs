@@ -119,4 +119,18 @@ namespace BabyPenguin.Semantic
         override public string StringOP2 => TypeInfo.ToString();
         override public string StringResult => Target.ToString() ?? "";
     }
+
+    public record WriteEnumInstruction(ISymbol Value, ISymbol TargetEnum) : SemanticInstruction
+    {
+        override public string StringCommand => "WRENUM";
+        override public string StringOP1 => Value.ToString() ?? "";
+        override public string StringResult => TargetEnum.ToString() ?? "";
+    }
+
+    public record ReadEnumInstruction(ISymbol Enum, ISymbol TargetValue) : SemanticInstruction
+    {
+        override public string StringCommand => "RDENUM";
+        override public string StringOP1 => Enum.ToString() ?? "";
+        override public string StringResult => TargetValue.ToString() ?? "";
+    }
 }

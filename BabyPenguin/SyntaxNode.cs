@@ -694,13 +694,13 @@ namespace BabyPenguin
                    .Select(x => new RelationalExpression(walker, x))
                    .ToList();
 
-            public List<BinaryOperatorEnum> Operators { get; } = context.equalityOperator().Select(x => x.GetText() switch
+            public BinaryOperatorEnum? Operator { get; } = context.equalityOperator() is null ? null : context.equalityOperator().GetText() switch
             {
                 "==" => BinaryOperatorEnum.Equal,
                 "!=" => BinaryOperatorEnum.NotEqual,
                 "is" => BinaryOperatorEnum.Is,
                 _ => throw new System.NotImplementedException("Invalid equality operator"),
-            }).ToList();
+            };
 
             public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
             {

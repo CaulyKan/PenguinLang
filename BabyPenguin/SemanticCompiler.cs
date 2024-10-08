@@ -73,7 +73,7 @@ namespace BabyPenguin
 
         public List<ISymbol> ResolveClassSymbols(TypeInfo classType)
         {
-            if (classType.IsClassType)
+            if (classType.IsClassType || classType.IsEnumType)
             {
                 return Symbols.Where(s => s.Parent.FullName == classType.FullName).ToList();
             }
@@ -83,9 +83,22 @@ namespace BabyPenguin
             }
         }
 
-        public ISymbol? ResolveSymbol(string name)
+        public EnumSymbol? ResolveEnumSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
         {
-            return Symbols.FirstOrDefault(s => s.FullName == name);
+            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && t.IsEnum);
+            if (symbol == null && scope != null)
+                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && t.IsEnum);
+
+            return symbol as EnumSymbol;
+        }
+
+        public ISymbol? ResolveSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
+        {
+            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && !t.IsEnum);
+            if (symbol == null && scope != null)
+                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && !t.IsEnum);
+
+            return symbol;
         }
 
         public string BuildFullTypeName(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)

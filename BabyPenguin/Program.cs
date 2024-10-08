@@ -23,28 +23,28 @@ namespace BabyPenguin
 
         static int Run(Options options)
         {
-            try
+            // try
+            // {
+            var compiler = new SemanticCompiler();
+            foreach (var file in options.Files)
             {
-                var compiler = new SemanticCompiler();
-                foreach (var file in options.Files)
-                {
-                    compiler.AddFile(file);
-                }
-
-                var model = compiler.Compile();
-
-                var vm = new VirtualMachine(model);
-
-                Console.WriteLine("----------- Start Execution -----------");
-                vm.Run();
-
-                return 0;
+                compiler.AddFile(file);
             }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.Message);
-                return -1;
-            }
+
+            var model = compiler.Compile();
+
+            var vm = new VirtualMachine(model);
+
+            Console.WriteLine("----------- Start Execution -----------");
+            vm.Run();
+
+            return 0;
+            // }
+            // catch (Exception e)
+            // {
+            //     Console.WriteLine(e.Message);
+            //     return -1;
+            // }
         }
     }
 }

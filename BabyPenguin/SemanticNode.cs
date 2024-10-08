@@ -235,6 +235,7 @@ namespace BabyPenguin.Semantic
         public bool IsFunctionType => Type == TypeEnum.Fun;
         public bool IsVoidType => Type == TypeEnum.Void;
         public bool IsClassType => Type == TypeEnum.Class;
+        public bool IsEnumType => Type == TypeEnum.Enum;
 
         public static TypeInfo? ResolveLiteralType(string literal)
         {
@@ -323,11 +324,50 @@ namespace BabyPenguin.Semantic
         int ParameterIndex { get; }
         bool IsReadonly { get; }
         bool IsClassMember { get; }
-
         List<TypeInfo> GenericArguments { get; }
         List<string> GenericDefinitions { get; }
         bool IsGeneric => GenericDefinitions.Count > 0;
         bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
+        bool IsEnum { get; }
+        bool IsFunction { get; }
+        bool IsVariable { get; }
+    }
+
+    public class EnumSymbol(ISymbolContainer parent, string name, TypeInfo type, int value, SourceLocation sourceLocation) : ISymbol
+    {
+        public string Name { get; } = name;
+
+        public string OriginName { get; } = name;
+
+        public uint ScopeDepth { get; } = 0;
+
+        public ISymbolContainer Parent { get; } = parent;
+
+        public TypeInfo TypeInfo { get; } = type;
+
+        public SourceLocation SourceLocation { get; } = sourceLocation;
+
+        public bool IsLocal { get; } = false;
+
+        public bool IsTemp { get; } = false;
+
+        public bool IsParameter { get; } = false;
+
+        public int ParameterIndex { get; } = 0;
+
+        public bool IsReadonly { get; } = true;
+
+        public bool IsClassMember { get; } = false;
+
+        public List<TypeInfo> GenericArguments { get; } = [];
+
+        public List<string> GenericDefinitions { get; } = [];
+
+        public int Value { get; } = value;
+
+        public bool IsEnum => true;
+        public bool IsFunction => false;
+        public bool IsVariable => false;
     }
 
     public class VaraibleSymbol(ISymbolContainer parent,
@@ -357,6 +397,9 @@ namespace BabyPenguin.Semantic
         public bool IsClassMember { get; } = isClassMember;
         public List<TypeInfo> GenericArguments { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
+        public bool IsEnum => false;
+        public bool IsFunction => false;
+        public bool IsVariable => true;
 
         public override string ToString()
         {
@@ -419,6 +462,10 @@ namespace BabyPenguin.Semantic
         public List<TypeInfo> GenericArguments { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
 
+        public bool IsEnum => false;
+        public bool IsFunction => true;
+        public bool IsVariable => false;
+
         public override string ToString()
         {
             return $"{Name}({TypeInfo})";
@@ -452,6 +499,18 @@ namespace BabyPenguin.Semantic
         List<ISemanticScope> Children { get; }
         string Name { get; }
         string FullName { get; }
+        string NamespaceName
+        {
+            get
+            {
+                var current = this;
+                while (true)
+                {
+                    if (current is Namespace ns) return ns.Name;
+                    current = current.Parent!;
+                }
+            }
+        }
 
 
         IEnumerable<string> IPrettyPrint.PrettyPrint(int indentLevel, string? prefix)
@@ -479,14 +538,42 @@ namespace BabyPenguin.Semantic
             return temp;
         }
 
-        ISymbol? ResolveSymbol(string name, uint scopeDepth = uint.MaxValue, bool isOriginName = true)
+        EnumSymbol? ResolveEnumSymbol(string name, SourceLocation? sourceLocation = null)
         {
-            var symbol = Symbols.OrderByDescending(s => s.ScopeDepth).FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth);
+            var symbol = Symbols.OrderByDescending(s => s.ScopeDepth).FirstOrDefault(s => s.Name == name && s.IsEnum);
             if (symbol == null)
             {
                 if (Parent is ISymbolContainer parentContainer)
                 {
-                    return parentContainer.ResolveSymbol(name, scopeDepth);
+                    var parentSymbol = parentContainer.ResolveEnumSymbol(name);
+                    if (parentSymbol != null)
+                        return parentSymbol;
+
+                    var globalSymbol = Model.ResolveEnumSymbol(name, this, sourceLocation);
+                    return globalSymbol;
+                }
+                else
+                {
+                    if (this != Model.BuiltinNamespace && Model.BuiltinNamespace != null)
+                        return (Model.BuiltinNamespace as ISymbolContainer).ResolveEnumSymbol(name);
+                }
+            }
+            return symbol as EnumSymbol;
+        }
+
+        ISymbol? ResolveSymbol(string name, uint scopeDepth = uint.MaxValue, bool isOriginName = true, SourceLocation? sourceLocation = null)
+        {
+            var symbol = Symbols.OrderByDescending(s => s.ScopeDepth).FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && !s.IsEnum);
+            if (symbol == null)
+            {
+                if (Parent is ISymbolContainer parentContainer)
+                {
+                    var parentSymbol = parentContainer.ResolveSymbol(name, scopeDepth);
+                    if (parentSymbol != null)
+                        return parentSymbol;
+
+                    var globalSymbol = Model.ResolveSymbol(name, this, sourceLocation);
+                    return globalSymbol;
                 }
                 else
                 {
@@ -507,7 +594,7 @@ namespace BabyPenguin.Semantic
             return symbol;
         }
 
-        ISymbol AddSymbol(string name,
+        ISymbol AddVariableSymbol(string name,
             bool isLocal,
             Or<string, TypeInfo> type,
             SourceLocation sourceLocation,
@@ -540,7 +627,7 @@ namespace BabyPenguin.Semantic
             var symbol = new VaraibleSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
             if (!isLocal)
             {
-                if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
+                if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
                 {
                     Reporter.Throw($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                 }
@@ -578,12 +665,24 @@ namespace BabyPenguin.Semantic
             var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
             if (!isLocal)
             {
-                if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
+                if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
                 {
                     Reporter.Throw($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
                 }
                 Model.Symbols.Add(symbol);
             }
+            Symbols.Add(symbol);
+            return symbol;
+        }
+
+        ISymbol AddEnumSymbol(Enum enum_, string name, TypeInfo typeInfo, int value, SourceLocation sourceLocation)
+        {
+            var symbol = new EnumSymbol(enum_, name, typeInfo, value, sourceLocation) as ISymbol;
+            if (Model.Symbols.Any(s => s.FullName == symbol.FullName && s.IsEnum))
+            {
+                Reporter.Throw($"Enum Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
+            }
+            Model.Symbols.Add(symbol);
             Symbols.Add(symbol);
             return symbol;
         }
@@ -712,7 +811,7 @@ namespace BabyPenguin.Semantic
         public void AddLocalDeclearation(Syntax.Declaration item, int? paramIndex)
         {
             var typeName = item.TypeSpecifier!.Name; // TODO: type inference
-            var symbol = AddSymbol(item.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, paramIndex, item.IsReadonly, false);
+            var symbol = AddVariableSymbol(item.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, paramIndex, item.IsReadonly, false);
             if (item.InitializeExpression != null)
             {
                 AddExpression(item.InitializeExpression, symbol);
@@ -987,6 +1086,12 @@ namespace BabyPenguin.Semantic
                     }
                     else
                         return types.First();
+                case BinaryOperatorEnum.Is:
+                    if (types.Count > 1)
+                    {
+                        return TypeInfo.BuiltinTypes["bool"];
+                    }
+                    else return types.First();
                 case BinaryOperatorEnum.LogicalAnd:
                 case BinaryOperatorEnum.LogicalOr:
                     if (types.Count > 1)
@@ -1029,12 +1134,12 @@ namespace BabyPenguin.Semantic
             {
                 t = ResolveExpressionType(exp.PrimaryExpression);
             }
-            catch
+            catch (PenguinLangException)
             { // ok, try resolve type instead 
             }
             if (t == null)
             {
-                var type = Model.ResolveType(exp.Text, this, exp.SourceLocation);
+                var type = Model.ResolveType(exp.PrimaryExpression.Text, this, exp.SourceLocation);
                 if (type == null)
                 {
                     Model.Reporter.Throw($"Cant resolve owner type of member access expression", exp.SourceLocation);
@@ -1081,7 +1186,10 @@ namespace BabyPenguin.Semantic
                 case Syntax.BitwiseAndExpression exp:
                     return ResolveBinaryOperationType(BinaryOperatorEnum.BitwiseAnd, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case Syntax.EqualityExpression exp:
-                    return ResolveBinaryOperationType(BinaryOperatorEnum.Equal, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
+                    if (exp.Operator == BinaryOperatorEnum.Is)
+                        return ResolveBinaryOperationType(BinaryOperatorEnum.Is, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
+                    else
+                        return ResolveBinaryOperationType(BinaryOperatorEnum.Equal, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case Syntax.RelationalExpression exp:
                     return ResolveBinaryOperationType(BinaryOperatorEnum.GreaterThan, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case Syntax.ShiftExpression exp:
@@ -1161,9 +1269,9 @@ namespace BabyPenguin.Semantic
                         {
                             if (CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
                             {
-                                var symbol = ResolveSymbol(exp.Text);
+                                var symbol = ResolveSymbol(exp.MemberAccessExpression!.Text);
                                 if (symbol == null)
-                                    Model.Reporter.Throw($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
+                                    Model.Reporter.Throw($"Cant resolve symbol '{exp.MemberAccessExpression!.Text}'", exp.SourceLocation);
                                 funcType = symbol.TypeInfo;
                                 isInstanceCall = false;
                             }
@@ -1194,8 +1302,8 @@ namespace BabyPenguin.Semantic
                             }
                             else
                             {
-                                actualType = ResolveExpressionType(exp.ArgumentsExpression[exp.IsMemberAccess ? i - 1 : i]);
-                                sourceLocation = exp.ArgumentsExpression[exp.IsMemberAccess ? i - 1 : i].SourceLocation;
+                                actualType = ResolveExpressionType(exp.ArgumentsExpression[isInstanceCall ? i - 1 : i]);
+                                sourceLocation = exp.ArgumentsExpression[isInstanceCall ? i - 1 : i].SourceLocation;
                             }
                             if (!actualType.CanImplicitlyCastTo(expectedType))
                                 Model.Reporter.Throw($"Function expects {expectedType} param, but got '{actualType}'", sourceLocation);
@@ -1204,18 +1312,16 @@ namespace BabyPenguin.Semantic
                     }
                 case Syntax.MemberAccessExpression exp:
                     {
-                        var t = ResolveExpressionType(exp.PrimaryExpression);
-                        if (t == null)
+                        if (CheckMemberAccessExpressionIsStatic(exp))
                         {
-                            var type = Model.ResolveType(exp.Text, this, exp.SourceLocation);
-                            if (type == null)
-                            {
-                                Model.Reporter.Throw($"Cant resolve owner type of member access expression", exp.SourceLocation);
-                            }
-                            else t = type;
+                            var symbol = Model.ResolveSymbol(exp.Text, this, exp.SourceLocation);
+                            if (symbol == null)
+                                Model.Reporter.Throw($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
+                            return symbol.TypeInfo;
                         }
                         else
                         {
+                            var t = ResolveExpressionType(exp.PrimaryExpression);
                             var ma = exp;
                             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
                             {
@@ -1225,8 +1331,8 @@ namespace BabyPenguin.Semantic
                                     Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                                 t = member.TypeInfo;
                             }
+                            return t;
                         }
-                        return t;
                     }
                 // case Syntax.SlicingExpression exp:
                 //     throw new NotImplementedException();
@@ -1301,7 +1407,10 @@ namespace BabyPenguin.Semantic
                     Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                 if (isLastRound)
                 {
-                    AddInstruction(new ReadMemberInstruction(member, target, to));
+                    if (target.TypeInfo.IsEnumType)
+                        AddInstruction(new ReadEnumInstruction(target, to));
+                    else
+                        AddInstruction(new ReadMemberInstruction(member, target, to));
                 }
                 else
                 {
@@ -1429,17 +1538,26 @@ namespace BabyPenguin.Semantic
                 case Syntax.EqualityExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
-                        var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
-                        var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
-                        var resVar = tempVars.Aggregate((a, b) =>
+                        if (exp.Operator != BinaryOperatorEnum.Is)
                         {
-                            var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
-                            ops.MoveNext();
-                            return res;
-                        });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                            var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                            AddInstruction(new BinaryOperationInstruction(exp.Operator!.Value, tempVars[0], tempVars[1], to));
+                        }
+                        else
+                        {
+                            var leftVar = AddExpression(exp.SubExpressions[0]);
+                            var rightVar = ResolveEnumSymbol(exp.SubExpressions[1].Text);
+                            if (rightVar == null)
+                                Model.Reporter.Throw($"Cant resolve enum symbol '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation);
+                            var tempRightVar = AllocTempSymbol(TypeInfo.BuiltinTypes["i32"], exp.SourceLocation);
+                            var tempLeftVar = AllocTempSymbol(TypeInfo.BuiltinTypes["i32"], exp.SourceLocation);
+                            var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName + "._value");
+                            if (enumValueSymbol == null)
+                                Model.Reporter.Throw($"Cant resolve symbol '{leftVar.TypeInfo.FullName}._value'", exp.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(enumValueSymbol, leftVar, tempLeftVar));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(tempRightVar, TypeInfo.BuiltinTypes["i32"], rightVar.Value.ToString()));
+                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
+                        }
                     }
                     else
                     {
@@ -1700,7 +1818,7 @@ namespace BabyPenguin.Semantic
                 foreach (var decl in syntax.Declarations)
                 {
                     var typeName = decl.TypeSpecifier!.Name; // TODO: type inference
-                    (this as ISymbolContainer).AddSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.Scope.ScopeDepth, null, decl.IsReadonly, false);
+                    (this as ISymbolContainer).AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.Scope.ScopeDepth, null, decl.IsReadonly, false);
                 }
             }
 
@@ -1833,7 +1951,7 @@ namespace BabyPenguin.Semantic
                 {
                     foreach (var member in syntaxNode.ClassDeclarations)
                     {
-                        (this as ISymbolContainer).AddSymbol(member.Name, false, member.TypeSpecifier.Name, member.SourceLocation, member.Scope.ScopeDepth, null, member.IsReadonly, true);
+                        (this as ISymbolContainer).AddVariableSymbol(member.Name, false, member.TypeSpecifier.Name, member.SourceLocation, member.Scope.ScopeDepth, null, member.IsReadonly, true);
                     }
 
                     foreach (var func in Functions)
@@ -1903,7 +2021,7 @@ namespace BabyPenguin.Semantic
             ReturnTypeInfo = returnType;
             foreach (var param in parameters.Values)
             {
-                (this as ISymbolContainer).AddSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, param.Index, param.IsReadonly, false);
+                (this as ISymbolContainer).AddVariableSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, param.Index, param.IsReadonly, false);
             }
         }
 
@@ -1954,7 +2072,7 @@ namespace BabyPenguin.Semantic
                         else
                         {
                             Parameters.Add(param.Name, new FunctionParameter(param.Name, paramType, param.IsReadonly, i));
-                            (this as ISymbolContainer).AddSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth, i, param.IsReadonly, false);
+                            (this as ISymbolContainer).AddVariableSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth, i, param.IsReadonly, false);
                         }
                     }
                     i++;
@@ -1994,37 +2112,51 @@ namespace BabyPenguin.Semantic
         public List<EnumDeclaration> EnumDeclarations { get; set; } = [];
         ISemanticScope? ISemanticScope.Parent { get; set; }
         public TypeInfo? TypeInfo { get; set; }
+        public VaraibleSymbol? ValueSymbol { get; set; }
 
         public void ElabSyntaxSymbols()
         {
+            ValueSymbol = (this as ISymbolContainer)!.AddVariableSymbol("_value", false, TypeInfo.BuiltinTypes["i32"], SourceLocation.Empty(), 0, null, false, true) as VaraibleSymbol;
+
             if (SyntaxNode is Syntax.EnumDefinition syntax)
             {
-                EnumDeclarations = syntax.EnumDeclarations.Select(i => new EnumDeclaration(Model, this, i)).ToList();
+                EnumDeclarations = syntax.EnumDeclarations.Select((e, i) => new EnumDeclaration(Model, this, e, i)).ToList();
             }
 
-            EnumDeclarations.ForEach(i => i.ElabSyntaxSymbols());
+            for (int i = 0; i < EnumDeclarations.Count; i++)
+                EnumDeclarations[i].Value = i;
+
+            foreach (var enumDecl in EnumDeclarations)
+            {
+                enumDecl.ElabSyntaxSymbols();
+            }
         }
     }
 
     public class EnumDeclaration : SemanticNode
     {
-        public EnumDeclaration(SemanticModel model, Enum enum_, string name, TypeInfo? typeInfo = null) : base(model)
+        public EnumDeclaration(SemanticModel model, Enum enum_, string name, int value, TypeInfo? typeInfo = null) : base(model)
         {
             Name = name;
             TypeInfo = typeInfo ?? TypeInfo.BuiltinTypes["void"];
             Enum = enum_;
+            Value = value;
         }
 
-        public EnumDeclaration(SemanticModel model, Enum enum_, Syntax.EnumDeclaration syntaxNode) : base(model, syntaxNode)
+        public EnumDeclaration(SemanticModel model, Enum enum_, Syntax.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Enum = enum_;
             TypeInfo = TypeInfo.BuiltinTypes["void"];
+            Value = value;
         }
 
         public string Name { get; }
         public TypeInfo TypeInfo { get; private set; }
         public Enum Enum { get; }
+        public FunctionSymbol? FunctionSymbol { get; private set; }
+        public EnumSymbol? MemberSymbol { get; private set; }
+        public int Value { get; set; }
 
         public void ElabSyntaxSymbols()
         {
@@ -2036,7 +2168,27 @@ namespace BabyPenguin.Semantic
                     if (type == null) Model.Reporter.Throw($"Cant resolve type '{syntax.TypeSpecifier.Name}'", syntax.SourceLocation);
                     TypeInfo = type;
                 }
+                else TypeInfo = TypeInfo.BuiltinTypes["void"];
             }
+
+            var parameters = new Dictionary<string, FunctionParameter>();
+            if (!TypeInfo.IsVoidType)
+                parameters.Add("value", new FunctionParameter("value", TypeInfo!, false, 0));
+
+            var func = new Function(Model, Name, parameters, Enum.TypeInfo!, false, false);
+            FunctionSymbol = (Enum as IRoutineContainer)!.AddFunctionSymbol(func, false, Enum.TypeInfo!, parameters, SourceLocation, 0, null, true, false) as FunctionSymbol;
+
+            var body = func as ICodeContainer;
+            var tempResult = body.AllocTempSymbol(Enum.TypeInfo!, SourceLocation);
+            var tempValue = body.AllocTempSymbol(TypeInfo.BuiltinTypes["i32"], SourceLocation);
+            body.AddInstruction(new NewInstanceInstruction(tempResult));
+            body.AddInstruction(new AssignLiteralToSymbolInstruction(tempValue, TypeInfo.BuiltinTypes["i32"], Value.ToString()));
+            body.AddInstruction(new WriteMemberInstruction(Enum.ValueSymbol!, tempValue, tempResult));
+            if (!TypeInfo.IsVoidType)
+                body.AddInstruction(new WriteEnumInstruction(body.ResolveSymbol("value")!, tempResult));
+            body.AddInstruction(new ReturnInstruction(tempResult));
+
+            MemberSymbol = (Enum as ISymbolContainer)!.AddEnumSymbol(Enum, Name, TypeInfo, Value, SourceLocation) as EnumSymbol;
         }
     }
 }
