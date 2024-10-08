@@ -566,7 +566,7 @@ namespace BabyPenguin
 
         public void AssignFrom(RuntimeVar other)
         {
-            if (!other.TypeInfo.IsEnumType && this.TypeInfo.IsEnumType)
+            if (!other.TypeInfo.IsEnumType && !this.TypeInfo.IsEnumType)
                 if (!other.TypeInfo.CanImplicitlyCastTo(this.TypeInfo))
                     throw new BabyPenguinRuntimeException($"Cannot assign type {other.Type} to type {Type}");
             Value = other.Value;
