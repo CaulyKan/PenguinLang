@@ -398,7 +398,7 @@ namespace BabyPenguin.Semantic
         public int ParameterIndex { get; } = paramIndex ?? -1;
         public bool IsReadonly { get; set; } = isReadonly;
         public bool IsClassMember { get; } = isClassMember;
-        public bool IsStatic { get; } = true;
+        public bool IsStatic { get; } = !isClassMember;
         public List<TypeInfo> GenericArguments { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
         public bool IsEnum => false;
@@ -868,18 +868,26 @@ namespace BabyPenguin.Semantic
                             }
                             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
                             {
-                                if (i == ma.MemberIdentifiers.Count - 1)
+                                var isLastRound = i == ma.MemberIdentifiers.Count - 1;
+                                member = target.TypeInfo.IsEnumType ?
+                                    Model.ResolveEnumSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name) :
+                                    Model.ResolveSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name, isStatic: false);
+                                if (member == null)
+                                    Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
+                                if (!isLastRound)
                                 {
-                                    member = Model.ResolveSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name);
-                                }
-                                else
-                                {
-                                    member = Model.ResolveSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name);
-                                    if (member == null)
-                                        Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
-                                    var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                    AddInstruction(new ReadMemberInstruction(member, target, temp));
-                                    target = temp;
+                                    if (target.TypeInfo.IsEnumType)
+                                    {
+                                        var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
+                                        AddInstruction(new ReadEnumInstruction(target, temp));
+                                        target = temp;
+                                    }
+                                    else
+                                    {
+                                        var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
+                                        AddInstruction(new ReadMemberInstruction(member, target, temp));
+                                        target = temp;
+                                    }
                                 }
                             }
                         }
@@ -1420,7 +1428,9 @@ namespace BabyPenguin.Semantic
             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
             {
                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                var member = Model.ResolveSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name);
+                var member = target.TypeInfo.IsEnumType ?
+                    Model.ResolveEnumSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name) :
+                    Model.ResolveSymbol(target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name, isStatic: false);
                 if (member == null)
                     Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                 if (isLastRound)
@@ -1432,9 +1442,18 @@ namespace BabyPenguin.Semantic
                 }
                 else
                 {
-                    var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                    AddInstruction(new ReadMemberInstruction(member, target, temp));
-                    target = temp;
+                    if (target.TypeInfo.IsEnumType)
+                    {
+                        var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
+                        AddInstruction(new ReadEnumInstruction(target, temp));
+                        target = temp;
+                    }
+                    else
+                    {
+                        var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
+                        AddInstruction(new ReadMemberInstruction(member, target, temp));
+                        target = temp;
+                    }
                 }
             }
             owner = target;

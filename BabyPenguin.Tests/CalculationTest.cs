@@ -704,5 +704,42 @@ namespace BabyPenguin.Tests
             Assert.Equal("a2", vm.CollectOutput());
         }
 
+        [Fact]
+        public void EnumGenericCustomTypeTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test<Foo> = Test<Foo>.a();
+                        if (test is Test<Foo>.a) {
+                            print(""a"");
+                        }
+                        test = Test<Foo>.b(new Foo());
+                        if (test is Test<Foo>.b) {
+                            print(test.b.x as string);
+                            test.b.x = 1;
+                            print(test.b.x as string);
+                        } else if (test is Test<Foo>.a) {
+                            print(""not possible"");
+                        }
+                    }
+
+                    class Foo {
+                        var x: u8 = 0;
+                    }
+
+                    enum Test <T> {
+                        a;
+                        b : T;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("a01", vm.CollectOutput());
+        }
+
     }
 }

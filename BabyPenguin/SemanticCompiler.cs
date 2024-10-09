@@ -85,18 +85,40 @@ namespace BabyPenguin
 
         public EnumSymbol? ResolveEnumSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
         {
-            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && t.IsEnum);
+            var nameComponents = NameComponents.ParseName(name);
+            var fullname = "";
+            if (nameComponents.Prefix.Count > 0)
+            {
+                var fullPrefixName = BuildFullTypeName(nameComponents.PrefixString, scope, sourceLocation);
+                fullname = fullPrefixName + "." + nameComponents.Name;
+            }
+            else
+            {
+                fullname = name;
+            }
+            var symbol = Symbols.FirstOrDefault(t => t.FullName == fullname && t.IsEnum);
             if (symbol == null && scope != null)
-                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && t.IsEnum);
+                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + fullname && t.IsEnum);
 
             return symbol as EnumSymbol;
         }
 
         public ISymbol? ResolveSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null, bool? isStatic = null)
         {
-            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
+            var nameComponents = NameComponents.ParseName(name);
+            var fullname = "";
+            if (nameComponents.Prefix.Count > 0)
+            {
+                var fullPrefixName = BuildFullTypeName(nameComponents.PrefixString, scope, sourceLocation);
+                fullname = fullPrefixName + "." + nameComponents.Name;
+            }
+            else
+            {
+                fullname = name;
+            }
+            var symbol = Symbols.FirstOrDefault(t => t.FullName == fullname && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
             if (symbol == null && scope != null)
-                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
+                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + fullname && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
 
             return symbol;
         }
