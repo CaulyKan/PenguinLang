@@ -8,6 +8,7 @@ using System.Text;
 using BabyPenguin;
 using System.Reflection.Metadata.Ecma335;
 using ConsoleTables;
+using BabyPenguin.Syntax;
 
 namespace BabyPenguin.Semantic
 {
@@ -324,6 +325,7 @@ namespace BabyPenguin.Semantic
         int ParameterIndex { get; }
         bool IsReadonly { get; }
         bool IsClassMember { get; }
+        bool IsStatic { get; }
         List<TypeInfo> GenericArguments { get; }
         List<string> GenericDefinitions { get; }
         bool IsGeneric => GenericDefinitions.Count > 0;
@@ -368,6 +370,7 @@ namespace BabyPenguin.Semantic
         public bool IsEnum => true;
         public bool IsFunction => false;
         public bool IsVariable => false;
+        public bool IsStatic => false;
     }
 
     public class VaraibleSymbol(ISymbolContainer parent,
@@ -395,6 +398,7 @@ namespace BabyPenguin.Semantic
         public int ParameterIndex { get; } = paramIndex ?? -1;
         public bool IsReadonly { get; set; } = isReadonly;
         public bool IsClassMember { get; } = isClassMember;
+        public bool IsStatic { get; } = true;
         public List<TypeInfo> GenericArguments { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
         public bool IsEnum => false;
@@ -423,7 +427,8 @@ namespace BabyPenguin.Semantic
             bool isTemp,
             int? paramIndex,
             bool isReadonly,
-            bool isClassMember)
+            bool isClassMember,
+            bool isStatic)
         {
             Parent = parent;
             Name = name;
@@ -438,6 +443,8 @@ namespace BabyPenguin.Semantic
             IsTemp = isTemp;
             IsReadonly = isReadonly;
             SemanticFunction = func;
+            IsStatic = isStatic;
+            IsClassMember = isClassMember;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Values.Select(p => p.Type)).ToList();
             TypeInfo = parent.Model.ResolveOrCreateType("fun", TypeEnum.Fun, "", [], funTypeGenericArguments);
@@ -459,6 +466,7 @@ namespace BabyPenguin.Semantic
         public bool IsReadonly { get; set; }
         public Function SemanticFunction { get; }
         public bool IsClassMember { get; }
+        public bool IsStatic { get; }
         public List<TypeInfo> GenericArguments { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
 
@@ -645,7 +653,8 @@ namespace BabyPenguin.Semantic
             uint scopeDepth,
             int? paramIndex,
             bool isReadonly,
-            bool isClassMember)
+            bool isClassMember,
+            bool isStatic)
         {
             var name = func.Name;
             var originName = name;
@@ -662,7 +671,7 @@ namespace BabyPenguin.Semantic
                 }
             }
 
-            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
+            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -1314,7 +1323,7 @@ namespace BabyPenguin.Semantic
                     {
                         if (CheckMemberAccessExpressionIsStatic(exp))
                         {
-                            var symbol = Model.ResolveSymbol(exp.Text, this, exp.SourceLocation);
+                            var symbol = Model.ResolveSymbol(exp.Text, this, exp.SourceLocation, true);
                             if (symbol == null)
                                 Model.Reporter.Throw($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
                             return symbol.TypeInfo;
@@ -1326,7 +1335,16 @@ namespace BabyPenguin.Semantic
                             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
                             {
                                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                                var member = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
+                                ISymbol? member;
+                                if (t.IsEnumType)
+                                {
+                                    member = Model.ResolveEnumSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
+                                }
+                                else
+                                {
+                                    member = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name, isStatic: false);
+                                }
+
                                 if (member == null)
                                     Model.Reporter.Throw($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                                 t = member.TypeInfo;
@@ -2012,13 +2030,14 @@ namespace BabyPenguin.Semantic
             CodeSyntaxNode = syntaxNode.CodeBlock;
         }
 
-        public Function(SemanticModel model, string name, Dictionary<string, FunctionParameter> parameters, TypeInfo returnType, bool isExtern = false, bool? isPure = null) : base(model)
+        public Function(SemanticModel model, string name, Dictionary<string, FunctionParameter> parameters, TypeInfo returnType, bool isExtern = false, bool? isPure = null, bool isStatic = true) : base(model)
         {
             Name = name;
             IsExtern = isExtern;
             IsPure = isPure;
             Parameters = parameters;
             ReturnTypeInfo = returnType;
+            IsStatic = isStatic;
             foreach (var param in parameters.Values)
             {
                 (this as ISymbolContainer).AddVariableSymbol(param.Name, true, param.Type, SourceLocation.Empty(), 0, param.Index, param.IsReadonly, false);
@@ -2035,6 +2054,7 @@ namespace BabyPenguin.Semantic
         public List<SemanticInstruction> Instructions { get; } = [];
         public Syntax.SyntaxNode? CodeSyntaxNode { get; }
         public bool IsExtern { get; }
+        public bool? IsStatic { get; private set; }
         public bool? IsPure { get; }
         public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
@@ -2055,6 +2075,7 @@ namespace BabyPenguin.Semantic
 
                 Parameters = [];
                 int i = 0;
+                IsStatic = true;
                 foreach (var param in func.Parameters)
                 {
                     if (Parameters.ContainsKey(param.Name))
@@ -2075,14 +2096,22 @@ namespace BabyPenguin.Semantic
                             (this as ISymbolContainer).AddVariableSymbol(param.Name, true, paramType, param.SourceLocation, param.Scope.ScopeDepth, i, param.IsReadonly, false);
                         }
                     }
+
+                    if (param.Name == "this")
+                    {
+                        if (Parent is Class && i == 0)
+                            IsStatic = false;
+                        else
+                            Model.Reporter.Throw($"'this' parameter can only be the first parameter for class method in function '{func.Name}'", param.SourceLocation);
+                    }
                     i++;
                 }
-                var funcSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false);
+                var funcSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, func.SourceLocation, func.Scope.ScopeDepth, null, true, false, IsStatic!.Value);
                 FunctionSymbol = (FunctionSymbol)funcSymbol;
             }
             else
             {
-                FunctionSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, SourceLocation.Empty(), 0, null, true, false) as FunctionSymbol;
+                FunctionSymbol = (Parent as IRoutineContainer)!.AddFunctionSymbol(this, false, ReturnTypeInfo, Parameters, SourceLocation.Empty(), 0, null, true, false, IsStatic!.Value) as FunctionSymbol;
             }
             Model.CompileTasks.Add(this);
         }
@@ -2090,45 +2119,78 @@ namespace BabyPenguin.Semantic
 
     public class Enum : SemanticNode, ISymbolContainer, IRoutineContainer, IGenericContainer
     {
-        public Enum(SemanticModel model, IClassContainer ns, Syntax.EnumDefinition syntaxNode) : base(model, syntaxNode)
+        public Enum(SemanticModel model, IClassContainer ns, Syntax.EnumDefinition syntaxNode, List<TypeInfo>? genericArguments = null) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Parent = ns;
+            GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(i => i.Name).ToList() ?? [];
+            GenericArguments = genericArguments ?? [];
             foreach (var func in syntaxNode.Functions)
                 (this as IRoutineContainer).AddFunction(func);
             foreach (var initialRoutine in syntaxNode.InitialRoutines)
                 (this as IRoutineContainer).AddInitialRoutine(initialRoutine);
         }
 
+        public Enum(SemanticModel model, IClassContainer ns, string name, List<string>? genericDefinitions = null, List<TypeInfo>? genericArguments = null) : base(model)
+        {
+            Name = name;
+            Parent = ns;
+            GenericDefinitions = genericDefinitions ?? [];
+            GenericArguments = genericArguments ?? [];
+        }
+
+        public Enum Specialize(TypeInfo specializationTypeInfo)
+        {
+            Enum result;
+            var genericArguments = specializationTypeInfo.GenericArguments;
+            if (SyntaxNode is Syntax.EnumDefinition syntax)
+            {
+                result = new Enum(Model, (IClassContainer)Parent!, syntax, genericArguments);
+                result.TypeInfo = specializationTypeInfo;
+            }
+            else
+            {
+                result = new Enum(Model, (IClassContainer)Parent!, Name, GenericDefinitions, genericArguments);
+                result.TypeInfo = specializationTypeInfo;
+            }
+
+            return result;
+        }
         public List<ISymbol> Symbols { get; } = [];
-        public IClassContainer Parent { get; }
         public List<ISemanticScope> Children { get; } = [];
         public string Name { get; }
-        public string FullName => Parent == null ? Name : Parent.FullName + "." + Name;
+        public string FullName => TypeInfo!.FullName;
         public List<InitialRoutine> InitialRoutines { get; } = [];
         public List<Function> Functions { get; } = [];
         public List<string> GenericDefinitions { get; } = [];
         public List<TypeInfo> GenericArguments { get; set; } = [];
         public List<EnumDeclaration> EnumDeclarations { get; set; } = [];
-        ISemanticScope? ISemanticScope.Parent { get; set; }
+        public ISemanticScope? Parent { get; set; }
         public TypeInfo? TypeInfo { get; set; }
         public VaraibleSymbol? ValueSymbol { get; set; }
 
         public void ElabSyntaxSymbols()
         {
-            ValueSymbol = (this as ISymbolContainer)!.AddVariableSymbol("_value", false, TypeInfo.BuiltinTypes["i32"], SourceLocation.Empty(), 0, null, false, true) as VaraibleSymbol;
-
-            if (SyntaxNode is Syntax.EnumDefinition syntax)
+            if ((this as IGenericContainer).IsGeneric && !(this as IGenericContainer).IsSpecialized)
             {
-                EnumDeclarations = syntax.EnumDeclarations.Select((e, i) => new EnumDeclaration(Model, this, e, i)).ToList();
+                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, "ElabSyntaxSymbols for class '{Name}' is skipped now because it is generic");
             }
-
-            for (int i = 0; i < EnumDeclarations.Count; i++)
-                EnumDeclarations[i].Value = i;
-
-            foreach (var enumDecl in EnumDeclarations)
+            else
             {
-                enumDecl.ElabSyntaxSymbols();
+                ValueSymbol = (this as ISymbolContainer)!.AddVariableSymbol("_value", false, TypeInfo.BuiltinTypes["i32"], SourceLocation.Empty(), 0, null, false, true) as VaraibleSymbol;
+
+                if (SyntaxNode is Syntax.EnumDefinition syntax)
+                {
+                    EnumDeclarations = syntax.EnumDeclarations.Select((e, i) => new EnumDeclaration(Model, this, e, i)).ToList();
+                }
+
+                for (int i = 0; i < EnumDeclarations.Count; i++)
+                    EnumDeclarations[i].Value = i;
+
+                foreach (var enumDecl in EnumDeclarations)
+                {
+                    enumDecl.ElabSyntaxSymbols();
+                }
             }
         }
     }
@@ -2176,7 +2238,7 @@ namespace BabyPenguin.Semantic
                 parameters.Add("value", new FunctionParameter("value", TypeInfo!, false, 0));
 
             var func = new Function(Model, Name, parameters, Enum.TypeInfo!, false, false);
-            FunctionSymbol = (Enum as IRoutineContainer)!.AddFunctionSymbol(func, false, Enum.TypeInfo!, parameters, SourceLocation, 0, null, true, false) as FunctionSymbol;
+            FunctionSymbol = (Enum as IRoutineContainer)!.AddFunctionSymbol(func, false, Enum.TypeInfo!, parameters, SourceLocation, 0, null, true, false, true) as FunctionSymbol;
 
             var body = func as ICodeContainer;
             var tempResult = body.AllocTempSymbol(Enum.TypeInfo!, SourceLocation);

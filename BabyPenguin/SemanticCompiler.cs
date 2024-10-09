@@ -92,11 +92,11 @@ namespace BabyPenguin
             return symbol as EnumSymbol;
         }
 
-        public ISymbol? ResolveSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null)
+        public ISymbol? ResolveSymbol(string name, ISemanticScope? scope = null, SourceLocation? sourceLocation = null, bool? isStatic = null)
         {
-            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && !t.IsEnum);
+            var symbol = Symbols.FirstOrDefault(t => t.FullName == name && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
             if (symbol == null && scope != null)
-                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && !t.IsEnum);
+                symbol = Symbols.FirstOrDefault(t => t.FullName == scope.NamespaceName + "." + name && !t.IsEnum && (isStatic == null || t.IsStatic == isStatic));
 
             return symbol;
         }
@@ -264,6 +264,28 @@ namespace BabyPenguin
             return class_;
         }
 
+        public Enum ResolveOrCreateSpecializedEnum(Enum enum_, List<TypeInfo> genericArguments, SourceLocation? sourceLocation = null)
+        {
+            var baseType = enum_.TypeInfo!;
+            if (!baseType.IsGeneric && genericArguments.Count > 0)
+                Reporter.Throw($"Cannot specialize non-generic type '{baseType.FullName}'", sourceLocation);
+            if (baseType.IsSpecialized)
+                return enum_;
+
+            var type = new TypeInfo(baseType.Name, baseType.Namespace, TypeEnum.Enum, baseType.GenericDefinitions, genericArguments);
+            if (Enums.Find(c => c.TypeInfo == type) is Enum existingEnum)
+                return existingEnum;
+
+            var newEnum = enum_.Specialize(type);
+            if (!Types.Contains(type))
+                Types.Add(type);
+            Enums.Add(newEnum);
+
+            newEnum.ElabSyntaxSymbols();
+
+            return newEnum;
+        }
+
         public Class ResolveOrCreateSpecializedClass(Class class_, List<TypeInfo> genericArguments, SourceLocation? sourceLocation = null)
         {
             var baseType = class_.TypeInfo!;
@@ -324,10 +346,25 @@ namespace BabyPenguin
             }
             else
             {
-                var class_ = Classes.FirstOrDefault(c => c.TypeInfo == baseType);
-                if (class_ == null)
-                    Reporter.Throw($"Cannot specialize non-class type '{baseType.FullName}'", SourceLocation.Empty());
-                return ResolveOrCreateSpecializedClass(class_, genericArguments).TypeInfo!;
+                if (baseType.IsClassType)
+                {
+                    var class_ = Classes.FirstOrDefault(c => c.TypeInfo == baseType);
+                    if (class_ == null)
+                        Reporter.Throw($"Cannot specialize non-class type '{baseType.FullName}'", SourceLocation.Empty());
+                    return ResolveOrCreateSpecializedClass(class_, genericArguments).TypeInfo!;
+                }
+                else if (baseType.IsEnumType)
+                {
+                    var enum_ = Enums.FirstOrDefault(e => e.TypeInfo == baseType);
+                    if (enum_ == null)
+                        Reporter.Throw($"Cannot specialize non-enum type '{baseType.FullName}'", SourceLocation.Empty());
+                    return ResolveOrCreateSpecializedEnum(enum_, genericArguments).TypeInfo!;
+                }
+                else
+                {
+                    Reporter.Throw($"Cannot specialize type '{baseType.FullName}'", SourceLocation.Empty());
+                    throw new NotImplementedException();
+                }
             }
         }
 

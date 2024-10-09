@@ -473,6 +473,8 @@ namespace BabyPenguin.Tests
                         test = Test.b(2);
                         if (test is Test.b) {
                             print(test.b as string);
+                        } else if (test is Test.a) {
+                            print(""not possible"");
                         }
                     }
 
@@ -670,5 +672,37 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
+
+        [Fact]
+        public void EnumGenericTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    initial {
+                        var test : Test<u8> = Test<u8>.a();
+                        if (test is Test<u8>.a) {
+                            print(""a"");
+                        }
+                        test = Test<u8>.b(2);
+                        if (test is Test<u8>.b) {
+                            print(test.b as string);
+                        } else if (test is Test<u8>.a) {
+                            print(""not possible"");
+                        }
+                    }
+
+                    enum Test <T> {
+                        a;
+                        b : T;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new VirtualMachine(model);
+            vm.Run();
+            Assert.Equal("a2", vm.CollectOutput());
+        }
+
     }
 }
