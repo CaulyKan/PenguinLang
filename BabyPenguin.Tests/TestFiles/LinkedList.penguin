@@ -1,46 +1,53 @@
 namespace ll {
-    class LinkedList {
-        var head: LinkedListNode;
-        var tail: LinkedListNode;
-        var size: u32 = 0;
+    class LinkedList <T> {
+        var head: LinkedListNode<T>;
+        var tail: LinkedListNode<T>;
+        var size: i32 = 0;
 
-        fun add(var this: LinkedList, val v: i32) {
-            if (size == 0) {
-               this.head = new LinkedListNode();
+        fun add(var this: LinkedList<T>, val v: T) {
+            if (this.size == 0) {
+               this.head = new LinkedListNode<T>();
                this.head.value = v;
-               this.head.hasNext = false;
+               this.head.link = LinkedListLink<T>.end();
                this.tail = this.head;
             } else {
-               var newNode : LinkedListNode= new LinkedListNode();
+               var newNode : LinkedListNode<T> = new LinkedListNode<T>();
                newNode.value = v;
-               newNode.hasNext = false;
-               this.tail.hasNext = true;
-               this.tail.next = newNode;
+               newNode.link = LinkedListLink<T>.end();
+               this.tail.link = LinkedListLink<T>.next(newNode);
                this.tail = newNode;
             }
+            this.size += 1;
         }
 
-        fun print_all(val this: LinkedList) {
+        fun print_all(val this: LinkedList<T>) {
             if (this.size > 0) {
-                var current : LinkedListNode = head;
-                print(current.value);
-                while (current.hasNext) {
-                    current = current.next;
-                    print(", ");
+                var current : LinkedListNode<T> = this.head;
+                while (true) {
                     print(current.value);
+                    if (current.link is LinkedListLink<T>.end) {
+                        break;
+                    } else {
+                        current = current.link.next;
+                        print(",");
+                    }
                 }
             }
         }
     }
 
-    class LinkedListNode {
-        var value: i32;
-        var next: LinkedListNode;
-        var hasNext: bool;
+    enum LinkedListLink <T> {
+        end;
+        next: LinkedListNode<T>;
+    }
+
+    class LinkedListNode <T> {
+        var value: T;
+        var link: LinkedListLink<T> = LinkedListLink<T>.end();
     }
 
     initial {
-        var ll : LinkedList = new LinkedList();
+        var ll : LinkedList<i32> = new LinkedList<i32>();
         ll.add(1);
         ll.add(2);
         ll.add(3);

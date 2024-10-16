@@ -31,7 +31,7 @@ namespace BabyPenguin
             var model = compiler.Compile();
 
             var vm = new BabyPenguinVM(model);
-            vm.Global.EnableDebugPrint = true;
+            vm.Global.EnableDebugPrint = false;
 
             Console.WriteLine("----------- Start Execution -----------");
             vm.Run();
