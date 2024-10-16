@@ -6,14 +6,14 @@ namespace BabyPenguin
         public IEnumerable<Class> Classes => FindAll(s => s is Class).Cast<Class>();
         public IEnumerable<SemanticNode.Enum> Enums => FindAll(s => s is SemanticNode.Enum).Cast<SemanticNode.Enum>();
         public IEnumerable<IType> Types => FindAll(s => s is IType).Cast<IType>();
-        public PenguinLangSyntax.ErrorReporter Reporter { get; } = new PenguinLangSyntax.ErrorReporter();
+        public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
         public SemanticNode.Namespace BuiltinNamespace { get; }
 
-        public SemanticModel(PenguinLangSyntax.ErrorReporter? reporter = null)
+        public SemanticModel(ErrorReporter? reporter = null)
         {
-            Reporter = reporter ?? new PenguinLangSyntax.ErrorReporter();
+            Reporter = reporter ?? new ErrorReporter();
             BuiltinNamespace = AddBuiltin();
             Namespaces = [BuiltinNamespace];
             Passes = new List<ISemanticPass>() {
@@ -161,21 +161,32 @@ namespace BabyPenguin
             // specialize type with generic arguments if necessary
             if (typeCandidate.IsGeneric && nameComponents.Generics.Count > 0)
             {
-                var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, predicate, scope)).ToList();
-                for (int i = 0; i < genericArgumentsFromName.Count; i++)
+                if (nameComponents.Generics.All(i => i == "?"))
                 {
-                    if (genericArgumentsFromName[i] == null)
-                    {
-                        Reporter.Write(PenguinLangSyntax.ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
-                        return null;
-                    }
+                    return typeCandidate;
                 }
-                var genericTypeInfo = typeCandidate.GenericInstances.FirstOrDefault(i =>
-                    i.GenericArguments.SequenceEqual(genericArgumentsFromName));
+                else
+                {
+                    var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, predicate, scope)).ToList();
+                    for (int i = 0; i < genericArgumentsFromName.Count; i++)
+                    {
+                        if (genericArgumentsFromName[i] == null)
+                        {
+                            Reporter.Write(PenguinLangSyntax.ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
+                            return null;
+                        }
+                    }
+                    var genericTypeInfo = typeCandidate.GenericInstances.FirstOrDefault(i =>
+                        i.GenericArguments.SequenceEqual(genericArgumentsFromName));
 
-                genericTypeInfo ??= typeCandidate.Specialize(genericArgumentsFromName.Select(i => i!).ToList());
+                    genericTypeInfo ??= typeCandidate.Specialize(genericArgumentsFromName.Select(i => i!).ToList());
 
-                return genericTypeInfo;
+                    return genericTypeInfo;
+                }
+            }
+            else if (typeCandidate.IsGeneric && nameComponents.Generics.Count == 0)
+            {
+                throw new BabyPenguinException("Resolving generic type without generic arguments is not supported. If non-specialized type is needed, use '?' as generic argument.");
             }
             else
             {

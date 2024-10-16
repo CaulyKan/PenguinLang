@@ -443,7 +443,7 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var bar1 = model.ResolveType("ns.Bar");
+            var bar1 = model.ResolveType("ns.Bar<?,?,?>");
             Assert.NotNull(bar1);
             Assert.True(bar1.IsGeneric);
             Assert.False(bar1.IsSpecialized);
@@ -458,7 +458,7 @@ namespace BabyPenguin.Tests
             Assert.Equal("string", bar2.GenericArguments[2].FullName);
             Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName);
 
-            var bar3 = model.ResolveType("Bar", scope: model.Classes.First());
+            var bar3 = model.ResolveType("Bar<?,?,?>", scope: model.Classes.First());
             Assert.True(bar1.FullName == bar3!.FullName);
             Assert.Single(bar3.GenericInstances);
             Assert.True(bar3.GenericInstances.First() == bar2);
@@ -475,7 +475,7 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var foo1 = model.ResolveType("ns.Foo");
+            var foo1 = model.ResolveType("ns.Foo<?>");
             Assert.NotNull(foo1);
             Assert.True(foo1.IsGeneric);
             Assert.False(foo1.IsSpecialized);
@@ -487,7 +487,7 @@ namespace BabyPenguin.Tests
             Assert.True(foo2.IsSpecialized);
             Assert.Equal("ns.Foo<u8>", foo2.FullName);
 
-            var foo3 = model.ResolveType("Foo", scope: model.Enums.First());
+            var foo3 = model.ResolveType("Foo<?>", scope: model.Enums.First());
             Assert.True(foo1.FullName == foo3!.FullName);
             Assert.Single(foo3.GenericInstances);
             Assert.True(foo3.GenericInstances.First() == foo2);
@@ -622,6 +622,36 @@ namespace BabyPenguin.Tests
             var symbol3 = model.ResolveSymbol("a", scope: bar1 as IClass);
             Assert.Equal("ns.Bar<ns.Foo<string>>.a", symbol3!.FullName);
             Assert.Equal("ns.Foo<string>", symbol3.TypeInfo.FullName);
+        }
+
+        [Fact]
+        public void CantDeclareTypeWithoutGeneric1()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo<T> {}
+                    class Bar { 
+                        val a : Foo;
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void CantDeclareTypeWithoutGeneric2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo<T> {}
+                    initial {
+                        val a : Foo;
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
     }
 }

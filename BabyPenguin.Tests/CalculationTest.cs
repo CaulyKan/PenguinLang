@@ -348,6 +348,25 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ClassMethodCantVisitMemberDirectly()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                namespace ns {
+                    class Test {
+                        var a : u8;
+                        var b : u8;
+
+                        fun print_sum() {
+                            a=1;
+                        }
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
+        }
+
+        [Fact]
         public void ClassMethodCascadeTest()
         {
             var compiler = new SemanticCompiler();

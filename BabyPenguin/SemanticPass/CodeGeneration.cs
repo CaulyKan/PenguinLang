@@ -90,6 +90,7 @@ namespace BabyPenguin.SemanticPass
                         if (!isMemberAccess)
                         {
                             target = Model.ResolveShortSymbol(item.AssignmentStatement.LeftHandSide.Identifier!.Name,
+                                s => !s.IsClassMember,
                                 scopeDepth: item.Scope.ScopeDepth, scope: this);
                         }
                         else
@@ -97,7 +98,8 @@ namespace BabyPenguin.SemanticPass
                             var ma = item.AssignmentStatement.LeftHandSide.MemberAccess!;
                             if (ma.PrimaryExpression.IsSimple)
                             {
-                                target = Model.ResolveShortSymbol(ma.PrimaryExpression.Text, scopeDepth: item.Scope.ScopeDepth, scope: this);
+                                target = Model.ResolveShortSymbol(ma.PrimaryExpression.Text,
+                                    s => !s.IsClassMember, scopeDepth: item.Scope.ScopeDepth, scope: this);
                                 if (target == null)
                                 {
                                     throw new BabyPenguinException($"Cant resolve symbol '{ma.PrimaryExpression.Text}'", ma.PrimaryExpression.SourceLocation);
@@ -571,7 +573,8 @@ namespace BabyPenguin.SemanticPass
                     switch (exp.PrimaryExpressionType)
                     {
                         case PrimaryExpression.Type.Identifier:
-                            var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                            var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
+                                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
                             if (symbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
                             else
@@ -608,7 +611,9 @@ namespace BabyPenguin.SemanticPass
             if (!exp.PrimaryExpression.IsSimple)
                 return false;
 
-            var symbol = Model.ResolveShortSymbol(exp.PrimaryExpression.Text, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+            var symbol = Model.ResolveShortSymbol(exp.PrimaryExpression.Text,
+                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+
             if (symbol == null)
             {
                 symbol = Model.ResolveSymbol(exp.Text, s => s.IsStatic || s.IsEnum, scope: this);
@@ -636,7 +641,9 @@ namespace BabyPenguin.SemanticPass
             {
                 if (exp.PrimaryExpression.IsSimple)
                 {
-                    var temp = Model.ResolveShortSymbol(exp.PrimaryExpression.Text, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                    var temp = Model.ResolveShortSymbol(exp.PrimaryExpression.Text,
+                        s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+
                     if (temp == null)
                         throw new BabyPenguinException($"Cant resolve symbol '{exp.PrimaryExpression.Text}'", exp.PrimaryExpression.SourceLocation);
                     owner_var = temp;
@@ -1010,7 +1017,8 @@ namespace BabyPenguin.SemanticPass
                     switch (exp.PrimaryExpressionType)
                     {
                         case PrimaryExpression.Type.Identifier:
-                            var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                            var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
+                                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
                             if (symbol == null) throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
                             else AddInstruction(new AssignmentInstruction(symbol, to));
                             break;
