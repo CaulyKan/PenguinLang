@@ -1,25 +1,15 @@
                 namespace ns {
+                    class Test <T> {
+                        var x: T;
+                    }
+
                     initial {
-                        var test : Test<Foo> = Test<Foo>.a();
-                        if (test is Test<Foo>.a) {
-                            print("a");
-                        }
-                        test = Test<Foo>.b(new Foo());
-                        if (test is Test<Foo>.b) {
-                            print(test.b.x as string);
-                            test.b.x = 1;
-                            print(test.b.x as string);
-                        } else if (test is Test<Foo>.a) {
-                            print("not possible");
-                        }
-                    }
+                        val t : Test<u8> = new Test<u8>();
+                        t.x = 1;
+                        print(t.x as string);
 
-                    class Foo {
-                        var x: u8 = 0;
-                    }
-
-                    enum Test <T> {
-                        a;
-                        b : T;
+                        val t2 : Test<string> = new Test<string>();
+                        t2.x = "2";
+                        print(t2.x);
                     }
                 }

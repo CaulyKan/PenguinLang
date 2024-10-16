@@ -1,7 +1,4 @@
-﻿// See https://aka.ms/new-console-template for more information
-using System.Text;
-using CommandLine;
-using PenguinLangAntlr;
+﻿using CommandLine;
 namespace BabyPenguin
 {
     public class Options
@@ -33,7 +30,8 @@ namespace BabyPenguin
 
             var model = compiler.Compile();
 
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
+            vm.Global.EnableDebugPrint = true;
 
             Console.WriteLine("----------- Start Execution -----------");
             vm.Run();

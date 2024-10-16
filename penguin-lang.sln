@@ -5,7 +5,7 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BabyPenguin", "BabyPenguin\BabyPenguin.csproj", "{1EB934FB-FC38-4B20-8DB5-11F4A394FAC4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PenguinLangAntlr", "PenguinLangAntlr\PenguinLangAntlr.csproj", "{3FBF5076-58C4-4B29-87D5-18D2972FE876}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PenguinLangSyntax", "PenguinLangSyntax\PenguinLangSyntax.csproj", "{3FBF5076-58C4-4B29-87D5-18D2972FE876}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BabyPenguin.Tests", "BabyPenguin.Tests\BabyPenguin.Tests.csproj", "{1644E680-C71D-45C1-9622-9046395AA486}"
 EndProject

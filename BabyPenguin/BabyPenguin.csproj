@@ -12,7 +12,7 @@
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <PackageReference Include="ConsoleTables" Version="2.6.2" />
     <PackageReference Include="Mono.Cecil" Version="0.11.5" />
-    <ProjectReference Include="..\PenguinLangAntlr\PenguinLangAntlr.csproj" />
+    <ProjectReference Include="..\PenguinLangSyntax\PenguinLangSyntax.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,8 +1,8 @@
 using System.Diagnostics.SymbolStore;
 using BabyPenguin;
-using BabyPenguin.Semantic;
-using PenguinLangAntlr;
+using PenguinLangSyntax;
 using Xunit.Abstractions;
+using BabyPenguin.VirtualMachine;
 
 namespace BabyPenguin.Tests
 {
@@ -24,7 +24,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("ac", vm.CollectOutput());
         }
@@ -47,7 +47,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("c", vm.CollectOutput());
         }
@@ -70,7 +70,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("f", vm.CollectOutput());
         }
@@ -90,7 +90,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("012", vm.CollectOutput());
         }
@@ -115,7 +115,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("0011", vm.CollectOutput());
         }
@@ -135,7 +135,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("01", vm.CollectOutput());
         }
@@ -155,7 +155,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("13", vm.CollectOutput());
         }
@@ -182,7 +182,7 @@ namespace BabyPenguin.Tests
                 } 
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("1313", vm.CollectOutput());
         }
@@ -201,7 +201,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -221,7 +221,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -245,7 +245,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
 
@@ -270,7 +270,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("55", vm.CollectOutput());
         }
@@ -289,7 +289,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -306,7 +306,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -323,7 +323,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
     }

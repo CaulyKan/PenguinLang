@@ -1,12 +1,13 @@
 using System.Diagnostics.SymbolStore;
 using BabyPenguin;
-using BabyPenguin.Semantic;
-using PenguinLangAntlr;
+using BabyPenguin.SemanticNode;
+using BabyPenguin.SemanticPass;
+using PenguinLangSyntax;
 using Xunit.Abstractions;
 
 namespace BabyPenguin.Tests
 {
-    public class HelloWorldTest(ITestOutputHelper helper) : TestBase(helper)
+    public class DeclarationTests(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
         public void GlobalDeclare()
@@ -20,17 +21,18 @@ namespace BabyPenguin.Tests
                 val test5 : float = 3.14159;
             ");
             var model = compiler.Compile();
-            Assert.Equal(5, model.Namespaces[0].Symbols.Count);
-            Assert.True(model.Namespaces[0].Symbols[0].TypeInfo.IsStringType);
-            Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
-            Assert.True(model.Namespaces[0].Symbols[1].TypeInfo.FullName == "u8");
-            Assert.Equal("test2", model.Namespaces[0].Symbols[1].Name);
-            Assert.True(model.Namespaces[0].Symbols[2].TypeInfo.FullName == "i32");
-            Assert.Equal("test3", model.Namespaces[0].Symbols[2].Name);
-            Assert.True(model.Namespaces[0].Symbols[3].TypeInfo.IsBoolType);
-            Assert.Equal("test4", model.Namespaces[0].Symbols[3].Name);
-            Assert.True(model.Namespaces[0].Symbols[4].TypeInfo.IsFloatType);
-            Assert.Equal("test5", model.Namespaces[0].Symbols[4].Name);
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            Assert.Equal(5, ns.Symbols.Count());
+            Assert.True(ns.Symbols[0].TypeInfo.IsStringType);
+            Assert.Equal("test1", ns.Symbols[0].Name);
+            Assert.True(ns.Symbols[1].TypeInfo.FullName == "u8");
+            Assert.Equal("test2", ns.Symbols[1].Name);
+            Assert.True(ns.Symbols[2].TypeInfo.FullName == "i32");
+            Assert.Equal("test3", ns.Symbols[2].Name);
+            Assert.True(ns.Symbols[3].TypeInfo.IsBoolType);
+            Assert.Equal("test4", ns.Symbols[3].Name);
+            Assert.True(ns.Symbols[4].TypeInfo.IsFloatType);
+            Assert.Equal("test5", ns.Symbols[4].Name);
         }
 
         [Fact]
@@ -48,7 +50,7 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name == "Test");
-            Assert.Equal(5, ns!.Symbols.Count);
+            Assert.Equal(5, ns!.Symbols.Count());
             Assert.True(ns.Symbols[0].TypeInfo.IsStringType);
             Assert.True(ns.Symbols[0].FullName == "Test.test1");
             Assert.True(ns.Symbols[1].TypeInfo.FullName == "u8");
@@ -71,7 +73,7 @@ namespace BabyPenguin.Tests
                     val test1 : u8 = 1;
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -86,11 +88,15 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            Assert.Equal(2, model.Namespaces.Count);
-            Assert.Single(model.Namespaces.First().Classes);
-            Assert.Equal("TestClass", model.Namespaces.First().Classes[0].Name);
-            Assert.Equal(2, model.Namespaces[1].Classes.Count);
-            Assert.Equal("Test.TestClass", (model.Namespaces[1].Classes[0] as ISemanticScope).FullName);
+            Assert.Equal(3, model.Namespaces.Count);
+
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
+            Assert.Single(ns.Classes);
+            Assert.Equal("TestClass", ns.Classes[0].Name);
+
+            var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
+            Assert.Equal(2, ns2.Classes.Count);
+            Assert.Equal("Test.TestClass", (ns2.Classes[0] as IClass).FullName);
         }
 
         [Fact]
@@ -104,18 +110,21 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            Assert.Single(model.Namespaces[0].Symbols);
-            Assert.Single(model.Namespaces[0].Functions);
-            Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
-            Assert.True(model.Namespaces[0].Symbols[0] is FunctionSymbol);
-            Assert.True(((FunctionSymbol)model.Namespaces[0].Symbols[0]).ReturnTypeInfo.IsStringType);
-            Assert.True(((FunctionSymbol)model.Namespaces[0].Symbols[0]).Parameters.Count == 0);
-            Assert.Single(model.Namespaces[1].Symbols);
-            Assert.Single(model.Namespaces[1].Functions);
-            Assert.Equal("Test.test1", model.Namespaces[1].Symbols[0].FullName);
-            Assert.True(model.Namespaces[1].Symbols[0] is FunctionSymbol);
-            Assert.True(((FunctionSymbol)model.Namespaces[1].Symbols[0]).ReturnTypeInfo.IsVoidType);
-            Assert.True(((FunctionSymbol)model.Namespaces[1].Symbols[0]).Parameters.Count == 0);
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
+            Assert.Single(ns.Symbols);
+            Assert.Single(ns.Functions);
+            Assert.Equal("test1", ns.Symbols[0].Name);
+            Assert.True(ns.Symbols[0] is FunctionSymbol);
+            Assert.True(((FunctionSymbol)ns.Symbols[0]).ReturnTypeInfo.IsStringType);
+            Assert.True(((FunctionSymbol)ns.Symbols[0]).Parameters.Count == 0);
+
+            var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
+            Assert.Single(ns2.Symbols);
+            Assert.Single(ns2.Functions);
+            Assert.Equal("Test.test1", ns2.Symbols[0].FullName);
+            Assert.True(ns2.Symbols[0] is FunctionSymbol);
+            Assert.True(((FunctionSymbol)ns2.Symbols[0]).ReturnTypeInfo.IsVoidType);
+            Assert.True(((FunctionSymbol)ns2.Symbols[0]).Parameters.Count == 0);
         }
 
         [Fact]
@@ -123,7 +132,7 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                initial {
+                initial foo {
 
                 }
                 namespace Test {
@@ -131,9 +140,13 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
 
-            Assert.Single(model.Namespaces[0].InitialRoutines);
-            Assert.Single(model.Namespaces[1].InitialRoutines);
+            Assert.Single(ns.InitialRoutines);
+            Assert.Equal("foo", ns.InitialRoutines[0].Name);
+
+            var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
+            Assert.Single(ns2.InitialRoutines);
         }
 
         [Fact]
@@ -150,10 +163,11 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].InitialRoutines);
-            var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
-            Assert.Equal(5, symbols.Count);
+            Assert.Single(ns.InitialRoutines);
+            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Equal(5, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
             Assert.True(symbols[0].IsLocal);
@@ -181,10 +195,11 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].Functions);
-            var symbols = model.Namespaces[0].Functions[0].Symbols.Where(x => !x.IsTemp).ToList();
-            Assert.Equal(7, symbols.Count);
+            Assert.Single(ns.Functions);
+            var symbols = ns.Functions[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Equal(7, symbols.Count());
             Assert.Equal("param1", symbols[0].Name);
             Assert.Equal("u64", symbols[0].TypeInfo.FullName);
             Assert.True(symbols[0].IsReadonly);
@@ -226,10 +241,11 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].InitialRoutines);
-            var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
-            Assert.Equal(3, symbols.Count);
+            Assert.Single(ns.InitialRoutines);
+            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Equal(3, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.Equal("test1", symbols[0].OriginName);
             Assert.True(symbols[0].TypeInfo.IsStringType);
@@ -259,12 +275,13 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].Symbols);
-            Assert.Equal("test1", model.Namespaces[0].Symbols[0].Name);
+            Assert.Single(ns.Symbols);
+            Assert.Equal("test1", ns.Symbols[0].Name);
 
-            Assert.Single(model.Namespaces[0].InitialRoutines);
-            var symbols = model.Namespaces[0].InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            Assert.Single(ns.InitialRoutines);
+            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Single(symbols);
             Assert.NotEqual("test1", symbols[0].Name);
             Assert.Equal("test1", symbols[0].OriginName);
@@ -280,7 +297,7 @@ namespace BabyPenguin.Tests
                 class A {}
                 class A {}
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -290,7 +307,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 fun test(val param1: u64, var param1: char){}
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -307,10 +324,11 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].Classes);
-            var symbols = model.Namespaces[0].Classes[0].Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
-            Assert.Equal(5, symbols.Count);
+            Assert.Single(ns.Classes);
+            var symbols = ns.Classes[0].Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
+            Assert.Equal(5, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
             Assert.True(symbols[0].IsClassMember);
@@ -326,6 +344,36 @@ namespace BabyPenguin.Tests
             Assert.True(symbols[4].IsReadonly);
         }
 
+        [Fact]
+        public void ClassMethodDeclare()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Test {
+                    fun test1() {}
+                    fun test2(var this: Test) {}
+                }
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+
+            var cls = ns.Classes[0];
+            Assert.Equal(3, cls.Functions.Count);
+            Assert.Equal("test1", cls.Functions[0].Name);
+            Assert.Equal("test2", cls.Functions[1].Name);
+            Assert.Equal("new", cls.Functions[2].Name);
+            Assert.True(cls.Functions[0].IsStatic);
+            Assert.False(cls.Functions[1].IsStatic);
+            Assert.False(cls.Functions[2].IsStatic);
+
+            var fun1 = model.ResolveSymbol("test1", scope: cls);
+            Assert.True(fun1 is FunctionSymbol);
+            Assert.True(fun1.IsStatic);
+
+            var fun2 = model.ResolveSymbol("test2", scope: cls);
+            Assert.True(fun2 is FunctionSymbol);
+            Assert.False(fun2.IsStatic);
+        }
 
         [Fact]
         public void EnumDeclare()
@@ -340,18 +388,240 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(model.Namespaces[0].Enums);
-            Assert.Equal("Test", model.Namespaces[0].Enums[0].Name);
-            Assert.Equal(4, model.Namespaces[0].Enums[0].EnumDeclarations.Count);
-            Assert.Equal("a", model.Namespaces[0].Enums[0].EnumDeclarations[0].Name);
-            Assert.Equal("void", model.Namespaces[0].Enums[0].EnumDeclarations[0].TypeInfo.Name);
-            Assert.Equal("b", model.Namespaces[0].Enums[0].EnumDeclarations[1].Name);
-            Assert.Equal("void", model.Namespaces[0].Enums[0].EnumDeclarations[1].TypeInfo.Name);
-            Assert.Equal("c", model.Namespaces[0].Enums[0].EnumDeclarations[2].Name);
-            Assert.Equal("u8", model.Namespaces[0].Enums[0].EnumDeclarations[2].TypeInfo.Name);
-            Assert.Equal("d", model.Namespaces[0].Enums[0].EnumDeclarations[3].Name);
-            Assert.Equal("string", model.Namespaces[0].Enums[0].EnumDeclarations[3].TypeInfo.Name);
+            Assert.Single(ns.Enums);
+            Assert.Equal("Test", ns.Enums[0].Name);
+            Assert.Equal(4, ns.Enums[0].EnumDeclarations.Count);
+            Assert.Equal("a", ns.Enums[0].EnumDeclarations[0].Name);
+            Assert.Equal("void", ns.Enums[0].EnumDeclarations[0].TypeInfo.Name);
+            Assert.Equal("b", ns.Enums[0].EnumDeclarations[1].Name);
+            Assert.Equal("void", ns.Enums[0].EnumDeclarations[1].TypeInfo.Name);
+            Assert.Equal("c", ns.Enums[0].EnumDeclarations[2].Name);
+            Assert.Equal("u8", ns.Enums[0].EnumDeclarations[2].TypeInfo.Name);
+            Assert.Equal("d", ns.Enums[0].EnumDeclarations[3].Name);
+            Assert.Equal("string", ns.Enums[0].EnumDeclarations[3].TypeInfo.Name);
+        }
+
+        [Fact]
+        public void ResolveTypeBasic()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    enum Foo { }
+                    class Bar { }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var foo1 = model.ResolveType("ns.Foo");
+            Assert.NotNull(foo1);
+            Assert.Equal("ns.Foo", foo1.FullName);
+
+            var foo2 = model.ResolveType("Foo", scope: model.Classes.First());
+            Assert.NotNull(foo2);
+            Assert.Equal("ns.Foo", foo2.FullName);
+
+            var bar1 = model.ResolveType("ns.Bar");
+            Assert.NotNull(bar1);
+            Assert.Equal("ns.Bar", bar1.FullName);
+
+            var bar2 = model.ResolveType("Bar", scope: model.Classes.First());
+            Assert.NotNull(bar2);
+            Assert.Equal("ns.Bar", bar2.FullName);
+        }
+
+        [Fact]
+        public void ResolveTypeWithGenericClass()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Bar<X,Y,Z> { }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var bar1 = model.ResolveType("ns.Bar");
+            Assert.NotNull(bar1);
+            Assert.True(bar1.IsGeneric);
+            Assert.False(bar1.IsSpecialized);
+            Assert.Equal("ns.Bar<?,?,?>", bar1.FullName);
+
+            var bar2 = model.ResolveType("ns.Bar<u8,i8,string>");
+            Assert.NotNull(bar2);
+            Assert.True(bar2.IsGeneric);
+            Assert.True(bar2.IsSpecialized);
+            Assert.Equal("u8", bar2.GenericArguments[0].FullName);
+            Assert.Equal("i8", bar2.GenericArguments[1].FullName);
+            Assert.Equal("string", bar2.GenericArguments[2].FullName);
+            Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName);
+
+            var bar3 = model.ResolveType("Bar", scope: model.Classes.First());
+            Assert.True(bar1.FullName == bar3!.FullName);
+            Assert.Single(bar3.GenericInstances);
+            Assert.True(bar3.GenericInstances.First() == bar2);
+        }
+
+        [Fact]
+        public void ResolveTypeWithGenericEnum()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    enum Foo<T> { }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var foo1 = model.ResolveType("ns.Foo");
+            Assert.NotNull(foo1);
+            Assert.True(foo1.IsGeneric);
+            Assert.False(foo1.IsSpecialized);
+            Assert.Equal("ns.Foo<?>", foo1.FullName);
+
+            var foo2 = model.ResolveType("ns.Foo<u8>");
+            Assert.NotNull(foo2);
+            Assert.True(foo2.IsGeneric);
+            Assert.True(foo2.IsSpecialized);
+            Assert.Equal("ns.Foo<u8>", foo2.FullName);
+
+            var foo3 = model.ResolveType("Foo", scope: model.Enums.First());
+            Assert.True(foo1.FullName == foo3!.FullName);
+            Assert.Single(foo3.GenericInstances);
+            Assert.True(foo3.GenericInstances.First() == foo2);
+        }
+
+        [Fact]
+        public void ResolveTypeInsideGenericClass()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo {}
+                    class Bar<T,Foo> { }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var bar1 = model.ResolveType("ns.Bar <  u8, i8>");
+            Assert.NotNull(bar1);
+            Assert.True(bar1.IsGeneric);
+            Assert.True(bar1.IsSpecialized);
+            Assert.Equal("ns.Bar<u8,i8>", bar1.FullName);
+
+            var T1 = model.ResolveType("T", scope: bar1 as IClass);
+            Assert.Equal("u8", T1!.FullName);
+
+            var T2 = model.ResolveType("Foo", scope: bar1 as IClass);
+            Assert.Equal("i8", T2!.FullName);
+
+            var fooOutOfScope = model.ResolveType("Foo", scope: model.Namespaces.Find(i => i.Name == "ns"));
+            Assert.Equal("ns.Foo", fooOutOfScope!.FullName);
+        }
+
+        [Fact]
+        public void ResolveTypeGenericCascade()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo<T> {}
+                    class Bar<T> { 
+                        val a : T;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var bar1 = model.ResolveType("ns.Bar<ns.Foo<u8>>");
+            Assert.True(bar1!.IsSpecialized);
+            Assert.Equal("ns.Bar<ns.Foo<u8>>", bar1.FullName);
+            Assert.Equal("ns.Foo<u8>", bar1.GenericArguments[0].FullName);
+            Assert.Equal("u8", bar1.GenericArguments[0].GenericArguments[0].FullName);
+
+            var bar2 = model.ResolveType("Bar<Foo<u8>>", scope: model.Classes.First());
+            Assert.Equal(bar1.FullName, bar2!.FullName);
+
+            var foo1 = model.ResolveType("T", scope: bar1 as IClass);
+            Assert.Equal("ns.Foo<u8>", foo1!.FullName);
+
+            var u8 = model.ResolveType("T", scope: foo1 as IClass);
+            Assert.Equal("u8", u8!.FullName);
+        }
+
+        [Fact]
+        public void ResolveShortSymbol()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    var a : u8 = 1;
+                    class Foo {
+                        var a : u8 = 1;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            Assert.Equal("ns.a", model.ResolveShortSymbol("a", scope: ns)!.FullName);
+            Assert.Equal("ns.Foo.a", model.ResolveShortSymbol("a", scope: foo)!.FullName);
+        }
+
+        [Fact]
+        public void ResolveSymbol()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    var a : u8 = 1;
+                    class Foo {
+                        var a : u8 = 1;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            Assert.Equal("ns.a", model.ResolveSymbol("ns.a")!.FullName);
+            Assert.Equal("ns.a", model.ResolveSymbol("a", scope: ns)!.FullName);
+            Assert.Equal("ns.a", model.ResolveSymbol("ns.a", scope: ns)!.FullName);
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("a", scope: foo)!.FullName);
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("Foo.a", scope: foo)!.FullName);
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("ns.Foo.a", scope: foo)!.FullName);
+        }
+
+        [Fact]
+        public void ResolveSymbolWithGeneric()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo<T> {}
+                    class Bar<T> { 
+                        val a : T;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var symbol1 = model.ResolveSymbol("ns.Bar<ns.Foo<u8>>.a");
+            Assert.Equal("ns.Bar<ns.Foo<u8>>.a", symbol1!.FullName);
+            Assert.Equal("ns.Foo<u8>", symbol1.TypeInfo.FullName);
+
+            var symbol2 = model.ResolveSymbol("Bar<Foo<i8>>.a", scope: ns);
+            Assert.Equal("ns.Bar<ns.Foo<i8>>.a", symbol2!.FullName);
+            Assert.Equal("ns.Foo<i8>", symbol2.TypeInfo.FullName);
+
+            var bar1 = model.ResolveType("ns.Bar<ns.Foo<string>>");
+            var symbol3 = model.ResolveSymbol("a", scope: bar1 as IClass);
+            Assert.Equal("ns.Bar<ns.Foo<string>>.a", symbol3!.FullName);
+            Assert.Equal("ns.Foo<string>", symbol3.TypeInfo.FullName);
         }
     }
 }

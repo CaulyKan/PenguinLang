@@ -1,0 +1,245 @@
+using InitialRoutine = BabyPenguin.SemanticNode.InitialRoutine;
+using Namespace = BabyPenguin.SemanticNode.Namespace;
+
+namespace BabyPenguin.SemanticPass
+{
+    public interface ISemanticScope : ISemanticNode
+    {
+        ISemanticScope? Parent { get; set; }
+
+        IEnumerable<ISemanticScope> Children { get; }
+
+        List<NamespaceImport> ImportedNamespaces { get; }
+
+        void Traverse(Action<ISemanticScope> action)
+        {
+            action(this);
+            foreach (var child in Children)
+                child.Traverse(action);
+        }
+
+        ISemanticScope? FindAncestorIncludingSelf(Predicate<ISemanticScope> predicate)
+        {
+            if (predicate(this))
+                return this;
+
+            return FindAncestor(predicate);
+        }
+
+        ISemanticScope? FindAncestor(Predicate<ISemanticScope> predicate)
+        {
+            if (Parent == null)
+                return null;
+
+            if (predicate(Parent))
+                return Parent;
+
+            return Parent.FindAncestor(predicate);
+        }
+
+        ISemanticScope? FindChildIncludingSelf(Predicate<ISemanticScope> predicate)
+        {
+            if (predicate(this))
+                return this;
+
+            foreach (var child in Children)
+            {
+                var result = child.FindChild(predicate);
+                if (result != null)
+                    return result;
+            }
+
+            return null;
+        }
+
+        ISemanticScope? FindChild(Predicate<ISemanticScope> predicate)
+        {
+            foreach (var child in Children)
+            {
+                var result = child.FindChildIncludingSelf(predicate);
+                if (result != null)
+                    return result;
+            }
+
+            return null;
+        }
+
+        IEnumerable<ISemanticScope> FindChildrenIncludingSelf(Predicate<ISemanticScope> predicate)
+        {
+            if (predicate(this))
+                yield return this;
+
+            if (this is IType typeObj)
+                foreach (var specialization in typeObj.GenericInstances.Cast<ISemanticScope>())
+                    foreach (var res in specialization.FindChildrenIncludingSelf(predicate))
+                        yield return res;
+
+            foreach (var child in Children)
+                foreach (var res in child.FindChildrenIncludingSelf(predicate))
+                    yield return res;
+        }
+
+        IEnumerable<ISemanticScope> FindChildren(Predicate<ISemanticScope> predicate)
+        {
+            foreach (var child in Children)
+                foreach (var res in child.FindChildrenIncludingSelf(predicate))
+                    yield return res;
+        }
+
+        IEnumerable<Namespace> GetImportedNamespaces(bool includeBuiltin = true)
+        {
+            return ImportedNamespaces.Select(i =>
+                    Model.Namespaces.Find(n => n.Name == i.Namespace) ??
+                        throw new BabyPenguinException($"Namespace '{i}' not found.", i.SourceLocation))
+                .Concat(
+                    Parent?.GetImportedNamespaces(false) ?? Array.Empty<Namespace>()
+                ).Concat(
+                    includeBuiltin ? [Model.BuiltinNamespace] : Array.Empty<Namespace>()
+                ).Concat(
+                    this is Namespace ns ? [ns] : Array.Empty<Namespace>()
+                );
+        }
+    }
+
+    public interface ITypeContainer : ISemanticScope
+    {
+        void AddClass(Class cls)
+        {
+            Classes.Add(cls);
+            cls.Parent = this;
+        }
+
+        void AddEnum(SemanticNode.Enum enm)
+        {
+            Enums.Add(enm);
+            enm.Parent = this;
+        }
+
+        List<Class> Classes { get; }
+
+        List<SemanticNode.Enum> Enums { get; }
+    }
+
+    public interface IRoutineContainer : ISemanticScope
+    {
+        void AddInitialRoutine(InitialRoutine routine)
+        {
+            InitialRoutines.Add(routine);
+            routine.Parent = this;
+        }
+
+        void AddFunction(Function function)
+        {
+            Functions.Add(function);
+            function.Parent = this;
+        }
+
+        List<InitialRoutine> InitialRoutines { get; }
+
+        List<Function> Functions { get; }
+    }
+
+    public record NamespaceImport(string Namespace, PenguinLangSyntax.SourceLocation SourceLocation);
+
+    public class SemanticScopingPass(SemanticModel model) : ISemanticPass
+    {
+        public SemanticModel Model { get; } = model;
+
+        public void Process(ISemanticNode obj)
+        {
+            switch (obj)
+            {
+                case INamespace ns:
+                    if (ns.SyntaxNode is PenguinLangSyntax.Namespace namespaceSyntax)
+                    {
+                        foreach (var classNode in namespaceSyntax.Classes)
+                        {
+                            var class_ = new Class(Model, classNode);
+                            if (ns.Classes.Any(c => c.Name == class_.Name))
+                                throw new BabyPenguinException($"Class '{class_.Name}' already exists in namespace '{ns.Name}'.", classNode.SourceLocation);
+                            ns.AddClass(class_);
+                            Process(class_);
+                        }
+                        foreach (var initialRoutineNode in namespaceSyntax.InitialRoutines)
+                        {
+                            var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
+                            if (ns.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in namespace '{ns.Name}'.", initialRoutineNode.SourceLocation);
+                            ns.AddInitialRoutine(initialRoutine);
+                        }
+                        foreach (var func in namespaceSyntax.Functions)
+                        {
+                            var function = new Function(Model, func);
+                            if (ns.Functions.Any(c => c.Name == function.Name))
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in namespace '{ns.Name}'.", func.SourceLocation);
+                            ns.AddFunction(function);
+                        }
+                        foreach (var enumNode in namespaceSyntax.Enums)
+                        {
+                            var enum_ = new SemanticNode.Enum(Model, enumNode);
+                            if (ns.Enums.Any(c => c.Name == enum_.Name))
+                                throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation);
+                            ns.AddEnum(enum_);
+                        }
+                    }
+                    break;
+                case IClass cls:
+                    if (cls.SyntaxNode is PenguinLangSyntax.ClassDefinition classSyntax)
+                    {
+                        foreach (var initialRoutineNode in classSyntax.InitialRoutines)
+                        {
+                            var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
+                            if (cls.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation);
+                            cls.AddInitialRoutine(initialRoutine);
+                        }
+                        foreach (var func in classSyntax.Functions)
+                        {
+                            var function = new Function(Model, func);
+                            if (cls.Functions.Any(c => c.Name == function.Name))
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in class '{cls.Name}'.", func.SourceLocation);
+                            cls.AddFunction(function);
+                        }
+                    }
+                    break;
+                case IEnum enm:
+                    if (enm.SyntaxNode is PenguinLangSyntax.EnumDefinition enumSyntax)
+                    {
+                        foreach (var initialRoutineNode in enumSyntax.InitialRoutines)
+                        {
+                            var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
+                            if (enm.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in enum '{enm.Name}'.", initialRoutineNode.SourceLocation);
+                            enm.AddInitialRoutine(initialRoutine);
+                        }
+                        foreach (var func in enumSyntax.Functions)
+                        {
+                            var function = new Function(Model, func);
+                            if (enm.Functions.Any(c => c.Name == function.Name))
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in enum '{enm.Name}'.", func.SourceLocation);
+                            enm.AddFunction(function);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        public void Process()
+        {
+            foreach (var ns in Model.Namespaces)
+                Process(ns);
+        }
+
+        public string Report
+        {
+            get
+            {
+                var table = new ConsoleTable("Name", "Type");
+                Model.Traverse(t => table.AddRow(t.Name, t.GetType().Name));
+                return table.ToMarkDownString();
+            }
+        }
+    }
+}

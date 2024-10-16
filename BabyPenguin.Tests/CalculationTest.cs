@@ -1,7 +1,7 @@
 using System.Diagnostics.SymbolStore;
 using BabyPenguin;
-using BabyPenguin.Semantic;
-using PenguinLangAntlr;
+using BabyPenguin.VirtualMachine;
+using PenguinLangSyntax;
 using Xunit.Abstractions;
 
 namespace BabyPenguin.Tests
@@ -20,7 +20,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("-3", vm.CollectOutput());
         }
@@ -37,7 +37,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("-1", vm.CollectOutput());
         }
@@ -54,7 +54,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("false", vm.CollectOutput());
         }
@@ -71,7 +71,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("true", vm.CollectOutput());
         }
@@ -88,7 +88,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("false", vm.CollectOutput());
         }
@@ -105,7 +105,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("true", vm.CollectOutput());
         }
@@ -122,7 +122,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal((30 & 15 | 10 ^ 5).ToString(), vm.CollectOutput());
         }
@@ -144,7 +144,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -163,7 +163,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("4", vm.CollectOutput());
         }
@@ -180,7 +180,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("false", vm.CollectOutput());
         }
@@ -197,7 +197,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("1", vm.CollectOutput());
         }
@@ -214,7 +214,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal((~1).ToString(), vm.CollectOutput());
         }
@@ -234,7 +234,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("21", vm.CollectOutput());
         }
@@ -255,7 +255,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("21", vm.CollectOutput());
         }
@@ -281,7 +281,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
         }
@@ -313,7 +313,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
         }
@@ -342,7 +342,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
         }
@@ -373,7 +373,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
         }
@@ -403,7 +403,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("2", vm.CollectOutput());
         }
@@ -429,7 +429,7 @@ namespace BabyPenguin.Tests
                 class Test2 {
                 }
             ");
-            Assert.Throws<PenguinLangException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
         [Fact]
@@ -454,7 +454,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -485,7 +485,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("a2", vm.CollectOutput());
         }
@@ -516,7 +516,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -553,7 +553,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
         }
@@ -580,7 +580,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("12", vm.CollectOutput());
         }
@@ -613,7 +613,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("12", vm.CollectOutput());
         }
@@ -640,7 +640,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("12", vm.CollectOutput());
         }
@@ -668,7 +668,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3", vm.CollectOutput());
         }
@@ -699,7 +699,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("a2", vm.CollectOutput());
         }
@@ -736,7 +736,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var vm = new VirtualMachine(model);
+            var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("a01", vm.CollectOutput());
         }

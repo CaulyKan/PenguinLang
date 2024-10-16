@@ -1,11 +1,23 @@
-﻿namespace PenguinLangAntlr
+﻿using Antlr4.Runtime;
+using Antlr4.Runtime.Misc;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+
+namespace PenguinLangSyntax
 {
-    using Antlr4.Runtime;
-    using Antlr4.Runtime.Misc;
-    using System;
-    using System.Collections.Generic;
-    using System.IO;
-    using System.Linq;
+
+    public interface IPrettyPrint
+    {
+        static string PrintText(int indentLevel, string text) => new string(' ', indentLevel * 2) + text;
+
+        IEnumerable<string> PrettyPrint(int indentLevel, string? prefix = null)
+        {
+            yield return new string(' ', indentLevel * 2) + (prefix ?? " ") + ToString();
+        }
+    }
+
 
     public class ErrorListener<S> : ConsoleErrorListener<S>
     {

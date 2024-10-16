@@ -218,7 +218,7 @@ functionDefinition:
 		'->' typeSpecifier
 	)? codeBlock;
 
-initialRoutine: 'initial' codeBlock;
+initialRoutine: 'initial' identifier? codeBlock;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';

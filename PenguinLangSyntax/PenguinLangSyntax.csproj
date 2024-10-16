@@ -3,13 +3,13 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <RootNamespace>PenguinLangAntlr</RootNamespace>
+    <RootNamespace>PenguinLangSyntax</RootNamespace>
     <Nullable>enable</Nullable>
   </PropertyGroup>
   
   <ItemGroup>
     <Antlr4 Include="PenguinLang.g4">
-      <Package>PenguinLangAntlr</Package>
+      <Package>PenguinLangSyntax</Package>
     </Antlr4>
   </ItemGroup>
 

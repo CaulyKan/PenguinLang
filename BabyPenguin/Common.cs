@@ -1,18 +1,24 @@
 
-using System.Text.RegularExpressions;
+global using BabyPenguin.SemanticNode;
+global using BabyPenguin.SemanticPass;
+global using BabyPenguin.VirtualMachine;
+global using PenguinLangSyntax;
+global using System.Text;
+global using System.Linq;
+global using System.Collections.Generic;
+global using ConsoleTables;
 
 namespace BabyPenguin
 {
-    public interface IPrettyPrint
+    public class BabyPenguinException : Exception
     {
-        static string PrintText(int indentLevel, string text) => new string(' ', indentLevel * 2) + text;
-
-        IEnumerable<string> PrettyPrint(int indentLevel, string? prefix = null)
+        public BabyPenguinException(string message, SourceLocation? location = null) : base(message)
         {
-            yield return new string(' ', indentLevel * 2) + (prefix ?? " ") + ToString();
+            Location = location;
         }
-    }
 
+        public SourceLocation? Location { get; }
+    }
 
     public partial record NameComponents(List<string> Prefix, string Name, List<string> Generics)
     {
@@ -22,11 +28,11 @@ namespace BabyPenguin
         public static NameComponents ParseName(string name)
         {
             var list = SplitStringPreservingAngleBrackets(name, '.');
-            var prefix = list.Take(list.Count - 1).ToList();
+            var prefix = list.Take(list.Count - 1).Select(i => i.Trim()).ToList();
             var last = list.Last();
             var simpleName = last.Contains('<') ? last.Split('<')[0] : last;
             var generics = last.Contains('<') ? SplitStringPreservingAngleBrackets(last.Substring(simpleName.Length + 1, last.LastIndexOf('>') - simpleName.Length - 1), ',') : [];
-            return new NameComponents(prefix, simpleName, generics);
+            return new NameComponents(prefix, simpleName.Trim(), generics);
         }
 
         public static List<string> SplitStringPreservingAngleBrackets(string input, char deli)
@@ -106,52 +112,4 @@ namespace BabyPenguin
         Class,
         Enum,
     }
-    public enum BinaryOperatorEnum
-    {
-        Add,
-        Subtract,
-        Multiply,
-        Divide,
-        Modulo,
-        LessThan,
-        GreaterThan,
-        LessThanOrEqual,
-        GreaterThanOrEqual,
-        Equal,
-        NotEqual,
-        LogicalAnd,
-        LogicalOr,
-        BitwiseAnd,
-        BitwiseOr,
-        BitwiseXor,
-        LeftShift,
-        RightShift,
-        Is
-    }
-
-    public enum UnaryOperatorEnum
-    {
-        Deref,
-        Ref,
-        Plus,
-        Minus,
-        BitwiseNot,
-        LogicalNot,
-    }
-
-    public enum AssignmentOperatorEnum
-    {
-        Assign,
-        MultiplyAssign,
-        DivideAssign,
-        ModuloAssign,
-        AddAssign,
-        SubtractAssign,
-        LeftShiftAssign,
-        RightShiftAssign,
-        BitwiseAndAssign,
-        BitwiseOrAssign,
-        BitwiseXorAssign
-    }
-
 }
