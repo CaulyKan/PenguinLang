@@ -22,9 +22,9 @@ namespace BabyPenguin.SemanticPass
             {
                 AddStatement(statement);
             }
-            else if (CodeSyntaxNode is PenguinLangSyntax.Namespace)
+            else if (CodeSyntaxNode is PenguinLangSyntax.NamespaceDefinition)
             {
-                foreach (var decl in (CodeSyntaxNode as PenguinLangSyntax.Namespace)!.Declarations)
+                foreach (var decl in (CodeSyntaxNode as PenguinLangSyntax.NamespaceDefinition)!.Declarations)
                 {
                     if (decl.InitializeExpression != null)
                     {

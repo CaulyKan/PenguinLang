@@ -135,6 +135,11 @@ genericArguments: '<' typeSpecifier (',' typeSpecifier)* '>';
 
 genericDefinitions: '<' identifier (',' identifier)* '>';
 
+interfaceDefinition:
+	'interface' identifier genericDefinitions? '{' (
+		functionDefinition
+	)* '}';
+
 classDefinition:
 	'class' identifier genericDefinitions? '{' (
 		classDeclaration
@@ -207,6 +212,7 @@ namespaceDeclaration:
 	| functionDefinition
 	| classDefinition
 	| enumDefinition
+	| interfaceDefinition
 	| ';';
 
 parameterList: declaration? (',' declaration)* ','?;
@@ -216,7 +222,7 @@ functionSpecifier: 'pure' | '!pure' | 'extern';
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (
 		'->' typeSpecifier
-	)? codeBlock;
+	)? (codeBlock | ';');
 
 initialRoutine: 'initial' identifier? codeBlock;
 

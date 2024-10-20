@@ -13,7 +13,7 @@ namespace PenguinLangSyntax
     {
         public SyntaxNode(SyntaxWalker walker, ParserRuleContext context)
         {
-            Scope = walker.CurrentScope ?? this as Namespace ?? throw new NotImplementedException();
+            Scope = walker.CurrentScope ?? this as NamespaceDefinition ?? throw new NotImplementedException();
             Context = context;
             Reporter = walker.Reporter;
 
@@ -36,9 +36,9 @@ namespace PenguinLangSyntax
         protected string shorten(string str) => str.Length > 30 ? str.Substring(0, 27) + "..." : str;
     }
 
-    public class Namespace : SyntaxNode, ISyntaxScope
+    public class NamespaceDefinition : SyntaxNode, ISyntaxScope
     {
-        public Namespace(SyntaxWalker walker, NamespaceDefinitionContext context) : base(walker, context)
+        public NamespaceDefinition(SyntaxWalker walker, NamespaceDefinitionContext context) : base(walker, context)
         {
             Name = context.identifier().GetText();
             IsAnonymous = false;
@@ -53,7 +53,7 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
-        public Namespace(SyntaxWalker walker, CompilationUnitContext context) : base(walker, context)
+        public NamespaceDefinition(SyntaxWalker walker, CompilationUnitContext context) : base(walker, context)
         {
             Name = "_global@" + SourceLocation.FileNameIdentifier;
             IsAnonymous = true;
@@ -78,7 +78,7 @@ namespace PenguinLangSyntax
 
             SubNamespaces.AddRange(
                  namespaceDeclarationContext.children.OfType<NamespaceDefinitionContext>()
-                    .Select(x => new Namespace(walker, x)));
+                    .Select(x => new NamespaceDefinition(walker, x)));
 
             Functions.AddRange(
                  namespaceDeclarationContext.children.OfType<FunctionDefinitionContext>()
@@ -91,14 +91,19 @@ namespace PenguinLangSyntax
             Enums.AddRange(
                  namespaceDeclarationContext.children.OfType<EnumDefinitionContext>()
                     .Select(x => new EnumDefinition(walker, x)));
+
+            Interfaces.AddRange(
+                 namespaceDeclarationContext.children.OfType<InterfaceDefinitionContext>()
+                    .Select(x => new InterfaceDefinition(walker, x)));
         }
 
         public List<InitialRoutine> InitialRoutines { get; } = [];
         public List<Declaration> Declarations { get; } = [];
-        public List<Namespace> SubNamespaces { get; } = [];
+        public List<NamespaceDefinition> SubNamespaces { get; } = [];
         public List<FunctionDefinition> Functions { get; } = [];
         public List<ClassDefinition> Classes { get; } = [];
         public List<EnumDefinition> Enums { get; } = [];
+        public List<InterfaceDefinition> Interfaces { get; } = [];
         public string Name { get; }
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Namespace;
@@ -1185,14 +1190,15 @@ namespace PenguinLangSyntax
                 }
             }
 
-            this.CodeBlock = new CodeBlock(walker, context.codeBlock());
+            if (context.codeBlock() != null)
+                CodeBlock = new CodeBlock(walker, context.codeBlock());
 
             walker.PopScope();
         }
         public Identifier FunctionIdentifier { get; }
         public List<Declaration> Parameters { get; }
         public TypeSpecifier ReturnType { get; }
-        public CodeBlock CodeBlock { get; }
+        public CodeBlock? CodeBlock { get; }
         public string Name => FunctionIdentifier.Name;
         public SyntaxScopeType ScopeType => SyntaxScopeType.Function;
         public List<SyntaxSymbol> Symbols { get; } = [];
@@ -1209,7 +1215,7 @@ namespace PenguinLangSyntax
                 .Concat(FunctionIdentifier.PrettyPrint(indentLevel + 1, "(FunctionName)"))
                 .Concat(Parameters.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")))
                 .Concat(ReturnType.PrettyPrint(indentLevel + 1, "(ReturnType)"))
-                .Concat(CodeBlock.PrettyPrint(indentLevel + 1));
+                .Concat(CodeBlock?.PrettyPrint(indentLevel + 1) ?? []);
         }
     }
 
@@ -1345,6 +1351,33 @@ namespace PenguinLangSyntax
         public bool IsAnonymous => false;
         public uint ScopeDepth { get; set; }
         public ISyntaxScope? ParentScope { get; set; }
+    }
+
+    public class InterfaceDefinition : SyntaxNode, ISyntaxScope
+    {
+        public InterfaceDefinition(SyntaxWalker walker, InterfaceDefinitionContext context) : base(walker, context)
+        {
+            walker.PushScope(SyntaxScopeType.Interface, this);
+
+            InterfaceIdentifier = new Identifier(walker, context.identifier(), false);
+            Functions = context.children.OfType<FunctionDefinitionContext>()
+               .Select(x => new FunctionDefinition(walker, x))
+               .ToList();
+            GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
+
+            walker.PopScope();
+        }
+
+        public Identifier InterfaceIdentifier { get; }
+        public string Name => InterfaceIdentifier.Name;
+        public SyntaxScopeType ScopeType => SyntaxScopeType.Interface;
+        public List<SyntaxSymbol> Symbols { get; } = [];
+        public List<FunctionDefinition> Functions { get; } = [];
+        public bool IsAnonymous => false;
+        public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+        public ISyntaxScope? ParentScope { get; set; }
+        public uint ScopeDepth { get; set; }
+        public GenericDefinitions? GenericDefinitions { get; } = null;
     }
 
 }

@@ -653,5 +653,40 @@ namespace BabyPenguin.Tests
             ");
             Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
+
+
+        [Fact]
+        public void InterfaceDefinition()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {}
+                    interface IBar<T> { 
+                        fun bar() -> T;
+                        fun bar2(val this: IBar<T>) {}
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var ifoo = ns!.Interfaces.Find(i => i.Name == "IFoo");
+            var ibar = ns.Interfaces.Find(i => i.Name == "IBar");
+            Assert.NotNull(ifoo);
+            Assert.NotNull(ibar);
+            Assert.Single(ibar.GenericDefinitions);
+
+            var ibar_u8 = model.ResolveType("ns.IBar<u8>") as Interface;
+            Assert.NotNull(ibar_u8);
+
+            var bar = ibar_u8.Functions.Find(i => i.Name == "bar");
+            Assert.Equal("u8", bar!.ReturnTypeInfo.FullName);
+            Assert.True(bar.IsDeclarationOnly);
+            var bar2 = ibar_u8.Functions.Find(i => i.Name == "bar2");
+            Assert.Equal("ns.IBar<u8>", bar2!.Parameters[0].Type.FullName);
+            Assert.Equal("this", bar2!.Parameters[0].Name);
+            Assert.False(bar2.IsDeclarationOnly);
+        }
     }
 }

@@ -313,7 +313,7 @@ namespace BabyPenguin.SemanticPass
             {
                 case INamespace ns:
                     {
-                        if (ns.SyntaxNode is PenguinLangSyntax.Namespace syntaxNode)
+                        if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
                         {
                             foreach (var decl in syntaxNode.Declarations)
                             {
@@ -441,7 +441,7 @@ namespace BabyPenguin.SemanticPass
 
                                     if (param.Name == "this")
                                     {
-                                        if ((func.Parent is IClass || func.Parent is IEnum) && i == 0)
+                                        if ((func.Parent is IClass || func.Parent is IEnum || func.Parent is IInterface) && i == 0)
                                             func.IsStatic = false;
                                         else
                                             throw new BabyPenguinException($"'this' parameter can only be the first parameter for class method in function '{syntaxNode.Name}'", param.SourceLocation);

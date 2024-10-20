@@ -1,6 +1,3 @@
-using BabyPenguin.SemanticPass;
-using BabyPenguin.VirtualMachine;
-
 namespace BabyPenguin.SemanticNode
 {
     public interface INamespace : ISemanticNode, ISemanticScope, IRoutineContainer, ITypeContainer, ISymbolContainer, ICodeContainer;
@@ -12,14 +9,16 @@ namespace BabyPenguin.SemanticNode
             Name = name;
         }
 
-        public Namespace(SemanticModel model, PenguinLangSyntax.Namespace syntaxNode) : base(model, syntaxNode)
+        public Namespace(SemanticModel model, NamespaceDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
         }
 
         public List<Class> Classes { get; } = [];
 
-        public List<SemanticNode.Enum> Enums { get; } = [];
+        public List<Interface> Interfaces { get; } = [];
+
+        public List<Enum> Enums { get; } = [];
 
         public List<Function> Functions { get; } = [];
 
@@ -39,7 +38,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 
-        public PenguinLangSyntax.SyntaxNode? CodeSyntaxNode => SyntaxNode;
+        public SyntaxNode? CodeSyntaxNode => SyntaxNode;
 
         public IType ReturnTypeInfo { get; set; } = BasicType.Void;
 

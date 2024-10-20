@@ -11,14 +11,14 @@ namespace PenguinLangSyntax
         public void Compile()
         {
             var walker = new SyntaxWalker(FileName, Reporter);
-            _ = new Namespace(walker, Ast);
+            _ = new NamespaceDefinition(walker, Ast);
             Namespaces = walker.Namespaces;
             Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => x.PrettyPrint(0))));
         }
         public PenguinLangParser.CompilationUnitContext Ast { get; } = ast;
         public ErrorReporter Reporter { get; } = reporter;
         public string FileName { get; } = file;
-        public List<Namespace> Namespaces { get; private set; } = [];
+        public List<NamespaceDefinition> Namespaces { get; private set; } = [];
     }
 
 
@@ -27,7 +27,7 @@ namespace PenguinLangSyntax
         public ErrorReporter Reporter { get; } = reporter;
         public string FileName { get; } = file;
 
-        public List<Namespace> Namespaces { get; } = [];
+        public List<NamespaceDefinition> Namespaces { get; } = [];
 
         public ISyntaxScope? CurrentScope => ScopeStack.Count > 0 ? ScopeStack.Peek() : null;
         Stack<ISyntaxScope> ScopeStack { get; } = [];
@@ -46,7 +46,7 @@ namespace PenguinLangSyntax
             {
                 case SyntaxScopeType.Namespace:
                     {
-                        var ns = scope as Namespace ?? throw new NotImplementedException();
+                        var ns = scope as NamespaceDefinition ?? throw new NotImplementedException();
                         Namespaces.Add(ns);
                         break;
                     }
@@ -106,6 +106,7 @@ namespace PenguinLangSyntax
         InitialRoutine,
         CodeBlock,
         Enum,
+        Interface,
     }
 
     public interface ISyntaxScope

@@ -2,27 +2,27 @@ namespace BabyPenguin
 {
     public class SemanticCompiler
     {
-        public SemanticCompiler(PenguinLangSyntax.ErrorReporter? reporter = null)
+        public SemanticCompiler(ErrorReporter? reporter = null)
         {
-            Reporter = reporter ?? new PenguinLangSyntax.ErrorReporter();
+            Reporter = reporter ?? new ErrorReporter();
         }
 
-        public PenguinLangSyntax.ErrorReporter Reporter { get; }
+        public ErrorReporter Reporter { get; }
 
-        public List<PenguinLangSyntax.PenguinParser> Parsers { get; } = [];
+        public List<PenguinParser> Parsers { get; } = [];
 
         private static ulong counter = 0;
 
         public SemanticCompiler AddFile(string filePath)
         {
-            var parser = new PenguinLangSyntax.PenguinParser(filePath, Reporter);
+            var parser = new PenguinParser(filePath, Reporter);
             Parsers.Add(parser);
             return this;
         }
 
         public SemanticCompiler AddSource(string source, string? fileName = null)
         {
-            var parser = new PenguinLangSyntax.PenguinParser(source, fileName ?? $"<anonymous_{counter++}>", Reporter);
+            var parser = new PenguinParser(source, fileName ?? $"<anonymous_{counter++}>", Reporter);
             Parsers.Add(parser);
             return this;
         }
@@ -37,7 +37,7 @@ namespace BabyPenguin
                     throw new NotImplementedException(); // never reached
                 }
                 else
-                    return new PenguinLangSyntax.SyntaxCompiler(parser.SourceFile, parser.Result, Reporter);
+                    return new SyntaxCompiler(parser.SourceFile, parser.Result, Reporter);
             }).ToList();
 
             foreach (var compiler in syntaxCompilers)

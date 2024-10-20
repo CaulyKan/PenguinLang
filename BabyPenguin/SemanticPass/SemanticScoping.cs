@@ -115,9 +115,17 @@ namespace BabyPenguin.SemanticPass
             enm.Parent = this;
         }
 
+        void AddInterface(Interface intf)
+        {
+            Interfaces.Add(intf);
+            intf.Parent = this;
+        }
+
         List<Class> Classes { get; }
 
         List<SemanticNode.Enum> Enums { get; }
+
+        List<Interface> Interfaces { get; }
     }
 
     public interface IRoutineContainer : ISemanticScope
@@ -150,7 +158,7 @@ namespace BabyPenguin.SemanticPass
             switch (obj)
             {
                 case INamespace ns:
-                    if (ns.SyntaxNode is PenguinLangSyntax.Namespace namespaceSyntax)
+                    if (ns.SyntaxNode is NamespaceDefinition namespaceSyntax)
                     {
                         foreach (var classNode in namespaceSyntax.Classes)
                         {
@@ -160,6 +168,7 @@ namespace BabyPenguin.SemanticPass
                             ns.AddClass(class_);
                             Process(class_);
                         }
+
                         foreach (var initialRoutineNode in namespaceSyntax.InitialRoutines)
                         {
                             var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
@@ -167,6 +176,7 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in namespace '{ns.Name}'.", initialRoutineNode.SourceLocation);
                             ns.AddInitialRoutine(initialRoutine);
                         }
+
                         foreach (var func in namespaceSyntax.Functions)
                         {
                             var function = new Function(Model, func);
@@ -174,6 +184,7 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Function '{function.Name}' already exists in namespace '{ns.Name}'.", func.SourceLocation);
                             ns.AddFunction(function);
                         }
+
                         foreach (var enumNode in namespaceSyntax.Enums)
                         {
                             var enum_ = new SemanticNode.Enum(Model, enumNode);
@@ -181,10 +192,18 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation);
                             ns.AddEnum(enum_);
                         }
+
+                        foreach (var intf in namespaceSyntax.Interfaces)
+                        {
+                            var interface_ = new Interface(Model, intf);
+                            if (ns.Interfaces.Any(c => c.Name == interface_.Name))
+                                throw new BabyPenguinException($"Interface '{interface_.Name}' already exists in namespace '{ns.Name}'.", intf.SourceLocation);
+                            ns.AddInterface(interface_);
+                        }
                     }
                     break;
                 case IClass cls:
-                    if (cls.SyntaxNode is PenguinLangSyntax.ClassDefinition classSyntax)
+                    if (cls.SyntaxNode is ClassDefinition classSyntax)
                     {
                         foreach (var initialRoutineNode in classSyntax.InitialRoutines)
                         {
@@ -202,8 +221,22 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
+                case IInterface intf:
+                    if (intf.SyntaxNode is InterfaceDefinition interfaceSyntax)
+                    {
+                        foreach (var func in interfaceSyntax.Functions)
+                        {
+                            var function = new Function(Model, func);
+                            if (intf.Functions.Any(c => c.Name == function.Name))
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in interface '{intf.Name}'.", func.SourceLocation);
+                            if (function.Name == "new")
+                                throw new BabyPenguinException($"Function 'new' is not allowed in interface '{intf.Name}'.", func.SourceLocation);
+                            intf.AddFunction(function);
+                        }
+                    }
+                    break;
                 case IEnum enm:
-                    if (enm.SyntaxNode is PenguinLangSyntax.EnumDefinition enumSyntax)
+                    if (enm.SyntaxNode is EnumDefinition enumSyntax)
                     {
                         foreach (var initialRoutineNode in enumSyntax.InitialRoutines)
                         {

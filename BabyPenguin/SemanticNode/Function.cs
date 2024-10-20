@@ -18,23 +18,25 @@ namespace BabyPenguin.SemanticNode
 
     public class Function : BaseSemanticNode, IFunction
     {
-        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, bool isExtern = false, bool isStatic = false, bool isPure = false) : base(model)
+        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false) : base(model)
         {
             Name = name;
             IsExtern = isExtern;
             IsStatic = isStatic;
             IsPure = isPure;
+            IsDeclarationOnly = isDeclarationOnly;
             if (parameters != null)
                 Parameters = parameters;
             if (returnType != null)
                 ReturnTypeInfo = returnType;
         }
 
-        public Function(SemanticModel model, PenguinLangSyntax.FunctionDefinition syntaxNode) : base(model, syntaxNode)
+        public Function(SemanticModel model, FunctionDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             IsExtern = syntaxNode.IsExtern;
             IsPure = syntaxNode.IsPure;
+            IsDeclarationOnly = syntaxNode.CodeBlock == null;
         }
 
         public string Name { get; }
@@ -59,9 +61,11 @@ namespace BabyPenguin.SemanticNode
 
         public bool? IsPure { get; set; }
 
+        public bool IsDeclarationOnly { get; }
+
         public FunctionSymbol? FunctionSymbol { get; set; }
 
-        public List<VirtualMachine.BabyPenguinIR> Instructions { get; } = [];
+        public List<BabyPenguinIR> Instructions { get; } = [];
 
         public SyntaxNode? CodeSyntaxNode => (SyntaxNode as FunctionDefinition)?.CodeBlock;
 
