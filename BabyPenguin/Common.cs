@@ -111,5 +111,6 @@ namespace BabyPenguin
         Fun,
         Class,
         Enum,
+        Interface,
     }
 }

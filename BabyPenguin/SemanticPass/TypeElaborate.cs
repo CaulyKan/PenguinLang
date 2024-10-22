@@ -81,6 +81,7 @@ namespace BabyPenguin.SemanticPass
 
         bool IsEnumType => Type == TypeEnum.Enum;
 
+        bool IsInterfaceType => Type == TypeEnum.Interface;
     }
 
     public class TypeElaboratePass(SemanticModel model) : ISemanticPass

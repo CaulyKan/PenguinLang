@@ -688,5 +688,29 @@ namespace BabyPenguin.Tests
             Assert.Equal("this", bar2!.Parameters[0].Name);
             Assert.False(bar2.IsDeclarationOnly);
         }
+
+        [Fact]
+        public void InterfaceImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {}
+                    
+                    class Foo {
+                        impl IFoo;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var ifoo = ns!.Interfaces.Find(i => i.Name == "IFoo");
+            var foo = ns.Classes.Find(i => i.Name == "Foo");
+            Assert.NotNull(ifoo);
+            Assert.NotNull(foo);
+            Assert.Single(foo.ImplementedInterfaces);
+            Assert.Equal("ns.IFoo", foo.ImplementedInterfaces[0].InterfaceType?.FullName);
+        }
     }
 }

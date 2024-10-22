@@ -22,6 +22,7 @@ namespace BabyPenguin
                 new TypeElaboratePass(this),
                 new SymbolElaboratePass(this),
                 new ClassConstructorPass(this),
+                new InterfaceImplementationPass(this),
                 new CodeGenerationPass(this),
             };
         }

@@ -169,6 +169,7 @@ namespace PenguinLangSyntax
         public List<SyntaxSymbol> Symbols { get; } = [];
 
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
         public bool IsAnonymous => false;
 
@@ -470,6 +471,7 @@ namespace PenguinLangSyntax
         public MemberAccessExpression? MemberAccess { get; }
 
         public bool IsIdentifier => Identifier is not null;
+
         public bool IsMemberAccess => MemberAccess is not null;
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -598,9 +600,13 @@ namespace PenguinLangSyntax
         }
 
         public Identifier Identifier { get; }
+
         public TypeSpecifier? TypeSpecifier { get; }
+
         public Expression? InitializeExpression { get; }
+
         public bool IsReadonly;
+
         public string Name => Identifier.Name;
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -1138,6 +1144,7 @@ namespace PenguinLangSyntax
         }
 
         public bool IsSimple => false;
+
         public bool IsWrite { get; }
     }
 
@@ -1195,18 +1202,31 @@ namespace PenguinLangSyntax
 
             walker.PopScope();
         }
+
         public Identifier FunctionIdentifier { get; }
+
         public List<Declaration> Parameters { get; }
+
         public TypeSpecifier ReturnType { get; }
+
         public CodeBlock? CodeBlock { get; }
+
         public string Name => FunctionIdentifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Function;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
+
         public bool IsAnonymous => false;
+
         public uint ScopeDepth { get; set; }
+
         public bool IsExtern { get; }
+
         public bool? IsPure { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
@@ -1233,22 +1253,38 @@ namespace PenguinLangSyntax
                .Select(x => new FunctionDefinition(walker, x))
                .ToList();
             GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
+            InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
+               .Select(x => new InterfaceImplementation(walker, x))
+               .ToList();
 
             walker.PopScope();
         }
 
         public Identifier ClassIdentifier { get; }
+
         public string Name => ClassIdentifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public List<FunctionDefinition> Functions { get; } = [];
+
         public List<InitialRoutine> InitialRoutines { get; } = [];
+
         public bool IsAnonymous => false;
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
+
         public uint ScopeDepth { get; set; }
+
         public List<ClassDeclaration> ClassDeclarations { get; } = [];
+
         public GenericDefinitions? GenericDefinitions { get; } = null;
+
+        public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
     }
 
     public class GenericDefinitions : SyntaxNode
@@ -1286,15 +1322,25 @@ namespace PenguinLangSyntax
         }
 
         public Identifier Identifier { get; }
+
         public TypeSpecifier TypeSpecifier { get; }
+
         public Expression? Initializer { get; }
+
         public string Name => Identifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public bool IsAnonymous => false;
+
         public uint ScopeDepth { get; set; }
+
         public ISyntaxScope? ParentScope { get; set; }
+
         public bool IsReadonly { get; }
     }
 
@@ -1321,16 +1367,27 @@ namespace PenguinLangSyntax
         }
 
         public Identifier EnumIdentifier { get; }
+
         public string Name => EnumIdentifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public List<FunctionDefinition> Functions { get; } = [];
+
         public List<InitialRoutine> InitialRoutines { get; } = [];
+
         public bool IsAnonymous => false;
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
+
         public uint ScopeDepth { get; set; }
+
         public List<EnumDeclaration> EnumDeclarations { get; } = [];
+
         public GenericDefinitions? GenericDefinitions { get; } = null;
     }
 
@@ -1343,13 +1400,21 @@ namespace PenguinLangSyntax
         }
 
         public Identifier Identifier { get; }
+
         public TypeSpecifier? TypeSpecifier { get; }
+
         public string Name => Identifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Enum;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public bool IsAnonymous => false;
+
         public uint ScopeDepth { get; set; }
+
         public ISyntaxScope? ParentScope { get; set; }
     }
 
@@ -1369,15 +1434,56 @@ namespace PenguinLangSyntax
         }
 
         public Identifier InterfaceIdentifier { get; }
+
         public string Name => InterfaceIdentifier.Name;
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.Interface;
+
         public List<SyntaxSymbol> Symbols { get; } = [];
+
         public List<FunctionDefinition> Functions { get; } = [];
+
         public bool IsAnonymous => false;
+
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
+
         public uint ScopeDepth { get; set; }
+
         public GenericDefinitions? GenericDefinitions { get; } = null;
     }
 
+    public class InterfaceImplementation : SyntaxNode, ISyntaxScope
+    {
+        public InterfaceImplementation(SyntaxWalker walker, InterfaceImplementationContext context) : base(walker, context)
+        {
+            walker.PushScope(SyntaxScopeType.Interface, this);
+
+            InterfaceType = new TypeSpecifier(walker, context.typeSpecifier());
+            Functions = context.children.OfType<FunctionDefinitionContext>()
+               .Select(x => new FunctionDefinition(walker, x))
+               .ToList();
+
+            walker.PopScope();
+        }
+
+        public TypeSpecifier InterfaceType { get; }
+
+        public string Name => InterfaceType.Name;
+
+        public SyntaxScopeType ScopeType => SyntaxScopeType.InterfaceImplementation;
+
+        public List<SyntaxSymbol> Symbols { get; } = [];
+
+        public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
+        public bool IsAnonymous => false;
+
+        public uint ScopeDepth { get; set; }
+
+        public ISyntaxScope? ParentScope { get; set; }
+
+        public List<FunctionDefinition> Functions { get; } = [];
+    }
 }

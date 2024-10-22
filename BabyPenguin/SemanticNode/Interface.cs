@@ -59,7 +59,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
-        public TypeEnum Type => TypeEnum.Class;
+        public TypeEnum Type => TypeEnum.Interface;
 
         public List<string> GenericDefinitions { get; }
 
@@ -76,5 +76,35 @@ namespace BabyPenguin.SemanticNode
         public IFunction? Constructor { get; set; }
 
         public override string ToString() => (this as ISemanticScope).FullName;
+    }
+
+    public class InterfaceImplementation : BaseSemanticNode, ISemanticNode, IRoutineContainer
+    {
+        public InterfaceImplementation(SemanticModel model, string name, Interface interfaceType) : base(model)
+        {
+            Name = name;
+            InterfaceType = interfaceType;
+        }
+
+        public InterfaceImplementation(SemanticModel model, PenguinLangSyntax.InterfaceImplementation syntaxNode) : base(model, syntaxNode)
+        {
+            Name = syntaxNode.Name;
+        }
+
+        public string Name { get; }
+
+        public string FullName => "impl_for_" + Name;
+
+        public IInterface? InterfaceType { get; set; }
+
+        public List<Function> Functions { get; } = [];
+
+        public List<InitialRoutine> InitialRoutines { get; } = [];
+
+        public ISemanticScope? Parent { get; set; }
+
+        public IEnumerable<ISemanticScope> Children => [];
+
+        public List<NamespaceImport> ImportedNamespaces { get; } = [];
     }
 }

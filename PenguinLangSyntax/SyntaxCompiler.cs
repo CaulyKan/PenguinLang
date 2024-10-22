@@ -107,6 +107,7 @@ namespace PenguinLangSyntax
         CodeBlock,
         Enum,
         Interface,
+        InterfaceImplementation,
     }
 
     public interface ISyntaxScope

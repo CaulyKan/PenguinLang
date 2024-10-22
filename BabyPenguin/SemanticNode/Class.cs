@@ -32,6 +32,8 @@ namespace BabyPenguin.SemanticNode
         }
 
         IFunction? Constructor { get; set; }
+
+        List<InterfaceImplementation> ImplementedInterfaces { get; }
     }
 
     public class Class : BaseSemanticNode, IClass
@@ -81,5 +83,7 @@ namespace BabyPenguin.SemanticNode
         public IFunction? Constructor { get; set; }
 
         public override string ToString() => (this as ISemanticScope).FullName;
+
+        public List<InterfaceImplementation> ImplementedInterfaces { get; } = [];
     }
 }
