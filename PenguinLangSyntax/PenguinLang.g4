@@ -140,7 +140,8 @@ interfaceDefinition:
 		functionDefinition
 	)* '}';
 
-interfaceImplementation: 'impl' typeSpecifier (';' | codeBlock);
+interfaceImplementation:
+	'impl' typeSpecifier (';' | ( '{' (functionDefinition)* '}'));
 
 classDefinition:
 	'class' identifier genericDefinitions? '{' (

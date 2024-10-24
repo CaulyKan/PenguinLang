@@ -1,6 +1,46 @@
+
 namespace BabyPenguin.SemanticPass
 {
+    public record VTableSlot(ISymbol InterfaceSymbol, ISymbol ImplementationSymbol);
 
+    public class VTable : BaseSemanticNode, ISemanticNode, IRoutineContainer, ISymbolContainer
+    {
+        public VTable(SemanticModel model, IClass implementingClass, IInterface interfaceType) : base(model)
+        {
+            Name = "vtable-" + interfaceType.FullName.Replace(".", "-");
+            Parent = implementingClass;
+            Interface = interfaceType;
+        }
+
+        public VTable(SemanticModel model, InterfaceImplementation syntaxNode, IClass implementingClass) : base(model, syntaxNode)
+        {
+            if (Model.ResolveType(syntaxNode.InterfaceType.Text, s => s.IsInterfaceType, implementingClass) is not IInterface interfaceType)
+                throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}");
+            Name = "vtable-" + interfaceType.FullName.Replace(".", "-");
+            Parent = implementingClass;
+            Interface = interfaceType;
+        }
+
+        public IInterface Interface { get; }
+
+        public List<VTableSlot> Slots { get; } = [];
+
+        public string Name { get; }
+
+        public ISemanticScope? Parent { get; set; }
+
+        public List<SemanticNode.InitialRoutine> InitialRoutines => throw new NotImplementedException();
+
+        public List<Function> Functions { get; } = [];
+
+        public IEnumerable<ISemanticScope> Children => Functions;
+
+        public List<NamespaceImport> ImportedNamespaces { get; } = [];
+
+        public List<ISymbol> Symbols { get; } = [];
+
+        public string FullName => Parent!.FullName + "." + Name;
+    }
 
     public class InterfaceImplementationPass(SemanticModel model) : ISemanticPass
     {
@@ -24,32 +64,45 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var implSyntax in classSyntax.InterfaceImplementations)
                             {
-                                var impl = new SemanticNode.InterfaceImplementation(Model, implSyntax);
-                                impl.InterfaceType = Model.ResolveType(implSyntax.InterfaceType.Text, s => s.IsInterfaceType, cls) as Interface;
-                                implSyntax.Functions.ForEach(f => (impl as IRoutineContainer).AddFunction(new Function(Model, f)));
-                                if (impl.InterfaceType == null)
-                                    throw new BabyPenguinException($"Could not resolve interface type {implSyntax.InterfaceType.Text} in class {cls.Name}");
-
-                                foreach (var func in impl.InterfaceType.Functions)
+                                var vtable = new VTable(Model, implSyntax, cls);
+                                foreach (var funcSyntax in implSyntax.Functions)
                                 {
-                                    if (func.IsDeclarationOnly)
+                                    if (!vtable.Interface.Functions.Any(f => f.Name == funcSyntax.Name))
+                                        throw new BabyPenguinException($"Interface {vtable.Interface.Name} does not have a function {funcSyntax.Name} to implement in class {cls.Name}");
+
+                                    var func = new Function(Model, funcSyntax);
+                                    (vtable as IRoutineContainer).AddFunction(func);
+                                }
+
+                                Model.CatchUp(vtable);
+
+                                foreach (var interfaceFunc in vtable.Interface.Functions)
+                                {
+                                    if (interfaceFunc.IsDeclarationOnly)
                                     {
-                                        if (!impl.Functions.Any(f => f.Name == func.Name))
-                                            throw new BabyPenguinException($"Interface {impl.InterfaceType.Name} requires an implementation for function {func.Name} in class {cls.FullName}");
+                                        if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is Function implFunc)
+                                        {
+                                            vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
+                                        }
+                                        else
+                                        {
+                                            throw new BabyPenguinException($"Interface {vtable.Interface.Name} requires an implementation for function {interfaceFunc.Name} in class {cls.FullName}");
+                                        }
                                     }
                                     else
                                     {
-                                        if (!impl.Functions.Any(f => f.Name == func.Name))
+                                        if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is Function implFunc)
                                         {
-                                            var fs = func.SyntaxNode as FunctionDefinition ?? throw new NotImplementedException();
-                                            (impl as IRoutineContainer).AddFunction(new Function(Model, fs));
+                                            vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
+                                        }
+                                        else
+                                        {
+                                            vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, interfaceFunc.FunctionSymbol!));
                                         }
                                     }
                                 }
 
-                                Model.CatchUp(impl);
-                                cls.ImplementedInterfaces.Add(impl);
-                                impl.Parent = cls;
+                                cls.VTables.Add(vtable);
                             }
                         }
                     }
@@ -61,8 +114,17 @@ namespace BabyPenguin.SemanticPass
         {
             get
             {
-                var table = new ConsoleTable("Name", "Namespace", "Type", "Generic Parameters");
-                Model.Types.Select(t => table.AddRow(t.Name, t.Namespace, t.Type, string.Join(", ", t.GenericDefinitions))).ToList();
+                var table = new ConsoleTable("Class", "Interface", "Function", "Implementation");
+                foreach (var cls in Model.Classes)
+                {
+                    foreach (var vtable in cls.VTables)
+                    {
+                        foreach (var slot in vtable.Slots)
+                        {
+                            table.AddRow((cls as IClass).FullName, vtable.Interface.FullName, slot.InterfaceSymbol.FullName, slot.ImplementationSymbol.FullName);
+                        }
+                    }
+                }
                 return table.ToMarkDownString();
             }
         }

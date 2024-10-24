@@ -1,15 +1,16 @@
                 namespace ns {
-                    class Test <T> {
-                        var x: T;
+                    interface IFoo {
+                        fun foo() -> u8;
+                        fun bar() -> u8 {
+                            return 1;
+                        }
                     }
-
-                    initial {
-                        val t : Test<u8> = new Test<u8>();
-                        t.x = 1;
-                        print(t.x as string);
-
-                        val t2 : Test<string> = new Test<string>();
-                        t2.x = "2";
-                        print(t2.x);
+                    
+                    class Foo {
+                        impl IFoo {
+                            fun foo() -> u8 {
+                                return 1;
+                            }
+                        }
                     }
                 }

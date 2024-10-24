@@ -223,6 +223,28 @@ namespace BabyPenguin.SemanticPass
         }
     }
 
+    public class InterfaceVariableSymbol : VaraibleSymbol
+    {
+        public InterfaceVariableSymbol(
+            VTable vtable,
+            ISymbolContainer parent,
+            bool isLocal,
+            string name,
+            IType interfaceType,
+            SourceLocation sourceLocation,
+            uint scopeDepth,
+            string originName,
+            bool isTemp,
+            int? paramIndex,
+            bool isReadonly,
+            bool isClassMember) : base(parent, isLocal, name, interfaceType, sourceLocation, scopeDepth, originName, isTemp, paramIndex, isReadonly, isClassMember)
+        {
+            VTable = vtable;
+        }
+
+        public VTable VTable { get; }
+    }
+
     public record FunctionParameter(string Name, IType Type, bool IsReadonly, int Index);
 
     public class FunctionSymbol : ISymbol
@@ -448,6 +470,7 @@ namespace BabyPenguin.SemanticPass
                                     }
                                     i++;
                                 }
+
                                 var funcSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, syntaxNode.SourceLocation, syntaxNode.Scope.ScopeDepth, null, true, false, func.IsStatic!.Value);
                                 func.FunctionSymbol = (FunctionSymbol)funcSymbol;
                             }

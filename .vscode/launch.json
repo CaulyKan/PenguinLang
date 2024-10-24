@@ -9,7 +9,7 @@
             "request": "launch",
             "name": "antlr-hello_world",
             "input": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
-            "grammar": "${workspaceFolder}/PenguinLangAntlr/PenguinLang.g4",
+            "grammar": "${workspaceFolder}/PenguinLangSyntax/PenguinLang.g4",
             "startRule": "compilationUnit",
             "visualParseTree": true
         },

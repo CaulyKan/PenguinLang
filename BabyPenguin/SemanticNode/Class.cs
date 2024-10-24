@@ -33,7 +33,7 @@ namespace BabyPenguin.SemanticNode
 
         IFunction? Constructor { get; set; }
 
-        List<InterfaceImplementation> ImplementedInterfaces { get; }
+        List<VTable> VTables { get; }
     }
 
     public class Class : BaseSemanticNode, IClass
@@ -84,6 +84,6 @@ namespace BabyPenguin.SemanticNode
 
         public override string ToString() => (this as ISemanticScope).FullName;
 
-        public List<InterfaceImplementation> ImplementedInterfaces { get; } = [];
+        public List<VTable> VTables { get; } = [];
     }
 }

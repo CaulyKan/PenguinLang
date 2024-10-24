@@ -709,8 +709,43 @@ namespace BabyPenguin.Tests
             var foo = ns.Classes.Find(i => i.Name == "Foo");
             Assert.NotNull(ifoo);
             Assert.NotNull(foo);
-            Assert.Single(foo.ImplementedInterfaces);
-            Assert.Equal("ns.IFoo", foo.ImplementedInterfaces[0].InterfaceType?.FullName);
+            Assert.Single(foo.VTables);
+            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName);
+        }
+
+        [Fact]
+        public void InterfaceFunctionImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo() -> T;
+                        fun bar() -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8> {
+                            fun foo() -> u8 {
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            Assert.Single(foo!.VTables);
+            var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
+            var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
+            Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
         }
     }
 }

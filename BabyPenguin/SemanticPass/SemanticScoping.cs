@@ -191,6 +191,7 @@ namespace BabyPenguin.SemanticPass
                             if (ns.Enums.Any(c => c.Name == enum_.Name))
                                 throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation);
                             ns.AddEnum(enum_);
+                            Process(enum_);
                         }
 
                         foreach (var intf in namespaceSyntax.Interfaces)
@@ -199,6 +200,7 @@ namespace BabyPenguin.SemanticPass
                             if (ns.Interfaces.Any(c => c.Name == interface_.Name))
                                 throw new BabyPenguinException($"Interface '{interface_.Name}' already exists in namespace '{ns.Name}'.", intf.SourceLocation);
                             ns.AddInterface(interface_);
+                            Process(interface_);
                         }
                     }
                     break;
