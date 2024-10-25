@@ -224,8 +224,17 @@ namespace BabyPenguin.VirtualMachine
                                 case TypeEnum.Fun:
                                 case TypeEnum.Class:
                                     throw new NotImplementedException();
+                                case TypeEnum.Interface:
+                                    throw new BabyPenguinRuntimeException("CAST command is not supported for interface type");
                             }
                             DebugPrint(cmd, op1: rightVar.ToDebugString(), result: resultVar.ToDebugString());
+                            break;
+                        }
+                    case CastInterfaceInstruction cmd:
+                        {
+                            RuntimeVar resultVar = resolveVariable(cmd.Target);
+                            RuntimeVar rightVar = resolveVariable(cmd.Operand);
+                            resultVar.VTable = cmd.VTable;
                             break;
                         }
                     case UnaryOperationInstruction cmd:
@@ -402,10 +411,20 @@ namespace BabyPenguin.VirtualMachine
                         {
                             RuntimeVar resultVar = resolveVariable(cmd.Target);
                             var owner = resolveVariable(cmd.MemberOwnerSymbol);
-                            var members = (owner.Value as Dictionary<string, RuntimeVar>)!;
-                            var memberVar = members[cmd.Member.Name]!;
-                            resultVar.AssignFrom(memberVar);
-                            DebugPrint(cmd, op1: memberVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
+                            if (owner.Type == TypeEnum.Interface &&
+                                owner.VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
+                            {
+                                var funVar = new RuntimeVar(owner.Model, vtableSlot.ImplementationSymbol.TypeInfo, vtableSlot.ImplementationSymbol);
+                                resultVar.AssignFrom(funVar);
+                                DebugPrint(cmd, op1: funVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
+                            }
+                            else
+                            {
+                                var members = (owner.Value as Dictionary<string, RuntimeVar>)!;
+                                var memberVar = members[cmd.Member.Name]!;
+                                resultVar.AssignFrom(memberVar);
+                                DebugPrint(cmd, op1: memberVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
+                            }
                         }
                         break;
                     case WriteMemberInstruction cmd:

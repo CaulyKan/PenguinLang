@@ -9,7 +9,8 @@ namespace BabyPenguin.SemanticPass
         ISymbol AllocTempSymbol(IType type, SourceLocation sourceLocation)
         {
             var name = $"__temp_{counter++}";
-            var temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
+            ISymbol temp;
+            temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
             Symbols.Add(temp);
             return temp;
         }

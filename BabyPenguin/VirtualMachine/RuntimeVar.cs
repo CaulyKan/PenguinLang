@@ -46,6 +46,14 @@ namespace BabyPenguin.VirtualMachine
                         Value = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
                         break;
                     }
+                case TypeEnum.Interface:
+                    {
+                        var symbols = (typeInfo as ISymbolContainer)!.Symbols;
+                        Value = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
+                        break;
+                    }
+                default:
+                    throw new NotImplementedException();
             }
         }
 
@@ -56,6 +64,7 @@ namespace BabyPenguin.VirtualMachine
         public RuntimeVar? EnumValue { get; set; }
         public ISymbol? Symbol { get; }
         public FunctionSymbol? FunctionSymbol { get; private set; }
+        public VTable? VTable { get; set; }
 
         public void AssignFrom(RuntimeVar other)
         {
@@ -65,6 +74,7 @@ namespace BabyPenguin.VirtualMachine
             Value = other.Value;
             EnumValue = other.EnumValue;
             FunctionSymbol = other.FunctionSymbol;
+            VTable = other.VTable;
         }
 
         public static RuntimeVar Void()
@@ -76,7 +86,8 @@ namespace BabyPenguin.VirtualMachine
         {
             RuntimeVar result = new(Model, TypeInfo, Symbol)
             {
-                Value = Value
+                Value = Value,
+                VTable = VTable
             };
             return result;
         }
@@ -100,6 +111,7 @@ namespace BabyPenguin.VirtualMachine
             TypeEnum.Fun => "fun",
             TypeEnum.Class => "class",
             TypeEnum.Enum => "enum",
+            TypeEnum.Interface => "interface",
             _ => "unknown"
         };
 

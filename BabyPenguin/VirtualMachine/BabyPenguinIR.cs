@@ -112,6 +112,24 @@ namespace BabyPenguin.VirtualMachine
         override public string StringResult => Target.ToString() ?? "";
     }
 
+    public record CastInterfaceInstruction(ISymbol Operand, IType TypeInfo, ISymbol Target) : BabyPenguinIR
+    {
+        public VTable VTable
+        {
+            get
+            {
+                var cls = (Operand.TypeInfo as IClass) ?? throw new InvalidOperationException("Operand is not a class");
+                var intf = (TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
+                var vtable = cls.VTables.FirstOrDefault(v => v.Interface == intf) ?? throw new BabyPenguinException($"Class {cls.FullName} does not implement interface {intf.FullName}");
+                return vtable;
+            }
+        }
+        override public string StringCommand => "ICAST";
+        override public string StringOP1 => Operand.ToString() ?? "";
+        override public string StringOP2 => TypeInfo.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
     public record WriteEnumInstruction(ISymbol Value, ISymbol TargetEnum) : BabyPenguinIR
     {
         override public string StringCommand => "WRENUM";

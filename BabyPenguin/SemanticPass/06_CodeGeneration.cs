@@ -1,6 +1,5 @@
 namespace BabyPenguin.SemanticPass
 {
-
     public interface ICodeContainer : ISymbolContainer, ISemanticNode
     {
         List<BabyPenguinIR> Instructions { get; }
@@ -73,6 +72,7 @@ namespace BabyPenguin.SemanticPass
         {
             public Stack<CurrentWhileLoopInfo> CurrentWhileLoop { get; } = new Stack<CurrentWhileLoopInfo>();
         }
+
         public record CurrentWhileLoopInfo(string BeginLabel, string EndLabel) { }
 
         public CodeContainerStorage CodeContainerData { get; }
@@ -690,6 +690,41 @@ namespace BabyPenguin.SemanticPass
             return to;
         }
 
+        public ISymbol AddCastExpression(CastExpression exp, ISymbol to)
+        {
+            if (ResolveExpressionType(exp).FullName != to.TypeInfo.FullName)
+                throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName}' to type '{to.TypeInfo.FullName}'", exp.SourceLocation);
+
+            var temp_var = AddExpression(exp.SubUnaryExpression!);
+            var type = temp_var.TypeInfo;
+            if (type.IsInterfaceType)
+            {
+                AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
+            }
+            else if (type is IClass cls)
+            {
+                if (to.TypeInfo.IsClassType)
+                {
+                    throw new BabyPenguinException($"Cant cast class type to class type", exp.SourceLocation);
+                }
+                else if (to.TypeInfo.IsInterfaceType)
+                {
+                    // class to interface conversion
+                    var vtable = cls.VTables.Find(v => v.Interface.FullName == to.TypeInfo.FullName)
+                        ?? throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", exp.SourceLocation);
+
+                    AddInstruction(new CastInterfaceInstruction(temp_var, to.TypeInfo, to));
+                }
+            }
+            else
+            {
+                // TODO: deal with basic types
+                AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
+            }
+
+            return to;
+        }
+
         public ISymbol AddExpression(ISyntaxExpression expression, ISymbol? to = null)
         {
             if (to != null)
@@ -914,9 +949,7 @@ namespace BabyPenguin.SemanticPass
                 case CastExpression exp:
                     if (exp.IsTypeCast)
                     {
-                        var type = ResolveExpressionType(exp);
-                        var temp_var = AddExpression(exp.SubUnaryExpression!);
-                        AddInstruction(new CastInstruction(temp_var, type, to));
+                        AddCastExpression(exp, to);
                     }
                     else
                     {
@@ -1011,8 +1044,6 @@ namespace BabyPenguin.SemanticPass
                         AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
                     }
                     break;
-                // case SlicingExpression exp:
-                //     throw new NotImplementedException();
                 case PrimaryExpression exp:
                     switch (exp.PrimaryExpressionType)
                     {
@@ -1049,8 +1080,6 @@ namespace BabyPenguin.SemanticPass
             Instructions.Add(instruction);
         }
     }
-
-
 
     public class CodeGenerationPass(SemanticModel model) : ISemanticPass
     {

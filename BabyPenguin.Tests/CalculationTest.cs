@@ -755,7 +755,7 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void InterfaceImplementation()
+        public void InterfaceImplementationBasic()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
