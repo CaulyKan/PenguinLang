@@ -76,12 +76,23 @@ namespace BabyPenguin.SemanticPass
 
                                 Model.CatchUp(vtable);
 
+                                void checkFunction(Function interfaceFunc, Function implFunc)
+                                {
+                                    if (implFunc.ReturnTypeInfo.FullName != interfaceFunc.ReturnTypeInfo.FullName
+                                                || implFunc.Parameters.Count != interfaceFunc.Parameters.Count
+                                                || implFunc.Parameters.Zip(interfaceFunc.Parameters, (p1, p2) => p1.Type.FullName != p2.Type.FullName).Any(b => b))
+                                    {
+                                        throw new BabyPenguinException($"Function {interfaceFunc.Name} in interface {vtable.Interface.Name} does not match the implementation in class {cls.Name}");
+                                    }
+                                }
+
                                 foreach (var interfaceFunc in vtable.Interface.Functions)
                                 {
                                     if (interfaceFunc.IsDeclarationOnly)
                                     {
                                         if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is Function implFunc)
                                         {
+                                            checkFunction(interfaceFunc, implFunc);
                                             vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
                                         }
                                         else
@@ -93,6 +104,7 @@ namespace BabyPenguin.SemanticPass
                                     {
                                         if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is Function implFunc)
                                         {
+                                            checkFunction(interfaceFunc, implFunc);
                                             vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
                                         }
                                         else

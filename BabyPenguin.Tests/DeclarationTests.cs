@@ -1,10 +1,3 @@
-using System.Diagnostics.SymbolStore;
-using BabyPenguin;
-using BabyPenguin.SemanticNode;
-using BabyPenguin.SemanticPass;
-using PenguinLangSyntax;
-using Xunit.Abstractions;
-
 namespace BabyPenguin.Tests
 {
     public class DeclarationTests(ITestOutputHelper helper) : TestBase(helper)
@@ -746,6 +739,80 @@ namespace BabyPenguin.Tests
             Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
             Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
             Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
+        }
+
+        [Fact]
+        public void InterfaceFunctionImplementationError1()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo() -> T;
+                        fun bar() -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8>;
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void InterfaceFunctionImplementationError2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo() -> T;
+                        fun bar() -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8> {
+                            fun foo() -> u8 {
+                                return 1;
+                            }
+                            fun foo2() -> u8 {
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void InterfaceFunctionImplementationError3()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo() -> T;
+                        fun bar() -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8> {
+                            fun foo() -> u16 {
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            ");
+            Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
     }
 }

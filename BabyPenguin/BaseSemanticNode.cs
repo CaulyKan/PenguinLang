@@ -1,8 +1,5 @@
 
-using BabyPenguin;
-using PenguinLangSyntax;
-
-namespace BabyPenguin.SemanticNode
+namespace BabyPenguin
 {
     public interface ISemanticNode
     {

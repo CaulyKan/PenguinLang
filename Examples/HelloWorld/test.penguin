@@ -1,16 +1,23 @@
-                namespace ns {
-                    interface IFoo {
-                        fun foo() -> u8;
-                        fun bar() -> u8 {
+ namespace ns {
+                    interface IFoo<T> {
+                        fun foo(val this: IFoo<T>) -> T;
+                        fun bar(val this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
                     
                     class Foo {
-                        impl IFoo {
-                            fun foo() -> u8 {
-                                return 1;
+                        impl IFoo<u8> {
+                            fun foo(val this: IFoo<u8>) -> u8 {
+                                return 0;
                             }
                         }
+                    }
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        print(f2.foo() as string);
+                        print(f2.bar() as string);
                     }
                 }

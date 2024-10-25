@@ -1,9 +1,3 @@
-using System.Diagnostics.SymbolStore;
-using BabyPenguin;
-using PenguinLangSyntax;
-using Xunit.Abstractions;
-using BabyPenguin.VirtualMachine;
-
 namespace BabyPenguin.Tests
 {
     public class FlowControlTest(ITestOutputHelper helper) : TestBase(helper)

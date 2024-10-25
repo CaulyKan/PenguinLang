@@ -1,4 +1,4 @@
-namespace BabyPenguin.SemanticPass
+namespace BabyPenguin
 {
     public interface ISemanticPass
     {

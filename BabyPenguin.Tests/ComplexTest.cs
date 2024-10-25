@@ -1,9 +1,3 @@
-using System.Diagnostics.SymbolStore;
-using BabyPenguin;
-using BabyPenguin.VirtualMachine;
-using PenguinLangSyntax;
-using Xunit.Abstractions;
-
 namespace BabyPenguin.Tests
 {
     public class ComplexTest(ITestOutputHelper helper) : TestBase(helper)

@@ -62,7 +62,7 @@ namespace BabyPenguin.SemanticNode
 
         public ISemanticScope? Parent { get; set; }
 
-        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines);
+        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines).Concat(VTables);
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 

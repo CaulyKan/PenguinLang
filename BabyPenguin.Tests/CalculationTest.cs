@@ -1,9 +1,3 @@
-using System.Diagnostics.SymbolStore;
-using BabyPenguin;
-using BabyPenguin.VirtualMachine;
-using PenguinLangSyntax;
-using Xunit.Abstractions;
-
 namespace BabyPenguin.Tests
 {
     public class CalculationTest(ITestOutputHelper helper) : TestBase(helper)
@@ -760,5 +754,39 @@ namespace BabyPenguin.Tests
             Assert.Equal("a01", vm.CollectOutput());
         }
 
+        [Fact]
+        public void InterfaceImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo(val this: IFoo<T>) -> T;
+                        fun bar(val this: IFoo<T>) -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8> {
+                            fun foo(val this: IFoo<u8>) -> u8 {
+                                return 0;
+                            }
+                        }
+                    }
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        print(f2.foo() as string);
+                        print(f2.bar() as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("01", vm.CollectOutput());
+        }
     }
 }
