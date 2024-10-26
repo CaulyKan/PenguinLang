@@ -788,5 +788,43 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("01", vm.CollectOutput());
         }
+
+
+        [Fact]
+        public void InterfaceCastToClass()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo(val this: IFoo<T>) -> T;
+                        fun bar(val this: IFoo<T>) -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo {
+                        val a: u8 = 9;
+                        impl IFoo<u8> {
+                            fun foo(val this: IFoo<u8>) -> u8 {
+                                val f : Foo = this as Foo;
+                                return f.a;
+                            }
+                        }
+                    }
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        print(f2.foo() as string);
+                        print(f2.bar() as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("91", vm.CollectOutput());
+        }
     }
 }

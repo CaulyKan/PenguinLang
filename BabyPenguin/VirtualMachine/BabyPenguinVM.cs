@@ -8,11 +8,11 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var symbol in model.Symbols.Where(s => !s.IsEnum && !s.IsLocal))
             {
-                Global.GlobalVariables.Add(symbol.FullName, new RuntimeVar(model, symbol.TypeInfo, symbol));
+                Global.GlobalVariables.Add(symbol.FullName, IRuntimeVar.FromSymbol(model, symbol));
             }
 
-            Global.ExternFunctions.Add("__builtin.print", (result, args) => { Output.Append(args[0].Value); Console.Write(args[0].Value); });
-            Global.ExternFunctions.Add("__builtin.println", (result, args) => { Output.AppendLine(args[0].Value as string); Console.WriteLine(args[0].Value); });
+            Global.ExternFunctions.Add("__builtin.print", (result, args) => { var s = args[0].As<BasicRuntimeVar>().Value; Output.Append(s); Console.Write(s); });
+            Global.ExternFunctions.Add("__builtin.println", (result, args) => { var s = args[0].As<BasicRuntimeVar>().Value; Output.AppendLine(s as string); Console.WriteLine(s); });
         }
 
         public SemanticModel Model { get; }
@@ -43,9 +43,9 @@ namespace BabyPenguin.VirtualMachine
 
     public class RuntimeGlobal
     {
-        public Dictionary<string, RuntimeVar> GlobalVariables { get; } = [];
+        public Dictionary<string, IRuntimeVar> GlobalVariables { get; } = [];
 
-        public Dictionary<string, Action<RuntimeVar?, List<RuntimeVar>>> ExternFunctions { get; } = [];
+        public Dictionary<string, Action<IRuntimeVar?, List<IRuntimeVar>>> ExternFunctions { get; } = [];
         public bool EnableDebugPrint { get; set; } = false;
         public TextWriter DebugWriter { get; set; } = Console.Out;
     }

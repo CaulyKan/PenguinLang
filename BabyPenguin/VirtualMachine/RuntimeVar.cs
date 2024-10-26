@@ -1,15 +1,55 @@
 namespace BabyPenguin.VirtualMachine
 {
-
-    public class RuntimeVar
+    public interface IRuntimeVar
     {
-        public RuntimeVar(SemanticModel? model, IType typeInfo, ISymbol? symbol)
+        SemanticModel Model { get; }
+
+        IType TypeInfo { get; }
+
+        TypeEnum Type => TypeInfo.Type;
+
+        ISymbol Symbol { get; }
+
+        void AssignFrom(IRuntimeVar other);
+
+        T As<T>() where T : class, IRuntimeVar => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
+
+        string? ValueString => TypeInfo.FullName;
+
+        string ToDebugString() => $"{Symbol?.Name}({ValueString})";
+
+        static IRuntimeVar FromSymbol(SemanticModel model, ISymbol symbol)
         {
-            TypeInfo = typeInfo;
-            Symbol = symbol;
-            FunctionSymbol = symbol as FunctionSymbol;
-            Type = typeInfo.Type;
+            if (symbol.TypeInfo.IsEnumType)
+            {
+                return new EnumRuntimeVar(model, symbol);
+            }
+            else if (symbol.TypeInfo.IsFunctionType)
+            {
+                return new FunctionRuntimeVar(model, symbol);
+            }
+            else if (symbol.TypeInfo.IsClassType)
+            {
+                return new ClassRuntimeVar(model, symbol);
+            }
+            else if (symbol.TypeInfo.IsInterfaceType)
+            {
+                return new InterfaceRuntimeVar(model, symbol);
+            }
+            else
+            {
+                return new BasicRuntimeVar(model, symbol);
+            }
+        }
+    }
+
+    public class BasicRuntimeVar : IRuntimeVar
+    {
+        public BasicRuntimeVar(SemanticModel model, ISymbol symbol)
+        {
             Model = model;
+            Symbol = symbol;
+
             switch (Type)
             {
                 case TypeEnum.Bool:
@@ -36,61 +76,23 @@ namespace BabyPenguin.VirtualMachine
                     Value = '\0';
                     break;
                 case TypeEnum.Void:
-                    break;
                 case TypeEnum.Fun:
+                    Value = 0;
                     break;
-                case TypeEnum.Class:
-                case TypeEnum.Enum:
-                    {
-                        var symbols = (typeInfo as ISymbolContainer)!.Symbols;
-                        Value = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
-                        break;
-                    }
-                case TypeEnum.Interface:
-                    {
-                        var symbols = (typeInfo as ISymbolContainer)!.Symbols;
-                        Value = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => new RuntimeVar(Model, s.TypeInfo, s));
-                        break;
-                    }
                 default:
-                    throw new NotImplementedException();
+                    throw new BabyPenguinRuntimeException($"Unsupported type {Type} for BasicVar");
             }
         }
 
-        public IType TypeInfo { get; }
-        public TypeEnum Type { get; }
-        public SemanticModel? Model { get; }
-        public object? Value { get; set; }
-        public RuntimeVar? EnumValue { get; set; }
-        public ISymbol? Symbol { get; }
-        public FunctionSymbol? FunctionSymbol { get; private set; }
-        public VTable? VTable { get; set; }
+        public ISymbol Symbol { get; }
 
-        public void AssignFrom(RuntimeVar other)
-        {
-            if (!other.TypeInfo.IsEnumType && !this.TypeInfo.IsEnumType)
-                if (!other.TypeInfo.CanImplicitlyCastTo(this.TypeInfo))
-                    throw new BabyPenguinRuntimeException($"Cannot assign type {other.Type} to type {Type}");
-            Value = other.Value;
-            EnumValue = other.EnumValue;
-            FunctionSymbol = other.FunctionSymbol;
-            VTable = other.VTable;
-        }
+        public SemanticModel Model { get; }
 
-        public static RuntimeVar Void()
-        {
-            return new RuntimeVar(null, BasicType.Void, null);
-        }
+        public IType TypeInfo => Symbol.TypeInfo;
 
-        public RuntimeVar Clone()
-        {
-            RuntimeVar result = new(Model, TypeInfo, Symbol)
-            {
-                Value = Value,
-                VTable = VTable
-            };
-            return result;
-        }
+        public TypeEnum Type => TypeInfo.Type;
+
+        public object Value { get; set; }
 
         public string? ValueString => Type switch
         {
@@ -108,21 +110,140 @@ namespace BabyPenguin.VirtualMachine
             TypeEnum.String => "\"" + Value?.ToString() + "\"",
             TypeEnum.Char => "'" + Value?.ToString() + "'",
             TypeEnum.Void => "void",
-            TypeEnum.Fun => "fun",
-            TypeEnum.Class => "class",
-            TypeEnum.Enum => "enum",
-            TypeEnum.Interface => "interface",
             _ => "unknown"
         };
 
-        public override string ToString()
+        public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        public void AssignFrom(IRuntimeVar other)
         {
-            return $"{ValueString}({TypeInfo})";
+            if (other is BasicRuntimeVar otherVar)
+            {
+                if (!other.TypeInfo.CanImplicitlyCastTo(TypeInfo))
+                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                Value = otherVar.Value;
+            }
+            else
+            {
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+            }
+        }
+    }
+
+    public class FunctionRuntimeVar : IRuntimeVar
+    {
+        public FunctionRuntimeVar(SemanticModel model, ISymbol symbol, ISymbol? functionSymbol = null)
+        {
+            Model = model;
+            Symbol = symbol;
+            FunctionSymbol = functionSymbol ?? symbol;
         }
 
-        public string ToDebugString()
+        public SemanticModel Model { get; }
+
+        public ISymbol Symbol { get; }
+
+        public ISymbol? FunctionSymbol { get; set; }
+
+        public IType TypeInfo => Symbol.TypeInfo;
+
+        public void AssignFrom(IRuntimeVar other)
         {
-            return $"{Symbol?.Name}({ValueString})";
+            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not FunctionRuntimeVar funVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+
+            FunctionSymbol = funVar.FunctionSymbol;     // using reference
         }
+
+        public override string ToString() => (this as IRuntimeVar).ToDebugString();
+    }
+
+    public class ClassRuntimeVar : IRuntimeVar
+    {
+        public ClassRuntimeVar(SemanticModel model, ISymbol symbol)
+        {
+            Model = model;
+            Symbol = symbol;
+            var symbols = (TypeInfo as ISymbolContainer)!.Symbols;
+            ObjectFields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeVar.FromSymbol(Model, s));
+        }
+
+        public SemanticModel Model { get; }
+
+        public ISymbol Symbol { get; }
+
+        public IType TypeInfo => Symbol.TypeInfo;
+
+        public Dictionary<string, IRuntimeVar> ObjectFields { get; private set; } = [];
+
+        public void AssignFrom(IRuntimeVar other)
+        {
+            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not ClassRuntimeVar clsVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+
+            ObjectFields = clsVar.ObjectFields;     // using reference
+        }
+
+        public override string ToString() => (this as IRuntimeVar).ToDebugString();
+    }
+
+    public class InterfaceRuntimeVar(SemanticModel model, ISymbol symbol) : IRuntimeVar
+    {
+        public SemanticModel Model { get; } = model;
+
+        public ISymbol Symbol { get; } = symbol;
+
+        public IType TypeInfo => Symbol.TypeInfo;
+
+        public VTable? VTable { get; set; }
+
+        public IRuntimeVar? Object { get; set; }
+
+        public void AssignFrom(IRuntimeVar other)
+        {
+            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not InterfaceRuntimeVar intfVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+
+            Object = intfVar.Object;     // using reference
+            VTable = intfVar.VTable;
+        }
+
+        public override string ToString() => (this as IRuntimeVar).ToDebugString();
+    }
+
+
+    public class EnumRuntimeVar : IRuntimeVar
+    {
+        public SemanticModel Model { get; }
+
+        public ISymbol Symbol { get; }
+
+        public IType TypeInfo => Symbol.TypeInfo;
+
+        public VTable? VTable { get; set; }
+
+        public IRuntimeVar? EnumObject { get; set; }
+
+        public Dictionary<string, IRuntimeVar> ObjectFields { get; private set; } = [];
+
+        public EnumRuntimeVar(SemanticModel model, ISymbol symbol)
+        {
+            Model = model;
+            Symbol = symbol;
+
+            var symbols = (TypeInfo as ISymbolContainer)!.Symbols;
+            ObjectFields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeVar.FromSymbol(Model, s));
+        }
+
+        public void AssignFrom(IRuntimeVar other)
+        {
+            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not EnumRuntimeVar intfVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+
+            EnumObject = intfVar.EnumObject;     // using reference
+            ObjectFields = intfVar.ObjectFields;
+        }
+
+        public override string ToString() => (this as IRuntimeVar).ToDebugString();
     }
 }
