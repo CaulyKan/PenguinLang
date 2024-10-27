@@ -29,15 +29,14 @@ namespace BabyPenguin.Symbol
 
         public bool IsClassMember { get; } = false;
 
-        public List<IType> GenericArguments { get; } = [];
-
-        public List<string> GenericDefinitions { get; } = [];
-
         public int Value { get; } = value;
 
         public bool IsEnum => true;
+
         public bool IsFunction => false;
+
         public bool IsVariable => false;
+
         public bool IsStatic => false;
     }
 

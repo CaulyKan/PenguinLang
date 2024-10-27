@@ -60,9 +60,6 @@ namespace BabyPenguin.Symbol
         public IFunction SemanticFunction { get; }
         public bool IsClassMember { get; }
         public bool IsStatic { get; }
-        public List<IType> GenericArguments { get; } = [];
-        public List<string> GenericDefinitions { get; } = [];
-
         public bool IsEnum => false;
         public bool IsFunction => true;
         public bool IsVariable => false;

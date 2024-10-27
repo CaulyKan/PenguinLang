@@ -27,8 +27,6 @@ namespace BabyPenguin.Symbol
         public bool IsReadonly { get; set; } = isReadonly;
         public bool IsClassMember { get; } = isClassMember;
         public bool IsStatic { get; } = !isClassMember;
-        public List<IType> GenericArguments { get; } = [];
-        public List<string> GenericDefinitions { get; } = [];
         public bool IsEnum => false;
         public bool IsFunction => false;
         public bool IsVariable => true;

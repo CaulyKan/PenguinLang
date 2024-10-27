@@ -26,10 +26,6 @@ namespace BabyPenguin.Symbol
         bool IsReadonly { get; }
         bool IsClassMember { get; }
         bool IsStatic { get; }
-        List<IType> GenericArguments { get; }
-        List<string> GenericDefinitions { get; }
-        bool IsGeneric => GenericDefinitions.Count > 0;
-        bool IsSpecialized => !IsGeneric || GenericArguments.Count > 0;
         bool IsEnum { get; }
         bool IsFunction { get; }
         bool IsVariable { get; }
