@@ -201,11 +201,24 @@ namespace BabyPenguin.VirtualMachine
 
         public void AssignFrom(IRuntimeVar other)
         {
-            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not InterfaceRuntimeVar intfVar)
+            if (other is not InterfaceRuntimeVar intfVar)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
 
+            if (intfVar.Object is null)
+                throw new BabyPenguinRuntimeException($"Cannot assign null to interface {TypeInfo.FullName}");
+
+            if (intfVar.Object is not ClassRuntimeVar clsVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Object.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName}");
+
+            if (clsVar.TypeInfo is not IClass cls)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {clsVar.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not a class");
+
+            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == TypeInfo.FullName);
+            if (vtable == null)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {clsVar.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not implementing the interface");
+
             Object = intfVar.Object;     // using reference
-            VTable = intfVar.VTable;
+            VTable = vtable;
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();

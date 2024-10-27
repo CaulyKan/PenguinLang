@@ -814,5 +814,34 @@ namespace BabyPenguin.Tests
             ");
             Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
+
+        [Fact]
+        public void InterfaceCascadeImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {}
+                    interface IBar<T> { 
+                        impl IFoo;
+                    }
+                    interface IQux<T> { 
+                        impl IBar<T>;
+                    }
+                    class Qux {
+                        impl IQux<u8>;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var qux = ns!.Classes.Find(i => i.Name == "Qux") as IClass;
+            Assert.Equal(3, qux!.ImplementedInterfaces.Count());
+            Assert.Equal("ns.IFoo", qux.ImplementedInterfaces.First().FullName);
+            Assert.Equal("ns.IBar<u8>", qux.ImplementedInterfaces.ElementAt(1).FullName);
+            Assert.Equal("ns.IQux<u8>", qux.ImplementedInterfaces.ElementAt(2).FullName);
+        }
+
     }
 }

@@ -1429,6 +1429,9 @@ namespace PenguinLangSyntax
                .Select(x => new FunctionDefinition(walker, x))
                .ToList();
             GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
+            InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
+               .Select(x => new InterfaceImplementation(walker, x))
+               .ToList();
 
             walker.PopScope();
         }
@@ -1452,6 +1455,8 @@ namespace PenguinLangSyntax
         public uint ScopeDepth { get; set; }
 
         public GenericDefinitions? GenericDefinitions { get; } = null;
+
+        public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
     }
 
     public class InterfaceImplementation : SyntaxNode, ISyntaxScope

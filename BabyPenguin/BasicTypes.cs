@@ -191,6 +191,8 @@ namespace BabyPenguin.SemanticNode
 
         public SyntaxNode? SyntaxNode => null;
 
+        public int PassIndex { get; set; } = int.MaxValue; // BasicType do not involve in semantic passes.
+
         public static IType? ResolveLiteralType(string literal)
         {
             if (literal.StartsWith('"') && literal.EndsWith('"'))

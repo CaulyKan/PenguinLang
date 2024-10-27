@@ -138,6 +138,7 @@ genericDefinitions: '<' identifier (',' identifier)* '>';
 interfaceDefinition:
 	'interface' identifier genericDefinitions? '{' (
 		functionDefinition
+		| interfaceImplementation
 	)* '}';
 
 interfaceImplementation:

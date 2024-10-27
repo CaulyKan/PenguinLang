@@ -149,12 +149,17 @@ namespace BabyPenguin.SemanticPass
 
     public record NamespaceImport(string Namespace, PenguinLangSyntax.SourceLocation SourceLocation);
 
-    public class SemanticScopingPass(SemanticModel model) : ISemanticPass
+    public class SemanticScopingPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
 
+        public int PassIndex { get; } = passIndex;
+
         public void Process(ISemanticNode obj)
         {
+            if (obj.PassIndex >= PassIndex)
+                return;
+
             switch (obj)
             {
                 case INamespace ns:
@@ -259,6 +264,8 @@ namespace BabyPenguin.SemanticPass
                 default:
                     break;
             }
+
+            obj.PassIndex = PassIndex;
         }
 
         public void Process()
@@ -272,7 +279,7 @@ namespace BabyPenguin.SemanticPass
             get
             {
                 var table = new ConsoleTable("Name", "Type");
-                Model.Traverse(t => table.AddRow(t.Name, t.GetType().Name));
+                Model.Traverse(t => table.AddRow(t.FullName, t.GetType().Name));
                 return table.ToMarkDownString();
             }
         }

@@ -4,9 +4,11 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticPass
 {
-    public class TypeElaboratePass(SemanticModel model) : ISemanticPass
+    public class TypeElaboratePass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
+
+        public int PassIndex { get; } = passIndex;
 
         public void Process()
         {
@@ -18,6 +20,9 @@ namespace BabyPenguin.SemanticPass
 
         public void Process(ISemanticNode obj)
         {
+            if (obj.PassIndex >= PassIndex)
+                return;
+
             switch (obj)
             {
                 case Class class_:
@@ -31,6 +36,8 @@ namespace BabyPenguin.SemanticPass
                 default:
                     break;
             }
+
+            obj.PassIndex = PassIndex;
         }
 
         public string Report

@@ -107,9 +107,11 @@ namespace BabyPenguin.SemanticPass
         }
     }
 
-    public class SymbolElaboratePass(SemanticModel model) : ISemanticPass
+    public class SymbolElaboratePass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
+
+        public int PassIndex { get; } = passIndex;
 
         public void Process()
         {
@@ -121,6 +123,9 @@ namespace BabyPenguin.SemanticPass
 
         public void Process(ISemanticNode obj)
         {
+            if (obj.PassIndex >= PassIndex)
+                return;
+
             switch (obj)
             {
                 case INamespace ns:
@@ -280,6 +285,8 @@ namespace BabyPenguin.SemanticPass
                 default:
                     break;
             }
+
+            obj.PassIndex = PassIndex;
         }
 
         public string Report

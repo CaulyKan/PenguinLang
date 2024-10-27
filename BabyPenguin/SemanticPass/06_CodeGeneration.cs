@@ -561,7 +561,7 @@ namespace BabyPenguin.SemanticPass
                                 var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == t.IsEnumType, scope: this);
 
                                 if (member == null)
-                                    throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
+                                    throw new BabyPenguinException($"Cant resolve symbol '{symbolName}'", ma.MemberIdentifiers[i].SourceLocation);
                                 t = member.TypeInfo;
                             }
                             return t;
@@ -710,10 +710,10 @@ namespace BabyPenguin.SemanticPass
                 else if (to.TypeInfo.IsInterfaceType)
                 {
                     // class to interface conversion
-                    var vtable = cls.VTables.Find(v => v.Interface.FullName == to.TypeInfo.FullName)
-                        ?? throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", exp.SourceLocation);
+                    if (!cls.ImplementedInterfaces.Any(i => i.FullName == to.TypeInfo.FullName))
+                        throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", exp.SourceLocation);
 
-                    AddInstruction(new CastInterfaceInstruction(temp_var, to.TypeInfo, to));
+                    AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
                 }
             }
             else
@@ -1081,9 +1081,11 @@ namespace BabyPenguin.SemanticPass
         }
     }
 
-    public class CodeGenerationPass(SemanticModel model) : ISemanticPass
+    public class CodeGenerationPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
+
+        public int PassIndex { get; } = passIndex;
 
         public void Process()
         {
@@ -1103,9 +1105,12 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Generation code for '{obj.FullName}'...");
                     container.CompileSyntaxStatements();
                 }
             }
+
+            obj.PassIndex = PassIndex;
         }
 
         public string Report

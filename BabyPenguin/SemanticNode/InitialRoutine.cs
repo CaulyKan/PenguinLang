@@ -27,7 +27,7 @@ namespace BabyPenguin.SemanticNode
 
         public string FullName => Parent!.FullName + "." + Name;
 
-        public List<VirtualMachine.BabyPenguinIR> Instructions { get; } = [];
+        public List<BabyPenguinIR> Instructions { get; } = [];
 
         public SyntaxNode? CodeSyntaxNode => (SyntaxNode as PenguinLangSyntax.InitialRoutine)?.CodeBlock;
 

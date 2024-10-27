@@ -789,7 +789,6 @@ namespace BabyPenguin.Tests
             Assert.Equal("01", vm.CollectOutput());
         }
 
-
         [Fact]
         public void InterfaceCastToClass()
         {
@@ -825,6 +824,58 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("91", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceUpcastDowncast()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo(val this: IFoo<T>) -> T;
+                        fun foo2(val this: IFoo<T>) -> T {
+                            return 1;
+                        }
+                    }
+
+                    interface IBar<T> {
+                        impl IFoo<T> {
+                            fun foo(val this: IFoo<T>) -> T {
+                                return 2;
+                            }
+                        }
+                        fun bar(val this: IBar<T>) -> T {
+                            return 3;
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IBar<u8>;
+                        val a: u8 = 9;
+                    }
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        val f3 : IBar<u8> = f2 as IBar<u8>;
+                        val f4 : IBar<u8> = f as IBar<u8>;
+                        val f5 : IFoo<u8> = f3 as IFoo<u8>;
+                        val f6 : Foo = f4 as Foo;
+                        print(f2.foo() as string);
+                        print(f2.foo2() as string);
+                        print(f3.bar() as string);
+                        print(f4.bar() as string);
+                        print(f5.foo() as string);
+                        print(f5.foo2() as string);
+                        print(f6.a as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("2133219", vm.CollectOutput());
         }
     }
 }

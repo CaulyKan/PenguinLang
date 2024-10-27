@@ -13,6 +13,8 @@ namespace BabyPenguin
 
         SyntaxNode? SyntaxNode { get; }
 
+        int PassIndex { get; set; }
+
         ErrorReporter Reporter => Model.Reporter;
     }
 
@@ -23,6 +25,8 @@ namespace BabyPenguin
         public SourceLocation SourceLocation { get; }
 
         public SyntaxNode? SyntaxNode { get; }
+
+        public int PassIndex { get; set; }
 
         public BaseSemanticNode(SemanticModel model, SyntaxNode? syntaxNode = null)
         {

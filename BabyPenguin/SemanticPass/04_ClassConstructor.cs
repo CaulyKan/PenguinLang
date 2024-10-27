@@ -1,9 +1,11 @@
 namespace BabyPenguin.SemanticPass
 {
 
-    public class ClassConstructorPass(SemanticModel model) : ISemanticPass
+    public class ClassConstructorPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
+
+        public int PassIndex { get; } = passIndex;
 
         public void Process()
         {
@@ -15,6 +17,9 @@ namespace BabyPenguin.SemanticPass
 
         public void Process(ISemanticNode obj)
         {
+            if (obj.PassIndex >= PassIndex)
+                return;
+
             if (obj is IClass cls)
             {
                 if (cls.IsGeneric && !cls.IsSpecialized)
@@ -26,6 +31,8 @@ namespace BabyPenguin.SemanticPass
                     ProcessClass(cls);
                 }
             }
+
+            obj.PassIndex = PassIndex;
         }
 
         public void ProcessClass(IClass cls)
@@ -66,7 +73,6 @@ namespace BabyPenguin.SemanticPass
                     }
                 }
             }
-
         }
 
         public string Report => "";

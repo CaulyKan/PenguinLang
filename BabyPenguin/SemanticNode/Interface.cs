@@ -1,6 +1,6 @@
 namespace BabyPenguin.SemanticNode
 {
-    public interface IInterface : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer
+    public interface IInterface : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
         IType IType.Specialize(List<IType> genericArguments)
         {
@@ -55,7 +55,7 @@ namespace BabyPenguin.SemanticNode
 
         public ISemanticScope? Parent { get; set; }
 
-        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines);
+        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines).Concat(VTables);
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
@@ -74,6 +74,8 @@ namespace BabyPenguin.SemanticNode
         public bool CanImplicitlyCastTo(IType other) => (this as ISemanticScope).FullName == other.FullName;
 
         public IFunction? Constructor { get; set; }
+
+        public List<VTable> VTables { get; } = [];
 
         public override string ToString() => (this as ISemanticScope).FullName;
     }

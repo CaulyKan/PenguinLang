@@ -10,7 +10,7 @@ namespace BabyPenguin
         public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
-        public SemanticNode.Namespace BuiltinNamespace { get; }
+        public Namespace BuiltinNamespace { get; }
 
         public SemanticModel(ErrorReporter? reporter = null)
         {
@@ -18,18 +18,18 @@ namespace BabyPenguin
             BuiltinNamespace = AddBuiltin();
             Namespaces = [BuiltinNamespace];
             Passes = new List<ISemanticPass>() {
-                new SemanticScopingPass(this),
-                new TypeElaboratePass(this),
-                new SymbolElaboratePass(this),
-                new ClassConstructorPass(this),
-                new InterfaceImplementationPass(this),
-                new CodeGenerationPass(this),
+                new SemanticScopingPass(this, 1),
+                new TypeElaboratePass(this, 2),
+                new SymbolElaboratePass(this, 3),
+                new ClassConstructorPass(this, 4),
+                new InterfaceImplementationPass(this, 5),
+                new CodeGenerationPass(this, 6),
             };
         }
 
-        private SemanticNode.Namespace AddBuiltin()
+        private Namespace AddBuiltin()
         {
-            var ns = new SemanticNode.Namespace(this, "__builtin");
+            var ns = new Namespace(this, "__builtin");
 
             var println = new Function(this, "println",
                 [new FunctionParameter("text", BasicType.String, true, 0)], BasicType.Void, true);
@@ -53,7 +53,7 @@ namespace BabyPenguin
             return Namespaces.SelectMany(ns => (ns as ISemanticScope).FindChildrenIncludingSelf(predicate));
         }
 
-        public void AddNamespace(SemanticNode.Namespace ns)
+        public void AddNamespace(Namespace ns)
         {
             Namespaces.Add(ns);
             ns.Parent = null;
@@ -174,7 +174,7 @@ namespace BabyPenguin
                 }
                 else
                 {
-                    var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, predicate, scope)).ToList();
+                    var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, scope: scope)).ToList();
                     for (int i = 0; i < genericArgumentsFromName.Count; i++)
                     {
                         if (genericArgumentsFromName[i] == null)
@@ -211,7 +211,9 @@ namespace BabyPenguin
                 if (node is ISemanticScope scp)
                 {
                     foreach (var child in scp.FindChildrenIncludingSelf(s => true).ToList())
+                    {
                         pass.Process(child);
+                    }
                 }
                 else
                 {

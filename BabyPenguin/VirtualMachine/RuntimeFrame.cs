@@ -230,17 +230,21 @@ namespace BabyPenguin.VirtualMachine
                                         resultVar.As<ClassRuntimeVar>().AssignFrom(rightVar.As<InterfaceRuntimeVar>().Object!);
                                     break;
                                 case TypeEnum.Interface:
-                                    throw new BabyPenguinRuntimeException("CAST command is not supported for interface type");
+                                    if (rightVar is ClassRuntimeVar)
+                                    {
+                                        var cls = (cmd.Operand.TypeInfo as IClass) ?? throw new InvalidOperationException("Operand is not a class");
+                                        var intf = (cmd.TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
+                                        var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == intf.FullName) ?? throw new BabyPenguinException($"Class {cls.FullName} does not implement interface {intf.FullName}");
+                                        resultVar.As<InterfaceRuntimeVar>().VTable = vtable;
+                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar.As<ClassRuntimeVar>();
+                                    }
+                                    else if (rightVar is InterfaceRuntimeVar)
+                                    {
+                                        resultVar.As<InterfaceRuntimeVar>().AssignFrom(rightVar);
+                                    }
+                                    break;
                             }
                             DebugPrint(cmd, op1: rightVar.ToDebugString(), result: resultVar.ToDebugString());
-                            break;
-                        }
-                    case CastInterfaceInstruction cmd:
-                        {
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
-                            IRuntimeVar rightVar = resolveVariable(cmd.Operand);
-                            resultVar.As<InterfaceRuntimeVar>().VTable = cmd.VTable;
-                            resultVar.As<InterfaceRuntimeVar>().Object = rightVar.As<ClassRuntimeVar>();
                             break;
                         }
                     case UnaryOperationInstruction cmd:

@@ -3,7 +3,7 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticNode
 {
-    public interface IClass : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer
+    public interface IClass : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
         IType IType.Specialize(List<IType> genericArguments)
         {
@@ -32,8 +32,6 @@ namespace BabyPenguin.SemanticNode
         }
 
         IFunction? Constructor { get; set; }
-
-        List<VTable> VTables { get; }
     }
 
     public class Class : BaseSemanticNode, IClass

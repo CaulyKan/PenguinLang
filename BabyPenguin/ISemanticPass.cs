@@ -6,6 +6,8 @@ namespace BabyPenguin
 
         string Report { get; }
 
+        int PassIndex { get; }
+
         public void Process();
 
         public void Process(ISemanticNode obj);
