@@ -56,10 +56,47 @@ namespace BabyPenguin
         public static void AddIterators(SemanticModel model)
         {
             var source = @"
-                interface IIterator<T> {
-                    fun next(var this: IIterator<T>) -> Option<T>;
+                namespace __builtin {
+                    interface IIterator<T> {
+                        fun next(var this: IIterator<T>) -> Option<T>;
+                    }
+
+                    interface IIterable<T> {
+                        fun iter(var this: IIterable<T>) -> IIterator<T>;
+                    }
+
+                    class RangeIterator {
+                        val start: i64;
+                        val end: i64;
+                        var current: i64;
+
+                        fun new(var this: RangeIterator, val start: i64, val end: i64) {
+                            this.start = start;
+                            this.end = end;
+                            this.current = start;
+                        }
+
+                        impl IIterator<i64> {
+                            fun next(var this: IIterator<i64>) -> Option<i64> {
+                                var self : RangeIterator = this as RangeIterator;
+                                if (self.current < self.end) {
+                                    val res : Option<i64> =new Option<i64>.some(self.current);
+                                    self.current += 1;
+                                    return res;
+                                } else {
+                                    return new Option<i64>.none();
+                                }
+                            }
+                        }
+                    }
+
+                    fun range(val start: i64, val end: i64) -> IIterator<i64> {
+                        return new RangeIterator(start, end) as IIterator<i64>;
+                    }
                 }
             ";
+
+            model.AddSource(source, "__builtin");
         }
     }
 }

@@ -40,5 +40,27 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal($"true{EOL}false{EOL}10{EOL}false{EOL}true{EOL}9{EOL}", vm.CollectOutput());
         }
+
+        [Fact]
+        public void RangeTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val rg : IIterator<i64> = range(0, 5);
+                    while(true) {
+                        val n : Option<i64> = rg.next();
+                        if (n.is_none())
+                            break;
+                        else 
+                            print(n.some as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"01234", vm.CollectOutput());
+        }
     }
 }

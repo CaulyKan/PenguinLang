@@ -1,6 +1,10 @@
                 initial {
-                    val a : Option<u32> = new Option<u32>.some(10);
-                    println(a.is_some() as string);
-                    println(a.is_none() as string);
-                    println(a.value_or(9) as string);
+                    val rg : IIterator<i64> = range(0, 5);
+                    while(true) {
+                        val n : Option<i64> = rg.next();
+                        if (n.is_none())
+                            break;
+                        else 
+                            print(n.some as string);
+                    }
                 }
