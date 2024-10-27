@@ -25,10 +25,13 @@ namespace BabyPenguin.VirtualMachine
 
         public void Run()
         {
-            foreach (var ns in Model.Namespaces)
+            foreach (var mns in Model.Namespaces)
             {
-                var frame = new RuntimeFrame(ns, Global, []);
-                frame.Run();
+                foreach (var ns in mns.Namespaces)
+                {
+                    var frame = new RuntimeFrame(ns, Global, []);
+                    frame.Run();
+                }
             }
 
             foreach (var inital in Model.Namespaces.SelectMany(ns => ns.InitialRoutines))

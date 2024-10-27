@@ -2,7 +2,7 @@ namespace BabyPenguin
 {
     public partial class SemanticModel
     {
-        public List<Namespace> Namespaces { get; }
+        public List<MergedNamespace> Namespaces { get; } = [];
         public IEnumerable<Class> Classes => FindAll(s => s is Class).Cast<Class>();
         public IEnumerable<Interface> Interfaces => FindAll(s => s is Interface).Cast<Interface>();
         public IEnumerable<SemanticNode.Enum> Enums => FindAll(s => s is SemanticNode.Enum).Cast<SemanticNode.Enum>();
@@ -10,21 +10,20 @@ namespace BabyPenguin
         public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
-        public Namespace BuiltinNamespace { get; }
+        public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new PenguinLangException("Builtin namespace not found.");
 
         public SemanticModel(ErrorReporter? reporter = null)
         {
             Reporter = reporter ?? new ErrorReporter();
-            BuiltinNamespace = AddBuiltin();
-            Namespaces = [BuiltinNamespace];
-            Passes = new List<ISemanticPass>() {
+            Builtin.Build(this);
+            Passes = [
                 new SemanticScopingPass(this, 1),
                 new TypeElaboratePass(this, 2),
                 new SymbolElaboratePass(this, 3),
                 new ClassConstructorPass(this, 4),
                 new InterfaceImplementationPass(this, 5),
                 new CodeGenerationPass(this, 6),
-            };
+            ];
         }
 
         public void Traverse(Action<ISemanticScope> action)
@@ -40,8 +39,18 @@ namespace BabyPenguin
 
         public void AddNamespace(Namespace ns)
         {
-            Namespaces.Add(ns);
-            ns.Parent = null;
+            if (Namespaces.Find(n => n.Name == ns.Name) is MergedNamespace existing)
+            {
+                existing.Namespaces.Add(ns);
+                ns.Parent = existing;
+            }
+            else
+            {
+                var merged = new MergedNamespace(this, ns.Name);
+                merged.Namespaces.Add(ns);
+                Namespaces.Add(merged);
+                ns.Parent = merged;
+            }
         }
 
         public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true)
@@ -73,7 +82,12 @@ namespace BabyPenguin
             }
             else
             {
-                if (scope is ISymbolContainer symbolContainer)
+                if (scope is MergedNamespace mergedNamespace)
+                {
+                    symbol = mergedNamespace.Symbols.OrderByDescending(s => s.ScopeDepth)
+                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && predicate_(s));
+                }
+                else if (scope is ISymbolContainer symbolContainer)
                 {
                     symbol = symbolContainer.Symbols.OrderByDescending(s => s.ScopeDepth)
                         .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && predicate_(s));
@@ -127,17 +141,17 @@ namespace BabyPenguin
             IType? typeCandidate = null;
             foreach (var ns in namespaceCandidates)
             {
-                if (ns.Classes.Find(c => c.Name == nameComponents.Name && predicate_(c)) is IType cls)
+                if (ns.Classes.FirstOrDefault(c => c.Name == nameComponents.Name && predicate_(c)) is IType cls)
                 {
                     typeCandidate = cls;
                     break;
                 }
-                else if (ns.Enums.Find(e => e.Name == nameComponents.Name && predicate_(e)) is IType enm)
+                else if (ns.Enums.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is IType enm)
                 {
                     typeCandidate = enm;
                     break;
                 }
-                else if (ns.Interfaces.Find(e => e.Name == nameComponents.Name && predicate_(e)) is IType intf)
+                else if (ns.Interfaces.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is IType intf)
                 {
                     typeCandidate = intf;
                     break;
@@ -218,6 +232,19 @@ namespace BabyPenguin
                 if (!string.IsNullOrEmpty(report))
                     Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Pass {pass.GetType().Name} report:\n" + pass.Report);
                 Reporter.Write(ErrorReporter.DiagnosticLevel.Info, $"Pass {pass.GetType().Name} completed");
+            }
+        }
+
+        public void AddSource(string? source, string fileName)
+        {
+            var context = PenguinParser.Parse(source ?? File.ReadAllText(fileName), fileName, Reporter);
+            var syntaxCompiler = new SyntaxCompiler(fileName, context, Reporter);
+
+            syntaxCompiler.Compile();
+
+            foreach (var ns in syntaxCompiler.Namespaces)
+            {
+                AddNamespace(new Namespace(this, ns));
             }
         }
     }

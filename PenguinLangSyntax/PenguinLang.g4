@@ -127,7 +127,11 @@ typeSpecifier:
 	| 'string'
 	| 'bool'
 	| 'char'
-	| identifierWithDots genericArguments?;
+	| (
+		identifierWithDots genericArguments? (
+			'.' identifierWithDots genericArguments?
+		)*
+	);
 
 identifierWithDots: identifier ('.' identifier)*;
 

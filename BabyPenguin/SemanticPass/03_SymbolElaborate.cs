@@ -188,26 +188,7 @@ namespace BabyPenguin.SemanticPass
                                 else enumDecl.TypeInfo = BasicType.Void;
                             }
 
-                            var parameters = new List<FunctionParameter>();
-                            if (!enumDecl.TypeInfo.IsVoidType)
-                                parameters.Add(new FunctionParameter("value", enumDecl.TypeInfo, false, 0));
-
-                            var func = new Function(Model, enumDecl.Name, parameters, enm, false, true, true);
-                            enm.AddFunction(func);
-                            Model.CatchUp(func);
-
-                            var body = func as ICodeContainer;
-                            var tempResult = body.AllocTempSymbol(enm, enumDecl.SourceLocation);
-                            var tempValue = body.AllocTempSymbol(BasicType.I32, enumDecl.SourceLocation);
-                            body.AddInstruction(new NewInstanceInstruction(tempResult));
-                            body.AddInstruction(new AssignLiteralToSymbolInstruction(tempValue, BasicType.I32, enumDecl.Value.ToString()));
-                            body.AddInstruction(new WriteMemberInstruction(enm.ValueSymbol!, tempValue, tempResult));
-                            if (!enumDecl.TypeInfo.IsVoidType)
-                                body.AddInstruction(new WriteEnumInstruction(Model.ResolveShortSymbol("value", scope: body)!, tempResult));
-                            body.AddInstruction(new ReturnInstruction(tempResult));
-
                             enumDecl.MemberSymbol = enm.AddEnumSymbol(enm, enumDecl.Name, enumDecl.TypeInfo, enumDecl.Value, enumDecl.SourceLocation) as EnumSymbol;
-
                         }
                     }
                     break;

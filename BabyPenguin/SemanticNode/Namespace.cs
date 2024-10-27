@@ -1,6 +1,8 @@
 namespace BabyPenguin.SemanticNode
 {
-    public interface INamespace : ISemanticNode, ISemanticScope, IRoutineContainer, ITypeContainer, ISymbolContainer, ICodeContainer;
+    public interface INamespace : ISemanticNode, ISemanticScope, IRoutineContainer, ITypeContainer, ISymbolContainer, ICodeContainer
+    {
+    }
 
     public class Namespace : BaseSemanticNode, INamespace
     {
@@ -24,9 +26,9 @@ namespace BabyPenguin.SemanticNode
 
         public List<InitialRoutine> InitialRoutines { get; } = [];
 
-        public string Name { get; }
-
         public List<ISymbol> Symbols { get; } = [];
+
+        public string Name { get; }
 
         public string FullName => Name;
 
@@ -45,5 +47,47 @@ namespace BabyPenguin.SemanticNode
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
         public override string ToString() => (this as ISemanticScope).FullName;
+    }
+
+    public class MergedNamespace : ISemanticScope
+    {
+        public MergedNamespace(SemanticModel model, string name)
+        {
+            Name = name;
+            Model = model;
+        }
+
+        public List<Namespace> Namespaces { get; } = [];
+
+        public ISemanticScope? Parent { get; set; }
+
+        public IEnumerable<ISemanticScope> Children => Namespaces.Cast<ISemanticScope>();
+
+        public List<NamespaceImport> ImportedNamespaces { get; } = [];
+
+        public string Name { get; }
+
+        public string FullName => Name;
+
+        public SemanticModel Model { get; }
+
+        public SourceLocation SourceLocation => SourceLocation.Empty();
+
+        public SyntaxNode? SyntaxNode => null;
+
+        public int PassIndex { get; set; }
+
+        public IEnumerable<Class> Classes => Namespaces.SelectMany(n => n.Classes);
+
+        public IEnumerable<Interface> Interfaces => Namespaces.SelectMany(n => n.Interfaces);
+
+        public IEnumerable<Enum> Enums => Namespaces.SelectMany(n => n.Enums);
+
+        public IEnumerable<Function> Functions => Namespaces.SelectMany(n => n.Functions);
+
+        public IEnumerable<InitialRoutine> InitialRoutines => Namespaces.SelectMany(n => n.InitialRoutines);
+
+        public IEnumerable<ISymbol> Symbols => Namespaces.SelectMany(n => n.Symbols);
+
     }
 }

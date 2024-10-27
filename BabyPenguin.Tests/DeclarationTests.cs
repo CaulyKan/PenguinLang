@@ -16,16 +16,16 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
             Assert.Equal(5, ns.Symbols.Count());
-            Assert.True(ns.Symbols[0].TypeInfo.IsStringType);
-            Assert.Equal("test1", ns.Symbols[0].Name);
-            Assert.True(ns.Symbols[1].TypeInfo.FullName == "u8");
-            Assert.Equal("test2", ns.Symbols[1].Name);
-            Assert.True(ns.Symbols[2].TypeInfo.FullName == "i32");
-            Assert.Equal("test3", ns.Symbols[2].Name);
-            Assert.True(ns.Symbols[3].TypeInfo.IsBoolType);
-            Assert.Equal("test4", ns.Symbols[3].Name);
-            Assert.True(ns.Symbols[4].TypeInfo.IsFloatType);
-            Assert.Equal("test5", ns.Symbols[4].Name);
+            Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
+            Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
+            Assert.Equal("test2", ns.Symbols.ElementAt(1).Name);
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName == "i32");
+            Assert.Equal("test3", ns.Symbols.ElementAt(2).Name);
+            Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
+            Assert.Equal("test4", ns.Symbols.ElementAt(3).Name);
+            Assert.True(ns.Symbols.ElementAt(4).TypeInfo.IsFloatType);
+            Assert.Equal("test5", ns.Symbols.ElementAt(4).Name);
         }
 
         [Fact]
@@ -44,16 +44,16 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name == "Test");
             Assert.Equal(5, ns!.Symbols.Count());
-            Assert.True(ns.Symbols[0].TypeInfo.IsStringType);
-            Assert.True(ns.Symbols[0].FullName == "Test.test1");
-            Assert.True(ns.Symbols[1].TypeInfo.FullName == "u8");
-            Assert.True(ns.Symbols[1].FullName == "Test.test2");
-            Assert.True(ns.Symbols[2].TypeInfo.FullName == "i32");
-            Assert.True(ns.Symbols[2].FullName == "Test.test3");
-            Assert.True(ns.Symbols[3].TypeInfo.IsBoolType);
-            Assert.True(ns.Symbols[3].FullName == "Test.test4");
-            Assert.True(ns.Symbols[4].TypeInfo.IsFloatType);
-            Assert.True(ns.Symbols[4].FullName == "Test.test5");
+            Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
+            Assert.True(ns.Symbols.ElementAt(0).FullName == "Test.test1");
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
+            Assert.True(ns.Symbols.ElementAt(1).FullName == "Test.test2");
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName == "i32");
+            Assert.True(ns.Symbols.ElementAt(2).FullName == "Test.test3");
+            Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
+            Assert.True(ns.Symbols.ElementAt(3).FullName == "Test.test4");
+            Assert.True(ns.Symbols.ElementAt(4).TypeInfo.IsFloatType);
+            Assert.True(ns.Symbols.ElementAt(4).FullName == "Test.test5");
         }
 
         [Fact]
@@ -67,6 +67,25 @@ namespace BabyPenguin.Tests
                 }
             ");
             Assert.Throws<BabyPenguinException>(compiler.Compile);
+        }
+
+        [Fact]
+        public void NamesapceMerging()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace Test {
+                    val test1 : string = "" "";
+                }
+
+                namespace Test {
+                    val test2 : string = "" "";
+                }
+            ");
+            var model = compiler.Compile();
+            Assert.Equal(2, model.Namespaces.Count);
+            var ns = model.Namespaces.Find(x => x.Name == "Test")!;
+            Assert.Equal(2, ns!.Symbols.Count());
         }
 
         [Fact]
@@ -85,11 +104,11 @@ namespace BabyPenguin.Tests
 
             var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
             Assert.Single(ns.Classes);
-            Assert.Equal("TestClass", ns.Classes[0].Name);
+            Assert.Equal("TestClass", ns.Classes.ElementAt(0).Name);
 
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
-            Assert.Equal(2, ns2.Classes.Count);
-            Assert.Equal("Test.TestClass", (ns2.Classes[0] as IClass).FullName);
+            Assert.Equal(2, ns2.Classes.Count());
+            Assert.Equal("Test.TestClass", (ns2.Classes.First() as IClass).FullName);
         }
 
         [Fact]
@@ -106,18 +125,18 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
             Assert.Single(ns.Symbols);
             Assert.Single(ns.Functions);
-            Assert.Equal("test1", ns.Symbols[0].Name);
-            Assert.True(ns.Symbols[0] is FunctionSymbol);
-            Assert.True(((FunctionSymbol)ns.Symbols[0]).ReturnTypeInfo.IsStringType);
-            Assert.True(((FunctionSymbol)ns.Symbols[0]).Parameters.Count == 0);
+            Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
+            Assert.True(ns.Symbols.ElementAt(0) is FunctionSymbol);
+            Assert.True(((FunctionSymbol)ns.Symbols.ElementAt(0)).ReturnTypeInfo.IsStringType);
+            Assert.True(((FunctionSymbol)ns.Symbols.ElementAt(0)).Parameters.Count == 0);
 
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Single(ns2.Symbols);
             Assert.Single(ns2.Functions);
-            Assert.Equal("Test.test1", ns2.Symbols[0].FullName);
-            Assert.True(ns2.Symbols[0] is FunctionSymbol);
-            Assert.True(((FunctionSymbol)ns2.Symbols[0]).ReturnTypeInfo.IsVoidType);
-            Assert.True(((FunctionSymbol)ns2.Symbols[0]).Parameters.Count == 0);
+            Assert.Equal("Test.test1", ns2.Symbols.ElementAt(0).FullName);
+            Assert.True(ns2.Symbols.ElementAt(0) is FunctionSymbol);
+            Assert.True(((FunctionSymbol)ns2.Symbols.ElementAt(0)).ReturnTypeInfo.IsVoidType);
+            Assert.True(((FunctionSymbol)ns2.Symbols.ElementAt(0)).Parameters.Count == 0);
         }
 
         [Fact]
@@ -136,7 +155,7 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
 
             Assert.Single(ns.InitialRoutines);
-            Assert.Equal("foo", ns.InitialRoutines[0].Name);
+            Assert.Equal("foo", ns.InitialRoutines.ElementAt(0).Name);
 
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Single(ns2.InitialRoutines);
@@ -159,7 +178,7 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.InitialRoutines);
-            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Equal(5, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
@@ -191,7 +210,7 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.Functions);
-            var symbols = ns.Functions[0].Symbols.Where(x => !x.IsTemp).ToList();
+            var symbols = ns.Functions.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Equal(7, symbols.Count());
             Assert.Equal("param1", symbols[0].Name);
             Assert.Equal("u64", symbols[0].TypeInfo.FullName);
@@ -237,7 +256,7 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.InitialRoutines);
-            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Equal(3, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.Equal("test1", symbols[0].OriginName);
@@ -271,10 +290,10 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.Symbols);
-            Assert.Equal("test1", ns.Symbols[0].Name);
+            Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
 
             Assert.Single(ns.InitialRoutines);
-            var symbols = ns.InitialRoutines[0].Symbols.Where(x => !x.IsTemp).ToList();
+            var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Single(symbols);
             Assert.NotEqual("test1", symbols[0].Name);
             Assert.Equal("test1", symbols[0].OriginName);
@@ -320,7 +339,7 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.Classes);
-            var symbols = ns.Classes[0].Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
+            var symbols = ns.Classes.ElementAt(0).Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
             Assert.Equal(5, symbols.Count());
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
@@ -350,7 +369,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            var cls = ns.Classes[0];
+            var cls = ns.Classes.ElementAt(0);
             Assert.Equal(3, cls.Functions.Count);
             Assert.Equal("test1", cls.Functions[0].Name);
             Assert.Equal("test2", cls.Functions[1].Name);
@@ -384,16 +403,16 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
             Assert.Single(ns.Enums);
-            Assert.Equal("Test", ns.Enums[0].Name);
-            Assert.Equal(4, ns.Enums[0].EnumDeclarations.Count);
-            Assert.Equal("a", ns.Enums[0].EnumDeclarations[0].Name);
-            Assert.Equal("void", ns.Enums[0].EnumDeclarations[0].TypeInfo.Name);
-            Assert.Equal("b", ns.Enums[0].EnumDeclarations[1].Name);
-            Assert.Equal("void", ns.Enums[0].EnumDeclarations[1].TypeInfo.Name);
-            Assert.Equal("c", ns.Enums[0].EnumDeclarations[2].Name);
-            Assert.Equal("u8", ns.Enums[0].EnumDeclarations[2].TypeInfo.Name);
-            Assert.Equal("d", ns.Enums[0].EnumDeclarations[3].Name);
-            Assert.Equal("string", ns.Enums[0].EnumDeclarations[3].TypeInfo.Name);
+            Assert.Equal("Test", ns.Enums.ElementAt(0).Name);
+            Assert.Equal(4, ns.Enums.ElementAt(0).EnumDeclarations.Count);
+            Assert.Equal("a", ns.Enums.ElementAt(0).EnumDeclarations[0].Name);
+            Assert.Equal("void", ns.Enums.ElementAt(0).EnumDeclarations[0].TypeInfo.Name);
+            Assert.Equal("b", ns.Enums.ElementAt(0).EnumDeclarations[1].Name);
+            Assert.Equal("void", ns.Enums.ElementAt(0).EnumDeclarations[1].TypeInfo.Name);
+            Assert.Equal("c", ns.Enums.ElementAt(0).EnumDeclarations[2].Name);
+            Assert.Equal("u8", ns.Enums.ElementAt(0).EnumDeclarations[2].TypeInfo.Name);
+            Assert.Equal("d", ns.Enums.ElementAt(0).EnumDeclarations[3].Name);
+            Assert.Equal("string", ns.Enums.ElementAt(0).EnumDeclarations[3].TypeInfo.Name);
         }
 
         [Fact]
@@ -480,7 +499,7 @@ namespace BabyPenguin.Tests
             Assert.True(foo2.IsSpecialized);
             Assert.Equal("ns.Foo<u8>", foo2.FullName);
 
-            var foo3 = model.ResolveType("Foo<?>", scope: model.Enums.First());
+            var foo3 = model.ResolveType("Foo<?>", scope: model.Namespaces.Find(i => i.Name == "ns"));
             Assert.True(foo1.FullName == foo3!.FullName);
             Assert.Single(foo3.GenericInstances);
             Assert.True(foo3.GenericInstances.First() == foo2);
@@ -559,7 +578,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            var foo = ns!.Classes.FirstOrDefault(i => i.Name == "Foo");
             Assert.Equal("ns.a", model.ResolveShortSymbol("a", scope: ns)!.FullName);
             Assert.Equal("ns.Foo.a", model.ResolveShortSymbol("a", scope: foo)!.FullName);
         }
@@ -579,7 +598,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            var foo = ns!.Classes.FirstOrDefault(i => i.Name == "Foo");
             Assert.Equal("ns.a", model.ResolveSymbol("ns.a")!.FullName);
             Assert.Equal("ns.a", model.ResolveSymbol("a", scope: ns)!.FullName);
             Assert.Equal("ns.a", model.ResolveSymbol("ns.a", scope: ns)!.FullName);
@@ -664,8 +683,8 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var ifoo = ns!.Interfaces.Find(i => i.Name == "IFoo");
-            var ibar = ns.Interfaces.Find(i => i.Name == "IBar");
+            var ifoo = ns!.Interfaces.FirstOrDefault(i => i.Name == "IFoo");
+            var ibar = ns.Interfaces.FirstOrDefault(i => i.Name == "IBar");
             Assert.NotNull(ifoo);
             Assert.NotNull(ibar);
             Assert.Single(ibar.GenericDefinitions);
@@ -698,8 +717,8 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var ifoo = ns!.Interfaces.Find(i => i.Name == "IFoo");
-            var foo = ns.Classes.Find(i => i.Name == "Foo");
+            var ifoo = ns!.Interfaces.FirstOrDefault(i => i.Name == "IFoo");
+            var foo = ns.Classes.FirstOrDefault(i => i.Name == "Foo");
             Assert.NotNull(ifoo);
             Assert.NotNull(foo);
             Assert.Single(foo.VTables);
@@ -731,7 +750,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var foo = ns!.Classes.Find(i => i.Name == "Foo");
+            var foo = ns!.Classes.FirstOrDefault(i => i.Name == "Foo");
             Assert.Single(foo!.VTables);
             var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
             var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
@@ -836,11 +855,11 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var qux = ns!.Classes.Find(i => i.Name == "Qux") as IClass;
+            var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClass;
             Assert.Equal(3, qux!.ImplementedInterfaces.Count());
-            Assert.Equal("ns.IFoo", qux.ImplementedInterfaces.First().FullName);
-            Assert.Equal("ns.IBar<u8>", qux.ImplementedInterfaces.ElementAt(1).FullName);
-            Assert.Equal("ns.IQux<u8>", qux.ImplementedInterfaces.ElementAt(2).FullName);
+            Assert.Contains("ns.IFoo", qux.ImplementedInterfaces.Select(i => i.FullName));
+            Assert.Contains("ns.IBar<u8>", qux.ImplementedInterfaces.Select(i => i.FullName));
+            Assert.Contains("ns.IQux<u8>", qux.ImplementedInterfaces.Select(i => i.FullName));
         }
 
     }

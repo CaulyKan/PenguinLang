@@ -14,6 +14,8 @@ namespace BabyPenguin.Tests
 
         public override Encoding Encoding => Encoding.UTF8;
 
+        public static string EOL => Environment.NewLine;
+
         public override void WriteLine(string? value)
         {
             testOutputHelper.WriteLine(value);

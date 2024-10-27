@@ -113,12 +113,12 @@ namespace BabyPenguin.SemanticPass
                             {
                                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
                                 var symbolName = target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name;
-                                member = Model.ResolveSymbol(symbolName, s => s.IsEnum == target.TypeInfo.IsEnumType, scope: this);
+                                member = Model.ResolveSymbol(symbolName, scope: this);
                                 if (member == null)
                                     throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                                 if (!isLastRound)
                                 {
-                                    if (target.TypeInfo.IsEnumType)
+                                    if (target.TypeInfo.IsEnumType && !member.IsFunction)
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
                                         AddInstruction(new ReadEnumInstruction(target, temp));
@@ -422,7 +422,8 @@ namespace BabyPenguin.SemanticPass
                     return ResolveBinaryOperationType(BinaryOperatorEnum.BitwiseAnd, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case EqualityExpression exp:
                     if (exp.Operator == BinaryOperatorEnum.Is)
-                        return ResolveBinaryOperationType(BinaryOperatorEnum.Is, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
+                        // return ResolveBinaryOperationType(BinaryOperatorEnum.Is, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
+                        return exp.SubExpressions.Count == 1 ? ResolveExpressionType(exp.SubExpressions[0]) : BasicType.Bool;
                     else
                         return ResolveBinaryOperationType(BinaryOperatorEnum.Equal, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case RelationalExpression exp:
@@ -485,11 +486,7 @@ namespace BabyPenguin.SemanticPass
                         case PostfixExpression.Type.PrimaryExpression:
                             return ResolveExpressionType(exp.SubPrimaryExpression!);
                         case PostfixExpression.Type.New:
-                            {
-                                var res = Model.ResolveType(exp.SubNewExpression!.TypeSpecifier.Name, scope: this) ??
-                                    throw new BabyPenguinException($"Cant resolve type '{exp.SubNewExpression!.TypeSpecifier.Name}'", exp.SubNewExpression!.TypeSpecifier.SourceLocation);
-                                return res;
-                            }
+                            return ResolveExpressionType(exp.SubNewExpression!);
                     }
                     break;
                 case FunctionCallExpression exp:
@@ -558,7 +555,8 @@ namespace BabyPenguin.SemanticPass
                             {
                                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
                                 var symbolName = t.FullName + "." + ma.MemberIdentifiers[i].Name;
-                                var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == t.IsEnumType, scope: this);
+                                // var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == t.IsEnumType, scope: this);
+                                var member = Model.ResolveSymbol(symbolName, scope: this);
 
                                 if (member == null)
                                     throw new BabyPenguinException($"Cant resolve symbol '{symbolName}'", ma.MemberIdentifiers[i].SourceLocation);
@@ -567,8 +565,6 @@ namespace BabyPenguin.SemanticPass
                             return t;
                         }
                     }
-                // case SlicingExpression exp:
-                //     throw new NotImplementedException();
                 case PrimaryExpression exp:
                     switch (exp.PrimaryExpressionType)
                     {
@@ -596,6 +592,17 @@ namespace BabyPenguin.SemanticPass
                 case NewExpression exp:
                     {
                         var res = Model.ResolveType(exp.TypeSpecifier.Name, scope: this);
+                        if (res == null)
+                        {
+                            // if new enum, remove last dot and try again
+                            var parts = NameComponents.SplitStringPreservingAngleBrackets(exp.TypeSpecifier.Name, '.');
+                            if (parts.Count > 1)
+                            {
+                                var typeStr = parts.Take(parts.Count - 1).Aggregate((a, b) => a + "." + b);
+                                res = Model.ResolveType(typeStr, scope: this);
+                            }
+                        }
+
                         if (res == null)
                             throw new BabyPenguinException($"Cant resolve type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
                         return res;
@@ -660,19 +667,21 @@ namespace BabyPenguin.SemanticPass
             {
                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
                 var symbolName = target.TypeInfo.FullName + "." + ma.MemberIdentifiers[i].Name;
-                var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == target.TypeInfo.IsEnumType, scope: this);
+                // var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == target.TypeInfo.IsEnumType, scope: this);
+                var member = Model.ResolveSymbol(symbolName, scope: this);
+
                 if (member == null)
                     throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                 if (isLastRound)
                 {
-                    if (target.TypeInfo.IsEnumType)
+                    if (target.TypeInfo.IsEnumType && !member.IsFunction)
                         AddInstruction(new ReadEnumInstruction(target, to));
                     else
                         AddInstruction(new ReadMemberInstruction(member, target, to));
                 }
                 else
                 {
-                    if (target.TypeInfo.IsEnumType)
+                    if (target.TypeInfo.IsEnumType && !member.IsFunction)
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
                         AddInstruction(new ReadEnumInstruction(target, temp));
@@ -1030,18 +1039,62 @@ namespace BabyPenguin.SemanticPass
                 case NewExpression exp:
                     {
                         AddInstruction(new NewInstanceInstruction(to));
-                        var class_ = Model.ResolveType(exp.TypeSpecifier.Name, scope: this) as IClass;
-                        if (class_ == null)
+
+                        string? enumOption = null;
+                        var type = Model.ResolveType(exp.TypeSpecifier.Name, scope: this);
+                        if (type == null)
+                        {
+                            // if new enum, remove last dot and try again
+                            var parts = NameComponents.SplitStringPreservingAngleBrackets(exp.TypeSpecifier.Name, '.');
+                            if (parts.Count > 1)
+                            {
+                                var typeStr = parts.Take(parts.Count - 1).Aggregate((a, b) => a + "." + b);
+                                type = Model.ResolveType(typeStr, scope: this) as IEnum;
+                                enumOption = parts.Last();
+                            }
+                        }
+
+                        if (type == null)
                             throw new BabyPenguinException($"Cant resolve class '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
-                        var constructorFunc = class_.Constructor;
-                        if (constructorFunc == null)
-                            throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
-                        var constructorSymbol = constructorFunc.FunctionSymbol;
-                        if (constructorSymbol == null)
-                            throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
-                        var paramVars = new List<ISymbol> { to };
-                        paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
-                        AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
+
+                        if (type is IClass cls)
+                        {
+                            var constructorFunc = cls.Constructor;
+                            if (constructorFunc == null)
+                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                            var constructorSymbol = constructorFunc.FunctionSymbol;
+                            if (constructorSymbol == null)
+                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                            var paramVars = new List<ISymbol> { to };
+                            paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
+                            AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
+                        }
+                        else if (type is IEnum enm)
+                        {
+                            var enumDecl = enm.EnumDeclarations.Find(i => i.Name == enumOption!) ??
+                                throw new BabyPenguinException($"Cant find enum option '{enumOption}' in enum '{enm.FullName}'", exp.SourceLocation);
+
+                            var tempValue = AllocTempSymbol(BasicType.I32, enumDecl.SourceLocation);
+                            AddInstruction(new AssignLiteralToSymbolInstruction(tempValue, BasicType.I32, enumDecl.Value.ToString()));
+                            AddInstruction(new WriteMemberInstruction(enm.ValueSymbol!, tempValue, to));
+                            if (!enumDecl.TypeInfo.IsVoidType)
+                            {
+                                if (exp.ArgumentsExpression.Count != 1)
+                                    throw new BabyPenguinException($"Enum '{enm.FullName}.{enumDecl.Name}' expects exactly 1 argument", exp.SourceLocation);
+                                var enmValSymbol = AddExpression(exp.ArgumentsExpression[0]);
+                                AddInstruction(new WriteEnumInstruction(enmValSymbol, to));
+                            }
+                            else
+                            {
+                                if (exp.ArgumentsExpression.Count != 0)
+                                    throw new BabyPenguinException($"Enum '{enm.FullName}.{enumDecl.Name}' expects no argument", exp.SourceLocation);
+                            }
+                        }
+                        else if (type is IInterface intf)
+                        {
+                            throw new BabyPenguinException($"Cant create instance of interface '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                        }
+                        else throw new NotImplementedException();
                     }
                     break;
                 case PrimaryExpression exp:

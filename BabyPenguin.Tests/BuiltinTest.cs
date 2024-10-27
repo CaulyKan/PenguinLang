@@ -1,0 +1,44 @@
+namespace BabyPenguin.Tests
+{
+    public class BuiltinTest(ITestOutputHelper helper) : TestBase(helper)
+    {
+        [Fact]
+        public void PrintTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    print(""hello, "");
+                    println(""world!"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"hello, world!{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void OptionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val a : Option<u32> = new Option<u32>.some(10);
+                    println(a.is_some() as string);
+                    println(a.is_none() as string);
+                    println(a.value_or(9) as string);
+
+                    val b : Option<u32> = new Option<u32>.none();
+                    println(b.is_some() as string);
+                    println(b.is_none() as string);
+                    println(b.value_or(9) as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"true{EOL}false{EOL}10{EOL}false{EOL}true{EOL}9{EOL}", vm.CollectOutput());
+        }
+    }
+}

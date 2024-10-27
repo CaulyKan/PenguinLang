@@ -8,13 +8,13 @@ namespace ll {
             if (this.size == 0) {
                this.head = new LinkedListNode<T>();
                this.head.value = v;
-               this.head.link = LinkedListLink<T>.end();
+               this.head.link = new LinkedListLink<T>.end();
                this.tail = this.head;
             } else {
                var newNode : LinkedListNode<T> = new LinkedListNode<T>();
                newNode.value = v;
-               newNode.link = LinkedListLink<T>.end();
-               this.tail.link = LinkedListLink<T>.next(newNode);
+               newNode.link = new LinkedListLink<T>.end();
+               this.tail.link = new LinkedListLink<T>.next(newNode);
                this.tail = newNode;
             }
             this.size += 1;
@@ -43,7 +43,7 @@ namespace ll {
 
     class LinkedListNode <T> {
         var value: T;
-        var link: LinkedListLink<T> = LinkedListLink<T>.end();
+        var link: LinkedListLink<T> = new LinkedListLink<T>.end();
     }
 
     initial {

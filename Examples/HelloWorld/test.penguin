@@ -1,40 +1,6 @@
- namespace ns {
-                    interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun foo2(val this: IFoo<T>) -> T {
-                            return 1;
-                        }
-                    }
-
-                    interface IBar<T> {
-                        impl IFoo<T> {
-                            fun foo(val this: IFoo<T>) -> T {
-                                return 2;
-                            }
-                        }
-                        fun bar(val this: IBar<T>) -> T {
-                            return 3;
-                        }
-                    }
-                    
-                    class Foo {
-                        impl IBar<u8>;
-                        val a: u8 = 9;
-                    }
-                
-                    initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
-                        val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IBar<u8> = f as IBar<u8>;
-                        val f5 : IFoo<u8> = f3 as IFoo<u8>;
-                        val f6 : Foo = f4 as Foo;
-                        print(f2.foo() as string);
-                        print(f2.foo2() as string);
-                        print(f3.bar() as string);
-                        print(f4.bar() as string);
-                        print(f5.foo() as string);
-                        print(f5.foo2() as string);
-                        print(f6.a as string);
-                    }
+                initial {
+                    val a : Option<u32> = new Option<u32>.some(10);
+                    println(a.is_some() as string);
+                    println(a.is_none() as string);
+                    println(a.value_or(9) as string);
                 }

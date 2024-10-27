@@ -98,12 +98,21 @@ namespace PenguinLangSyntax
         }
 
         public List<InitialRoutine> InitialRoutines { get; } = [];
+
         public List<Declaration> Declarations { get; } = [];
+
         public List<NamespaceDefinition> SubNamespaces { get; } = [];
+
         public List<FunctionDefinition> Functions { get; } = [];
+
         public List<ClassDefinition> Classes { get; } = [];
+
         public List<EnumDefinition> Enums { get; } = [];
+
         public List<InterfaceDefinition> Interfaces { get; } = [];
+
+        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0;
+
         public string Name { get; }
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Namespace;
@@ -142,6 +151,10 @@ namespace PenguinLangSyntax
                 Functions.SelectMany(x => x.PrettyPrint(indentLevel + 1))
             ).Concat(
                 Classes.SelectMany(x => x.PrettyPrint(indentLevel + 1))
+            ).Concat(
+                Enums.SelectMany(x => x.PrettyPrint(indentLevel + 1))
+            ).Concat(
+                Interfaces.SelectMany(x => x.PrettyPrint(indentLevel + 1))
             );
         }
     }
@@ -554,29 +567,15 @@ namespace PenguinLangSyntax
     {
         public TypeSpecifier(SyntaxWalker walker, TypeSpecifierContext context) : base(walker, context)
         {
-            Name = context.identifierWithDots()?.GetText() ?? context.GetText();
-            GenericArguments = context.genericArguments() is not null ? new GenericArguments(walker, context.genericArguments()) : null;
-            if (GenericArguments != null && GenericArguments.TypeParameters.Count > 0)
-            {
-                Name += "<" + string.Join(", ", GenericArguments.TypeParameters.Select(x => x.Name)) + ">";
-            }
+            Name = context.GetText();
         }
 
-        public TypeSpecifier(SyntaxWalker walker, string liternalName, ParserRuleContext context, GenericArguments? genericArguments = null) : base(walker, context)
+        public TypeSpecifier(SyntaxWalker walker, string liternalName, ParserRuleContext context) : base(walker, context)
         {
             Name = liternalName;
-            GenericArguments = genericArguments;
-            if (GenericArguments != null && GenericArguments.TypeParameters.Count > 0)
-            {
-                Name += "<" + string.Join(", ", GenericArguments.TypeParameters.Select(x => x.Name)) + ">";
-            }
         }
 
         public string Name { get; }
-
-        public GenericArguments? GenericArguments { get; }
-
-        public bool IsGeneric => GenericArguments is not null && GenericArguments.TypeParameters.Count != 0;
     }
 
     public class Declaration : SyntaxNode

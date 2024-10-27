@@ -29,21 +29,12 @@ namespace BabyPenguin
 
         public SemanticModel Compile()
         {
-            var syntaxCompilers = Sources.Select(s =>
-            {
-                var root = s.Source == null ? PenguinParser.Parse(s.File, Reporter) : PenguinParser.Parse(s.Source, s.File, Reporter);
-                return new SyntaxCompiler(s.File, root, Reporter);
-            }).ToList();
-
-            foreach (var compiler in syntaxCompilers)
-            {
-                compiler.Compile();
-            }
-
             var model = new SemanticModel(Reporter);
-            foreach (var compiler in syntaxCompilers)
-                foreach (var ns in compiler.Namespaces)
-                    model.AddNamespace(new Namespace(model, ns));
+
+            foreach (var source in Sources)
+            {
+                model.AddSource(source.Source, source.File);
+            }
 
             model.Compile();
 

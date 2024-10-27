@@ -45,11 +45,6 @@ namespace PenguinLangSyntax
 
     public class PenguinParser
     {
-        public static PenguinLangParser.CompilationUnitContext Parse(string file, ErrorReporter? reporter = null)
-        {
-            return Parse(File.ReadAllText(file), file, reporter);
-        }
-
         public static PenguinLangParser.CompilationUnitContext Parse(string source, string file, ErrorReporter? reporter_ = null)
         {
             var parser = PrepareParser(source, file, reporter_);

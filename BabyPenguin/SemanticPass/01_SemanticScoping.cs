@@ -86,17 +86,17 @@ namespace BabyPenguin.SemanticPass
                     yield return res;
         }
 
-        IEnumerable<Namespace> GetImportedNamespaces(bool includeBuiltin = true)
+        IEnumerable<MergedNamespace> GetImportedNamespaces(bool includeBuiltin = true)
         {
             return ImportedNamespaces.Select(i =>
                     Model.Namespaces.Find(n => n.Name == i.Namespace) ??
                         throw new BabyPenguinException($"Namespace '{i}' not found.", i.SourceLocation))
                 .Concat(
-                    Parent?.GetImportedNamespaces(false) ?? Array.Empty<Namespace>()
+                    Parent?.GetImportedNamespaces(false) ?? []
                 ).Concat(
-                    includeBuiltin ? [Model.BuiltinNamespace] : Array.Empty<Namespace>()
+                    includeBuiltin ? [Model.BuiltinNamespace] : Array.Empty<MergedNamespace>()
                 ).Concat(
-                    this is Namespace ns ? [ns] : Array.Empty<Namespace>()
+                    this is MergedNamespace ns ? [ns] : Array.Empty<MergedNamespace>()
                 );
         }
     }
@@ -162,6 +162,14 @@ namespace BabyPenguin.SemanticPass
 
             switch (obj)
             {
+                case MergedNamespace mns:
+                    {
+                        foreach (var ns in mns.Namespaces)
+                        {
+                            Process(ns);
+                        }
+                        break;
+                    }
                 case INamespace ns:
                     if (ns.SyntaxNode is NamespaceDefinition namespaceSyntax)
                     {

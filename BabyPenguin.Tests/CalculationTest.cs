@@ -479,11 +479,11 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        var test : Test = Test.a();
+                        var test : Test = new Test.a();
                         if (test is Test.a) {
                             print(""a"");
                         }
-                        test = Test.b(2);
+                        test = new Test.b(2);
                         if (test is Test.b) {
                             print(test.b as string);
                         } else if (test is Test.a) {
@@ -693,11 +693,11 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        var test : Test<u8> = Test<u8>.a();
+                        var test : Test<u8> = new Test<u8>.a();
                         if (test is Test<u8>.a) {
                             print(""a"");
                         }
-                        test = Test<u8>.b(2);
+                        test = new Test<u8>.b(2);
                         if (test is Test<u8>.b) {
                             print(test.b as string);
                         } else if (test is Test<u8>.a) {
@@ -724,11 +724,11 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        var test : Test<Foo> = Test<Foo>.a();
+                        var test : Test<Foo> = new Test<Foo>.a();
                         if (test is Test<Foo>.a) {
                             print(""a"");
                         }
-                        test = Test<Foo>.b(new Foo());
+                        test = new Test<Foo>.b(new Foo());
                         if (test is Test<Foo>.b) {
                             print(test.b.x as string);
                             test.b.x = 1;

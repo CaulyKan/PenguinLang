@@ -10,7 +10,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.True("Hello, World!\n" == vm.CollectOutput() || "Hello, World!\r\n" == vm.CollectOutput());
+            Assert.True($"Hello, World!{EOL}" == vm.CollectOutput());
         }
 
         [Fact]
