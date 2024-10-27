@@ -45,47 +45,76 @@ namespace PenguinLangSyntax
 
     public class PenguinParser
     {
-        public PenguinParser(string file, ErrorReporter? reporter = null)
+        public static PenguinLangParser.CompilationUnitContext Parse(string file, ErrorReporter? reporter = null)
         {
-            this.SourceFile = file;
-            this.Source = File.ReadAllText(file);
-            this.Reporter = reporter ?? new ErrorReporter();
+            return Parse(File.ReadAllText(file), file, reporter);
         }
 
-        public PenguinParser(string source, string file, ErrorReporter? reporter = null)
+        public static PenguinLangParser.CompilationUnitContext Parse(string source, string file, ErrorReporter? reporter_ = null)
         {
-            this.SourceFile = file;
-            this.Source = source;
-            this.Reporter = reporter ?? new ErrorReporter();
+            var parser = PrepareParser(source, file, reporter_);
+            var result = parser.Parser.compilationUnit();
+            parser.ReportError();
+            return result;
         }
 
-        public ErrorReporter Reporter { get; }
-        public string SourceFile { get; set; }
-        public string Source { get; set; }
-
-        public PenguinLangParser.CompilationUnitContext? Result { get; private set; }
-
-        public bool Parse()
+        public static PenguinLangParser.InterfaceDefinitionContext ParseInterface(string source, string file, ErrorReporter? reporter_ = null)
         {
-            bool success = true;
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Info, "parsing " + SourceFile);
+            var parser = PrepareParser(source, file, reporter_);
+            var result = parser.Parser.interfaceDefinition();
+            parser.ReportError();
+            return result;
+        }
 
-            var str = new AntlrInputStream(Source);
+        public static PenguinLangParser.ClassDefinitionContext ParseClass(string source, string file, ErrorReporter? reporter_ = null)
+        {
+            var parser = PrepareParser(source, file, reporter_);
+            var result = parser.Parser.classDefinition();
+            parser.ReportError();
+            return result;
+        }
+
+        public static PenguinLangParser.NamespaceDefinitionContext ParseNamespace(string source, string file, ErrorReporter? reporter_ = null)
+        {
+            var parser = PrepareParser(source, file, reporter_);
+            var result = parser.Parser.namespaceDefinition();
+            parser.ReportError();
+            return result;
+        }
+
+        public static PenguinLangParser.EnumDefinitionContext ParseEnum(string source, string file, ErrorReporter? reporter_ = null)
+        {
+            var parser = PrepareParser(source, file, reporter_);
+            var result = parser.Parser.enumDefinition();
+            parser.ReportError();
+            return result;
+        }
+
+        private record ParserData(PenguinLangParser Parser, ErrorListener<int> LexerListener, ErrorListener<IToken> ParserListener)
+        {
+            public void ReportError()
+            {
+                if (ParserListener.HasError || LexerListener.HasError)
+                    throw new PenguinLangException("Failed to parse input");
+            }
+        }
+
+        private static ParserData PrepareParser(string source, string file, ErrorReporter? reporter_)
+        {
+            var reporter = reporter_ ?? new ErrorReporter();
+            reporter.Write(ErrorReporter.DiagnosticLevel.Info, "parsing " + file);
+
+            var str = new AntlrInputStream(source);
             var lexer = new PenguinLangLexer(str);
             var tokens = new CommonTokenStream(lexer);
             var parser = new PenguinLangParser(tokens);
-            var listener_lexer = new ErrorListener<int>(Reporter, SourceFile);
-            var listener_parser = new ErrorListener<IToken>(Reporter, SourceFile);
+            var listener_lexer = new ErrorListener<int>(reporter, file);
+            var listener_parser = new ErrorListener<IToken>(reporter, file);
             lexer.RemoveErrorListeners();
             parser.RemoveErrorListeners();
             lexer.AddErrorListener(listener_lexer);
             parser.AddErrorListener(listener_parser);
-            Result = parser.compilationUnit();
-            if (listener_lexer.HasError || listener_parser.HasError)
-            {
-                success = false;
-            }
-            return success;
+            return new ParserData(parser, listener_lexer, listener_parser);
         }
     }
 }

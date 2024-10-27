@@ -1,8 +1,8 @@
 namespace BabyPenguin
 {
-    public class SemanticModel
+    public partial class SemanticModel
     {
-        public List<SemanticNode.Namespace> Namespaces { get; }
+        public List<Namespace> Namespaces { get; }
         public IEnumerable<Class> Classes => FindAll(s => s is Class).Cast<Class>();
         public IEnumerable<Interface> Interfaces => FindAll(s => s is Interface).Cast<Interface>();
         public IEnumerable<SemanticNode.Enum> Enums => FindAll(s => s is SemanticNode.Enum).Cast<SemanticNode.Enum>();
@@ -25,21 +25,6 @@ namespace BabyPenguin
                 new InterfaceImplementationPass(this, 5),
                 new CodeGenerationPass(this, 6),
             };
-        }
-
-        private Namespace AddBuiltin()
-        {
-            var ns = new Namespace(this, "__builtin");
-
-            var println = new Function(this, "println",
-                [new FunctionParameter("text", BasicType.String, true, 0)], BasicType.Void, true);
-            var print = new Function(this, "print",
-                [new FunctionParameter("text", BasicType.String, true, 0)], BasicType.Void, true);
-
-            (ns as IRoutineContainer).AddFunction(println);
-            (ns as IRoutineContainer).AddFunction(print);
-
-            return ns;
         }
 
         public void Traverse(Action<ISemanticScope> action)

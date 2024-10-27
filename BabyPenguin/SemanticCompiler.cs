@@ -9,35 +9,30 @@ namespace BabyPenguin
 
         public ErrorReporter Reporter { get; }
 
-        public List<PenguinParser> Parsers { get; } = [];
+        public record SourceInput(string File, string? Source);
+
+        public List<SourceInput> Sources { get; } = [];
 
         private static ulong counter = 0;
 
         public SemanticCompiler AddFile(string filePath)
         {
-            var parser = new PenguinParser(filePath, Reporter);
-            Parsers.Add(parser);
+            Sources.Add(new SourceInput(filePath, null));
             return this;
         }
 
         public SemanticCompiler AddSource(string source, string? fileName = null)
         {
-            var parser = new PenguinParser(source, fileName ?? $"<anonymous_{counter++}>", Reporter);
-            Parsers.Add(parser);
+            Sources.Add(new SourceInput(fileName ?? $"<anonymous_{counter++}>", source));
             return this;
         }
 
         public SemanticModel Compile()
         {
-            var syntaxCompilers = Parsers.Select(parser =>
+            var syntaxCompilers = Sources.Select(s =>
             {
-                if (!parser.Parse() || parser.Result == null)
-                {
-                    Reporter.Throw("Failed to parse input: " + parser.SourceFile + "\n");
-                    throw new NotImplementedException(); // never reached
-                }
-                else
-                    return new SyntaxCompiler(parser.SourceFile, parser.Result, Reporter);
+                var root = s.Source == null ? PenguinParser.Parse(s.File, Reporter) : PenguinParser.Parse(s.Source, s.File, Reporter);
+                return new SyntaxCompiler(s.File, root, Reporter);
             }).ToList();
 
             foreach (var compiler in syntaxCompilers)
@@ -48,7 +43,7 @@ namespace BabyPenguin
             var model = new SemanticModel(Reporter);
             foreach (var compiler in syntaxCompilers)
                 foreach (var ns in compiler.Namespaces)
-                    model.AddNamespace(new SemanticNode.Namespace(model, ns));
+                    model.AddNamespace(new Namespace(model, ns));
 
             model.Compile();
 
