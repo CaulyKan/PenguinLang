@@ -507,7 +507,7 @@ namespace BabyPenguin.VirtualMachine
             }
             else
             {
-                throw new BabyPenguinRuntimeException("Function does not return a value");
+                throw new BabyPenguinRuntimeException($"Function {CodeContainer.FullName} does not return a value");
             }
         }
     }

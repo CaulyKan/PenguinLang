@@ -28,6 +28,7 @@ namespace BabyPenguin.SemanticNode
                 result.EnumDeclarations = EnumDeclarations.Select(i => new EnumDeclaration(Model, result, i.Name, i.Value)).ToList();
             }
 
+            (result as IType).GenericType = this;
             GenericInstances.Add(result);
             result.GenericArguments = genericArguments;
             result.Parent = Parent;
@@ -74,6 +75,8 @@ namespace BabyPenguin.SemanticNode
         public TypeEnum Type => TypeEnum.Enum;
 
         public List<string> GenericDefinitions { get; }
+
+        public IType? GenericType { get; set; }
 
         public List<IType> GenericArguments { get; set; } = [];
 

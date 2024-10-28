@@ -422,10 +422,21 @@ namespace PenguinLangSyntax
         }
     }
 
-    public class ForStatement : SyntaxNode
+    public class ForStatement(SyntaxWalker walker, ForStatementContext context) : SyntaxNode(walker, context)
     {
-        public ForStatement(SyntaxWalker walker, ForStatementContext context) : base(walker, context)
+        public Declaration Declaration { get; } = new Declaration(walker, context.declaration());
+
+        public Expression Expression { get; } = new Expression(walker, context.expression());
+
+        public Statement BodyStatement { get; } = new Statement(walker, context.statement());
+
+        override public IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
+            return base.PrettyPrint(indentLevel).Concat(
+                Expression.PrettyPrint(indentLevel + 1, "(expression)")
+            ).Concat(
+                BodyStatement.PrettyPrint(indentLevel + 1, "(body)")
+            );
         }
     }
 

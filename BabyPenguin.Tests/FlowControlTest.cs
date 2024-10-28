@@ -320,5 +320,73 @@ namespace BabyPenguin.Tests
             Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
+        [Fact]
+        public void ForTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    for (var i : i64 in range(0, 3)) 
+                        print(i as string);
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ForBreakTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    for (var i : i64 in range(0, 10)) {
+                        if (i == 3) break;
+                        print(i as string); 
+                    }
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ForContinueTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    for (var i : i64 in range(0, 10)) { 
+                        if (i % 2 == 0) continue;
+                        print(i as string);
+                    }
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("13579", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void CascadeForTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    for (var i : i64 in range(0, 3))  
+                        for (var j : i64 in range(0, 3)) 
+                            print(j as string);
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012012012", vm.CollectOutput());
+        }
     }
 }

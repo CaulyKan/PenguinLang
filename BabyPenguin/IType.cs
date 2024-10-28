@@ -41,6 +41,8 @@ namespace BabyPenguin
 
         IType Specialize(List<IType> genericArguments);
 
+        IType? GenericType { get; set; }
+
         bool CanImplicitlyCastTo(IType other);
 
         static IType? ImplictlyCastResult(IType one, IType another)

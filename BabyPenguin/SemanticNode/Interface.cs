@@ -20,6 +20,7 @@ namespace BabyPenguin.SemanticNode
                 result = new Interface(Model, Name);
             }
 
+            (result as IInterface).GenericType = this;
             GenericInstances.Add(result);
             result.GenericArguments = genericArguments;
             result.Parent = Parent;
@@ -62,6 +63,8 @@ namespace BabyPenguin.SemanticNode
         public TypeEnum Type => TypeEnum.Interface;
 
         public List<string> GenericDefinitions { get; }
+
+        public IType? GenericType { get; set; }
 
         public List<IType> GenericArguments { get; set; } = [];
 

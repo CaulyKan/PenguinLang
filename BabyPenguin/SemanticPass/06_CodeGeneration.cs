@@ -21,9 +21,9 @@ namespace BabyPenguin.SemanticPass
             {
                 AddStatement(statement);
             }
-            else if (CodeSyntaxNode is PenguinLangSyntax.NamespaceDefinition)
+            else if (CodeSyntaxNode is NamespaceDefinition)
             {
-                foreach (var decl in (CodeSyntaxNode as PenguinLangSyntax.NamespaceDefinition)!.Declarations)
+                foreach (var decl in (CodeSyntaxNode as NamespaceDefinition)!.Declarations)
                 {
                     if (decl.InitializeExpression != null)
                     {
@@ -56,7 +56,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void AddLocalDeclearation(Declaration item, int? paramIndex)
+        public ISymbol AddLocalDeclearation(Declaration item, int? paramIndex)
         {
             var typeName = item.TypeSpecifier!.Name; // TODO: type inference
             var symbol = AddVariableSymbol(item.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, paramIndex, item.IsReadonly, false);
@@ -64,6 +64,7 @@ namespace BabyPenguin.SemanticPass
             {
                 AddExpression(item.InitializeExpression, symbol);
             }
+            return symbol;
         }
 
         public string CreateLabel() => $"{Name}_{counter++}";
@@ -242,7 +243,56 @@ namespace BabyPenguin.SemanticPass
                         break;
                     }
                 case Statement.Type.ForStatement:
-                    throw new NotImplementedException();
+                    {
+                        var forStatement = item.ForStatement!;
+                        var iteratorSymbol = AddExpression(forStatement.Expression);
+
+                        // expecting an iterator symbol
+                        if (iteratorSymbol.TypeInfo.GenericType?.FullName != "__builtin.IIterator<?>")
+                            throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation);
+                        var iterItemSymbol = AddLocalDeclearation(forStatement.Declaration!, null);
+
+                        // prepare begin label
+                        var beginLabel = CreateLabel();
+                        var endLabel = CreateLabel();
+                        AddInstruction(new NopInstuction().WithLabel(beginLabel));
+                        CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
+
+                        // call .next on IIterator 
+                        var nextMethodSymbol = Model.ResolveSymbol(iteratorSymbol.TypeInfo.FullName + ".next", scope: this) as FunctionSymbol;
+                        if (nextMethodSymbol == null)
+                            throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName}'", forStatement.SourceLocation);
+                        var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression.SourceLocation);
+                        AddInstruction(new ReadMemberInstruction(nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol));
+
+                        // .next result should be an Option
+                        var nextResult = AllocTempSymbol(nextMethodSymbol.ReturnTypeInfo, forStatement.Expression.SourceLocation);
+                        AddInstruction(new FunctionCallInstruction(nextMethodImplSymbol, [iteratorSymbol], nextResult));
+                        var optionValueSymbol = Model.ResolveSymbol(nextResult.TypeInfo.FullName + "._value");
+                        if (optionValueSymbol == null)
+                            throw new BabyPenguinException($"Cant resolve symbol '{nextResult.TypeInfo.FullName}._value'", forStatement.Expression.SourceLocation);
+
+                        // compare Option value is none
+                        var tempRightVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
+                        var tempLeftVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
+                        AddInstruction(new ReadMemberInstruction(optionValueSymbol, nextResult, tempLeftVar));
+                        var noneEnumValue = (nextResult.TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Name == "none")?.Value;
+                        if (noneEnumValue == null)
+                            throw new BabyPenguinException($"Can't resolve 'none' enum value of type '{nextResult.TypeInfo.FullName}'", forStatement.Expression.SourceLocation);
+                        AddInstruction(new AssignLiteralToSymbolInstruction(tempRightVar, BasicType.I32, noneEnumValue.ToString()!));
+                        var condVar = AllocTempSymbol(BasicType.Bool, forStatement.Expression.SourceLocation);
+                        AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, condVar));
+
+                        // loop body
+                        AddInstruction(new GotoInstruction(endLabel, condVar, true));
+                        AddInstruction(new ReadEnumInstruction(nextResult, iterItemSymbol));
+                        AddStatement(forStatement.BodyStatement);
+                        AddInstruction(new GotoInstruction(beginLabel));
+
+                        CodeContainerData.CurrentWhileLoop.Pop();
+                        AddInstruction(new NopInstuction().WithLabel(endLabel));
+                        break;
+                    }
                 case Statement.Type.ReturnStatement:
                     {
                         var returnStatement = item.ReturnStatement!;
@@ -888,7 +938,7 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -908,7 +958,7 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {

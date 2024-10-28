@@ -181,6 +181,8 @@ namespace BabyPenguin.SemanticNode
 
         public List<string> GenericDefinitions { get; } = [];
 
+        public IType? GenericType { get; set; }
+
         public List<IType> GenericArguments { get; set; } = [];
 
         public List<IType> GenericInstances { get; set; } = [];
@@ -264,8 +266,8 @@ namespace BabyPenguin.SemanticNode
                 if (self.GenericInstances.Find(i => i.FullName == typeInfo.FullName) is IType existingType)
                     return existingType;
                 self.GenericInstances.Add(typeInfo);
+                typeInfo.GenericType = self;
                 return typeInfo;
-
             }
             else
             {
