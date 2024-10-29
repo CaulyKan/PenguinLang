@@ -431,7 +431,7 @@ namespace BabyPenguin.Tests
             Assert.NotNull(foo1);
             Assert.Equal("ns.Foo", foo1.FullName);
 
-            var foo2 = model.ResolveType("Foo", scope: model.Classes.First());
+            var foo2 = model.ResolveType("Foo", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(foo2);
             Assert.Equal("ns.Foo", foo2.FullName);
 
@@ -439,7 +439,7 @@ namespace BabyPenguin.Tests
             Assert.NotNull(bar1);
             Assert.Equal("ns.Bar", bar1.FullName);
 
-            var bar2 = model.ResolveType("Bar", scope: model.Classes.First());
+            var bar2 = model.ResolveType("Bar", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(bar2);
             Assert.Equal("ns.Bar", bar2.FullName);
         }
@@ -470,7 +470,7 @@ namespace BabyPenguin.Tests
             Assert.Equal("string", bar2.GenericArguments[2].FullName);
             Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName);
 
-            var bar3 = model.ResolveType("Bar<?,?,?>", scope: model.Classes.First());
+            var bar3 = model.ResolveType("Bar<?,?,?>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.True(bar1.FullName == bar3!.FullName);
             Assert.Single(bar3.GenericInstances);
             Assert.True(bar3.GenericInstances.First() == bar2);
@@ -553,7 +553,7 @@ namespace BabyPenguin.Tests
             Assert.Equal("ns.Foo<u8>", bar1.GenericArguments[0].FullName);
             Assert.Equal("u8", bar1.GenericArguments[0].GenericArguments[0].FullName);
 
-            var bar2 = model.ResolveType("Bar<Foo<u8>>", scope: model.Classes.First());
+            var bar2 = model.ResolveType("Bar<Foo<u8>>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.Equal(bar1.FullName, bar2!.FullName);
 
             var foo1 = model.ResolveType("T", scope: bar1 as IClass);
