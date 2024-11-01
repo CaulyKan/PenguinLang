@@ -28,6 +28,16 @@ namespace BabyPenguin.SemanticNode
 
             return result;
         }
+
+        bool IType.CanImplicitlyCastTo(IType other)
+        {
+            if (FullName == other.FullName)
+                return true;
+            else if (other is IInterface intf)
+                return ImplementedInterfaces.Any(i => i.FullName == intf.FullName);
+            else
+                return false;
+        }
     }
 
     public class Interface : BaseSemanticNode, IInterface
@@ -73,8 +83,6 @@ namespace BabyPenguin.SemanticNode
         public override bool Equals(object? obj) => (this as IInterface).FullName == (obj as IInterface)?.FullName;
 
         public override int GetHashCode() => (this as IInterface).FullName.GetHashCode();
-
-        public bool CanImplicitlyCastTo(IType other) => (this as ISemanticScope).FullName == other.FullName;
 
         public IFunction? Constructor { get; set; }
 

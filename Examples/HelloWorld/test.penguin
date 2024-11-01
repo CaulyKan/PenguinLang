@@ -1,10 +1,5 @@
                 initial {
-                    val rg : IIterator<i64> = range(0, 5);
-                    while(true) {
-                        val n : Option<i64> = rg.next();
-                        if (n.is_none())
-                            break;
-                        else 
-                            print(n.some as string);
-                    }
+                    var a : i16 = -(-1);
+                    var b : string = a as string;
+                    print(b);
                 }

@@ -176,28 +176,28 @@ namespace BabyPenguin.VirtualMachine
                                     resultVar.As<BasicRuntimeVar>().Value = 0;
                                     break;
                                 case TypeEnum.U8:
-                                    resultVar.As<BasicRuntimeVar>().Value = (byte)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToByte(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.U16:
-                                    resultVar.As<BasicRuntimeVar>().Value = (ushort)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToUInt16(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.U32:
-                                    resultVar.As<BasicRuntimeVar>().Value = (uint)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToUInt32(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.U64:
-                                    resultVar.As<BasicRuntimeVar>().Value = (ulong)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToUInt64(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.I8:
-                                    resultVar.As<BasicRuntimeVar>().Value = (sbyte)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToSByte(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.I16:
-                                    resultVar.As<BasicRuntimeVar>().Value = (short)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToInt16(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.I32:
-                                    resultVar.As<BasicRuntimeVar>().Value = (int)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToInt32(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.I64:
-                                    resultVar.As<BasicRuntimeVar>().Value = (long)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ToInt64(rightVar.As<BasicRuntimeVar>().Value!);
                                     break;
                                 case TypeEnum.Float:
                                     resultVar.As<BasicRuntimeVar>().Value = (float)rightVar.As<BasicRuntimeVar>().Value!;
@@ -234,9 +234,9 @@ namespace BabyPenguin.VirtualMachine
                                     {
                                         var cls = (cmd.Operand.TypeInfo as IClass) ?? throw new InvalidOperationException("Operand is not a class");
                                         var intf = (cmd.TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
-                                        var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == intf.FullName) ?? throw new BabyPenguinException($"Class {cls.FullName} does not implement interface {intf.FullName}");
+                                        var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == intf.FullName) ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName} does not implement interface {intf.FullName}");
                                         resultVar.As<InterfaceRuntimeVar>().VTable = vtable;
-                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar.As<ClassRuntimeVar>();
+                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar.As<ClassRuntimeVar>() ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName} does not implement interface {intf.FullName}");
                                     }
                                     else if (rightVar is InterfaceRuntimeVar)
                                     {
@@ -262,13 +262,13 @@ namespace BabyPenguin.VirtualMachine
                                     resultVar.As<BasicRuntimeVar>().Value = rightVar.As<BasicRuntimeVar>().Value;
                                     break;
                                 case UnaryOperatorEnum.Minus:
-                                    resultVar.As<BasicRuntimeVar>().Value = -(dynamic)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ChangeType(-(dynamic)rightVar.As<BasicRuntimeVar>().Value!, resultVar.As<BasicRuntimeVar>().Value.GetType());
                                     break;
                                 case UnaryOperatorEnum.BitwiseNot:
-                                    resultVar.As<BasicRuntimeVar>().Value = ~(dynamic)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = Convert.ChangeType(~(dynamic)rightVar.As<BasicRuntimeVar>().Value!, resultVar.As<BasicRuntimeVar>().Value.GetType());
                                     break;
                                 case UnaryOperatorEnum.LogicalNot:
-                                    resultVar.As<BasicRuntimeVar>().Value = !(dynamic)rightVar.As<BasicRuntimeVar>().Value!;
+                                    resultVar.As<BasicRuntimeVar>().Value = (bool)!(dynamic)rightVar.As<BasicRuntimeVar>().Value!;
                                     break;
                             }
                             DebugPrint(cmd, op1: rightVar.ToDebugString(), result: resultVar.ToDebugString());

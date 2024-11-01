@@ -62,5 +62,35 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal($"01234", vm.CollectOutput());
         }
+
+        [Fact]
+        public void CopyTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Foo {
+                    var x : i64;
+                    var y : i64;
+
+                    impl ICopiable<Self>;
+                }
+                initial {
+                    var a : Foo = new Foo();
+                    a.x = 1;
+                    a.y = 2;
+                    var b : Foo = a.copy();
+                    b.x = 3;
+                    b.y = 4;
+                    print(a.x as string);
+                    print(a.y as string);
+                    print(b.x as string);
+                    print(b.y as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"1234", vm.CollectOutput());
+        }
     }
 }

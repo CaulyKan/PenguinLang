@@ -15,7 +15,7 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
-            Assert.Equal(5, ns.Symbols.Count());
+            Assert.Equal(5, ns.Symbols.Where(i => !i.IsTemp).Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
             Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
@@ -43,7 +43,7 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name == "Test");
-            Assert.Equal(5, ns!.Symbols.Count());
+            Assert.Equal(5, ns!.Symbols.Where(i => !i.IsTemp).Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.True(ns.Symbols.ElementAt(0).FullName == "Test.test1");
             Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
@@ -862,5 +862,48 @@ namespace BabyPenguin.Tests
             Assert.Contains("ns.IQux<u8>", qux.ImplementedInterfaces.Select(i => i.FullName));
         }
 
+        [Fact]
+        public void InterfaceImplicitlyConversion()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {}
+                    interface IBar<T> { 
+                        impl IFoo;
+                    }
+                    interface IQux<T> { 
+                        impl IBar<T>;
+                    }
+                    class Qux {
+                        impl IQux<u8>;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClass;
+            var ifoo = ns.Interfaces.FirstOrDefault(i => i.Name == "IFoo") as IInterface;
+            var iqux = model.ResolveType("ns.IQux<u8>") as IInterface;
+            var ibar = model.ResolveType("ns.IBar<u8>") as IInterface;
+
+            Assert.True(qux!.CanImplicitlyCastTo(qux!));
+            Assert.True(qux!.CanImplicitlyCastTo(iqux!));
+            Assert.True(qux!.CanImplicitlyCastTo(ibar!));
+            Assert.True(qux!.CanImplicitlyCastTo(ifoo!));
+            Assert.False(iqux!.CanImplicitlyCastTo(qux!));
+            Assert.True(iqux!.CanImplicitlyCastTo(iqux!));
+            Assert.True(iqux!.CanImplicitlyCastTo(ibar!));
+            Assert.True(iqux!.CanImplicitlyCastTo(ifoo!));
+            Assert.False(ibar!.CanImplicitlyCastTo(qux!));
+            Assert.False(ibar!.CanImplicitlyCastTo(iqux!));
+            Assert.True(ibar!.CanImplicitlyCastTo(ibar!));
+            Assert.True(ibar!.CanImplicitlyCastTo(ifoo!));
+            Assert.False(ifoo!.CanImplicitlyCastTo(qux!));
+            Assert.False(ifoo!.CanImplicitlyCastTo(iqux!));
+            Assert.False(ifoo!.CanImplicitlyCastTo(ibar!));
+            Assert.True(ifoo!.CanImplicitlyCastTo(ifoo!));
+        }
     }
 }

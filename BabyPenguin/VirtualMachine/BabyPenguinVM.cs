@@ -11,8 +11,7 @@ namespace BabyPenguin.VirtualMachine
                 Global.GlobalVariables.Add(symbol.FullName, IRuntimeVar.FromSymbol(model, symbol));
             }
 
-            Global.ExternFunctions.Add("__builtin.print", (result, args) => { var s = args[0].As<BasicRuntimeVar>().Value; Output.Append(s); Console.Write(s); });
-            Global.ExternFunctions.Add("__builtin.println", (result, args) => { var s = args[0].As<BasicRuntimeVar>().Value; Output.AppendLine(s as string); Console.WriteLine(s); });
+            ExternFunctions.Build(this);
         }
 
         public SemanticModel Model { get; }

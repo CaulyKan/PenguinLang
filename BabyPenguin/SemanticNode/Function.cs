@@ -36,7 +36,7 @@ namespace BabyPenguin.SemanticNode
             Name = syntaxNode.Name;
             IsExtern = syntaxNode.IsExtern;
             IsPure = syntaxNode.IsPure;
-            IsDeclarationOnly = syntaxNode.CodeBlock == null;
+            IsDeclarationOnly = syntaxNode.CodeBlock == null && !IsExtern;
         }
 
         public string Name { get; }

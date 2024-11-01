@@ -127,6 +127,7 @@ typeSpecifier:
 	| 'string'
 	| 'bool'
 	| 'char'
+	| 'Self'
 	| (
 		identifierWithDots genericArguments? (
 			'.' identifierWithDots genericArguments?

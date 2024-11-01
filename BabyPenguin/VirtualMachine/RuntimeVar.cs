@@ -12,6 +12,8 @@ namespace BabyPenguin.VirtualMachine
 
         void AssignFrom(IRuntimeVar other);
 
+        IRuntimeVar Clone();
+
         T As<T>() where T : class, IRuntimeVar => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
 
         string? ValueString => TypeInfo.FullName;
@@ -56,18 +58,34 @@ namespace BabyPenguin.VirtualMachine
                     Value = false;
                     break;
                 case TypeEnum.U8:
+                    Value = (byte)0;
+                    break;
                 case TypeEnum.U16:
+                    Value = (ushort)0;
+                    break;
                 case TypeEnum.U32:
+                    Value = (uint)0;
+                    break;
                 case TypeEnum.U64:
+                    Value = (ulong)0;
+                    break;
                 case TypeEnum.I8:
+                    Value = (sbyte)0;
+                    break;
                 case TypeEnum.I16:
+                    Value = (short)0;
+                    break;
                 case TypeEnum.I32:
+                    Value = (int)0;
+                    break;
                 case TypeEnum.I64:
-                    Value = 0;
+                    Value = (long)0;
                     break;
                 case TypeEnum.Float:
+                    Value = (float)0.0;
+                    break;
                 case TypeEnum.Double:
-                    Value = 0.0;
+                    Value = (double)0.0;
                     break;
                 case TypeEnum.String:
                     Value = "";
@@ -128,6 +146,13 @@ namespace BabyPenguin.VirtualMachine
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
             }
         }
+
+        public IRuntimeVar Clone()
+        {
+            var result = new BasicRuntimeVar(Model, Symbol);
+            result.Value = Value;
+            return result;
+        }
     }
 
     public class FunctionRuntimeVar : IRuntimeVar
@@ -156,6 +181,13 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        public IRuntimeVar Clone()
+        {
+            var result = new FunctionRuntimeVar(Model, Symbol);
+            result.FunctionSymbol = FunctionSymbol;
+            return result;
+        }
     }
 
     public class ClassRuntimeVar : IRuntimeVar
@@ -185,6 +217,13 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        public IRuntimeVar Clone()
+        {
+            var result = new ClassRuntimeVar(Model, Symbol);
+            result.ObjectFields = ObjectFields.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone());
+            return result;
+        }
     }
 
     public class InterfaceRuntimeVar(SemanticModel model, ISymbol symbol) : IRuntimeVar
@@ -222,6 +261,14 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        public IRuntimeVar Clone()
+        {
+            var result = new InterfaceRuntimeVar(Model, Symbol);
+            result.Object = Object?.Clone();
+            result.VTable = VTable;
+            return result;
+        }
     }
 
 
@@ -258,5 +305,13 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        public IRuntimeVar Clone()
+        {
+            var result = new EnumRuntimeVar(Model, Symbol);
+            result.EnumObject = EnumObject?.Clone();
+            result.ObjectFields = ObjectFields.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone());
+            return result;
+        }
     }
 }

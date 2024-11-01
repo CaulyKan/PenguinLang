@@ -119,6 +119,17 @@ namespace BabyPenguin
             if (BasicType.BasicTypes.TryGetValue(name, out BasicType? value))
                 return value;
 
+            // check if is 'Self'
+            if (name == "Self")
+            {
+                if (scope is null)
+                    throw new PenguinLangException("Self is not allowed here.");
+                if (scope is IType typ)
+                    return typ;
+                else
+                    return ResolveType(name, predicate, scope.Parent);
+            }
+
             // check if is a generic definition
             if (scope != null && nameComponents.Prefix.Count == 0 && nameComponents.Generics.Count == 0)
             {

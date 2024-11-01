@@ -435,8 +435,9 @@ namespace BabyPenguin.SemanticPass
             throw new NotImplementedException();
         }
 
-        public IType ResolveMemberAccessExpressionOwnerType(MemberAccessExpression expression)
+        public void ResolveMemberAccessExpressionType(MemberAccessExpression expression, out IType owner, out ISymbol member)
         {
+            ISymbol? member_ = null;
             var t = ResolveExpressionType(expression.PrimaryExpression);
             if (t == null)
                 throw new BabyPenguinException($"Cant resolve owner type of member access expression", expression.SourceLocation);
@@ -444,13 +445,29 @@ namespace BabyPenguin.SemanticPass
             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
             {
                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                var member = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
-                if (member == null)
+                member_ = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
+
+                if (member_ == null && t is IClass cls)
+                {
+                    // try implicit conversion to interface
+                    var candidates = cls.ImplementedInterfaces.Select(
+                        intf => Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, scope: intf)
+                    ).Where(s => s != null).ToList();
+                    if (candidates.Count > 1)
+                        throw new BabyPenguinException($"Ambiguous interface method for {ma.MemberIdentifiers[i].Name}, please explicitly specify cast to interface", expression.SourceLocation);
+                    else if (candidates.Count == 1)
+                        member_ = candidates[0];
+                }
+
+                if (member_ == null)
                     throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
-                if (isLastRound) return t;
-                t = member.TypeInfo;
+
+                if (isLastRound) break;
+                t = member_.TypeInfo;
             }
-            throw new NotImplementedException();
+
+            member = member_ ?? throw new BabyPenguinException($"Cant resolve symbol {expression}'", expression.SourceLocation);
+            owner = t ?? throw new BabyPenguinException($"$Cant resolve owner type {expression}", expression.SourceLocation);
         }
 
         public IType ResolveExpressionType(ISyntaxExpression expression)
@@ -575,7 +592,7 @@ namespace BabyPenguin.SemanticPass
                             SourceLocation sourceLocation;
                             if (i == 0 && isInstanceCall)
                             {
-                                actualType = ResolveMemberAccessExpressionOwnerType(exp.MemberAccessExpression!);
+                                ResolveMemberAccessExpressionType(exp.MemberAccessExpression!, out actualType, out _);
                                 sourceLocation = exp.SourceLocation;
                             }
                             else
@@ -599,20 +616,8 @@ namespace BabyPenguin.SemanticPass
                         }
                         else
                         {
-                            var t = ResolveExpressionType(exp.PrimaryExpression);
-                            var ma = exp;
-                            for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
-                            {
-                                var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                                var symbolName = t.FullName + "." + ma.MemberIdentifiers[i].Name;
-                                // var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == t.IsEnumType, scope: this);
-                                var member = Model.ResolveSymbol(symbolName, scope: this);
-
-                                if (member == null)
-                                    throw new BabyPenguinException($"Cant resolve symbol '{symbolName}'", ma.MemberIdentifiers[i].SourceLocation);
-                                t = member.TypeInfo;
-                            }
-                            return t;
+                            ResolveMemberAccessExpressionType(exp, out _, out ISymbol symbol);
+                            return symbol.TypeInfo;
                         }
                     }
                 case PrimaryExpression exp:
@@ -683,12 +688,14 @@ namespace BabyPenguin.SemanticPass
                 return false;
         }
 
-        public ISymbol AddMemberAccessExpression(MemberAccessExpression exp, ISymbol to, out ISymbol? owner)
+        public ISymbol AddMemberAccessExpression(MemberAccessExpression exp, ISymbol to, out ISymbol? owner, out ISymbol? ownerBeforeImplicitConversion_)
         {
             ISymbol owner_var;
+            ISymbol? ownerBeforeImplicitConversion = null;
             if (CheckMemberAccessExpressionIsStatic(exp))
             {
                 owner = null;
+                ownerBeforeImplicitConversion_ = null;
                 var res = Model.ResolveSymbol(exp.Text, s => s.IsStatic, scope: this);
                 if (res == null)
                     throw new BabyPenguinException($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
@@ -720,6 +727,19 @@ namespace BabyPenguin.SemanticPass
                 // var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == target.TypeInfo.IsEnumType, scope: this);
                 var member = Model.ResolveSymbol(symbolName, scope: this);
 
+                if (member == null && target.TypeInfo is IClass cls)
+                {
+                    // try implicit conversion to interface
+                    var implicitSymbol = cls.ImplementedInterfaces.Select(intf => Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, scope: intf)).First(s => s != null);
+                    var implicitSymbolType = implicitSymbol?.Parent as IType ?? throw new BabyPenguinException($"can't get parent of symbol {implicitSymbol?.FullName}");
+                    var temp = AllocTempSymbol(implicitSymbolType, exp.SourceLocation);  // we are sure implicitSymbol exists in resolveExpressionType
+                    AddCastExpression(new(target), temp, exp.SourceLocation);
+                    member = implicitSymbol;
+                    if (isLastRound)
+                        ownerBeforeImplicitConversion = target;
+                    target = temp;
+                }
+
                 if (member == null)
                     throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
                 if (isLastRound)
@@ -746,52 +766,74 @@ namespace BabyPenguin.SemanticPass
                 }
             }
             owner = target;
+            ownerBeforeImplicitConversion_ = ownerBeforeImplicitConversion ?? owner;
             return to;
         }
 
-        public ISymbol AddCastExpression(CastExpression exp, ISymbol to)
+        public ISymbol AddCastExpression(Or<CastExpression, ISymbol> from, ISymbol to, SourceLocation sourceLocation)
         {
-            if (ResolveExpressionType(exp).FullName != to.TypeInfo.FullName)
-                throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName}' to type '{to.TypeInfo.FullName}'", exp.SourceLocation);
+            IType type;
+            ISymbol tempSymbol;
+            if (from.IsLeft)
+            {
+                var exp = from.Left!;
+                if (ResolveExpressionType(exp).FullName != to.TypeInfo.FullName)
+                    throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName}' to type '{to.TypeInfo.FullName}'", exp.SourceLocation);
 
-            var temp_var = AddExpression(exp.SubUnaryExpression!);
-            var type = temp_var.TypeInfo;
+                tempSymbol = AddExpression(exp.SubUnaryExpression!);
+                type = tempSymbol.TypeInfo;
+            }
+            else
+            {
+                tempSymbol = from.Right!;
+                type = tempSymbol.TypeInfo;
+            }
+
             if (type.IsInterfaceType)
             {
-                AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
+                AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
             }
             else if (type is IClass cls)
             {
                 if (to.TypeInfo.IsClassType)
                 {
-                    throw new BabyPenguinException($"Cant cast class type to class type", exp.SourceLocation);
+                    throw new BabyPenguinException($"Cant cast class type to class type", sourceLocation);
                 }
                 else if (to.TypeInfo.IsInterfaceType)
                 {
                     // class to interface conversion
                     if (!cls.ImplementedInterfaces.Any(i => i.FullName == to.TypeInfo.FullName))
-                        throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", exp.SourceLocation);
+                        throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", sourceLocation);
 
-                    AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
+                    AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
                 }
             }
             else
             {
                 // TODO: deal with basic types
-                AddInstruction(new CastInstruction(temp_var, to.TypeInfo, to));
+                AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
             }
 
             return to;
         }
 
-        public ISymbol AddExpression(ISyntaxExpression expression, ISymbol? to = null)
+        public ISymbol AddExpression(ISyntaxExpression expression, ISymbol? targetSymbol = null)
         {
-            if (to != null)
+            ISymbol to;
+            if (targetSymbol != null)
             {
                 var rightType = ResolveExpressionType(expression);
-                if (!rightType.CanImplicitlyCastTo(to.TypeInfo))
+                if (rightType.FullName == targetSymbol.TypeInfo.FullName)
                 {
-                    throw new BabyPenguinException($"Cant assign type '{rightType}' to type '{to.TypeInfo}'", expression.SourceLocation);
+                    to = targetSymbol;
+                }
+                else if (rightType.CanImplicitlyCastTo(targetSymbol.TypeInfo))
+                {
+                    to = AllocTempSymbol(ResolveExpressionType(expression), expression.SourceLocation);
+                }
+                else
+                {
+                    throw new BabyPenguinException($"Cant assign type '{rightType}' to type '{targetSymbol.TypeInfo}'", expression.SourceLocation);
                 }
             }
             else
@@ -817,7 +859,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalOr, a, b, res));
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -835,7 +877,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalAnd, a, b, res));
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -853,7 +895,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseOr, a, b, res));
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -871,7 +913,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseXor, a, b, res));
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -889,7 +931,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseAnd, a, b, res));
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddInstruction(new AssignmentInstruction(resVar, to));
                     }
                     else
                     {
@@ -1008,7 +1050,7 @@ namespace BabyPenguin.SemanticPass
                 case CastExpression exp:
                     if (exp.IsTypeCast)
                     {
-                        AddCastExpression(exp, to);
+                        AddCastExpression(exp, to, exp.SourceLocation);
                     }
                     else
                     {
@@ -1054,12 +1096,12 @@ namespace BabyPenguin.SemanticPass
                         {
                             var isStatic = CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!);
                             var temp = AllocTempSymbol(ResolveExpressionType(exp.MemberAccessExpression!), expression.SourceLocation);
-                            var func_var = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out ISymbol? owner_var);
-                            if (!func_var.TypeInfo.IsFunctionType)
-                                throw new BabyPenguinException($"Function call expects function symbol, but got '{func_var.TypeInfo}'", exp.MemberAccessExpression!.SourceLocation);
-                            var param_vars = isStatic ? [] : new List<ISymbol> { owner_var! };
+                            var funcVar = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out _, out ISymbol? ownerVarBeforeImplicitConversion);
+                            if (!funcVar.TypeInfo.IsFunctionType)
+                                throw new BabyPenguinException($"Function call expects function symbol, but got '{funcVar.TypeInfo}'", exp.MemberAccessExpression!.SourceLocation);
+                            var param_vars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
                             param_vars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
-                            AddInstruction(new FunctionCallInstruction(func_var, param_vars, to));
+                            AddInstruction(new FunctionCallInstruction(funcVar, param_vars, to));
                         }
                         else
                         {
@@ -1083,7 +1125,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case MemberAccessExpression exp:
                     {
-                        AddMemberAccessExpression(exp, to, out ISymbol? owner_var);
+                        AddMemberAccessExpression(exp, to, out ISymbol? owner_var, out _);
                     }
                     break;
                 case NewExpression exp:
@@ -1174,6 +1216,12 @@ namespace BabyPenguin.SemanticPass
                             break;
                     }
                     break;
+            }
+
+            if (targetSymbol != null && to.TypeInfo.FullName != targetSymbol.TypeInfo.FullName)
+            {
+                // deal with implicity cast
+                AddCastExpression(new(to), targetSymbol, expression.SourceLocation);
             }
             return to;
         }

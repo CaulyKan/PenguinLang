@@ -7,6 +7,7 @@ namespace BabyPenguin
             AddPrint(model);
             AddOption(model);
             AddIterators(model);
+            AddCopy(model);
         }
 
         public static void AddPrint(SemanticModel model)
@@ -46,6 +47,19 @@ namespace BabyPenguin
                                 return default_val;
                             }
                         }
+                    }
+                }
+            ";
+
+            model.AddSource(source, "__builtin");
+        }
+
+        public static void AddCopy(SemanticModel model)
+        {
+            var source = @"
+                namespace __builtin {
+                    interface ICopiable<T> {
+                        extern fun copy(val this: T) -> T;
                     }
                 }
             ";

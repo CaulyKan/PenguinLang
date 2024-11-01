@@ -1,6 +1,3 @@
-using BabyPenguin.SemanticPass;
-using PenguinLangSyntax;
-
 namespace BabyPenguin.SemanticNode
 {
     public interface IClass : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
@@ -30,6 +27,16 @@ namespace BabyPenguin.SemanticNode
             Model.CatchUp(result);
 
             return result;
+        }
+
+        bool IType.CanImplicitlyCastTo(IType other)
+        {
+            if (FullName == other.FullName)
+                return true;
+            else if (other is IInterface intf)
+                return ImplementedInterfaces.Any(i => i.FullName == intf.FullName);
+            else
+                return false;
         }
 
         IFunction? Constructor { get; set; }
@@ -78,8 +85,6 @@ namespace BabyPenguin.SemanticNode
         public override bool Equals(object? obj) => (this as IClass).FullName == (obj as IClass)?.FullName;
 
         public override int GetHashCode() => (this as IClass).FullName.GetHashCode();
-
-        public bool CanImplicitlyCastTo(IType other) => (this as ISemanticScope).FullName == other.FullName;
 
         public IFunction? Constructor { get; set; }
 

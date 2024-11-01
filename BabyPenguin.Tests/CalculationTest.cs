@@ -976,7 +976,7 @@ namespace BabyPenguin.Tests
                         var f : Foo = new Foo();
                         val f2 : IFoo<u8> = f as IFoo<u8>;
                         val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IFoo<u8> = f as IFoo<u8>;
+                        val f4 : IFoo<u8> = f3 as IFoo<u8>;
                         print(f2.foo() as string);
                         print(f2.foo2() as string);
                         print(f4.foo() as string);
@@ -989,5 +989,65 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("3333", vm.CollectOutput());
         }
+
+        [Fact]
+        public void InterfaceImplicitCasting()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo(val this: IFoo<T>) -> T;
+                        fun foo2(val this: IFoo<T>) -> T {
+                            return 1;
+                        }
+                    }
+
+                    interface IBar<T> {
+                        impl IFoo<T> {
+                            fun foo(val this: IFoo<T>) -> T {
+                                return 2;
+                            }
+                            fun foo2(val this: IFoo<T>) -> T {
+                                return 2;
+                            }
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo<u8> {
+                            fun foo(val this: IFoo<u8>) -> u8 {
+                                return 3;
+                            }
+                        }
+                        impl IBar<u8>;
+                        impl IFoo<u8> {
+                            fun foo2(val this: IFoo<u8>) -> u8 {
+                                return 3;
+                            }
+                        }
+                        val a: u8 = 9;
+                    }
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        val f2 : IFoo<u8> = f;
+                        val f3 : IBar<u8> = f2 as IBar<u8>;
+                        val f4 : IFoo<u8> = f3;
+                        print(f2.foo() as string);
+                        print(f2.foo2() as string);
+                        print(f4.foo() as string);
+                        print(f4.foo2() as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("3333", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceImplicitCastingInParameter() { }
     }
 }
