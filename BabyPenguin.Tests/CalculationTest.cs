@@ -1048,6 +1048,39 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void InterfaceImplicitCastingInParameter() { }
+        public void InterfaceImplicitCastingInParameter()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo(val this: IFoo) {
+                            print(""1"");
+                        }
+                        fun foo2(val this: Foo) {
+                            print(this.a as string);
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo;
+                        val a : u8 = 2;
+                    }
+
+                    fun test(val a : Foo, val b: IFoo) {}
+                
+                    initial {
+                        var f : Foo = new Foo();
+                        test(f,f);
+                        f.foo();
+                        f.foo2();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
     }
 }

@@ -905,5 +905,35 @@ namespace BabyPenguin.Tests
             Assert.False(ifoo!.CanImplicitlyCastTo(ibar!));
             Assert.True(ifoo!.CanImplicitlyCastTo(ifoo!));
         }
+
+        [Fact]
+        public void SelfTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun a() -> Self {}
+                    }
+                    class Foo {
+                        fun a() -> Self {}
+                        impl IFoo {
+                            fun a() -> IFoo {
+                                val b: Self; 
+                            } 
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ifoo_a = model.ResolveSymbol("ns.IFoo.a") as FunctionSymbol;
+            Assert.Equal("ns.IFoo", ifoo_a!.ReturnTypeInfo.FullName);
+            var foo_a = model.ResolveSymbol("ns.Foo.a") as FunctionSymbol;
+            Assert.Equal("ns.Foo", foo_a!.ReturnTypeInfo.FullName);
+            var vtable_foo = model.Classes.First(i => i.Name == "Foo")!.VTables.First();
+            var f = vtable_foo.Functions.First()!;
+            Assert.Equal("ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName);
+        }
     }
 }
