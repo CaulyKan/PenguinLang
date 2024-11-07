@@ -28,7 +28,7 @@ namespace BabyPenguin.SemanticPass
                     if (decl.InitializeExpression != null)
                     {
                         var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.Scope.ScopeDepth, scope: this);
-                        AddExpression(decl.InitializeExpression, symbol);
+                        AddExpression(decl.InitializeExpression, true, symbol);
                     }
                 }
             }
@@ -62,7 +62,7 @@ namespace BabyPenguin.SemanticPass
             var symbol = AddVariableSymbol(item.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, paramIndex, item.IsReadonly, false);
             if (item.InitializeExpression != null)
             {
-                AddExpression(item.InitializeExpression, symbol);
+                AddExpression(item.InitializeExpression, true, symbol);
             }
             return symbol;
         }
@@ -84,7 +84,7 @@ namespace BabyPenguin.SemanticPass
             {
                 case Statement.Type.AssignmentStatement:
                     {
-                        var rightVar = AddExpression(item.AssignmentStatement!.RightHandSide);
+                        var rightVar = AddExpression(item.AssignmentStatement!.RightHandSide, false);
                         ISymbol? member = null;
                         ISymbol? target;
                         bool isMemberAccess = item.AssignmentStatement.LeftHandSide.IsMemberAccess;
@@ -108,7 +108,7 @@ namespace BabyPenguin.SemanticPass
                             }
                             else
                             {
-                                target = AddExpression(ma.PrimaryExpression);
+                                target = AddExpression(ma.PrimaryExpression, false);
                             }
                             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
                             {
@@ -144,7 +144,7 @@ namespace BabyPenguin.SemanticPass
                             if (item.AssignmentStatement.AssignmentOperator == AssignmentOperatorEnum.Assign)
                             {
                                 if (!isMemberAccess)
-                                    AddInstruction(new AssignmentInstruction(rightVar, target));
+                                    AddAssignmentExpression(new(rightVar), target, false, item.SourceLocation);
                                 else
                                     AddInstruction(new WriteMemberInstruction(member!, rightVar, target));
                             }
@@ -168,11 +168,11 @@ namespace BabyPenguin.SemanticPass
                                 {
                                     var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
                                     AddInstruction(new BinaryOperationInstruction(op, target, rightVar, temp));
-                                    AddInstruction(new AssignmentInstruction(temp, target));
+                                    AddAssignmentExpression(new(temp), target, false, item.SourceLocation);
                                 }
                                 else
                                 {
-                                    var tempBeforeCalc = AddExpression(item.AssignmentStatement.LeftHandSide.MemberAccess!);
+                                    var tempBeforeCalc = AddExpression(item.AssignmentStatement.LeftHandSide.MemberAccess!, false);
                                     var tempAfterCalc = AllocTempSymbol(ResolveBinaryOperationType(op, [tempBeforeCalc.TypeInfo, rightVar.TypeInfo], item.SourceLocation), item.SourceLocation);
                                     AddInstruction(new BinaryOperationInstruction(op, tempBeforeCalc, rightVar, tempAfterCalc));
                                     AddInstruction(new WriteMemberInstruction(member!, tempAfterCalc, target));
@@ -184,7 +184,7 @@ namespace BabyPenguin.SemanticPass
                     }
                 case Statement.Type.ExpressionStatement:
                     {
-                        AddExpression(item.ExpressionStatement!.Expression);
+                        AddExpression(item.ExpressionStatement!.Expression, false);
                         break;
                     }
                 case Statement.Type.SubBlock:
@@ -198,7 +198,7 @@ namespace BabyPenguin.SemanticPass
                 case Statement.Type.IfStatement:
                     {
                         var ifStatement = item.IfStatement!;
-                        var conditionVar = AddExpression(ifStatement.Condition);
+                        var conditionVar = AddExpression(ifStatement.Condition, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation);
                         if (ifStatement.HasElse)
@@ -226,7 +226,7 @@ namespace BabyPenguin.SemanticPass
                         var whileStatement = item.WhileStatement!;
                         var beginLabel = CreateLabel();
                         AddInstruction(new NopInstuction().WithLabel(beginLabel));
-                        var conditionVar = AddExpression(whileStatement.Condition);
+                        var conditionVar = AddExpression(whileStatement.Condition, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
                         var endLabel = CreateLabel();
@@ -245,7 +245,7 @@ namespace BabyPenguin.SemanticPass
                 case Statement.Type.ForStatement:
                     {
                         var forStatement = item.ForStatement!;
-                        var iteratorSymbol = AddExpression(forStatement.Expression);
+                        var iteratorSymbol = AddExpression(forStatement.Expression, false);
 
                         // expecting an iterator symbol
                         if (iteratorSymbol.TypeInfo.GenericType?.FullName != "__builtin.IIterator<?>")
@@ -298,7 +298,7 @@ namespace BabyPenguin.SemanticPass
                         var returnStatement = item.ReturnStatement!;
                         if (returnStatement.ReturnExpression != null)
                         {
-                            var returnVar = AddExpression(returnStatement.ReturnExpression);
+                            var returnVar = AddExpression(returnStatement.ReturnExpression, false);
                             AddInstruction(new ReturnInstruction(returnVar));
                         }
                         else
@@ -714,7 +714,7 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
-                    owner_var = AddExpression(exp.PrimaryExpression);
+                    owner_var = AddExpression(exp.PrimaryExpression, false);
                 }
             }
 
@@ -770,7 +770,7 @@ namespace BabyPenguin.SemanticPass
             return to;
         }
 
-        public ISymbol AddCastExpression(Or<CastExpression, ISymbol> from, ISymbol to, SourceLocation sourceLocation)
+        public void AddCastExpression(Or<CastExpression, ISymbol> from, ISymbol to, SourceLocation sourceLocation)
         {
             IType type;
             ISymbol tempSymbol;
@@ -780,7 +780,7 @@ namespace BabyPenguin.SemanticPass
                 if (ResolveExpressionType(exp).FullName != to.TypeInfo.FullName)
                     throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName}' to type '{to.TypeInfo.FullName}'", exp.SourceLocation);
 
-                tempSymbol = AddExpression(exp.SubUnaryExpression!);
+                tempSymbol = AddExpression(exp.SubUnaryExpression!, false);
                 type = tempSymbol.TypeInfo;
             }
             else
@@ -813,11 +813,46 @@ namespace BabyPenguin.SemanticPass
                 // TODO: deal with basic types
                 AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
             }
-
-            return to;
         }
 
-        public ISymbol AddExpression(ISyntaxExpression expression, ISymbol? targetSymbol = null)
+        public void AddAssignmentExpression(Or<Expression, ISymbol> from, ISymbol to, bool isInitial, SourceLocation sourceLocation)
+        {
+            var fromSymbol = from.IsLeft ? AddExpression(from.Left!, false) : from.Right!;
+            if (fromSymbol.TypeInfo.FullName != to.TypeInfo.FullName)
+                throw new BabyPenguinException($"Cant assign type '{fromSymbol.TypeInfo.FullName}' to type '{to.TypeInfo.FullName}'", sourceLocation);
+
+            if (to.IsReadonly && !isInitial)
+            {
+                throw new BabyPenguinException($"Cant assign to readonly symbol '{to.FullName}'", sourceLocation);
+            }
+            else if (fromSymbol.IsReadonly != to.IsReadonly)
+            {
+                if (fromSymbol.TypeInfo is IVTableContainer vc &&
+                    vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName == $"__builtin.ICopiable<{to.TypeInfo.FullName}>") is IInterface icopiable)
+                {
+                    var temp = AllocTempSymbol(icopiable, sourceLocation);
+                    var copyFunc = Model.ResolveSymbol(icopiable.FullName + ".copy", s => s.IsFunction) ??
+                        throw new BabyPenguinException($"Cant resolve function '{icopiable.FullName}.copy'", sourceLocation);
+                    AddInstruction(new FunctionCallInstruction(copyFunc, [fromSymbol], temp));
+                    AddInstruction(new AssignmentInstruction(temp, to));
+                }
+                else
+                {
+                    var fromStr = fromSymbol.IsReadonly ? "readonly" : "non-readonly";
+                    var toStr = to.IsReadonly ? "readonly" : "non-readonly";
+                    // TODO: change warning to error later
+                    Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant assign {fromStr} symbol '{fromSymbol.FullName}' to {toStr} symbol '{to.FullName}'", sourceLocation);
+                    // throw new BabyPenguinException($"Cant assign {fromStr} symbol '{fromSymbol.FullName}' to {toStr} symbol '{to.FullName}'", sourceLocation);
+                    AddInstruction(new AssignmentInstruction(fromSymbol, to));
+                }
+            }
+            else
+            {
+                AddInstruction(new AssignmentInstruction(fromSymbol, to));
+            }
+        }
+
+        public ISymbol AddExpression(ISyntaxExpression expression, bool isVariableInitializer, ISymbol? targetSymbol = null)
         {
             ISymbol to;
             if (targetSymbol != null)
@@ -845,97 +880,97 @@ namespace BabyPenguin.SemanticPass
             {
                 case Expression exp:
                     {
-                        AddExpression(exp.SubExpression, to);
+                        AddExpression(exp.SubExpression, isVariableInitializer, to);
                     }
                     break;
                 case LogicalOrExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
                             var res = AllocTempSymbol(type, expression.SourceLocation);
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalOr, a, b, res));
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case LogicalAndExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
                             var res = AllocTempSymbol(type, expression.SourceLocation);
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalAnd, a, b, res));
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case BitWiseOrExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
                             var res = AllocTempSymbol(type, expression.SourceLocation);
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseOr, a, b, res));
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case BitwiseXorExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
                             var res = AllocTempSymbol(type, expression.SourceLocation);
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseXor, a, b, res));
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case BitwiseAndExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
                             var res = AllocTempSymbol(type, expression.SourceLocation);
                             AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseAnd, a, b, res));
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case EqualityExpression exp:
@@ -943,12 +978,12 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (exp.Operator != BinaryOperatorEnum.Is)
                         {
-                            var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                            var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                             AddInstruction(new BinaryOperationInstruction(exp.Operator!.Value, tempVars[0], tempVars[1], to));
                         }
                         else
                         {
-                            var leftVar = AddExpression(exp.SubExpressions[0]);
+                            var leftVar = AddExpression(exp.SubExpressions[0], false);
                             var rightVar = Model.ResolveSymbol(exp.SubExpressions[1].Text, s => s.IsEnum, scope: this) as EnumSymbol;
                             if (rightVar == null)
                                 throw new BabyPenguinException($"Cant resolve enum symbol '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation);
@@ -964,14 +999,14 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case RelationalExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
@@ -980,18 +1015,18 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case ShiftExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
@@ -1000,18 +1035,18 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case AdditiveExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
@@ -1020,18 +1055,18 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case MultiplicativeExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
                         var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e)).ToList();
+                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
                         var ops = exp.Operators.GetEnumerator(); ops.MoveNext();
                         var resVar = tempVars.Aggregate((a, b) =>
                         {
@@ -1040,11 +1075,11 @@ namespace BabyPenguin.SemanticPass
                             ops.MoveNext();
                             return res;
                         });
-                        this.AddInstruction(new AssignmentInstruction(resVar, to));
+                        AddAssignmentExpression(new(resVar), to, isVariableInitializer, expression.SourceLocation);
                     }
                     else
                     {
-                        AddExpression(exp.SubExpressions[0], to);
+                        AddExpression(exp.SubExpressions[0], isVariableInitializer, to);
                     }
                     break;
                 case CastExpression exp:
@@ -1054,37 +1089,37 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        AddExpression(exp.SubUnaryExpression!, to);
+                        AddExpression(exp.SubUnaryExpression!, isVariableInitializer, to);
                     }
                     break;
                 case UnaryExpression exp:
                     if (exp.HasUnaryOperator)
                     {
-                        var temp_var = AddExpression(exp.SubExpression);
+                        var temp_var = AddExpression(exp.SubExpression, false);
                         AddInstruction(new UnaryOperationInstruction((UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
                     }
                     else
                     {
-                        AddExpression(exp.SubExpression, to);
+                        AddExpression(exp.SubExpression, isVariableInitializer, to);
                     }
                     break;
                 case PostfixExpression exp:
                     switch (exp.PostfixExpressionType)
                     {
                         case PostfixExpression.Type.FunctionCall:
-                            AddExpression(exp.SubFunctionCallExpression!, to);
+                            AddExpression(exp.SubFunctionCallExpression!, isVariableInitializer, to);
                             break;
                         case PostfixExpression.Type.MemberAccess:
-                            AddExpression(exp.SubMemberAccessExpression!, to);
+                            AddExpression(exp.SubMemberAccessExpression!, isVariableInitializer, to);
                             break;
                         // case PostfixExpression.Type.Slicing:
                         //     AddExpression(exp.SubSlicingExpression!, to);
                         //     break;
                         case PostfixExpression.Type.PrimaryExpression:
-                            AddExpression(exp.SubPrimaryExpression!, to);
+                            AddExpression(exp.SubPrimaryExpression!, isVariableInitializer, to);
                             break;
                         case PostfixExpression.Type.New:
-                            AddExpression(exp.SubNewExpression!, to);
+                            AddExpression(exp.SubNewExpression!, isVariableInitializer, to);
                             break;
                         default:
                             throw new NotImplementedException();
@@ -1100,12 +1135,12 @@ namespace BabyPenguin.SemanticPass
                             if (!funcVar.TypeInfo.IsFunctionType)
                                 throw new BabyPenguinException($"Function call expects function symbol, but got '{funcVar.TypeInfo}'", exp.MemberAccessExpression!.SourceLocation);
                             var param_vars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
-                            param_vars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
+                            param_vars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             AddInstruction(new FunctionCallInstruction(funcVar, param_vars, to));
                         }
                         else
                         {
-                            var param_vars = exp.ArgumentsExpression.Select(e => AddExpression(e)).ToList();
+                            var param_vars = exp.ArgumentsExpression.Select(e => AddExpression(e, false)).ToList();
                             ISymbol? fun_var;
                             if (exp.PrimaryExpression!.IsSimple)
                             {
@@ -1115,7 +1150,7 @@ namespace BabyPenguin.SemanticPass
                             }
                             else
                             {
-                                fun_var = AddExpression(exp.PrimaryExpression!);
+                                fun_var = AddExpression(exp.PrimaryExpression!, false);
                             }
                             if (!fun_var.TypeInfo.IsFunctionType)
                                 throw new BabyPenguinException($"Function call expects function symbol, but got '{fun_var.TypeInfo}'", exp.PrimaryExpression!.SourceLocation);
@@ -1158,7 +1193,7 @@ namespace BabyPenguin.SemanticPass
                             if (constructorSymbol == null)
                                 throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
                             var paramVars = new List<ISymbol> { to };
-                            paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e)));
+                            paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
                         }
                         else if (type is IEnum enm)
@@ -1173,7 +1208,7 @@ namespace BabyPenguin.SemanticPass
                             {
                                 if (exp.ArgumentsExpression.Count != 1)
                                     throw new BabyPenguinException($"Enum '{enm.FullName}.{enumDecl.Name}' expects exactly 1 argument", exp.SourceLocation);
-                                var enmValSymbol = AddExpression(exp.ArgumentsExpression[0]);
+                                var enmValSymbol = AddExpression(exp.ArgumentsExpression[0], false);
                                 AddInstruction(new WriteEnumInstruction(enmValSymbol, to));
                             }
                             else
@@ -1195,8 +1230,10 @@ namespace BabyPenguin.SemanticPass
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
                                 s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
-                            if (symbol == null) throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
-                            else AddInstruction(new AssignmentInstruction(symbol, to));
+                            if (symbol == null)
+                                throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
+                            else
+                                AddAssignmentExpression(new(symbol), to, isVariableInitializer, expression.SourceLocation);
                             break;
                         case PrimaryExpression.Type.Constant:
                             var t = BasicType.ResolveLiteralType(exp.Literal!);
@@ -1210,7 +1247,7 @@ namespace BabyPenguin.SemanticPass
                             AddInstruction(new AssignLiteralToSymbolInstruction(to, BasicType.Bool, exp.Literal!));
                             break;
                         case PrimaryExpression.Type.ParenthesizedExpression:
-                            AddExpression(exp.ParenthesizedExpression!, to);
+                            AddExpression(exp.ParenthesizedExpression!, isVariableInitializer, to);
                             break;
                         default:
                             break;

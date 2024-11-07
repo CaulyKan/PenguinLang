@@ -18,13 +18,14 @@ namespace BabyPenguin.SemanticNode
 
     public class Function : BaseSemanticNode, IFunction
     {
-        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false) : base(model)
+        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false, bool returnValueIsReadonly = false) : base(model)
         {
             Name = name;
             IsExtern = isExtern;
             IsStatic = isStatic;
             IsPure = isPure;
             IsDeclarationOnly = isDeclarationOnly;
+            ReturnValueIsReadonly = returnValueIsReadonly;
             if (parameters != null)
                 Parameters = parameters;
             if (returnType != null)
@@ -37,6 +38,7 @@ namespace BabyPenguin.SemanticNode
             IsExtern = syntaxNode.IsExtern;
             IsPure = syntaxNode.IsPure;
             IsDeclarationOnly = syntaxNode.CodeBlock == null && !IsExtern;
+            ReturnValueIsReadonly = syntaxNode.ReturnValueIsReadonly ?? false;
         }
 
         public string Name { get; }
@@ -52,6 +54,8 @@ namespace BabyPenguin.SemanticNode
         public string FullName => Parent!.FullName + "." + Name;
 
         public List<FunctionParameter> Parameters { get; } = [];
+
+        public bool ReturnValueIsReadonly { get; }
 
         public IType ReturnTypeInfo { get; set; } = BasicType.Void;
 

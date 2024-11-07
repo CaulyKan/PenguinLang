@@ -935,5 +935,34 @@ namespace BabyPenguin.Tests
             var f = vtable_foo.Functions.First()!;
             Assert.Equal("ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName);
         }
+
+        [Fact]
+        public void ImplWithWhere()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                    }
+                    class Bar {
+                        impl IFoo;
+                    }
+                    class Foo<T> {
+                        impl IFoo where T : IFoo;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var bar = model.Classes.First(i => i.Name == "Bar") as IClass;
+            Assert.Single(bar.ImplementedInterfaces);
+
+            var foo_u8 = model.ResolveType("ns.Foo<u8>") as IClass;
+            Assert.Empty(foo_u8!.ImplementedInterfaces);
+
+            var foo_bar = model.ResolveType("ns.Foo<ns.Bar>") as IClass;
+            Assert.Single(foo_bar!.ImplementedInterfaces);
+            Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName);
+        }
     }
 }

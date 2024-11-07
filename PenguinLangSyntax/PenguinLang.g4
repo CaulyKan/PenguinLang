@@ -140,6 +140,10 @@ genericArguments: '<' typeSpecifier (',' typeSpecifier)* '>';
 
 genericDefinitions: '<' identifier (',' identifier)* '>';
 
+whereClause: identifier ':' typeSpecifier;
+
+whereDefinition: 'where' (whereClause (',' whereClause)*);
+
 interfaceDefinition:
 	'interface' identifier genericDefinitions? '{' (
 		functionDefinition
@@ -147,7 +151,10 @@ interfaceDefinition:
 	)* '}';
 
 interfaceImplementation:
-	'impl' typeSpecifier (';' | ( '{' (functionDefinition)* '}'));
+	'impl' typeSpecifier (whereDefinition)? (
+		';'
+		| ( '{' (functionDefinition)* '}')
+	);
 
 classDefinition:
 	'class' identifier genericDefinitions? '{' (
@@ -165,6 +172,7 @@ enumDefinition:
 	'enum' identifier genericDefinitions? '{' (
 		enumDeclaration
 		| functionDefinition
+		| interfaceImplementation
 	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
@@ -231,7 +239,7 @@ functionSpecifier: 'pure' | '!pure' | 'extern';
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (
-		'->' typeSpecifier
+		'->' declarationKeyword? typeSpecifier
 	)? (codeBlock | ';');
 
 initialRoutine: 'initial' identifier? codeBlock;

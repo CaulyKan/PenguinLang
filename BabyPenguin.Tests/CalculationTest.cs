@@ -202,7 +202,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 initial {
-                    var a : u8 = ~1;
+                    var a : i8 = 1;
+                    a = ~a;
                     var b : string = a as string;
                     print(b);
                 }
@@ -536,40 +537,40 @@ namespace BabyPenguin.Tests
 
         // this test case requries flow analysis to determine every member is initialized or not.
         // [Fact]
-        public void ClassConstructorDefaultInitializerTest()
-        {
-            var compiler = new SemanticCompiler();
-            compiler.AddSource(@"
-                namespace ns {
-                    initial {
-                        var test : Test = new Test(2);
-                        print(test.a as string);
-                        print(test.b as string);
-                        print(test.c as string); // empty
-                        print(test.test2.d as string);
-                    }
+        // public void ClassConstructorDefaultInitializerTest()
+        // {
+        //     var compiler = new SemanticCompiler();
+        //     compiler.AddSource(@"
+        //         namespace ns {
+        //             initial {
+        //                 var test : Test = new Test(2);
+        //                 print(test.a as string);
+        //                 print(test.b as string);
+        //                 print(test.c as string); // empty
+        //                 print(test.test2.d as string);
+        //             }
 
-                    class Test {
-                        var a : u8=1;
-                        var b : u8;
-                        var c : string;
-                        var test2 : Test2;
+        //             class Test {
+        //                 var a : u8=1;
+        //                 var b : u8;
+        //                 var c : string;
+        //                 var test2 : Test2;
 
-                        fun new(var this: Test, val b: u8) {
-                            this.b = b;
-                        }
-                    }
+        //                 fun new(var this: Test, val b: u8) {
+        //                     this.b = b;
+        //                 }
+        //             }
 
-                    class Test2 {
-                        var d : u8 = 3;
-                    }
-                }
-            ");
-            var model = compiler.Compile();
-            var vm = new BabyPenguinVM(model);
-            vm.Run();
-            Assert.Equal("123", vm.CollectOutput());
-        }
+        //             class Test2 {
+        //                 var d : u8 = 3;
+        //             }
+        //         }
+        //     ");
+        //     var model = compiler.Compile();
+        //     var vm = new BabyPenguinVM(model);
+        //     vm.Run();
+        //     Assert.Equal("123", vm.CollectOutput());
+        // }
 
         [Fact]
         public void GenericTest()

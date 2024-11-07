@@ -3,7 +3,7 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticNode
 {
-    public interface IEnum : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer
+    public interface IEnum : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
         VaraibleSymbol? ValueSymbol { get; set; }
 
@@ -66,7 +66,7 @@ namespace BabyPenguin.SemanticNode
 
         public ISemanticScope? Parent { get; set; }
 
-        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines);
+        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines).Concat(VTables);
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
@@ -87,6 +87,8 @@ namespace BabyPenguin.SemanticNode
         public override int GetHashCode() => (this as IEnum).FullName.GetHashCode();
 
         public bool CanImplicitlyCastTo(IType other) => (this as ISemanticScope).FullName == other.FullName;
+
+        public List<VTable> VTables { get; } = [];
 
         public override string ToString() => (this as ISemanticScope).FullName;
     }

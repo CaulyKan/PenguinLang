@@ -47,6 +47,8 @@ namespace BabyPenguin
                                 return default_val;
                             }
                         }
+
+                        impl ICopiable<Option<T>> where T: ICopiable<T>;
                     }
                 }
             ";

@@ -1210,6 +1210,9 @@ namespace PenguinLangSyntax
             if (context.codeBlock() != null)
                 CodeBlock = new CodeBlock(walker, context.codeBlock());
 
+            if (context.declarationKeyword() != null)
+                ReturnValueIsReadonly = context.declarationKeyword().GetText() == "val";
+
             walker.PopScope();
         }
 
@@ -1218,6 +1221,8 @@ namespace PenguinLangSyntax
         public List<Declaration> Parameters { get; }
 
         public TypeSpecifier ReturnType { get; }
+
+        public bool? ReturnValueIsReadonly { get; }
 
         public CodeBlock? CodeBlock { get; }
 
@@ -1372,6 +1377,10 @@ namespace PenguinLangSyntax
                                .Select(x => new InitialRoutine(walker, x))
                                .ToList();
             GenericDefinitions = context.genericDefinitions() != null ? new GenericDefinitions(walker, context.genericDefinitions()) : null;
+            InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
+                .Select(x => new InterfaceImplementation(walker, x))
+                .ToList();
+
 
             walker.PopScope();
         }
@@ -1399,6 +1408,8 @@ namespace PenguinLangSyntax
         public List<EnumDeclaration> EnumDeclarations { get; } = [];
 
         public GenericDefinitions? GenericDefinitions { get; } = null;
+
+        public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
     }
 
     public class EnumDeclaration : SyntaxNode, ISyntaxScope
@@ -1479,6 +1490,7 @@ namespace PenguinLangSyntax
             Functions = context.children.OfType<FunctionDefinitionContext>()
                .Select(x => new FunctionDefinition(walker, x))
                .ToList();
+            WhereDefinition = context.whereDefinition() != null ? new WhereDefinition(walker, context.whereDefinition()) : null;
 
             walker.PopScope();
         }
@@ -1500,5 +1512,32 @@ namespace PenguinLangSyntax
         public ISyntaxScope? ParentScope { get; set; }
 
         public List<FunctionDefinition> Functions { get; } = [];
+
+        public WhereDefinition? WhereDefinition { get; set; }
+    }
+
+    public class WhereClause : SyntaxNode
+    {
+        public WhereClause(SyntaxWalker walker, WhereClauseContext context) : base(walker, context)
+        {
+            Identifier = new Identifier(walker, context.identifier(), false);
+            TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
+        }
+
+        public Identifier Identifier { get; }
+
+        public TypeSpecifier TypeSpecifier { get; }
+    }
+
+    public class WhereDefinition : SyntaxNode
+    {
+        public WhereDefinition(SyntaxWalker walker, WhereDefinitionContext context) : base(walker, context)
+        {
+            WhereClauses = context.children.OfType<WhereClauseContext>()
+               .Select(x => new WhereClause(walker, x))
+               .ToList();
+        }
+
+        public List<WhereClause> WhereClauses { get; } = [];
     }
 }

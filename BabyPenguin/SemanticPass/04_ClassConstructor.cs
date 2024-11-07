@@ -68,7 +68,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: cls)!;
                         var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor)!;
-                        var temp = constructorBody.AddExpression(initializer);
+                        var temp = constructorBody.AddExpression(initializer, true);
                         constructorBody.AddInstruction(new WriteMemberInstruction(memberSymbol, temp, thisSymbol));
                     }
                 }
