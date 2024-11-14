@@ -447,7 +447,7 @@ namespace BabyPenguin.SemanticPass
                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
                 member_ = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
 
-                if (member_ == null && t is IClass cls)
+                if (member_ == null && t is IVTableContainer cls)
                 {
                     // try implicit conversion to interface
                     var candidates = cls.ImplementedInterfaces.Select(
@@ -727,7 +727,7 @@ namespace BabyPenguin.SemanticPass
                 // var member = Model.ResolveSymbol(symbolName, s => s.IsEnum == target.TypeInfo.IsEnumType, scope: this);
                 var member = Model.ResolveSymbol(symbolName, scope: this);
 
-                if (member == null && target.TypeInfo is IClass cls)
+                if (member == null && target.TypeInfo is IVTableContainer cls)
                 {
                     // try implicit conversion to interface
                     var implicitSymbol = cls.ImplementedInterfaces.Select(intf => Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, scope: intf)).First(s => s != null);
@@ -825,12 +825,12 @@ namespace BabyPenguin.SemanticPass
             {
                 throw new BabyPenguinException($"Cant assign to readonly symbol '{to.FullName}'", sourceLocation);
             }
-            else if (fromSymbol.IsReadonly != to.IsReadonly)
+            else if (fromSymbol.IsReadonly != to.IsReadonly && !to.IsTemp)
             {
                 if (fromSymbol.TypeInfo is IVTableContainer vc &&
                     vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName == $"__builtin.ICopy<{to.TypeInfo.FullName}>") is IInterface ICopy)
                 {
-                    var temp = AllocTempSymbol(ICopy, sourceLocation);
+                    var temp = AllocTempSymbol(to.TypeInfo, sourceLocation);
                     var copyFunc = Model.ResolveSymbol(ICopy.FullName + ".copy", s => s.IsFunction) ??
                         throw new BabyPenguinException($"Cant resolve function '{ICopy.FullName}.copy'", sourceLocation);
                     AddInstruction(new FunctionCallInstruction(copyFunc, [fromSymbol], temp));

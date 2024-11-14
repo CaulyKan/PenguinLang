@@ -4,7 +4,7 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticNode
 {
-    public class BasicType : IType
+    public class BasicType : IType, IVTableContainer
     {
         private BasicType(string name, TypeEnum type)
         {
@@ -13,7 +13,7 @@ namespace BabyPenguin.SemanticNode
         }
 
         public static BasicType Bool { get; } = new("bool", TypeEnum.Bool);
-        public static BasicType Double { get; } = new("bool", TypeEnum.Double);
+        public static BasicType Double { get; } = new("double", TypeEnum.Double);
         public static BasicType Float { get; } = new("float", TypeEnum.Float);
         public static BasicType String { get; } = new("string", TypeEnum.String);
         public static BasicType Void { get; } = new("void", TypeEnum.Void);
@@ -194,6 +194,16 @@ namespace BabyPenguin.SemanticNode
         public SyntaxNode? SyntaxNode => null;
 
         public int PassIndex { get; set; } = int.MaxValue; // BasicType do not involve in semantic passes.
+
+        public List<VTable> VTables { get; } = [];
+
+        public ISemanticScope? Parent { get => null; set => throw new NotImplementedException(); }
+
+        public IEnumerable<ISemanticScope> Children => [];
+
+        public List<NamespaceImport> ImportedNamespaces => [];
+
+        IEnumerable<MergedNamespace> ISemanticScope.GetImportedNamespaces(bool includeBuiltin) => [];
 
         public static IType? ResolveLiteralType(string literal)
         {

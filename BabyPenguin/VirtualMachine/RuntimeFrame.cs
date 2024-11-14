@@ -230,13 +230,13 @@ namespace BabyPenguin.VirtualMachine
                                         resultVar.As<ClassRuntimeVar>().AssignFrom(rightVar.As<InterfaceRuntimeVar>().Object!);
                                     break;
                                 case TypeEnum.Interface:
-                                    if (rightVar is ClassRuntimeVar)
+                                    if (rightVar is ClassRuntimeVar || rightVar is BasicRuntimeVar)
                                     {
-                                        var cls = (cmd.Operand.TypeInfo as IClass) ?? throw new InvalidOperationException("Operand is not a class");
+                                        var cls = (cmd.Operand.TypeInfo as IVTableContainer) ?? throw new InvalidOperationException("Operand is not a class");
                                         var intf = (cmd.TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
                                         var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == intf.FullName) ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName} does not implement interface {intf.FullName}");
                                         resultVar.As<InterfaceRuntimeVar>().VTable = vtable;
-                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar.As<ClassRuntimeVar>() ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName} does not implement interface {intf.FullName}");
+                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar;
                                     }
                                     else if (rightVar is InterfaceRuntimeVar)
                                     {

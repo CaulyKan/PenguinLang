@@ -60,7 +60,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            var items = Model.FindAll(o => o is IVTableContainer).ToList();
+            var items = BasicType.BasicTypes.Values.Concat(Model.FindAll(o => o is IVTableContainer)).ToList();
             foreach (var obj in items)
             {
                 BuiltVTable(obj);
@@ -117,7 +117,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         interfaceImplementations = interfaceSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>().ToList();
                     }
-                    else return;
+                    else interfaceImplementations = [];
 
                     interfaceImplementations.AddRange(CollectInterfaceForImplementation(container));
 

@@ -48,7 +48,7 @@ namespace BabyPenguin
                             }
                         }
 
-                        impl ICopy<Option<T>> where T: ICopy<T>;
+                        impl __builtin.ICopy<Option<T>> where T: ICopy<T>;
                     }
                 }
             ";
@@ -64,19 +64,19 @@ namespace BabyPenguin
                         extern fun copy(val this: T) -> T;
                     }
                         
-                    impl ICopy<i64> for i64;
-                    impl ICopy<u64> for u64;
-                    impl ICopy<i32> for i32;
-                    impl ICopy<u32> for u32;
-                    impl ICopy<i16> for i16;
-                    impl ICopy<u16> for u16;
-                    impl ICopy<i8> for i8;
-                    impl ICopy<u8> for u8;
-                    impl ICopy<bool> for bool;
-                    impl ICopy<char> for char;
-                    impl ICopy<string> for string;
-                    impl ICopy<float> for float;
-                    impl ICopy<double> for double;
+                    impl __builtin.ICopy<i64> for i64;
+                    impl __builtin.ICopy<u64> for u64;
+                    impl __builtin.ICopy<i32> for i32;
+                    impl __builtin.ICopy<u32> for u32;
+                    impl __builtin.ICopy<i16> for i16;
+                    impl __builtin.ICopy<u16> for u16;
+                    impl __builtin.ICopy<i8> for i8;
+                    impl __builtin.ICopy<u8> for u8;
+                    impl __builtin.ICopy<bool> for bool;
+                    impl __builtin.ICopy<char> for char;
+                    impl __builtin.ICopy<string> for string;
+                    impl __builtin.ICopy<float> for float;
+                    impl __builtin.ICopy<double> for double;
                 }
             ";
 

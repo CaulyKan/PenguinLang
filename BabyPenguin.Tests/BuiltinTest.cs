@@ -100,7 +100,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     val a : u8 = 1;
-                    var b : u8 = a;
+                    var b : u8 = a.copy();
                     b = 2;
                     print(a as string);
                     print(b as string);
