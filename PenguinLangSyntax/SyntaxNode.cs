@@ -95,6 +95,10 @@ namespace PenguinLangSyntax
             Interfaces.AddRange(
                  namespaceDeclarationContext.children.OfType<InterfaceDefinitionContext>()
                     .Select(x => new InterfaceDefinition(walker, x)));
+
+            InterfaceImplementations.AddRange(
+                 namespaceDeclarationContext.children.OfType<InterfaceForImplementationContext>()
+                    .Select(x => new InterfaceForImplementation(walker, x)));
         }
 
         public List<InitialRoutine> InitialRoutines { get; } = [];
@@ -111,7 +115,9 @@ namespace PenguinLangSyntax
 
         public List<InterfaceDefinition> Interfaces { get; } = [];
 
-        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0;
+        public List<InterfaceForImplementation> InterfaceImplementations { get; } = [];
+
+        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0;
 
         public string Name { get; }
 
@@ -1480,7 +1486,26 @@ namespace PenguinLangSyntax
         public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
     }
 
-    public class InterfaceImplementation : SyntaxNode, ISyntaxScope
+    public interface IInterfaceImplementation
+    {
+        TypeSpecifier InterfaceType { get; }
+
+        string Name => InterfaceType.Name;
+
+        SyntaxScopeType ScopeType { get; }
+
+        List<SyntaxSymbol> Symbols { get; }
+
+        Dictionary<string, ISyntaxScope> SubScopes { get; }
+
+        ISyntaxScope? ParentScope { get; set; }
+
+        List<FunctionDefinition> Functions { get; }
+
+        WhereDefinition? WhereDefinition { get; set; }
+    }
+
+    public class InterfaceImplementation : SyntaxNode, ISyntaxScope, IInterfaceImplementation
     {
         public InterfaceImplementation(SyntaxWalker walker, InterfaceImplementationContext context) : base(walker, context)
         {
@@ -1496,6 +1521,45 @@ namespace PenguinLangSyntax
         }
 
         public TypeSpecifier InterfaceType { get; }
+
+        public string Name => InterfaceType.Name;
+
+        public SyntaxScopeType ScopeType => SyntaxScopeType.InterfaceImplementation;
+
+        public List<SyntaxSymbol> Symbols { get; } = [];
+
+        public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
+        public bool IsAnonymous => false;
+
+        public uint ScopeDepth { get; set; }
+
+        public ISyntaxScope? ParentScope { get; set; }
+
+        public List<FunctionDefinition> Functions { get; } = [];
+
+        public WhereDefinition? WhereDefinition { get; set; }
+    }
+
+    public class InterfaceForImplementation : SyntaxNode, ISyntaxScope, IInterfaceImplementation
+    {
+        public InterfaceForImplementation(SyntaxWalker walker, InterfaceForImplementationContext context) : base(walker, context)
+        {
+            walker.PushScope(SyntaxScopeType.Interface, this);
+
+            InterfaceType = new TypeSpecifier(walker, context.typeSpecifier()[0]);
+            ForType = new TypeSpecifier(walker, context.typeSpecifier()[1]);
+            Functions = context.children.OfType<FunctionDefinitionContext>()
+               .Select(x => new FunctionDefinition(walker, x))
+               .ToList();
+            WhereDefinition = context.whereDefinition() != null ? new WhereDefinition(walker, context.whereDefinition()) : null;
+
+            walker.PopScope();
+        }
+
+        public TypeSpecifier InterfaceType { get; }
+
+        public TypeSpecifier ForType { get; }
 
         public string Name => InterfaceType.Name;
 

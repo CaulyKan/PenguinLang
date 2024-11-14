@@ -828,11 +828,11 @@ namespace BabyPenguin.SemanticPass
             else if (fromSymbol.IsReadonly != to.IsReadonly)
             {
                 if (fromSymbol.TypeInfo is IVTableContainer vc &&
-                    vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName == $"__builtin.ICopiable<{to.TypeInfo.FullName}>") is IInterface icopiable)
+                    vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName == $"__builtin.ICopy<{to.TypeInfo.FullName}>") is IInterface ICopy)
                 {
-                    var temp = AllocTempSymbol(icopiable, sourceLocation);
-                    var copyFunc = Model.ResolveSymbol(icopiable.FullName + ".copy", s => s.IsFunction) ??
-                        throw new BabyPenguinException($"Cant resolve function '{icopiable.FullName}.copy'", sourceLocation);
+                    var temp = AllocTempSymbol(ICopy, sourceLocation);
+                    var copyFunc = Model.ResolveSymbol(ICopy.FullName + ".copy", s => s.IsFunction) ??
+                        throw new BabyPenguinException($"Cant resolve function '{ICopy.FullName}.copy'", sourceLocation);
                     AddInstruction(new FunctionCallInstruction(copyFunc, [fromSymbol], temp));
                     AddInstruction(new AssignmentInstruction(temp, to));
                 }

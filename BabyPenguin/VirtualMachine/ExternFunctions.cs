@@ -27,9 +27,9 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddCopy(BabyPenguinVM vm)
         {
-            foreach (var icopiable in vm.Model.ResolveType("__builtin.ICopiable<?>")!.GenericInstances)
+            foreach (var ICopy in vm.Model.ResolveType("__builtin.ICopy<?>")!.GenericInstances)
             {
-                vm.Global.ExternFunctions.Add(icopiable.FullName + ".copy", (result, args) =>
+                vm.Global.ExternFunctions.Add(ICopy.FullName + ".copy", (result, args) =>
                 {
                     var clone = args[0].Clone();
                     result!.AssignFrom(clone);

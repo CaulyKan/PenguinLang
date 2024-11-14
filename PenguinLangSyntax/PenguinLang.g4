@@ -156,6 +156,12 @@ interfaceImplementation:
 		| ( '{' (functionDefinition)* '}')
 	);
 
+interfaceForImplementation:
+	'impl' typeSpecifier 'for' typeSpecifier (whereDefinition)? (
+		';'
+		| ( '{' (functionDefinition)* '}')
+	);
+
 classDefinition:
 	'class' identifier genericDefinitions? '{' (
 		classDeclaration
@@ -231,6 +237,7 @@ namespaceDeclaration:
 	| classDefinition
 	| enumDefinition
 	| interfaceDefinition
+	| interfaceForImplementation
 	| ';';
 
 parameterList: declaration? (',' declaration)* ','?;

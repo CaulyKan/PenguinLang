@@ -726,6 +726,31 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void SeperateInterfaceImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {}
+                    
+                    class Foo {
+                    }
+
+                    impl IFoo for Foo;
+                }
+            ");
+            var model = compiler.Compile();
+
+            var ns = model.Namespaces.Find(i => i.Name == "ns");
+            var ifoo = ns!.Interfaces.FirstOrDefault(i => i.Name == "IFoo");
+            var foo = ns.Classes.FirstOrDefault(i => i.Name == "Foo");
+            Assert.NotNull(ifoo);
+            Assert.NotNull(foo);
+            Assert.Single(foo.VTables);
+            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName);
+        }
+
+        [Fact]
         public void InterfaceFunctionImplementation()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -758,6 +783,44 @@ namespace BabyPenguin.Tests
             Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
             Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
             Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
+        }
+
+        [Fact]
+        public void SeperateInterfaceFunctionImplementation()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo<T> {
+                        fun foo() -> T;
+                        fun bar() -> T {
+                            return 1;
+                        }
+                    }
+                    
+                    class Foo<T> {
+                    }
+                    
+                    impl IFoo<u8> for Foo<u8> {
+                        fun foo() -> u8 {
+                            return 1;
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var foo = model.ResolveType("ns.Foo<u8>") as IClass;
+            Assert.Single(foo!.VTables);
+            var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
+            var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
+            Assert.Equal("ns.Foo<u8>.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
+
+            var foo2 = model.ResolveType("ns.Foo<u16>") as IClass;
+            Assert.Empty(foo2!.VTables);
         }
 
         [Fact]

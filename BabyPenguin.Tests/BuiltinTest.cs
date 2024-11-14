@@ -72,7 +72,7 @@ namespace BabyPenguin.Tests
                     var x : i64;
                     var y : i64;
 
-                    impl ICopiable<Self>;
+                    impl ICopy<Self>;
                 }
                 initial {
                     var a : Foo = new Foo();
@@ -91,6 +91,25 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal($"1234", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void BasicTypeCopyTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val a : u8 = 1;
+                    var b : u8 = a;
+                    b = 2;
+                    print(a as string);
+                    print(b as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"12", vm.CollectOutput());
         }
     }
 }

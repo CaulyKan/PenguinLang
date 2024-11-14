@@ -12,7 +12,7 @@ namespace BabyPenguin.SemanticPass
             Interface = interfaceType;
         }
 
-        public VTable(SemanticModel model, InterfaceImplementation syntaxNode, IVTableContainer implementingClass) : base(model, syntaxNode)
+        public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass) : base(model, syntaxNode as SyntaxNode)
         {
             var type = Model.ResolveType(syntaxNode.InterfaceType.Text, s => s.IsInterfaceType, implementingClass);
             if (type is not IInterface interfaceType)
@@ -79,6 +79,25 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
+        IEnumerable<IInterfaceImplementation> CollectInterfaceForImplementation(IVTableContainer implementingClass)
+        {
+            foreach (var ns in Model.Namespaces.SelectMany(n => n.Namespaces))
+            {
+                if (ns.SyntaxNode is NamespaceDefinition namespaceDefinition)
+                {
+                    foreach (var impl in namespaceDefinition.InterfaceImplementations)
+                    {
+                        var forType = Model.ResolveType(impl.ForType.Text, scope: ns);
+                        if (forType == null)
+                            throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName}", impl.SourceLocation);
+
+                        if (forType.FullName == implementingClass.FullName)
+                            yield return impl;
+                    }
+                }
+            }
+        }
+
         public void BuiltVTable(ISemanticNode obj)
         {
             if (obj is IVTableContainer container)
@@ -89,16 +108,18 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
-                    List<InterfaceImplementation> interfaceImplementations;
+                    List<IInterfaceImplementation> interfaceImplementations;
                     if (container.SyntaxNode is ClassDefinition classSyntax)
                     {
-                        interfaceImplementations = classSyntax.InterfaceImplementations;
+                        interfaceImplementations = classSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>().ToList();
                     }
                     else if (container.SyntaxNode is InterfaceDefinition interfaceSyntax)
                     {
-                        interfaceImplementations = interfaceSyntax.InterfaceImplementations;
+                        interfaceImplementations = interfaceSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>().ToList();
                     }
                     else return;
+
+                    interfaceImplementations.AddRange(CollectInterfaceForImplementation(container));
 
                     foreach (var implSyntax in interfaceImplementations)
                     {

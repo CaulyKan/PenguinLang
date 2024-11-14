@@ -48,7 +48,7 @@ namespace BabyPenguin
                             }
                         }
 
-                        impl ICopiable<Option<T>> where T: ICopiable<T>;
+                        impl ICopy<Option<T>> where T: ICopy<T>;
                     }
                 }
             ";
@@ -60,9 +60,23 @@ namespace BabyPenguin
         {
             var source = @"
                 namespace __builtin {
-                    interface ICopiable<T> {
+                    interface ICopy<T> {
                         extern fun copy(val this: T) -> T;
                     }
+                        
+                    impl ICopy<i64> for i64;
+                    impl ICopy<u64> for u64;
+                    impl ICopy<i32> for i32;
+                    impl ICopy<u32> for u32;
+                    impl ICopy<i16> for i16;
+                    impl ICopy<u16> for u16;
+                    impl ICopy<i8> for i8;
+                    impl ICopy<u8> for u8;
+                    impl ICopy<bool> for bool;
+                    impl ICopy<char> for char;
+                    impl ICopy<string> for string;
+                    impl ICopy<float> for float;
+                    impl ICopy<double> for double;
                 }
             ";
 
