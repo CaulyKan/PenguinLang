@@ -111,5 +111,63 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal($"12", vm.CollectOutput());
         }
+
+        [Fact]
+        public void ResultTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val a : Result<u32,string> = new Result<u32,string>.ok(10);
+                    println(a.is_ok() as string);
+                    println(a.is_error() as string);
+                    println(a.value_or(9) as string);
+
+                    val b : Result<u32,string> = new Result<u32,string>.error(""err"");
+                    println(b.error);
+                    println(b.is_ok() as string);
+                    println(b.is_error() as string);
+                    println(b.value_or(9) as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"true{EOL}false{EOL}10{EOL}err{EOL}false{EOL}true{EOL}9{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AtomicTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : AtomicI64 = new AtomicI64(1);
+                    println(a.load() as string);
+                    a.store(2);
+                    println(a.load() as string);
+                    val res1: i64 = a.compare_exchange(2, 3);
+                    println(res1 as string);
+                    println(a.load() as string);
+                    val res2: i64 = a.compare_exchange(8888, 4);
+                    println(res2 as string);
+                    println(a.load() as string);
+                    val res3 : i64 = a.fetch_add(1);
+                    println(res3 as string);
+                    val res4 : i64 = a.swap(5);
+                    println(res4 as string);
+                    println(a.load() as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"1{EOL}2{EOL}2{EOL}3{EOL}3{EOL}3{EOL}4{EOL}4{EOL}5{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AtmoicTest()
+        {
+        }
     }
 }

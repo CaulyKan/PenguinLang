@@ -13,10 +13,16 @@ postfixExpression:
 	primaryExpression
 	//	| slicingExpression
 	| newExpression
+	| spawnExpression
+	| waitExpression
 	| functionCallExpression
 	| memberAccessExpression;
 
 //slicingExpression: primaryExpression '[' expression ']';
+
+spawnExpression: 'spawn' expression;
+
+waitExpression: 'wait' expression;
 
 newExpression:
 	'new' typeSpecifier '(' expression? (',' expression)* ')';
@@ -242,7 +248,7 @@ namespaceDeclaration:
 
 parameterList: declaration? (',' declaration)* ','?;
 
-functionSpecifier: 'pure' | '!pure' | 'extern';
+functionSpecifier: 'pure' | '!pure' | 'extern' | 'async';
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (

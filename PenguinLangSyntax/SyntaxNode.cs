@@ -1197,6 +1197,9 @@ namespace PenguinLangSyntax
             }
 
             IsExtern = false;
+            IsAsync = false;
+            IsPure = null;
+
             foreach (var specifierContext in context.children.OfType<FunctionSpecifierContext>())
             {
                 if (specifierContext.GetText() == "extern")
@@ -1210,6 +1213,10 @@ namespace PenguinLangSyntax
                 else if (specifierContext.GetText() == "!pure")
                 {
                     IsPure = false;
+                }
+                else if (specifierContext.GetText() == "async")
+                {
+                    IsAsync = true;
                 }
             }
 
@@ -1249,6 +1256,8 @@ namespace PenguinLangSyntax
         public bool IsExtern { get; }
 
         public bool? IsPure { get; }
+
+        public bool IsAsync { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {

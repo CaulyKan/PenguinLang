@@ -13,7 +13,7 @@ namespace BabyPenguin
 {
     public class BabyPenguinException : Exception
     {
-        public BabyPenguinException(string message, SourceLocation? location = null) : base(message)
+        public BabyPenguinException(string message, SourceLocation? location = null) : base(location == null ? message : $"{location}: {message}")
         {
             Location = location;
         }

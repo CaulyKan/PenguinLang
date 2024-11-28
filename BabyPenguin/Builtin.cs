@@ -8,6 +8,8 @@ namespace BabyPenguin
             AddOption(model);
             AddIterators(model);
             AddCopy(model);
+            AddResult(model);
+            AddAtomic(model);
         }
 
         public static void AddPrint(SemanticModel model)
@@ -83,6 +85,38 @@ namespace BabyPenguin
             model.AddSource(source, "__builtin");
         }
 
+        public static void AddResult(SemanticModel model)
+        {
+            var source = @"
+                namespace __builtin {
+                    enum Result<T, E> {
+                        ok: T;
+                        error: E;
+                    
+                        fun is_ok(val this: Result<T, E>) -> bool {
+                            return this is Result<T, E>.ok;
+                        }
+
+                        fun is_error(val this: Result<T, E>) -> bool {
+                            return this is Result<T, E>.error;
+                        }
+                    
+                        fun value_or(val this: Result<T, E>, val default_val: T) -> T {
+                            if (this is Result<T, E>.ok) {
+                                return this.ok;
+                            } else {
+                                return default_val;
+                            }
+                        }
+
+                        impl __builtin.ICopy<Result<T, E>> where T: ICopy<T>, E: ICopy<E>;
+                    }
+                }
+            ";
+
+            model.AddSource(source, "__builtin");
+        }
+
         public static void AddIterators(SemanticModel model)
         {
             var source = @"
@@ -122,6 +156,56 @@ namespace BabyPenguin
 
                     fun range(val start: i64, val end: i64) -> IIterator<i64> {
                         return new RangeIterator(start, end) as IIterator<i64>;
+                    }
+                }
+            ";
+
+            model.AddSource(source, "__builtin");
+        }
+
+        public static void AddAtomic(SemanticModel model)
+        {
+            var source = @"
+                namespace __builtin {
+                    class AtomicI64 {
+                        var value: i64;
+                        fun new(var this: AtomicI64, val value: i64) {
+                            this.value = value;
+                        }
+                        fun load(val this: AtomicI64) -> i64 {
+                            return this.value;
+                        }
+                        fun store(var this: AtomicI64, val value: i64) {
+                            this.value = value;
+                        }
+                        extern fun swap(var this: AtomicI64, val value: i64) -> i64;
+                        extern fun compare_exchange(var this: AtomicI64, var current_val: i64, val new_val: i64) -> i64;
+                        extern fun fetch_add(var this: AtomicI64, val value: i64) -> i64;
+                    }
+                }";
+
+            model.AddSource(source, "__builtin");
+        }
+
+        public static void AddFuture(SemanticModel model)
+        {
+            var source = @"
+                namespace __builtin {
+                    interface IFutureBase {
+                    }
+
+                    enum FutureState<T> {
+                        pending,
+                        ready: T,
+                        finished
+                    }
+
+                    class IFuture<T> : IFutureBase {
+                        fun poll(var this: Self) -> FutureState<T>;
+                    }
+
+                    interface IRoutine<T> {
+                        
                     }
                 }
             ";

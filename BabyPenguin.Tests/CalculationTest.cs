@@ -16,6 +16,24 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
+            Assert.Equal("253", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AdditionTest2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var temp : i8 = 1;
+                    var a : i8 = temp + 2 - 4 * 3 / 2;
+                    var b : string = a as string;
+                    print(b);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
             Assert.Equal("-3", vm.CollectOutput());
         }
 
@@ -25,7 +43,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 initial {
-                    var a : u8 = (1 + (2 - 4) * 3) / 5;
+                    var a : u8 = (4 + (4 - 2) * 3) / 5;
                     var b : string = a as string;
                     print(b);
                 }
@@ -33,7 +51,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal("-1", vm.CollectOutput());
+            Assert.Equal("2", vm.CollectOutput());
         }
 
         [Fact]

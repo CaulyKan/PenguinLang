@@ -16,9 +16,9 @@ namespace BabyPenguin.VirtualMachine
 
         T As<T>() where T : class, IRuntimeVar => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
 
-        string? ValueString => TypeInfo.FullName;
+        string? ValueToString => TypeInfo.FullName;
 
-        string ToDebugString() => $"{Symbol?.Name}({ValueString})";
+        string ToDebugString() => $"[ {Symbol?.Name}({TypeInfo.FullName}) = {ValueToString} ]";
 
         static IRuntimeVar FromSymbol(SemanticModel model, ISymbol symbol)
         {
@@ -51,55 +51,6 @@ namespace BabyPenguin.VirtualMachine
         {
             Model = model;
             Symbol = symbol;
-
-            switch (Type)
-            {
-                case TypeEnum.Bool:
-                    Value = false;
-                    break;
-                case TypeEnum.U8:
-                    Value = (byte)0;
-                    break;
-                case TypeEnum.U16:
-                    Value = (ushort)0;
-                    break;
-                case TypeEnum.U32:
-                    Value = (uint)0;
-                    break;
-                case TypeEnum.U64:
-                    Value = (ulong)0;
-                    break;
-                case TypeEnum.I8:
-                    Value = (sbyte)0;
-                    break;
-                case TypeEnum.I16:
-                    Value = (short)0;
-                    break;
-                case TypeEnum.I32:
-                    Value = (int)0;
-                    break;
-                case TypeEnum.I64:
-                    Value = (long)0;
-                    break;
-                case TypeEnum.Float:
-                    Value = (float)0.0;
-                    break;
-                case TypeEnum.Double:
-                    Value = (double)0.0;
-                    break;
-                case TypeEnum.String:
-                    Value = "";
-                    break;
-                case TypeEnum.Char:
-                    Value = '\0';
-                    break;
-                case TypeEnum.Void:
-                case TypeEnum.Fun:
-                    Value = 0;
-                    break;
-                default:
-                    throw new BabyPenguinRuntimeException($"Unsupported type {Type} for BasicVar");
-            }
         }
 
         public ISymbol Symbol { get; }
@@ -110,23 +61,109 @@ namespace BabyPenguin.VirtualMachine
 
         public TypeEnum Type => TypeInfo.Type;
 
-        public object Value { get; set; }
+        public bool BoolValue;
+        public byte U8Value;
+        public ushort U16Value;
+        public uint U32Value;
+        public ulong U64Value;
+        public sbyte I8Value;
+        public short I16Value;
+        public int I32Value;
+        public long I64Value;
+        public float FloatValue;
+        public double DoubleValue;
+        public string StringValue = "";
+        public char CharValue;
 
-        public string? ValueString => Type switch
+        public dynamic? DynamicValue
         {
-            TypeEnum.Bool => Value?.ToString(),
-            TypeEnum.U8 => Value?.ToString(),
-            TypeEnum.U16 => Value?.ToString(),
-            TypeEnum.U32 => Value?.ToString(),
-            TypeEnum.U64 => Value?.ToString(),
-            TypeEnum.I8 => Value?.ToString(),
-            TypeEnum.I16 => Value?.ToString(),
-            TypeEnum.I32 => Value?.ToString(),
-            TypeEnum.I64 => Value?.ToString(),
-            TypeEnum.Float => Value?.ToString(),
-            TypeEnum.Double => Value?.ToString(),
-            TypeEnum.String => "\"" + Value?.ToString() + "\"",
-            TypeEnum.Char => "'" + Value?.ToString() + "'",
+            get
+            {
+                return Type switch
+                {
+                    TypeEnum.Bool => BoolValue,
+                    TypeEnum.U8 => U8Value,
+                    TypeEnum.U16 => U16Value,
+                    TypeEnum.U32 => U32Value,
+                    TypeEnum.U64 => U64Value,
+                    TypeEnum.I8 => I8Value,
+                    TypeEnum.I16 => I16Value,
+                    TypeEnum.I32 => I32Value,
+                    TypeEnum.I64 => I64Value,
+                    TypeEnum.Float => FloatValue,
+                    TypeEnum.Double => DoubleValue,
+                    TypeEnum.String => StringValue,
+                    TypeEnum.Char => CharValue,
+                    TypeEnum.Void => null,
+                    _ => null
+                };
+            }
+            set
+            {
+                switch (Type)
+                {
+                    case TypeEnum.Bool:
+                        BoolValue = (bool)value;
+                        break;
+                    case TypeEnum.U8:
+                        U8Value = (byte)value;
+                        break;
+                    case TypeEnum.U16:
+                        U16Value = (ushort)value;
+                        break;
+                    case TypeEnum.U32:
+                        U32Value = (uint)value;
+                        break;
+                    case TypeEnum.U64:
+                        U64Value = (ulong)value;
+                        break;
+                    case TypeEnum.I8:
+                        I8Value = (sbyte)value;
+                        break;
+                    case TypeEnum.I16:
+                        I16Value = (short)value;
+                        break;
+                    case TypeEnum.I32:
+                        I32Value = (int)value;
+                        break;
+                    case TypeEnum.I64:
+                        I64Value = (long)value;
+                        break;
+                    case TypeEnum.Float:
+                        FloatValue = (float)value;
+                        break;
+                    case TypeEnum.Double:
+                        DoubleValue = (double)value;
+                        break;
+                    case TypeEnum.String:
+                        StringValue = value as string ?? "";
+                        break;
+                    case TypeEnum.Char:
+                        CharValue = (char)value;
+                        break;
+                    case TypeEnum.Void:
+                        break;
+                    default:
+                        throw new BabyPenguinRuntimeException($"Cannot assign value of type {value?.GetType()} to type {Type}");
+                }
+            }
+        }
+
+        public string? ValueToString => Type switch
+        {
+            TypeEnum.Bool => BoolValue.ToString(),
+            TypeEnum.U8 => U8Value.ToString(),
+            TypeEnum.U16 => U16Value.ToString(),
+            TypeEnum.U32 => U32Value.ToString(),
+            TypeEnum.U64 => U64Value.ToString(),
+            TypeEnum.I8 => I8Value.ToString(),
+            TypeEnum.I16 => I16Value.ToString(),
+            TypeEnum.I32 => I32Value.ToString(),
+            TypeEnum.I64 => I64Value.ToString(),
+            TypeEnum.Float => FloatValue.ToString(),
+            TypeEnum.Double => DoubleValue.ToString(),
+            TypeEnum.String => "\"" + StringValue.ToString() + "\"",
+            TypeEnum.Char => "'" + CharValue.ToString() + "'",
             TypeEnum.Void => "void",
             _ => "unknown"
         };
@@ -139,7 +176,19 @@ namespace BabyPenguin.VirtualMachine
             {
                 if (!other.TypeInfo.CanImplicitlyCastTo(TypeInfo))
                     throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
-                Value = otherVar.Value;
+                BoolValue = otherVar.BoolValue;
+                U8Value = otherVar.U8Value;
+                U16Value = otherVar.U16Value;
+                U32Value = otherVar.U32Value;
+                U64Value = otherVar.U64Value;
+                I8Value = otherVar.I8Value;
+                I16Value = otherVar.I16Value;
+                I32Value = otherVar.I32Value;
+                I64Value = otherVar.I64Value;
+                FloatValue = otherVar.FloatValue;
+                DoubleValue = otherVar.DoubleValue;
+                StringValue = otherVar.StringValue;
+                CharValue = otherVar.CharValue;
             }
             else
             {
@@ -150,7 +199,7 @@ namespace BabyPenguin.VirtualMachine
         public IRuntimeVar Clone()
         {
             var result = new BasicRuntimeVar(Model, Symbol);
-            result.Value = Value;
+            result.AssignFrom(this);
             return result;
         }
     }
