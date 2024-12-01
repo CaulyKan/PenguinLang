@@ -7,6 +7,7 @@ namespace BabyPenguin.VirtualMachine
             AddPrint(vm);
             AddCopy(vm);
             AddAtmoic(vm);
+            AddList(vm);
         }
 
         public static void AddPrint(BabyPenguinVM vm)
@@ -64,6 +65,105 @@ namespace BabyPenguin.VirtualMachine
                 var res = Interlocked.Add(ref atomic.I64Value, add_value);
                 result!.As<BasicRuntimeVar>().I64Value = res;
             });
+        }
+
+        public static void AddList(BabyPenguinVM vm)
+        {
+            foreach (var queue in vm.Model.ResolveType("__builtin.Queue<?>")!.GenericInstances)
+            {
+                vm.Global.ExternFunctions.Add(queue.FullName + ".new", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    impl.ExternImplenmentationValue = new Queue<IRuntimeVar>();
+                });
+
+                vm.Global.ExternFunctions.Add(queue.FullName + ".enqueue", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
+                    q!.Enqueue(args[1]);
+                });
+
+                vm.Global.ExternFunctions.Add(queue.FullName + ".dequeue", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
+                    if (q!.Count == 0)
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = null;
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 1;
+                    }
+                    else
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = q.Dequeue();
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 0;
+                    }
+                });
+
+                vm.Global.ExternFunctions.Add(queue.FullName + ".size", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
+                    result!.As<BasicRuntimeVar>().U64Value = (ulong)q!.Count;
+                });
+            }
+
+            foreach (var list in vm.Model.ResolveType("__builtin.List<?>")!.GenericInstances)
+            {
+                vm.Global.ExternFunctions.Add(list.FullName + ".new", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    impl.ExternImplenmentationValue = new List<IRuntimeVar>();
+                });
+
+                vm.Global.ExternFunctions.Add(list.FullName + ".push", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
+                    l!.Add(args[1]);
+                });
+
+                vm.Global.ExternFunctions.Add(list.FullName + ".pop", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
+                    if (l!.Count == 0)
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = null;
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 1;
+                    }
+                    else
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = l.Last();
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 0;
+                        l.RemoveAt(l.Count - 1);
+                    }
+                });
+
+                vm.Global.ExternFunctions.Add(list.FullName + ".at", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var idx = args[1].As<BasicRuntimeVar>().U64Value;
+                    var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
+                    if ((ulong)l!.Count <= idx)
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = null;
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 1;
+                    }
+                    else
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = l.ElementAt((int)idx);
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 0;
+                    }
+                });
+
+                vm.Global.ExternFunctions.Add(list.FullName + ".size", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
+                    result!.As<BasicRuntimeVar>().U64Value = (ulong)l!.Count;
+                });
+            }
         }
     }
 }

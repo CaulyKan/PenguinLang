@@ -149,6 +149,8 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
+        public object ExternImplenmentationValue { get; set; }
+
         public string? ValueToString => Type switch
         {
             TypeEnum.Bool => BoolValue.ToString(),

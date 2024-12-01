@@ -166,8 +166,23 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void AtmoicTest()
+        public void ListTest()
         {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : List<i64> = new List<i64>();
+                    a.push(1);
+                    a.push(2);
+                    a.push(3);
+                    println(a.size() as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"3{EOL}", vm.CollectOutput());
+
         }
     }
 }

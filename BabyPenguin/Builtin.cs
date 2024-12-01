@@ -10,6 +10,7 @@ namespace BabyPenguin
             AddCopy(model);
             AddResult(model);
             AddAtomic(model);
+            AddList(model);
         }
 
         public static void AddPrint(SemanticModel model)
@@ -187,30 +188,66 @@ namespace BabyPenguin
             model.AddSource(source, "__builtin");
         }
 
+        public static void AddList(SemanticModel model)
+        {
+            var source = @"
+                namespace __builtin {
+                    class List<T> {
+                        var __impl: u64;
+                        extern fun new(var this: List<T>);
+                        extern fun at(val this: List<T>, val index: u64) -> Option<T>;
+                        extern fun push(var this: List<T>, val value: T);
+                        extern fun pop(var this: List<T>) -> Option<T>;
+                        extern fun size(val this: List<T>) -> u64;
+                    }
+
+                    class Queue<T> {
+                        var __impl: u64;
+                        extern fun new(var this: Queue<T>);
+                        extern fun enqueue(var this: Queue<T>, val value: T);
+                        extern fun dequeue(var this: Queue<T>) -> Option<T>;
+                        extern fun size(val this: Queue<T>) -> u64;
+                    }
+                }";
+
+            model.AddSource(source, "__builtin");
+        }
+
         public static void AddFuture(SemanticModel model)
         {
             var source = @"
                 namespace __builtin {
-                    interface IFutureBase {
-                    }
-
-                    enum FutureState<T> {
+                    enum FutureState {
                         pending,
-                        ready: T,
+                        ready,
                         finished
                     }
 
-                    class IFuture<T> : IFutureBase {
-                        fun poll(var this: Self) -> FutureState<T>;
+                    enum FutureResult<T, E> {
+                        not_ready,
+                        ok_finished: T,
+                        ok_not_finished: T,
+                        error: E
                     }
 
-                    interface IRoutine<T> {
-                        
+                    interface IFutureBase {
+                        fun state(val this: IFutureBase) -> FutureState;
+                    }
+
+                    interface IFuture<T, E> : IFutureBase {
+                        fun poll(val this: IFuture<T, E>) -> FutureResult<T, E>;
+                        fun set_result(var this: IFuture<T, E>, val result: Result<T, E>, val is_finished: bool);
+                    }
+
+                    class Routine<T, E> {
+                        var state: AtomicI64;
+                        var result: IFuture<T, E>;
+
                     }
                 }
             ";
 
-            model.AddSource(source, "__builtin");
+            // model.AddSource(source, "__builtin");
         }
     }
 }
