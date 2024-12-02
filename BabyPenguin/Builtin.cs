@@ -206,6 +206,7 @@ namespace BabyPenguin
                         extern fun new(var this: Queue<T>);
                         extern fun enqueue(var this: Queue<T>, val value: T);
                         extern fun dequeue(var this: Queue<T>) -> Option<T>;
+                        extern fun peek(var this: Queue<T>) -> Option<T>;
                         extern fun size(val this: Queue<T>) -> u64;
                     }
                 }";

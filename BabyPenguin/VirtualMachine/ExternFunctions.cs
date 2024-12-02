@@ -100,6 +100,22 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
+                vm.Global.ExternFunctions.Add(queue.FullName + ".peek", (result, args) =>
+                {
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
+                    if (q!.Count == 0)
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = null;
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 1;
+                    }
+                    else
+                    {
+                        result!.As<EnumRuntimeVar>().EnumObject = q.Peek();
+                        result.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value = 0;
+                    }
+                });
+
                 vm.Global.ExternFunctions.Add(queue.FullName + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();

@@ -176,13 +176,54 @@ namespace BabyPenguin.Tests
                     a.push(2);
                     a.push(3);
                     println(a.size() as string);
+                    val res1 : Option<i64> = a.at(0);
+                    println(res1.some as string);
+                    val res2 : Option<i64> = a.at(2);
+                    println(res2.some as string);
+                    a.pop();
+                    println(a.size() as string);
+                    val res3 : Option<i64> = a.at(1);
+                    println(res3.some as string);
+                    val res4 : Option<i64> = a.at(2);
+                    println(res4.is_none() as string);
                 }
             ");
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"3{EOL}", vm.CollectOutput());
+            Assert.Equal($"3{EOL}1{EOL}3{EOL}2{EOL}2{EOL}true{EOL}", vm.CollectOutput());
+        }
 
+        [Fact]
+        public void QueueTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : Queue<i64> = new Queue<i64>();
+                    a.enqueue(1);
+                    a.enqueue(2);
+                    println(a.size() as string);
+                    val res1 : Option<i64> = a.peek();
+                    println(res1.some as string);
+                    a.enqueue(3);
+                    val res2 : Option<i64> = a.peek();
+                    println(res2.some as string);
+                    a.dequeue();
+                    println(a.size() as string);
+                    val res3 : Option<i64> = a.peek();
+                    println(res3.some as string);
+                    a.dequeue();
+                    val res4 : Option<i64> = a.dequeue();
+                    println(res4.some as string);
+                    val res5 : Option<i64> = a.peek();
+                    println(res5.is_none() as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"2{EOL}1{EOL}1{EOL}2{EOL}2{EOL}3{EOL}true{EOL}", vm.CollectOutput());
         }
     }
 }
