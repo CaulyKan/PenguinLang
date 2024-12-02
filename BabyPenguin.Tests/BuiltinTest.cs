@@ -195,6 +195,27 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ListForEachTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : List<i64> = new List<i64>();
+                    a.push(1);
+                    a.push(2);
+                    a.push(3);
+                    for (val x : i64 in a.iter()) {
+                        print(x as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"123", vm.CollectOutput());
+        }
+
+        [Fact]
         public void QueueTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

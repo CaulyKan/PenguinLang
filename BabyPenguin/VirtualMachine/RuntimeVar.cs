@@ -149,7 +149,7 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
-        public object ExternImplenmentationValue { get; set; }
+        public object ExternImplenmentationValue { get; set; } = new object();
 
         public string? ValueToString => Type switch
         {
@@ -321,7 +321,6 @@ namespace BabyPenguin.VirtualMachine
             return result;
         }
     }
-
 
     public class EnumRuntimeVar : IRuntimeVar
     {

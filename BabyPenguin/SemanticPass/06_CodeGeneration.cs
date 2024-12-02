@@ -254,7 +254,9 @@ namespace BabyPenguin.SemanticPass
 
                         // expecting an iterator symbol
                         if (iteratorSymbol.TypeInfo.GenericType?.FullName != "__builtin.IIterator<?>")
+                        {
                             throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation);
+                        }
                         var iterItemSymbol = AddLocalDeclearation(forStatement.Declaration!, null);
 
                         // prepare begin label

@@ -199,6 +199,31 @@ namespace BabyPenguin
                         extern fun push(var this: List<T>, val value: T);
                         extern fun pop(var this: List<T>) -> Option<T>;
                         extern fun size(val this: List<T>) -> u64;
+
+                        impl IIterable<T> {
+                            fun iter(var this: IIterable<T>) -> IIterator<T> {
+                                return new ListIterator<T>(this as List<T>) as IIterator<T>;
+                            }
+                        }
+                    }
+
+                    class ListIterator<T> {
+                        var list : List<T>;
+                        var current: u64;
+
+                        fun new(var this: ListIterator<T>, var list: List<T>) {
+                            this.list = list;
+                            this.current = 0;
+                        }
+
+                        impl IIterator<T> {
+                            fun next(var this: IIterator<T>) -> Option<T> {
+                                var self : ListIterator<T> = this as ListIterator<T>;
+                                var res : Option<T> = self.list.at(self.current);
+                                self.current += 1;
+                                return res;
+                            }
+                        }
                     }
 
                     class Queue<T> {
