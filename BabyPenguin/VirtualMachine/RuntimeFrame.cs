@@ -218,6 +218,12 @@ namespace BabyPenguin.VirtualMachine
                                     {
                                         resultVar.As<BasicRuntimeVar>().StringValue = rightVar.As<BasicRuntimeVar>().StringValue ?? "";
                                     }
+                                    else if (rightVar.TypeInfo.IsEnumType)
+                                    {
+                                        var enumInt = rightVar.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value;
+                                        resultVar.As<BasicRuntimeVar>().StringValue = (rightVar.As<EnumRuntimeVar>().TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Value == enumInt)?.Name ??
+                                        throw new BabyPenguinRuntimeException($"Converting unknown enum value '{enumInt}' for '{rightVar.As<EnumRuntimeVar>().TypeInfo.FullName}' to string.");
+                                    }
                                     else
                                     {
                                         resultVar.As<BasicRuntimeVar>().StringValue = rightVar.As<BasicRuntimeVar>().ValueToString ?? "";

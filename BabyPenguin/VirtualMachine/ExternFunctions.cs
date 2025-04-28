@@ -8,6 +8,7 @@ namespace BabyPenguin.VirtualMachine
             AddCopy(vm);
             AddAtmoic(vm);
             AddList(vm);
+            AddRoutineContext(vm);
         }
 
         public static void AddPrint(BabyPenguinVM vm)
@@ -180,6 +181,26 @@ namespace BabyPenguin.VirtualMachine
                     result!.As<BasicRuntimeVar>().U64Value = (ulong)l!.Count;
                 });
             }
+        }
+
+        public static void AddRoutineContext(BabyPenguinVM vm)
+        {
+            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.call", (result, args) =>
+            {
+                var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                var frame = impl.ExternImplenmentationValue as RuntimeFrame;
+                frame!.Run();
+            });
+
+            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.set_test_context", (result, args) =>
+            {
+                var container = new SemanticNode.InitialRoutine(vm.Model, "test_context");
+                var func = vm.Model.ResolveSymbol("__builtin.hello_world");
+                container.Instructions.Add(new FunctionCallInstruction(func!, [], null));
+                var frame = new RuntimeFrame(container, vm.Global, []);
+                var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                impl.ExternImplenmentationValue = frame;
+            });
         }
     }
 }

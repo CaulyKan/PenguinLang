@@ -231,9 +231,9 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (!vtable.Slots.Exists(vs => vs.InterfaceSymbol.FullName == interfaceFunc.FunctionSymbol!.FullName))
                         {
-                            if (interfaceFunc.IsDeclarationOnly)
+                            if (interfaceFunc.IsDeclarationOnly && !container.IsInterfaceType)
                             {
-                                throw new BabyPenguinException($"Interface {vtable.Interface.Name} requires an implementation for function {interfaceFunc.Name} in class {container.FullName}");
+                                throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName}'");
                             }
                             else
                             {

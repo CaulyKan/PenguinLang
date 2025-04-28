@@ -1027,5 +1027,35 @@ namespace BabyPenguin.Tests
             Assert.Single(foo_bar!.ImplementedInterfaces);
             Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName);
         }
+
+        [Fact]
+        public void InterfaceCascadeWithFunction()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo();
+                    }
+                    interface IBar {
+                        impl IFoo;
+                    }
+                    class Foo {
+                        impl IBar;
+                        impl IFoo {
+                            fun foo() {
+                            }
+                        }
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var foo = model.Classes.First(i => i.Name == "Foo") as IClass;
+            Assert.Equal(2, foo.ImplementedInterfaces.Count());
+
+            var ibar = model.ResolveType("ns.IBar") as IInterface;
+            Assert.Single(ibar!.ImplementedInterfaces);
+        }
     }
 }

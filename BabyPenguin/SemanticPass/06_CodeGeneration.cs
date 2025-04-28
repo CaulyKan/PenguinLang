@@ -1312,8 +1312,14 @@ namespace BabyPenguin.SemanticPass
                             }
                             else
                             {
-                                if (exp.ArgumentsExpression.Count != 0)
+                                if (exp.ArgumentsExpression.Count == 1 && ResolveExpressionType(exp.ArgumentsExpression[0]).IsVoidType)
+                                {
+                                    // ok if pass only one void to one void
+                                }
+                                else if (exp.ArgumentsExpression.Count != 0)
+                                {
                                     throw new BabyPenguinException($"Enum '{enm.FullName}.{enumDecl.Name}' expects no argument", exp.SourceLocation);
+                                }
                             }
                         }
                         else if (type is IInterface intf)

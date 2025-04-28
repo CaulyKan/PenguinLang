@@ -3,6 +3,21 @@ namespace BabyPenguin.Tests
     public class BuiltinTest(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
+        public void VoidTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val v: void = void;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"", vm.CollectOutput());
+        }
+
+        [Fact]
         public void PrintTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -245,6 +260,35 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal($"2{EOL}1{EOL}1{EOL}2{EOL}2{EOL}3{EOL}true{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void TestSimpleRoutine()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var routine : SimpleRoutine = new SimpleRoutine();
+                    routine.context.set_test_context();
+                    println(routine.routine_state() as string);
+                    val started : bool = routine.start_sync();
+                    println(started as string);
+                    println(routine.routine_state() as string);
+                    
+                    val state1 : FutureState<void, void> = routine.poll();
+                    println(state1 as string);
+                    
+                    val set_res : bool = routine.set_result(new Result<void, void>.ok(void), true);
+                    println(set_res as string);
+                    
+                    val state2 : FutureState<void, void> = routine.poll();
+                    println(state2 as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"pending{EOL}hello world!{EOL}true{EOL}finished{EOL}ok_finished{EOL}false{EOL}ok_finished{EOL}", vm.CollectOutput());
         }
     }
 }

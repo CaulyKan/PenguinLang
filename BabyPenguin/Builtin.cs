@@ -11,6 +11,7 @@ namespace BabyPenguin
             AddResult(model);
             AddAtomic(model);
             AddList(model);
+            AddFuture(model);
         }
 
         public static void AddPrint(SemanticModel model)
@@ -25,6 +26,16 @@ namespace BabyPenguin
             (ns as IRoutineContainer).AddFunction(print);
 
             model.AddNamespace(ns);
+
+            var source = @"
+                namespace __builtin {
+                   fun hello_world() {
+                        println(""hello world!"");
+                   }
+                }
+            ";
+
+            model.AddSource(source, "__builtin");
         }
 
         public static void AddOption(SemanticModel model)
@@ -243,37 +254,115 @@ namespace BabyPenguin
         {
             var source = @"
                 namespace __builtin {
-                    enum FutureState {
-                        pending,
-                        ready,
-                        finished
+                    enum RoutineState {
+                        pending;
+                        running;
+                        ready;
+                        finished;
+
+                        fun from_atomic(val a: AtomicI64) -> RoutineState {
+                            val v : i64 = a.load();
+                            if (v == 0) {
+                                return new RoutineState.pending();
+                            } else if (v == 1) {
+                                return new RoutineState.running();
+                            } else if (v == 2) {
+                                return new RoutineState.ready();
+                            } else {
+                                return new RoutineState.finished();
+                            }
+                        }
+
+                        fun to_i64(val v: RoutineState) -> i64 {
+                            if (v is RoutineState.pending) {
+                                return 0;
+                            } else if (v is RoutineState.running) {
+                                return 1;
+                            } else if (v is RoutineState.ready) {
+                                return 2;
+                            } else {
+                                return 3;
+                            }
+                        }
+
+                        fun switch(var v: AtomicI64, val from: RoutineState, val to: RoutineState) -> bool {
+                            val from_i64 : i64 = from.to_i64();
+                            val to_i64 : i64 = to.to_i64();
+                            val res : i64 = v.compare_exchange(from_i64, to_i64);
+                            return res == from_i64;
+                        }
                     }
 
-                    enum FutureResult<T, E> {
-                        not_ready,
-                        ok_finished: T,
-                        ok_not_finished: T,
-                        error: E
+                    enum FutureState<T, E> {
+                        not_ready;
+                        ok_finished: T;
+                        ok_not_finished: T;
+                        error: E;
                     }
 
                     interface IFutureBase {
-                        fun state(val this: IFutureBase) -> FutureState;
+                        fun routine_state(val this: IFutureBase) -> RoutineState;
+                        fun start_sync(var this: IFutureBase) -> bool;
                     }
 
-                    interface IFuture<T, E> : IFutureBase {
-                        fun poll(val this: IFuture<T, E>) -> FutureResult<T, E>;
-                        fun set_result(var this: IFuture<T, E>, val result: Result<T, E>, val is_finished: bool);
+                    interface IFuture<T, E> {
+                        impl IFutureBase;
+                        fun poll(val this: IFuture<T, E>) -> FutureState<T, E>;
+                        fun set_result(var this: IFuture<T, E>, val result: Result<T, E>, val is_finished: bool) -> bool;
                     }
 
-                    class Routine<T, E> {
-                        var state: AtomicI64;
-                        var result: IFuture<T, E>;
+                    class RoutineContext {
+                        var __impl: u64;
 
+                        extern fun call(var this: RoutineContext);
+                        extern fun set_test_context(var this: RoutineContext);
+                    }
+
+                    class SimpleRoutine {
+                        var state: AtomicI64 = new AtomicI64(0);
+                        var context: RoutineContext = new RoutineContext();
+
+                        impl IFutureBase {
+                            fun routine_state(val this: IFutureBase) -> RoutineState {
+                                var self: SimpleRoutine = this as SimpleRoutine;
+                                return RoutineState.from_atomic(self.state);
+                            }
+
+                            fun start_sync(val this: IFutureBase) -> bool {
+                                var self: SimpleRoutine = this as SimpleRoutine;
+                                val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
+                                if (!res) return false;
+                                self.context.call();
+                                val res : bool = RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
+                                return res;
+                            }
+                        }
+
+                        impl IFuture<void, void> {
+                            fun poll(val this: IFuture<void, void>) -> FutureState<void, void> {
+                                var self: SimpleRoutine = this as SimpleRoutine;
+                                val state_val: i64 = self.state.load();
+                                
+                                if (state_val == 2) {
+                                    return new FutureState<void, void>.ok_not_finished(void);
+                                } else if (state_val == 3) {
+                                    return new FutureState<void, void>.ok_finished(void);
+                                }
+                                else {
+                                    return new FutureState<void, void>.not_ready();
+                                }
+                            }
+
+                            fun set_result(var this: IFuture<void, void>, val result: Result<void, void>, val is_finished: bool) -> bool {
+                                var self: SimpleRoutine = this as SimpleRoutine;
+                                return RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
+                            }
+                        }
                     }
                 }
             ";
 
-            // model.AddSource(source, "__builtin");
+            model.AddSource(source, "__builtin");
         }
     }
 }
