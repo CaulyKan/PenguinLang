@@ -4,6 +4,7 @@ primaryExpression:
 	Constant
 	| StringLiteral+
 	| boolLiteral
+	| voidLiteral
 	| identifierWithGeneric
 	| '(' expression ')';
 
@@ -379,6 +380,8 @@ fragment HexadecimalEscapeSequence: '\\x' HexadecimalDigit+;
 StringLiteral: EncodingPrefix? '"' SCharSequence? '"';
 
 boolLiteral: 'true' | 'false';
+
+voidLiteral: 'void';
 
 fragment EncodingPrefix: 'u8' | 'u' | 'U' | 'L';
 

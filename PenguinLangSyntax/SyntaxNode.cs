@@ -987,6 +987,7 @@ namespace PenguinLangSyntax
             Constant,
             StringLiteral,
             BoolLiteral,
+            VoidLiteral,
             ParenthesizedExpression,
         }
 
@@ -1011,6 +1012,11 @@ namespace PenguinLangSyntax
             {
                 Literal = context.GetText();
                 PrimaryExpressionType = Type.BoolLiteral;
+            }
+            else if (context.voidLiteral() != null)
+            {
+                Literal = context.GetText();
+                PrimaryExpressionType = Type.VoidLiteral;
             }
             else if (context.children.OfType<ExpressionContext>().Any())
             {
@@ -1039,6 +1045,7 @@ namespace PenguinLangSyntax
                 Type.Constant => [IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal)],
                 Type.StringLiteral => [IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal)],
                 Type.BoolLiteral => [IPrettyPrint.PrintText(indentLevel, "BoolLiteral: " + Literal)],
+                Type.VoidLiteral => [IPrettyPrint.PrintText(indentLevel, "VoidLiteral: " + Literal)],
                 Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel, note),
                 _ => throw new NotImplementedException(),
             };
@@ -1050,6 +1057,7 @@ namespace PenguinLangSyntax
             Type.Constant => true,
             Type.StringLiteral => true,
             Type.BoolLiteral => true,
+            Type.VoidLiteral => true,
             Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
             _ => throw new System.NotImplementedException("Invalid primary expression type"),
         };

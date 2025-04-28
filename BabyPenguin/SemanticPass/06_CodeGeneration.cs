@@ -657,6 +657,8 @@ namespace BabyPenguin.SemanticPass
                             return BasicType.String;
                         case PrimaryExpression.Type.BoolLiteral:
                             return BasicType.Bool;
+                        case PrimaryExpression.Type.VoidLiteral:
+                            return BasicType.Void;
                         case PrimaryExpression.Type.ParenthesizedExpression:
                             return ResolveExpressionType(exp.ParenthesizedExpression!);
                     }
