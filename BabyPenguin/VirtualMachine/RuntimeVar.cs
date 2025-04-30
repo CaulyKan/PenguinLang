@@ -223,6 +223,8 @@ namespace BabyPenguin.VirtualMachine
 
         public IType TypeInfo => Symbol.TypeInfo;
 
+        public string? ValueToString => FunctionSymbol?.FullName;
+
         public void AssignFrom(IRuntimeVar other)
         {
             if (other.TypeInfo.FullName != TypeInfo.FullName || other is not FunctionRuntimeVar funVar)
@@ -258,6 +260,15 @@ namespace BabyPenguin.VirtualMachine
         public IType TypeInfo => Symbol.TypeInfo;
 
         public Dictionary<string, IRuntimeVar> ObjectFields { get; private set; } = [];
+
+        public string? ValueToString
+        {
+            get
+            {
+                var fields = ObjectFields.Where(kvp => !kvp.Value.TypeInfo.IsFunctionType).Select(kvp => kvp.Key + "=" + kvp.Value.ValueToString);
+                return "{" + string.Join(", ", fields) + "}";
+            }
+        }
 
         public void AssignFrom(IRuntimeVar other)
         {
@@ -313,6 +324,8 @@ namespace BabyPenguin.VirtualMachine
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
 
+        public string? ValueToString => Object?.ValueToString;
+
         public IRuntimeVar Clone()
         {
             var result = new InterfaceRuntimeVar(Model, Symbol);
@@ -355,6 +368,16 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public override string ToString() => (this as IRuntimeVar).ToDebugString();
+
+        string? ValueToString
+        {
+            get
+            {
+                var enumValue = ObjectFields["_value"].As<BasicRuntimeVar>().I32Value;
+                var enumName = (TypeInfo as IEnum)?.EnumDeclarations.Find(e => e.Value == enumValue);
+                return enumName?.Name ?? "?invalid?";
+            }
+        }
 
         public IRuntimeVar Clone()
         {

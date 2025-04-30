@@ -1,5 +1,6 @@
 namespace BabyPenguin.VirtualMachine
 {
+    public record RuntimeFrameResult(IRuntimeVar? ReturnValue, ReturnStatus ReturnStatus);
 
     public class RuntimeFrame
     {
@@ -32,7 +33,7 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
-        public IRuntimeVar? Run()
+        public RuntimeFrameResult Run()
         {
             IRuntimeVar resolveVariable(ISymbol symbol)
             {
@@ -139,12 +140,12 @@ namespace BabyPenguin.VirtualMachine
                             IRuntimeVar? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
                             List<IRuntimeVar> args = cmd.Arguments.Select(resolveVariable).ToList();
                             DebugPrint(cmd, op1: funSymbol.ToString(), op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.ToString());
-                            if (!funSymbol.SemanticFunction.IsExtern)
+                            if (!funSymbol.IsExtern)
                             {
-                                var newFrame = new RuntimeFrame(funSymbol.SemanticFunction, Global, args);
+                                var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args);
                                 var resTemp = newFrame.Run();
-                                if (resTemp != null)
-                                    retVar?.AssignFrom(resTemp);
+                                if (resTemp.ReturnValue != null)
+                                    retVar?.AssignFrom(resTemp.ReturnValue);
                             }
                             else
                             {
@@ -499,7 +500,7 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 IRuntimeVar retVar = resolveVariable(cmd.RetValue);
                                 DebugPrint(cmd, op1: retVar.ToDebugString());
-                                return retVar;
+                                return new RuntimeFrameResult(retVar, cmd.ReturnStatus);
                             }
                             break;
                         }
@@ -593,7 +594,7 @@ namespace BabyPenguin.VirtualMachine
             }
             if (CodeContainer.ReturnTypeInfo.Type == TypeEnum.Void)
             {
-                return null;
+                return new RuntimeFrameResult(null, ReturnStatus.YieldFinished);
             }
             else
             {

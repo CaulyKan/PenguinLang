@@ -289,8 +289,9 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
 
-            Assert.Single(ns.Symbols);
+            Assert.Equal(2, ns.Symbols.Count());
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.IsFunctionType);
 
             Assert.Single(ns.InitialRoutines);
             var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();

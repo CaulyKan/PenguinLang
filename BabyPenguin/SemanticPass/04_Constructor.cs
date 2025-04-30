@@ -1,7 +1,7 @@
 namespace BabyPenguin.SemanticPass
 {
 
-    public class ClassConstructorPass(SemanticModel model, int passIndex) : ISemanticPass
+    public class ConstructorPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
 
@@ -10,6 +10,11 @@ namespace BabyPenguin.SemanticPass
         public void Process()
         {
             foreach (var obj in Model.FindAll(o => o is IClass).ToList())
+            {
+                Process(obj);
+            }
+
+            foreach (var obj in Model.FindAll(o => o is INamespace).ToList())
             {
                 Process(obj);
             }
@@ -32,14 +37,46 @@ namespace BabyPenguin.SemanticPass
                 }
             }
 
+            if (obj is INamespace ns)
+            {
+                ProcessNamespace(ns);
+            }
+
             obj.PassIndex = PassIndex;
+        }
+
+        public void ProcessNamespace(INamespace ns)
+        {
+            var sourceLocation = ns.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
+
+            var constructor = Model.ResolveSymbol(ns.FullName + ".new") as FunctionSymbol;
+
+            if (constructor == null)
+            {
+                ns.Constructor = new Function(Model, "new", [], BasicType.Void, false, false);
+                ns.AddFunction(ns.Constructor);
+                Model.CatchUp(ns.Constructor);
+                constructor = ns.Constructor.FunctionSymbol;
+            }
+
+            if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
+            {
+                foreach (var decl in syntaxNode.Declarations)
+                {
+                    if (decl.InitializeExpression != null)
+                    {
+                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.Scope.ScopeDepth, scope: ns);
+                        constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
+                    }
+                }
+            }
         }
 
         public void ProcessClass(IClass cls)
         {
             var sourceLocation = cls.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
 
-            if (cls.Functions.Find(i => i.Name == "new") is Function constructorFunc)
+            if (cls.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
                 if (constructorFunc.Parameters.Count > 0 &&
                     constructorFunc.Parameters[0].Type.FullName == cls.FullName)
@@ -55,7 +92,7 @@ namespace BabyPenguin.SemanticPass
             {
                 List<FunctionParameter> param = [new FunctionParameter("this", cls, false, 0)];
                 cls.Constructor = new Function(Model, "new", param, BasicType.Void, false, false);
-                cls.AddFunction((Function)cls.Constructor);
+                cls.AddFunction(cls.Constructor);
                 Model.CatchUp(cls.Constructor);
             }
 

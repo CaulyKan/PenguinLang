@@ -36,6 +36,12 @@ namespace BabyPenguin
             Console.WriteLine("----------- Start Execution -----------");
             vm.Run();
 
+            if (vm.Global.EnableDebugPrint)
+            {
+                Console.WriteLine("----------- Console Output -----------");
+                Console.WriteLine(vm.CollectOutput());
+            }
+
             return 0;
             // }
             // catch (Exception e)

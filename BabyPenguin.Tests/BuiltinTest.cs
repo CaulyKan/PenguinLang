@@ -268,11 +268,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var routine : SimpleRoutine = new SimpleRoutine();
-                    routine.context.set_test_context();
-                    println(routine.routine_state() as string);
-                    val started : bool = routine.start_sync();
-                    println(started as string);
+                    var routine : SimpleRoutine = new SimpleRoutine(""__builtin.hello_world"");
+                    println(routine.start() as string);
                     println(routine.routine_state() as string);
                     
                     val state1 : FutureState<void, void> = routine.poll();
@@ -288,7 +285,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"pending{EOL}hello world!{EOL}true{EOL}finished{EOL}ok_finished{EOL}false{EOL}ok_finished{EOL}", vm.CollectOutput());
+            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}ok_finished{EOL}false{EOL}ok_finished{EOL}", vm.CollectOutput());
         }
     }
 }

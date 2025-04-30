@@ -3,7 +3,10 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticNode
 {
-    public interface IInitialRoutine : ISemanticNode, ISemanticScope, ISymbolContainer, ICodeContainer;
+    public interface IInitialRoutine : ISemanticNode, ISemanticScope, ISymbolContainer, ICodeContainer
+    {
+        public FunctionSymbol? FunctionSymbol { get; set; }
+    }
 
     public class InitialRoutine : BaseSemanticNode, IInitialRoutine
     {
@@ -36,6 +39,8 @@ namespace BabyPenguin.SemanticNode
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
         public List<ISymbol> Symbols { get; } = [];
+
+        public FunctionSymbol? FunctionSymbol { get; set; }
 
         public override string ToString() => (this as ISemanticScope).FullName;
     }

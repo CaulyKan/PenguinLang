@@ -31,10 +31,19 @@ namespace BabyPenguin.VirtualMachine
         override public string StringResult => TargetLabel;
     }
 
-    public record ReturnInstruction(ISymbol? RetValue = null) : BabyPenguinIR
+    public enum ReturnStatus
+    {
+        Blocked = 0, // the routine is blocked by some dependency and dont have a result
+        YieldNotFinished, // the routine generated a result but not finished
+        YieldFinished, // the routine generated a result and finished
+        Finished, // the routine finished without generating a result
+    }
+
+    public record ReturnInstruction(ISymbol? RetValue, ReturnStatus ReturnStatus) : BabyPenguinIR
     {
         override public string StringCommand => "RETN";
         override public string StringOP1 => (RetValue == null) ? "" : RetValue.ToString()!;
+        public override string StringOP2 => ReturnStatus.ToString();
     }
 
     public record BinaryOperationInstruction(BinaryOperatorEnum Operator, ISymbol LeftSymbol, ISymbol RightSymbol, ISymbol Target) : BabyPenguinIR

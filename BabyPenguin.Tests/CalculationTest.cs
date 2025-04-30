@@ -553,6 +553,26 @@ namespace BabyPenguin.Tests
             Assert.Equal("3", vm.CollectOutput());
         }
 
+        [Fact]
+        public void NamespaceTest()
+        {
+            {
+                var compiler = new SemanticCompiler();
+                compiler.AddSource(@"
+                    namespace ns {
+                        initial {
+                            print(a as string);
+                        }
+                        var a : u8 = 1+1;
+                    }
+                ");
+                var model = compiler.Compile();
+                var vm = new BabyPenguinVM(model);
+                vm.Run();
+                Assert.Equal("2", vm.CollectOutput());
+            }
+        }
+
         // this test case requries flow analysis to determine every member is initialized or not.
         // [Fact]
         // public void ClassConstructorDefaultInitializerTest()

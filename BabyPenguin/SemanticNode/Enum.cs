@@ -56,9 +56,9 @@ namespace BabyPenguin.SemanticNode
 
         public INamespace Namespace => Parent as Namespace ?? throw new BabyPenguinException("Enum is not inserted into model yet.");
 
-        public List<InitialRoutine> InitialRoutines { get; } = [];
+        public List<IInitialRoutine> InitialRoutines { get; } = [];
 
-        public List<Function> Functions { get; } = [];
+        public List<IFunction> Functions { get; } = [];
 
         public List<ISymbol> Symbols { get; } = [];
 

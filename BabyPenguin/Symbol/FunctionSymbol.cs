@@ -6,7 +6,7 @@ namespace BabyPenguin.Symbol
     public class FunctionSymbol : ISymbol
     {
         public FunctionSymbol(ISymbolContainer parent,
-            IFunction func,
+            ICodeContainer codeContainer,
             bool isLocal,
             string name,
             SourceLocation sourceLocation,
@@ -18,7 +18,8 @@ namespace BabyPenguin.Symbol
             int? paramIndex,
             bool isReadonly,
             bool isClassMember,
-            bool isStatic)
+            bool isStatic,
+            bool isExtern)
         {
             Parent = parent;
             Name = name;
@@ -32,9 +33,10 @@ namespace BabyPenguin.Symbol
             ParameterIndex = paramIndex ?? -1;
             IsTemp = isTemp;
             IsReadonly = isReadonly;
-            SemanticFunction = func;
+            CodeContainer = codeContainer;
             IsStatic = isStatic;
             IsClassMember = isClassMember;
+            IsExtern = isExtern;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Select(p => p.Type)).ToList();
             var typeInfo = BasicType.Fun.Specialize(funTypeGenericArguments);
@@ -57,12 +59,13 @@ namespace BabyPenguin.Symbol
         public bool IsParameter { get; }
         public int ParameterIndex { get; }
         public bool IsReadonly { get; set; }
-        public IFunction SemanticFunction { get; }
+        public ICodeContainer CodeContainer { get; }
         public bool IsClassMember { get; }
         public bool IsStatic { get; }
         public bool IsEnum => false;
         public bool IsFunction => true;
         public bool IsVariable => false;
+        public bool IsExtern { get; }
 
         public override string ToString()
         {

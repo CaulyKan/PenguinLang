@@ -130,21 +130,21 @@ namespace BabyPenguin.SemanticPass
 
     public interface IRoutineContainer : ISemanticScope
     {
-        void AddInitialRoutine(InitialRoutine routine)
+        void AddInitialRoutine(IInitialRoutine routine)
         {
             InitialRoutines.Add(routine);
             routine.Parent = this;
         }
 
-        void AddFunction(Function function)
+        void AddFunction(IFunction function)
         {
             Functions.Add(function);
             function.Parent = this;
         }
 
-        List<InitialRoutine> InitialRoutines { get; }
+        List<IInitialRoutine> InitialRoutines { get; }
 
-        List<Function> Functions { get; }
+        List<IFunction> Functions { get; }
     }
 
     public record NamespaceImport(string Namespace, PenguinLangSyntax.SourceLocation SourceLocation);

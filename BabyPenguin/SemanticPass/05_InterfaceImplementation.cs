@@ -30,9 +30,9 @@ namespace BabyPenguin.SemanticPass
 
         public ISemanticScope? Parent { get; set; }
 
-        public List<SemanticNode.InitialRoutine> InitialRoutines => throw new NotImplementedException();
+        public List<IInitialRoutine> InitialRoutines => throw new NotImplementedException();
 
-        public List<Function> Functions { get; } = [];
+        public List<IFunction> Functions { get; } = [];
 
         public IEnumerable<ISemanticScope> Children => Functions;
 
@@ -149,7 +149,7 @@ namespace BabyPenguin.SemanticPass
 
                         foreach (var interfaceFunc in vtable.Interface.Functions)
                         {
-                            if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is Function implFunc)
+                            if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is IFunction implFunc)
                             {
                                 if (implFunc.ReturnTypeInfo.FullName != interfaceFunc.ReturnTypeInfo.FullName
                                         || implFunc.Parameters.Count != interfaceFunc.Parameters.Count

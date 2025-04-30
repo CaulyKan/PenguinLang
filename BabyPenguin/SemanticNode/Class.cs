@@ -56,9 +56,9 @@ namespace BabyPenguin.SemanticNode
             GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(gd => gd.Name).ToList() ?? [];
         }
 
-        public List<Function> Functions { get; } = [];
+        public List<IFunction> Functions { get; } = [];
 
-        public List<InitialRoutine> InitialRoutines { get; } = [];
+        public List<IInitialRoutine> InitialRoutines { get; } = [];
 
         public string Name { get; }
 

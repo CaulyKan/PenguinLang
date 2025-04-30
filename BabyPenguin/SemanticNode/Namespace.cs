@@ -1,7 +1,8 @@
 namespace BabyPenguin.SemanticNode
 {
-    public interface INamespace : ISemanticNode, ISemanticScope, IRoutineContainer, ITypeContainer, ISymbolContainer, ICodeContainer
+    public interface INamespace : ISemanticNode, ISemanticScope, IRoutineContainer, ITypeContainer, ISymbolContainer
     {
+        IFunction? Constructor { get; set; }
     }
 
     public class Namespace : BaseSemanticNode, INamespace
@@ -22,9 +23,9 @@ namespace BabyPenguin.SemanticNode
 
         public List<Enum> Enums { get; } = [];
 
-        public List<Function> Functions { get; } = [];
+        public List<IFunction> Functions { get; } = [];
 
-        public List<InitialRoutine> InitialRoutines { get; } = [];
+        public List<IInitialRoutine> InitialRoutines { get; } = [];
 
         public List<ISymbol> Symbols { get; } = [];
 
@@ -47,6 +48,9 @@ namespace BabyPenguin.SemanticNode
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
         public override string ToString() => (this as ISemanticScope).FullName;
+
+        public IFunction? Constructor { get; set; }
+
     }
 
     public class MergedNamespace : ISemanticScope
@@ -83,9 +87,9 @@ namespace BabyPenguin.SemanticNode
 
         public IEnumerable<Enum> Enums => Namespaces.SelectMany(n => n.Enums);
 
-        public IEnumerable<Function> Functions => Namespaces.SelectMany(n => n.Functions);
+        public IEnumerable<IFunction> Functions => Namespaces.SelectMany(n => n.Functions);
 
-        public IEnumerable<InitialRoutine> InitialRoutines => Namespaces.SelectMany(n => n.InitialRoutines);
+        public IEnumerable<IInitialRoutine> InitialRoutines => Namespaces.SelectMany(n => n.InitialRoutines);
 
         public IEnumerable<ISymbol> Symbols => Namespaces.SelectMany(n => n.Symbols);
 

@@ -189,17 +189,27 @@ namespace BabyPenguin.VirtualMachine
             {
                 var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                 var frame = impl.ExternImplenmentationValue as RuntimeFrame;
-                frame!.Run();
+                var frameResult = frame!.Run();
+                result!.As<BasicRuntimeVar>().I64Value = (int)frameResult.ReturnStatus; // TODO: really finished?
             });
 
-            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.set_test_context", (result, args) =>
+            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.new", (result, args) =>
             {
-                var container = new SemanticNode.InitialRoutine(vm.Model, "test_context");
-                var func = vm.Model.ResolveSymbol("__builtin.hello_world");
-                container.Instructions.Add(new FunctionCallInstruction(func!, [], null));
-                var frame = new RuntimeFrame(container, vm.Global, []);
-                var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
-                impl.ExternImplenmentationValue = frame;
+                var targetName = args[1].As<BasicRuntimeVar>().StringValue;
+                var targetSymbol = vm.Model.ResolveSymbol(targetName);
+
+                if (targetSymbol is FunctionSymbol functionSymbol)
+                {
+                    var container = new SemanticNode.InitialRoutine(vm.Model, "test_context");
+                    container.Instructions.Add(new FunctionCallInstruction(functionSymbol, [], null));
+                    var frame = new RuntimeFrame(container, vm.Global, []);
+                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
+                    impl.ExternImplenmentationValue = frame;
+                }
+                else
+                {
+                    throw new BabyPenguinRuntimeException($"Cannot build context on non-function symbol {targetName}");
+                }
             });
         }
     }

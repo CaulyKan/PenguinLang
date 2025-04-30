@@ -24,20 +24,12 @@ namespace BabyPenguin.VirtualMachine
 
         public void Run()
         {
-            foreach (var mns in Model.Namespaces)
-            {
-                foreach (var ns in mns.Namespaces)
-                {
-                    var frame = new RuntimeFrame(ns, Global, []);
-                    frame.Run();
-                }
-            }
+            var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol;
+            if (mainFunc == null)
+                throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
-            foreach (var inital in Model.Namespaces.SelectMany(ns => ns.InitialRoutines))
-            {
-                var frame = new RuntimeFrame(inital, Global, []);
-                frame.Run();
-            }
+            var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, []); ;
+            frame.Run();
         }
     }
 
@@ -48,7 +40,9 @@ namespace BabyPenguin.VirtualMachine
         public Dictionary<string, IRuntimeVar> GlobalVariables { get; } = [];
 
         public Dictionary<string, Action<IRuntimeVar?, List<IRuntimeVar>>> ExternFunctions { get; } = [];
+
         public bool EnableDebugPrint { get; set; } = false;
+
         public TextWriter DebugWriter { get; set; } = Console.Out;
     }
 }

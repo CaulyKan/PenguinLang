@@ -260,8 +260,7 @@ namespace BabyPenguin
                         ready;
                         finished;
 
-                        fun from_atomic(val a: AtomicI64) -> RoutineState {
-                            val v : i64 = a.load();
+                        fun from_i64(val v: i64) -> RoutineState {
                             if (v == 0) {
                                 return new RoutineState.pending();
                             } else if (v == 1) {
@@ -271,6 +270,11 @@ namespace BabyPenguin
                             } else {
                                 return new RoutineState.finished();
                             }
+                        }
+
+                        fun from_atomic(val a: AtomicI64) -> RoutineState {
+                            val v : i64 = a.load();
+                            return RoutineState.from_i64(v);
                         }
 
                         fun to_i64(val v: RoutineState) -> i64 {
@@ -302,7 +306,7 @@ namespace BabyPenguin
 
                     interface IFutureBase {
                         fun routine_state(val this: IFutureBase) -> RoutineState;
-                        fun start_sync(var this: IFutureBase) -> bool;
+                        fun start(var this: IFutureBase) -> bool;
                     }
 
                     interface IFuture<T, E> {
@@ -314,13 +318,49 @@ namespace BabyPenguin
                     class RoutineContext {
                         var __impl: u64;
 
-                        extern fun call(var this: RoutineContext);
-                        extern fun set_test_context(var this: RoutineContext);
+                        extern fun new(var this: RoutineContext, val symbol: string);
+                        extern fun call(var this: RoutineContext) -> i64;
                     }
+
+                    class Scheduler {
+                        var pending_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
+                        var ready_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
+
+                        fun entry(var this: Scheduler) {
+                            while (true) {
+                                var job_opt : Option<IFutureBase> = this.pending_jobs.dequeue();
+                                if (job_opt.is_some()) {
+                                    var job : IFutureBase = job_opt.some;
+                                    val result: bool = job.start();
+                                    if (!result) {
+                                        // job is in invalid state, skip it for now
+                                    }
+                                    else {
+                                        val state : RoutineState = job.routine_state();
+                                        if (state is RoutineState.pending) {
+                                            this.pending_jobs.enqueue(job);
+                                        } else if (state is RoutineState.ready) {
+                                            this.pending_jobs.enqueue(job);
+                                        } else if (state is RoutineState.finished) {
+                                            // job is finished, remove it from queue
+                                        }
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    var _main_scheduler : Scheduler = new Scheduler();
 
                     class SimpleRoutine {
                         var state: AtomicI64 = new AtomicI64(0);
-                        var context: RoutineContext = new RoutineContext();
+                        var context: RoutineContext;
+
+                        fun new(var this: SimpleRoutine, val context_symbol: string) {
+                            this.context = new RoutineContext(context_symbol);
+                        }
 
                         impl IFutureBase {
                             fun routine_state(val this: IFutureBase) -> RoutineState {
@@ -328,13 +368,24 @@ namespace BabyPenguin
                                 return RoutineState.from_atomic(self.state);
                             }
 
-                            fun start_sync(val this: IFutureBase) -> bool {
+                            fun start(val this: IFutureBase) -> bool {
                                 var self: SimpleRoutine = this as SimpleRoutine;
                                 val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
                                 if (!res) return false;
-                                self.context.call();
-                                val res : bool = RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
-                                return res;
+                                val return_state : i64 = self.context.call();
+
+                                if (return_state == 0) {
+                                    // blocked, put back as pending
+                                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
+                                } else if (return_state == 1) {
+                                    // yield not finished
+                                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.ready());
+                                } else if (return_state == 2 || return_state == 3) {
+                                    // yield finished & finished
+                                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
+                                }
+
+                                return true;
                             }
                         }
 

@@ -1,8 +1,7 @@
                 initial {
-                    var routine : SimpleRoutine = new SimpleRoutine();
-                    routine.context.set_test_context();
+                    var routine : SimpleRoutine = new SimpleRoutine("__builtin.hello_world");
                     println(routine.routine_state() as string);
-                    val started : bool = routine.start_sync();
+                    val started : bool = routine.start();
                     println(started as string);
                     println(routine.routine_state() as string);
                     

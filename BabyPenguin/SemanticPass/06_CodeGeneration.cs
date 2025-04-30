@@ -21,17 +21,6 @@ namespace BabyPenguin.SemanticPass
             {
                 AddStatement(statement);
             }
-            else if (CodeSyntaxNode is NamespaceDefinition)
-            {
-                foreach (var decl in (CodeSyntaxNode as NamespaceDefinition)!.Declarations)
-                {
-                    if (decl.InitializeExpression != null)
-                    {
-                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.Scope.ScopeDepth, scope: this);
-                        AddExpression(decl.InitializeExpression, true, symbol);
-                    }
-                }
-            }
         }
 
         public string PrintInstructionsTable()
@@ -316,11 +305,11 @@ namespace BabyPenguin.SemanticPass
                                 }
                                 else throw new BabyPenguinException($"Return type mismatch, expected '{ReturnTypeInfo}' but got '{returnVar.TypeInfo}'", returnStatement.SourceLocation);
                             }
-                            AddInstruction(new ReturnInstruction(returnVar));
+                            AddInstruction(new ReturnInstruction(returnVar, ReturnStatus.YieldFinished));
                         }
                         else
                         {
-                            AddInstruction(new ReturnInstruction(null));
+                            AddInstruction(new ReturnInstruction(null, ReturnStatus.YieldFinished));
                         }
                         break;
                     }

@@ -20,9 +20,10 @@ namespace BabyPenguin
                 new SemanticScopingPass(this, 1),
                 new TypeElaboratePass(this, 2),
                 new SymbolElaboratePass(this, 3),
-                new ClassConstructorPass(this, 4),
+                new ConstructorPass(this, 4),
                 new InterfaceImplementationPass(this, 5),
                 new CodeGenerationPass(this, 6),
+                new MainFunctionGenerationPass(this, 7),
             ];
         }
 
@@ -171,7 +172,7 @@ namespace BabyPenguin
 
             if (typeCandidate is null)
             {
-                Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type {nameComponents.NameWithPrefix}");
+                // Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type {nameComponents.NameWithPrefix}");
                 return null;
             }
 
@@ -189,7 +190,7 @@ namespace BabyPenguin
                     {
                         if (genericArgumentsFromName[i] == null)
                         {
-                            Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
+                            // Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
                             return null;
                         }
                     }

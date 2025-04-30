@@ -13,6 +13,8 @@ namespace BabyPenguin.SemanticNode
 
         bool? IsPure { get; set; }
 
+        bool IsDeclarationOnly { get; }
+
         FunctionSymbol? FunctionSymbol { get; set; }
     }
 

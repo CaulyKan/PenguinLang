@@ -57,6 +57,23 @@ namespace BabyPenguin.SemanticPass
             return symbol;
         }
 
+        ISymbol AddInitialRoutineSymbol(IInitialRoutine initialRoutine,
+            SourceLocation sourceLocation,
+            uint scopeDepth,
+            bool isClassMember)
+        {
+            var name = initialRoutine.Name;
+            var originName = name;
+            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false);
+            if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
+            {
+                throw new BabyPenguinException($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
+            }
+
+            Symbols.Add(symbol);
+            return symbol;
+        }
+
         ISymbol AddFunctionSymbol(IFunction func,
             bool isLocal,
             IType returnType,
@@ -83,7 +100,7 @@ namespace BabyPenguin.SemanticPass
                 }
             }
 
-            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic);
+            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -189,6 +206,25 @@ namespace BabyPenguin.SemanticPass
                             }
 
                             enumDecl.MemberSymbol = enm.AddEnumSymbol(enm, enumDecl.Name, enumDecl.TypeInfo, enumDecl.Value, enumDecl.SourceLocation) as EnumSymbol;
+                        }
+                    }
+                    break;
+                case IInitialRoutine initialRoutine:
+                    {
+                        var parent = initialRoutine.Parent as IType;
+                        if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
+                        {
+                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for initial routine '{initialRoutine.Name}' is skipped now because it is generic");
+                        }
+                        else
+                        {
+                            if (initialRoutine.SyntaxNode is PenguinLangSyntax.InitialRoutine syntaxNode)
+                            {
+                                var funcSymbol = (initialRoutine.Parent as ISymbolContainer)!.AddInitialRoutineSymbol(
+                                    initialRoutine, initialRoutine.SourceLocation, syntaxNode.Scope.ScopeDepth, false);
+
+                                initialRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
+                            }
                         }
                     }
                     break;
