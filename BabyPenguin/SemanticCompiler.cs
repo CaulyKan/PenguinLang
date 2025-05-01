@@ -29,7 +29,7 @@ namespace BabyPenguin
 
         public SemanticModel Compile()
         {
-            var model = new SemanticModel(Reporter);
+            var model = new SemanticModel(true, Reporter);
 
             foreach (var source in Sources)
             {

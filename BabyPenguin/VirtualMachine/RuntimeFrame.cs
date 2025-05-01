@@ -139,7 +139,7 @@ namespace BabyPenguin.VirtualMachine
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
                             IRuntimeVar? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
                             List<IRuntimeVar> args = cmd.Arguments.Select(resolveVariable).ToList();
-                            DebugPrint(cmd, op1: funSymbol.ToString(), op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.ToString());
+                            DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.ToString());
                             if (!funSymbol.IsExtern)
                             {
                                 var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args);
@@ -506,7 +506,7 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case NewInstanceInstruction cmd:
                         // do nothing
-                        DebugPrint(cmd);
+                        DebugPrint(cmd, result: cmd.Target.FullName);
                         break;
                     case ReadMemberInstruction cmd:
                         {

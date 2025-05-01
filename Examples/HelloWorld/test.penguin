@@ -1,16 +1,8 @@
                 initial {
-                    var routine : SimpleRoutine = new SimpleRoutine("__builtin.hello_world");
-                    println(routine.routine_state() as string);
-                    val started : bool = routine.start();
-                    println(started as string);
-                    println(routine.routine_state() as string);
-                    
-                    val state1 : FutureState<void, void> = routine.poll();
-                    println(state1 as string);
-                    
-                    val set_res : bool = routine.set_result(new Result<void, void>.ok(void), true);
-                    println(set_res as string);
-                    
-                    val state2 : FutureState<void, void> = routine.poll();
-                    println(state2 as string);
-                }
+                    print("hello");
+                    return;
+                    print("world");
+                } 
+                initial {
+                    print(" ");
+                } 

@@ -14,5 +14,10 @@
     <PackageReference Include="Mono.Cecil" Version="0.11.5" />
     <ProjectReference Include="..\PenguinLangSyntax\PenguinLangSyntax.csproj" />
   </ItemGroup>
+  <ItemGroup>
 
+    <None Include="Builtin.penguin">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace BabyPenguin
 {
     public partial class SemanticModel
@@ -12,10 +14,18 @@ namespace BabyPenguin
         public List<ISemanticPass> Passes { get; }
         public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new PenguinLangException("Builtin namespace not found.");
 
-        public SemanticModel(ErrorReporter? reporter = null)
+        public SemanticModel(bool addBuiltin = true, ErrorReporter? reporter = null)
         {
             Reporter = reporter ?? new ErrorReporter();
-            Builtin.Build(this);
+
+            if (addBuiltin)
+            {
+                var builtinFile = Path.GetFullPath(Environment.GetEnvironmentVariable("PENGUINLANG_BUILTIN") ??
+                    (Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/Builtin.penguin"));
+                var builtinCode = File.ReadAllText(builtinFile);
+                this.AddSource(builtinCode, builtinFile);
+            }
+
             Passes = [
                 new SemanticScopingPass(this, 1),
                 new TypeElaboratePass(this, 2),
