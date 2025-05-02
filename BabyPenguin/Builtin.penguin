@@ -227,7 +227,7 @@ namespace __builtin {
     }
 
     class RoutineContext {
-        var __impl: u64;
+        var target: fun;
 
         extern fun new(var this: RoutineContext, val symbol: string);
         extern fun call(var this: RoutineContext) -> i64;

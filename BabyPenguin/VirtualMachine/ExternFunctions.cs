@@ -13,14 +13,14 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddPrint(BabyPenguinVM vm)
         {
-            vm.Global.ExternFunctions.Add("__builtin.print", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.print", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
                 vm.Output.Append(s);
                 Console.Write(s);
             });
 
-            vm.Global.ExternFunctions.Add("__builtin.println", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.println", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
                 vm.Output.AppendLine(s as string);
@@ -32,7 +32,7 @@ namespace BabyPenguin.VirtualMachine
         {
             foreach (var ICopy in vm.Model.ResolveType("__builtin.ICopy<?>")!.GenericInstances)
             {
-                vm.Global.ExternFunctions.Add(ICopy.FullName + ".copy", (result, args) =>
+                vm.Global.RegisterExternFunction(ICopy.FullName + ".copy", (result, args) =>
                 {
                     var clone = args[0].Clone();
                     result!.AssignFrom(clone);
@@ -42,7 +42,7 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddAtmoic(BabyPenguinVM vm)
         {
-            vm.Global.ExternFunctions.Add("__builtin.AtomicI64.swap", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.AtomicI64.swap", (result, args) =>
             {
                 var atomic = args[0].As<ClassRuntimeVar>().ObjectFields["value"].As<BasicRuntimeVar>();
                 var other_value = args[1].As<BasicRuntimeVar>().I64Value;
@@ -50,7 +50,7 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeVar>().I64Value = org;
             });
 
-            vm.Global.ExternFunctions.Add("__builtin.AtomicI64.compare_exchange", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.AtomicI64.compare_exchange", (result, args) =>
             {
                 var atomic = args[0].As<ClassRuntimeVar>().ObjectFields["value"].As<BasicRuntimeVar>();
                 var current_value = args[1].As<BasicRuntimeVar>().I64Value;
@@ -59,7 +59,7 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeVar>().I64Value = org;
             });
 
-            vm.Global.ExternFunctions.Add("__builtin.AtomicI64.fetch_add", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.AtomicI64.fetch_add", (result, args) =>
             {
                 var atomic = args[0].As<ClassRuntimeVar>().ObjectFields["value"].As<BasicRuntimeVar>();
                 var add_value = (Int64)args[1].As<BasicRuntimeVar>().I64Value;
@@ -72,20 +72,20 @@ namespace BabyPenguin.VirtualMachine
         {
             foreach (var queue in vm.Model.ResolveType("__builtin.Queue<?>")!.GenericInstances)
             {
-                vm.Global.ExternFunctions.Add(queue.FullName + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName + ".new", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     impl.ExternImplenmentationValue = new Queue<IRuntimeVar>();
                 });
 
-                vm.Global.ExternFunctions.Add(queue.FullName + ".enqueue", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName + ".enqueue", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
                     q!.Enqueue(args[1]);
                 });
 
-                vm.Global.ExternFunctions.Add(queue.FullName + ".dequeue", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName + ".dequeue", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
@@ -101,7 +101,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.ExternFunctions.Add(queue.FullName + ".peek", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName + ".peek", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
@@ -117,7 +117,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.ExternFunctions.Add(queue.FullName + ".size", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeVar>;
@@ -127,20 +127,20 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var list in vm.Model.ResolveType("__builtin.List<?>")!.GenericInstances)
             {
-                vm.Global.ExternFunctions.Add(list.FullName + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName + ".new", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     impl.ExternImplenmentationValue = new List<IRuntimeVar>();
                 });
 
-                vm.Global.ExternFunctions.Add(list.FullName + ".push", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName + ".push", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
                     l!.Add(args[1]);
                 });
 
-                vm.Global.ExternFunctions.Add(list.FullName + ".pop", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName + ".pop", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
@@ -157,7 +157,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.ExternFunctions.Add(list.FullName + ".at", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName + ".at", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var idx = args[1].As<BasicRuntimeVar>().U64Value;
@@ -174,7 +174,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.ExternFunctions.Add(list.FullName + ".size", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeVar>;
@@ -185,26 +185,24 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddRoutineContext(BabyPenguinVM vm)
         {
-            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.call", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.RoutineContext.call", (frame, result, args) =>
             {
-                var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
-                var frame = impl.ExternImplenmentationValue as RuntimeFrame;
-                var frameResult = frame!.Run();
+                var target = args[0].As<ClassRuntimeVar>().ObjectFields["target"].As<FunctionRuntimeVar>();
+                var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
+                var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame.FrameLevel + 1);
+                var frameResult = newFrame!.Run();
                 result!.As<BasicRuntimeVar>().I64Value = (int)frameResult.ReturnStatus; // TODO: really finished?
             });
 
-            vm.Global.ExternFunctions.Add("__builtin.RoutineContext.new", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.RoutineContext.new", (result, args) =>
             {
                 var targetName = args[1].As<BasicRuntimeVar>().StringValue;
                 var targetSymbol = vm.Model.ResolveSymbol(targetName);
 
                 if (targetSymbol is FunctionSymbol functionSymbol)
                 {
-                    var container = new SemanticNode.InitialRoutine(vm.Model, "test_context");
-                    container.Instructions.Add(new FunctionCallInstruction(functionSymbol, [], null));
-                    var frame = new RuntimeFrame(container, vm.Global, []);
-                    var impl = args[0].As<ClassRuntimeVar>().ObjectFields["__impl"].As<BasicRuntimeVar>();
-                    impl.ExternImplenmentationValue = frame;
+                    var target = args[0].As<ClassRuntimeVar>().ObjectFields["target"].As<FunctionRuntimeVar>();
+                    target.FunctionSymbol = functionSymbol;
                 }
                 else
                 {

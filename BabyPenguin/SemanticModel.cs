@@ -34,6 +34,7 @@ namespace BabyPenguin
                 new InterfaceImplementationPass(this, 5),
                 new CodeGenerationPass(this, 6),
                 new MainFunctionGenerationPass(this, 7),
+                new CheckReturnValuePass(this, 8),
             ];
         }
 

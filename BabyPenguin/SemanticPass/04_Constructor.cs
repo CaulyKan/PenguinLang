@@ -49,7 +49,7 @@ namespace BabyPenguin.SemanticPass
         {
             var sourceLocation = ns.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
 
-            var constructor = Model.ResolveSymbol(ns.FullName + ".new") as FunctionSymbol;
+            var constructor = Model.ResolveSymbol(ns.FullName + ".new", checkImportedNamespaces: false) as FunctionSymbol;
 
             if (constructor == null)
             {

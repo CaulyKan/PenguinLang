@@ -4,10 +4,11 @@ namespace BabyPenguin.VirtualMachine
 
     public class RuntimeFrame
     {
-        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeVar> parameters)
+        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeVar> parameters, int frameLevel)
         {
             CodeContainer = container;
             Global = runtimeGlobal;
+            FrameLevel = frameLevel;
             foreach (var local in container.Symbols)
             {
                 if (local.IsParameter)
@@ -24,12 +25,13 @@ namespace BabyPenguin.VirtualMachine
         public Dictionary<string, IRuntimeVar> LocalVariables { get; } = [];
         public RuntimeGlobal Global { get; }
         public ICodeContainer CodeContainer { get; }
+        public int FrameLevel { get; set; } = 0;
 
         private void DebugPrint(BabyPenguinIR inst, string? op1 = "", string? op2 = "", string? result = "")
         {
             if (Global.EnableDebugPrint)
             {
-                Global.DebugWriter.WriteLine(inst.ToDebugString(op1, op2, result));
+                Global.DebugWriter.WriteLine(new string('|', FrameLevel) + inst.ToDebugString(op1, op2, result));
             }
         }
 
@@ -139,19 +141,19 @@ namespace BabyPenguin.VirtualMachine
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
                             IRuntimeVar? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
                             List<IRuntimeVar> args = cmd.Arguments.Select(resolveVariable).ToList();
-                            DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.ToString());
+                            DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.Symbol.FullName);
                             if (!funSymbol.IsExtern)
                             {
-                                var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args);
+                                var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args, this.FrameLevel + 1);
                                 var resTemp = newFrame.Run();
                                 if (resTemp.ReturnValue != null)
                                     retVar?.AssignFrom(resTemp.ReturnValue);
                             }
                             else
                             {
-                                if (Global.ExternFunctions.TryGetValue(funSymbol.FullName, out Action<IRuntimeVar?, List<IRuntimeVar>>? action))
+                                if (Global.ExternFunctions.TryGetValue(funSymbol.FullName, out Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>>? action))
                                 {
-                                    action(retVar, args);
+                                    action(this, retVar, args);
                                 }
                                 else
                                 {
@@ -502,7 +504,10 @@ namespace BabyPenguin.VirtualMachine
                                 DebugPrint(cmd, op1: retVar.ToDebugString());
                                 return new RuntimeFrameResult(retVar, cmd.ReturnStatus);
                             }
-                            break;
+                            else
+                            {
+                                return new RuntimeFrameResult(null, cmd.ReturnStatus);
+                            }
                         }
                     case NewInstanceInstruction cmd:
                         // do nothing
@@ -592,14 +597,9 @@ namespace BabyPenguin.VirtualMachine
                         throw new NotImplementedException();
                 }
             }
-            if (CodeContainer.ReturnTypeInfo.Type == TypeEnum.Void)
-            {
-                return new RuntimeFrameResult(null, ReturnStatus.YieldFinished);
-            }
-            else
-            {
-                throw new BabyPenguinRuntimeException($"Function {CodeContainer.FullName} does not return a value");
-            }
+
+
+            throw new BabyPenguinRuntimeException($"Function {CodeContainer.FullName} does not return a value");
         }
     }
 }

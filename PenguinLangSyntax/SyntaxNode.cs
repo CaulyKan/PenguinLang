@@ -271,7 +271,8 @@ namespace PenguinLangSyntax
             ForStatement,
             JumpStatement,
             AssignmentStatement,
-            ReturnStatement
+            ReturnStatement,
+            YieldStatement,
         }
 
         public Statement(SyntaxWalker walker, StatementContext context) : base(walker, context)
@@ -311,6 +312,11 @@ namespace PenguinLangSyntax
                 StatementType = Type.ReturnStatement;
                 ReturnStatement = new ReturnStatement(walker, context.returnStatement());
             }
+            else if (context.yieldStatement() is not null)
+            {
+                StatementType = Type.YieldStatement;
+                YieldStatement = new YieldStatement(walker, context.yieldStatement());
+            }
             else
             {
                 StatementType = Type.SubBlock;
@@ -337,6 +343,7 @@ namespace PenguinLangSyntax
 
         public ReturnStatement? ReturnStatement { get; }
 
+        public YieldStatement? YieldStatement { get; }
 
         public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
@@ -350,6 +357,7 @@ namespace PenguinLangSyntax
                 Type.JumpStatement => JumpStatement!.PrettyPrint(indentLevel),
                 Type.AssignmentStatement => AssignmentStatement!.PrettyPrint(indentLevel),
                 Type.ReturnStatement => ReturnStatement!.PrettyPrint(indentLevel),
+                Type.YieldStatement => YieldStatement!.PrettyPrint(indentLevel),
                 _ => throw new NotImplementedException($"Invalid statement type: {StatementType}"),
             };
         }
@@ -476,6 +484,11 @@ namespace PenguinLangSyntax
     public class ReturnStatement(SyntaxWalker walker, ReturnStatementContext context) : SyntaxNode(walker, context)
     {
         public Expression? ReturnExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
+    }
+
+    public class YieldStatement(SyntaxWalker walker, YieldStatementContext context) : SyntaxNode(walker, context)
+    {
+        public Expression? YieldExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
     }
 
     public class IdentifierOrMemberAccess : SyntaxNode

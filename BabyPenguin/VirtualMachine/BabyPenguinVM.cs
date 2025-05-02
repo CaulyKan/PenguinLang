@@ -28,7 +28,7 @@ namespace BabyPenguin.VirtualMachine
             if (mainFunc == null)
                 throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
-            var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, []); ;
+            var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], 0);
             frame.Run();
         }
     }
@@ -39,7 +39,17 @@ namespace BabyPenguin.VirtualMachine
     {
         public Dictionary<string, IRuntimeVar> GlobalVariables { get; } = [];
 
-        public Dictionary<string, Action<IRuntimeVar?, List<IRuntimeVar>>> ExternFunctions { get; } = [];
+        public Dictionary<string, Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>>> ExternFunctions { get; } = [];
+
+        public void RegisterExternFunction(string name, Action<IRuntimeVar?, List<IRuntimeVar>> func)
+        {
+            ExternFunctions.Add(name, (frame, result, args) => func(result, args));
+        }
+
+        public void RegisterExternFunction(string name, Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>> func)
+        {
+            ExternFunctions.Add(name, func);
+        }
 
         public bool EnableDebugPrint { get; set; } = false;
 

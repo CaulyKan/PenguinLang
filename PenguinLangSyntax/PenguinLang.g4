@@ -135,6 +135,7 @@ typeSpecifier:
 	| 'bool'
 	| 'char'
 	| 'Self'
+	| 'fun'
 	| (
 		identifierWithDots genericArguments? (
 			'.' identifierWithDots genericArguments?
@@ -210,6 +211,7 @@ statement:
 	| assignmentStatement
 	| jumpStatement
 	| returnStatement
+	| yieldStatement
 	| ';';
 
 identifierOrMemberAccess: identifier | memberAccessExpression;
@@ -233,6 +235,8 @@ jumpStatement: jumpKeyword ';';
 jumpKeyword: 'continue' | 'break';
 
 returnStatement: 'return' expression? ';';
+
+yieldStatement: 'yield' expression? ';';
 
 compilationUnit: namespaceDeclaration* EOF;
 

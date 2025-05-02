@@ -11,7 +11,7 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public sealed override string ToString() => $"{StringCommand} {StringOP1} {StringOP2} -> {StringResult} {StringLabels}";
-        public virtual string ToDebugString(string? op1, string? op2, string? result) => $"{StringCommand} {op1} {op2} -> {result}";
+        public virtual string ToDebugString(string? op1, string? op2, string? result) => $"{ConsoleColor.RED}{StringCommand}{ConsoleColor.NORMAL} {op1} {op2} {(string.IsNullOrEmpty(result) ? "" : "-> " + result)}";
         public virtual string StringCommand => "";
         public virtual string StringOP1 => "";
         public virtual string StringOP2 => "";
@@ -100,7 +100,7 @@ namespace BabyPenguin.VirtualMachine
     public record FunctionCallInstruction(ISymbol FunctionSymbol, List<ISymbol> Arguments, ISymbol? Target) : BabyPenguinIR
     {
         override public string StringCommand => "CALL";
-        override public string StringOP1 => FunctionSymbol.ToString() ?? "";
+        override public string StringOP1 => FunctionSymbol.FullName ?? "";
         override public string StringOP2 => string.Join(", ", Arguments);
         override public string StringResult => Target?.ToString() ?? "";
     }
