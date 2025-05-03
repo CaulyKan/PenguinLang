@@ -7,6 +7,17 @@
 			"group": "build",
 			"problemMatcher": [],
 			"label": "dotnet: build"
+		},
+		{
+			"type": "shell",
+			"label": "dotnet build",
+			"command": "dotnet",
+			"args": [
+				"build",
+				"/p:Configuration=Debug",
+				"/p:Platform=\"Any CPU\""
+			],
+			"group": "build",
 		}
 	]
 }

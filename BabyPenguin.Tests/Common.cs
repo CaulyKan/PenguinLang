@@ -18,7 +18,7 @@ namespace BabyPenguin.Tests
 
         public override void WriteLine(string? value)
         {
-            testOutputHelper.WriteLine(value);
+            // testOutputHelper.WriteLine(value);
         }
     }
 }

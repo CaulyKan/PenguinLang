@@ -48,7 +48,11 @@ namespace BabyPenguin.SemanticPass
         public ISymbol AddLocalDeclearation(Declaration item, int? paramIndex)
         {
             var typeName = item.TypeSpecifier!.Name; // TODO: type inference
-            var symbol = AddVariableSymbol(item.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, paramIndex, item.IsReadonly, false);
+            var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.Scope.ScopeDepth, scope: this);
+            if (symbol == null)
+            {
+                Model.Reporter.Throw($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
+            }
             if (item.InitializeExpression != null)
             {
                 AddExpression(item.InitializeExpression, true, symbol);
@@ -441,7 +445,7 @@ namespace BabyPenguin.SemanticPass
             throw new NotImplementedException();
         }
 
-        public void ResolveMemberAccessExpressionType(MemberAccessExpression expression, out IType owner, out ISymbol member)
+        public void ResolveMemberAccessExpressionSymbol(MemberAccessExpression expression, out IType owner, out ISymbol member)
         {
             ISymbol? member_ = null;
             var t = ResolveExpressionType(expression.PrimaryExpression);
@@ -598,7 +602,7 @@ namespace BabyPenguin.SemanticPass
                             SourceLocation sourceLocation;
                             if (i == 0 && isInstanceCall)
                             {
-                                ResolveMemberAccessExpressionType(exp.MemberAccessExpression!, out actualType, out _);
+                                ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out actualType, out _);
                                 sourceLocation = exp.SourceLocation;
                             }
                             else
@@ -622,7 +626,7 @@ namespace BabyPenguin.SemanticPass
                         }
                         else
                         {
-                            ResolveMemberAccessExpressionType(exp, out _, out ISymbol symbol);
+                            ResolveMemberAccessExpressionSymbol(exp, out _, out ISymbol symbol);
                             return symbol.TypeInfo;
                         }
                     }

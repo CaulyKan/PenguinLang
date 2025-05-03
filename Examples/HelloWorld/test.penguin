@@ -1,8 +1,26 @@
+                /*
                 initial {
                     print("hello");
-                    return;
+                    yield;
                     print("world");
                 } 
                 initial {
                     print(" ");
                 } 
+                fun test() {
+                    yield;
+                }
+                fun test2() {
+                    test();
+                }
+                */
+
+
+                                initial {
+                    var a : u8 = 1;
+                    {
+                        var a : u8 = 2;
+                        print(a as string);
+                    }
+                    print(a as string);
+                }

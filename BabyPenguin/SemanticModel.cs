@@ -32,9 +32,10 @@ namespace BabyPenguin
                 new SymbolElaboratePass(this, 3),
                 new ConstructorPass(this, 4),
                 new InterfaceImplementationPass(this, 5),
-                new CodeGenerationPass(this, 6),
-                new MainFunctionGenerationPass(this, 7),
-                new CheckReturnValuePass(this, 8),
+                new AsyncRewritingPass(this, 6),
+                new CodeGenerationPass(this, 7),
+                new MainFunctionGenerationPass(this, 8),
+                new CheckReturnValuePass(this, 9),
             ];
         }
 

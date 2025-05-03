@@ -208,11 +208,10 @@ namespace __builtin {
         }
     }
 
-    enum FutureState<T, E> {
+    enum FutureState<T> {
         not_ready;
-        ok_finished: T;
-        ok_not_finished: T;
-        error: E;
+        ready: T;
+        finished;
     }
 
     interface IFutureBase {
@@ -220,10 +219,10 @@ namespace __builtin {
         fun start(var this: IFutureBase) -> bool;
     }
 
-    interface IFuture<T, E> {
+    interface IFuture<T> {
         impl IFutureBase;
-        fun poll(val this: IFuture<T, E>) -> FutureState<T, E>;
-        fun set_result(var this: IFuture<T, E>, val result: Result<T, E>, val is_finished: bool) -> bool;
+        fun poll(val this: IFuture<T>) -> FutureState<T>;
+        fun set_result(var this: IFuture<T>, val result: Option<T>, val is_finished: bool) -> bool;
     }
 
     class RoutineContext {
@@ -300,22 +299,22 @@ namespace __builtin {
             }
         }
 
-        impl IFuture<void, void> {
-            fun poll(val this: IFuture<void, void>) -> FutureState<void, void> {
+        impl IFuture<void> {
+            fun poll(val this: IFuture<void>) -> FutureState<void> {
                 var self: SimpleRoutine = this as SimpleRoutine;
                 val state_val: i64 = self.state.load();
                 
                 if (state_val == 2) {
-                    return new FutureState<void, void>.ok_not_finished(void);
+                    return new FutureState<void>.ready(void);
                 } else if (state_val == 3) {
-                    return new FutureState<void, void>.ok_finished(void);
+                    return new FutureState<void>.finished();
                 }
                 else {
-                    return new FutureState<void, void>.not_ready();
+                    return new FutureState<void>.not_ready();
                 }
             }
 
-            fun set_result(var this: IFuture<void, void>, val result: Result<void, void>, val is_finished: bool) -> bool {
+            fun set_result(var this: IFuture<void>, val result: Option<void>, val is_finished: bool) -> bool {
                 var self: SimpleRoutine = this as SimpleRoutine;
                 return RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
             }

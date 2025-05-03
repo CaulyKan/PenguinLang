@@ -253,7 +253,12 @@ namespaceDeclaration:
 
 parameterList: declaration? (',' declaration)* ','?;
 
-functionSpecifier: 'pure' | '!pure' | 'extern' | 'async';
+functionSpecifier:
+	'pure'
+	| '!pure'
+	| 'extern'
+	| 'async'
+	| '!async';
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (

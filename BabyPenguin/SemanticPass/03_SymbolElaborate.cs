@@ -64,7 +64,7 @@ namespace BabyPenguin.SemanticPass
         {
             var name = initialRoutine.Name;
             var originName = name;
-            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false);
+            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false, null);
             if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
             {
                 throw new BabyPenguinException($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
@@ -83,7 +83,8 @@ namespace BabyPenguin.SemanticPass
             int? paramIndex,
             bool isReadonly,
             bool isClassMember,
-            bool isStatic)
+            bool isStatic,
+            bool? isAsync = null)
         {
             var name = func.Name;
             var originName = name;
@@ -100,7 +101,7 @@ namespace BabyPenguin.SemanticPass
                 }
             }
 
-            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern);
+            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern, isAsync);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -132,10 +133,19 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (var obj in Model.FindAll(o => o is ISymbolContainer).ToList())
-            {
-                Process(obj);
-            }
+            var symbolContainers = Model.FindAll(o => o is ISymbolContainer).ToList();
+            foreach (var obj in symbolContainers)
+                ElaborateGlobalSymbol(obj);
+
+            var codeContainers = Model.FindAll(o => o is ICodeContainer).ToList();
+            foreach (var obj in codeContainers)
+                ElaborateLocalSymbol(obj);
+
+            foreach (var obj in symbolContainers)
+                obj.PassIndex = PassIndex;
+
+            foreach (var obj in codeContainers)
+                obj.PassIndex = PassIndex;
         }
 
         public void Process(ISemanticNode obj)
@@ -143,6 +153,14 @@ namespace BabyPenguin.SemanticPass
             if (obj.PassIndex >= PassIndex)
                 return;
 
+            ElaborateGlobalSymbol(obj);
+            ElaborateLocalSymbol(obj);
+
+            obj.PassIndex = PassIndex;
+        }
+
+        private void ElaborateGlobalSymbol(ISemanticNode obj)
+        {
             switch (obj)
             {
                 case INamespace ns:
@@ -302,16 +320,45 @@ namespace BabyPenguin.SemanticPass
                 default:
                     break;
             }
+        }
 
-            obj.PassIndex = PassIndex;
+        private void ElaborateLocalSymbol(ISemanticNode obj)
+        {
+            if (obj is ICodeContainer container)
+            {
+                if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                {
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName}' is skipped now because it is inside a generic type");
+                }
+                else
+                {
+                    container.CodeSyntaxNode?.TraverseChildren((node, _) =>
+                    {
+                        if (node is CodeBlockItem item)
+                        {
+                            if (item.IsDeclaration)
+                            {
+                                var typeName = item.Declaration!.TypeSpecifier!.Name; // TODO: type inference
+                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, null, item.Declaration.IsReadonly, false);
+                            }
+                        }
+                        else if (node is ForStatement forStatement)
+                        {
+                            var typeName = forStatement.Declaration.TypeSpecifier!.Name;
+                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.Scope.ScopeDepth, null, forStatement.Declaration.IsReadonly, false);
+                        }
+                        return true;
+                    });
+                }
+            }
         }
 
         public string Report
         {
             get
             {
-                var table = new ConsoleTable("Name", "Type", "Source");
-                Model.Symbols.Select(s => table.AddRow(s.FullName, s.TypeInfo, s.SourceLocation)).ToList();
+                var table = new ConsoleTable("Name", "Type", "IsLocal", "Source");
+                _ = Model.Symbols.Select(s => table.AddRow(s.FullName, s.TypeInfo, s.IsLocal, s.SourceLocation)).ToList();
                 return table.ToMarkDownString();
             }
         }

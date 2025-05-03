@@ -17,7 +17,7 @@
             "name": ".NET Core Launch (console)",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "dotnet: build",
+            "preLaunchTask": "dotnet build",
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
             "args": [
                 "${workspaceFolder}/Examples/HelloWorld/test.penguin"
