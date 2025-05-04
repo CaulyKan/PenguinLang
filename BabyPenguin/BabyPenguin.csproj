@@ -20,4 +20,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <PropertyGroup>
+    <WarningAsError>CS8509</WarningAsError>
+  </PropertyGroup>
 </Project>

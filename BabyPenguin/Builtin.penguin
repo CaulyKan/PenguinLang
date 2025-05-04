@@ -212,6 +212,7 @@ namespace __builtin {
         not_ready;
         ready: T;
         finished;
+        ready_finished: T;
     }
 
     interface IFutureBase {
@@ -261,6 +262,10 @@ namespace __builtin {
                     break;
                 }
             }
+        }
+
+        fun current() -> Scheduler {
+            return _main_scheduler;
         }
     }
 

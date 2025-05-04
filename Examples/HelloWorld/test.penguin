@@ -1,14 +1,9 @@
                 initial {
-                    var routine : SimpleRoutine = new SimpleRoutine("__builtin.hello_world");
-                    println(routine.start() as string);
-                    println(routine.routine_state() as string);
-                    
-                    val state1 : FutureState<void, void> = routine.poll();
-                    println(state1 as string);
-                    
-                    val set_res : bool = routine.set_result(new Result<void, void>.ok(void), true);
-                    println(set_res as string);
-                    
-                    val state2 : FutureState<void, void> = routine.poll();
-                    println(state2 as string);
+                    wait test();
+                    print("3");
+                } 
+                fun test() {
+                    print("1");
+                    yield;
+                    print("2");
                 }

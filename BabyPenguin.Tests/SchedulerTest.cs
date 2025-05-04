@@ -80,6 +80,9 @@ namespace BabyPenguin.Tests
                     fun test4() {
                         test3();
                     }
+                    fun test5() {
+                        wait test3();
+                    }
                 }
             ");
             var model = compiler.Compile();
@@ -87,6 +90,28 @@ namespace BabyPenguin.Tests
             Assert.True((model.ResolveSymbol("ns.test2") as FunctionSymbol)?.IsAsync);
             Assert.False((model.ResolveSymbol("ns.test3") as FunctionSymbol)?.IsAsync);
             Assert.False((model.ResolveSymbol("ns.test4") as FunctionSymbol)?.IsAsync);
+            Assert.True((model.ResolveSymbol("ns.test5") as FunctionSymbol)?.IsAsync);
+        }
+
+        [Fact]
+        public void WaitAllTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    wait test();
+                    print(""3"");
+                } 
+                fun test() {
+                    print(""1"");
+                    yield;
+                    print(""2"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("123", vm.CollectOutput());
         }
     }
 }

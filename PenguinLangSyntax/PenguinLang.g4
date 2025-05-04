@@ -21,9 +21,9 @@ postfixExpression:
 
 //slicingExpression: primaryExpression '[' expression ']';
 
-spawnExpression: 'spawn' expression;
+spawnExpression: 'async' expression;
 
-waitExpression: 'wait' expression;
+waitExpression: ('wait' | 'wait_any') expression;
 
 newExpression:
 	'new' typeSpecifier '(' expression? (',' expression)* ')';

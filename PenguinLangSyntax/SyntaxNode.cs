@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json.Serialization;
 using Antlr4.Runtime;
 using Antlr4.Runtime.Misc;
@@ -9,6 +10,9 @@ using static PenguinLangSyntax.PenguinLangParser;
 
 namespace PenguinLangSyntax
 {
+    [AttributeUsage(AttributeTargets.Property)]
+    public class ChildrenNodeAttribute : Attribute { }
+
     public abstract class SyntaxNode : IPrettyPrint
     {
         public SyntaxNode(SyntaxWalker walker, ParserRuleContext context)
@@ -22,21 +26,65 @@ namespace PenguinLangSyntax
         }
 
         static ulong counter = 0;
+
         public ISyntaxScope Scope { get; }
+
         public ParserRuleContext Context { get; }
+
         public virtual SourceLocation SourceLocation { get; }
+
         public ErrorReporter Reporter { get; }
+
         public virtual string Text =>
             Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
-        public override string ToString() => this.GetType().Name + ": " + shorten(Text.Trim().Replace("\n", " ").Replace("\r", ""));
+
+        public override string ToString() => $"[{GetType().Name}] {shorten(Text)}";
+
         public virtual IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
-            yield return new string(' ', indentLevel * 2) + (note ?? " ") + ToString();
+            return new List<string> { $"{new string(' ', indentLevel * 2)} {note}: {ToString()}" }
+                .Concat(Children.SelectMany(item => item.Value.PrettyPrint(indentLevel + 1, item.Key)));
         }
-        protected string shorten(string str) => str.Length > 30 ? str.Substring(0, 27) + "..." : str;
+
+        protected string shorten(string s)
+        {
+            var str = s.Trim().Replace("\n", " ").Replace("\r", "");
+            return str.Length > 30 ? str.Substring(0, 27) + "..." : str;
+        }
+
+        public virtual List<KeyValuePair<string, SyntaxNode>> Children
+        {
+            get
+            {
+                var result = new List<KeyValuePair<string, SyntaxNode>>();
+                var properties = this.GetType().GetProperties()
+                    .Where(p => p.GetCustomAttributes(typeof(ChildrenNodeAttribute), true).Length != 0);
+
+                foreach (var property in properties)
+                {
+                    var value = property.GetValue(this);
+                    if (value is SyntaxNode node)
+                    {
+                        result.Add(new KeyValuePair<string, SyntaxNode>(property.Name, node));
+                    }
+                    else if (value is IEnumerable<SyntaxNode> nodes)
+                    {
+                        result.AddRange(nodes.Select(n => new KeyValuePair<string, SyntaxNode>(property.Name, n)));
+                    }
+                }
+
+                return result;
+            }
+        }
 
         // bool callback(SyntaxNode current, SyntaxNode parent)
-        public abstract void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent);
+        public virtual void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
+        {
+            if (!callback(this, parent)) throw new EndOfStreamException();
+
+            Children.ForEach(i => i.Value.TraverseChildrenImpl(callback, this));
+        }
+
         public void TraverseChildren(Func<SyntaxNode, SyntaxNode, bool> callback)
         {
             try
@@ -47,6 +95,31 @@ namespace PenguinLangSyntax
             {
                 // ok
             }
+        }
+
+        public void ReplaceChild(SyntaxNode oldChild, SyntaxNode? newChild)
+        {
+            var properties = this.GetType().GetProperties()
+                    .Where(p => p.GetCustomAttributes(typeof(ChildrenNodeAttribute), true).Length != 0);
+
+            foreach (var property in properties)
+            {
+                var value = property.GetValue(this);
+                if (value is SyntaxNode node && node == oldChild)
+                {
+                    property.SetValue(this, newChild);
+                }
+                else if (value is List<SyntaxNode> nodes)
+                {
+                    if (nodes.Remove(oldChild))
+                    {
+                        if (newChild != null)
+                            nodes.Add(newChild);
+                        break;
+                    }
+                }
+            }
+
         }
     }
 
@@ -115,20 +188,28 @@ namespace PenguinLangSyntax
                     .Select(x => new InterfaceForImplementation(walker, x)));
         }
 
+        [ChildrenNode]
         public List<InitialRoutine> InitialRoutines { get; } = [];
 
+        [ChildrenNode]
         public List<Declaration> Declarations { get; } = [];
 
+        [ChildrenNode]
         public List<NamespaceDefinition> SubNamespaces { get; } = [];
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
+        [ChildrenNode]
         public List<ClassDefinition> Classes { get; } = [];
 
+        [ChildrenNode]
         public List<EnumDefinition> Enums { get; } = [];
 
+        [ChildrenNode]
         public List<InterfaceDefinition> Interfaces { get; } = [];
 
+        [ChildrenNode]
         public List<InterfaceForImplementation> InterfaceImplementations { get; } = [];
 
         public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0;
@@ -140,6 +221,7 @@ namespace PenguinLangSyntax
         public List<SyntaxSymbol> Symbols { get; } = [];
 
         public Dictionary<string, ISyntaxScope> SubScopes { get; } = [];
+
         public ISyntaxScope? ParentScope { get; set; }
 
         public bool IsAnonymous { get; private set; }
@@ -160,35 +242,6 @@ namespace PenguinLangSyntax
                 return result;
             }
         }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                Declarations.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            ).Concat(
-                InitialRoutines.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            ).Concat(
-                Functions.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            ).Concat(
-                Classes.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            ).Concat(
-                Enums.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            ).Concat(
-                Interfaces.SelectMany(x => x.PrettyPrint(indentLevel + 1))
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Declarations.ForEach(i => i.TraverseChildrenImpl(callback, this));
-            InitialRoutines.ForEach(i => i.TraverseChildrenImpl(callback, this));
-            Functions.ForEach(i => i.TraverseChildrenImpl(callback, this));
-            Classes.ForEach(i => i.TraverseChildrenImpl(callback, this));
-            Enums.ForEach(i => i.TraverseChildrenImpl(callback, this));
-            Interfaces.ForEach(i => i.TraverseChildrenImpl(callback, this));
-        }
     }
 
     public class InitialRoutine : SyntaxNode, ISyntaxScope
@@ -205,6 +258,7 @@ namespace PenguinLangSyntax
 
         static UInt64 counter = 0;
 
+        [ChildrenNode]
         public CodeBlock CodeBlock { get; }
 
         public string Name { get; }
@@ -219,20 +273,6 @@ namespace PenguinLangSyntax
         public bool IsAnonymous => false;
 
         public uint ScopeDepth { get; set; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                CodeBlock.PrettyPrint(indentLevel + 1)
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            CodeBlock.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class CodeBlock : SyntaxNode, ISyntaxScope
@@ -245,9 +285,10 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
-        static UInt64 counter = 0;
+        static ulong counter = 0;
 
-        public List<CodeBlockItem> BlockItems { get; } = new();
+        [ChildrenNode]
+        public List<CodeBlockItem> BlockItems { get; } = [];
 
         public string Name { get; } = $"codeblock_{counter++}";
 
@@ -262,16 +303,6 @@ namespace PenguinLangSyntax
         public bool IsAnonymous => true;
 
         public uint ScopeDepth { get; set; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-            => BlockItems.SelectMany(x => x.PrettyPrint(indentLevel));
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            BlockItems.ForEach(i => i.TraverseChildrenImpl(callback, this));
-        }
     }
 
     public class CodeBlockItem : SyntaxNode
@@ -288,30 +319,13 @@ namespace PenguinLangSyntax
             }
         }
 
+        [ChildrenNode]
         public Statement? Statement { get; }
 
+        [ChildrenNode]
         public Declaration? Declaration { get; }
 
         public bool IsDeclaration => Declaration is not null;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return IsDeclaration ? Declaration!.PrettyPrint(indentLevel) : Statement!.PrettyPrint(indentLevel);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            if (IsDeclaration)
-            {
-                Declaration!.TraverseChildrenImpl(callback, this);
-            }
-            else
-            {
-                Statement!.TraverseChildrenImpl(callback, this);
-            }
-        }
     }
 
     public class Statement : SyntaxNode
@@ -381,76 +395,32 @@ namespace PenguinLangSyntax
 
         public Type StatementType { get; }
 
+        [ChildrenNode]
         public CodeBlock? CodeBlock { get; }
 
+        [ChildrenNode]
         public ExpressionStatement? ExpressionStatement { get; }
 
+        [ChildrenNode]
         public IfStatement? IfStatement { get; }
 
+        [ChildrenNode]
         public ForStatement? ForStatement { get; }
 
+        [ChildrenNode]
         public WhileStatement? WhileStatement { get; }
 
+        [ChildrenNode]
         public JumpStatement? JumpStatement { get; }
 
+        [ChildrenNode]
         public AssignmentStatement? AssignmentStatement { get; }
 
+        [ChildrenNode]
         public ReturnStatement? ReturnStatement { get; }
 
+        [ChildrenNode]
         public YieldStatement? YieldStatement { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return StatementType switch
-            {
-                Type.SubBlock => CodeBlock!.PrettyPrint(indentLevel + 1),
-                Type.ExpressionStatement => ExpressionStatement!.PrettyPrint(indentLevel),
-                Type.IfStatement => IfStatement!.PrettyPrint(indentLevel),
-                Type.ForStatement => ForStatement!.PrettyPrint(indentLevel),
-                Type.WhileStatement => WhileStatement!.PrettyPrint(indentLevel),
-                Type.JumpStatement => JumpStatement!.PrettyPrint(indentLevel),
-                Type.AssignmentStatement => AssignmentStatement!.PrettyPrint(indentLevel),
-                Type.ReturnStatement => ReturnStatement!.PrettyPrint(indentLevel),
-                Type.YieldStatement => YieldStatement!.PrettyPrint(indentLevel),
-                _ => throw new NotImplementedException($"Invalid statement type: {StatementType}"),
-            };
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            switch (StatementType)
-            {
-                case Type.SubBlock:
-                    CodeBlock!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.ExpressionStatement:
-                    ExpressionStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.IfStatement:
-                    IfStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.ForStatement:
-                    ForStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.WhileStatement:
-                    WhileStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.JumpStatement:
-                    JumpStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.AssignmentStatement:
-                    AssignmentStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.ReturnStatement:
-                    ReturnStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.YieldStatement:
-                    YieldStatement!.TraverseChildrenImpl(callback, this);
-                    break;
-            }
-        }
     }
 
     public class ExpressionStatement : SyntaxNode
@@ -458,22 +428,10 @@ namespace PenguinLangSyntax
         public ExpressionStatement(SyntaxWalker walker, ExpressionStatementContext context) : base(walker, context)
         {
             Expression = new Expression(walker, context.expression());
-
         }
 
+        [ChildrenNode]
         public Expression Expression { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return Expression.PrettyPrint(indentLevel);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Expression.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class IfStatement : SyntaxNode
@@ -497,87 +455,37 @@ namespace PenguinLangSyntax
             }
         }
 
+        [ChildrenNode]
         public Expression Condition { get; }
 
+        [ChildrenNode]
         public Statement MainStatement { get; }
 
+        [ChildrenNode]
         public Statement? ElseStatement { get; }
 
         public bool HasElse => ElseStatement is not null;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                Condition.PrettyPrint(indentLevel + 1, "(condition)")
-            ).Concat(
-                MainStatement.PrettyPrint(indentLevel + 1, "(main statement)")
-            ).Concat(
-                HasElse ? ElseStatement!.PrettyPrint(indentLevel + 1, "(else statement)") : []
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Condition.TraverseChildrenImpl(callback, this);
-            MainStatement.TraverseChildrenImpl(callback, this);
-            if (HasElse)
-            {
-                ElseStatement!.TraverseChildrenImpl(callback, this);
-            }
-        }
     }
 
     public class WhileStatement(SyntaxWalker walker, WhileStatementContext context) : SyntaxNode(walker, context)
     {
+        [ChildrenNode]
         public Expression Condition { get; } = new Expression(walker, context.expression());
 
+        [ChildrenNode]
         public Statement BodyStatement { get; } = new Statement(walker, context.statement());
-
-        override public IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                Condition.PrettyPrint(indentLevel + 1, "(condition)")
-            ).Concat(
-                BodyStatement.PrettyPrint(indentLevel + 1, "(body)")
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Condition.TraverseChildrenImpl(callback, this);
-            BodyStatement.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class ForStatement(SyntaxWalker walker, ForStatementContext context) : SyntaxNode(walker, context)
     {
+        [ChildrenNode]
         public Declaration Declaration { get; } = new Declaration(walker, context.declaration());
 
+        [ChildrenNode]
         public Expression Expression { get; } = new Expression(walker, context.expression());
 
+        [ChildrenNode]
         public Statement BodyStatement { get; } = new Statement(walker, context.statement());
-
-        override public IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                Expression.PrettyPrint(indentLevel + 1, "(expression)")
-            ).Concat(
-                BodyStatement.PrettyPrint(indentLevel + 1, "(body)")
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Declaration.TraverseChildrenImpl(callback, this);
-            Expression.TraverseChildrenImpl(callback, this);
-            BodyStatement.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class JumpStatement : SyntaxNode
@@ -605,31 +513,18 @@ namespace PenguinLangSyntax
         }
 
         public Type JumpType { get; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-        }
     }
 
     public class ReturnStatement(SyntaxWalker walker, ReturnStatementContext context) : SyntaxNode(walker, context)
     {
+        [ChildrenNode]
         public Expression? ReturnExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-        }
     }
 
     public class YieldStatement(SyntaxWalker walker, YieldStatementContext context) : SyntaxNode(walker, context)
     {
+        [ChildrenNode]
         public Expression? YieldExpression { get; } = context.expression() is not null ? new Expression(walker, context.expression()) : null;
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-        }
     }
 
     public class IdentifierOrMemberAccess : SyntaxNode
@@ -650,32 +545,15 @@ namespace PenguinLangSyntax
             }
         }
 
+        [ChildrenNode]
         public Identifier? Identifier { get; }
 
+        [ChildrenNode]
         public MemberAccessExpression? MemberAccess { get; }
 
         public bool IsIdentifier => Identifier is not null;
 
         public bool IsMemberAccess => MemberAccess is not null;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return Identifier is not null ? Identifier.PrettyPrint(indentLevel) : MemberAccess!.PrettyPrint(indentLevel + 1);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            if (Identifier is not null)
-            {
-                Identifier.TraverseChildrenImpl(callback, this);
-            }
-            else
-            {
-                MemberAccess!.TraverseChildrenImpl(callback, this);
-            }
-        }
     }
 
     public class AssignmentStatement : SyntaxNode
@@ -701,26 +579,13 @@ namespace PenguinLangSyntax
             };
         }
 
+        [ChildrenNode]
         public IdentifierOrMemberAccess LeftHandSide { get; }
+
+        [ChildrenNode]
         public Expression RightHandSide { get; }
+
         public AssignmentOperatorEnum AssignmentOperator { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                LeftHandSide.PrettyPrint(indentLevel + 1)
-            ).Concat(
-                RightHandSide.PrettyPrint(indentLevel + 1)
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            LeftHandSide.TraverseChildrenImpl(callback, this);
-            RightHandSide.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class Identifier : SyntaxNode
@@ -754,11 +619,6 @@ namespace PenguinLangSyntax
         public string LiteralName { get; }
 
         public string Name => LiteralName;
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-        }
     }
 
     public class TypeSpecifier : SyntaxNode
@@ -774,11 +634,6 @@ namespace PenguinLangSyntax
         }
 
         public string Name { get; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-        }
     }
 
     public class Declaration : SyntaxNode
@@ -801,169 +656,87 @@ namespace PenguinLangSyntax
                 InitializeExpression = new Expression(walker, context.expression());
         }
 
+        [ChildrenNode]
         public Identifier Identifier { get; }
 
+        [ChildrenNode]
         public TypeSpecifier? TypeSpecifier { get; }
 
+        [ChildrenNode]
         public Expression? InitializeExpression { get; }
 
         public bool IsReadonly;
 
         public string Name => Identifier.Name;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel).Concat(
-                Identifier.PrettyPrint(indentLevel + 1)
-            ).Concat(
-                TypeSpecifier?.PrettyPrint(indentLevel + 1, "(type)") ?? []
-            ).Concat(
-                InitializeExpression?.PrettyPrint(indentLevel + 1, "(initializer)") ?? []
-            );
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Identifier.TraverseChildrenImpl(callback, this);
-            TypeSpecifier?.TraverseChildrenImpl(callback, this);
-            InitializeExpression?.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class Expression(SyntaxWalker walker, PenguinLangParser.ExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public LogicalOrExpression SubExpression { get; }
             = new LogicalOrExpression(walker, context.logicalOrExpression());
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpression.PrettyPrint(indentLevel);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpression.TraverseChildrenImpl(callback, this);
-        }
 
         public bool IsSimple => SubExpression.IsSimple;
     }
 
     public class LogicalOrExpression(SyntaxWalker walker, LogicalOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<LogicalAndExpression> SubExpressions { get; }
             = context.children.OfType<LogicalAndExpressionContext>()
                .Select(x => new LogicalAndExpression(walker, x))
                .ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class LogicalAndExpression(SyntaxWalker walker, LogicalAndExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<BitWiseOrExpression> SubExpressions { get; }
             = context.children.OfType<InclusiveOrExpressionContext>()
                .Select(x => new BitWiseOrExpression(walker, x))
                .ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class BitWiseOrExpression(SyntaxWalker walker, InclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<BitwiseXorExpression> SubExpressions { get; }
             = context.children.OfType<ExclusiveOrExpressionContext>()
                .Select(x => new BitwiseXorExpression(walker, x))
                .ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class BitwiseXorExpression(SyntaxWalker walker, ExclusiveOrExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<BitwiseAndExpression> SubExpressions { get; }
             = context.children.OfType<AndExpressionContext>()
                .Select(x => new BitwiseAndExpression(walker, x))
                .ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class BitwiseAndExpression(SyntaxWalker walker, AndExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<EqualityExpression> SubExpressions { get; }
             = context.children.OfType<EqualityExpressionContext>()
                .Select(x => new EqualityExpression(walker, x))
                .ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class EqualityExpression(SyntaxWalker walker, EqualityExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<RelationalExpression> SubExpressions { get; }
             = context.children.OfType<RelationalExpressionContext>()
                .Select(x => new RelationalExpression(walker, x))
@@ -977,23 +750,12 @@ namespace PenguinLangSyntax
             _ => throw new System.NotImplementedException("Invalid equality operator"),
         };
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
-
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class RelationalExpression(SyntaxWalker walker, PenguinLangParser.RelationalExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<ShiftExpression> SubExpressions { get; } = context.children.OfType<ShiftExpressionContext>()
                .Select(x => new ShiftExpression(walker, x))
                .ToList();
@@ -1007,23 +769,12 @@ namespace PenguinLangSyntax
                     _ => throw new System.NotImplementedException("Invalid relational operator")
                 }).ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
-
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class ShiftExpression(SyntaxWalker walker, ShiftExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<AdditiveExpression> SubExpressions { get; }
             = context.children.OfType<AdditiveExpressionContext>()
                .Select(x => new AdditiveExpression(walker, x))
@@ -1036,23 +787,12 @@ namespace PenguinLangSyntax
                     _ => throw new System.NotImplementedException("Invalid shift operator")
                 }).ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
-
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class AdditiveExpression(SyntaxWalker walker, AdditiveExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<MultiplicativeExpression> SubExpressions { get; }
             = context.children.OfType<MultiplicativeExpressionContext>()
                .Select(x => new MultiplicativeExpression(walker, x))
@@ -1065,23 +805,12 @@ namespace PenguinLangSyntax
                     _ => throw new System.NotImplementedException("Invalid additive operator")
                 }).ToList();
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
-
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
 
     public class MultiplicativeExpression(SyntaxWalker walker, MultiplicativeExpressionContext context) : SyntaxNode(walker, context), ISyntaxExpression
     {
+        [ChildrenNode]
         public List<CastExpression> SubExpressions { get; }
             = context.children.OfType<CastExpressionContext>()
                .Select(x => new CastExpression(walker, x))
@@ -1094,18 +823,6 @@ namespace PenguinLangSyntax
                     "%" => BinaryOperatorEnum.Modulo,
                     _ => throw new System.NotImplementedException("Invalid multiplicative operator")
                 }).ToList();
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return SubExpressions.Count == 1 ? SubExpressions[0].PrettyPrint(indentLevel) : base.PrettyPrint(indentLevel).Concat(SubExpressions.SelectMany(x => x.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpressions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
     }
@@ -1125,29 +842,13 @@ namespace PenguinLangSyntax
             }
         }
 
+        [ChildrenNode]
         public TypeSpecifier? CastTypeSpecifier { get; }
 
+        [ChildrenNode]
         public UnaryExpression SubUnaryExpression { get; }
 
         public bool IsTypeCast => CastTypeSpecifier is not null;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            if (IsTypeCast)
-                return base.PrettyPrint(indentLevel).Concat(SubUnaryExpression.PrettyPrint(indentLevel + 1));
-            else
-                return SubUnaryExpression.PrettyPrint(indentLevel);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            if (!IsTypeCast)
-                SubUnaryExpression.TraverseChildrenImpl(callback, this);
-            else
-                CastTypeSpecifier?.TraverseChildrenImpl(callback, this);
-        }
 
         public bool IsSimple => !IsTypeCast && SubUnaryExpression.IsSimple;
     }
@@ -1172,26 +873,12 @@ namespace PenguinLangSyntax
             SubExpression = new PostfixExpression(walker, context.postfixExpression());
         }
 
+        [ChildrenNode]
         public PostfixExpression SubExpression { get; }
 
         public UnaryOperatorEnum? UnaryOperator { get; }
 
         public bool HasUnaryOperator => UnaryOperator is not null;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            if (HasUnaryOperator)
-                return base.PrettyPrint(indentLevel).Concat(SubExpression!.PrettyPrint(indentLevel + 1));
-            else
-                return SubExpression!.PrettyPrint(indentLevel);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            SubExpression!.TraverseChildrenImpl(callback, this);
-        }
 
         public bool IsSimple => !HasUnaryOperator && SubExpression!.IsSimple;
     }
@@ -1205,6 +892,8 @@ namespace PenguinLangSyntax
             FunctionCall,
             MemberAccess,
             New,
+            Wait,
+            SpawnAsync,
         }
 
         public PostfixExpression(SyntaxWalker walker, PostfixExpressionContext context) : base(walker, context)
@@ -1234,6 +923,16 @@ namespace PenguinLangSyntax
                 SubNewExpression = new NewExpression(walker, context.newExpression());
                 PostfixExpressionType = Type.New;
             }
+            else if (context.waitExpression() != null)
+            {
+                SubWaitExpression = new WaitExpression(walker, context.waitExpression());
+                PostfixExpressionType = Type.Wait;
+            }
+            else if (context.spawnExpression() != null)
+            {
+                SubSpawnAsyncExpression = new SpawnAsyncExpression(walker, context.spawnExpression());
+                PostfixExpressionType = Type.SpawnAsync;
+            }
             else
             {
                 throw new NotImplementedException("Invalid postfix expression");
@@ -1242,52 +941,25 @@ namespace PenguinLangSyntax
 
         public Type PostfixExpressionType { get; }
 
+        [ChildrenNode]
         public PrimaryExpression? SubPrimaryExpression { get; }
 
         // public SlicingExpression? SubSlicingExpression { get; }
 
+        [ChildrenNode]
         public FunctionCallExpression? SubFunctionCallExpression { get; }
 
+        [ChildrenNode]
         public MemberAccessExpression? SubMemberAccessExpression { get; }
 
+        [ChildrenNode]
         public NewExpression? SubNewExpression { get; }
 
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return PostfixExpressionType switch
-            {
-                Type.PrimaryExpression => SubPrimaryExpression!.PrettyPrint(indentLevel),
-                // Type.Slicing => SubSlicingExpression!.PrettyPrint(indentLevel),
-                Type.FunctionCall => SubFunctionCallExpression!.PrettyPrint(indentLevel),
-                Type.MemberAccess => SubMemberAccessExpression!.PrettyPrint(indentLevel),
-                Type.New => SubNewExpression!.PrettyPrint(indentLevel),
-                _ => throw new NotImplementedException("Invalid postfix expression type"),
-            };
-        }
+        [ChildrenNode]
+        public WaitExpression? SubWaitExpression { get; }
 
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            switch (PostfixExpressionType)
-            {
-                case Type.PrimaryExpression:
-                    SubPrimaryExpression!.TraverseChildrenImpl(callback, this);
-                    break;
-                // case Type.Slicing:
-                //     SubSlicingExpression!.TraverseChildrenImpl(callback, this);
-                //     break;
-                case Type.FunctionCall:
-                    SubFunctionCallExpression!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.MemberAccess:
-                    SubMemberAccessExpression!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.New:
-                    SubNewExpression!.TraverseChildrenImpl(callback, this);
-                    break;
-            }
-        }
+        [ChildrenNode]
+        public SpawnAsyncExpression? SubSpawnAsyncExpression { get; }
 
         public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression && SubPrimaryExpression!.IsSimple;
     }
@@ -1344,48 +1016,13 @@ namespace PenguinLangSyntax
 
         public Type PrimaryExpressionType { get; }
 
+        [ChildrenNode]
         public Identifier? Identifier { get; }
 
         public string? Literal { get; }
 
+        [ChildrenNode]
         public Expression? ParenthesizedExpression { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return PrimaryExpressionType switch
-            {
-                Type.Identifier => Identifier!.PrettyPrint(indentLevel, note),
-                Type.Constant => [IPrettyPrint.PrintText(indentLevel, "ConstantLiteral: " + Literal)],
-                Type.StringLiteral => [IPrettyPrint.PrintText(indentLevel, "StringLiteral: " + Literal)],
-                Type.BoolLiteral => [IPrettyPrint.PrintText(indentLevel, "BoolLiteral: " + Literal)],
-                Type.VoidLiteral => [IPrettyPrint.PrintText(indentLevel, "VoidLiteral: " + Literal)],
-                Type.ParenthesizedExpression => ParenthesizedExpression!.PrettyPrint(indentLevel, note),
-                _ => throw new NotImplementedException(),
-            };
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            switch (PrimaryExpressionType)
-            {
-                case Type.Identifier:
-                    Identifier!.TraverseChildrenImpl(callback, this);
-                    break;
-                case Type.Constant:
-                    break;
-                case Type.StringLiteral:
-                    break;
-                case Type.BoolLiteral:
-                    break;
-                case Type.VoidLiteral:
-                    break;
-                case Type.ParenthesizedExpression:
-                    ParenthesizedExpression!.TraverseChildrenImpl(callback, this);
-                    break;
-            }
-        }
 
         public bool IsSimple => PrimaryExpressionType switch
         {
@@ -1395,7 +1032,7 @@ namespace PenguinLangSyntax
             Type.BoolLiteral => true,
             Type.VoidLiteral => true,
             Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
-            _ => throw new System.NotImplementedException("Invalid primary expression type"),
+            _ => throw new NotImplementedException("Invalid primary expression type"),
         };
     }
 
@@ -1421,6 +1058,35 @@ namespace PenguinLangSyntax
     //     }
     // }
 
+    public class WaitExpression : SyntaxNode, ISyntaxExpression
+    {
+        public WaitExpression(SyntaxWalker walker, WaitExpressionContext context) : base(walker, context)
+        {
+            Expression = new Expression(walker, context.expression());
+            IsWaitAny = context.GetText().StartsWith("wait_any");
+        }
+
+        public bool IsWaitAny { get; } = false;
+
+        [ChildrenNode]
+        public Expression Expression { get; }
+
+        public bool IsSimple => false;
+    }
+
+    public class SpawnAsyncExpression : SyntaxNode, ISyntaxExpression
+    {
+        public SpawnAsyncExpression(SyntaxWalker walker, SpawnExpressionContext context) : base(walker, context)
+        {
+            Expression = new Expression(walker, context.expression());
+        }
+
+        [ChildrenNode]
+        public Expression Expression { get; }
+
+        public bool IsSimple => false;
+    }
+
     public class NewExpression : SyntaxNode, ISyntaxExpression
     {
         public NewExpression(SyntaxWalker walker, NewExpressionContext context) : base(walker, context)
@@ -1431,25 +1097,11 @@ namespace PenguinLangSyntax
                .ToList();
         }
 
+        [ChildrenNode]
         public TypeSpecifier TypeSpecifier { get; }
 
+        [ChildrenNode]
         public List<Expression> ArgumentsExpression { get; }
-
-        public override string ToString() => "new " + TypeSpecifier.Name;
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel)
-                .Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            TypeSpecifier.TraverseChildrenImpl(callback, this);
-            ArgumentsExpression.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => false;
     }
@@ -1471,32 +1123,16 @@ namespace PenguinLangSyntax
                .ToList();
         }
 
+        [ChildrenNode]
         public PrimaryExpression? PrimaryExpression { get; }
 
+        [ChildrenNode]
         public MemberAccessExpression? MemberAccessExpression { get; }
 
         public bool IsMemberAccess => MemberAccessExpression is not null;
 
+        [ChildrenNode]
         public List<Expression> ArgumentsExpression { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel)
-                .Concat(IsMemberAccess ? MemberAccessExpression!.PrettyPrint(indentLevel + 1, "(Function)") : PrimaryExpression!.PrettyPrint(indentLevel + 1, "(Function)"))
-                .Concat(ArgumentsExpression.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            if (IsMemberAccess)
-                MemberAccessExpression?.TraverseChildrenImpl(callback, this);
-            else
-                PrimaryExpression?.TraverseChildrenImpl(callback, this);
-
-            ArgumentsExpression.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => false;
     }
@@ -1512,24 +1148,11 @@ namespace PenguinLangSyntax
             IsWrite = isWrite;
         }
 
+        [ChildrenNode]
         public PrimaryExpression PrimaryExpression { get; }
 
+        [ChildrenNode]
         public List<Identifier> MemberIdentifiers { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel)
-                .Concat(PrimaryExpression.PrettyPrint(indentLevel + 1, "(Object)"))
-                .Concat(MemberIdentifiers.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Member)")));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            PrimaryExpression.TraverseChildrenImpl(callback, this);
-            MemberIdentifiers.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
 
         public bool IsSimple => false;
 
@@ -1605,14 +1228,18 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public Identifier FunctionIdentifier { get; }
 
+        [ChildrenNode]
         public List<Declaration> Parameters { get; }
 
+        [ChildrenNode]
         public TypeSpecifier ReturnType { get; }
 
         public bool? ReturnValueIsReadonly { get; }
 
+        [ChildrenNode]
         public CodeBlock? CodeBlock { get; }
 
         public string Name => FunctionIdentifier.Name;
@@ -1634,25 +1261,6 @@ namespace PenguinLangSyntax
         public bool? IsPure { get; }
 
         public bool? IsAsync { get; }
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel)
-                .Concat(FunctionIdentifier.PrettyPrint(indentLevel + 1, "(FunctionName)"))
-                .Concat(Parameters.SelectMany(x => x.PrettyPrint(indentLevel + 1, "(Parameter)")))
-                .Concat(ReturnType.PrettyPrint(indentLevel + 1, "(ReturnType)"))
-                .Concat(CodeBlock?.PrettyPrint(indentLevel + 1) ?? []);
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            FunctionIdentifier.TraverseChildrenImpl(callback, this);
-            Parameters.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            ReturnType.TraverseChildrenImpl(callback, this);
-            CodeBlock?.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class ClassDefinition : SyntaxNode, ISyntaxScope
@@ -1676,6 +1284,7 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public Identifier ClassIdentifier { get; }
 
         public string Name => ClassIdentifier.Name;
@@ -1684,8 +1293,10 @@ namespace PenguinLangSyntax
 
         public List<SyntaxSymbol> Symbols { get; } = [];
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
+        [ChildrenNode]
         public List<InitialRoutine> InitialRoutines { get; } = [];
 
         public bool IsAnonymous => false;
@@ -1696,31 +1307,14 @@ namespace PenguinLangSyntax
 
         public uint ScopeDepth { get; set; }
 
+        [ChildrenNode]
         public List<ClassDeclaration> ClassDeclarations { get; } = [];
 
+        [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; } = null;
 
+        [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
-
-        public override IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
-        {
-            return base.PrettyPrint(indentLevel)
-                .Concat(ClassIdentifier.PrettyPrint(indentLevel + 1, "(ClassName)"))
-                .Concat(GenericDefinitions?.PrettyPrint(indentLevel + 1, "(Generics)") ?? [])
-                .Concat(ClassDeclarations.SelectMany(x => x.PrettyPrint(indentLevel + 1)))
-                .Concat(Functions.SelectMany(i => i.PrettyPrint(indentLevel + 1)))
-                .Concat(InterfaceImplementations.SelectMany(i => i.PrettyPrint(indentLevel + 1)));
-        }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            ClassIdentifier.TraverseChildrenImpl(callback, this);
-            ClassDeclarations.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            Functions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            InterfaceImplementations.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 
     public class GenericDefinitions : SyntaxNode
@@ -1732,50 +1326,28 @@ namespace PenguinLangSyntax
                .ToList();
         }
 
+        [ChildrenNode]
         public List<Identifier> TypeParameters { get; } = [];
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            TypeParameters.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 
-    public class GenericArguments : SyntaxNode
+    public class GenericArguments(SyntaxWalker walker, PenguinLangParser.GenericArgumentsContext context) : SyntaxNode(walker, context)
     {
-        public GenericArguments(SyntaxWalker walker, GenericArgumentsContext context) : base(walker, context)
-        {
-            TypeParameters = context.children.OfType<TypeSpecifierContext>()
+        [ChildrenNode]
+        public List<TypeSpecifier> TypeParameters { get; } = context.children.OfType<TypeSpecifierContext>()
                .Select(x => new TypeSpecifier(walker, x))
                .ToList();
-        }
-
-        public List<TypeSpecifier> TypeParameters { get; } = [];
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            TypeParameters.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 
-    public class ClassDeclaration : SyntaxNode, ISyntaxScope
+    public class ClassDeclaration(SyntaxWalker walker, PenguinLangParser.ClassDeclarationContext context) : SyntaxNode(walker, context), ISyntaxScope
     {
-        public ClassDeclaration(SyntaxWalker walker, ClassDeclarationContext context) : base(walker, context)
-        {
-            Identifier = new Identifier(walker, context.identifier(), false);
-            TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
-            IsReadonly = context.declarationKeyword().GetText() == "val";
-            Initializer = context.expression() != null ? new Expression(walker, context.expression()) : null;
-        }
+        [ChildrenNode]
+        public Identifier Identifier { get; } = new Identifier(walker, context.identifier(), false);
 
-        public Identifier Identifier { get; }
+        [ChildrenNode]
+        public TypeSpecifier TypeSpecifier { get; } = new TypeSpecifier(walker, context.typeSpecifier());
 
-        public TypeSpecifier TypeSpecifier { get; }
-
-        public Expression? Initializer { get; }
+        [ChildrenNode]
+        public Expression? Initializer { get; } = context.expression() != null ? new Expression(walker, context.expression()) : null;
 
         public string Name => Identifier.Name;
 
@@ -1791,16 +1363,7 @@ namespace PenguinLangSyntax
 
         public ISyntaxScope? ParentScope { get; set; }
 
-        public bool IsReadonly { get; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Identifier.TraverseChildrenImpl(callback, this);
-            TypeSpecifier.TraverseChildrenImpl(callback, this);
-            Initializer?.TraverseChildrenImpl(callback, this);
-        }
+        public bool IsReadonly { get; } = context.declarationKeyword().GetText() == "val";
     }
 
 
@@ -1829,6 +1392,7 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public Identifier EnumIdentifier { get; }
 
         public string Name => EnumIdentifier.Name;
@@ -1837,8 +1401,10 @@ namespace PenguinLangSyntax
 
         public List<SyntaxSymbol> Symbols { get; } = [];
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
+        [ChildrenNode]
         public List<InitialRoutine> InitialRoutines { get; } = [];
 
         public bool IsAnonymous => false;
@@ -1849,23 +1415,14 @@ namespace PenguinLangSyntax
 
         public uint ScopeDepth { get; set; }
 
+        [ChildrenNode]
         public List<EnumDeclaration> EnumDeclarations { get; } = [];
 
+        [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; } = null;
 
+        [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            EnumIdentifier.TraverseChildrenImpl(callback, this);
-            EnumDeclarations.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            GenericDefinitions?.TraverseChildrenImpl(callback, this);
-            Functions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            InitialRoutines.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            InterfaceImplementations.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 
     public class EnumDeclaration : SyntaxNode, ISyntaxScope
@@ -1876,8 +1433,10 @@ namespace PenguinLangSyntax
             TypeSpecifier = context.typeSpecifier() != null ? new TypeSpecifier(walker, context.typeSpecifier()) : null;
         }
 
+        [ChildrenNode]
         public Identifier Identifier { get; }
 
+        [ChildrenNode]
         public TypeSpecifier? TypeSpecifier { get; }
 
         public string Name => Identifier.Name;
@@ -1893,14 +1452,6 @@ namespace PenguinLangSyntax
         public uint ScopeDepth { get; set; }
 
         public ISyntaxScope? ParentScope { get; set; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Identifier.TraverseChildrenImpl(callback, this);
-            TypeSpecifier?.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class InterfaceDefinition : SyntaxNode, ISyntaxScope
@@ -1921,6 +1472,7 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public Identifier InterfaceIdentifier { get; }
 
         public string Name => InterfaceIdentifier.Name;
@@ -1929,6 +1481,7 @@ namespace PenguinLangSyntax
 
         public List<SyntaxSymbol> Symbols { get; } = [];
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
         public bool IsAnonymous => false;
@@ -1939,19 +1492,11 @@ namespace PenguinLangSyntax
 
         public uint ScopeDepth { get; set; }
 
+        [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; } = null;
 
+        [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; } = [];
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            InterfaceIdentifier.TraverseChildrenImpl(callback, this);
-            GenericDefinitions?.TraverseChildrenImpl(callback, this);
-            Functions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            InterfaceImplementations.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 
     public interface IInterfaceImplementation
@@ -1988,6 +1533,7 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public TypeSpecifier InterfaceType { get; }
 
         public string Name => InterfaceType.Name;
@@ -2004,18 +1550,11 @@ namespace PenguinLangSyntax
 
         public ISyntaxScope? ParentScope { get; set; }
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
+        [ChildrenNode]
         public WhereDefinition? WhereDefinition { get; set; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            InterfaceType.TraverseChildrenImpl(callback, this);
-            Functions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            WhereDefinition?.TraverseChildrenImpl(callback, this);
-        }
     }
 
     public class InterfaceForImplementation : SyntaxNode, ISyntaxScope, IInterfaceImplementation
@@ -2034,8 +1573,10 @@ namespace PenguinLangSyntax
             walker.PopScope();
         }
 
+        [ChildrenNode]
         public TypeSpecifier InterfaceType { get; }
 
+        [ChildrenNode]
         public TypeSpecifier ForType { get; }
 
         public string Name => InterfaceType.Name;
@@ -2052,58 +1593,27 @@ namespace PenguinLangSyntax
 
         public ISyntaxScope? ParentScope { get; set; }
 
+        [ChildrenNode]
         public List<FunctionDefinition> Functions { get; } = [];
 
+        [ChildrenNode]
         public WhereDefinition? WhereDefinition { get; set; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            InterfaceType.TraverseChildrenImpl(callback, this);
-            ForType.TraverseChildrenImpl(callback, this);
-            Functions.ForEach(x => x.TraverseChildrenImpl(callback, this));
-            WhereDefinition?.TraverseChildrenImpl(callback, this);
-        }
     }
 
-    public class WhereClause : SyntaxNode
+    public class WhereClause(SyntaxWalker walker, PenguinLangParser.WhereClauseContext context) : SyntaxNode(walker, context)
     {
-        public WhereClause(SyntaxWalker walker, WhereClauseContext context) : base(walker, context)
-        {
-            Identifier = new Identifier(walker, context.identifier(), false);
-            TypeSpecifier = new TypeSpecifier(walker, context.typeSpecifier());
-        }
+        [ChildrenNode]
+        public Identifier Identifier { get; } = new Identifier(walker, context.identifier(), false);
 
-        public Identifier Identifier { get; }
-
-        public TypeSpecifier TypeSpecifier { get; }
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            Identifier.TraverseChildrenImpl(callback, this);
-            TypeSpecifier.TraverseChildrenImpl(callback, this);
-        }
+        [ChildrenNode]
+        public TypeSpecifier TypeSpecifier { get; } = new TypeSpecifier(walker, context.typeSpecifier());
     }
 
-    public class WhereDefinition : SyntaxNode
+    public class WhereDefinition(SyntaxWalker walker, PenguinLangParser.WhereDefinitionContext context) : SyntaxNode(walker, context)
     {
-        public WhereDefinition(SyntaxWalker walker, WhereDefinitionContext context) : base(walker, context)
-        {
-            WhereClauses = context.children.OfType<WhereClauseContext>()
+        [ChildrenNode]
+        public List<WhereClause> WhereClauses { get; } = context.children.OfType<WhereClauseContext>()
                .Select(x => new WhereClause(walker, x))
                .ToList();
-        }
-
-        public List<WhereClause> WhereClauses { get; } = [];
-
-        public override void TraverseChildrenImpl(Func<SyntaxNode, SyntaxNode, bool> callback, SyntaxNode parent)
-        {
-            if (!callback(this, parent)) throw new EndOfStreamException();
-
-            WhereClauses.ForEach(x => x.TraverseChildrenImpl(callback, this));
-        }
     }
 }

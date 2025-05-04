@@ -21,5 +21,8 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <NoWarn>3021;1701;1702</NoWarn>
   </PropertyGroup>
-
+  
+  <PropertyGroup>
+    <WarningAsError>CS8509</WarningAsError>
+  </PropertyGroup>
 </Project>

@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 namespace BabyPenguin.SemanticPass
 {
 
+
     public class AsyncRewritingPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
@@ -18,6 +19,54 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
+        public void Process()
+        {
+            foreach (var func in Model.FindAll(i => i is IFunction))
+            {
+                Process(func);
+            }
+        }
+
+        public void RewriteAsyncWait(ICodeContainer codeContainer)
+        {
+            /*
+                async fun test() -> bool {}
+
+                initial {
+                    var a : bool = wait test();
+                }
+
+                // rewrite to:
+                initial {
+                    var a : bool;
+                    var f: IFuture<bool> = async test();
+                    while (true) {
+                        wait;
+                        var res : FutureState<bool> = f.poll(); 
+                        if (res is FutureState<bool>.ready_finished) {
+                            a = res.ready_finished;
+                            break;
+                        } 
+                        else if (res is FutureState<bool>.ready) {
+                            a = res.ready;
+                        } 
+                        else if (res is FutureState<bool>.finished) {
+                            break;
+                        }
+                    }
+                }
+            */
+
+            codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
+            {
+                if (node is WaitExpression waitExp && waitExp.Expression != null)
+                {
+
+                }
+                return true;
+            });
+        }
+
         public void IdentifyAsyncFunction(IFunction func)
         {
             if (func.IsAsync != null) return;  // declared as async/!async, respect
@@ -29,6 +78,12 @@ namespace BabyPenguin.SemanticPass
                     {
                         func.IsAsync = true;
                         Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has yield statement", node.SourceLocation);
+                        return false;
+                    }
+                    else if (node is WaitExpression)
+                    {
+                        func.IsAsync = true;
+                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has wait statement", node.SourceLocation);
                         return false;
                     }
                     else if (node is FunctionCallExpression exp)
@@ -76,14 +131,6 @@ namespace BabyPenguin.SemanticPass
                     }
                     return true;
                 });
-        }
-
-        public void Process()
-        {
-            foreach (var func in Model.FindAll(i => i is IFunction))
-            {
-                Process(func);
-            }
         }
 
         public string Report
