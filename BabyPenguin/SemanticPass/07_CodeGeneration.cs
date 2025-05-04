@@ -338,6 +338,19 @@ namespace BabyPenguin.SemanticPass
                             throw new NotImplementedException();
                         break;
                     }
+                case Statement.Type.YieldStatement:
+                    {
+                        var yieldStatement = item.YieldStatement!;
+                        if (yieldStatement.YieldExpression == null)
+                        {
+                            if (this.ReturnTypeInfo.IsVoidType)
+                                AddInstruction(new ReturnInstruction(null, ReturnStatus.YieldNotFinished));
+                            else Reporter.Throw($"Yield statement should have an expression that returns '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                        }
+                        else throw new NotImplementedException();
+
+                        break;
+                    }
                 default:
                     throw new NotImplementedException();
             }

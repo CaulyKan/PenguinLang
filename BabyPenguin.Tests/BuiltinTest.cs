@@ -272,20 +272,20 @@ namespace BabyPenguin.Tests
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     
-                    val state1 : FutureState<void, void> = routine.poll();
+                    val state1 : FutureState<void>  = routine.poll();
                     println(state1 as string);
                     
-                    val set_res : bool = routine.set_result(new Result<void, void>.ok(void), true);
+                    val set_res : bool = routine.set_result(new Option<void>.some(void), true);
                     println(set_res as string);
                     
-                    val state2 : FutureState<void, void> = routine.poll();
+                    val state2 : FutureState<void> = routine.poll();
                     println(state2 as string);
                 }
             ");
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}ok_finished{EOL}false{EOL}ok_finished{EOL}", vm.CollectOutput());
+            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}finished{EOL}false{EOL}finished{EOL}", vm.CollectOutput());
         }
     }
 }

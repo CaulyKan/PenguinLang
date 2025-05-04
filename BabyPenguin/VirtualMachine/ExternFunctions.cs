@@ -188,9 +188,19 @@ namespace BabyPenguin.VirtualMachine
             vm.Global.RegisterExternFunction("__builtin.RoutineContext.call", (frame, result, args) =>
             {
                 var target = args[0].As<ClassRuntimeVar>().ObjectFields["target"].As<FunctionRuntimeVar>();
-                var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
-                var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame.FrameLevel + 1);
-                var frameResult = newFrame!.Run();
+                var oldFrame = args[0].As<ClassRuntimeVar>().ObjectFields["frame"].As<BasicRuntimeVar>();
+                RuntimeFrameResult frameResult;
+                if (oldFrame.ExternImplenmentationValue is RuntimeFrame f)
+                {
+                    frameResult = f.Run();
+                }
+                else
+                {
+                    var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
+                    var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame.FrameLevel + 1);
+                    frameResult = newFrame!.Run();
+                    oldFrame.ExternImplenmentationValue = newFrame;
+                }
                 result!.As<BasicRuntimeVar>().I64Value = (int)frameResult.ReturnStatus; // TODO: really finished?
             });
 

@@ -26,6 +26,7 @@ namespace BabyPenguin.VirtualMachine
         public RuntimeGlobal Global { get; }
         public ICodeContainer CodeContainer { get; }
         public int FrameLevel { get; set; } = 0;
+        public int InstructionPointer { get; set; } = 0;
 
         private void DebugPrint(BabyPenguinIR inst, string? op1 = "", string? op2 = "", string? result = "")
         {
@@ -69,9 +70,10 @@ namespace BabyPenguin.VirtualMachine
                 throw new BabyPenguinRuntimeException("Cannot find label " + label);
             }
 
-            for (int i = 0; i < CodeContainer.Instructions.Count; i++)
+            RuntimeFrameResult? result = null;
+            while (InstructionPointer < CodeContainer.Instructions.Count)
             {
-                var command = CodeContainer.Instructions[i];
+                var command = CodeContainer.Instructions[InstructionPointer];
                 switch (command)
                 {
                     case AssignmentInstruction cmd:
@@ -485,13 +487,13 @@ namespace BabyPenguin.VirtualMachine
                                 }
                                 else
                                 {
-                                    i = findLabel(cmd.TargetLabel);
+                                    InstructionPointer = findLabel(cmd.TargetLabel);
                                     DebugPrint(cmd, op1: condVar.ToDebugString(), result: $"JUMP {cmd.TargetLabel}");
                                 }
                             }
                             else
                             {
-                                i = findLabel(cmd.TargetLabel);
+                                InstructionPointer = findLabel(cmd.TargetLabel);
                                 DebugPrint(cmd, result: $"JUMP {cmd.TargetLabel}");
                             }
                             break;
@@ -502,12 +504,13 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 IRuntimeVar retVar = resolveVariable(cmd.RetValue);
                                 DebugPrint(cmd, op1: retVar.ToDebugString());
-                                return new RuntimeFrameResult(retVar, cmd.ReturnStatus);
+                                result = new RuntimeFrameResult(retVar, cmd.ReturnStatus);
                             }
                             else
                             {
-                                return new RuntimeFrameResult(null, cmd.ReturnStatus);
+                                result = new RuntimeFrameResult(null, cmd.ReturnStatus);
                             }
+                            break;
                         }
                     case NewInstanceInstruction cmd:
                         // do nothing
@@ -596,6 +599,11 @@ namespace BabyPenguin.VirtualMachine
                     default:
                         throw new NotImplementedException();
                 }
+
+                InstructionPointer += 1;
+
+                if (result != null)
+                    return result;
             }
 
 

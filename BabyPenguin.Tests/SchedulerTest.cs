@@ -73,7 +73,7 @@ namespace BabyPenguin.Tests
                         yield;
                     }
                     fun test2() {
-                        test();
+                        test1();
                     }
                     fun test3() {
                     }

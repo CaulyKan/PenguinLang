@@ -227,6 +227,7 @@ namespace __builtin {
 
     class RoutineContext {
         var target: fun;
+        var frame: i64;
 
         extern fun new(var this: RoutineContext, val symbol: string);
         extern fun call(var this: RoutineContext) -> i64;
@@ -244,13 +245,14 @@ namespace __builtin {
                     val result: bool = job.start();
                     if (!result) {
                         // job is in invalid state, skip it for now
+                        println("Scheduler: job in '" + (job.routine_state() as string) + "' state, failed to run");
                     }
                     else {
                         val state : RoutineState = job.routine_state();
                         if (state is RoutineState.pending) {
                             this.pending_jobs.enqueue(job);
                         } else if (state is RoutineState.ready) {
-                            this.pending_jobs.enqueue(job);
+                            this.ready_jobs.enqueue(job);
                         } else if (state is RoutineState.finished) {
                             // job is finished, remove it from queue
                         }
@@ -281,7 +283,8 @@ namespace __builtin {
             fun start(val this: IFutureBase) -> bool {
                 var self: SimpleRoutine = this as SimpleRoutine;
                 val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
-                if (!res) return false;
+                if (!res) 
+                    return false;
                 val return_state : i64 = self.context.call();
 
                 if (return_state == 0) {
@@ -289,7 +292,7 @@ namespace __builtin {
                     RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
                 } else if (return_state == 1) {
                     // yield not finished
-                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.ready());
+                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
                 } else if (return_state == 2 || return_state == 3) {
                     // yield finished & finished
                     RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
