@@ -182,6 +182,26 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void WhileTrueBreakTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var i : u8 = 0;
+                    while (true) {
+                        if (i == 3) break;
+                        i+=1;
+                    }
+                    print(i as string);
+                } 
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
+
+        [Fact]
         public void FunctionBasicTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class EqualityExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<RelationalExpression> SubExpressions { get; private set; } = [];
+        public List<RelationalExpression> SubExpressions { get; set; } = [];
 
         public BinaryOperatorEnum? Operator { get; private set; }
 
@@ -28,6 +28,17 @@ namespace PenguinLangSyntax.SyntaxNodes
                 };
             }
             else throw new NotImplementedException();
+        }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new BitwiseAndExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpressions = [this],
+            };
         }
     }
 }

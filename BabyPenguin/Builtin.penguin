@@ -307,9 +307,11 @@ namespace __builtin {
     class SimpleRoutine {
         var state: AtomicI64 = new AtomicI64(0);
         var context: RoutineContext;
+        val context_symbol : string;
 
         fun new(var this: SimpleRoutine, val context_symbol: string) {
             this.context = new RoutineContext(context_symbol);
+            this.context_symbol = context_symbol;
         }
 
         impl IFutureBase {

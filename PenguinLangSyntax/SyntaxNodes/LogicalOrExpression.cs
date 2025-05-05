@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class LogicalOrExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<LogicalAndExpression> SubExpressions { get; private set; } = [];
+        public List<LogicalAndExpression> SubExpressions { get; set; } = [];
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
@@ -19,6 +19,17 @@ namespace PenguinLangSyntax.SyntaxNodes
                    .ToList();
             }
             else throw new NotImplementedException();
+        }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new Expression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpression = this,
+            };
         }
     }
 }

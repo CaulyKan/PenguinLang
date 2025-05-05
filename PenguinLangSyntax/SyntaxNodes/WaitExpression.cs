@@ -21,5 +21,17 @@ namespace PenguinLangSyntax.SyntaxNodes
         public Expression? Expression { get; private set; }
 
         public bool IsSimple => false;
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PostfixExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubWaitExpression = this,
+                PostfixExpressionType = PostfixExpression.Type.Wait
+            };
+        }
     }
 }

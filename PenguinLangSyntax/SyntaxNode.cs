@@ -7,6 +7,7 @@ global using Antlr4.Runtime;
 global using Antlr4.Runtime.Misc;
 global using static PenguinLangSyntax.PenguinLangParser;
 global using PenguinLangSyntax.SyntaxNodes;
+using System.Buffers.Text;
 
 namespace PenguinLangSyntax
 {
@@ -17,11 +18,16 @@ namespace PenguinLangSyntax
     {
         public uint ScopeDepth { get; set; }
 
-        public ParserRuleContext? Context { get; private set; }
-
         public SourceLocation SourceLocation { get; set; } = SourceLocation.Empty();
 
         public string Text { get; set; } = string.Empty;
+
+        private string? rewritedText = null;
+        public string? RewritedText
+        {
+            get => rewritedText ?? Text;
+            set => rewritedText = value;
+        }
 
         public override string ToString() => $"[{GetType().Name}] {shorten(Text)}";
 
@@ -32,10 +38,23 @@ namespace PenguinLangSyntax
             return result;
         }
 
+        public virtual T Build<T>(Action<T> init) where T : SyntaxNode, new()
+        {
+            var result = new T
+            {
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                Text = this.Text
+            };
+            init(result);
+            return result;
+        }
+
         public virtual void Build(SyntaxWalker walker, ParserRuleContext context)
         {
-            Context = context;
-            Text = Context.Start.InputStream.GetText(new Interval(Context.Start.StartIndex, Context.Stop.StopIndex));
+            Text = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
+            var fileNameIdentifier = Path.GetFileNameWithoutExtension(walker.FileName) + (walker.FileName.GetHashCode() % 0xFF);
+            SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Start.Column, context.Stop.Line, context.Stop.Column);
             ScopeDepth = walker.CurrentScope?.ScopeDepth ?? 0;
         }
 
@@ -96,7 +115,7 @@ namespace PenguinLangSyntax
             }
         }
 
-        public void ReplaceChild(SyntaxNode oldChild, SyntaxNode? newChild)
+        public virtual void ReplaceChild(SyntaxNode oldChild, SyntaxNode? newChild)
         {
             var properties = this.GetType().GetProperties()
                     .Where(p => p.GetCustomAttributes(typeof(ChildrenNodeAttribute), true).Length != 0);

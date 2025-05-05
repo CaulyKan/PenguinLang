@@ -57,15 +57,15 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public Type PrimaryExpressionType { get; private set; }
+        public Type PrimaryExpressionType { get; set; }
 
         [ChildrenNode]
-        public Identifier? Identifier { get; private set; }
+        public Identifier? Identifier { get; set; }
 
-        public string? Literal { get; private set; }
+        public string? Literal { get; set; }
 
         [ChildrenNode]
-        public Expression? ParenthesizedExpression { get; private set; }
+        public Expression? ParenthesizedExpression { get; set; }
 
         public bool IsSimple => PrimaryExpressionType switch
         {
@@ -77,5 +77,17 @@ namespace PenguinLangSyntax.SyntaxNodes
             Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
             _ => throw new NotImplementedException("Invalid primary expression type"),
         };
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PostfixExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubPrimaryExpression = this,
+                PostfixExpressionType = PostfixExpression.Type.PrimaryExpression
+            };
+        }
     }
 }

@@ -15,8 +15,20 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Expression? Expression { get; private set; }
+        public Expression? Expression { get; set; }
 
         public bool IsSimple => false;
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PostfixExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubSpawnAsyncExpression = this,
+                PostfixExpressionType = PostfixExpression.Type.SpawnAsync
+            };
+        }
     }
 }

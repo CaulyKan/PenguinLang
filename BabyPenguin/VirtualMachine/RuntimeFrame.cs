@@ -148,6 +148,11 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args, this.FrameLevel + 1);
                                 var resTemp = newFrame.Run();
+                                if (resTemp.ReturnStatus == ReturnStatus.Blocked)
+                                {
+                                    result = new RuntimeFrameResult(null, ReturnStatus.Blocked);
+                                    break;
+                                }
                                 if (resTemp.ReturnValue != null)
                                     retVar?.AssignFrom(resTemp.ReturnValue);
                             }
@@ -591,6 +596,20 @@ namespace BabyPenguin.VirtualMachine
                                 throw new BabyPenguinRuntimeException($"Enum {enumVar.TypeInfo} has no value");
                             resultVar.AssignFrom(enumVar.As<EnumRuntimeVar>().EnumObject!);
                             DebugPrint(cmd, op1: enumVar.ToDebugString(), result: resultVar.ToDebugString());
+                            break;
+                        }
+                    case SignalInstruction cmd:
+                        {
+                            var codeVar = resolveVariable(cmd.CodeSymbol);
+                            var value = Convert.ToInt32(codeVar.As<BasicRuntimeVar>().ValueToString!);
+                            switch (value)
+                            {
+                                case (int)SignalCode.Breakpoint:
+                                    Console.WriteLine("Breakpoint hit");
+                                    break;
+                                default:
+                                    throw new BabyPenguinRuntimeException("unknown signal: " + value);
+                            }
                             break;
                         }
                     case NopInstuction cmd:

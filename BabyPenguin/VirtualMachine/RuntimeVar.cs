@@ -191,6 +191,7 @@ namespace BabyPenguin.VirtualMachine
                 DoubleValue = otherVar.DoubleValue;
                 StringValue = otherVar.StringValue;
                 CharValue = otherVar.CharValue;
+                ExternImplenmentationValue = otherVar.ExternImplenmentationValue;
             }
             else
             {

@@ -17,13 +17,23 @@ namespace BabyPenguin.SemanticPass
             {
                 IdentifyAsyncFunction(function);
             }
+
+            if (node is ICodeContainer codeContainer)
+            {
+                RewriteAsyncWait(codeContainer);
+            }
         }
 
         public void Process()
         {
-            foreach (var func in Model.FindAll(i => i is IFunction))
+            foreach (var func in Model.FindAll(i => i is IFunction).Cast<IFunction>())
             {
-                Process(func);
+                IdentifyAsyncFunction(func);
+            }
+
+            foreach (var func in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
+            {
+                RewriteAsyncWait(func);
             }
         }
 
@@ -48,9 +58,41 @@ namespace BabyPenguin.SemanticPass
             {
                 if (node is WaitExpression waitExp && waitExp.Expression != null)
                 {
-                    // var asyncSpawnExp = new SpawnAsyncExpression(waitExp, waitExp.Expression);
-                    // var functionCallPrimaryExp = new PrimaryExpression(waitExp, PrimaryExpression.Type.ParenthesizedExpression, null, asyncSpawnExp, null); ;
-                    // var functionCallExp = new FunctionCallExpression(waitExp, asyncSpawnExp, null, []);
+                    var waitFunctionName = waitExp.IsWaitAny ? "do_wait_any" : "do_wait";
+
+                    var asyncSpawnExp = waitExp.Build<SpawnAsyncExpression>(e =>
+                    {
+                        e.Expression = waitExp.Expression;
+                        e.RewritedText = "async " + waitExp.Expression.RewritedText;
+                    });
+                    var primaryExp = asyncSpawnExp.Build<PrimaryExpression>(e =>
+                    {
+                        e.RewritedText = $"({asyncSpawnExp.RewritedText})";
+                        e.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
+                        e.ParenthesizedExpression = (asyncSpawnExp as ISyntaxExpression).CreateWrapperExpression<Expression>();
+                    });
+                    var memberAccessExp = primaryExp.Build<ReadMemberAccessExpression>(e =>
+                    {
+                        e.RewritedText = $"{primaryExp.RewritedText}.{waitFunctionName}";
+                        e.PrimaryExpression = primaryExp;
+                        e.MemberIdentifiers = [primaryExp.Build<SymbolIdentifier>(e => e.LiteralName = waitFunctionName)];
+                    });
+                    var functionCallExp = memberAccessExp.Build<FunctionCallExpression>(e =>
+                    {
+                        e.RewritedText = memberAccessExp.RewritedText + "()";
+                        e.MemberAccessExpression = memberAccessExp;
+                    });
+
+                    //parent.ReplaceChild(waitExp, functionCallExp);
+                    if (parent is PostfixExpression postfixExp)
+                    {
+                        postfixExp.PostfixExpressionType = PostfixExpression.Type.FunctionCall;
+                        postfixExp.SubWaitExpression = null;
+                        postfixExp.SubFunctionCallExpression = functionCallExp;
+                    }
+                    else throw new NotImplementedException();
+
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{waitExp.RewritedText}' to '{functionCallExp.RewritedText}'", waitExp.SourceLocation);
                 }
                 return true;
             });

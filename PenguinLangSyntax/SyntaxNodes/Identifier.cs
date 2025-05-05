@@ -24,8 +24,6 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public abstract bool IsType { get; }
 
-        public Identifier? Parent { get; set; }
-
         public string LiteralName { get; set; } = "";
 
         public string Name => LiteralName;

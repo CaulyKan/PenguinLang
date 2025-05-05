@@ -3,7 +3,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class BitwiseXorExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<BitwiseAndExpression> SubExpressions { get; private set; } = [];
+        public List<BitwiseAndExpression> SubExpressions { get; set; } = [];
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
@@ -18,6 +18,17 @@ namespace PenguinLangSyntax.SyntaxNodes
                    .ToList();
             }
             else throw new NotImplementedException();
+        }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new BitWiseOrExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpressions = [this],
+            };
         }
     }
 }

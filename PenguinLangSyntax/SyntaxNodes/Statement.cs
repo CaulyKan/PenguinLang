@@ -13,6 +13,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             AssignmentStatement,
             ReturnStatement,
             YieldStatement,
+            SignalStatement,
         }
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
@@ -61,6 +62,11 @@ namespace PenguinLangSyntax.SyntaxNodes
                     StatementType = Type.YieldStatement;
                     YieldStatement = Build<YieldStatement>(walker, context.yieldStatement());
                 }
+                else if (context.signalStatement() is not null)
+                {
+                    StatementType = Type.SignalStatement;
+                    SignalStatement = Build<SignalStatement>(walker, context.signalStatement());
+                }
                 else
                 {
                     StatementType = Type.SubBlock;
@@ -71,34 +77,37 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public Type StatementType { get; private set; }
+        public Type StatementType { get; set; }
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; private set; }
+        public CodeBlock? CodeBlock { get; set; }
 
         [ChildrenNode]
-        public ExpressionStatement? ExpressionStatement { get; private set; }
+        public ExpressionStatement? ExpressionStatement { get; set; }
 
         [ChildrenNode]
-        public IfStatement? IfStatement { get; private set; }
+        public IfStatement? IfStatement { get; set; }
 
         [ChildrenNode]
-        public ForStatement? ForStatement { get; private set; }
+        public ForStatement? ForStatement { get; set; }
 
         [ChildrenNode]
-        public WhileStatement? WhileStatement { get; private set; }
+        public WhileStatement? WhileStatement { get; set; }
 
         [ChildrenNode]
-        public JumpStatement? JumpStatement { get; private set; }
+        public JumpStatement? JumpStatement { get; set; }
 
         [ChildrenNode]
-        public AssignmentStatement? AssignmentStatement { get; private set; }
+        public AssignmentStatement? AssignmentStatement { get; set; }
 
         [ChildrenNode]
-        public ReturnStatement? ReturnStatement { get; private set; }
+        public ReturnStatement? ReturnStatement { get; set; }
 
         [ChildrenNode]
-        public YieldStatement? YieldStatement { get; private set; }
+        public YieldStatement? YieldStatement { get; set; }
+
+        [ChildrenNode]
+        public SignalStatement? SignalStatement { get; set; }
     }
 
 }

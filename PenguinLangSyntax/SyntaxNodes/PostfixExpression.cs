@@ -62,28 +62,39 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public Type PostfixExpressionType { get; private set; }
+        public Type PostfixExpressionType { get; set; }
 
         [ChildrenNode]
-        public PrimaryExpression? SubPrimaryExpression { get; private set; }
+        public PrimaryExpression? SubPrimaryExpression { get; set; }
 
         // public SlicingExpression? SubSlicingExpression { get; private set; }
 
         [ChildrenNode]
-        public FunctionCallExpression? SubFunctionCallExpression { get; private set; }
+        public FunctionCallExpression? SubFunctionCallExpression { get; set; }
 
         [ChildrenNode]
-        public MemberAccessExpression? SubMemberAccessExpression { get; private set; }
+        public MemberAccessExpression? SubMemberAccessExpression { get; set; }
 
         [ChildrenNode]
-        public NewExpression? SubNewExpression { get; private set; }
+        public NewExpression? SubNewExpression { get; set; }
 
         [ChildrenNode]
-        public WaitExpression? SubWaitExpression { get; private set; }
+        public WaitExpression? SubWaitExpression { get; set; }
 
         [ChildrenNode]
-        public SpawnAsyncExpression? SubSpawnAsyncExpression { get; private set; }
+        public SpawnAsyncExpression? SubSpawnAsyncExpression { get; set; }
 
         public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression && SubPrimaryExpression!.IsSimple;
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new UnaryExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpression = this,
+            };
+        }
     }
 }

@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace BabyPenguin.VirtualMachine
 {
     class ExternFunctions
@@ -11,20 +13,32 @@ namespace BabyPenguin.VirtualMachine
             AddRoutineContext(vm);
         }
 
+        public static void Print(BabyPenguinVM vm, string s, bool newline = false)
+        {
+            if (!newline)
+            {
+                vm.Output.Append(s);
+                Console.Write(s);
+            }
+            else
+            {
+                vm.Output.AppendLine(s);
+                Console.WriteLine(s);
+            }
+        }
+
         public static void AddPrint(BabyPenguinVM vm)
         {
             vm.Global.RegisterExternFunction("__builtin.print", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
-                vm.Output.Append(s);
-                Console.Write(s);
+                Print(vm, s);
             });
 
             vm.Global.RegisterExternFunction("__builtin.println", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
-                vm.Output.AppendLine(s as string);
-                Console.WriteLine(s);
+                Print(vm, s, true);
             });
         }
 

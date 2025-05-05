@@ -25,10 +25,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public PrimaryExpression? PrimaryExpression { get; private set; }
+        public PrimaryExpression? PrimaryExpression { get; set; }
 
         [ChildrenNode]
-        public MemberAccessExpression? MemberAccessExpression { get; private set; }
+        public MemberAccessExpression? MemberAccessExpression { get; set; }
 
         public bool IsMemberAccess => MemberAccessExpression is not null;
 
@@ -36,5 +36,17 @@ namespace PenguinLangSyntax.SyntaxNodes
         public List<Expression> ArgumentsExpression { get; private set; } = [];
 
         public bool IsSimple => false;
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PostfixExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubFunctionCallExpression = this,
+                PostfixExpressionType = PostfixExpression.Type.FunctionCall
+            };
+        }
     }
 }

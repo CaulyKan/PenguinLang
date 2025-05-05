@@ -351,6 +351,20 @@ namespace BabyPenguin.SemanticPass
 
                         break;
                     }
+                case Statement.Type.SignalStatement:
+                    {
+                        var signalStatement = item.SignalStatement!;
+                        var signalValue = AddExpression(signalStatement.SignalExpression!, false);
+                        if (signalValue.TypeInfo.IsIntType)
+                        {
+                            AddInstruction(new SignalInstruction(signalValue));
+                        }
+                        else
+                        {
+                            Reporter.Throw($"Signal statement requires an integer type, but got '{signalValue.TypeInfo}'", signalStatement.SourceLocation);
+                        }
+                    }
+                    break;
                 default:
                     throw new NotImplementedException();
             }
@@ -702,6 +716,14 @@ namespace BabyPenguin.SemanticPass
                             throw new NotImplementedException();
                         }
                     }
+                case SpawnAsyncExpression exp:
+                    {
+                        var subExpressionType = ResolveExpressionType(exp.Expression!);
+                        var futureType = Model.ResolveType($"__builtin.IFuture<{subExpressionType}>");
+                        if (futureType == null)
+                            Model.Reporter.Throw($"can't resolve type '__builtin.IFuture<${subExpressionType}>'");
+                        return futureType;
+                    }
                 default:
                     break;
             }
@@ -726,6 +748,34 @@ namespace BabyPenguin.SemanticPass
             }
             else
                 return false;
+        }
+
+        public ISymbol SchedulerAddSimpleJob(ICodeContainer codeContainer, SourceLocation sourceLocation, ISymbol? targetSymbol)
+        {
+            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
+            var pendingJobsSymbol = Model.ResolveSymbol("__builtin.Scheduler.pending_jobs") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.pending_jobs' is not found.");
+            var pendingJobsEnqueueSymbol = Model.ResolveSymbol("__builtin.Queue<__builtin.IFutureBase>.enqueue") ?? throw new BabyPenguinException("symbol '__builtin.Queue<__builtin.IFutureBase>.enqueue' is not found.");
+            var simpleRoutineType = Model.ResolveType("__builtin.SimpleRoutine") ?? throw new BabyPenguinException("type '__builtin.SimpleRoutine' is not found.");
+            var simpleRoutineConstructor = Model.ResolveSymbol("__builtin.SimpleRoutine.new") ?? throw new BabyPenguinException("symbol '__builtin.SimpleRoutine.new' is not found.");
+            var ifutureBaseType = Model.ResolveType("__builtin.IFutureBase") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
+            var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
+            var pendingJobsInstanceSymbol = AllocTempSymbol(Model.ResolveType("__builtin.Queue<__builtin.IFutureBase>") ?? throw new BabyPenguinException("type '__builtin.Queue<__builtin.IFutureBase>' is not found."), SourceLocation.Empty());
+
+            if (targetSymbol != null && targetSymbol.TypeInfo.FullName != ifutureVoidType.FullName)
+                Model.Reporter.Throw($"expected 'IFuture<void>' here", targetSymbol.SourceLocation);
+            else targetSymbol ??= AllocTempSymbol(ifutureVoidType, sourceLocation);
+
+            AddInstruction(new ReadMemberInstruction(pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
+            var routineNameSymbol = AllocTempSymbol(BasicType.String, sourceLocation);
+            var routineSymbol = AllocTempSymbol(simpleRoutineType, sourceLocation);
+            var futureSymbol = AllocTempSymbol(ifutureBaseType, sourceLocation);
+            AddInstruction(new AssignLiteralToSymbolInstruction(routineNameSymbol, BasicType.String, "\"" + codeContainer.FullName + "\""));
+            AddInstruction(new NewInstanceInstruction(routineSymbol));
+            AddInstruction(new FunctionCallInstruction(simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
+            AddInstruction(new CastInstruction(routineSymbol, ifutureBaseType, futureSymbol));
+            AddInstruction(new CastInstruction(routineSymbol, ifutureVoidType, targetSymbol));
+            AddInstruction(new FunctionCallInstruction(pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
+            return targetSymbol;
         }
 
         public ISymbol AddMemberAccessExpression(MemberAccessExpression exp, ISymbol to, out ISymbol? owner, out ISymbol? ownerBeforeImplicitConversion_)
@@ -1385,6 +1435,30 @@ namespace BabyPenguin.SemanticPass
                             break;
                     }
                     break;
+                case WaitExpression waitExpression:
+                    {
+                        if (waitExpression.Expression == null)
+                        {
+                            AddInstruction(new ReturnInstruction(null, ReturnStatus.Blocked));
+                        }
+                        else throw new NotImplementedException();
+                    }
+                    break;
+                case SpawnAsyncExpression spawnAsyncExpression:
+                    {
+                        var exp = spawnAsyncExpression.Expression!;
+                        // TODO: we need to convert expression into a annoymous function
+                        if (exp.Text.EndsWith("()"))
+                        {
+                            var funcSymbol = Model.ResolveSymbol(exp.Text.Replace("()", ""), scope: this) as FunctionSymbol;
+                            if (funcSymbol == null) Model.Reporter.Throw($"cant resolve function {exp.Text}");
+                            var func = funcSymbol.CodeContainer;
+                            return SchedulerAddSimpleJob(func, spawnAsyncExpression.SourceLocation, targetSymbol);
+                        }
+                        throw new NotImplementedException();
+                    }
+                default:
+                    throw new NotImplementedException($"unsupported expression: {expression}");
             }
 
             if (targetSymbol != null && to.TypeInfo.FullName != targetSymbol.TypeInfo.FullName)

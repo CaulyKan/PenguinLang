@@ -34,27 +34,14 @@ namespace BabyPenguin.SemanticPass
             }
 
             // push all initial routines into pending queue
+            foreach (var initialRoutine in Model.FindAll(i => i is IInitialRoutine).Cast<IInitialRoutine>())
+            {
+                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine, SourceLocation.Empty(), null);
+            }
+
+            // call __builtin._main_scheduler.entry()
             var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
             var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
-            var pendingJobsSymbol = Model.ResolveSymbol("__builtin.Scheduler.pending_jobs") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.pending_jobs' is not found.");
-            var pendingJobsEnqueueSymbol = Model.ResolveSymbol("__builtin.Queue<__builtin.IFutureBase>.enqueue") ?? throw new BabyPenguinException("symbol '__builtin.Queue<__builtin.IFutureBase>.enqueue' is not found.");
-            var simpleRoutineType = Model.ResolveType("__builtin.SimpleRoutine") ?? throw new BabyPenguinException("type '__builtin.SimpleRoutine' is not found.");
-            var simpleRoutineConstructor = Model.ResolveSymbol("__builtin.SimpleRoutine.new") ?? throw new BabyPenguinException("symbol '__builtin.SimpleRoutine.new' is not found.");
-            var ifutureBaseType = Model.ResolveType("__builtin.IFutureBase") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
-            var pendingJobsInstanceSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(Model.ResolveType("__builtin.Queue<__builtin.IFutureBase>") ?? throw new BabyPenguinException("type '__builtin.Queue<__builtin.IFutureBase>' is not found."), SourceLocation.Empty());
-
-            mainFunc.Instructions.Add(new ReadMemberInstruction(pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
-            foreach (var initialRoutine in Model.FindAll(i => i is IInitialRoutine))
-            {
-                var routineNameSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(BasicType.String, SourceLocation.Empty());
-                var routineSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(simpleRoutineType, SourceLocation.Empty());
-                var futureSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(ifutureBaseType, SourceLocation.Empty());
-                mainFunc.Instructions.Add(new AssignLiteralToSymbolInstruction(routineNameSymbol, BasicType.String, "\"" + initialRoutine.FullName + "\""));
-                mainFunc.Instructions.Add(new NewInstanceInstruction(routineSymbol));
-                mainFunc.Instructions.Add(new FunctionCallInstruction(simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
-                mainFunc.Instructions.Add(new CastInstruction(routineSymbol, ifutureBaseType, futureSymbol));
-                mainFunc.Instructions.Add(new FunctionCallInstruction(pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
-            }
             mainFunc.Instructions.Add(new FunctionCallInstruction(schedulerEntrySymbol, [schedulerSymbol], null));
         }
 

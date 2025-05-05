@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class RelationalExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<ShiftExpression> SubExpressions { get; private set; } = [];
+        public List<ShiftExpression> SubExpressions { get; set; } = [];
 
         public List<BinaryOperatorEnum> Operators { get; private set; } = [];
 
@@ -29,6 +29,17 @@ namespace PenguinLangSyntax.SyntaxNodes
                     }).ToList();
             }
             else throw new NotImplementedException();
+        }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new EqualityExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpressions = [this],
+            };
         }
     }
 }

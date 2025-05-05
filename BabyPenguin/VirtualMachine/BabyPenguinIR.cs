@@ -46,6 +46,18 @@ namespace BabyPenguin.VirtualMachine
         public override string StringOP2 => ReturnStatus.ToString();
     }
 
+    public enum SignalCode
+    {
+        Breakpoint = 0,
+    }
+
+    public record SignalInstruction(ISymbol CodeSymbol) : BabyPenguinIR
+    {
+        override public string StringCommand => "SIGN";
+
+        override public string StringOP1 => CodeSymbol.ToString() ?? "";
+    }
+
     public record BinaryOperationInstruction(BinaryOperatorEnum Operator, ISymbol LeftSymbol, ISymbol RightSymbol, ISymbol Target) : BabyPenguinIR
     {
         override public string StringCommand => Operator.ToString().ToUpper();

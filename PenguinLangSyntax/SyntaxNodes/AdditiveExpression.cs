@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class AdditiveExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<MultiplicativeExpression> SubExpressions { get; private set; } = [];
+        public List<MultiplicativeExpression> SubExpressions { get; set; } = [];
 
         public List<BinaryOperatorEnum> Operators { get; private set; } = [];
 
@@ -27,6 +27,17 @@ namespace PenguinLangSyntax.SyntaxNodes
                     }).ToList();
             }
             else throw new NotImplementedException();
+        }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new ShiftExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpressions = [this],
+            };
         }
     }
 }

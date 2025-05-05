@@ -18,14 +18,26 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public PrimaryExpression? PrimaryExpression { get; private set; }
+        public PrimaryExpression? PrimaryExpression { get; set; }
 
         [ChildrenNode]
-        public List<Identifier> MemberIdentifiers { get; private set; } = [];
+        public List<Identifier> MemberIdentifiers { get; set; } = [];
 
         public bool IsSimple => false;
 
         public abstract bool IsWrite { get; }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PostfixExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubMemberAccessExpression = this,
+                PostfixExpressionType = PostfixExpression.Type.MemberAccess
+            };
+        }
     }
 
     public class ReadMemberAccessExpression : MemberAccessExpression
@@ -37,4 +49,5 @@ namespace PenguinLangSyntax.SyntaxNodes
     {
         public override bool IsWrite => true;
     }
+
 }

@@ -97,6 +97,18 @@ namespace PenguinLangSyntax
         bool IsSimple { get; }
 
         SourceLocation SourceLocation { get; }
+
+        T CreateWrapperExpression<T>() where T : class, ISyntaxExpression
+        {
+            var exp = this;
+            while (exp is not T)
+            {
+                exp = exp.CreateWrapperExpression();
+            }
+            return (T)exp;
+        }
+
+        ISyntaxExpression CreateWrapperExpression();
     }
 
     public enum SyntaxScopeType

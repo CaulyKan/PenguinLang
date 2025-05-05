@@ -23,13 +23,24 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public TypeSpecifier? CastTypeSpecifier { get; private set; }
+        public TypeSpecifier? CastTypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public UnaryExpression? SubUnaryExpression { get; private set; }
+        public UnaryExpression? SubUnaryExpression { get; set; }
 
         public bool IsTypeCast => CastTypeSpecifier is not null;
 
         public bool IsSimple => !IsTypeCast && SubUnaryExpression!.IsSimple;
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new MultiplicativeExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                SubExpressions = [this],
+            };
+        }
     }
 }

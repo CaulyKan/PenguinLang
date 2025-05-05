@@ -212,6 +212,7 @@ statement:
 	| jumpStatement
 	| returnStatement
 	| yieldStatement
+	| signalStatement
 	| ';';
 
 identifierOrMemberAccess: identifier | memberAccessExpression;
@@ -237,6 +238,8 @@ jumpKeyword: 'continue' | 'break';
 returnStatement: 'return' expression? ';';
 
 yieldStatement: 'yield' expression? ';';
+
+signalStatement: '__signal' expression;
 
 compilationUnit: namespaceDeclaration* EOF;
 
