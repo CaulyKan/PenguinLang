@@ -224,6 +224,39 @@ namespace __builtin {
         impl IFutureBase;
         fun poll(val this: IFuture<T>) -> FutureState<T>;
         fun set_result(var this: IFuture<T>, val result: Option<T>, val is_finished: bool) -> bool;
+        fun do_wait(var this: IFuture<T>) -> T {
+            var result: T;
+            while(true) {
+                wait;
+                var state: FutureState<T> = this.poll();
+                if (state is FutureState<T>.ready_finished) {
+                    result = state.ready_finished;
+                    break;
+                }
+                else if (state is FutureState<T>.ready) {
+                    result = state.ready;
+                } else if (state is FutureState<T>.finished) {
+                    break;
+                }
+            }
+            return result;
+        }
+
+        fun do_wait_any(var this: IFuture<T>) -> Option<T> {
+            while(true) {
+                wait;
+                var state: FutureState<T> = this.poll();
+                if (state is FutureState<T>.ready_finished) {
+                    return new Option<T>.some(state.ready_finished);
+                }
+                else if (state is FutureState<T>.ready) {
+                    return new Option<T>.some(state.ready_finished);
+                } else if (state is FutureState<T>.finished) {
+                    break;
+                }
+            }
+            return new Option<T>.none();
+        }
     }
 
     class RoutineContext {

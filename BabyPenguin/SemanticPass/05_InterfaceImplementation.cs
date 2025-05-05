@@ -14,7 +14,7 @@ namespace BabyPenguin.SemanticPass
 
         public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass) : base(model, syntaxNode as SyntaxNode)
         {
-            var type = Model.ResolveType(syntaxNode.InterfaceType.Text, s => s.IsInterfaceType, implementingClass);
+            var type = Model.ResolveType(syntaxNode.InterfaceType!.Text, s => s.IsInterfaceType, implementingClass);
             if (type is not IInterface interfaceType)
                 throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}");
             Name = "vtable-" + interfaceType.FullName.Replace(".", "-");
@@ -87,7 +87,7 @@ namespace BabyPenguin.SemanticPass
                 {
                     foreach (var impl in namespaceDefinition.InterfaceImplementations)
                     {
-                        var forType = Model.ResolveType(impl.ForType.Text, scope: ns);
+                        var forType = Model.ResolveType(impl.ForType!.Text, scope: ns);
                         if (forType == null)
                             throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName}", impl.SourceLocation);
 
@@ -173,11 +173,11 @@ namespace BabyPenguin.SemanticPass
 
             foreach (var condition in whereDefinition.WhereClauses)
             {
-                var leftType = Model.ResolveType(condition.Identifier.Text, scope: container);
+                var leftType = Model.ResolveType(condition.Identifier!.Text, scope: container);
                 if (leftType == null)
                     throw new BabyPenguinException($"Could not resolve type {condition.Identifier.Text}", condition.SourceLocation);
 
-                var rightType = Model.ResolveType(condition.TypeSpecifier.Text, scope: container);
+                var rightType = Model.ResolveType(condition.TypeSpecifier!.Text, scope: container);
                 if (rightType == null)
                     throw new BabyPenguinException($"Could not resolve type {condition.TypeSpecifier.Text}", condition.SourceLocation);
 

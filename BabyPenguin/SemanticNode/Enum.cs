@@ -104,7 +104,7 @@ namespace BabyPenguin.SemanticNode
             TypeInfo = typeInfo ?? BasicType.Void;
         }
 
-        public EnumDeclaration(SemanticModel model, IEnum enum_, PenguinLangSyntax.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
+        public EnumDeclaration(SemanticModel model, IEnum enum_, PenguinLangSyntax.SyntaxNodes.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             Enum = enum_;

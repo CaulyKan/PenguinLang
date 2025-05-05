@@ -11,7 +11,7 @@ namespace PenguinLangSyntax
         public void Compile()
         {
             var walker = new SyntaxWalker(FileName, Reporter);
-            _ = new NamespaceDefinition(walker, Ast);
+            _ = SyntaxNode.Build<NamespaceDefinition>(walker, Ast);
             Namespaces = walker.Namespaces.FindAll(x => !x.IsEmpty).ToList();
             Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => x.PrettyPrint(0))));
         }
@@ -20,7 +20,6 @@ namespace PenguinLangSyntax
         public string FileName { get; } = file;
         public List<NamespaceDefinition> Namespaces { get; private set; } = [];
     }
-
 
     public class SyntaxWalker(string file, ErrorReporter reporter)
     {
@@ -73,7 +72,7 @@ namespace PenguinLangSyntax
 
                 case SyntaxScopeType.InitialRoutine:
                     {
-                        var _ = scope as InitialRoutine ?? throw new NotImplementedException();
+                        var _ = scope as InitialRoutineDefinition ?? throw new NotImplementedException();
                         break;
                     }
 

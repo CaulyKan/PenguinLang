@@ -4,6 +4,7 @@ global using BabyPenguin.Symbol;
 global using BabyPenguin.SemanticPass;
 global using BabyPenguin.VirtualMachine;
 global using PenguinLangSyntax;
+global using PenguinLangSyntax.SyntaxNodes;
 global using System.Text;
 global using System.Linq;
 global using System.Collections.Generic;

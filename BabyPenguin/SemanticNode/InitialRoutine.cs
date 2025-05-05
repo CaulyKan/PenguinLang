@@ -15,7 +15,7 @@ namespace BabyPenguin.SemanticNode
             Name = name;
         }
 
-        public InitialRoutine(SemanticModel model, PenguinLangSyntax.InitialRoutine syntaxNode) : base(model, syntaxNode)
+        public InitialRoutine(SemanticModel model, InitialRoutineDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
         }
@@ -32,7 +32,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 
-        public SyntaxNode? CodeSyntaxNode => (SyntaxNode as PenguinLangSyntax.InitialRoutine)?.CodeBlock;
+        public SyntaxNode? CodeSyntaxNode => (SyntaxNode as InitialRoutineDefinition)?.CodeBlock;
 
         public IType ReturnTypeInfo { get; set; } = BasicType.Void;
 

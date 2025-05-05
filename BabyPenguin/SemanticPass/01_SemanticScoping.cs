@@ -1,6 +1,3 @@
-using InitialRoutine = BabyPenguin.SemanticNode.InitialRoutine;
-using Namespace = BabyPenguin.SemanticNode.Namespace;
-
 namespace BabyPenguin.SemanticPass
 {
     public interface ISemanticScope : ISemanticNode

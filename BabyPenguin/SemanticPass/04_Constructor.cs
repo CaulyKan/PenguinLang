@@ -65,7 +65,7 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (decl.InitializeExpression != null)
                     {
-                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.Scope.ScopeDepth, scope: ns);
+                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.ScopeDepth, scope: ns);
                         constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
                     }
                 }

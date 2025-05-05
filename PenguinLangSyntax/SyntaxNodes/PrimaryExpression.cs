@@ -1,0 +1,81 @@
+namespace PenguinLangSyntax.SyntaxNodes
+{
+
+    public class PrimaryExpression : SyntaxNode, ISyntaxExpression
+    {
+        public enum Type
+        {
+            Identifier,
+            Constant,
+            StringLiteral,
+            BoolLiteral,
+            VoidLiteral,
+            ParenthesizedExpression,
+        }
+
+        public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
+        {
+            base.Build(walker, ctx);
+
+            if (ctx is PrimaryExpressionContext context)
+            {
+                if (context.children.OfType<IdentifierWithGenericContext>().Any())
+                {
+                    Identifier = Build<SymbolIdentifier>(walker, context.identifierWithGeneric());
+                    PrimaryExpressionType = Type.Identifier;
+                }
+                else if (context.Constant() != null)
+                {
+                    Literal = context.GetText();
+                    PrimaryExpressionType = Type.Constant;
+                }
+                else if (context.StringLiteral().Length > 0)
+                {
+                    Literal = context.GetText();
+                    PrimaryExpressionType = Type.StringLiteral;
+                }
+                else if (context.boolLiteral() != null)
+                {
+                    Literal = context.GetText();
+                    PrimaryExpressionType = Type.BoolLiteral;
+                }
+                else if (context.voidLiteral() != null)
+                {
+                    Literal = context.GetText();
+                    PrimaryExpressionType = Type.VoidLiteral;
+                }
+                else if (context.children.OfType<ExpressionContext>().Any())
+                {
+                    ParenthesizedExpression = Build<Expression>(walker, context.expression());
+                    PrimaryExpressionType = Type.ParenthesizedExpression;
+                }
+                else
+                {
+                    throw new System.NotImplementedException("Invalid primary expression");
+                }
+            }
+            else throw new NotImplementedException();
+        }
+
+        public Type PrimaryExpressionType { get; private set; }
+
+        [ChildrenNode]
+        public Identifier? Identifier { get; private set; }
+
+        public string? Literal { get; private set; }
+
+        [ChildrenNode]
+        public Expression? ParenthesizedExpression { get; private set; }
+
+        public bool IsSimple => PrimaryExpressionType switch
+        {
+            Type.Identifier => true,
+            Type.Constant => true,
+            Type.StringLiteral => true,
+            Type.BoolLiteral => true,
+            Type.VoidLiteral => true,
+            Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
+            _ => throw new NotImplementedException("Invalid primary expression type"),
+        };
+    }
+}

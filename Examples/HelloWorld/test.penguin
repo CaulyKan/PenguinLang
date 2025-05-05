@@ -1,5 +1,5 @@
                 initial {
-                    wait test();
+                    //wait test();
                     print("3");
                 } 
                 fun test() {

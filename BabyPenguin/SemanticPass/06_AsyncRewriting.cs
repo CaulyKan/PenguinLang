@@ -34,26 +34,13 @@ namespace BabyPenguin.SemanticPass
 
                 initial {
                     var a : bool = wait test();
+                    var b : Option<bool> = wait_any test();
                 }
 
                 // rewrite to:
                 initial {
-                    var a : bool;
-                    var f: IFuture<bool> = async test();
-                    while (true) {
-                        wait;
-                        var res : FutureState<bool> = f.poll(); 
-                        if (res is FutureState<bool>.ready_finished) {
-                            a = res.ready_finished;
-                            break;
-                        } 
-                        else if (res is FutureState<bool>.ready) {
-                            a = res.ready;
-                        } 
-                        else if (res is FutureState<bool>.finished) {
-                            break;
-                        }
-                    }
+                    var a : bool = (async test()).wait();
+                    var b : Option<bool> = (async test()).wait_any();
                 }
             */
 
@@ -61,7 +48,9 @@ namespace BabyPenguin.SemanticPass
             {
                 if (node is WaitExpression waitExp && waitExp.Expression != null)
                 {
-
+                    // var asyncSpawnExp = new SpawnAsyncExpression(waitExp, waitExp.Expression);
+                    // var functionCallPrimaryExp = new PrimaryExpression(waitExp, PrimaryExpression.Type.ParenthesizedExpression, null, asyncSpawnExp, null); ;
+                    // var functionCallExp = new FunctionCallExpression(waitExp, asyncSpawnExp, null, []);
                 }
                 return true;
             });
@@ -105,7 +94,7 @@ namespace BabyPenguin.SemanticPass
                             if (exp.PrimaryExpression!.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
                             {
                                 symbol = Model.ResolveShortSymbol(exp.PrimaryExpression.Identifier!.Name,
-                                    s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: func);
+                                    s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: func);
                             }
                             else
                             {

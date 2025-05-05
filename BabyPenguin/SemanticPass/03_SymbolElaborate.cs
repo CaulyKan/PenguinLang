@@ -170,7 +170,7 @@ namespace BabyPenguin.SemanticPass
                             foreach (var decl in syntaxNode.Declarations)
                             {
                                 var typeName = decl.TypeSpecifier!.Name; // TODO: type inference
-                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.Scope.ScopeDepth, null, decl.IsReadonly, false);
+                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, decl.IsReadonly, false);
                             }
                         }
                     }
@@ -186,7 +186,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var member in syntaxNode.ClassDeclarations)
                             {
-                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier.Name, member.SourceLocation, member.Scope.ScopeDepth, null, member.IsReadonly, true);
+                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, member.IsReadonly, true);
                             }
                         }
                     }
@@ -211,7 +211,7 @@ namespace BabyPenguin.SemanticPass
                             var enumDecl = enm.EnumDeclarations[i];
                             enumDecl.Value = i;
 
-                            if (enumDecl.SyntaxNode is PenguinLangSyntax.EnumDeclaration enumDeclSyntax)
+                            if (enumDecl.SyntaxNode is PenguinLangSyntax.SyntaxNodes.EnumDeclaration enumDeclSyntax)
                             {
                                 if (enumDeclSyntax.TypeSpecifier != null)
                                 {
@@ -236,10 +236,10 @@ namespace BabyPenguin.SemanticPass
                         }
                         else
                         {
-                            if (initialRoutine.SyntaxNode is PenguinLangSyntax.InitialRoutine syntaxNode)
+                            if (initialRoutine.SyntaxNode is InitialRoutineDefinition syntaxNode)
                             {
                                 var funcSymbol = (initialRoutine.Parent as ISymbolContainer)!.AddInitialRoutineSymbol(
-                                    initialRoutine, initialRoutine.SourceLocation, syntaxNode.Scope.ScopeDepth, false);
+                                    initialRoutine, initialRoutine.SourceLocation, syntaxNode.ScopeDepth, false);
 
                                 initialRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
                             }
@@ -257,7 +257,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (func.SyntaxNode is FunctionDefinition syntaxNode)
                             {
-                                var retType = Model.ResolveType(syntaxNode.ReturnType.Name, scope: func);
+                                var retType = Model.ResolveType(syntaxNode.ReturnType!.Name, scope: func);
                                 if (retType == null)
                                 {
                                     throw new BabyPenguinException($"Cant resolve return type '{syntaxNode.ReturnType.Name}'", syntaxNode.SourceLocation);
@@ -287,7 +287,7 @@ namespace BabyPenguin.SemanticPass
                                         else
                                         {
                                             func.Parameters.Add(new FunctionParameter(param.Name, paramType, param.IsReadonly, i));
-                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.Scope.ScopeDepth, i, param.IsReadonly, false);
+                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.ScopeDepth, i, param.IsReadonly, false);
                                         }
                                     }
 
@@ -301,7 +301,7 @@ namespace BabyPenguin.SemanticPass
                                     i++;
                                 }
 
-                                var funcSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, syntaxNode.SourceLocation, syntaxNode.Scope.ScopeDepth, null, true, false, func.IsStatic!.Value);
+                                var funcSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, syntaxNode.SourceLocation, syntaxNode.ScopeDepth, null, true, false, func.IsStatic!.Value);
                                 func.FunctionSymbol = (FunctionSymbol)funcSymbol;
                             }
                             else
@@ -339,13 +339,13 @@ namespace BabyPenguin.SemanticPass
                             if (item.IsDeclaration)
                             {
                                 var typeName = item.Declaration!.TypeSpecifier!.Name; // TODO: type inference
-                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.Scope.ScopeDepth, null, item.Declaration.IsReadonly, false);
+                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, item.Declaration.IsReadonly, false);
                             }
                         }
                         else if (node is ForStatement forStatement)
                         {
-                            var typeName = forStatement.Declaration.TypeSpecifier!.Name;
-                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.Scope.ScopeDepth, null, forStatement.Declaration.IsReadonly, false);
+                            var typeName = forStatement.Declaration!.TypeSpecifier!.Name;
+                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.ScopeDepth, null, forStatement.Declaration.IsReadonly, false);
                         }
                         return true;
                     });

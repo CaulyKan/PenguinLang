@@ -48,7 +48,7 @@ namespace BabyPenguin.SemanticPass
         public ISymbol AddLocalDeclearation(Declaration item, int? paramIndex)
         {
             var typeName = item.TypeSpecifier!.Name; // TODO: type inference
-            var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.Scope.ScopeDepth, scope: this);
+            var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.ScopeDepth, scope: this);
             if (symbol == null)
             {
                 Model.Reporter.Throw($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
@@ -77,23 +77,23 @@ namespace BabyPenguin.SemanticPass
             {
                 case Statement.Type.AssignmentStatement:
                     {
-                        var rightVar = AddExpression(item.AssignmentStatement!.RightHandSide, false);
+                        var rightVar = AddExpression(item.AssignmentStatement!.RightHandSide!, false);
                         ISymbol? member = null;
                         ISymbol? target;
-                        bool isMemberAccess = item.AssignmentStatement.LeftHandSide.IsMemberAccess;
+                        bool isMemberAccess = item.AssignmentStatement.LeftHandSide!.IsMemberAccess;
                         if (!isMemberAccess)
                         {
                             target = Model.ResolveShortSymbol(item.AssignmentStatement.LeftHandSide.Identifier!.Name,
                                 s => !s.IsClassMember,
-                                scopeDepth: item.Scope.ScopeDepth, scope: this);
+                                scopeDepth: item.ScopeDepth, scope: this);
                         }
                         else
                         {
                             var ma = item.AssignmentStatement.LeftHandSide.MemberAccess!;
-                            if (ma.PrimaryExpression.IsSimple)
+                            if (ma.PrimaryExpression!.IsSimple)
                             {
                                 target = Model.ResolveShortSymbol(ma.PrimaryExpression.Text,
-                                    s => !s.IsClassMember, scopeDepth: item.Scope.ScopeDepth, scope: this);
+                                    s => !s.IsClassMember, scopeDepth: item.ScopeDepth, scope: this);
                                 if (target == null)
                                 {
                                     throw new BabyPenguinException($"Cant resolve symbol '{ma.PrimaryExpression.Text}'", ma.PrimaryExpression.SourceLocation);
@@ -182,7 +182,7 @@ namespace BabyPenguin.SemanticPass
                     }
                 case Statement.Type.ExpressionStatement:
                     {
-                        AddExpression(item.ExpressionStatement!.Expression, false);
+                        AddExpression(item.ExpressionStatement!.Expression!, false);
                         break;
                     }
                 case Statement.Type.SubBlock:
@@ -196,7 +196,7 @@ namespace BabyPenguin.SemanticPass
                 case Statement.Type.IfStatement:
                     {
                         var ifStatement = item.IfStatement!;
-                        var conditionVar = AddExpression(ifStatement.Condition, false);
+                        var conditionVar = AddExpression(ifStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation);
                         if (ifStatement.HasElse)
@@ -204,7 +204,7 @@ namespace BabyPenguin.SemanticPass
                             var elseLabel = CreateLabel();
                             var endifLabel = CreateLabel();
                             AddInstruction(new GotoInstruction(elseLabel, conditionVar, false));
-                            AddStatement(ifStatement.MainStatement);
+                            AddStatement(ifStatement.MainStatement!);
                             AddInstruction(new GotoInstruction(endifLabel));
                             AddInstruction(new NopInstuction().WithLabel(elseLabel));
                             AddStatement(ifStatement.ElseStatement!);
@@ -214,7 +214,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var endifLabel = CreateLabel();
                             AddInstruction(new GotoInstruction(endifLabel, conditionVar, false));
-                            AddStatement(ifStatement.MainStatement);
+                            AddStatement(ifStatement.MainStatement!);
                             AddInstruction(new NopInstuction().WithLabel(endifLabel));
                         }
                         break;
@@ -224,7 +224,7 @@ namespace BabyPenguin.SemanticPass
                         var whileStatement = item.WhileStatement!;
                         var beginLabel = CreateLabel();
                         AddInstruction(new NopInstuction().WithLabel(beginLabel));
-                        var conditionVar = AddExpression(whileStatement.Condition, false);
+                        var conditionVar = AddExpression(whileStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
                         var endLabel = CreateLabel();
@@ -232,7 +232,7 @@ namespace BabyPenguin.SemanticPass
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
 
                         AddInstruction(new GotoInstruction(endLabel, conditionVar, false));
-                        AddStatement(whileStatement.BodyStatement);
+                        AddStatement(whileStatement.BodyStatement!);
                         AddInstruction(new GotoInstruction(beginLabel));
 
                         CodeContainerData.CurrentWhileLoop.Pop();
@@ -243,7 +243,7 @@ namespace BabyPenguin.SemanticPass
                 case Statement.Type.ForStatement:
                     {
                         var forStatement = item.ForStatement!;
-                        var iteratorSymbol = AddExpression(forStatement.Expression, false);
+                        var iteratorSymbol = AddExpression(forStatement.Expression!, false);
 
                         // expecting an iterator symbol
                         if (iteratorSymbol.TypeInfo.GenericType?.FullName != "__builtin.IIterator<?>")
@@ -262,7 +262,7 @@ namespace BabyPenguin.SemanticPass
                         var nextMethodSymbol = Model.ResolveSymbol(iteratorSymbol.TypeInfo.FullName + ".next", scope: this) as FunctionSymbol;
                         if (nextMethodSymbol == null)
                             throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName}'", forStatement.SourceLocation);
-                        var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression.SourceLocation);
+                        var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression!.SourceLocation);
                         AddInstruction(new ReadMemberInstruction(nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol));
 
                         // .next result should be an Option
@@ -286,7 +286,7 @@ namespace BabyPenguin.SemanticPass
                         // loop body
                         AddInstruction(new GotoInstruction(endLabel, condVar, true));
                         AddInstruction(new ReadEnumInstruction(nextResult, iterItemSymbol));
-                        AddStatement(forStatement.BodyStatement);
+                        AddStatement(forStatement.BodyStatement!);
                         AddInstruction(new GotoInstruction(beginLabel));
 
                         CodeContainerData.CurrentWhileLoop.Pop();
@@ -461,7 +461,7 @@ namespace BabyPenguin.SemanticPass
         public void ResolveMemberAccessExpressionSymbol(MemberAccessExpression expression, out IType owner, out ISymbol member)
         {
             ISymbol? member_ = null;
-            var t = ResolveExpressionType(expression.PrimaryExpression);
+            var t = ResolveExpressionType(expression.PrimaryExpression!);
             if (t == null)
                 throw new BabyPenguinException($"Cant resolve owner type of member access expression", expression.SourceLocation);
             var ma = expression;
@@ -499,7 +499,7 @@ namespace BabyPenguin.SemanticPass
             switch (expression)
             {
                 case Expression exp:
-                    return ResolveExpressionType(exp.SubExpression);
+                    return ResolveExpressionType(exp.SubExpression!);
                 case LogicalOrExpression exp:
                     return ResolveBinaryOperationType(BinaryOperatorEnum.LogicalOr, exp.SubExpressions.Select(ResolveExpressionType), expression.SourceLocation);
                 case LogicalAndExpression exp:
@@ -544,7 +544,7 @@ namespace BabyPenguin.SemanticPass
                             case UnaryOperatorEnum.Ref:
                                 throw new NotImplementedException();
                             case UnaryOperatorEnum.Minus:
-                                var type = ResolveExpressionType(exp.SubExpression);
+                                var type = ResolveExpressionType(exp.SubExpression!);
                                 return type.Type switch
                                 {
                                     TypeEnum.U8 => BasicType.I8,
@@ -554,14 +554,14 @@ namespace BabyPenguin.SemanticPass
                                 };
                             case UnaryOperatorEnum.Plus:
                             case UnaryOperatorEnum.BitwiseNot:
-                                return ResolveExpressionType(exp.SubExpression);
+                                return ResolveExpressionType(exp.SubExpression!);
                             case UnaryOperatorEnum.LogicalNot:
                                 return BasicType.Bool;
                         }
                     }
                     else
                     {
-                        return ResolveExpressionType(exp.SubExpression);
+                        return ResolveExpressionType(exp.SubExpression!);
                     }
                     break;
                 case PostfixExpression exp:
@@ -577,6 +577,10 @@ namespace BabyPenguin.SemanticPass
                             return ResolveExpressionType(exp.SubPrimaryExpression!);
                         case PostfixExpression.Type.New:
                             return ResolveExpressionType(exp.SubNewExpression!);
+                        case PostfixExpression.Type.Wait:
+                            return ResolveExpressionType(exp.SubWaitExpression!);
+                        case PostfixExpression.Type.SpawnAsync:
+                            return ResolveExpressionType(exp.SubSpawnAsyncExpression!);
                     }
                     break;
                 case FunctionCallExpression exp:
@@ -648,7 +652,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
-                                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
                             if (symbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
                             else
@@ -671,7 +675,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case NewExpression exp:
                     {
-                        var res = Model.ResolveType(exp.TypeSpecifier.Name, scope: this);
+                        var res = Model.ResolveType(exp.TypeSpecifier!.Name, scope: this);
                         if (res == null)
                         {
                             // if new enum, remove last dot and try again
@@ -687,6 +691,17 @@ namespace BabyPenguin.SemanticPass
                             throw new BabyPenguinException($"Cant resolve type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
                         return res;
                     }
+                case WaitExpression exp:
+                    {
+                        if (exp.Expression == null)
+                        {
+                            return BasicType.Void;
+                        }
+                        else
+                        {
+                            throw new NotImplementedException();
+                        }
+                    }
                 default:
                     break;
             }
@@ -695,11 +710,11 @@ namespace BabyPenguin.SemanticPass
 
         public bool CheckMemberAccessExpressionIsStatic(MemberAccessExpression exp)
         {
-            if (!exp.PrimaryExpression.IsSimple)
+            if (!exp.PrimaryExpression!.IsSimple)
                 return false;
 
             var symbol = Model.ResolveShortSymbol(exp.PrimaryExpression.Text,
-                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
 
             if (symbol == null)
             {
@@ -728,10 +743,10 @@ namespace BabyPenguin.SemanticPass
             }
             else
             {
-                if (exp.PrimaryExpression.IsSimple)
+                if (exp.PrimaryExpression!.IsSimple)
                 {
                     var temp = Model.ResolveShortSymbol(exp.PrimaryExpression.Text,
-                        s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                        s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
 
                     if (temp == null)
                         throw new BabyPenguinException($"Cant resolve symbol '{exp.PrimaryExpression.Text}'", exp.PrimaryExpression.SourceLocation);
@@ -954,7 +969,7 @@ namespace BabyPenguin.SemanticPass
             {
                 case Expression exp:
                     {
-                        AddExpression(exp.SubExpression, isVariableInitializer, to);
+                        AddExpression(exp.SubExpression!, isVariableInitializer, to);
                     }
                     break;
                 case LogicalOrExpression exp:
@@ -1189,12 +1204,12 @@ namespace BabyPenguin.SemanticPass
                 case UnaryExpression exp:
                     if (exp.HasUnaryOperator)
                     {
-                        var temp_var = AddExpression(exp.SubExpression, false);
+                        var temp_var = AddExpression(exp.SubExpression!, false);
                         AddInstruction(new UnaryOperationInstruction((UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
                     }
                     else
                     {
-                        AddExpression(exp.SubExpression, isVariableInitializer, to);
+                        AddExpression(exp.SubExpression!, isVariableInitializer, to);
                     }
                     break;
                 case PostfixExpression exp:
@@ -1214,6 +1229,12 @@ namespace BabyPenguin.SemanticPass
                             break;
                         case PostfixExpression.Type.New:
                             AddExpression(exp.SubNewExpression!, isVariableInitializer, to);
+                            break;
+                        case PostfixExpression.Type.Wait:
+                            AddExpression(exp.SubWaitExpression!, isVariableInitializer, to);
+                            break;
+                        case PostfixExpression.Type.SpawnAsync:
+                            AddExpression(exp.SubSpawnAsyncExpression!, isVariableInitializer, to);
                             break;
                         default:
                             throw new NotImplementedException();
@@ -1237,7 +1258,7 @@ namespace BabyPenguin.SemanticPass
                             ISymbol? funVar;
                             if (exp.PrimaryExpression!.IsSimple)
                             {
-                                funVar = Model.ResolveShortSymbol(exp.PrimaryExpression!.Text, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                                funVar = Model.ResolveShortSymbol(exp.PrimaryExpression!.Text, scopeDepth: exp.ScopeDepth, scope: this);
                             }
                             else
                             {
@@ -1262,7 +1283,7 @@ namespace BabyPenguin.SemanticPass
                         AddInstruction(new NewInstanceInstruction(to));
 
                         string? enumOption = null;
-                        var type = Model.ResolveType(exp.TypeSpecifier.Name, scope: this);
+                        var type = Model.ResolveType(exp.TypeSpecifier!.Name, scope: this);
                         if (type == null)
                         {
                             // if new enum, remove last dot and try again
@@ -1340,7 +1361,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
-                                s => !s.IsClassMember, scopeDepth: exp.Scope.ScopeDepth, scope: this);
+                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
                             if (symbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
                             else

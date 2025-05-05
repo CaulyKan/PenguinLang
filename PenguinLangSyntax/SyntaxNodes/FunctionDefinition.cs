@@ -1,0 +1,117 @@
+namespace PenguinLangSyntax.SyntaxNodes
+{
+
+    public class FunctionDefinition : SyntaxNode, ISyntaxScope
+    {
+        public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
+        {
+            base.Build(walker, ctx);
+
+            if (ctx is FunctionDefinitionContext context)
+            {
+                walker.PushScope(SyntaxScopeType.Function, this);
+
+                if (context.identifier() != null)
+                    FunctionIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
+                else
+                    FunctionIdentifier = new SymbolIdentifier
+                    {
+                        LiteralName = "new"
+                    };
+
+                walker.DefineSymbol(Name, "fun", this);
+
+                if (context.parameterList().children == null)
+                {
+                    Parameters = [];
+                }
+                else
+                {
+                    Parameters = context.parameterList().children.OfType<DeclarationContext>()
+                        .Select(x => Build<Declaration>(walker, x)).ToList();
+                }
+
+                if (context.typeSpecifier() == null)
+                {
+                    ReturnType = new TypeSpecifier
+                    {
+                        Name = "void"
+                    };
+                }
+                else
+                {
+                    ReturnType = Build<TypeSpecifier>(walker, context.typeSpecifier());
+                }
+
+                IsExtern = false;
+                IsAsync = null;
+                IsPure = null;
+
+                foreach (var specifierContext in context.children.OfType<FunctionSpecifierContext>())
+                {
+                    if (specifierContext.GetText() == "extern")
+                    {
+                        IsExtern = true;
+                    }
+                    else if (specifierContext.GetText() == "pure")
+                    {
+                        IsPure = true;
+                    }
+                    else if (specifierContext.GetText() == "!pure")
+                    {
+                        IsPure = false;
+                    }
+                    else if (specifierContext.GetText() == "async")
+                    {
+                        IsAsync = true;
+                    }
+                    else if (specifierContext.GetText() == "!async")
+                    {
+                        IsAsync = false;
+                    }
+                }
+
+                if (context.codeBlock() != null)
+                    CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
+
+                if (context.declarationKeyword() != null)
+                    ReturnValueIsReadonly = context.declarationKeyword().GetText() == "val";
+
+                walker.PopScope();
+            }
+            else throw new NotImplementedException();
+        }
+
+        [ChildrenNode]
+        public Identifier? FunctionIdentifier { get; private set; }
+
+        [ChildrenNode]
+        public List<Declaration> Parameters { get; private set; } = [];
+
+        [ChildrenNode]
+        public TypeSpecifier? ReturnType { get; private set; }
+
+        public bool? ReturnValueIsReadonly { get; private set; }
+
+        [ChildrenNode]
+        public CodeBlock? CodeBlock { get; private set; }
+
+        public string Name => FunctionIdentifier!.Name;
+
+        public SyntaxScopeType ScopeType => SyntaxScopeType.Function;
+
+        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+
+        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+
+        public ISyntaxScope? ParentScope { get; set; }
+
+        public bool IsAnonymous => false;
+
+        public bool IsExtern { get; private set; }
+
+        public bool? IsPure { get; private set; }
+
+        public bool? IsAsync { get; private set; }
+    }
+}

@@ -1,0 +1,38 @@
+namespace PenguinLangSyntax.SyntaxNodes
+{
+
+    public class IdentifierOrMemberAccess : SyntaxNode
+    {
+        public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
+        {
+            base.Build(walker, ctx);
+
+            if (ctx is IdentifierOrMemberAccessContext context)
+            {
+                if (context.identifier() is not null)
+                {
+                    Identifier = Build<SymbolIdentifier>(walker, context.identifier());
+                }
+                else if (context.memberAccessExpression() is not null)
+                {
+                    MemberAccess = Build<WriteMemberAccessExpression>(walker, context.memberAccessExpression());
+                }
+                else
+                {
+                    throw new NotImplementedException("Invalid identifier or member access");
+                }
+            }
+            else throw new NotImplementedException();
+        }
+
+        [ChildrenNode]
+        public Identifier? Identifier { get; private set; }
+
+        [ChildrenNode]
+        public MemberAccessExpression? MemberAccess { get; private set; }
+
+        public bool IsIdentifier => Identifier is not null;
+
+        public bool IsMemberAccess => MemberAccess is not null;
+    }
+}
