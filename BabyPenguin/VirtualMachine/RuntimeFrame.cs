@@ -1,3 +1,5 @@
+using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
+
 namespace BabyPenguin.VirtualMachine
 {
     public record RuntimeFrameResult(IRuntimeVar? ReturnValue, ReturnStatus ReturnStatus);
@@ -28,16 +30,20 @@ namespace BabyPenguin.VirtualMachine
         public int FrameLevel { get; set; } = 0;
         public int InstructionPointer { get; set; } = 0;
 
+        public SourceLocation CurrentSourceLocation => InstructionPointer >= CodeContainer.Instructions.Count ? CodeContainer.SourceLocation.EndLocation : CodeContainer.Instructions[InstructionPointer].SourceLocation;
+
         private void DebugPrint(BabyPenguinIR inst, string? op1 = "", string? op2 = "", string? result = "")
         {
             if (Global.EnableDebugPrint)
             {
-                Global.DebugWriter.WriteLine(new string('|', FrameLevel) + inst.ToDebugString(op1, op2, result));
+                Global.DebugFunc(new string('|', FrameLevel) + inst.ToDebugString(op1, op2, result) + "\n");
             }
         }
 
-        public RuntimeFrameResult Run()
+        public IEnumerable<RuntimeFrameResult?> Run()
         {
+            Global.StackFrames.Push(this);
+
             IRuntimeVar resolveVariable(ISymbol symbol)
             {
                 IRuntimeVar? result;
@@ -73,6 +79,11 @@ namespace BabyPenguin.VirtualMachine
             RuntimeFrameResult? result = null;
             while (InstructionPointer < CodeContainer.Instructions.Count)
             {
+                if (InstructionPointer > 0 && Global.StepMode)
+                {
+                    yield return null;
+                }
+
                 var command = CodeContainer.Instructions[InstructionPointer];
                 switch (command)
                 {
@@ -147,20 +158,33 @@ namespace BabyPenguin.VirtualMachine
                             if (!funSymbol.IsExtern)
                             {
                                 var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args, this.FrameLevel + 1);
-                                var resTemp = newFrame.Run();
-                                if (resTemp.ReturnStatus == ReturnStatus.Blocked)
+                                foreach (var resTemp in newFrame.Run())
                                 {
-                                    result = new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                                    break;
+                                    if (resTemp == null)
+                                    {
+                                        yield return null;
+                                    }
+                                    else
+                                    {
+                                        if (resTemp.ReturnStatus == ReturnStatus.Blocked)
+                                        {
+                                            result = new RuntimeFrameResult(null, ReturnStatus.Blocked);
+                                            break;
+                                        }
+                                        if (resTemp.ReturnValue != null)
+                                            retVar?.AssignFrom(resTemp.ReturnValue);
+                                    }
                                 }
-                                if (resTemp.ReturnValue != null)
-                                    retVar?.AssignFrom(resTemp.ReturnValue);
                             }
                             else
                             {
-                                if (Global.ExternFunctions.TryGetValue(funSymbol.FullName, out Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>>? action))
+                                if (Global.ExternFunctions.TryGetValue(funSymbol.FullName, out var action))
                                 {
-                                    action(this, retVar, args);
+                                    foreach (var resTemp in action(this, retVar, args))
+                                    {
+                                        if (resTemp == false)
+                                            yield return null;
+                                    }
                                 }
                                 else
                                 {
@@ -605,7 +629,7 @@ namespace BabyPenguin.VirtualMachine
                             switch (value)
                             {
                                 case (int)SignalCode.Breakpoint:
-                                    Console.WriteLine("Breakpoint hit");
+                                    yield return null;
                                     break;
                                 default:
                                     throw new BabyPenguinRuntimeException("unknown signal: " + value);
@@ -622,11 +646,15 @@ namespace BabyPenguin.VirtualMachine
                 InstructionPointer += 1;
 
                 if (result != null)
-                    return result;
+                {
+                    yield return result;
+                    Global.StackFrames.Pop();
+                    break;
+                }
             }
 
-
-            throw new BabyPenguinRuntimeException($"Function {CodeContainer.FullName} does not return a value");
+            if (result == null && InstructionPointer >= CodeContainer.Instructions.Count)
+                throw new BabyPenguinRuntimeException($"Function/Routine '{CodeContainer.FullName}' does not return a value");
         }
     }
 }

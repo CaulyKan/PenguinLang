@@ -17,6 +17,10 @@ namespace PenguinLangSyntax
 
         public static SourceLocation Empty() => new SourceLocation("_anonymous", $"anonymous_{count++}", 0, 0, 0, 0);
 
+        public SourceLocation StartLocation => new SourceLocation(FileName, FileNameIdentifier, RowStart, RowStart, ColStart, ColStart);
+
+        public SourceLocation EndLocation => new SourceLocation(FileName, FileNameIdentifier, RowEnd, RowEnd, ColEnd, ColEnd);
+
         public override string ToString()
         {
             return $"{FileName}:{RowStart},{ColStart}";

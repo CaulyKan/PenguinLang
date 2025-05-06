@@ -25,6 +25,31 @@
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "console": "integratedTerminal"
+        },
+        {
+            "name": "launch dap",
+            "type": "coreclr",
+            "request": "launch",
+            "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/PenguinLangVscode"
+            ]
+        },
+        {
+            "name": "PenguinLang Debug",
+            "type": "penguinlang",
+            "request": "launch",
+            "program": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+            "stopAtEntry": true
         }
     ]
 }

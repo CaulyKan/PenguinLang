@@ -115,13 +115,13 @@ namespace BabyPenguin.SemanticPass
                                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                        AddInstruction(new ReadEnumInstruction(target, temp));
+                                        AddInstruction(new ReadEnumInstruction(member.SourceLocation, target, temp));
                                         target = temp;
                                     }
                                     else
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                        AddInstruction(new ReadMemberInstruction(member, target, temp));
+                                        AddInstruction(new ReadMemberInstruction(member.SourceLocation, member, target, temp));
                                         target = temp;
                                     }
                                 }
@@ -165,15 +165,15 @@ namespace BabyPenguin.SemanticPass
                                 if (!isMemberAccess)
                                 {
                                     var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
-                                    AddInstruction(new BinaryOperationInstruction(op, target, rightVar, temp));
+                                    AddInstruction(new BinaryOperationInstruction(item.SourceLocation, op, target, rightVar, temp));
                                     AddAssignmentExpression(new(temp), target, false, null, item.SourceLocation);
                                 }
                                 else
                                 {
                                     var tempBeforeCalc = AddExpression(item.AssignmentStatement.LeftHandSide.MemberAccess!, false);
                                     var tempAfterCalc = AllocTempSymbol(ResolveBinaryOperationType(op, [tempBeforeCalc.TypeInfo, rightVar.TypeInfo], item.SourceLocation), item.SourceLocation);
-                                    AddInstruction(new BinaryOperationInstruction(op, tempBeforeCalc, rightVar, tempAfterCalc));
-                                    AddInstruction(new WriteMemberInstruction(member!, tempAfterCalc, target));
+                                    AddInstruction(new BinaryOperationInstruction(item.SourceLocation, op, tempBeforeCalc, rightVar, tempAfterCalc));
+                                    AddInstruction(new WriteMemberInstruction(item.SourceLocation, member!, tempAfterCalc, target));
                                 }
                                 break;
                             }
@@ -203,19 +203,19 @@ namespace BabyPenguin.SemanticPass
                         {
                             var elseLabel = CreateLabel();
                             var endifLabel = CreateLabel();
-                            AddInstruction(new GotoInstruction(elseLabel, conditionVar, false));
+                            AddInstruction(new GotoInstruction(ifStatement.Condition!.SourceLocation, elseLabel, conditionVar, false));
                             AddStatement(ifStatement.MainStatement!);
-                            AddInstruction(new GotoInstruction(endifLabel));
-                            AddInstruction(new NopInstuction().WithLabel(elseLabel));
+                            AddInstruction(new GotoInstruction(ifStatement.Condition!.SourceLocation, endifLabel));
+                            AddInstruction(new NopInstuction(ifStatement.ElseStatement!.SourceLocation).WithLabel(elseLabel));
                             AddStatement(ifStatement.ElseStatement!);
-                            AddInstruction(new NopInstuction().WithLabel(endifLabel));
+                            AddInstruction(new NopInstuction(ifStatement.SourceLocation.EndLocation).WithLabel(endifLabel));
                         }
                         else
                         {
                             var endifLabel = CreateLabel();
-                            AddInstruction(new GotoInstruction(endifLabel, conditionVar, false));
+                            AddInstruction(new GotoInstruction(ifStatement.Condition!.SourceLocation, endifLabel, conditionVar, false));
                             AddStatement(ifStatement.MainStatement!);
-                            AddInstruction(new NopInstuction().WithLabel(endifLabel));
+                            AddInstruction(new NopInstuction(ifStatement.SourceLocation.EndLocation).WithLabel(endifLabel));
                         }
                         break;
                     }
@@ -223,7 +223,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         var whileStatement = item.WhileStatement!;
                         var beginLabel = CreateLabel();
-                        AddInstruction(new NopInstuction().WithLabel(beginLabel));
+                        AddInstruction(new NopInstuction(whileStatement.Condition!.SourceLocation).WithLabel(beginLabel));
                         var conditionVar = AddExpression(whileStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             Reporter.Throw($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
@@ -231,13 +231,13 @@ namespace BabyPenguin.SemanticPass
 
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
 
-                        AddInstruction(new GotoInstruction(endLabel, conditionVar, false));
+                        AddInstruction(new GotoInstruction(whileStatement.Condition!.SourceLocation, endLabel, conditionVar, false));
                         AddStatement(whileStatement.BodyStatement!);
-                        AddInstruction(new GotoInstruction(beginLabel));
+                        AddInstruction(new GotoInstruction(whileStatement.Condition!.SourceLocation, beginLabel));
 
                         CodeContainerData.CurrentWhileLoop.Pop();
 
-                        AddInstruction(new NopInstuction().WithLabel(endLabel));
+                        AddInstruction(new NopInstuction(whileStatement.SourceLocation.EndLocation).WithLabel(endLabel));
                         break;
                     }
                 case Statement.Type.ForStatement:
@@ -255,7 +255,7 @@ namespace BabyPenguin.SemanticPass
                         // prepare begin label
                         var beginLabel = CreateLabel();
                         var endLabel = CreateLabel();
-                        AddInstruction(new NopInstuction().WithLabel(beginLabel));
+                        AddInstruction(new NopInstuction(forStatement.Declaration!.SourceLocation).WithLabel(beginLabel));
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
 
                         // call .next on IIterator 
@@ -263,11 +263,11 @@ namespace BabyPenguin.SemanticPass
                         if (nextMethodSymbol == null)
                             throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName}'", forStatement.SourceLocation);
                         var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression!.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol));
+                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol));
 
                         // .next result should be an Option
                         var nextResult = AllocTempSymbol(nextMethodSymbol.ReturnTypeInfo, forStatement.Expression.SourceLocation);
-                        AddInstruction(new FunctionCallInstruction(nextMethodImplSymbol, [iteratorSymbol], nextResult));
+                        AddInstruction(new FunctionCallInstruction(forStatement.Declaration!.SourceLocation, nextMethodImplSymbol, [iteratorSymbol], nextResult));
                         var optionValueSymbol = Model.ResolveSymbol(nextResult.TypeInfo.FullName + "._value");
                         if (optionValueSymbol == null)
                             throw new BabyPenguinException($"Cant resolve symbol '{nextResult.TypeInfo.FullName}._value'", forStatement.Expression.SourceLocation);
@@ -275,22 +275,22 @@ namespace BabyPenguin.SemanticPass
                         // compare Option value is none
                         var tempRightVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
                         var tempLeftVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(optionValueSymbol, nextResult, tempLeftVar));
+                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, optionValueSymbol, nextResult, tempLeftVar));
                         var noneEnumValue = (nextResult.TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Name == "none")?.Value;
                         if (noneEnumValue == null)
                             throw new BabyPenguinException($"Can't resolve 'none' enum value of type '{nextResult.TypeInfo.FullName}'", forStatement.Expression.SourceLocation);
-                        AddInstruction(new AssignLiteralToSymbolInstruction(tempRightVar, BasicType.I32, noneEnumValue.ToString()!));
+                        AddInstruction(new AssignLiteralToSymbolInstruction(forStatement.Declaration!.SourceLocation, tempRightVar, BasicType.I32, noneEnumValue.ToString()!));
                         var condVar = AllocTempSymbol(BasicType.Bool, forStatement.Expression.SourceLocation);
-                        AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, condVar));
+                        AddInstruction(new BinaryOperationInstruction(forStatement.Declaration!.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, condVar));
 
                         // loop body
-                        AddInstruction(new GotoInstruction(endLabel, condVar, true));
-                        AddInstruction(new ReadEnumInstruction(nextResult, iterItemSymbol));
+                        AddInstruction(new GotoInstruction(forStatement.Declaration!.SourceLocation, endLabel, condVar, true));
+                        AddInstruction(new ReadEnumInstruction(forStatement.Declaration!.SourceLocation, nextResult, iterItemSymbol));
                         AddStatement(forStatement.BodyStatement!);
-                        AddInstruction(new GotoInstruction(beginLabel));
+                        AddInstruction(new GotoInstruction(forStatement.SourceLocation.EndLocation, beginLabel));
 
                         CodeContainerData.CurrentWhileLoop.Pop();
-                        AddInstruction(new NopInstuction().WithLabel(endLabel));
+                        AddInstruction(new NopInstuction(forStatement.SourceLocation.EndLocation).WithLabel(endLabel));
                         break;
                     }
                 case Statement.Type.ReturnStatement:
@@ -309,11 +309,11 @@ namespace BabyPenguin.SemanticPass
                                 }
                                 else throw new BabyPenguinException($"Return type mismatch, expected '{ReturnTypeInfo}' but got '{returnVar.TypeInfo}'", returnStatement.SourceLocation);
                             }
-                            AddInstruction(new ReturnInstruction(returnVar, ReturnStatus.YieldFinished));
+                            AddInstruction(new ReturnInstruction(item.SourceLocation, returnVar, ReturnStatus.YieldFinished));
                         }
                         else
                         {
-                            AddInstruction(new ReturnInstruction(null, ReturnStatus.YieldFinished));
+                            AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldFinished));
                         }
                         break;
                     }
@@ -325,14 +325,14 @@ namespace BabyPenguin.SemanticPass
                             if (CodeContainerData.CurrentWhileLoop.Count == 0)
                                 throw new BabyPenguinException("Break statement outside of while loop", jumpStatement.SourceLocation);
                             var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
-                            AddInstruction(new GotoInstruction(currentWhileLoop.EndLabel));
+                            AddInstruction(new GotoInstruction(item.SourceLocation, currentWhileLoop.EndLabel));
                         }
                         else if (jumpStatement.JumpType == JumpStatement.Type.Continue)
                         {
                             if (CodeContainerData.CurrentWhileLoop.Count == 0)
                                 throw new BabyPenguinException("Continue statement outside of while loop", jumpStatement.SourceLocation);
                             var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
-                            AddInstruction(new GotoInstruction(currentWhileLoop.BeginLabel));
+                            AddInstruction(new GotoInstruction(item.SourceLocation, currentWhileLoop.BeginLabel));
                         }
                         else
                             throw new NotImplementedException();
@@ -344,7 +344,7 @@ namespace BabyPenguin.SemanticPass
                         if (yieldStatement.YieldExpression == null)
                         {
                             if (this.ReturnTypeInfo.IsVoidType)
-                                AddInstruction(new ReturnInstruction(null, ReturnStatus.YieldNotFinished));
+                                AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldNotFinished));
                             else Reporter.Throw($"Yield statement should have an expression that returns '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
                         }
                         else throw new NotImplementedException();
@@ -357,7 +357,7 @@ namespace BabyPenguin.SemanticPass
                         var signalValue = AddExpression(signalStatement.SignalExpression!, false);
                         if (signalValue.TypeInfo.IsIntType)
                         {
-                            AddInstruction(new SignalInstruction(signalValue));
+                            AddInstruction(new SignalInstruction(item.SourceLocation, signalValue));
                         }
                         else
                         {
@@ -765,16 +765,16 @@ namespace BabyPenguin.SemanticPass
                 Model.Reporter.Throw($"expected 'IFuture<void>' here", targetSymbol.SourceLocation);
             else targetSymbol ??= AllocTempSymbol(ifutureVoidType, sourceLocation);
 
-            AddInstruction(new ReadMemberInstruction(pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
+            AddInstruction(new ReadMemberInstruction(sourceLocation, pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
             var routineNameSymbol = AllocTempSymbol(BasicType.String, sourceLocation);
             var routineSymbol = AllocTempSymbol(simpleRoutineType, sourceLocation);
             var futureSymbol = AllocTempSymbol(ifutureBaseType, sourceLocation);
-            AddInstruction(new AssignLiteralToSymbolInstruction(routineNameSymbol, BasicType.String, "\"" + codeContainer.FullName + "\""));
-            AddInstruction(new NewInstanceInstruction(routineSymbol));
-            AddInstruction(new FunctionCallInstruction(simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
-            AddInstruction(new CastInstruction(routineSymbol, ifutureBaseType, futureSymbol));
-            AddInstruction(new CastInstruction(routineSymbol, ifutureVoidType, targetSymbol));
-            AddInstruction(new FunctionCallInstruction(pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
+            AddInstruction(new AssignLiteralToSymbolInstruction(sourceLocation, routineNameSymbol, BasicType.String, "\"" + codeContainer.FullName + "\""));
+            AddInstruction(new NewInstanceInstruction(sourceLocation, routineSymbol));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
+            AddInstruction(new CastInstruction(sourceLocation, routineSymbol, ifutureBaseType, futureSymbol));
+            AddInstruction(new CastInstruction(sourceLocation, routineSymbol, ifutureVoidType, targetSymbol));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
             return targetSymbol;
         }
 
@@ -835,22 +835,22 @@ namespace BabyPenguin.SemanticPass
                 if (isLastRound)
                 {
                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
-                        AddInstruction(new ReadEnumInstruction(target, to));
+                        AddInstruction(new ReadEnumInstruction(target.SourceLocation, target, to));
                     else
-                        AddInstruction(new ReadMemberInstruction(member, target, to));
+                        AddInstruction(new ReadMemberInstruction(target.SourceLocation, member, target, to));
                 }
                 else
                 {
                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                        AddInstruction(new ReadEnumInstruction(target, temp));
+                        AddInstruction(new ReadEnumInstruction(target.SourceLocation, target, temp));
                         target = temp;
                     }
                     else
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(member, target, temp));
+                        AddInstruction(new ReadMemberInstruction(member.SourceLocation, member, target, temp));
                         target = temp;
                     }
                 }
@@ -881,7 +881,7 @@ namespace BabyPenguin.SemanticPass
 
             if (type.IsInterfaceType)
             {
-                AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
+                AddInstruction(new CastInstruction(sourceLocation, tempSymbol, to.TypeInfo, to));
             }
             else if (type is IClass cls)
             {
@@ -895,13 +895,13 @@ namespace BabyPenguin.SemanticPass
                     if (!cls.ImplementedInterfaces.Any(i => i.FullName == to.TypeInfo.FullName))
                         throw new BabyPenguinException($"Cant cast class {cls.FullName} to interface '{to.TypeInfo.FullName}'", sourceLocation);
 
-                    AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
+                    AddInstruction(new CastInstruction(sourceLocation, tempSymbol, to.TypeInfo, to));
                 }
             }
             else
             {
                 // TODO: deal with basic types
-                AddInstruction(new CastInstruction(tempSymbol, to.TypeInfo, to));
+                AddInstruction(new CastInstruction(sourceLocation, tempSymbol, to.TypeInfo, to));
             }
         }
 
@@ -913,7 +913,7 @@ namespace BabyPenguin.SemanticPass
                 if (fromSymbol.TypeInfo.CanImplicitlyCastTo(to.TypeInfo))
                 {
                     var temp = AllocTempSymbol(to.TypeInfo, sourceLocation ?? SourceLocation.Empty());
-                    AddInstruction(new CastInstruction(fromSymbol, to.TypeInfo, temp));
+                    AddInstruction(new CastInstruction(sourceLocation ?? SourceLocation.Empty(), fromSymbol, to.TypeInfo, temp));
                     fromSymbol = temp;
                 }
                 else
@@ -932,7 +932,7 @@ namespace BabyPenguin.SemanticPass
                     var temp = AllocTempSymbol(to.TypeInfo, sourceLocation ?? SourceLocation.Empty());
                     var copyFunc = Model.ResolveSymbol(ICopy.FullName + ".copy", s => s.IsFunction) ??
                         throw new BabyPenguinException($"Cant resolve function '{ICopy.FullName}.copy'", sourceLocation);
-                    AddInstruction(new FunctionCallInstruction(copyFunc, [fromSymbol], temp));
+                    AddInstruction(new FunctionCallInstruction(sourceLocation ?? SourceLocation.Empty(), copyFunc, [fromSymbol], temp));
                     fromSymbol = temp;
                 }
                 else
@@ -947,11 +947,11 @@ namespace BabyPenguin.SemanticPass
 
             if (memberOwner != null)
             {
-                AddInstruction(new WriteMemberInstruction(to, fromSymbol, memberOwner));
+                AddInstruction(new WriteMemberInstruction(sourceLocation ?? SourceLocation.Empty(), to, fromSymbol, memberOwner));
             }
             else
             {
-                AddInstruction(new AssignmentInstruction(fromSymbol, to));
+                AddInstruction(new AssignmentInstruction(sourceLocation ?? SourceLocation.Empty(), fromSymbol, to));
             }
         }
 
@@ -1005,7 +1005,7 @@ namespace BabyPenguin.SemanticPass
                         if (p.TypeInfo.CanImplicitlyCastTo(expectedParamType))
                         {
                             var casted = AllocTempSymbol(expectedParamType, sourceLocation);
-                            AddInstruction(new CastInstruction(p, expectedParamType, casted));
+                            AddInstruction(new CastInstruction(sourceLocation, p, expectedParamType, casted));
                             return casted;
                         }
                         else throw new BabyPenguinException($"Cant cast type '{p.TypeInfo}' to '{expectedParamType}'", sourceLocation);
@@ -1032,7 +1032,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalOr, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.LogicalOr, a, b, res));
                             return res;
                         });
                         AddAssignmentExpression(new(resVar), to, isVariableInitializer, null, expression.SourceLocation);
@@ -1052,7 +1052,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.LogicalAnd, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.LogicalAnd, a, b, res));
                             return res;
                         });
                         AddAssignmentExpression(new(resVar), to, isVariableInitializer, null, expression.SourceLocation);
@@ -1072,7 +1072,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseOr, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.BitwiseOr, a, b, res));
                             return res;
                         });
                         AddAssignmentExpression(new(resVar), to, isVariableInitializer, null, expression.SourceLocation);
@@ -1092,7 +1092,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseXor, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.BitwiseXor, a, b, res));
                             return res;
                         });
                         AddAssignmentExpression(new(resVar), to, isVariableInitializer, null, expression.SourceLocation);
@@ -1112,7 +1112,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.BitwiseAnd, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.BitwiseAnd, a, b, res));
                             return res;
                         });
                         AddAssignmentExpression(new(resVar), to, isVariableInitializer, null, expression.SourceLocation);
@@ -1130,7 +1130,7 @@ namespace BabyPenguin.SemanticPass
                             var type = ResolveExpressionType(exp.SubExpressions.First());
                             var a = ensureType(AddExpression(exp.SubExpressions[0], false), type, expression.SourceLocation);
                             var b = ensureType(AddExpression(exp.SubExpressions[1], false), type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(exp.Operator!.Value, a, b, to));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, exp.Operator!.Value, a, b, to));
                         }
                         else
                         {
@@ -1143,9 +1143,9 @@ namespace BabyPenguin.SemanticPass
                             var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName + "._value");
                             if (enumValueSymbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName}._value'", exp.SourceLocation);
-                            AddInstruction(new ReadMemberInstruction(enumValueSymbol, leftVar, tempLeftVar));
-                            AddInstruction(new AssignLiteralToSymbolInstruction(tempRightVar, BasicType.I32, rightVar.Value.ToString()));
-                            AddInstruction(new BinaryOperationInstruction(BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
+                            AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempRightVar, BasicType.I32, rightVar.Value.ToString()));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
                         }
                     }
                     else
@@ -1164,7 +1164,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, tempVars.First().TypeInfo, expression.SourceLocation);
                             b = ensureType(b, tempVars.First().TypeInfo, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
@@ -1186,7 +1186,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
@@ -1208,7 +1208,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
@@ -1230,7 +1230,7 @@ namespace BabyPenguin.SemanticPass
                             a = ensureType(a, type, expression.SourceLocation);
                             b = ensureType(b, type, expression.SourceLocation);
                             var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(ops.Current, a, b, res));
+                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, ops.Current, a, b, res));
                             ops.MoveNext();
                             return res;
                         });
@@ -1255,7 +1255,7 @@ namespace BabyPenguin.SemanticPass
                     if (exp.HasUnaryOperator)
                     {
                         var temp_var = AddExpression(exp.SubExpression!, false);
-                        AddInstruction(new UnaryOperationInstruction((UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
+                        AddInstruction(new UnaryOperationInstruction(exp.SourceLocation, (UnaryOperatorEnum)exp.UnaryOperator!, temp_var, to));
                     }
                     else
                     {
@@ -1300,7 +1300,7 @@ namespace BabyPenguin.SemanticPass
                             var paramVars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
                             paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             paramVars = convertParams(funcVar.TypeInfo, paramVars, exp.SourceLocation);
-                            AddInstruction(new FunctionCallInstruction(funcVar, paramVars, to));
+                            AddInstruction(new FunctionCallInstruction(exp.SourceLocation, funcVar, paramVars, to));
                         }
                         else
                         {
@@ -1319,7 +1319,7 @@ namespace BabyPenguin.SemanticPass
                             paramVars = convertParams(funVar.TypeInfo, paramVars, exp.SourceLocation);
                             if (!funVar.TypeInfo.IsFunctionType)
                                 throw new BabyPenguinException($"Function call expects function symbol, but got '{funVar.TypeInfo}'", exp.PrimaryExpression!.SourceLocation);
-                            AddInstruction(new FunctionCallInstruction(funVar, paramVars, to));
+                            AddInstruction(new FunctionCallInstruction(exp.SourceLocation, funVar, paramVars, to));
                         }
                     }
                     break;
@@ -1330,7 +1330,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case NewExpression exp:
                     {
-                        AddInstruction(new NewInstanceInstruction(to));
+                        AddInstruction(new NewInstanceInstruction(exp.SourceLocation, to));
 
                         string? enumOption = null;
                         var type = Model.ResolveType(exp.TypeSpecifier!.Name, scope: this);
@@ -1360,7 +1360,7 @@ namespace BabyPenguin.SemanticPass
                             var paramVars = new List<ISymbol> { to };
                             paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             paramVars = convertParams(constructorSymbol.TypeInfo, paramVars, exp.SourceLocation);
-                            AddInstruction(new FunctionCallInstruction(constructorSymbol, paramVars, null));
+                            AddInstruction(new FunctionCallInstruction(exp.SourceLocation, constructorSymbol, paramVars, null));
                         }
                         else if (type is IEnum enm)
                         {
@@ -1368,8 +1368,8 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Cant find enum option '{enumOption}' in enum '{enm.FullName}'", exp.SourceLocation);
 
                             var tempValue = AllocTempSymbol(BasicType.I32, enumDecl.SourceLocation);
-                            AddInstruction(new AssignLiteralToSymbolInstruction(tempValue, BasicType.I32, enumDecl.Value.ToString()));
-                            AddInstruction(new WriteMemberInstruction(enm.ValueSymbol!, tempValue, to));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempValue, BasicType.I32, enumDecl.Value.ToString()));
+                            AddInstruction(new WriteMemberInstruction(exp.SourceLocation, enm.ValueSymbol!, tempValue, to));
                             if (!enumDecl.TypeInfo.IsVoidType)
                             {
                                 if (exp.ArgumentsExpression.Count != 1)
@@ -1380,12 +1380,12 @@ namespace BabyPenguin.SemanticPass
                                     if (enmValSymbol.TypeInfo.CanImplicitlyCastTo(enumDecl.TypeInfo))
                                     {
                                         var temp = AllocTempSymbol(enumDecl.TypeInfo, exp.SourceLocation);
-                                        AddInstruction(new CastInstruction(enmValSymbol, enumDecl.TypeInfo, temp));
+                                        AddInstruction(new CastInstruction(exp.SourceLocation, enmValSymbol, enumDecl.TypeInfo, temp));
                                         enmValSymbol = temp;
                                     }
                                     else throw new BabyPenguinException($"Cant cast type '{enmValSymbol.TypeInfo}' to '{enumDecl.TypeInfo}'", exp.SourceLocation);
                                 }
-                                AddInstruction(new WriteEnumInstruction(enmValSymbol, to));
+                                AddInstruction(new WriteEnumInstruction(exp.SourceLocation, enmValSymbol, to));
                             }
                             else
                             {
@@ -1420,13 +1420,13 @@ namespace BabyPenguin.SemanticPass
                         case PrimaryExpression.Type.Constant:
                             var t = BasicType.ResolveLiteralType(exp.Literal!);
                             if (t == null) throw new BabyPenguinException($"Cant resolve Type '{exp.Literal}'", exp.SourceLocation);
-                            else AddInstruction(new AssignLiteralToSymbolInstruction(to, t, exp.Literal!));
+                            else AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, to, t, exp.Literal!));
                             break;
                         case PrimaryExpression.Type.StringLiteral:
-                            AddInstruction(new AssignLiteralToSymbolInstruction(to, BasicType.String, exp.Literal!));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, to, BasicType.String, exp.Literal!));
                             break;
                         case PrimaryExpression.Type.BoolLiteral:
-                            AddInstruction(new AssignLiteralToSymbolInstruction(to, BasicType.Bool, exp.Literal!));
+                            AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, to, BasicType.Bool, exp.Literal!));
                             break;
                         case PrimaryExpression.Type.ParenthesizedExpression:
                             AddExpression(exp.ParenthesizedExpression!, isVariableInitializer, to);
@@ -1439,7 +1439,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (waitExpression.Expression == null)
                         {
-                            AddInstruction(new ReturnInstruction(null, ReturnStatus.Blocked));
+                            AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
                         }
                         else throw new NotImplementedException();
                     }

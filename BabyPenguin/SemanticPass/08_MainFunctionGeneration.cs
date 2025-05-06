@@ -30,7 +30,7 @@ namespace BabyPenguin.SemanticPass
             foreach (var mergedNamespace in Model.Namespaces)
             {
                 var constructor = Model.ResolveSymbol(mergedNamespace.FullName + ".new") ?? throw new BabyPenguinException($"symbol '{mergedNamespace.FullName + ".new"}' is not found.");
-                mainFunc.Instructions.Add(new FunctionCallInstruction(constructor, [], null));
+                mainFunc.Instructions.Add(new FunctionCallInstruction(constructor.SourceLocation, constructor, [], null));
             }
 
             // push all initial routines into pending queue
@@ -42,7 +42,7 @@ namespace BabyPenguin.SemanticPass
             // call __builtin._main_scheduler.entry()
             var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
             var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
-            mainFunc.Instructions.Add(new FunctionCallInstruction(schedulerEntrySymbol, [schedulerSymbol], null));
+            mainFunc.Instructions.Add(new FunctionCallInstruction(schedulerEntrySymbol.SourceLocation.StartLocation, schedulerEntrySymbol, [schedulerSymbol], null));
         }
 
         public string Report

@@ -1,11 +1,12 @@
-﻿using CommandLine;
+﻿using System.Diagnostics;
+using CommandLine;
 namespace BabyPenguin
 {
     public class Options
     {
 
-        [Value(0, Required = true, HelpText = "Input files to process")]
-        public required IEnumerable<string> Files { get; set; }
+        [Value(0, HelpText = "Input files to process")]
+        public IEnumerable<string> Files { get; set; }
     }
 
     public class Program
@@ -18,7 +19,7 @@ namespace BabyPenguin
             );
         }
 
-        static int Run(Options options)
+        static void RunNormal(Options options)
         {
             // try
             // {
@@ -42,13 +43,32 @@ namespace BabyPenguin
                 Console.WriteLine(vm.CollectOutput());
             }
 
-            return 0;
             // }
             // catch (Exception e)
             // {
             //     Console.WriteLine(e.Message);
             //     return -1;
             // }
+        }
+
+        static void RunDAP(Options options)
+        {
+            var dap = new DAP();
+            dap.Protocol.LogMessage += (sender, e) => Debug.WriteLine(e.Message);
+            dap.Protocol.Run();
+        }
+
+        static int Run(Options options)
+        {
+            if (options.Files.Count() == 0)
+            {
+                RunDAP(options);
+            }
+            else
+            {
+                RunNormal(options);
+            }
+            return 0;
         }
     }
 }

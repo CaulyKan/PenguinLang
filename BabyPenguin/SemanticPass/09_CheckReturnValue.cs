@@ -37,7 +37,7 @@ namespace BabyPenguin.SemanticPass
                     if (codeContainer.Instructions.Count() == 0 || codeContainer.Instructions.Last() is not ReturnInstruction)
                     {
                         Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Adding return for '{codeContainer.FullName}'");
-                        codeContainer.Instructions.Add(new ReturnInstruction(null, ReturnStatus.YieldFinished));
+                        codeContainer.Instructions.Add(new ReturnInstruction(codeContainer.SourceLocation.EndLocation, null, ReturnStatus.YieldFinished));
                     }
                 }
             }

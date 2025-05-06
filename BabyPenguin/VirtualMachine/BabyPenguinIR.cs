@@ -1,8 +1,10 @@
 namespace BabyPenguin.VirtualMachine
 {
-    public record BabyPenguinIR
+    public abstract class BabyPenguinIR
     {
         public List<string> Labels { get; } = [];
+
+        public abstract SourceLocation SourceLocation { get; set; }
 
         public BabyPenguinIR WithLabel(string label)
         {
@@ -19,13 +21,19 @@ namespace BabyPenguin.VirtualMachine
         public virtual string StringLabels => Labels.Count == 0 ? "" : "[" + string.Join(", ", Labels) + "]";
     }
 
-    public record NopInstuction() : BabyPenguinIR
+    public class NopInstuction(SourceLocation sourceLocation) : BabyPenguinIR
     {
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         public override string StringCommand => "NOP";
     }
 
-    public record GotoInstruction(string TargetLabel, ISymbol? Condition = null, bool JumpOnCondition = true) : BabyPenguinIR
+    public class GotoInstruction(SourceLocation sourceLocation, string targetLabel, ISymbol? condition = null, bool jumpOnCondition = true) : BabyPenguinIR
     {
+        public string TargetLabel { get; } = targetLabel;
+        public ISymbol? Condition { get; } = condition;
+        public bool JumpOnCondition { get; } = jumpOnCondition;
+
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "GOTO";
         override public string StringOP1 => Condition == null ? "" : (JumpOnCondition ? "" : "!" + Condition.ToString());
         override public string StringResult => TargetLabel;
@@ -39,8 +47,11 @@ namespace BabyPenguin.VirtualMachine
         Finished, // the routine finished without generating a result
     }
 
-    public record ReturnInstruction(ISymbol? RetValue, ReturnStatus ReturnStatus) : BabyPenguinIR
+    public class ReturnInstruction(SourceLocation sourceLocation, ISymbol? retValue, ReturnStatus returnStatus) : BabyPenguinIR
     {
+        public ISymbol? RetValue { get; } = retValue;
+        public ReturnStatus ReturnStatus { get; } = returnStatus;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "RETN";
         override public string StringOP1 => (RetValue == null) ? "" : RetValue.ToString()!;
         public override string StringOP2 => ReturnStatus.ToString();
@@ -51,73 +62,106 @@ namespace BabyPenguin.VirtualMachine
         Breakpoint = 0,
     }
 
-    public record SignalInstruction(ISymbol CodeSymbol) : BabyPenguinIR
+    public class SignalInstruction(SourceLocation sourceLocation, ISymbol codeSymbol) : BabyPenguinIR
     {
+        public ISymbol CodeSymbol { get; } = codeSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "SIGN";
 
         override public string StringOP1 => CodeSymbol.ToString() ?? "";
     }
 
-    public record BinaryOperationInstruction(BinaryOperatorEnum Operator, ISymbol LeftSymbol, ISymbol RightSymbol, ISymbol Target) : BabyPenguinIR
+    public class BinaryOperationInstruction(SourceLocation sourceLocation, BinaryOperatorEnum _operator, ISymbol leftSymbol, ISymbol rightSymbol, ISymbol target) : BabyPenguinIR
     {
+        public BinaryOperatorEnum Operator { get; } = _operator;
+        public ISymbol LeftSymbol { get; } = leftSymbol;
+        public ISymbol RightSymbol { get; } = rightSymbol;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => Operator.ToString().ToUpper();
         override public string StringOP1 => LeftSymbol.ToString() ?? "";
         override public string StringOP2 => RightSymbol.ToString() ?? "";
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record UnaryOperationInstruction(UnaryOperatorEnum Operator, ISymbol Operand, ISymbol Target) : BabyPenguinIR
+    public class UnaryOperationInstruction(SourceLocation sourceLocation, UnaryOperatorEnum _operator, ISymbol operand, ISymbol target) : BabyPenguinIR
     {
+        public UnaryOperatorEnum Operator { get; } = _operator;
+        public ISymbol Operand { get; } = operand;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => Operator.ToString().ToUpper();
         override public string StringOP1 => Operand.ToString() ?? "";
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record NewInstanceInstruction(ISymbol Target) : BabyPenguinIR
+    public class NewInstanceInstruction(SourceLocation sourceLocation, ISymbol target) : BabyPenguinIR
     {
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "NEW";
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record AssignmentInstruction(ISymbol RightHandSymbol, ISymbol LeftHandSymbol) : BabyPenguinIR
+    public class AssignmentInstruction(SourceLocation sourceLocation, ISymbol rightHandSymbol, ISymbol leftHandSymbol) : BabyPenguinIR
     {
+        public ISymbol RightHandSymbol { get; } = rightHandSymbol;
+        public ISymbol LeftHandSymbol { get; } = leftHandSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "ASSIGN";
         override public string StringOP1 => RightHandSymbol.ToString() ?? "";
         override public string StringResult => LeftHandSymbol.ToString() ?? "";
     }
 
-    public record ReadMemberInstruction(ISymbol Member, ISymbol MemberOwnerSymbol, ISymbol Target) : BabyPenguinIR
+    public class ReadMemberInstruction(SourceLocation sourceLocation, ISymbol member, ISymbol memberOwnerSymbol, ISymbol target) : BabyPenguinIR
     {
+
+        public ISymbol Member { get; } = member;
+        public ISymbol MemberOwnerSymbol { get; } = memberOwnerSymbol;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "RDMBR";
         override public string StringOP1 => Member.ToString() ?? "";
         override public string StringOP2 => MemberOwnerSymbol.ToString() ?? "";
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record WriteMemberInstruction(ISymbol Member, ISymbol Value, ISymbol MemberOwnerSymbol) : BabyPenguinIR
+    public class WriteMemberInstruction(SourceLocation sourceLocation, ISymbol member, ISymbol _value, ISymbol memberOwnerSymbol) : BabyPenguinIR
     {
+        public ISymbol Member { get; } = member;
+        public ISymbol Value { get; } = _value;
+        public ISymbol MemberOwnerSymbol { get; } = memberOwnerSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "WRMBR";
         override public string StringOP1 => Member.ToString() ?? "";
         override public string StringOP2 => Value.ToString() ?? "";
         override public string StringResult => MemberOwnerSymbol?.ToString() ?? "";
     }
 
-    public record AssignLiteralToSymbolInstruction(ISymbol Target, IType Type, string LiteralValue) : BabyPenguinIR
+    public class AssignLiteralToSymbolInstruction(SourceLocation sourceLocation, ISymbol target, IType type, string literalValue) : BabyPenguinIR
     {
+        public ISymbol Target { get; } = target;
+        public IType Type { get; } = type;
+        public string LiteralValue { get; } = literalValue;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "LITERAL";
         override public string StringOP1 => LiteralValue;
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record FunctionCallInstruction(ISymbol FunctionSymbol, List<ISymbol> Arguments, ISymbol? Target) : BabyPenguinIR
+    public class FunctionCallInstruction(SourceLocation sourceLocation, ISymbol functionSymbol, List<ISymbol> arguments, ISymbol? target) : BabyPenguinIR
     {
+        public ISymbol FunctionSymbol { get; } = functionSymbol;
+        public List<ISymbol> Arguments { get; } = arguments;
+        public ISymbol? Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "CALL";
         override public string StringOP1 => FunctionSymbol.FullName ?? "";
         override public string StringOP2 => string.Join(", ", Arguments);
         override public string StringResult => Target?.ToString() ?? "";
     }
 
-    // public record SlicingInstruction(ISymbol Slicable, ISymbol Index, ISymbol Target) : SemanticInstruction
+    // public class SlicingInstruction(ISymbol Slicable, ISymbol Index, ISymbol Target) : SemanticInstruction
     // {
     //     override public string StringCommand => "SLICE";
     //     override public string StringOP1 => Slicable.ToString() ?? "";
@@ -125,23 +169,33 @@ namespace BabyPenguin.VirtualMachine
     //     override public string StringResult => Target.ToString() ?? "";
     // }
 
-    public record CastInstruction(ISymbol Operand, IType TypeInfo, ISymbol Target) : BabyPenguinIR
+    public class CastInstruction(SourceLocation sourceLocation, ISymbol operand, IType typeInfo, ISymbol target) : BabyPenguinIR
     {
+        public ISymbol Operand { get; } = operand;
+        public IType TypeInfo { get; } = typeInfo;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "CAST";
         override public string StringOP1 => Operand.ToString() ?? "";
         override public string StringOP2 => TypeInfo.ToString() ?? "";
         override public string StringResult => Target.ToString() ?? "";
     }
 
-    public record WriteEnumInstruction(ISymbol Value, ISymbol TargetEnum) : BabyPenguinIR
+    public class WriteEnumInstruction(SourceLocation sourceLocation, ISymbol value, ISymbol targetEnum) : BabyPenguinIR
     {
+        public ISymbol Value { get; } = value;
+        public ISymbol TargetEnum { get; } = targetEnum;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "WRENUM";
         override public string StringOP1 => Value.ToString() ?? "";
         override public string StringResult => TargetEnum.ToString() ?? "";
     }
 
-    public record ReadEnumInstruction(ISymbol Enum, ISymbol TargetValue) : BabyPenguinIR
+    public class ReadEnumInstruction(SourceLocation sourceLocation, ISymbol _enum, ISymbol targetValue) : BabyPenguinIR
     {
+        public ISymbol Enum { get; } = _enum;
+        public ISymbol TargetValue { get; } = targetValue;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "RDENUM";
         override public string StringOP1 => Enum.ToString() ?? "";
         override public string StringResult => TargetValue.ToString() ?? "";

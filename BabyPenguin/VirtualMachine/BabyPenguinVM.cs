@@ -18,18 +18,27 @@ namespace BabyPenguin.VirtualMachine
 
         public RuntimeGlobal Global { get; } = new RuntimeGlobal();
 
-        public StringBuilder Output { get; } = new StringBuilder();
+        public RuntimeFrame? StartFrame { get; private set; }
 
-        public string CollectOutput() => Output.ToString();
+        public Stack<RuntimeFrame> StackFrames => Global.StackFrames;
 
-        public void Run()
+        public string CollectOutput() => Global.Output.ToString();
+
+        public void Initialize()
         {
             var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol;
             if (mainFunc == null)
                 throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
             var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], 0);
-            frame.Run();
+            StartFrame = frame;
+        }
+
+        public void Run()
+        {
+            if (StartFrame == null)
+                Initialize();
+            foreach (var _ in StartFrame!.Run()) { }
         }
     }
 
@@ -37,22 +46,49 @@ namespace BabyPenguin.VirtualMachine
 
     public class RuntimeGlobal
     {
+        public Stack<RuntimeFrame> StackFrames { get; } = new Stack<RuntimeFrame>();
+
+        public bool StepMode { get; set; } = false;
+
         public Dictionary<string, IRuntimeVar> GlobalVariables { get; } = [];
 
-        public Dictionary<string, Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>>> ExternFunctions { get; } = [];
+        public Dictionary<string, Func<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>, IEnumerable<bool>>> ExternFunctions { get; } = [];
 
         public void RegisterExternFunction(string name, Action<IRuntimeVar?, List<IRuntimeVar>> func)
         {
-            ExternFunctions.Add(name, (frame, result, args) => func(result, args));
+            ExternFunctions.Add(name, (frame, result, args) =>
+            {
+                func(result, args);
+                return [true];
+            });
         }
 
-        public void RegisterExternFunction(string name, Action<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>> func)
+        public void RegisterExternFunction(string name, Func<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>, IEnumerable<bool>> func)
         {
             ExternFunctions.Add(name, func);
         }
 
         public bool EnableDebugPrint { get; set; } = false;
 
-        public TextWriter DebugWriter { get; set; } = Console.Out;
+        public StringBuilder Output { get; } = new StringBuilder();
+
+        public Action<string> PrintFunc { get; set; } = (s) => Console.Write(s);
+
+        public Action<string> DebugFunc { get; set; } = (s) => Console.Write(s);
+
+        public void Print(string s, bool newline = false)
+        {
+            if (!newline)
+            {
+                Output.Append(s);
+                PrintFunc(s);
+            }
+            else
+            {
+                Output.AppendLine(s);
+                PrintFunc(s + Environment.NewLine);
+            }
+        }
+
     }
 }

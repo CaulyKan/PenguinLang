@@ -13,32 +13,18 @@ namespace BabyPenguin.VirtualMachine
             AddRoutineContext(vm);
         }
 
-        public static void Print(BabyPenguinVM vm, string s, bool newline = false)
-        {
-            if (!newline)
-            {
-                vm.Output.Append(s);
-                Console.Write(s);
-            }
-            else
-            {
-                vm.Output.AppendLine(s);
-                Console.WriteLine(s);
-            }
-        }
-
         public static void AddPrint(BabyPenguinVM vm)
         {
             vm.Global.RegisterExternFunction("__builtin.print", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
-                Print(vm, s);
+                vm.Global.Print(s);
             });
 
             vm.Global.RegisterExternFunction("__builtin.println", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeVar>().StringValue;
-                Print(vm, s, true);
+                vm.Global.Print(s, true);
             });
         }
 
@@ -197,26 +183,41 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
+        private static IEnumerable<bool> RoutineContextCall(RuntimeFrame frame, IRuntimeVar? resultVar, List<IRuntimeVar> args)
+        {
+            var target = args[0].As<ClassRuntimeVar>().ObjectFields["target"].As<FunctionRuntimeVar>();
+            var oldFrame = args[0].As<ClassRuntimeVar>().ObjectFields["frame"].As<BasicRuntimeVar>();
+            RuntimeFrameResult? frameResult = null;
+            if (oldFrame.ExternImplenmentationValue is RuntimeFrame f)
+            {
+                foreach (var res in f.Run())
+                {
+                    if (res == null)
+                        yield return false;
+                    else
+                        frameResult = res;
+                }
+            }
+            else
+            {
+                var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
+                var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame.FrameLevel + 1);
+                oldFrame.ExternImplenmentationValue = newFrame;
+                foreach (var res in newFrame.Run())
+                {
+                    if (res == null)
+                        yield return false;
+                    else
+                        frameResult = res;
+                }
+            }
+            resultVar!.As<BasicRuntimeVar>().I64Value = (int)frameResult!.ReturnStatus; // TODO: really finished?
+            yield return true;
+        }
+
         public static void AddRoutineContext(BabyPenguinVM vm)
         {
-            vm.Global.RegisterExternFunction("__builtin.RoutineContext.call", (frame, result, args) =>
-            {
-                var target = args[0].As<ClassRuntimeVar>().ObjectFields["target"].As<FunctionRuntimeVar>();
-                var oldFrame = args[0].As<ClassRuntimeVar>().ObjectFields["frame"].As<BasicRuntimeVar>();
-                RuntimeFrameResult frameResult;
-                if (oldFrame.ExternImplenmentationValue is RuntimeFrame f)
-                {
-                    frameResult = f.Run();
-                }
-                else
-                {
-                    var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
-                    var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame.FrameLevel + 1);
-                    frameResult = newFrame!.Run();
-                    oldFrame.ExternImplenmentationValue = newFrame;
-                }
-                result!.As<BasicRuntimeVar>().I64Value = (int)frameResult.ReturnStatus; // TODO: really finished?
-            });
+            vm.Global.RegisterExternFunction("__builtin.RoutineContext.call", RoutineContextCall);
 
             vm.Global.RegisterExternFunction("__builtin.RoutineContext.new", (result, args) =>
             {
