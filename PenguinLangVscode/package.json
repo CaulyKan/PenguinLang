@@ -36,10 +36,10 @@
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "server/BabyPenguin"
+          "program": "X:\\repos\\penguinlang\\BabyPenguin\\bin\\Debug\\net8.0\\BabyPenguin.exe"
         },
         "linux": {
-          "program": "server/BabyPenguin"
+          "program": "/home/cauly/workspace/repos/penguinlang/BabyPenguin/bin/Debug/net8.0/BabyPenguin"
         },
         "configurationAttributes": {
           "launch": {

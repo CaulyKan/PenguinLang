@@ -25,10 +25,10 @@ namespace BabyPenguin.SemanticPass
 
         public string PrintInstructionsTable()
         {
-            var table = new ConsoleTable("Instruction", "OP1", "OP2", "Result", "Labels");
+            var table = new ConsoleTable("Instruction", "OP1", "OP2", "Result", "Labels", "Location");
             foreach (var ins in Instructions)
             {
-                table.AddRow(ins.StringCommand, ins.StringOP1, ins.StringOP2, ins.StringResult, ins.StringLabels);
+                table.AddRow(ins.StringCommand, ins.StringOP1, ins.StringOP2, ins.StringResult, ins.StringLabels, ins.SourceLocation);
             }
             return table.ToMarkDownString();
         }
@@ -75,6 +75,8 @@ namespace BabyPenguin.SemanticPass
         {
             switch (item.StatementType)
             {
+                case Statement.Type.Empty:
+                    break;
                 case Statement.Type.AssignmentStatement:
                     {
                         var rightVar = AddExpression(item.AssignmentStatement!.RightHandSide!, false);
@@ -115,13 +117,13 @@ namespace BabyPenguin.SemanticPass
                                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                        AddInstruction(new ReadEnumInstruction(member.SourceLocation, target, temp));
+                                        AddInstruction(new ReadEnumInstruction(item.AssignmentStatement.LeftHandSide.SourceLocation, target, temp));
                                         target = temp;
                                     }
                                     else
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                        AddInstruction(new ReadMemberInstruction(member.SourceLocation, member, target, temp));
+                                        AddInstruction(new ReadMemberInstruction(item.AssignmentStatement.LeftHandSide.SourceLocation, member, target, temp));
                                         target = temp;
                                     }
                                 }
@@ -835,22 +837,22 @@ namespace BabyPenguin.SemanticPass
                 if (isLastRound)
                 {
                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
-                        AddInstruction(new ReadEnumInstruction(target.SourceLocation, target, to));
+                        AddInstruction(new ReadEnumInstruction(exp.SourceLocation, target, to));
                     else
-                        AddInstruction(new ReadMemberInstruction(target.SourceLocation, member, target, to));
+                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, to));
                 }
                 else
                 {
                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                        AddInstruction(new ReadEnumInstruction(target.SourceLocation, target, temp));
+                        AddInstruction(new ReadEnumInstruction(exp.SourceLocation, target, temp));
                         target = temp;
                     }
                     else
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(member.SourceLocation, member, target, temp));
+                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, temp));
                         target = temp;
                     }
                 }

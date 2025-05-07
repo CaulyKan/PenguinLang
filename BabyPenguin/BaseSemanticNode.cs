@@ -22,7 +22,7 @@ namespace BabyPenguin
     {
         public SemanticModel Model { get; }
 
-        public SourceLocation SourceLocation { get; }
+        public SourceLocation SourceLocation { get; set; }
 
         public SyntaxNode? SyntaxNode { get; }
 

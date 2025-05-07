@@ -22,7 +22,7 @@ namespace BabyPenguin.SemanticNode
 
     public class Function : BaseSemanticNode, IFunction
     {
-        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false, bool returnValueIsReadonly = false, bool? isAsync = false) : base(model)
+        public Function(SemanticModel model, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, SourceLocation? sourceLocation = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false, bool returnValueIsReadonly = false, bool? isAsync = false) : base(model)
         {
             Name = name;
             IsExtern = isExtern;
@@ -31,6 +31,7 @@ namespace BabyPenguin.SemanticNode
             IsAsync = isAsync;
             IsDeclarationOnly = isDeclarationOnly;
             ReturnValueIsReadonly = returnValueIsReadonly;
+            SourceLocation = sourceLocation ?? SourceLocation.Empty();
             if (parameters != null)
                 Parameters = parameters;
             if (returnType != null)

@@ -53,7 +53,7 @@ namespace BabyPenguin.SemanticPass
 
             if (constructor == null)
             {
-                ns.Constructor = new Function(Model, "new", [], BasicType.Void, false, false);
+                ns.Constructor = new Function(Model, "new", [], BasicType.Void, sourceLocation, false, false);
                 ns.AddFunction(ns.Constructor);
                 Model.CatchUp(ns.Constructor);
                 constructor = ns.Constructor.FunctionSymbol;
@@ -91,7 +91,7 @@ namespace BabyPenguin.SemanticPass
             else
             {
                 List<FunctionParameter> param = [new FunctionParameter("this", cls, false, 0)];
-                cls.Constructor = new Function(Model, "new", param, BasicType.Void, false, false);
+                cls.Constructor = new Function(Model, "new", param, BasicType.Void, sourceLocation, false, false);
                 cls.AddFunction(cls.Constructor);
                 Model.CatchUp(cls.Constructor);
             }

@@ -4,6 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     {
         public enum Type
         {
+            Empty,
             SubBlock,
             ExpressionStatement,
             IfStatement,
@@ -67,11 +68,16 @@ namespace PenguinLangSyntax.SyntaxNodes
                     StatementType = Type.SignalStatement;
                     SignalStatement = Build<SignalStatement>(walker, context.signalStatement());
                 }
-                else
+                else if (context.codeBlock() is not null)
                 {
                     StatementType = Type.SubBlock;
                     CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
                 }
+                else if (context.GetText() == ";")
+                {
+                    StatementType = Type.Empty;
+                }
+                else throw new NotImplementedException();
 
             }
             else throw new NotImplementedException();

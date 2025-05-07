@@ -3,5 +3,6 @@
         "**/bin": true,
         "**/obj": true,
         "**/.antlr": true
-    }
+    },
+    "cmake.ignoreCMakeListsMissing": true
 }

@@ -8,7 +8,7 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var symbol in model.Symbols.Where(s => !s.IsEnum && !s.IsLocal))
             {
-                Global.GlobalVariables.Add(symbol.FullName, IRuntimeVar.FromSymbol(model, symbol));
+                Global.GlobalVariables.Add(symbol.FullName, IRuntimeSymbol.FromSymbol(model, symbol));
             }
 
             ExternFunctions.Build(this);
@@ -20,8 +20,6 @@ namespace BabyPenguin.VirtualMachine
 
         public RuntimeFrame? StartFrame { get; private set; }
 
-        public Stack<RuntimeFrame> StackFrames => Global.StackFrames;
-
         public string CollectOutput() => Global.Output.ToString();
 
         public void Initialize()
@@ -30,7 +28,7 @@ namespace BabyPenguin.VirtualMachine
             if (mainFunc == null)
                 throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
-            var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], 0);
+            var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], null);
             StartFrame = frame;
         }
 
@@ -46,24 +44,24 @@ namespace BabyPenguin.VirtualMachine
 
     public class RuntimeGlobal
     {
-        public Stack<RuntimeFrame> StackFrames { get; } = new Stack<RuntimeFrame>();
+        public enum StepModeEnum { StepIn, StepOver, StepOut, Run }
 
-        public bool StepMode { get; set; } = false;
+        public StepModeEnum StepMode { get; set; } = StepModeEnum.Run;
 
-        public Dictionary<string, IRuntimeVar> GlobalVariables { get; } = [];
+        public Dictionary<string, IRuntimeSymbol> GlobalVariables { get; } = [];
 
-        public Dictionary<string, Func<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>, IEnumerable<bool>>> ExternFunctions { get; } = [];
+        public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeSymbol>, IEnumerable<RuntimeBreak>>> ExternFunctions { get; } = [];
 
-        public void RegisterExternFunction(string name, Action<IRuntimeVar?, List<IRuntimeVar>> func)
+        public void RegisterExternFunction(string name, Action<IRuntimeSymbol?, List<IRuntimeSymbol>> func)
         {
             ExternFunctions.Add(name, (frame, result, args) =>
             {
                 func(result, args);
-                return [true];
+                return [];
             });
         }
 
-        public void RegisterExternFunction(string name, Func<RuntimeFrame, IRuntimeVar?, List<IRuntimeVar>, IEnumerable<bool>> func)
+        public void RegisterExternFunction(string name, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeSymbol>, IEnumerable<RuntimeBreak>> func)
         {
             ExternFunctions.Add(name, func);
         }

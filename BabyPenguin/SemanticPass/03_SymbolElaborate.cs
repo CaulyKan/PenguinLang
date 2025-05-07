@@ -198,7 +198,7 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, SourceLocation.Empty(), 0, null, false, true) as VaraibleSymbol;
+                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, false, true) as VaraibleSymbol;
 
                         if (enm.SyntaxNode is EnumDefinition syntax)
                         {
@@ -309,10 +309,10 @@ namespace BabyPenguin.SemanticPass
                                 for (int i = 0; i < func.Parameters.Count; i++)
                                 {
                                     var param = func.Parameters[i];
-                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), SourceLocation.Empty(), 0, i, param.IsReadonly, false);
+                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, param.IsReadonly, false);
                                 }
 
-                                func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, SourceLocation.Empty(), 0, null, true, false, func.IsStatic!.Value) as FunctionSymbol;
+                                func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, func.SourceLocation, 0, null, true, false, func.IsStatic!.Value) as FunctionSymbol;
                             }
                         }
                         break;

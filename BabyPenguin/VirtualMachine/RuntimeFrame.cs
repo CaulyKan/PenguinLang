@@ -2,15 +2,20 @@ using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 
 namespace BabyPenguin.VirtualMachine
 {
-    public record RuntimeFrameResult(IRuntimeVar? ReturnValue, ReturnStatus ReturnStatus);
+    public record RuntimeFrameResult(IRuntimeSymbol? ReturnValue, ReturnStatus ReturnStatus);
+    public enum RuntimeBreakReason { Step, Breakpoint, Exception }
+    public record RuntimeBreak(RuntimeBreakReason Reason, RuntimeFrame CurrentFrame);
 
     public class RuntimeFrame
     {
-        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeVar> parameters, int frameLevel)
+        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeSymbol> parameters, RuntimeFrame? parentFrame)
         {
             CodeContainer = container;
             Global = runtimeGlobal;
-            FrameLevel = frameLevel;
+            FrameLevel = parentFrame?.FrameLevel + 1 ?? 0;
+            ParentFrame = parentFrame;
+            if (ParentFrame != null)
+                ParentFrame.ChildFrame = this;
             foreach (var local in container.Symbols)
             {
                 if (local.IsParameter)
@@ -19,18 +24,34 @@ namespace BabyPenguin.VirtualMachine
                 }
                 else
                 {
-                    LocalVariables.Add(local.FullName, IRuntimeVar.FromSymbol(container.Model, local));
+                    LocalVariables.Add(local.FullName, IRuntimeSymbol.FromSymbol(container.Model, local));
                 }
             }
         }
 
-        public Dictionary<string, IRuntimeVar> LocalVariables { get; } = [];
+        public Dictionary<string, IRuntimeSymbol> LocalVariables { get; } = [];
+
         public RuntimeGlobal Global { get; }
+
         public ICodeContainer CodeContainer { get; }
+
+        public override string ToString()
+        {
+            return $"[RuntimeFrame: {CodeContainer.FullName}]";
+        }
+
         public int FrameLevel { get; set; } = 0;
+
         public int InstructionPointer { get; set; } = 0;
 
+        public RuntimeFrame? ParentFrame { get; set; }
+
+        public RuntimeFrame? ChildFrame { get; set; }
+
         public SourceLocation CurrentSourceLocation => InstructionPointer >= CodeContainer.Instructions.Count ? CodeContainer.SourceLocation.EndLocation : CodeContainer.Instructions[InstructionPointer].SourceLocation;
+
+        public IRuntimeSymbol? LastReturnVar { get; private set; }
+
 
         private void DebugPrint(BabyPenguinIR inst, string? op1 = "", string? op2 = "", string? result = "")
         {
@@ -40,48 +61,75 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
-        public IEnumerable<RuntimeFrameResult?> Run()
+        private IRuntimeSymbol resolveVariable(ISymbol symbol)
         {
-            Global.StackFrames.Push(this);
-
-            IRuntimeVar resolveVariable(ISymbol symbol)
+            IRuntimeSymbol? result;
+            if (symbol.IsLocal)
             {
-                IRuntimeVar? result;
-                if (symbol.IsLocal)
+                if (!LocalVariables.TryGetValue(symbol.FullName, out result))
                 {
-                    if (!LocalVariables.TryGetValue(symbol.FullName, out result))
-                    {
-                        throw new BabyPenguinRuntimeException("Cannot find local variable " + symbol.FullName);
-                    }
+                    throw new BabyPenguinRuntimeException("Cannot find local variable " + symbol.FullName);
                 }
-                else
-                {
-                    if (!Global.GlobalVariables.TryGetValue(symbol.FullName, out result))
-                    {
-                        throw new BabyPenguinRuntimeException("Cannot find global variable " + symbol.FullName);
-                    }
-                }
-                return result!;
             }
-
-            int findLabel(string label)
+            else
             {
-                for (int i = 0; i < CodeContainer.Instructions.Count; i++)
+                if (!Global.GlobalVariables.TryGetValue(symbol.FullName, out result))
                 {
-                    if (CodeContainer.Instructions[i].Labels.Contains(label))
+                    throw new BabyPenguinRuntimeException("Cannot find global variable " + symbol.FullName);
+                }
+            }
+            return result!;
+        }
+
+        private int findLabel(string label)
+        {
+            for (int i = 0; i < CodeContainer.Instructions.Count; i++)
+            {
+                if (CodeContainer.Instructions[i].Labels.Contains(label))
+                {
+                    return i;
+                }
+            }
+            throw new BabyPenguinRuntimeException("Cannot find label " + label);
+        }
+
+        public IEnumerable<Or<RuntimeBreak, RuntimeFrameResult>> Run()
+        {
+            // continue from child frame yield/async stop point
+            if (ChildFrame != null)
+            {
+                foreach (var resTemp in ChildFrame.Run())
+                {
+                    if (resTemp.IsLeft)
                     {
-                        return i;
+                        yield return resTemp;
+                    }
+                    else
+                    {
+                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Blocked)
+                        {
+                            yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
+                            yield break;
+                        }
+
+                        if (resTemp.Right!.ReturnValue != null)
+                            LastReturnVar?.AssignFrom(resTemp.Right!.ReturnValue);
+
+                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Finished || resTemp.Right!.ReturnStatus == ReturnStatus.YieldFinished)
+                        {
+                            ChildFrame = null;
+                        }
                     }
                 }
-                throw new BabyPenguinRuntimeException("Cannot find label " + label);
             }
 
             RuntimeFrameResult? result = null;
             while (InstructionPointer < CodeContainer.Instructions.Count)
             {
-                if (InstructionPointer > 0 && Global.StepMode)
+                if (InstructionPointer > 0 && (Global.StepMode == RuntimeGlobal.StepModeEnum.StepIn || Global.StepMode == RuntimeGlobal.StepModeEnum.StepOver))
                 {
-                    yield return null;
+                    Global.StepMode = RuntimeGlobal.StepModeEnum.Run;
+                    yield return new RuntimeBreak(RuntimeBreakReason.Step, this);
                 }
 
                 var command = CodeContainer.Instructions[InstructionPointer];
@@ -89,57 +137,57 @@ namespace BabyPenguin.VirtualMachine
                 {
                     case AssignmentInstruction cmd:
                         {
-                            IRuntimeVar rightVar = resolveVariable(cmd.RightHandSymbol);
-                            IRuntimeVar resultVar = resolveVariable(cmd.LeftHandSymbol);
+                            IRuntimeSymbol rightVar = resolveVariable(cmd.RightHandSymbol);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.LeftHandSymbol);
                             resultVar.AssignFrom(rightVar);
                             DebugPrint(cmd, op1: rightVar.ToDebugString(), result: resultVar.ToDebugString());
                             break;
                         }
                     case AssignLiteralToSymbolInstruction cmd:
                         {
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
                             switch (resultVar.Type)
                             {
                                 case TypeEnum.Bool:
-                                    resultVar.As<BasicRuntimeVar>().BoolValue = bool.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue = bool.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.U8:
-                                    resultVar.As<BasicRuntimeVar>().U8Value = byte.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U8Value = byte.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.U16:
-                                    resultVar.As<BasicRuntimeVar>().U16Value = ushort.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U16Value = ushort.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.U32:
-                                    resultVar.As<BasicRuntimeVar>().U32Value = uint.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U32Value = uint.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.U64:
-                                    resultVar.As<BasicRuntimeVar>().U64Value = ulong.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U64Value = ulong.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.I8:
-                                    resultVar.As<BasicRuntimeVar>().I8Value = sbyte.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I8Value = sbyte.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.I16:
-                                    resultVar.As<BasicRuntimeVar>().I16Value = short.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I16Value = short.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.I32:
-                                    resultVar.As<BasicRuntimeVar>().I32Value = int.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I32Value = int.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.I64:
-                                    resultVar.As<BasicRuntimeVar>().I64Value = long.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I64Value = long.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.Float:
-                                    resultVar.As<BasicRuntimeVar>().FloatValue = float.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.FloatValue = float.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.Double:
-                                    resultVar.As<BasicRuntimeVar>().DoubleValue = double.Parse(cmd.LiteralValue);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DoubleValue = double.Parse(cmd.LiteralValue);
                                     break;
                                 case TypeEnum.Void:
                                     break;
                                 case TypeEnum.String:
-                                    resultVar.As<BasicRuntimeVar>().StringValue = cmd.LiteralValue[1..^1];
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = cmd.LiteralValue[1..^1];
                                     break;
                                 case TypeEnum.Char:
-                                    resultVar.As<BasicRuntimeVar>().CharValue = cmd.LiteralValue[0];
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.CharValue = cmd.LiteralValue[0];
                                     break;
                                 default:
                                     throw new BabyPenguinRuntimeException("A complex type cannot be a literal value");
@@ -149,32 +197,45 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case FunctionCallInstruction cmd:
                         {
-                            IRuntimeVar funVar = resolveVariable(cmd.FunctionSymbol);
-                            FunctionSymbol funSymbol = funVar.As<FunctionRuntimeVar>().FunctionSymbol as FunctionSymbol ??
+                            IRuntimeSymbol funVar = resolveVariable(cmd.FunctionSymbol);
+                            FunctionSymbol funSymbol = funVar.As<FunctionRuntimeSymbol>().FunctionValue.FunctionSymbol as FunctionSymbol ??
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
-                            IRuntimeVar? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
-                            List<IRuntimeVar> args = cmd.Arguments.Select(resolveVariable).ToList();
+                            IRuntimeSymbol? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
+                            List<IRuntimeSymbol> args = cmd.Arguments.Select(resolveVariable).ToList();
                             DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.Symbol.FullName);
                             if (!funSymbol.IsExtern)
                             {
-                                var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args, this.FrameLevel + 1);
+                                LastReturnVar = retVar;
+                                var newFrame = new RuntimeFrame(funSymbol.CodeContainer, Global, args, this);
+                                var isStepOver = Global.StepMode == RuntimeGlobal.StepModeEnum.StepOver || Global.StepMode == RuntimeGlobal.StepModeEnum.StepOut;
+                                if (isStepOver)
+                                    Global.StepMode = RuntimeGlobal.StepModeEnum.Run;
                                 foreach (var resTemp in newFrame.Run())
                                 {
-                                    if (resTemp == null)
+                                    if (resTemp.IsLeft)
                                     {
-                                        yield return null;
+                                        yield return resTemp;
                                     }
                                     else
                                     {
-                                        if (resTemp.ReturnStatus == ReturnStatus.Blocked)
+                                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Blocked)
                                         {
                                             result = new RuntimeFrameResult(null, ReturnStatus.Blocked);
+
                                             break;
                                         }
-                                        if (resTemp.ReturnValue != null)
-                                            retVar?.AssignFrom(resTemp.ReturnValue);
+
+                                        if (resTemp.Right!.ReturnValue != null)
+                                            retVar?.AssignFrom(resTemp.Right!.ReturnValue);
+
+                                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Finished || resTemp.Right!.ReturnStatus == ReturnStatus.YieldFinished)
+                                        {
+                                            ChildFrame = null;
+                                        }
                                     }
                                 }
+                                if (isStepOver)
+                                    yield return new RuntimeBreak(RuntimeBreakReason.Step, this);
                             }
                             else
                             {
@@ -182,8 +243,7 @@ namespace BabyPenguin.VirtualMachine
                                 {
                                     foreach (var resTemp in action(this, retVar, args))
                                     {
-                                        if (resTemp == false)
-                                            yield return null;
+                                        yield return resTemp;
                                     }
                                 }
                                 else
@@ -197,8 +257,8 @@ namespace BabyPenguin.VirtualMachine
                     //     throw new NotImplementedException();
                     case CastInstruction cmd:
                         {
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
-                            IRuntimeVar rightVar = resolveVariable(cmd.Operand);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
+                            IRuntimeSymbol rightVar = resolveVariable(cmd.Operand);
                             if (resultVar.TypeInfo != cmd.TypeInfo)
                             {
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {cmd.TypeInfo} to type {resultVar.TypeInfo}");
@@ -208,81 +268,86 @@ namespace BabyPenguin.VirtualMachine
                                 case TypeEnum.Void:
                                     break;
                                 case TypeEnum.U8:
-                                    resultVar.As<BasicRuntimeVar>().U8Value = Convert.ToByte(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U8Value = Convert.ToByte(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.U16:
-                                    resultVar.As<BasicRuntimeVar>().U16Value = Convert.ToUInt16(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U16Value = Convert.ToUInt16(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.U32:
-                                    resultVar.As<BasicRuntimeVar>().U32Value = Convert.ToUInt32(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U32Value = Convert.ToUInt32(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.U64:
-                                    resultVar.As<BasicRuntimeVar>().U64Value = Convert.ToUInt64(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.U64Value = Convert.ToUInt64(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.I8:
-                                    resultVar.As<BasicRuntimeVar>().I8Value = Convert.ToSByte(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I8Value = Convert.ToSByte(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.I16:
-                                    resultVar.As<BasicRuntimeVar>().I16Value = Convert.ToInt16(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I16Value = Convert.ToInt16(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.I32:
-                                    resultVar.As<BasicRuntimeVar>().I32Value = Convert.ToInt32(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I32Value = Convert.ToInt32(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.I64:
-                                    resultVar.As<BasicRuntimeVar>().I64Value = Convert.ToInt64(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.I64Value = Convert.ToInt64(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.Float:
-                                    resultVar.As<BasicRuntimeVar>().FloatValue = Convert.ToSingle(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.FloatValue = Convert.ToSingle(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.Double:
-                                    resultVar.As<BasicRuntimeVar>().DoubleValue = Convert.ToDouble(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DoubleValue = Convert.ToDouble(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.Char:
-                                    resultVar.As<BasicRuntimeVar>().CharValue = rightVar.As<BasicRuntimeVar>().CharValue;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.CharValue = rightVar.As<BasicRuntimeSymbol>().BasicValue.CharValue;
                                     break;
                                 case TypeEnum.Bool:
-                                    resultVar.As<BasicRuntimeVar>().BoolValue = bool.Parse(rightVar.As<BasicRuntimeVar>().ValueToString!);
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue = bool.Parse(rightVar.As<BasicRuntimeSymbol>().ValueToString!);
                                     break;
                                 case TypeEnum.String:
                                     if (rightVar.TypeInfo.IsBoolType)
                                     {
-                                        resultVar.As<BasicRuntimeVar>().StringValue = rightVar.As<BasicRuntimeVar>().BoolValue ? "true" : "false";
+                                        resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = rightVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue ? "true" : "false";
                                     }
                                     else if (rightVar.TypeInfo.IsStringType)
                                     {
-                                        resultVar.As<BasicRuntimeVar>().StringValue = rightVar.As<BasicRuntimeVar>().StringValue ?? "";
+                                        resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = rightVar.As<BasicRuntimeSymbol>().BasicValue.StringValue ?? "";
                                     }
                                     else if (rightVar.TypeInfo.IsEnumType)
                                     {
-                                        var enumInt = rightVar.As<EnumRuntimeVar>().ObjectFields["_value"].As<BasicRuntimeVar>().I32Value;
-                                        resultVar.As<BasicRuntimeVar>().StringValue = (rightVar.As<EnumRuntimeVar>().TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Value == enumInt)?.Name ??
-                                        throw new BabyPenguinRuntimeException($"Converting unknown enum value '{enumInt}' for '{rightVar.As<EnumRuntimeVar>().TypeInfo.FullName}' to string.");
+                                        var enumInt = rightVar.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value;
+                                        var name = (rightVar.As<EnumRuntimeSymbol>().TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Value == enumInt)?.Name ??
+                                            throw new BabyPenguinRuntimeException($"Converting unknown enum value '{enumInt}' for '{rightVar.As<EnumRuntimeSymbol>().TypeInfo.FullName}' to string.");
+                                        resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = rightVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue == null ? name : $"{name}({rightVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue})";
                                     }
                                     else
                                     {
-                                        resultVar.As<BasicRuntimeVar>().StringValue = rightVar.As<BasicRuntimeVar>().ValueToString ?? "";
+                                        resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = rightVar.As<BasicRuntimeSymbol>().ValueToString ?? "";
                                     }
                                     break;
                                 case TypeEnum.Fun:
                                     throw new NotImplementedException();
                                 case TypeEnum.Class:
-                                    if (rightVar is ClassRuntimeVar)
-                                        resultVar.As<ClassRuntimeVar>().AssignFrom(rightVar);
-                                    else if (rightVar is InterfaceRuntimeVar)
-                                        resultVar.As<ClassRuntimeVar>().AssignFrom(rightVar.As<InterfaceRuntimeVar>().Object!);
+                                    if (rightVar is ClassRuntimeSymbol)
+                                        resultVar.As<ClassRuntimeSymbol>().AssignFrom(rightVar);
+                                    else if (rightVar is InterfaceRuntimeSymbol)
+                                    {
+                                        if (rightVar.As<InterfaceRuntimeSymbol>().Value is ReferenceRuntimeValue rv)
+                                            resultVar.As<ClassRuntimeSymbol>().ReferenceValue = rv;
+                                        else throw new BabyPenguinRuntimeException($"Cannot assign interface {rightVar} to class {resultVar} because it does not contain a class value");
+                                    }
                                     break;
                                 case TypeEnum.Interface:
-                                    if (rightVar is ClassRuntimeVar || rightVar is BasicRuntimeVar)
+                                    if (rightVar is InterfaceRuntimeSymbol)
+                                    {
+                                        resultVar.As<InterfaceRuntimeSymbol>().AssignFrom(rightVar);
+                                    }
+                                    else
                                     {
                                         var cls = (cmd.Operand.TypeInfo as IVTableContainer) ?? throw new InvalidOperationException("Operand is not a class");
                                         var intf = (cmd.TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
                                         var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == intf.FullName) ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName} does not implement interface {intf.FullName}");
-                                        resultVar.As<InterfaceRuntimeVar>().VTable = vtable;
-                                        resultVar.As<InterfaceRuntimeVar>().Object = rightVar;
-                                    }
-                                    else if (rightVar is InterfaceRuntimeVar)
-                                    {
-                                        resultVar.As<InterfaceRuntimeVar>().AssignFrom(rightVar);
+                                        resultVar.As<InterfaceRuntimeSymbol>().VTable = vtable;
+                                        resultVar.As<InterfaceRuntimeSymbol>().Value = rightVar.Value;
                                     }
                                     break;
                             }
@@ -291,8 +356,8 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case UnaryOperationInstruction cmd:
                         {
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
-                            IRuntimeVar rightVar = resolveVariable(cmd.Operand);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
+                            IRuntimeSymbol rightVar = resolveVariable(cmd.Operand);
                             if (!rightVar.TypeInfo.CanImplicitlyCastTo(resultVar.TypeInfo))
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
                             switch (cmd.Operator)
@@ -307,34 +372,34 @@ namespace BabyPenguin.VirtualMachine
                                     switch (rightVar.Type)
                                     {
                                         case TypeEnum.U8:
-                                            resultVar.As<BasicRuntimeVar>().I8Value = (sbyte)(-rightVar.As<BasicRuntimeVar>().U8Value);
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I8Value = (sbyte)(-rightVar.As<BasicRuntimeSymbol>().BasicValue.U8Value);
                                             break;
                                         case TypeEnum.U16:
-                                            resultVar.As<BasicRuntimeVar>().I16Value = (short)(-rightVar.As<BasicRuntimeVar>().U16Value);
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I16Value = (short)(-rightVar.As<BasicRuntimeSymbol>().BasicValue.U16Value);
                                             break;
                                         case TypeEnum.U32:
-                                            resultVar.As<BasicRuntimeVar>().I32Value = (int)(-rightVar.As<BasicRuntimeVar>().U32Value);
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I32Value = (int)(-rightVar.As<BasicRuntimeSymbol>().BasicValue.U32Value);
                                             break;
                                         // case TypeEnum.U64:
                                         // resultVar.As<BasicRuntimeVar>().U64Value = (ulong)(-rightVar.As<BasicRuntimeVar>().U64Value);
                                         // break;
                                         case TypeEnum.I8:
-                                            resultVar.As<BasicRuntimeVar>().I8Value = (sbyte)(-rightVar.As<BasicRuntimeVar>().I8Value);
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I8Value = (sbyte)(-rightVar.As<BasicRuntimeSymbol>().BasicValue.I8Value);
                                             break;
                                         case TypeEnum.I16:
-                                            resultVar.As<BasicRuntimeVar>().I16Value = (short)(-rightVar.As<BasicRuntimeVar>().I16Value);
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I16Value = (short)(-rightVar.As<BasicRuntimeSymbol>().BasicValue.I16Value);
                                             break;
                                         case TypeEnum.I32:
-                                            resultVar.As<BasicRuntimeVar>().I32Value = -rightVar.As<BasicRuntimeVar>().I32Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I32Value = -rightVar.As<BasicRuntimeSymbol>().BasicValue.I32Value;
                                             break;
                                         case TypeEnum.I64:
-                                            resultVar.As<BasicRuntimeVar>().I64Value = -rightVar.As<BasicRuntimeVar>().I64Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I64Value = -rightVar.As<BasicRuntimeSymbol>().BasicValue.I64Value;
                                             break;
                                         case TypeEnum.Float:
-                                            resultVar.As<BasicRuntimeVar>().FloatValue = -rightVar.As<BasicRuntimeVar>().FloatValue;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.FloatValue = -rightVar.As<BasicRuntimeSymbol>().BasicValue.FloatValue;
                                             break;
                                         case TypeEnum.Double:
-                                            resultVar.As<BasicRuntimeVar>().DoubleValue = -rightVar.As<BasicRuntimeVar>().DoubleValue;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.DoubleValue = -rightVar.As<BasicRuntimeSymbol>().BasicValue.DoubleValue;
                                             break;
                                         default:
                                             throw new BabyPenguinRuntimeException($"Cannot negate type {rightVar.Type}");
@@ -344,31 +409,31 @@ namespace BabyPenguin.VirtualMachine
                                     switch (rightVar.Type)
                                     {
                                         case TypeEnum.U8:
-                                            resultVar.As<BasicRuntimeVar>().U8Value = (byte)~rightVar.As<BasicRuntimeVar>().U8Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.U8Value = (byte)~rightVar.As<BasicRuntimeSymbol>().BasicValue.U8Value;
                                             break;
                                         case TypeEnum.U16:
-                                            resultVar.As<BasicRuntimeVar>().U16Value = (ushort)~rightVar.As<BasicRuntimeVar>().U16Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.U16Value = (ushort)~rightVar.As<BasicRuntimeSymbol>().BasicValue.U16Value;
                                             break;
                                         case TypeEnum.U32:
-                                            resultVar.As<BasicRuntimeVar>().U32Value = ~rightVar.As<BasicRuntimeVar>().U32Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.U32Value = ~rightVar.As<BasicRuntimeSymbol>().BasicValue.U32Value;
                                             break;
                                         case TypeEnum.U64:
-                                            resultVar.As<BasicRuntimeVar>().U64Value = ~rightVar.As<BasicRuntimeVar>().U64Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.U64Value = ~rightVar.As<BasicRuntimeSymbol>().BasicValue.U64Value;
                                             break;
                                         case TypeEnum.I8:
-                                            resultVar.As<BasicRuntimeVar>().I8Value = (sbyte)~rightVar.As<BasicRuntimeVar>().I8Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I8Value = (sbyte)~rightVar.As<BasicRuntimeSymbol>().BasicValue.I8Value;
                                             break;
                                         case TypeEnum.I16:
-                                            resultVar.As<BasicRuntimeVar>().I16Value = (short)~rightVar.As<BasicRuntimeVar>().I16Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I16Value = (short)~rightVar.As<BasicRuntimeSymbol>().BasicValue.I16Value;
                                             break;
                                         case TypeEnum.I32:
-                                            resultVar.As<BasicRuntimeVar>().I32Value = ~rightVar.As<BasicRuntimeVar>().I32Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I32Value = ~rightVar.As<BasicRuntimeSymbol>().BasicValue.I32Value;
                                             break;
                                         case TypeEnum.I64:
-                                            resultVar.As<BasicRuntimeVar>().I64Value = ~rightVar.As<BasicRuntimeVar>().I64Value;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.I64Value = ~rightVar.As<BasicRuntimeSymbol>().BasicValue.I64Value;
                                             break;
                                         case TypeEnum.Bool:
-                                            resultVar.As<BasicRuntimeVar>().BoolValue = !rightVar.As<BasicRuntimeVar>().BoolValue;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue = !rightVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue;
                                             break;
                                         default:
                                             throw new BabyPenguinRuntimeException($"Cannot bitwise not type {rightVar.Type}");
@@ -378,7 +443,7 @@ namespace BabyPenguin.VirtualMachine
                                     switch (rightVar.Type)
                                     {
                                         case TypeEnum.Bool:
-                                            resultVar.As<BasicRuntimeVar>().BoolValue = !rightVar.As<BasicRuntimeVar>().BoolValue;
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue = !rightVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue;
                                             break;
                                         case TypeEnum.U8:
                                         case TypeEnum.U16:
@@ -388,7 +453,7 @@ namespace BabyPenguin.VirtualMachine
                                         case TypeEnum.I16:
                                         case TypeEnum.I32:
                                         case TypeEnum.I64:
-                                            resultVar.As<BasicRuntimeVar>().BoolValue = rightVar.As<BasicRuntimeVar>().ValueToString != "0";
+                                            resultVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue = rightVar.As<BasicRuntimeSymbol>().ValueToString != "0";
                                             break;
                                         default:
                                             throw new BabyPenguinRuntimeException($"Cannot logical not type {rightVar.Type}");
@@ -400,9 +465,9 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case BinaryOperationInstruction cmd:
                         {
-                            IRuntimeVar leftVar = resolveVariable(cmd.LeftSymbol);
-                            IRuntimeVar rightVar = resolveVariable(cmd.RightSymbol);
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
+                            IRuntimeSymbol leftVar = resolveVariable(cmd.LeftSymbol);
+                            IRuntimeSymbol rightVar = resolveVariable(cmd.RightSymbol);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
                             if (!leftVar.TypeInfo.CanImplicitlyCastTo(rightVar.TypeInfo)
                                 && !rightVar.TypeInfo.CanImplicitlyCastTo(leftVar.TypeInfo))
                                 throw new BabyPenguinRuntimeException($"Type {rightVar.TypeInfo} is not equal to type {leftVar.TypeInfo}");
@@ -411,92 +476,92 @@ namespace BabyPenguin.VirtualMachine
                                 case BinaryOperatorEnum.Add:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! + rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! + rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.Subtract:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! - rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! - rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.Multiply:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! * rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! * rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.Divide:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! / rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! / rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.Modulo:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! % rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! % rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.BitwiseAnd:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! & rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! & rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.BitwiseOr:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! | rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! | rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.BitwiseXor:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! ^ rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! ^ rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.LogicalAnd:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! && rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! && rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.LogicalOr:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! || rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! || rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.Equal:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! == rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! == rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.NotEqual:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! != rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! != rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.GreaterThan:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! > rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! > rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.GreaterThanOrEqual:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! >= rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! >= rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.LessThan:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! < rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! < rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.LessThanOrEqual:
                                     if (!resultVar.TypeInfo.IsBoolType)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! <= rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! <= rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.LeftShift:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! << rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! << rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                                 case BinaryOperatorEnum.RightShift:
                                     if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeVar>().DynamicValue = leftVar.As<BasicRuntimeVar>().DynamicValue! >> rightVar.As<BasicRuntimeVar>().DynamicValue!;
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! >> rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
                             }
                             DebugPrint(cmd, op1: leftVar.ToDebugString(), op2: rightVar.ToDebugString(), result: resultVar.ToDebugString());
@@ -506,10 +571,10 @@ namespace BabyPenguin.VirtualMachine
                         {
                             if (cmd.Condition != null)
                             {
-                                IRuntimeVar condVar = resolveVariable(cmd.Condition);
+                                IRuntimeSymbol condVar = resolveVariable(cmd.Condition);
                                 if (!condVar.TypeInfo.IsBoolType)
                                     throw new BabyPenguinRuntimeException($"Cannot use type {condVar.TypeInfo} as a condition");
-                                if (cmd.JumpOnCondition != condVar.As<BasicRuntimeVar>().BoolValue!)
+                                if (cmd.JumpOnCondition != condVar.As<BasicRuntimeSymbol>().BasicValue.BoolValue!)
                                 {
                                     DebugPrint(cmd, op1: condVar.ToDebugString(), result: "NOT JUMP");
                                     break;
@@ -531,7 +596,7 @@ namespace BabyPenguin.VirtualMachine
                         {
                             if (cmd.RetValue != null)
                             {
-                                IRuntimeVar retVar = resolveVariable(cmd.RetValue);
+                                IRuntimeSymbol retVar = resolveVariable(cmd.RetValue);
                                 DebugPrint(cmd, op1: retVar.ToDebugString());
                                 result = new RuntimeFrameResult(retVar, cmd.ReturnStatus);
                             }
@@ -547,13 +612,13 @@ namespace BabyPenguin.VirtualMachine
                         break;
                     case ReadMemberInstruction cmd:
                         {
-                            IRuntimeVar resultVar = resolveVariable(cmd.Target);
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
                             var owner = resolveVariable(cmd.MemberOwnerSymbol);
                             if (owner.Type == TypeEnum.Interface)
                             {
-                                if (owner.As<InterfaceRuntimeVar>().VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
+                                if (owner.As<InterfaceRuntimeSymbol>().VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
                                 {
-                                    var funVar = IRuntimeVar.FromSymbol(owner.Model, vtableSlot.ImplementationSymbol);
+                                    var funVar = IRuntimeSymbol.FromSymbol(owner.Model, vtableSlot.ImplementationSymbol);
                                     resultVar.AssignFrom(funVar);
                                     DebugPrint(cmd, op1: funVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                                 }
@@ -561,19 +626,19 @@ namespace BabyPenguin.VirtualMachine
                             }
                             else
                             {
-                                IRuntimeVar memberVar;
-                                if (owner is ClassRuntimeVar clsVar)
+                                IRuntimeValue memberVar;
+                                if (owner is ClassRuntimeSymbol clsVar)
                                 {
-                                    var members = clsVar.ObjectFields;
+                                    var members = clsVar.ReferenceValue.Fields;
                                     if (!members.ContainsKey(cmd.Member.Name))
                                         throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
                                     memberVar = members[cmd.Member.Name]!;
                                 }
-                                else if (owner is EnumRuntimeVar enumVar)
+                                else if (owner is EnumRuntimeSymbol enumVar)
                                 {
-                                    var members = enumVar.ObjectFields;
+                                    var members = enumVar.EnumValue.FieldsValue.Fields;
                                     if (!members.ContainsKey(cmd.Member.Name))
-                                        throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
+                                        throw new BabyPenguinRuntimeException($"Enum {owner.TypeInfo} does not have member {cmd.Member.Name}");
                                     memberVar = members[cmd.Member.Name]!;
                                 }
                                 else
@@ -581,7 +646,7 @@ namespace BabyPenguin.VirtualMachine
                                     throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from type {owner.TypeInfo}");
                                 }
                                 resultVar.AssignFrom(memberVar);
-                                DebugPrint(cmd, op1: memberVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
+                                DebugPrint(cmd, op1: memberVar.ToString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                             }
                         }
                         break;
@@ -590,25 +655,25 @@ namespace BabyPenguin.VirtualMachine
                             var rightVar = resolveVariable(cmd.Value);
                             var owner = resolveVariable(cmd.MemberOwnerSymbol);
 
-                            Dictionary<string, IRuntimeVar> members;
-                            if (owner is ClassRuntimeVar clsVar)
-                                members = clsVar.ObjectFields;
-                            else if (owner is EnumRuntimeVar enumVar)
-                                members = enumVar.ObjectFields;
+                            Dictionary<string, IRuntimeValue> members;
+                            if (owner is ClassRuntimeSymbol clsVar)
+                                members = clsVar.ReferenceValue.Fields;
+                            else if (owner is EnumRuntimeSymbol enumVar)
+                                members = enumVar.EnumValue.FieldsValue.Fields;
                             else
                                 throw new BabyPenguinRuntimeException($"Cannot write member {cmd.Member.Name} to type {owner.TypeInfo}");
 
                             if (!members.ContainsKey(cmd.Member.Name))
                                 throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
-                            members[cmd.Member.Name]!.AssignFrom(rightVar);
-                            DebugPrint(cmd, op1: members[cmd.Member.Name].ToDebugString(), op2: rightVar.ToDebugString(), result: owner.ToDebugString());
+                            members[cmd.Member.Name] = rightVar.Value;
+                            DebugPrint(cmd, op1: members[cmd.Member.Name].ToString(), op2: rightVar.ToDebugString(), result: owner.ToDebugString());
                         }
                         break;
                     case WriteEnumInstruction cmd:
                         {
                             var rightVar = resolveVariable(cmd.Value);
                             var enumVar = resolveVariable(cmd.TargetEnum);
-                            enumVar.As<EnumRuntimeVar>().EnumObject = rightVar;
+                            enumVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = rightVar.Value;
                             DebugPrint(cmd, op1: rightVar.ToDebugString(), result: enumVar.ToDebugString());
                             break;
                         }
@@ -616,20 +681,21 @@ namespace BabyPenguin.VirtualMachine
                         {
                             var resultVar = resolveVariable(cmd.TargetValue);
                             var enumVar = resolveVariable(cmd.Enum);
-                            if (enumVar.As<EnumRuntimeVar>().EnumObject == null)
+                            if (enumVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue == null)
                                 throw new BabyPenguinRuntimeException($"Enum {enumVar.TypeInfo} has no value");
-                            resultVar.AssignFrom(enumVar.As<EnumRuntimeVar>().EnumObject!);
+                            resultVar.AssignFrom(enumVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue!);
                             DebugPrint(cmd, op1: enumVar.ToDebugString(), result: resultVar.ToDebugString());
                             break;
                         }
                     case SignalInstruction cmd:
                         {
                             var codeVar = resolveVariable(cmd.CodeSymbol);
-                            var value = Convert.ToInt32(codeVar.As<BasicRuntimeVar>().ValueToString!);
+                            var value = Convert.ToInt32(codeVar.As<BasicRuntimeSymbol>().ValueToString!);
+                            DebugPrint(cmd, op1: codeVar.ToDebugString());
                             switch (value)
                             {
                                 case (int)SignalCode.Breakpoint:
-                                    yield return null;
+                                    yield return new RuntimeBreak(RuntimeBreakReason.Breakpoint, this);
                                     break;
                                 default:
                                     throw new BabyPenguinRuntimeException("unknown signal: " + value);
@@ -648,7 +714,6 @@ namespace BabyPenguin.VirtualMachine
                 if (result != null)
                 {
                     yield return result;
-                    Global.StackFrames.Pop();
                     break;
                 }
             }

@@ -11,14 +11,17 @@ namespace BabyPenguin.VirtualMachine
         bool stopAtEntry;
         object syncObject = new object();
         private System.Threading.Thread debugThread;
-        private ManualResetEvent runEvent = new ManualResetEvent(true);
+        private AutoResetEvent runEvent = new AutoResetEvent(true);
         private StoppedEvent.ReasonValue? stopReason;
         private bool stopped = true;
 
         public BabyPenguinVM VM => vm ?? throw new InvalidOperationException("VM not initialized.");
 
-        IEnumerable<RuntimeFrameResult?>? runtimeControl;
-        public IEnumerable<RuntimeFrameResult?> RuntimeControl => runtimeControl ?? throw new InvalidOperationException("Runtime control not initialized.");
+        IEnumerable<Or<RuntimeBreak, RuntimeFrameResult>>? runtimeControl;
+
+        public IEnumerable<Or<RuntimeBreak, RuntimeFrameResult>> RuntimeControl => runtimeControl ?? throw new InvalidOperationException("Runtime control not initialized.");
+
+        public RuntimeFrame? CurrentFrame { get; set; }
 
         public DAP()
         {
@@ -49,7 +52,6 @@ namespace BabyPenguin.VirtualMachine
             {
                 this.stopReason = reason;
                 this.stopped = true;
-                this.runEvent.Reset();
                 this.Protocol.SendEvent(new StoppedEvent(reason)
                 {
                     ThreadId = 0,
@@ -61,9 +63,21 @@ namespace BabyPenguin.VirtualMachine
         private void DebugThreadProc()
         {
             this.runEvent.WaitOne();
-            foreach (var _ in this.RuntimeControl)
+            foreach (var result in this.RuntimeControl)
             {
-                this.RequestStop(StoppedEvent.ReasonValue.Breakpoint);
+                if (result.IsLeft)
+                {
+                    if (result.Left!.Reason == RuntimeBreakReason.Breakpoint)
+                        this.RequestStop(StoppedEvent.ReasonValue.Breakpoint);
+                    else if (result.Left.Reason == RuntimeBreakReason.Exception)
+                        this.RequestStop(StoppedEvent.ReasonValue.Exception);
+                    else if (result.Left.Reason == RuntimeBreakReason.Step)
+                        this.RequestStop(StoppedEvent.ReasonValue.Step);
+
+                    CurrentFrame = result.Left.CurrentFrame;
+                }
+                else
+                    continue;
                 this.runEvent.WaitOne();
             }
 
@@ -123,18 +137,18 @@ namespace BabyPenguin.VirtualMachine
             runtimeControl = VM.StartFrame!.Run();
             this.runEvent.Reset();
 
-            this.debugThread = new System.Threading.Thread(this.DebugThreadProc);
-            this.debugThread.Name = "Debug Loop Thread";
-            this.debugThread.Start();
-
             if (this.stopAtEntry)
             {
-                Continue(true);
+                Continue(RuntimeGlobal.StepModeEnum.StepIn);
             }
             else
             {
-                Continue(false);
+                Continue(RuntimeGlobal.StepModeEnum.Run);
             }
+
+            this.debugThread = new System.Threading.Thread(this.DebugThreadProc);
+            this.debugThread.Name = "Debug Loop Thread";
+            this.debugThread.Start();
 
             return new ConfigurationDoneResponse();
         }
@@ -142,7 +156,7 @@ namespace BabyPenguin.VirtualMachine
         protected override DisconnectResponse HandleDisconnectRequest(DisconnectArguments arguments)
         {
             if (this.vm != null)
-                this.Continue(step: false);
+                this.Continue(RuntimeGlobal.StepModeEnum.Run);
 
             if (this.debugThread != null)
                 this.debugThread.Join();
@@ -153,41 +167,41 @@ namespace BabyPenguin.VirtualMachine
 
         protected override ContinueResponse HandleContinueRequest(ContinueArguments arguments)
         {
-            this.Continue(step: false);
+            this.Continue(RuntimeGlobal.StepModeEnum.Run);
             return new ContinueResponse();
         }
 
         protected override StepInResponse HandleStepInRequest(StepInArguments arguments)
         {
-            this.Continue(step: true);
+            this.Continue(RuntimeGlobal.StepModeEnum.StepIn);
             return new StepInResponse();
         }
 
         protected override StepOutResponse HandleStepOutRequest(StepOutArguments arguments)
         {
-            this.Continue(step: true);
+            this.Continue(RuntimeGlobal.StepModeEnum.StepOut);
             return new StepOutResponse();
         }
 
         protected override NextResponse HandleNextRequest(NextArguments arguments)
         {
-            this.Continue(step: true);
+            this.Continue(RuntimeGlobal.StepModeEnum.StepOver);
             return new NextResponse();
         }
 
-        private void Continue(bool step)
+        private void Continue(RuntimeGlobal.StepModeEnum step)
         {
             lock (this.syncObject)
             {
-                if (step)
+                if (step != RuntimeGlobal.StepModeEnum.Run)
                 {
                     this.stopReason = StoppedEvent.ReasonValue.Step;
-                    this.VM.Global.StepMode = true;
+                    this.VM.Global.StepMode = step;
                 }
                 else
                 {
                     this.stopReason = null;
-                    this.VM.Global.StepMode = false;
+                    this.VM.Global.StepMode = step;
                 }
             }
 
@@ -209,13 +223,15 @@ namespace BabyPenguin.VirtualMachine
         protected override StackTraceResponse HandleStackTraceRequest(StackTraceArguments args)
         {
             List<StackFrame> stackFrames = [];
+            var frame = this.CurrentFrame;
 
-            foreach (var frame in this.VM.Global.StackFrames)
+            while (frame != null)
             {
                 stackFrames.Add(new StackFrame(frame.GetHashCode(), frame.CodeContainer.FullName, frame.CurrentSourceLocation.RowStart, frame.CurrentSourceLocation.ColStart)
                 {
                     Source = new Source { Path = frame.CodeContainer.SourceLocation.FileName }
                 });
+                frame = frame.ParentFrame;
             }
 
             return new StackTraceResponse(stackFrames);
@@ -230,15 +246,19 @@ namespace BabyPenguin.VirtualMachine
         protected override VariablesResponse HandleVariablesRequest(VariablesArguments arguments)
         {
             List<Variable> variables = [];
-            foreach (var frame in this.VM.Global.StackFrames)
+
+            var frame = this.CurrentFrame;
+            while (frame != null)
             {
                 if (frame.GetHashCode() == arguments.VariablesReference)
                 {
-                    foreach (var var in frame.LocalVariables)
+                    foreach (var v in frame.LocalVariables)
                     {
-                        variables.Add(new Variable(var.Value.Symbol.Name, var.Value.ValueToString, arguments.VariablesReference));
+                        var localName = NameComponents.ParseName(v.Key);
+                        variables.Add(new Variable(localName.Name, v.Value.ValueToString, 0));
                     }
                 }
+                frame = frame.ParentFrame;
             }
             return new VariablesResponse(variables);
         }
@@ -260,6 +280,12 @@ namespace BabyPenguin.VirtualMachine
         {
             return new SetExceptionBreakpointsResponse();
         }
+
+        protected override EvaluateResponse HandleEvaluateRequest(EvaluateArguments arguments)
+        {
+            return new EvaluateResponse();
+        }
+
     }
 
 }

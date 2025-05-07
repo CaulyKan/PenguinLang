@@ -14,10 +14,15 @@
             "visualParseTree": true
         },
         {
-            "name": ".NET Core Launch (console)",
+            "name": "dotnet debug",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "dotnet build",
+            "windows": {
+                "preLaunchTask": "dotnet build win"
+            },
+            "linux": {
+                "preLaunchTask": "dotnet build linux"
+            },
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
             "args": [
                 "${workspaceFolder}/Examples/HelloWorld/test.penguin"
@@ -37,6 +42,12 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "Attach dap",
+            "type": "coreclr",
+            "request": "attach",
+            "processName": "BabyPenguin.exe"
+        },
+        {
             "name": "Extension",
             "type": "extensionHost",
             "request": "launch",
@@ -47,6 +58,12 @@
         {
             "name": "PenguinLang Debug",
             "type": "penguinlang",
+            "windows": {
+                "preLaunchTask": "dotnet build win"
+            },
+            "linux": {
+                "preLaunchTask": "dotnet build linux"
+            },
             "request": "launch",
             "program": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
             "stopAtEntry": true

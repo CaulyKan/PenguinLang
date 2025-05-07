@@ -54,7 +54,7 @@ namespace PenguinLangSyntax
         {
             Text = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
             var fileNameIdentifier = Path.GetFileNameWithoutExtension(walker.FileName) + (walker.FileName.GetHashCode() % 0xFF);
-            SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Start.Column, context.Stop.Line, context.Stop.Column);
+            SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
             ScopeDepth = walker.CurrentScope?.ScopeDepth ?? 0;
         }
 

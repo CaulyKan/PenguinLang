@@ -66,7 +66,7 @@ namespace BabyPenguin.VirtualMachine
     {
         public ISymbol CodeSymbol { get; } = codeSymbol;
         public override SourceLocation SourceLocation { get; set; } = sourceLocation;
-        override public string StringCommand => "SIGN";
+        override public string StringCommand => "SIGNAL";
 
         override public string StringOP1 => CodeSymbol.ToString() ?? "";
     }

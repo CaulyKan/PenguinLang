@@ -19,11 +19,14 @@ namespace BabyPenguin.SemanticPass
             if (symbol != null)
                 throw new BabyPenguinException("symbol '__builtin._main' is reserved.", symbol.SourceLocation);
 
-            var mainFunc = new Function(Model, "_main", [], BasicType.Void, false, true, false, false, true, false);
+            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
+            var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
+
+            var mainFunc = new Function(Model, "_main", [], BasicType.Void, schedulerEntrySymbol.SourceLocation.StartLocation, false, true, false, false, true, false);
             if (Model.Namespaces.Find(ns => ns.Name == "__builtin")?.Namespaces.First() is not INamespace builtinNamespace)
                 throw new BabyPenguinException("namespace '__builtin' is not found.");
 
-            builtinNamespace.AddFunctionSymbol(mainFunc, true, BasicType.Void, [], SourceLocation.Empty(), 0, null, true, false, true);
+            builtinNamespace.AddFunctionSymbol(mainFunc, true, BasicType.Void, [], schedulerEntrySymbol.SourceLocation.StartLocation, 0, null, true, false, true);
             builtinNamespace.AddFunction(mainFunc);
 
             // init global variables
@@ -36,12 +39,10 @@ namespace BabyPenguin.SemanticPass
             // push all initial routines into pending queue
             foreach (var initialRoutine in Model.FindAll(i => i is IInitialRoutine).Cast<IInitialRoutine>())
             {
-                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine, SourceLocation.Empty(), null);
+                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine, schedulerEntrySymbol.SourceLocation.StartLocation, null);
             }
 
             // call __builtin._main_scheduler.entry()
-            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
-            var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
             mainFunc.Instructions.Add(new FunctionCallInstruction(schedulerEntrySymbol.SourceLocation.StartLocation, schedulerEntrySymbol, [schedulerSymbol], null));
         }
 
