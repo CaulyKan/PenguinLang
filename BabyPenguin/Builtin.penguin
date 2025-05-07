@@ -217,6 +217,7 @@ namespace __builtin {
 
     interface IFutureBase {
         fun routine_state(val this: IFutureBase) -> RoutineState;
+        fun switch_state(var this: IFutureBase, val from: RoutineState, val to: RoutineState) -> bool;
         fun start(var this: IFutureBase) -> bool;
     }
 
@@ -235,6 +236,8 @@ namespace __builtin {
                 }
                 else if (state is FutureState<T>.ready) {
                     result = state.ready;
+                    this.switch_state(new RoutineState.ready(), new RoutineState.pending());
+                    _main_scheduler.pending_jobs.enqueue(this);
                 } else if (state is FutureState<T>.finished) {
                     break;
                 }
@@ -245,12 +248,13 @@ namespace __builtin {
         fun do_wait_any(var this: IFuture<T>) -> Option<T> {
             while(true) {
                 wait;
+                __signal 0;
                 var state: FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
                     return new Option<T>.some(state.ready_finished);
                 }
                 else if (state is FutureState<T>.ready) {
-                    return new Option<T>.some(state.ready_finished);
+                    return new Option<T>.some(state.ready);
                 } else if (state is FutureState<T>.finished) {
                     break;
                 }
@@ -269,7 +273,6 @@ namespace __builtin {
 
     class Scheduler {
         var pending_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
-        var ready_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
 
         fun entry(var this: Scheduler) {
             while (true) {
@@ -277,16 +280,16 @@ namespace __builtin {
                 if (job_opt.is_some()) {
                     var job : IFutureBase = job_opt.some;
                     val result: bool = job.start();
+                    val state : RoutineState = job.routine_state();
                     if (!result) {
                         // job is in invalid state, skip it for now
-                        println("Scheduler: job in '" + (job.routine_state() as string) + "' state, failed to run");
+                        println("Scheduler: job in '" + (state as string) + "' state, failed to run");
                     }
                     else {
-                        val state : RoutineState = job.routine_state();
                         if (state is RoutineState.pending) {
                             this.pending_jobs.enqueue(job);
                         } else if (state is RoutineState.ready) {
-                            this.ready_jobs.enqueue(job);
+                            
                         } else if (state is RoutineState.finished) {
                             // job is finished, remove it from queue
                         }
@@ -320,6 +323,11 @@ namespace __builtin {
                 return RoutineState.from_atomic(self.state);
             }
 
+            fun switch_state(var this: IFutureBase, val from: RoutineState, val to: RoutineState) -> bool {
+                var self: SimpleRoutine = this as SimpleRoutine;
+                return RoutineState.switch(self.state, from, to);
+            }
+
             fun start(val this: IFutureBase) -> bool {
                 var self: SimpleRoutine = this as SimpleRoutine;
                 val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
@@ -332,7 +340,7 @@ namespace __builtin {
                     RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
                 } else if (return_state == 1) {
                     // yield not finished
-                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
+                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.ready(void));
                 } else if (return_state == 2 || return_state == 3) {
                     // yield finished & finished
                     RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());

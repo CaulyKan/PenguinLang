@@ -1394,6 +1394,8 @@ namespace BabyPenguin.SemanticPass
                                 if (exp.ArgumentsExpression.Count == 1 && ResolveExpressionType(exp.ArgumentsExpression[0]).IsVoidType)
                                 {
                                     // ok if pass only one void to one void
+                                    var voidSymbol = AllocTempSymbol(BasicType.Void, exp.ArgumentsExpression[0].SourceLocation);
+                                    AddInstruction(new WriteEnumInstruction(exp.SourceLocation, voidSymbol, to));
                                 }
                                 else if (exp.ArgumentsExpression.Count != 0)
                                 {

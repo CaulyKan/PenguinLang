@@ -44,13 +44,13 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void YieldTest()
+        public void WaitTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
                     print(""hello"");
-                    yield;
+                    wait;
                     print(""world"");
                 } 
                 initial {
@@ -112,6 +112,27 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("123", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void WaitAnyTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    wait_any test();
+                    print(""3"");
+                } 
+                fun test() {
+                    print(""1"");
+                    yield;
+                    print(""2"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("13", vm.CollectOutput());
         }
     }
 }
