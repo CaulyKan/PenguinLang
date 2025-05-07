@@ -219,7 +219,9 @@ namespace BabyPenguin.VirtualMachine
 
         public VTable? VTable { get; set; }
 
-        public IRuntimeValue Value { get; set; }
+        private IRuntimeValue? value { get; set; }
+
+        public IRuntimeValue Value { get => value ?? throw new BabyPenguinRuntimeException($"Cannot access interface {Symbol.FullName} because it is not initialized"); set => this.value = value; }
 
         public void AssignFrom(IRuntimeSymbol other)
         {

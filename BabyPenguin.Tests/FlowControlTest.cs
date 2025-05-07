@@ -242,25 +242,25 @@ namespace BabyPenguin.Tests
 
 
         // [Fact]
-        public void FunctionNotAllPathReturnErrorTest()
-        {
-            var compiler = new SemanticCompiler(new ErrorReporter(this));
-            compiler.AddSource(@"
-                initial {
-                    val res : u8 = add(1,2);
-                    print(res as string);
-                } 
+        // public void FunctionNotAllPathReturnErrorTest()
+        // {
+        //     var compiler = new SemanticCompiler(new ErrorReporter(this));
+        //     compiler.AddSource(@"
+        //         initial {
+        //             val res : u8 = add(1,2);
+        //             print(res as string);
+        //         } 
 
-                fun add(val a : u8, val b : u8) -> u8 {
-                    if (false) {
-                        return 0;
-                    } else 
-                    {
-                    }
-                }
-            ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
-        }
+        //         fun add(val a : u8, val b : u8) -> u8 {
+        //             if (false) {
+        //                 return 0;
+        //             } else 
+        //             {
+        //             }
+        //         }
+        //     ");
+        //     Assert.Throws<BabyPenguinException>(compiler.Compile);
+        // }
 
 
         [Fact]

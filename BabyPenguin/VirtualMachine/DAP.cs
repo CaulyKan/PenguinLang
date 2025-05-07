@@ -10,7 +10,7 @@ namespace BabyPenguin.VirtualMachine
         BabyPenguinVM? vm;
         bool stopAtEntry;
         object syncObject = new object();
-        private System.Threading.Thread debugThread;
+        private System.Threading.Thread? debugThread;
         private AutoResetEvent runEvent = new AutoResetEvent(true);
         private StoppedEvent.ReasonValue? stopReason;
         private bool stopped = true;

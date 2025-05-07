@@ -6,7 +6,7 @@ namespace BabyPenguin
     {
 
         [Value(0, HelpText = "Input files to process")]
-        public IEnumerable<string> Files { get; set; }
+        public required IEnumerable<string> Files { get; set; }
     }
 
     public class Program
