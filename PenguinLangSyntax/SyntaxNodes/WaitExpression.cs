@@ -9,16 +9,16 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is WaitExpressionContext context)
             {
-                Expression = context.expression() != null ? Build<Expression>(walker, context.expression()) : null;
+                FunctionCallExpression = context.functionCallExpression() != null ? Build<FunctionCallExpression>(walker, context.functionCallExpression()) : null;
                 IsWaitAny = context.GetText().StartsWith("wait_any");
             }
             else throw new NotImplementedException();
         }
 
-        public bool IsWaitAny { get; private set; } = false;
+        public bool IsWaitAny { get; set; } = false;
 
         [ChildrenNode]
-        public Expression? Expression { get; private set; }
+        public FunctionCallExpression? FunctionCallExpression { get; set; }
 
         public bool IsSimple => false;
 

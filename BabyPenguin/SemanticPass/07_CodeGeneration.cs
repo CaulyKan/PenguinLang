@@ -709,7 +709,7 @@ namespace BabyPenguin.SemanticPass
                     }
                 case WaitExpression exp:
                     {
-                        if (exp.Expression == null)
+                        if (exp.FunctionCallExpression == null)
                         {
                             return BasicType.Void;
                         }
@@ -761,8 +761,6 @@ namespace BabyPenguin.SemanticPass
             var simpleRoutineConstructor = Model.ResolveSymbol("__builtin.SimpleRoutine.new") ?? throw new BabyPenguinException("symbol '__builtin.SimpleRoutine.new' is not found.");
             var ifutureBaseType = Model.ResolveType("__builtin.IFutureBase") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
             var pendingJobsInstanceSymbol = AllocTempSymbol(Model.ResolveType("__builtin.Queue<__builtin.IFutureBase>") ?? throw new BabyPenguinException("type '__builtin.Queue<__builtin.IFutureBase>' is not found."), SourceLocation.Empty());
-
-            targetSymbol ??= AllocTempSymbol(targetSymbol.TypeInfo, sourceLocation);
 
             AddInstruction(new ReadMemberInstruction(sourceLocation, pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
             var routineNameSymbol = AllocTempSymbol(BasicType.String, sourceLocation);
@@ -1438,7 +1436,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case WaitExpression waitExpression:
                     {
-                        if (waitExpression.Expression == null)
+                        if (waitExpression.FunctionCallExpression == null)
                         {
                             AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
                         }
@@ -1502,7 +1500,7 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Generation code for '{obj.FullName}'...");
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Generating code for '{obj.FullName}'...");
                     container.CompileSyntaxStatements();
                 }
             }

@@ -312,24 +312,24 @@ namespace __builtin {
         var context: RoutineContext;
         val context_symbol : string;
 
-        fun new(var this: SimpleRoutine, val context_symbol: string) {
+        fun new(var this: Self, val context_symbol: string) {
             this.context = new RoutineContext(context_symbol);
             this.context_symbol = context_symbol;
         }
 
         impl IFutureBase {
             fun routine_state(val this: IFutureBase) -> RoutineState {
-                var self: SimpleRoutine = this as SimpleRoutine;
+                var self: Self = this as Self;
                 return RoutineState.from_atomic(self.state);
             }
 
             fun switch_state(var this: IFutureBase, val from: RoutineState, val to: RoutineState) -> bool {
-                var self: SimpleRoutine = this as SimpleRoutine;
+                var self: Self = this as Self;
                 return RoutineState.switch(self.state, from, to);
             }
 
             fun start(val this: IFutureBase) -> bool {
-                var self: SimpleRoutine = this as SimpleRoutine;
+                var self: Self = this as Self;
                 val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
                 if (!res) 
                     return false;
@@ -352,7 +352,7 @@ namespace __builtin {
 
         impl IFuture<void> {
             fun poll(val this: IFuture<void>) -> FutureState<void> {
-                var self: SimpleRoutine = this as SimpleRoutine;
+                var self: Self = this as Self;
                 val state_val: i64 = self.state.load();
                 
                 if (state_val == 2) {
@@ -366,7 +366,7 @@ namespace __builtin {
             }
 
             fun set_result(var this: IFuture<void>, val result: Option<void>, val is_finished: bool) -> bool {
-                var self: SimpleRoutine = this as SimpleRoutine;
+                var self: Self = this as Self;
                 return RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
             }
         }

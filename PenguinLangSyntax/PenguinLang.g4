@@ -23,7 +23,7 @@ postfixExpression:
 
 spawnExpression: 'async' expression;
 
-waitExpression: ('wait' | 'wait_any') expression?;
+waitExpression: ('wait' | 'wait_any') functionCallExpression?;
 
 newExpression:
 	'new' typeSpecifier '(' expression? (',' expression)* ')';
