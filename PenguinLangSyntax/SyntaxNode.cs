@@ -29,7 +29,7 @@ namespace PenguinLangSyntax
             set => rewritedText = value;
         }
 
-        public override string ToString() => $"[{GetType().Name}] {shorten(Text)}";
+        public override string ToString() => $"[{GetType().Name}] {shorten(RewritedText ?? string.Empty)}";
 
         public static T Build<T>(SyntaxWalker walker, ParserRuleContext context) where T : SyntaxNode, new()
         {
@@ -93,6 +93,21 @@ namespace PenguinLangSyntax
 
                 return result;
             }
+        }
+
+        public virtual T? FindChild<T>() where T : SyntaxNode
+        {
+            T? result = null;
+            this.TraverseChildren((n, p) =>
+            {
+                if (n is T t)
+                {
+                    result = t;
+                    return false;
+                }
+                return true;
+            });
+            return result;
         }
 
         // bool callback(SyntaxNode current, SyntaxNode parent)

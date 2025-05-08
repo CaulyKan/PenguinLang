@@ -752,7 +752,7 @@ namespace BabyPenguin.SemanticPass
                 return false;
         }
 
-        public ISymbol SchedulerAddSimpleJob(ICodeContainer codeContainer, SourceLocation sourceLocation, ISymbol? targetSymbol)
+        public ISymbol SchedulerAddSimpleJob(ICodeContainer codeContainer, SourceLocation sourceLocation, ISymbol targetSymbol)
         {
             var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
             var pendingJobsSymbol = Model.ResolveSymbol("__builtin.Scheduler.pending_jobs") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.pending_jobs' is not found.");
@@ -760,12 +760,9 @@ namespace BabyPenguin.SemanticPass
             var simpleRoutineType = Model.ResolveType("__builtin.SimpleRoutine") ?? throw new BabyPenguinException("type '__builtin.SimpleRoutine' is not found.");
             var simpleRoutineConstructor = Model.ResolveSymbol("__builtin.SimpleRoutine.new") ?? throw new BabyPenguinException("symbol '__builtin.SimpleRoutine.new' is not found.");
             var ifutureBaseType = Model.ResolveType("__builtin.IFutureBase") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
-            var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
             var pendingJobsInstanceSymbol = AllocTempSymbol(Model.ResolveType("__builtin.Queue<__builtin.IFutureBase>") ?? throw new BabyPenguinException("type '__builtin.Queue<__builtin.IFutureBase>' is not found."), SourceLocation.Empty());
 
-            if (targetSymbol != null && targetSymbol.TypeInfo.FullName != ifutureVoidType.FullName)
-                Model.Reporter.Throw($"expected 'IFuture<void>' here", targetSymbol.SourceLocation);
-            else targetSymbol ??= AllocTempSymbol(ifutureVoidType, sourceLocation);
+            targetSymbol ??= AllocTempSymbol(targetSymbol.TypeInfo, sourceLocation);
 
             AddInstruction(new ReadMemberInstruction(sourceLocation, pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
             var routineNameSymbol = AllocTempSymbol(BasicType.String, sourceLocation);
@@ -775,7 +772,7 @@ namespace BabyPenguin.SemanticPass
             AddInstruction(new NewInstanceInstruction(sourceLocation, routineSymbol));
             AddInstruction(new FunctionCallInstruction(sourceLocation, simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
             AddInstruction(new CastInstruction(sourceLocation, routineSymbol, ifutureBaseType, futureSymbol));
-            AddInstruction(new CastInstruction(sourceLocation, routineSymbol, ifutureVoidType, targetSymbol));
+            AddInstruction(new CastInstruction(sourceLocation, routineSymbol, targetSymbol.TypeInfo, targetSymbol));
             AddInstruction(new FunctionCallInstruction(sourceLocation, pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
             return targetSymbol;
         }

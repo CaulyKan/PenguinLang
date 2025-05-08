@@ -21,6 +21,7 @@ namespace BabyPenguin.SemanticPass
             if (node is ICodeContainer codeContainer)
             {
                 RewriteAsyncWait(codeContainer);
+                RewriteImplicitWait(codeContainer);
             }
         }
 
@@ -33,8 +34,61 @@ namespace BabyPenguin.SemanticPass
 
             foreach (var func in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
             {
-                RewriteAsyncWait(func);
+                if (func is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                {
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Async rewriting pass for '{func.FullName}' is skipped now because it is inside a generic type");
+                }
+                else
+                {
+                    RewriteAsyncWait(func);
+                    RewriteImplicitWait(func);
+                }
             }
+        }
+
+        public void RewriteImplicitWait(ICodeContainer codeContainer)
+        {
+            codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
+            {
+                if (node is FunctionCallExpression exp)
+                {
+                    ISymbol? symbol;
+                    if (exp.IsMemberAccess)
+                    {
+                        if (codeContainer.CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
+                        {
+                            symbol = Model.ResolveSymbol(exp.MemberAccessExpression!.Text, s => s.IsStatic, scope: codeContainer);
+                        }
+                        else
+                        {
+                            codeContainer.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
+                        }
+                    }
+                    else
+                    {
+                        if (exp.PrimaryExpression!.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                        {
+                            symbol = Model.ResolveShortSymbol(exp.PrimaryExpression.Identifier!.Name,
+                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: codeContainer);
+                        }
+                        else
+                        {
+                            throw new NotImplementedException(); // TODO: Handle other types of expressions
+                        }
+                    }
+
+                    if (symbol == null || !symbol.IsFunction) Model.Reporter.Throw($"Can't resolve function symbol {exp}", exp.SourceLocation);
+
+                    var callingFunc = (symbol as FunctionSymbol)?.CodeContainer as IFunction;
+                    if (callingFunc == null) Model.Reporter.Throw($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+
+                    if (callingFunc.IsAsync == true)
+                    {
+                        RewriteAsyncWait(parent, (exp as ISyntaxExpression).CreateWrapperExpression<Expression>(), false);
+                    }
+                }
+                return true;
+            });
         }
 
         public void RewriteAsyncWait(ICodeContainer codeContainer)
@@ -58,45 +112,60 @@ namespace BabyPenguin.SemanticPass
             {
                 if (node is WaitExpression waitExp && waitExp.Expression != null)
                 {
-                    var waitFunctionName = waitExp.IsWaitAny ? "do_wait_any" : "do_wait";
-
-                    var asyncSpawnExp = waitExp.Build<SpawnAsyncExpression>(e =>
-                    {
-                        e.Expression = waitExp.Expression;
-                        e.RewritedText = "async " + waitExp.Expression.RewritedText;
-                    });
-                    var primaryExp = asyncSpawnExp.Build<PrimaryExpression>(e =>
-                    {
-                        e.RewritedText = $"({asyncSpawnExp.RewritedText})";
-                        e.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
-                        e.ParenthesizedExpression = (asyncSpawnExp as ISyntaxExpression).CreateWrapperExpression<Expression>();
-                    });
-                    var memberAccessExp = primaryExp.Build<ReadMemberAccessExpression>(e =>
-                    {
-                        e.RewritedText = $"{primaryExp.RewritedText}.{waitFunctionName}";
-                        e.PrimaryExpression = primaryExp;
-                        e.MemberIdentifiers = [primaryExp.Build<SymbolIdentifier>(e => e.LiteralName = waitFunctionName)];
-                    });
-                    var functionCallExp = memberAccessExp.Build<FunctionCallExpression>(e =>
-                    {
-                        e.RewritedText = memberAccessExp.RewritedText + "()";
-                        e.MemberAccessExpression = memberAccessExp;
-                    });
-
-                    //parent.ReplaceChild(waitExp, functionCallExp);
-                    if (parent is PostfixExpression postfixExp)
-                    {
-                        postfixExp.PostfixExpressionType = PostfixExpression.Type.FunctionCall;
-                        postfixExp.SubWaitExpression = null;
-                        postfixExp.SubFunctionCallExpression = functionCallExp;
-                    }
-                    else throw new NotImplementedException();
-
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{waitExp.RewritedText}' to '{functionCallExp.RewritedText}'", waitExp.SourceLocation);
+                    RewriteAsyncWait(parent, waitExp);
                 }
                 return true;
             });
         }
+
+        private void RewriteAsyncWait(SyntaxNode parent, Expression anyExpression, bool isWaitAny)
+        {
+            var waitFunctionName = isWaitAny ? "do_wait_any" : "do_wait";
+
+            var asyncSpawnExp = anyExpression.Build<SpawnAsyncExpression>(e =>
+            {
+                e.Expression = anyExpression;
+                e.RewritedText = "async " + anyExpression.RewritedText;
+            });
+            var primaryExp = asyncSpawnExp.Build<PrimaryExpression>(e =>
+            {
+                e.RewritedText = $"({asyncSpawnExp.RewritedText})";
+                e.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
+                e.ParenthesizedExpression = (asyncSpawnExp as ISyntaxExpression).CreateWrapperExpression<Expression>();
+            });
+            var memberAccessExp = primaryExp.Build<ReadMemberAccessExpression>(e =>
+            {
+                e.RewritedText = $"{primaryExp.RewritedText}.{waitFunctionName}";
+                e.PrimaryExpression = primaryExp;
+                e.MemberIdentifiers = [primaryExp.Build<SymbolIdentifier>(e => e.LiteralName = waitFunctionName)];
+            });
+            var waitFunctionCallExp = memberAccessExp.Build<FunctionCallExpression>(e =>
+            {
+                e.RewritedText = memberAccessExp.RewritedText + "()";
+                e.MemberAccessExpression = memberAccessExp;
+            });
+
+            //parent.ReplaceChild(waitExp, functionCallExp);
+            if (parent is PostfixExpression postfixExp)
+            {
+                postfixExp.PostfixExpressionType = PostfixExpression.Type.FunctionCall;
+                postfixExp.SubWaitExpression = null;
+                postfixExp.SubFunctionCallExpression = waitFunctionCallExp;
+            }
+            else throw new NotImplementedException();
+
+            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{anyExpression}' to '{waitFunctionCallExp}'", anyExpression.SourceLocation);
+        }
+
+
+        private void RewriteAsyncWait(SyntaxNode parent, WaitExpression waitExp)
+        {
+            if (waitExp.Expression != null)
+                RewriteAsyncWait(parent, waitExp.Expression, waitExp.IsWaitAny);
+            else
+                Model.Reporter.Throw($"Can't rewrite empty wait expression: '{waitExp.RewritedText}'", waitExp.SourceLocation);
+        }
+
 
         public void IdentifyAsyncFunction(IFunction func)
         {

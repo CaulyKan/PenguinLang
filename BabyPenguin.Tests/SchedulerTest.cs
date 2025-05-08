@@ -94,6 +94,27 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ImplicitWaitTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    test();
+                    print(""3"");
+                } 
+                fun test() {
+                    print(""1"");
+                    yield;
+                    print(""2"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("123", vm.CollectOutput());
+        }
+
+        [Fact]
         public void WaitAllTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

@@ -39,7 +39,9 @@ namespace BabyPenguin.SemanticPass
             // push all initial routines into pending queue
             foreach (var initialRoutine in Model.FindAll(i => i is IInitialRoutine).Cast<IInitialRoutine>())
             {
-                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine, schedulerEntrySymbol.SourceLocation.StartLocation, null);
+                var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
+                var targetSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(ifutureVoidType, schedulerEntrySymbol.SourceLocation.StartLocation);
+                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine, schedulerEntrySymbol.SourceLocation.StartLocation, targetSymbol);
             }
 
             // call __builtin._main_scheduler.entry()
