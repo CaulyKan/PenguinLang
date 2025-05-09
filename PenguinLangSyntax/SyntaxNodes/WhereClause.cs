@@ -9,6 +9,13 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public TypeSpecifier? TypeSpecifier { get; private set; }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.whereClause(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);

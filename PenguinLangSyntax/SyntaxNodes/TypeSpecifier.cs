@@ -9,11 +9,23 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is TypeSpecifierContext context)
             {
-                Name = context.GetText();
+                TypeName = context.typeSpecifierWithoutIterable().GetText();
+                IsIterable = context.iterableType() != null;
             }
             else throw new NotImplementedException();
         }
 
-        public string Name { get; set; } = "";
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.typeSpecifier(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
+        public string TypeName { get; set; } = "";
+
+        public string Name => IsIterable ? $"__builtin.IIterator<{TypeName}>" : TypeName;
+
+        public bool IsIterable { get; set; } = false;
     }
 }

@@ -4,3 +4,4 @@ obj
 node_modules
 PenguinLangVscode/server/*
 PenguinLangVscode/penguinlang-all-in-one.vsix
+report.txt

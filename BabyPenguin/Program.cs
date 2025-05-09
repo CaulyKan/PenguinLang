@@ -7,6 +7,9 @@ namespace BabyPenguin
 
         [Value(0, HelpText = "Input files to process")]
         public required IEnumerable<string> Files { get; set; }
+
+        [Option('r', "report", HelpText = "Generate a report file")]
+        public required string Report { get; set; }
     }
 
     public class Program
@@ -30,6 +33,11 @@ namespace BabyPenguin
             }
 
             var model = compiler.Compile();
+
+            if (!string.IsNullOrEmpty(options.Report))
+            {
+                model.WriteReport(options.Report);
+            }
 
             var vm = new BabyPenguinVM(model);
             vm.Global.EnableDebugPrint = true;

@@ -245,22 +245,41 @@ namespace BabyPenguin.VirtualMachine
 
         protected override VariablesResponse HandleVariablesRequest(VariablesArguments arguments)
         {
-            List<Variable> variables = [];
-
-            var frame = this.CurrentFrame;
-            while (frame != null)
+            try
             {
-                if (frame.GetHashCode() == arguments.VariablesReference)
+                List<Variable> variables = [];
+
+                if (ReferenceRuntimeValue.AllObjects.TryGetValue((ulong)arguments.VariablesReference, out var obj))
                 {
-                    foreach (var v in frame.LocalVariables)
+                    foreach (var kvp in obj.Fields)
                     {
-                        var localName = NameComponents.ParseName(v.Key);
-                        variables.Add(new Variable(localName.Name, v.Value.ValueToString, 0));
+                        variables.Add(new Variable(kvp.Key, kvp.Value.ToString(), (kvp.Value is ReferenceRuntimeValue rv) ? (int)rv.RefId : 0));
                     }
+                    return new VariablesResponse(variables);
                 }
-                frame = frame.ParentFrame;
+                else
+                {
+                    var frame = this.CurrentFrame;
+                    while (frame != null)
+                    {
+                        if (frame.GetHashCode() == arguments.VariablesReference)
+                        {
+                            foreach (var v in frame.LocalVariables)
+                            {
+                                var localName = NameComponents.ParseName(v.Key);
+                                variables.Add(new Variable(localName.Name, v.Value.ValueToString, (v.Value.Value is ReferenceRuntimeValue rv) ? (int)rv.RefId : 0));
+                            }
+                        }
+                        frame = frame.ParentFrame;
+                    }
+                    return new VariablesResponse(variables);
+                }
             }
-            return new VariablesResponse(variables);
+            catch (Exception e)
+            {
+                SendDebug(e.ToString());
+                return new VariablesResponse([]);
+            }
         }
 
         protected override SourceResponse HandleSourceRequest(SourceArguments arguments)

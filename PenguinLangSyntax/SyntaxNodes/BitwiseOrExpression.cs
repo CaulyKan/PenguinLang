@@ -8,17 +8,26 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
+        public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
 
-            if (ctx is InclusiveOrExpressionContext context)
+            if (ctx is BitwiseOrExpressionContext context)
             {
-                SubExpressions = context.children.OfType<ExclusiveOrExpressionContext>()
+                SubExpressions = context.children.OfType<BitwiseXorExpressionContext>()
                    .Select(x => Build<BitwiseXorExpression>(walker, x))
                    .ToList();
             }
             else throw new NotImplementedException();
+        }
+
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.bitwiseXorExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
         }
 
         public ISyntaxExpression CreateWrapperExpression()

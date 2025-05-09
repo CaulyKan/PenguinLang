@@ -271,5 +271,23 @@ namespace BabyPenguin
                 AddNamespace(new Namespace(this, ns));
             }
         }
+
+        public void WriteReport(string file)
+        {
+            if (File.Exists(file))
+                File.Delete(file);
+            using (var f = File.OpenWrite(file))
+            using (var sb = new StreamWriter(f))
+            {
+                foreach (var obj in FindAll(o => o is ICodeContainer))
+                {
+                    if (obj is ICodeContainer codeContainer && codeContainer.Instructions.Count > 0)
+                    {
+                        sb.WriteLine($"Compile Result For {obj.FullName}:");
+                        sb.WriteLine(codeContainer.PrintInstructionsTable());
+                    }
+                }
+            }
+        }
     }
 }

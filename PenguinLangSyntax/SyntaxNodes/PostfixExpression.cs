@@ -62,6 +62,25 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.postfixExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
+        public ISyntaxExpression GetEffectiveExpression() => PostfixExpressionType switch
+        {
+            Type.PrimaryExpression => (SubPrimaryExpression as ISyntaxExpression)!.GetEffectiveExpression(),
+            // Type.Slicing => SubSlicingExpression!.GetEffectiveExpression(),
+            Type.FunctionCall => SubFunctionCallExpression!.GetEffectiveExpression(),
+            Type.MemberAccess => SubMemberAccessExpression!.GetEffectiveExpression(),
+            Type.New => SubNewExpression!.GetEffectiveExpression(),
+            Type.Wait => (SubWaitExpression as ISyntaxExpression)!.GetEffectiveExpression(),
+            Type.SpawnAsync => (SubSpawnAsyncExpression as ISyntaxExpression)!.GetEffectiveExpression(),
+            _ => throw new NotImplementedException(),
+        };
+
         public Type PostfixExpressionType { get; set; }
 
         [ChildrenNode]

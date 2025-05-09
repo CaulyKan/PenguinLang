@@ -27,6 +27,15 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public ISyntaxExpression GetEffectiveExpression() => HasUnaryOperator ? this : SubExpression!.GetEffectiveExpression();
+
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.unaryExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         [ChildrenNode]
         public PostfixExpression? SubExpression { get; set; }
 

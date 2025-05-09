@@ -1,9 +1,9 @@
                 initial {
-                    test();
-                    print("3");
+                    val a : Option<i32> = (test()).next();
+                    print(a.some as string);
                 } 
-                fun test() {
-                    print("1");
-                    yield;
-                    print("2");
+                fun test() -> i32[] {
+                    yield 1;
+                    yield 2;
+                    print("not ganna happen");
                 }

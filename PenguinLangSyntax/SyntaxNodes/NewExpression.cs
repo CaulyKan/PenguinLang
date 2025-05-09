@@ -17,11 +17,20 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.newExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         [ChildrenNode]
         public TypeSpecifier? TypeSpecifier { get; private set; }
 
         [ChildrenNode]
         public List<Expression> ArgumentsExpression { get; private set; } = [];
+
+        public ISyntaxExpression GetEffectiveExpression() => this;
 
         public bool IsSimple => false;
 

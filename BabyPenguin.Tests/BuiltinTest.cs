@@ -79,6 +79,28 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void RangeTest2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val rg : i64[] = range(0, 5);
+                    while(true) {
+                        val n : Option<i64> = rg.next();
+                        if (n.is_none())
+                            break;
+                        else 
+                            print(n.some as string);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"01234", vm.CollectOutput());
+        }
+
+        [Fact]
         public void CopyTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -263,29 +285,23 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void TestSimpleRoutine()
+        public void TestDefaultRoutine()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var routine : SimpleRoutine = new SimpleRoutine(""__builtin.hello_world"");
+                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(""__builtin.hello_world"", false);
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     
                     val state1 : FutureState<void>  = routine.poll();
                     println(state1 as string);
-                    
-                    val set_res : bool = routine.set_result(new Option<void>.some(void), true);
-                    println(set_res as string);
-                    
-                    val state2 : FutureState<void> = routine.poll();
-                    println(state2 as string);
                 }
             ");
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}finished{EOL}false{EOL}finished{EOL}", vm.CollectOutput());
+            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}finished{EOL}", vm.CollectOutput());
         }
     }
 }

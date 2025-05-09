@@ -23,7 +23,7 @@ namespace PenguinLangSyntax
 
         public override string ToString()
         {
-            return $"{FileName}:{RowStart},{ColStart}";
+            return $"{FileName}:{RowStart}";
         }
     }
 

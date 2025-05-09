@@ -10,17 +10,23 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is WaitExpressionContext context)
             {
                 FunctionCallExpression = context.functionCallExpression() != null ? Build<FunctionCallExpression>(walker, context.functionCallExpression()) : null;
-                IsWaitAny = context.GetText().StartsWith("wait_any");
             }
             else throw new NotImplementedException();
         }
 
-        public bool IsWaitAny { get; set; } = false;
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.waitExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
 
         [ChildrenNode]
         public FunctionCallExpression? FunctionCallExpression { get; set; }
 
         public bool IsSimple => false;
+
+        public ISyntaxExpression GetEffectiveExpression() => this;
 
         public ISyntaxExpression CreateWrapperExpression()
         {

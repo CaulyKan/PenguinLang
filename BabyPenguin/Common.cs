@@ -28,6 +28,7 @@ namespace BabyPenguin
         public static string NOUNDERLINE = Console.IsOutputRedirected ? "" : "\x1b[24m";
         public static string REVERSE = Console.IsOutputRedirected ? "" : "\x1b[7m";
         public static string NOREVERSE = Console.IsOutputRedirected ? "" : "\x1b[27m";
+        public static string DELETELINE = Console.IsOutputRedirected ? "" : "\x1b[1A";
     }
 
     public class BabyPenguinException : Exception

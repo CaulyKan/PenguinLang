@@ -23,6 +23,12 @@ namespace BabyPenguin.SemanticPass
                 RewriteAsyncWait(codeContainer);
                 RewriteImplicitWait(codeContainer);
             }
+
+            if (node is IFunction function1)
+            {
+                RewriteGenerator(function1);
+            }
+
         }
 
         public void Process()
@@ -32,7 +38,8 @@ namespace BabyPenguin.SemanticPass
                 IdentifyAsyncFunction(func);
             }
 
-            foreach (var func in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
+            var funcs = Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>().ToList();
+            foreach (var func in funcs)
             {
                 if (func is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
@@ -42,6 +49,10 @@ namespace BabyPenguin.SemanticPass
                 {
                     RewriteImplicitWait(func);
                     RewriteAsyncWait(func);
+                    if (func is IFunction f)
+                    {
+                        RewriteGenerator(f);
+                    }
                 }
             }
         }
@@ -93,7 +104,6 @@ namespace BabyPenguin.SemanticPass
                             postfixExp.PostfixExpressionType = PostfixExpression.Type.Wait;
                             postfixExp.SubWaitExpression = node.Build<WaitExpression>(e =>
                             {
-                                e.IsWaitAny = false;
                                 e.FunctionCallExpression = exp;
                             });
                             postfixExp.SubFunctionCallExpression = null;
@@ -122,19 +132,22 @@ namespace BabyPenguin.SemanticPass
                 }
             */
 
-            codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
+            if ((codeContainer is IInitialRoutine) || (codeContainer is IFunction f && f.IsAsync == true))
             {
-                if (node is WaitExpression waitExp && waitExp.FunctionCallExpression != null)
+                codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
                 {
-                    RewriteAsyncWait(parent, waitExp);
-                }
-                return true;
-            });
+                    if (node is WaitExpression waitExp && waitExp.FunctionCallExpression != null)
+                    {
+                        RewriteAsyncWait(parent, waitExp);
+                    }
+                    return true;
+                });
+            }
         }
 
-        private void RewriteAsyncWait(SyntaxNode parent, FunctionCallExpression functionCallExpression, bool isWaitAny)
+        private void RewriteAsyncWait(SyntaxNode parent, FunctionCallExpression functionCallExpression)
         {
-            var waitFunctionName = isWaitAny ? "do_wait_any" : "do_wait";
+            var waitFunctionName = "do_wait";
 
             var asyncSpawnExp = functionCallExpression.Build<SpawnAsyncExpression>(e =>
             {
@@ -171,36 +184,36 @@ namespace BabyPenguin.SemanticPass
             Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{functionCallExpression}' to '{waitFunctionCallExp}'", functionCallExpression.SourceLocation);
         }
 
-
         private void RewriteAsyncWait(SyntaxNode parent, WaitExpression waitExp)
         {
             if (waitExp.FunctionCallExpression != null)
-                RewriteAsyncWait(parent, waitExp.FunctionCallExpression, waitExp.IsWaitAny);
+                RewriteAsyncWait(parent, waitExp.FunctionCallExpression);
             else
                 Model.Reporter.Throw($"Can't rewrite empty wait expression: '{waitExp.RewritedText}'", waitExp.SourceLocation);
         }
 
-
         public void IdentifyAsyncFunction(IFunction func)
         {
-            if (func.IsAsync != null) return;  // declared as async/!async, respect
+            var isAsyncKnown = func.IsAsync != null;
+            var isGeneratorKnown = func.IsGenerator != null;
 
-            func.IsAsync = false;
+            if (!isAsyncKnown) func.IsAsync = false;
+            if (!isGeneratorKnown) func.IsGenerator = false;
             func.SyntaxNode?.TraverseChildren((node, parent) =>
                 {
                     if (node is YieldStatement)
                     {
-                        func.IsAsync = true;
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has yield statement", node.SourceLocation);
+                        if (!isGeneratorKnown) func.IsGenerator = true;
+                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async & generator because it has yield statement", node.SourceLocation);
                         return false;
                     }
                     else if (node is WaitExpression)
                     {
-                        func.IsAsync = true;
+                        if (!isAsyncKnown) func.IsAsync = true;
                         Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has wait statement", node.SourceLocation);
                         return false;
                     }
-                    else if (node is FunctionCallExpression exp)
+                    else if (node is FunctionCallExpression exp && !isAsyncKnown)
                     {
                         ISymbol? symbol;
                         if (exp.IsMemberAccess)
@@ -245,6 +258,40 @@ namespace BabyPenguin.SemanticPass
                     }
                     return true;
                 });
+        }
+
+        public void RewriteGenerator(IFunction func)
+        {
+            if (func.IsGenerator == true)
+            {
+                if (func.Parent is not ISymbolContainer symbolContainer) throw new BabyPenguinException($"Can't find symbol container for function {func.FullName}");
+
+                IType? returnType = null;
+
+                if (func.ReturnTypeInfo.GenericType?.FullName == "__builtin.IIterator<?>" && func.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType t)
+                    returnType = t;
+                else if (func.ReturnTypeInfo.IsVoidType)
+                    returnType = BasicType.Void;
+                else throw new BabyPenguinException($"Generator function '{func.FullName}' return type should be an iterator or void");
+
+                if (func.SyntaxNode is FunctionDefinition functionDefinition)
+                {
+                    var wrapperFunction = symbolContainer.AddLambdaFunction(Model, functionDefinition, func.Name, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync, false);
+                    var cb = new CodeBlock();
+                    cb.FromString(@$"
+                            {{
+                                return new __builtin._DefaultRoutine<{returnType.FullName}>(""{wrapperFunction.FullName}"", true) as {returnType.FullName}[];
+                            }}
+                        ", functionDefinition.ScopeDepth + 1, Model.Reporter);
+                    functionDefinition.CodeBlock = cb;
+
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{wrapperFunction.FullName}`");
+                }
+                else
+                {
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"skip rewrite generator function `{func.FullName}` because no syntax node is found.");
+                }
+            }
         }
 
         public string Report

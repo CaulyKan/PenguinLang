@@ -35,7 +35,8 @@ namespace PenguinLangSyntax.SyntaxNodes
                 {
                     ReturnType = new TypeSpecifier
                     {
-                        Name = "void"
+                        TypeName = "void",
+                        IsIterable = false
                     };
                 }
                 else
@@ -69,6 +70,14 @@ namespace PenguinLangSyntax.SyntaxNodes
                     {
                         IsAsync = false;
                     }
+                    else if (specifierContext.GetText() == "generator")
+                    {
+                        IsGenerator = true;
+                    }
+                    else if (specifierContext.GetText() == "!generator")
+                    {
+                        IsGenerator = false;
+                    }
                 }
 
                 if (context.codeBlock() != null)
@@ -82,36 +91,45 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        [ChildrenNode]
-        public Identifier? FunctionIdentifier { get; private set; }
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.functionDefinition(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
 
         [ChildrenNode]
-        public List<Declaration> Parameters { get; private set; } = [];
+        public Identifier? FunctionIdentifier { get; set; }
 
         [ChildrenNode]
-        public TypeSpecifier? ReturnType { get; private set; }
-
-        public bool? ReturnValueIsReadonly { get; private set; }
+        public List<Declaration> Parameters { get; set; } = [];
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; private set; }
+        public TypeSpecifier? ReturnType { get; set; }
+
+        public bool? ReturnValueIsReadonly { get; set; }
+
+        [ChildrenNode]
+        public CodeBlock? CodeBlock { get; set; }
 
         public string Name => FunctionIdentifier!.Name;
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Function;
 
-        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+        public List<SyntaxSymbol> Symbols { get; set; } = [];
 
-        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+        public Dictionary<string, ISyntaxScope> SubScopes { get; set; } = [];
 
         public ISyntaxScope? ParentScope { get; set; }
 
         public bool IsAnonymous => false;
 
-        public bool IsExtern { get; private set; }
+        public bool IsExtern { get; set; }
 
-        public bool? IsPure { get; private set; }
+        public bool? IsPure { get; set; }
 
-        public bool? IsAsync { get; private set; }
+        public bool? IsAsync { get; set; }
+
+        public bool? IsGenerator { get; set; }
     }
 }

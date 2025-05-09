@@ -6,6 +6,40 @@ namespace BabyPenguin.SemanticPass
 
         static ulong counter = 0;
 
+        IFunction AddLambdaFunction(SemanticModel model, SyntaxNode? syntaxNode, string nameHint, List<FunctionParameter> parameters, IType returnType, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false, bool? isGenerator = false)
+        {
+            var name = $"__lambda_{nameHint}_{counter++}";
+            var isStatic = parameters.Count > 0 && parameters[0].Name == "this";
+            var function = new Function(model, name, parameters, returnType, sourceLocation, false, isStatic, isPure, false, returnValueIsReadonly, isAsync, isGenerator);
+
+            if (syntaxNode is FunctionDefinition functionDefinition)
+            {
+                function.SyntaxNode = new FunctionDefinition
+                {
+                    CodeBlock = functionDefinition.CodeBlock,
+                    FunctionIdentifier = new SymbolIdentifier { LiteralName = name },
+                    Parameters = functionDefinition.Parameters.ToList(),
+                    ReturnType = new TypeSpecifier { TypeName = returnType.FullName },
+                    ScopeDepth = scopeDepth + 1,
+                    IsAsync = isAsync,
+                    IsGenerator = isGenerator,
+                    IsPure = isPure,
+                    IsExtern = false,
+                };
+            }
+
+            if (this is IRoutineContainer routineContainer)
+                routineContainer.AddFunction(function);
+            else if (this.Parent is IRoutineContainer routineContainer1)
+                routineContainer1.AddFunction(function);
+            else
+                throw new NotImplementedException();
+
+            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Add lambda function {function.FullName}");
+            model.CatchUp(function);
+            return function;
+        }
+
         ISymbol AllocTempSymbol(IType type, SourceLocation sourceLocation)
         {
             var name = $"__temp_{counter++}";
@@ -64,7 +98,7 @@ namespace BabyPenguin.SemanticPass
         {
             var name = initialRoutine.Name;
             var originName = name;
-            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false, null);
+            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false, null, null);
             if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
             {
                 throw new BabyPenguinException($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
@@ -84,7 +118,8 @@ namespace BabyPenguin.SemanticPass
             bool isReadonly,
             bool isClassMember,
             bool isStatic,
-            bool? isAsync = null)
+            bool? isAsync = null,
+            bool? isGenerator = null)
         {
             var name = func.Name;
             var originName = name;
@@ -101,7 +136,7 @@ namespace BabyPenguin.SemanticPass
                 }
             }
 
-            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern, isAsync);
+            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern, isAsync, isGenerator);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -267,6 +302,7 @@ namespace BabyPenguin.SemanticPass
                                     func.ReturnTypeInfo = retType;
                                 }
 
+                                func.IsGenerator = syntaxNode.IsGenerator;
                                 func.Parameters.Clear();
                                 int i = 0;
                                 func.IsStatic = true;

@@ -57,6 +57,24 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.primaryExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
+        public ISyntaxExpression GetEffectiveExpression() => PrimaryExpressionType switch
+        {
+            Type.Identifier => this,
+            Type.Constant => this,
+            Type.StringLiteral => this,
+            Type.BoolLiteral => this,
+            Type.VoidLiteral => this,
+            Type.ParenthesizedExpression => ParenthesizedExpression!.GetEffectiveExpression(),
+            _ => throw new NotImplementedException(),
+        };
+
         public Type PrimaryExpressionType { get; set; }
 
         [ChildrenNode]

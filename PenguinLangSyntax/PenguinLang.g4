@@ -23,7 +23,7 @@ postfixExpression:
 
 spawnExpression: 'async' expression;
 
-waitExpression: ('wait' | 'wait_any') functionCallExpression?;
+waitExpression: 'wait' functionCallExpression?;
 
 newExpression:
 	'new' typeSpecifier '(' expression? (',' expression)* ')';
@@ -75,15 +75,17 @@ equalityExpression:
 
 equalityOperator: '==' | '!=' | 'is';
 
-andExpression: equalityExpression ('&' equalityExpression)*;
+bitwiseAndExpression:
+	equalityExpression ('&' equalityExpression)*;
 
-exclusiveOrExpression: andExpression ('^' andExpression)*;
+bitwiseXorExpression:
+	bitwiseAndExpression ('^' bitwiseAndExpression)*;
 
-inclusiveOrExpression:
-	exclusiveOrExpression ('|' exclusiveOrExpression)*;
+bitwiseOrExpression:
+	bitwiseXorExpression ('|' bitwiseXorExpression)*;
 
 logicalAndExpression:
-	inclusiveOrExpression ('&&' inclusiveOrExpression)*;
+	bitwiseOrExpression ('&&' bitwiseOrExpression)*;
 
 logicalOrExpression:
 	logicalAndExpression ('||' logicalAndExpression)*;
@@ -119,7 +121,9 @@ typeQualifier: 'const';
 
 storageClassSpecifier: 'extern';
 
-typeSpecifier:
+typeSpecifier: typeSpecifierWithoutIterable iterableType?;
+
+typeSpecifierWithoutIterable:
 	'void'
 	| 'u8'
 	| 'u16'
@@ -141,6 +145,8 @@ typeSpecifier:
 			'.' identifierWithDots genericArguments?
 		)*
 	);
+
+iterableType: '[]';
 
 identifierWithDots: identifier ('.' identifier)*;
 
@@ -261,7 +267,9 @@ functionSpecifier:
 	| '!pure'
 	| 'extern'
 	| 'async'
-	| '!async';
+	| '!async'
+	| 'generator'
+	| '!generator';
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (

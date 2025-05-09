@@ -53,39 +53,22 @@ namespace PenguinLangSyntax
             return result;
         }
 
-        public static PenguinLangParser.InterfaceDefinitionContext ParseInterface(string source, string file, ErrorReporter? reporter_ = null)
+        public static T Parse<T>(string source, string file, Func<PenguinLangParser, T> func, ErrorReporter? reporter_ = null)
         {
             var parser = PrepareParser(source, file, reporter_);
-            var result = parser.Parser.interfaceDefinition();
-            parser.ReportError();
+            var result = func(parser.Parser);
+            try
+            {
+                parser.ReportError();
+            }
+            catch (PenguinLangException e)
+            {
+                throw new PenguinLangException(e.Message + "\n\nSource:\n" + source);
+            }
             return result;
         }
 
-        public static PenguinLangParser.ClassDefinitionContext ParseClass(string source, string file, ErrorReporter? reporter_ = null)
-        {
-            var parser = PrepareParser(source, file, reporter_);
-            var result = parser.Parser.classDefinition();
-            parser.ReportError();
-            return result;
-        }
-
-        public static PenguinLangParser.NamespaceDefinitionContext ParseNamespace(string source, string file, ErrorReporter? reporter_ = null)
-        {
-            var parser = PrepareParser(source, file, reporter_);
-            var result = parser.Parser.namespaceDefinition();
-            parser.ReportError();
-            return result;
-        }
-
-        public static PenguinLangParser.EnumDefinitionContext ParseEnum(string source, string file, ErrorReporter? reporter_ = null)
-        {
-            var parser = PrepareParser(source, file, reporter_);
-            var result = parser.Parser.enumDefinition();
-            parser.ReportError();
-            return result;
-        }
-
-        private record ParserData(PenguinLangParser Parser, ErrorListener<int> LexerListener, ErrorListener<IToken> ParserListener)
+        public record ParserData(PenguinLangParser Parser, ErrorListener<int> LexerListener, ErrorListener<IToken> ParserListener)
         {
             public void ReportError()
             {
@@ -94,7 +77,7 @@ namespace PenguinLangSyntax
             }
         }
 
-        private static ParserData PrepareParser(string source, string file, ErrorReporter? reporter_)
+        public static ParserData PrepareParser(string source, string file, ErrorReporter? reporter_)
         {
             var reporter = reporter_ ?? new ErrorReporter();
             reporter.Write(ErrorReporter.DiagnosticLevel.Info, "parsing " + file);

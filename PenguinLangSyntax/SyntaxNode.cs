@@ -18,6 +18,8 @@ namespace PenguinLangSyntax
     {
         public uint ScopeDepth { get; set; }
 
+        public abstract void FromString(string text, uint scopeDepth, ErrorReporter reporter);
+
         public SourceLocation SourceLocation { get; set; } = SourceLocation.Empty();
 
         public string Text { get; set; } = string.Empty;
@@ -55,7 +57,7 @@ namespace PenguinLangSyntax
             Text = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
             var fileNameIdentifier = Path.GetFileNameWithoutExtension(walker.FileName) + (walker.FileName.GetHashCode() % 0xFF);
             SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
-            ScopeDepth = walker.CurrentScope?.ScopeDepth ?? 0;
+            ScopeDepth = walker.CurrentScope?.ScopeDepth ?? walker.InitialScopeDepth;
         }
 
         public virtual IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)

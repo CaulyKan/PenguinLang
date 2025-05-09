@@ -42,9 +42,9 @@ namespace BabyPenguin.VirtualMachine
     public enum ReturnStatus
     {
         Blocked = 0, // the routine is blocked by some dependency and dont have a result
-        YieldNotFinished, // the routine generated a result but not finished
-        YieldFinished, // the routine generated a result and finished
-        Finished, // the routine finished without generating a result
+        YieldNotFinished = 2, // the routine generated a result but not finished
+        Finished = 3, // the routine finished without generating a result
+        YieldFinished = 4, // the routine generated a result and finished
     }
 
     public class ReturnInstruction(SourceLocation sourceLocation, ISymbol? retValue, ReturnStatus returnStatus) : BabyPenguinIR

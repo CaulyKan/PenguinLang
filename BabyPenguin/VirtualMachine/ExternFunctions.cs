@@ -212,33 +212,51 @@ namespace BabyPenguin.VirtualMachine
                         frameResult = res.Right!;
                 }
             }
+
             if (frameResult!.ReturnStatus == ReturnStatus.YieldFinished || frameResult!.ReturnStatus == ReturnStatus.Finished)
             {
                 frame.ChildFrame = null;
                 frameRuntimeVar.ExternImplenmentationValue = null;
             }
+
+            var routineContextResult = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["result"].As<EnumRuntimeValue>();
+            if (frameResult.ReturnValue != null)
+            {
+                routineContextResult.ContainingValue = frameResult.ReturnValue.Value;
+                routineContextResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
+            }
+            else
+            {
+                routineContextResult.ContainingValue = null;
+                routineContextResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
+            }
+
             resultVar!.As<BasicRuntimeSymbol>().BasicValue.I64Value = (int)frameResult!.ReturnStatus;
         }
 
         public static void AddRoutineContext(BabyPenguinVM vm)
         {
-            vm.Global.RegisterExternFunction("__builtin.RoutineContext.call", RoutineContextCall);
 
-            vm.Global.RegisterExternFunction("__builtin.RoutineContext.new", (result, args) =>
+            foreach (var routineContext in vm.Model.ResolveType("__builtin.RoutineContext<?>")!.GenericInstances)
             {
-                var targetName = args[1].As<BasicRuntimeSymbol>().BasicValue.StringValue;
-                var targetSymbol = vm.Model.ResolveSymbol(targetName);
+                vm.Global.RegisterExternFunction(routineContext.FullName + ".call", RoutineContextCall);
 
-                if (targetSymbol is FunctionSymbol functionSymbol)
+                vm.Global.RegisterExternFunction(routineContext.FullName + ".new", (result, args) =>
                 {
-                    var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<FunctionRuntimeValue>();
-                    target.FunctionSymbol = functionSymbol;
-                }
-                else
-                {
-                    throw new BabyPenguinRuntimeException($"Cannot build context on non-function symbol {targetName}");
-                }
-            });
+                    var targetName = args[1].As<BasicRuntimeSymbol>().BasicValue.StringValue;
+                    var targetSymbol = vm.Model.ResolveSymbol(targetName);
+
+                    if (targetSymbol is FunctionSymbol functionSymbol)
+                    {
+                        var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<FunctionRuntimeValue>();
+                        target.FunctionSymbol = functionSymbol;
+                    }
+                    else
+                    {
+                        throw new BabyPenguinRuntimeException($"Cannot build context on non-function symbol {targetName}");
+                    }
+                });
+            }
         }
     }
 }

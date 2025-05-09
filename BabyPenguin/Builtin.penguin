@@ -170,6 +170,7 @@ namespace __builtin {
         running;
         ready;
         finished;
+        ready_finished;
 
         fun from_i64(val v: i64) -> RoutineState {
             if (v == 0) {
@@ -178,8 +179,10 @@ namespace __builtin {
                 return new RoutineState.running();
             } else if (v == 2) {
                 return new RoutineState.ready();
-            } else {
+            } else if (v == 3) {
                 return new RoutineState.finished();
+            } else {
+                return new RoutineState.ready_finished();
             }
         }
 
@@ -195,8 +198,10 @@ namespace __builtin {
                 return 1;
             } else if (v is RoutineState.ready) {
                 return 2;
-            } else {
+            } else if (v is RoutineState.finished) {
                 return 3;
+            } else {
+                return 4;
             }
         }
 
@@ -224,8 +229,8 @@ namespace __builtin {
     interface IFuture<T> {
         impl IFutureBase;
         fun poll(val this: IFuture<T>) -> FutureState<T>;
-        fun set_result(var this: IFuture<T>, val result: Option<T>, val is_finished: bool) -> bool;
-        fun do_wait(var this: IFuture<T>) -> T {
+        
+        !async fun do_wait(var this: IFuture<T>) -> T {
             var result: T;
             while(true) {
                 wait;
@@ -245,15 +250,17 @@ namespace __builtin {
             return result;
         }
 
-        fun do_wait_any(var this: IFuture<T>) -> Option<T> {
+        !async fun do_wait_any(var this: IFuture<T>) -> Option<T> {
             while(true) {
                 wait;
-                __signal 0;
                 var state: FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
+                    this.switch_state(new RoutineState.ready_finished(), new RoutineState.finished());
                     return new Option<T>.some(state.ready_finished);
                 }
                 else if (state is FutureState<T>.ready) {
+                    this.switch_state(new RoutineState.ready(), new RoutineState.pending());
+                    _main_scheduler.pending_jobs.enqueue(this);
                     return new Option<T>.some(state.ready);
                 } else if (state is FutureState<T>.finished) {
                     break;
@@ -263,12 +270,13 @@ namespace __builtin {
         }
     }
 
-    class RoutineContext {
+    class RoutineContext<T> {
         var target: fun;
         var frame: i64;
+        var result: Option<T> = new Option<T>.none();
 
-        extern fun new(var this: RoutineContext, val symbol: string);
-        extern fun call(var this: RoutineContext) -> i64;
+        extern fun new(var this: Self, val symbol: string);
+        extern fun call(var this: Self) -> i64;
     }
 
     class Scheduler {
@@ -288,10 +296,6 @@ namespace __builtin {
                     else {
                         if (state is RoutineState.pending) {
                             this.pending_jobs.enqueue(job);
-                        } else if (state is RoutineState.ready) {
-                            
-                        } else if (state is RoutineState.finished) {
-                            // job is finished, remove it from queue
                         }
                     }
                 } else {
@@ -307,14 +311,17 @@ namespace __builtin {
 
     var _main_scheduler : Scheduler = new Scheduler();
 
-    class SimpleRoutine {
+    class _DefaultRoutine<T> {
         var state: AtomicI64 = new AtomicI64(0);
-        var context: RoutineContext;
+        var context: RoutineContext<T>;
         val context_symbol : string;
 
-        fun new(var this: Self, val context_symbol: string) {
-            this.context = new RoutineContext(context_symbol);
+        fun new(var this: Self, val context_symbol: string, val scheduleNow: bool) {
+            this.context = new RoutineContext<T>(context_symbol);
             this.context_symbol = context_symbol;
+            if (scheduleNow) {
+                _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
+            }
         }
 
         impl IFutureBase {
@@ -335,39 +342,34 @@ namespace __builtin {
                     return false;
                 val return_state : i64 = self.context.call();
 
-                if (return_state == 0) {
-                    // blocked, put back as pending
-                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.pending());
-                } else if (return_state == 1) {
-                    // yield not finished
-                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.ready(void));
-                } else if (return_state == 2 || return_state == 3) {
-                    // yield finished & finished
-                    RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
-                }
+                // Blocked = 0, YieldNotFinished = 2, Finished = 3, YieldFinished = 4
+                RoutineState.switch(self.state, new RoutineState.running(), RoutineState.from_i64(return_state));
 
                 return true;
             }
         }
 
-        impl IFuture<void> {
-            fun poll(val this: IFuture<void>) -> FutureState<void> {
+        impl IFuture<T> {
+            fun poll(val this: IFuture<T>) -> FutureState<T> {
                 var self: Self = this as Self;
                 val state_val: i64 = self.state.load();
                 
                 if (state_val == 2) {
-                    return new FutureState<void>.ready(void);
+                    return new FutureState<T>.ready(self.context.result.some);
                 } else if (state_val == 3) {
-                    return new FutureState<void>.finished();
-                }
-                else {
-                    return new FutureState<void>.not_ready();
+                    return new FutureState<T>.finished();
+                } else if (state_val == 4) {
+                    return new FutureState<T>.ready_finished(self.context.result.some);
+                } else {
+                    return new FutureState<T>.not_ready();
                 }
             }
-
-            fun set_result(var this: IFuture<void>, val result: Option<void>, val is_finished: bool) -> bool {
-                var self: Self = this as Self;
-                return RoutineState.switch(self.state, new RoutineState.running(), new RoutineState.finished());
+        }
+    
+        impl IIterator<T> {
+            fun next(var this: IIterator<T>) -> Option<T> {
+                var self: IFuture<T> = this as IFuture<T>;
+                return self.do_wait_any();
             }
         }
     }

@@ -13,6 +13,14 @@ namespace PenguinLangSyntax.SyntaxNodes
                 BodyStatement = Build<Statement>(walker, context.statement());
             }
         }
+
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.forStatement(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         [ChildrenNode]
         public Declaration? Declaration { get; private set; }
 

@@ -32,12 +32,13 @@ namespace BabyPenguin.SemanticPass
 
                 returnVoid |= codeContainer is IInitialRoutine;
 
-                if (returnVoid)
+                // if (returnVoid)
                 {
-                    if (codeContainer.Instructions.Count() == 0 || codeContainer.Instructions.Last() is not ReturnInstruction)
+                    if (codeContainer.Instructions.Count() == 0 || codeContainer.Instructions.Last() is not ReturnInstruction
+                        || (codeContainer.Instructions.Last() is ReturnInstruction returnInstruction && (returnInstruction.ReturnStatus == ReturnStatus.Blocked || returnInstruction.ReturnStatus == ReturnStatus.YieldNotFinished)))
                     {
                         Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Adding return for '{codeContainer.FullName}'");
-                        codeContainer.Instructions.Add(new ReturnInstruction(codeContainer.SourceLocation.EndLocation, null, ReturnStatus.YieldFinished));
+                        codeContainer.Instructions.Add(new ReturnInstruction(codeContainer.SourceLocation.EndLocation, null, ReturnStatus.Finished));
                     }
                 }
             }

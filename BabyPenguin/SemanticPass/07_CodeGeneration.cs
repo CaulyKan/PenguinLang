@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace BabyPenguin.SemanticPass
 {
     public interface ICodeContainer : ISymbolContainer, ISemanticNode
@@ -309,13 +311,19 @@ namespace BabyPenguin.SemanticPass
                                     AddAssignmentExpression(new(returnVar), temp, false, null, returnStatement.SourceLocation);
                                     returnVar = temp;
                                 }
-                                else throw new BabyPenguinException($"Return type mismatch, expected '{ReturnTypeInfo}' but got '{returnVar.TypeInfo}'", returnStatement.SourceLocation);
+                                else if (returnVar.TypeInfo.IsVoidType && (this as IFunction)?.IsGenerator == true)
+                                {
+                                    // allow 'return;' to jump out generator functions
+                                    AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.Finished));
+                                }
+                                else
+                                    throw new BabyPenguinException($"Return type mismatch, expected '{ReturnTypeInfo}' but got '{returnVar.TypeInfo}'", returnStatement.SourceLocation);
                             }
                             AddInstruction(new ReturnInstruction(item.SourceLocation, returnVar, ReturnStatus.YieldFinished));
                         }
                         else
                         {
-                            AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldFinished));
+                            AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.Finished));
                         }
                         break;
                     }
@@ -347,9 +355,22 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (this.ReturnTypeInfo.IsVoidType)
                                 AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldNotFinished));
-                            else Reporter.Throw($"Yield statement should have an expression that returns '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                            else Reporter.Throw($"Yield statement without an expression requires function return type to be void, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
                         }
-                        else throw new NotImplementedException();
+                        else
+                        {
+                            var returnVar = AddExpression(yieldStatement.YieldExpression, false);
+                            var functionReturnType = this.ReturnTypeInfo;
+                            if (returnVar.TypeInfo.CanImplicitlyCastTo(ReturnTypeInfo))
+                            {
+                                var temp = AllocTempSymbol(ReturnTypeInfo, yieldStatement.SourceLocation);
+                                AddAssignmentExpression(new(returnVar), temp, false, null, yieldStatement.SourceLocation);
+                                returnVar = temp;
+                            }
+                            else
+                                throw new BabyPenguinException($"This yield statement requires function return type to be {returnVar.TypeInfo}, but got '{functionReturnType}'", yieldStatement.SourceLocation);
+                            AddInstruction(new ReturnInstruction(item.SourceLocation, returnVar, ReturnStatus.YieldNotFinished));
+                        }
 
                         break;
                     }
@@ -720,17 +741,41 @@ namespace BabyPenguin.SemanticPass
                     }
                 case SpawnAsyncExpression exp:
                     {
-                        var subExpressionType = ResolveExpressionType(exp.Expression!);
-                        var futureType = Model.ResolveType($"__builtin.IFuture<{subExpressionType}>");
-                        if (futureType == null)
-                            Model.Reporter.Throw($"can't resolve type '__builtin.IFuture<${subExpressionType}>'");
-                        return futureType;
+                        return ResolveSpawnAsyncExpressionType(exp, out _);
                     }
                 default:
                     break;
             }
             throw new BabyPenguinException($"Unsupported expression type '{expression.GetType()}'", expression.SourceLocation);
         }
+
+        IType ResolveSpawnAsyncExpressionType(SpawnAsyncExpression exp, out IFunction routine)
+        {
+            if (exp.Text.EndsWith("()"))
+            {
+                var funcSymbol = Model.ResolveSymbol(exp.Text.Replace("()", ""), scope: this) as FunctionSymbol;
+                if (funcSymbol == null) Model.Reporter.Throw($"cant resolve function {exp.Text}");
+                if (funcSymbol.CodeContainer is IFunction func)
+                {
+                    IType? futureType = null;
+                    if (func.IsGenerator == true)
+                    {
+                        if (funcSymbol.ReturnTypeInfo.GenericType?.FullName == "__builtin.IIterator<?>" && funcSymbol.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType argType)
+                            futureType = argType;
+                        else
+                            Model.Reporter.Throw($"Generator function {funcSymbol.FullName} must return an IIterator<T> where T is the type of the generator");
+                    }
+                    else
+                    {
+                        futureType = funcSymbol.ReturnTypeInfo;
+                    }
+                    routine = func;
+                    return Model.ResolveType($"__builtin.IFuture<{futureType!.FullName}>")!;
+                }
+            }
+            throw new NotImplementedException();
+        }
+
 
         public bool CheckMemberAccessExpressionIsStatic(MemberAccessExpression exp)
         {
@@ -754,24 +799,23 @@ namespace BabyPenguin.SemanticPass
 
         public ISymbol SchedulerAddSimpleJob(ICodeContainer codeContainer, SourceLocation sourceLocation, ISymbol targetSymbol)
         {
-            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
-            var pendingJobsSymbol = Model.ResolveSymbol("__builtin.Scheduler.pending_jobs") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.pending_jobs' is not found.");
-            var pendingJobsEnqueueSymbol = Model.ResolveSymbol("__builtin.Queue<__builtin.IFutureBase>.enqueue") ?? throw new BabyPenguinException("symbol '__builtin.Queue<__builtin.IFutureBase>.enqueue' is not found.");
-            var simpleRoutineType = Model.ResolveType("__builtin.SimpleRoutine") ?? throw new BabyPenguinException("type '__builtin.SimpleRoutine' is not found.");
-            var simpleRoutineConstructor = Model.ResolveSymbol("__builtin.SimpleRoutine.new") ?? throw new BabyPenguinException("symbol '__builtin.SimpleRoutine.new' is not found.");
-            var ifutureBaseType = Model.ResolveType("__builtin.IFutureBase") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
-            var pendingJobsInstanceSymbol = AllocTempSymbol(Model.ResolveType("__builtin.Queue<__builtin.IFutureBase>") ?? throw new BabyPenguinException("type '__builtin.Queue<__builtin.IFutureBase>' is not found."), SourceLocation.Empty());
+            if (targetSymbol.TypeInfo.GenericType?.FullName != "__builtin.IFuture<?>")
+                throw new BabyPenguinException($"expecting symbol '{targetSymbol.FullName}' to be of type '__builtin.IFuture<?>'", sourceLocation);
+            var futureResultType = targetSymbol.TypeInfo.GenericArguments.FirstOrDefault();
+            if (futureResultType == null)
+                throw new BabyPenguinException($"can't get generic argument of symbol '{targetSymbol.FullName}'", sourceLocation);
 
-            AddInstruction(new ReadMemberInstruction(sourceLocation, pendingJobsSymbol, schedulerSymbol, pendingJobsInstanceSymbol));
+            var DefaultRoutineType = Model.ResolveType($"__builtin._DefaultRoutine<{futureResultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._DefaultRoutine<{futureResultType.FullName}>' is not found.");
+            var DefaultRoutineConstructor = Model.ResolveSymbol($"__builtin._DefaultRoutine<{futureResultType.FullName}>.new") ?? throw new BabyPenguinException($"symbol '__builtin._DefaultRoutine<{futureResultType.FullName}>.new' is not found.");
+
+            var trueSymbol = AllocTempSymbol(BasicType.Bool, sourceLocation);
             var routineNameSymbol = AllocTempSymbol(BasicType.String, sourceLocation);
-            var routineSymbol = AllocTempSymbol(simpleRoutineType, sourceLocation);
-            var futureSymbol = AllocTempSymbol(ifutureBaseType, sourceLocation);
+            var routineSymbol = AllocTempSymbol(DefaultRoutineType, sourceLocation);
+            AddInstruction(new AssignLiteralToSymbolInstruction(sourceLocation, trueSymbol, BasicType.Bool, "true"));
             AddInstruction(new AssignLiteralToSymbolInstruction(sourceLocation, routineNameSymbol, BasicType.String, "\"" + codeContainer.FullName + "\""));
             AddInstruction(new NewInstanceInstruction(sourceLocation, routineSymbol));
-            AddInstruction(new FunctionCallInstruction(sourceLocation, simpleRoutineConstructor, [routineSymbol, routineNameSymbol], null));
-            AddInstruction(new CastInstruction(sourceLocation, routineSymbol, ifutureBaseType, futureSymbol));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, DefaultRoutineConstructor, [routineSymbol, routineNameSymbol, trueSymbol], null));
             AddInstruction(new CastInstruction(sourceLocation, routineSymbol, targetSymbol.TypeInfo, targetSymbol));
-            AddInstruction(new FunctionCallInstruction(sourceLocation, pendingJobsEnqueueSymbol, [pendingJobsInstanceSymbol, futureSymbol], null));
             return targetSymbol;
         }
 
@@ -1447,14 +1491,9 @@ namespace BabyPenguin.SemanticPass
                     {
                         var exp = spawnAsyncExpression.Expression!;
                         // TODO: we need to convert expression into a annoymous function
-                        if (exp.Text.EndsWith("()"))
-                        {
-                            var funcSymbol = Model.ResolveSymbol(exp.Text.Replace("()", ""), scope: this) as FunctionSymbol;
-                            if (funcSymbol == null) Model.Reporter.Throw($"cant resolve function {exp.Text}");
-                            var func = funcSymbol.CodeContainer;
-                            return SchedulerAddSimpleJob(func, spawnAsyncExpression.SourceLocation, targetSymbol);
-                        }
-                        throw new NotImplementedException();
+                        var type = ResolveSpawnAsyncExpressionType(spawnAsyncExpression, out IFunction func);
+                        var symbol = targetSymbol ?? AllocTempSymbol(type, spawnAsyncExpression.SourceLocation);
+                        return SchedulerAddSimpleJob(func, spawnAsyncExpression.SourceLocation, symbol);
                     }
                 default:
                     throw new NotImplementedException($"unsupported expression: {expression}");

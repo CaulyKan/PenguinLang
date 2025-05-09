@@ -21,7 +21,7 @@ namespace PenguinLangSyntax
         public List<NamespaceDefinition> Namespaces { get; private set; } = [];
     }
 
-    public class SyntaxWalker(string file, ErrorReporter reporter)
+    public class SyntaxWalker(string file, ErrorReporter reporter, uint scopeDepth = 0)
     {
         public ErrorReporter Reporter { get; } = reporter;
 
@@ -33,6 +33,8 @@ namespace PenguinLangSyntax
 
         Stack<ISyntaxScope> ScopeStack { get; } = [];
 
+        public uint InitialScopeDepth { get; } = scopeDepth;
+
         public void PopScope()
         {
             ScopeStack.Pop();
@@ -41,7 +43,7 @@ namespace PenguinLangSyntax
         public void PushScope(SyntaxScopeType type, ISyntaxScope scope)
         {
             scope.ParentScope = ScopeStack.Count > 0 ? CurrentScope : null;
-            scope.ScopeDepth = (scope.ParentScope?.ScopeDepth ?? 0) + 1;
+            scope.ScopeDepth = (scope.ParentScope?.ScopeDepth ?? InitialScopeDepth) + 1;
 
             switch (type)
             {
@@ -109,6 +111,8 @@ namespace PenguinLangSyntax
         }
 
         ISyntaxExpression CreateWrapperExpression();
+
+        ISyntaxExpression GetEffectiveExpression();
     }
 
     public enum SyntaxScopeType

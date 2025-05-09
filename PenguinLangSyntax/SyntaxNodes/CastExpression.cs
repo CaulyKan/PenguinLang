@@ -22,11 +22,20 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.castExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         [ChildrenNode]
         public TypeSpecifier? CastTypeSpecifier { get; set; }
 
         [ChildrenNode]
         public UnaryExpression? SubUnaryExpression { get; set; }
+
+        public ISyntaxExpression GetEffectiveExpression() => IsTypeCast ? this : (SubUnaryExpression as ISyntaxExpression)!.GetEffectiveExpression();
 
         public bool IsTypeCast => CastTypeSpecifier is not null;
 

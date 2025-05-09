@@ -20,7 +20,8 @@ namespace BabyPenguin.Symbol
             bool isClassMember,
             bool isStatic,
             bool isExtern,
-            bool? isAsync)
+            bool? isAsync,
+            bool? isGenerator)
         {
             Parent = parent;
             Name = name;
@@ -39,6 +40,7 @@ namespace BabyPenguin.Symbol
             IsClassMember = isClassMember;
             IsExtern = isExtern;
             this.isAsync = isAsync;
+            this.isGenerator = isGenerator;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Select(p => p.Type)).ToList();
             var typeInfo = BasicType.Fun.Specialize(funTypeGenericArguments);
@@ -71,6 +73,9 @@ namespace BabyPenguin.Symbol
 
         private bool? isAsync { get; }
         public bool IsAsync => isAsync ?? (CodeContainer as IFunction)?.IsAsync ?? true;
+
+        private bool? isGenerator { get; }
+        public bool IsGenerator => isGenerator ?? (CodeContainer as IFunction)?.IsGenerator ?? true;
 
         public override string ToString()
         {

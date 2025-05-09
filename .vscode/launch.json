@@ -25,7 +25,9 @@
             },
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
             "args": [
-                "${workspaceFolder}/Examples/HelloWorld/test.penguin"
+                "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+                "-r",
+                "report.txt"
             ],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
@@ -45,7 +47,8 @@
             "name": "Attach dap",
             "type": "coreclr",
             "request": "attach",
-            "processName": "BabyPenguin.exe"
+            // "processName": "BabyPenguin.exe"
+            "processId": "${command:pickProcess}"
         },
         {
             "name": "Extension",

@@ -71,6 +71,13 @@ namespace PenguinLangSyntax.SyntaxNodes
                     .Select(x => Build<InterfaceForImplementation>(walker, x)));
         }
 
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.namespaceDefinition(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
+        }
+
         [ChildrenNode]
         public List<InitialRoutineDefinition> InitialRoutines { get; private set; } = [];
 

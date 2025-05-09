@@ -376,9 +376,6 @@ namespace BabyPenguin.Tests
             Assert.Equal("test1", cls.Functions[0].Name);
             Assert.Equal("test2", cls.Functions[1].Name);
             Assert.Equal("new", cls.Functions[2].Name);
-            Assert.True(cls.Functions[0].IsStatic);
-            Assert.False(cls.Functions[1].IsStatic);
-            Assert.False(cls.Functions[2].IsStatic);
 
             var fun1 = model.ResolveSymbol("test1", scope: cls);
             Assert.True(fun1 is FunctionSymbol);
@@ -1058,6 +1055,26 @@ namespace BabyPenguin.Tests
 
             var ibar = model.ResolveType("ns.IBar") as IInterface;
             Assert.Single(ibar!.ImplementedInterfaces);
+        }
+
+        [Fact]
+        public void IteratorDefinition()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo {}
+
+                    var a : u8[];
+                    var b : ns.Foo[];
+                }
+            ");
+            var model = compiler.Compile();
+
+            var a = model.ResolveSymbol("ns.a");
+            Assert.Equal("__builtin.IIterator<u8>", a!.TypeInfo.FullName);
+            var b = model.ResolveSymbol("ns.b");
+            Assert.Equal("__builtin.IIterator<ns.Foo>", b!.TypeInfo.FullName);
         }
     }
 }

@@ -24,7 +24,7 @@ namespace BabyPenguin
 
         public SourceLocation SourceLocation { get; set; }
 
-        public SyntaxNode? SyntaxNode { get; }
+        public SyntaxNode? SyntaxNode { get; set; }
 
         public int PassIndex { get; set; }
 

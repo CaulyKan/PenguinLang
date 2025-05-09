@@ -10,6 +10,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
+        public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
@@ -28,6 +30,13 @@ namespace PenguinLangSyntax.SyntaxNodes
                 };
             }
             else throw new NotImplementedException();
+        }
+
+        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.equalityExpression(), reporter);
+            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            Build(walker, syntaxNode);
         }
 
         public ISyntaxExpression CreateWrapperExpression()

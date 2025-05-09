@@ -57,7 +57,7 @@ namespace BabyPenguin.VirtualMachine
         {
             if (Global.EnableDebugPrint)
             {
-                Global.DebugFunc(new string('|', FrameLevel) + inst.ToDebugString(op1, op2, result) + "\n");
+                Global.DebugFunc(new string('|', FrameLevel) + inst.ToDebugString(op1, op2, result) + " @" + ConsoleColor.UNDERLINE + inst.SourceLocation + ConsoleColor.NOUNDERLINE + "\n");
             }
         }
 
