@@ -53,7 +53,7 @@ namespace BabyPenguin.SemanticPass
             var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.ScopeDepth, scope: this);
             if (symbol == null)
             {
-                Model.Reporter.Throw($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
+                throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
             }
             if (item.InitializeExpression != null)
             {
@@ -202,7 +202,7 @@ namespace BabyPenguin.SemanticPass
                         var ifStatement = item.IfStatement!;
                         var conditionVar = AddExpression(ifStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            Reporter.Throw($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation);
+                            throw new BabyPenguinException($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation);
                         if (ifStatement.HasElse)
                         {
                             var elseLabel = CreateLabel();
@@ -230,7 +230,7 @@ namespace BabyPenguin.SemanticPass
                         AddInstruction(new NopInstuction(whileStatement.Condition!.SourceLocation).WithLabel(beginLabel));
                         var conditionVar = AddExpression(whileStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            Reporter.Throw($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
+                            throw new BabyPenguinException($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
                         var endLabel = CreateLabel();
 
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
@@ -355,7 +355,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (this.ReturnTypeInfo.IsVoidType)
                                 AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldNotFinished));
-                            else Reporter.Throw($"Yield statement without an expression requires function return type to be void, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                            else throw new BabyPenguinException($"Yield statement without an expression requires function return type to be void, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
                         }
                         else
                         {
@@ -384,7 +384,7 @@ namespace BabyPenguin.SemanticPass
                         }
                         else
                         {
-                            Reporter.Throw($"Signal statement requires an integer type, but got '{signalValue.TypeInfo}'", signalStatement.SourceLocation);
+                            throw new BabyPenguinException($"Signal statement requires an integer type, but got '{signalValue.TypeInfo}'", signalStatement.SourceLocation);
                         }
                     }
                     break;
@@ -753,8 +753,9 @@ namespace BabyPenguin.SemanticPass
         {
             if (exp.Text.EndsWith("()"))
             {
-                var funcSymbol = Model.ResolveSymbol(exp.Text.Replace("()", ""), scope: this) as FunctionSymbol;
-                if (funcSymbol == null) Model.Reporter.Throw($"cant resolve function {exp.Text}");
+                // TODO: change to lambda expression
+                var funcSymbol = Model.ResolveSymbol(exp.Text.Replace("async ", "").Replace("()", ""), scope: this) as FunctionSymbol;
+                if (funcSymbol == null) throw new BabyPenguinException($"cant resolve function {exp.Text}");
                 if (funcSymbol.CodeContainer is IFunction func)
                 {
                     IType? futureType = null;
@@ -763,7 +764,7 @@ namespace BabyPenguin.SemanticPass
                         if (funcSymbol.ReturnTypeInfo.GenericType?.FullName == "__builtin.IIterator<?>" && funcSymbol.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType argType)
                             futureType = argType;
                         else
-                            Model.Reporter.Throw($"Generator function {funcSymbol.FullName} must return an IIterator<T> where T is the type of the generator");
+                            throw new BabyPenguinException($"Generator function {funcSymbol.FullName} must return an IIterator<T> where T is the type of the generator");
                     }
                     else
                     {

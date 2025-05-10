@@ -43,16 +43,6 @@ namespace PenguinLangSyntax
             stringBuilder.AppendLine(msg.ToString());
         }
 
-        [DoesNotReturn]
-        public void Throw(string message, SourceLocation? sourceLocation = null)
-        {
-            var msg = new DiagnosticMessage(DiagnosticLevel.Error, message, sourceLocation ?? SourceLocation.Empty());
-            writer.WriteLine(msg.ToString());
-            Errors.Add(msg);
-            stringBuilder.AppendLine(msg.ToString());
-            throw new PenguinLangException(msg.ToString());
-        }
-
         public void Write(DiagnosticLevel level, string message)
         {
             var msg = new DiagnosticMessage(level, message);

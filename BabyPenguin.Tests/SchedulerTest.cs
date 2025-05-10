@@ -385,5 +385,69 @@ namespace BabyPenguin.Tests
             Assert.Throws<BabyPenguinException>(compiler.Compile);
         }
 
+        [Fact]
+        public void YieldWaitTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    for (var i : i32 in test()) {
+                        print(i as string);
+                    } 
+                } 
+                fun test() -> i32[] {
+                    yield 1;
+                    wait;
+                    yield 2;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AsyncTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    async test();
+                    print(""1"");
+                } 
+                fun test() {
+                    print(""2"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("12", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AsyncPollTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : IFuture<i32> = async test();
+                    var poll1 : FutureState<i32> = a.poll();
+                    println(poll1 as string);
+                    wait;
+                    var poll2 : FutureState<i32> = a.poll();
+                    println(poll2 as string);
+                } 
+                fun test() -> i32 {
+                    return 1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"not_ready{EOL}ready_finished(1){EOL}", vm.CollectOutput());
+        }
+
     }
 }

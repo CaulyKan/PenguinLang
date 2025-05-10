@@ -88,10 +88,10 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
 
-                    if (symbol == null || !symbol.IsFunction) Model.Reporter.Throw($"Can't resolve function symbol {exp}", exp.SourceLocation);
+                    if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
 
                     var callingFunc = (symbol as FunctionSymbol)?.CodeContainer as IFunction;
-                    if (callingFunc == null) Model.Reporter.Throw($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+                    if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
 
                     if (callingFunc.IsAsync == true)
                     {
@@ -189,7 +189,7 @@ namespace BabyPenguin.SemanticPass
             if (waitExp.FunctionCallExpression != null)
                 RewriteAsyncWait(parent, waitExp.FunctionCallExpression);
             else
-                Model.Reporter.Throw($"Can't rewrite empty wait expression: '{waitExp.RewritedText}'", waitExp.SourceLocation);
+                throw new BabyPenguinException($"Can't rewrite empty wait expression: '{waitExp.RewritedText}'", waitExp.SourceLocation);
         }
 
         public void IdentifyAsyncFunction(IFunction func)
@@ -240,10 +240,10 @@ namespace BabyPenguin.SemanticPass
                             }
                         }
 
-                        if (symbol == null || !symbol.IsFunction) Model.Reporter.Throw($"Can't resolve function symbol {exp}", exp.SourceLocation);
+                        if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
 
                         var callingFunc = (symbol as FunctionSymbol)?.CodeContainer as IFunction;
-                        if (callingFunc == null) Model.Reporter.Throw($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+                        if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
 
                         if (callingFunc.IsAsync == null)
                         {

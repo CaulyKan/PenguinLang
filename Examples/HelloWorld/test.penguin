@@ -1,9 +1,7 @@
                 initial {
-                    val a : Option<i32> = (test()).next();
-                    print(a.some as string);
+                    async test();
+                    print("2");
                 } 
-                fun test() -> i32[] {
-                    yield 1;
-                    yield 2;
-                    print("not ganna happen");
+                fun test() {
+                    print("1");
                 }
