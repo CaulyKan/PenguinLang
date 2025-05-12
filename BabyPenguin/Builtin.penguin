@@ -271,11 +271,11 @@ namespace __builtin {
     }
 
     class RoutineContext<T> {
-        var target: fun;
+        var target: i64;
         var frame: i64;
         var result: Option<T> = new Option<T>.none();
 
-        extern fun new(var this: Self, val symbol: string);
+        extern fun new(var this: Self, val symbol: fun<T>);
         extern fun call(var this: Self) -> i64;
     }
 
@@ -311,14 +311,16 @@ namespace __builtin {
 
     var _main_scheduler : Scheduler = new Scheduler();
 
+    interface IGenerator<T> {
+        impl IIterator<T>;
+    }
+
     class _DefaultRoutine<T> {
         var state: AtomicI64 = new AtomicI64(0);
         var context: RoutineContext<T>;
-        val context_symbol : string;
 
-        fun new(var this: Self, val context_symbol: string, val scheduleNow: bool) {
+        fun new(var this: Self, val context_symbol: fun<T>, val scheduleNow: bool) {
             this.context = new RoutineContext<T>(context_symbol);
-            this.context_symbol = context_symbol;
             if (scheduleNow) {
                 _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
             }
@@ -366,6 +368,7 @@ namespace __builtin {
             }
         }
     
+        impl IGenerator<T>;
         impl IIterator<T> {
             fun next(var this: IIterator<T>) -> Option<T> {
                 var self: IFuture<T> = this as IFuture<T>;

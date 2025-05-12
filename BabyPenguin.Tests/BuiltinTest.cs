@@ -290,7 +290,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(""__builtin.hello_world"", false);
+                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     

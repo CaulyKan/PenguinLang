@@ -27,6 +27,7 @@ namespace BabyPenguin.SemanticNode
         public static BasicType I64 { get; } = new("i64", TypeEnum.I64);
         public static BasicType Char { get; } = new("char", TypeEnum.Char);
         public static BasicType Fun { get; } = new("fun", TypeEnum.Fun);
+        public static BasicType AsyncFun { get; } = new("async_fun", TypeEnum.Fun) { IsAsyncFunction = true };
 
         public static Dictionary<string, BasicType> BasicTypes { get; } = new() {
             { "bool", Bool },
@@ -43,7 +44,6 @@ namespace BabyPenguin.SemanticNode
             { "i32", I32 },
             { "i64", I64 },
             { "char", Char },
-            { "fun", Fun }
         };
 
         public bool CanImplicitlyCastTo(IType other)
@@ -205,6 +205,8 @@ namespace BabyPenguin.SemanticNode
 
         IEnumerable<MergedNamespace> ISemanticScope.GetImportedNamespaces(bool includeBuiltin) => [];
 
+        public bool IsAsyncFunction { get; set; } = false;
+
         public static IType? ResolveLiteralType(string literal)
         {
             if (literal.StartsWith('"') && literal.EndsWith('"'))
@@ -272,7 +274,11 @@ namespace BabyPenguin.SemanticNode
             {
                 if (self.GenericArguments.Count > 0) throw new BabyPenguinException("Cannot specialize a specialized type.");
 
-                var typeInfo = new BasicType("fun", TypeEnum.Fun) { GenericArguments = genericArguments } as IType;
+                var typeInfo = new BasicType("fun", TypeEnum.Fun)
+                {
+                    GenericArguments = genericArguments,
+                    IsAsyncFunction = this.IsAsyncFunction
+                } as IType;
                 if (self.GenericInstances.Find(i => i.FullName == typeInfo.FullName) is IType existingType)
                     return existingType;
                 self.GenericInstances.Add(typeInfo);
@@ -285,6 +291,6 @@ namespace BabyPenguin.SemanticNode
             }
         }
 
-        override public string ToString() => Name;
+        override public string ToString() => FullName;
     }
 }

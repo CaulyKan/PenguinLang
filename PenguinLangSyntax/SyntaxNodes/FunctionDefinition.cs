@@ -70,14 +70,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                     {
                         IsAsync = false;
                     }
-                    else if (specifierContext.GetText() == "generator")
-                    {
-                        IsGenerator = true;
-                    }
-                    else if (specifierContext.GetText() == "!generator")
-                    {
-                        IsGenerator = false;
-                    }
                 }
 
                 if (context.codeBlock() != null)
@@ -129,7 +121,5 @@ namespace PenguinLangSyntax.SyntaxNodes
         public bool? IsPure { get; set; }
 
         public bool? IsAsync { get; set; }
-
-        public bool? IsGenerator { get; set; }
     }
 }

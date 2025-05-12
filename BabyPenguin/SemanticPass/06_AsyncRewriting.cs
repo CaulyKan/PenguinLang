@@ -90,10 +90,22 @@ namespace BabyPenguin.SemanticPass
 
                     if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
 
-                    var callingFunc = (symbol as FunctionSymbol)?.CodeContainer as IFunction;
-                    if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+                    var isAsync = false;
+                    if (symbol is FunctionSymbol callingFunc)
+                    {
+                        if (callingFunc.CodeContainer is IFunction func)
+                        {
+                            if (func.IsGenerator) isAsync = false;
+                            else isAsync = func.IsAsync ?? false;
+                        }
+                        else throw new NotImplementedException();
+                    }
+                    else if (symbol is FunctionVariableSymbol functionVariableSymbol)
+                    {
+                        isAsync = functionVariableSymbol.IsAsync;
+                    }
 
-                    if (callingFunc.IsAsync == true)
+                    if (isAsync)
                     {
                         if (parent is WaitExpression)
                         {
@@ -195,19 +207,11 @@ namespace BabyPenguin.SemanticPass
         public void IdentifyAsyncFunction(IFunction func)
         {
             var isAsyncKnown = func.IsAsync != null;
-            var isGeneratorKnown = func.IsGenerator != null;
 
             if (!isAsyncKnown) func.IsAsync = false;
-            if (!isGeneratorKnown) func.IsGenerator = false;
             func.SyntaxNode?.TraverseChildren((node, parent) =>
                 {
-                    if (node is YieldStatement)
-                    {
-                        if (!isGeneratorKnown) func.IsGenerator = true;
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async & generator because it has yield statement", node.SourceLocation);
-                        return false;
-                    }
-                    else if (node is WaitExpression)
+                    if (node is WaitExpression)
                     {
                         if (!isAsyncKnown) func.IsAsync = true;
                         Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has wait statement", node.SourceLocation);
@@ -268,7 +272,7 @@ namespace BabyPenguin.SemanticPass
 
                 IType? returnType = null;
 
-                if (func.ReturnTypeInfo.GenericType?.FullName == "__builtin.IIterator<?>" && func.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType t)
+                if (func.ReturnTypeInfo.GenericType?.FullName == "__builtin.IGenerator<?>" && func.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType t)
                     returnType = t;
                 else if (func.ReturnTypeInfo.IsVoidType)
                     returnType = BasicType.Void;
@@ -276,11 +280,32 @@ namespace BabyPenguin.SemanticPass
 
                 if (func.SyntaxNode is FunctionDefinition functionDefinition)
                 {
-                    var wrapperFunction = symbolContainer.AddLambdaFunction(Model, functionDefinition, func.Name, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync, false);
+                    functionDefinition.CodeBlock?.TraverseChildren((node, parent) =>
+                    {
+                        if (node is YieldStatement yieldStatement)
+                        {
+                            if (parent is Statement statement)
+                            {
+                                statement.ReturnStatement = new ReturnStatement
+                                {
+                                    ReturnExpression = yieldStatement.YieldExpression,
+                                    ReturnType = ReturnStatement.ReturnTypeEnum.YieldNotFinished,
+                                    ScopeDepth = node.ScopeDepth,
+                                    RewritedText = "__yield_not_finished_return " + (yieldStatement.YieldExpression?.RewritedText ?? "") + ";",
+                                    SourceLocation = node.SourceLocation
+                                };
+                                statement.StatementType = Statement.Type.ReturnStatement;
+                            }
+                            else throw new NotImplementedException();
+                        }
+                        return true;
+                    });
+
+                    var wrapperFunction = symbolContainer.AddLambdaFunction(Model, functionDefinition, func.Name, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync);
                     var cb = new CodeBlock();
                     cb.FromString(@$"
                             {{
-                                return new __builtin._DefaultRoutine<{returnType.FullName}>(""{wrapperFunction.FullName}"", true) as {returnType.FullName}[];
+                                return new __builtin._DefaultRoutine<{returnType.FullName}>({wrapperFunction.Name}, true) as __builtin.IGenerator<{returnType.FullName}>;
                             }}
                         ", functionDefinition.ScopeDepth + 1, Model.Reporter);
                     functionDefinition.CodeBlock = cb;

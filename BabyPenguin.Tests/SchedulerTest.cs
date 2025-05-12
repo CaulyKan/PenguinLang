@@ -69,10 +69,10 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns{
-                    fun test1() -> void[] {
+                    fun test1() -> IGenerator<void> {
                         yield;
                     }
-                    fun test2() -> i32[] {
+                    fun test2() -> IGenerator<i32> {
                         yield 1;
                     }
                     fun test3() -> i64[] {
@@ -211,18 +211,18 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns{
-                initial {
-                    val v : i32[] = test1();
-                    for (var i : i32 in v) {
-                        print(i as string);
+                    initial {
+                        val v : i32[] = test1();
+                        for (var i : i32 in v) {
+                            print(i as string);
+                        }
+                    } 
+                    fun test() -> i32 {
+                        __yield_not_finished_return 1;
+                        __yield_not_finished_return 2;
                     }
-                } 
-                !generator fun test() -> i32 {
-                    yield 1;
-                    yield 2;
-                }
-                fun test1() -> i32[] {
-                    return new _DefaultRoutine<i32>(""ns.test"", true) as i32[];
+                    fun test1() -> i32[] {
+                        return new _DefaultRoutine<i32>(test, true) as i32[];
                     }
                 }
             ");
@@ -238,12 +238,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : i64[] = test();
+                    val v : IGenerator<i64> = test();
                     for (var i : i64 in v) {
                         print(i as string);
                     }
                 } 
-                fun test() -> i64[] {
+                fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
                     for (var i : i64 in range(0, 3)) 
@@ -263,12 +263,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : i64[] = test();
+                    val v : IGenerator<i64> = test();
                     for (var i : i64 in v) {
                         print(i as string);
                     }
                 } 
-                fun test() -> i64[] {
+                fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
                     return;
@@ -287,12 +287,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : i64[] = test();
+                    val v : IGenerator<i64> = test();
                     for (var i : i64 in v) {
                         print(i as string);
                     }
                 } 
-                fun test() -> i64[] {
+                fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
                     return 3;
@@ -310,12 +310,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : i32[] = test();
+                    val v : IGenerator<i32> = test();
                     for (var i : i32 in v) {
                         print(i as string);
                     }
                 } 
-                fun test() -> i32[] {
+                fun test() -> IGenerator<i32> {
                     yield 1;
                     yield 2;
                     return range(3);  
@@ -333,7 +333,7 @@ namespace BabyPenguin.Tests
                 initial {
                    for (var i : void in test()) {} 
                 } 
-                fun test() -> void[] {
+                fun test() -> IGenerator<void> {
                     print(""1"");
                     yield;
                     print(""2"");
@@ -356,7 +356,7 @@ namespace BabyPenguin.Tests
                     val a : Option<i32> = (test()).next();
                     print(a.some as string);
                 } 
-                fun test() -> i32[] {
+                fun test() -> IGenerator<i32> {
                     yield 1;
                     yield 2;
                 }
@@ -395,7 +395,7 @@ namespace BabyPenguin.Tests
                         print(i as string);
                     } 
                 } 
-                fun test() -> i32[] {
+                fun test() -> IGenerator<i32> {
                     yield 1;
                     wait;
                     yield 2;

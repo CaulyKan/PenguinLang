@@ -32,7 +32,11 @@ namespace BabyPenguin.VirtualMachine
             {
                 return new EnumRuntimeSymbol(model, symbol);
             }
-            else if (symbol.TypeInfo.IsFunctionType)
+            else if (symbol is FunctionSymbol)
+            {
+                return new FunctionRuntimeSymbol(model, symbol, symbol);
+            }
+            else if (symbol is FunctionVariableSymbol)
             {
                 return new FunctionRuntimeSymbol(model, symbol);
             }
@@ -118,20 +122,20 @@ namespace BabyPenguin.VirtualMachine
         {
             Model = model;
             Symbol = symbol;
-            FunctionValue = new FunctionRuntimeValue(Symbol.TypeInfo, functionSymbol ?? symbol);
+            FunctionValue = functionSymbol == null ? null : new FunctionRuntimeValue(Symbol.TypeInfo, functionSymbol);
         }
 
         public SemanticModel Model { get; }
 
         public ISymbol Symbol { get; }
 
-        public FunctionRuntimeValue FunctionValue { get; private set; }
+        public FunctionRuntimeValue? FunctionValue { get; private set; }
 
-        public IRuntimeValue Value => FunctionValue;
+        public IRuntimeValue Value => (FunctionValue as IRuntimeValue) ?? new NotInitializedRuntimeValue(TypeInfo);
 
         public IType TypeInfo => Symbol.TypeInfo;
 
-        public string? ValueToString => "fun(" + FunctionValue.FunctionSymbol?.FullName + ")";
+        public string? ValueToString => "fun(" + (FunctionValue?.FunctionSymbol?.FullName ?? "not initialized") + ")";
 
         public void AssignFrom(IRuntimeSymbol other)
         {

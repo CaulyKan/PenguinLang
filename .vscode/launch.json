@@ -47,8 +47,8 @@
             "name": "Attach dap",
             "type": "coreclr",
             "request": "attach",
-            // "processName": "BabyPenguin.exe"
-            "processId": "${command:pickProcess}"
+            "processName": "BabyPenguin.exe"
+            // "processId": "${command:pickProcess}"
         },
         {
             "name": "Extension",

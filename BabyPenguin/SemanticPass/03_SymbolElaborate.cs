@@ -6,11 +6,11 @@ namespace BabyPenguin.SemanticPass
 
         static ulong counter = 0;
 
-        IFunction AddLambdaFunction(SemanticModel model, SyntaxNode? syntaxNode, string nameHint, List<FunctionParameter> parameters, IType returnType, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false, bool? isGenerator = false)
+        IFunction AddLambdaFunction(SemanticModel model, SyntaxNode? syntaxNode, string nameHint, List<FunctionParameter> parameters, IType returnType, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false)
         {
             var name = $"__lambda_{nameHint}_{counter++}";
             var isStatic = parameters.Count > 0 && parameters[0].Name == "this";
-            var function = new Function(model, name, parameters, returnType, sourceLocation, false, isStatic, isPure, false, returnValueIsReadonly, isAsync, isGenerator);
+            var function = new Function(model, name, parameters, returnType, sourceLocation, false, isStatic, isPure, false, returnValueIsReadonly, isAsync);
 
             if (syntaxNode is FunctionDefinition functionDefinition)
             {
@@ -22,7 +22,6 @@ namespace BabyPenguin.SemanticPass
                     ReturnType = new TypeSpecifier { TypeName = returnType.FullName },
                     ScopeDepth = scopeDepth + 1,
                     IsAsync = isAsync,
-                    IsGenerator = isGenerator,
                     IsPure = isPure,
                     IsExtern = false,
                 };
@@ -43,10 +42,18 @@ namespace BabyPenguin.SemanticPass
         ISymbol AllocTempSymbol(IType type, SourceLocation sourceLocation)
         {
             var name = $"__temp_{counter++}";
-            ISymbol temp;
-            temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
-            Symbols.Add(temp);
-            return temp;
+            if (!type.IsFunctionType)
+            {
+                ISymbol temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
+                Symbols.Add(temp);
+                return temp;
+            }
+            else
+            {
+                ISymbol temp = new FunctionVariableSymbol(this, true, name, sourceLocation, type.GenericArguments[0], type.GenericArguments.Skip(1).ToList(), 0, name, true, null, false, false, (type as BasicType)!.IsAsyncFunction);
+                Symbols.Add(temp);
+                return temp;
+            }
         }
 
         ISymbol AddVariableSymbol(string name,
@@ -79,7 +86,20 @@ namespace BabyPenguin.SemanticPass
                 throw new BabyPenguinException($"Cant resolve type '{type}' for '{Name}'", sourceLocation);
             }
 
-            var symbol = new VaraibleSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
+            ISymbol? symbol;
+            if (!typeinfo.IsFunctionType)
+            {
+                symbol = new VaraibleSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
+            }
+            else
+            {
+                if (typeinfo.GenericArguments.Count == 0)
+                    throw new BabyPenguinException($"Function type '{typeinfo.FullName}' must have at least one generic arguments as return type", sourceLocation);
+
+                var basicType = typeinfo as BasicType;
+
+                symbol = new FunctionVariableSymbol(this, isLocal, name, sourceLocation, typeinfo.GenericArguments[0], typeinfo.GenericArguments.Skip(1).ToList(), scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, basicType!.IsAsyncFunction);
+            }
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -98,7 +118,7 @@ namespace BabyPenguin.SemanticPass
         {
             var name = initialRoutine.Name;
             var originName = name;
-            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false, null, null);
+            var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, BasicType.Void, [], scopeDepth, originName, false, -1, true, isClassMember, false, false, null);
             if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
             {
                 throw new BabyPenguinException($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
@@ -118,8 +138,7 @@ namespace BabyPenguin.SemanticPass
             bool isReadonly,
             bool isClassMember,
             bool isStatic,
-            bool? isAsync = null,
-            bool? isGenerator = null)
+            bool? isAsync = null)
         {
             var name = func.Name;
             var originName = name;
@@ -136,7 +155,7 @@ namespace BabyPenguin.SemanticPass
                 }
             }
 
-            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern, isAsync, isGenerator);
+            var symbol = new FunctionSymbol(this, func, isLocal, name, sourceLocation, returnType, parameters, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember, isStatic, func.IsExtern, isAsync);
             if (!isLocal)
             {
                 if (Model.Symbols.Any(s => s.FullName == symbol.FullName && !s.IsEnum))
@@ -302,7 +321,6 @@ namespace BabyPenguin.SemanticPass
                                     func.ReturnTypeInfo = retType;
                                 }
 
-                                func.IsGenerator = syntaxNode.IsGenerator;
                                 func.Parameters.Clear();
                                 int i = 0;
                                 func.IsStatic = true;

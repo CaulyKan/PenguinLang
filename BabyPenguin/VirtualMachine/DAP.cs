@@ -99,58 +99,72 @@ namespace BabyPenguin.VirtualMachine
 
         protected override LaunchResponse HandleLaunchRequest(LaunchArguments arguments)
         {
-            string fileName = arguments.ConfigurationProperties.GetValueAsString("program");
-            if (String.IsNullOrEmpty(fileName))
+            try
             {
-                throw new ProtocolException("Launch failed because launch configuration did not specify 'program'.");
-            }
+                string fileName = arguments.ConfigurationProperties.GetValueAsString("program");
+                if (String.IsNullOrEmpty(fileName))
+                {
+                    throw new ProtocolException("Launch failed because launch configuration did not specify 'program'.");
+                }
 
-            fileName = Path.GetFullPath(fileName);
-            if (!File.Exists(fileName))
+                fileName = Path.GetFullPath(fileName);
+                if (!File.Exists(fileName))
+                {
+                    throw new ProtocolException("Launch failed because 'program' files does not exist.");
+                }
+
+                var writer = new StringWriter();
+                var compiler = new SemanticCompiler(new ErrorReporter(writer));
+                compiler.AddFile(fileName);
+                var model = compiler.Compile();
+                SendDebug(writer.ToString() + "\n");
+                vm = new BabyPenguinVM(model);
+                vm.Global.EnableDebugPrint = true;
+                vm.Global.PrintFunc = SendOutput;
+                vm.Global.DebugFunc = SendDebug;
+
+                this.stopAtEntry = arguments.ConfigurationProperties.GetValueAsBool("stopAtEntry") ?? false;
+
+                return new LaunchResponse();
+            }
+            catch (Exception e)
             {
-                throw new ProtocolException("Launch failed because 'program' files does not exist.");
+                throw new ProtocolException(e.Message);
             }
-
-            var writer = new StringWriter();
-            var compiler = new SemanticCompiler(new ErrorReporter(writer));
-            compiler.AddFile(fileName);
-            var model = compiler.Compile();
-            SendDebug(writer.ToString() + "\n");
-            vm = new BabyPenguinVM(model);
-            vm.Global.EnableDebugPrint = true;
-            vm.Global.PrintFunc = SendOutput;
-            vm.Global.DebugFunc = SendDebug;
-
-            this.stopAtEntry = arguments.ConfigurationProperties.GetValueAsBool("stopAtEntry") ?? false;
-
-            return new LaunchResponse();
         }
 
         protected override ConfigurationDoneResponse HandleConfigurationDoneRequest(ConfigurationDoneArguments arguments)
         {
-            Protocol.SendEvent(
-                new ThreadEvent(
-                    reason: ThreadEvent.ReasonValue.Started,
-                    threadId: 0));
-
-            VM.Initialize();
-            runtimeControl = VM.StartFrame!.Run();
-            this.runEvent.Reset();
-
-            if (this.stopAtEntry)
+            try
             {
-                Continue(RuntimeGlobal.StepModeEnum.StepIn);
+                Protocol.SendEvent(
+                    new ThreadEvent(
+                        reason: ThreadEvent.ReasonValue.Started,
+                        threadId: 0));
+
+                VM.Initialize();
+                runtimeControl = VM.StartFrame!.Run();
+                this.runEvent.Reset();
+
+                if (this.stopAtEntry)
+                {
+                    Continue(RuntimeGlobal.StepModeEnum.StepIn);
+                }
+                else
+                {
+                    Continue(RuntimeGlobal.StepModeEnum.Run);
+                }
+
+                this.debugThread = new System.Threading.Thread(this.DebugThreadProc);
+                this.debugThread.Name = "Debug Loop Thread";
+                this.debugThread.Start();
+
+                return new ConfigurationDoneResponse();
             }
-            else
+            catch (Exception e)
             {
-                Continue(RuntimeGlobal.StepModeEnum.Run);
+                throw new ProtocolException(e.Message);
             }
-
-            this.debugThread = new System.Threading.Thread(this.DebugThreadProc);
-            this.debugThread.Name = "Debug Loop Thread";
-            this.debugThread.Start();
-
-            return new ConfigurationDoneResponse();
         }
 
         protected override DisconnectResponse HandleDisconnectRequest(DisconnectArguments arguments)
@@ -304,7 +318,5 @@ namespace BabyPenguin.VirtualMachine
         {
             return new EvaluateResponse();
         }
-
     }
-
 }

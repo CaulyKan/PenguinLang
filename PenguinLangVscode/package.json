@@ -36,7 +36,7 @@
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "X:\\repos\\penguinlang\\BabyPenguin\\bin\\Debug\\net8.0\\BabyPenguin.exe"
+          "program": "D:\\repos\\penguinlang\\BabyPenguin\\bin\\Debug\\net8.0\\BabyPenguin.exe"
         },
         "linux": {
           "program": "/home/cauly/workspace/repos/penguinlang/BabyPenguin/bin/Debug/net8.0/BabyPenguin"

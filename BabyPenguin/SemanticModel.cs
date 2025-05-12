@@ -143,6 +143,16 @@ namespace BabyPenguin
                     return ResolveType(name, predicate, scope.Parent);
             }
 
+            // check if is a function type
+            if (nameComponents.NameWithPrefix == "fun" || nameComponents.NameWithPrefix == "async_fun")
+            {
+                var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, scope: scope)).ToList();
+                if (genericArgumentsFromName.Any(a => a == null))
+                    return null;
+                var funType = nameComponents.NameWithPrefix == "async_fun" ? BasicType.AsyncFun : BasicType.Fun;
+                return funType.Specialize(genericArgumentsFromName!);
+            }
+
             // check if is a generic definition
             if (scope != null && nameComponents.Prefix.Count == 0 && nameComponents.Generics.Count == 0)
             {

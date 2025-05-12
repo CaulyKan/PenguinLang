@@ -139,7 +139,7 @@ typeSpecifierWithoutIterable:
 	| 'bool'
 	| 'char'
 	| 'Self'
-	| 'fun'
+	| (('fun' | 'async_fun') genericArguments)
 	| (
 		identifierWithDots genericArguments? (
 			'.' identifierWithDots genericArguments?
@@ -150,7 +150,12 @@ iterableType: '[]';
 
 identifierWithDots: identifier ('.' identifier)*;
 
-genericArguments: '<' typeSpecifier (',' typeSpecifier)* '>';
+genericArguments:
+	'<' typeSpecifier (',' typeSpecifier)* (
+		',' variadicGenericArguments
+	)? '>';
+
+variadicGenericArguments: '...';
 
 genericDefinitions: '<' identifier (',' identifier)* '>';
 
@@ -241,7 +246,13 @@ jumpStatement: jumpKeyword ';';
 
 jumpKeyword: 'continue' | 'break';
 
-returnStatement: 'return' expression? ';';
+returnStatement: returnKeyword expression? ';';
+
+returnKeyword:
+	'return'
+	| '__yield_not_finished_return'
+	| '__yield_finished_return'
+	| '__blocked_return';
 
 yieldStatement: 'yield' expression? ';';
 
@@ -267,9 +278,7 @@ functionSpecifier:
 	| '!pure'
 	| 'extern'
 	| 'async'
-	| '!async'
-	| 'generator'
-	| '!generator';
+	| '!async';
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (

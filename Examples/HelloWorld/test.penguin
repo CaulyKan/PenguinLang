@@ -1,7 +1,15 @@
-                initial {
-                    async test();
-                    print("2");
-                } 
-                fun test() {
-                    print("1");
+                namespace ns{
+                    initial {
+                        val v : i32[] = test1();
+                        for (var i : i32 in v) {
+                            print(i as string);
+                        }
+                    } 
+                    fun test() -> i32 {
+                        __yield_not_finished_return 1;
+                        __yield_not_finished_return 2;
+                    }
+                    fun test1() -> i32[] {
+                        return new _DefaultRoutine<i32>(test, true) as i32[];
+                    }
                 }

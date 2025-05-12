@@ -11,6 +11,21 @@ namespace BabyPenguin.VirtualMachine
         IRuntimeValue Clone();
     }
 
+    public class NotInitializedRuntimeValue : IRuntimeValue
+    {
+        public NotInitializedRuntimeValue(IType typeInfo)
+        {
+            TypeInfo = typeInfo;
+        }
+
+        public IType TypeInfo { get; }
+
+        public IRuntimeValue Clone()
+        {
+            return new NotInitializedRuntimeValue(TypeInfo);
+        }
+    }
+
     public class BasicRuntimeValue : IRuntimeValue
     {
         public BasicRuntimeValue(IType typeInfo)
@@ -178,6 +193,8 @@ namespace BabyPenguin.VirtualMachine
         {
             TypeInfo = typeInfo;
             FunctionSymbol = funcSymbol;
+            if (funcSymbol is not Symbol.FunctionSymbol)
+                throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}");
         }
 
         public IType TypeInfo { get; }

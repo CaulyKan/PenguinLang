@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Mono.Cecil;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -186,7 +187,7 @@ namespace BabyPenguin.VirtualMachine
 
         private static IEnumerable<RuntimeBreak> RoutineContextCall(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeSymbol> args)
         {
-            var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<FunctionRuntimeValue>();
+            var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<BasicRuntimeValue>();
             var frameRuntimeVar = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["frame"].As<BasicRuntimeValue>();
             RuntimeFrameResult? frameResult = null;
             if (frameRuntimeVar.ExternImplenmentationValue is RuntimeFrame f)
@@ -201,16 +202,25 @@ namespace BabyPenguin.VirtualMachine
             }
             else
             {
-                var codeContainer = (target.FunctionSymbol as FunctionSymbol)?.CodeContainer ?? throw new BabyPenguinRuntimeException($"calling non-function symbol {target}");
-                var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame);
-                frameRuntimeVar.ExternImplenmentationValue = newFrame;
-                foreach (var res in newFrame.Run())
+                if (target.ExternImplenmentationValue is FunctionRuntimeSymbol functionRuntimeSymbol)
                 {
-                    if (res.IsLeft)
-                        yield return res.Left!;
-                    else
-                        frameResult = res.Right!;
+                    var codeContainer = (functionRuntimeSymbol.FunctionValue.FunctionSymbol as FunctionSymbol)?.CodeContainer as ICodeContainer;
+                    if (codeContainer == null)
+                    {
+                        throw new BabyPenguinRuntimeException($"Cannot call non-function symbol as a routine context");
+                    }
+                    var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame);
+                    frameRuntimeVar.ExternImplenmentationValue = newFrame;
+                    foreach (var res in newFrame.Run())
+                    {
+                        if (res.IsLeft)
+                            yield return res.Left!;
+                        else
+                            frameResult = res.Right!;
+                    }
                 }
+                else
+                    throw new BabyPenguinRuntimeException($"Cannot call non-function symbol as a routine context");
             }
 
             if (frameResult!.ReturnStatus == ReturnStatus.YieldFinished || frameResult!.ReturnStatus == ReturnStatus.Finished)
@@ -243,17 +253,14 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(routineContext.FullName + ".new", (result, args) =>
                 {
-                    var targetName = args[1].As<BasicRuntimeSymbol>().BasicValue.StringValue;
-                    var targetSymbol = vm.Model.ResolveSymbol(targetName);
-
-                    if (targetSymbol is FunctionSymbol functionSymbol)
+                    var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<BasicRuntimeValue>();
+                    if (args[1] is FunctionRuntimeSymbol functionRuntimeSymbol)
                     {
-                        var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<FunctionRuntimeValue>();
-                        target.FunctionSymbol = functionSymbol;
+                        target.ExternImplenmentationValue = functionRuntimeSymbol;
                     }
                     else
                     {
-                        throw new BabyPenguinRuntimeException($"Cannot build context on non-function symbol {targetName}");
+                        throw new BabyPenguinRuntimeException($"Cannot build RoutineContext on non-function symbol");
                     }
                 });
             }
