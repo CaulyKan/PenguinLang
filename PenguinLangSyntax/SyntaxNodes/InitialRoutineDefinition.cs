@@ -40,5 +40,10 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public ISyntaxScope? ParentScope { get; set; }
         public bool IsAnonymous => false;
+
+        public override string BuildSourceText()
+        {
+            return $"initial {Name} {CodeBlock!.BuildSourceText()}";
+        }
     }
 }

@@ -57,5 +57,27 @@ namespace PenguinLangSyntax.SyntaxNodes
                 PostfixExpressionType = PostfixExpression.Type.FunctionCall
             };
         }
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            if (IsMemberAccess)
+            {
+                parts.Add(MemberAccessExpression!.BuildSourceText());
+            }
+            else
+            {
+                parts.Add(PrimaryExpression!.BuildSourceText());
+            }
+
+            parts.Add("(");
+            if (ArgumentsExpression.Count > 0)
+            {
+                parts.Add(string.Join(", ", ArgumentsExpression.Select(e => e.BuildSourceText())));
+            }
+            parts.Add(")");
+
+            return string.Join("", parts);
+        }
     }
 }

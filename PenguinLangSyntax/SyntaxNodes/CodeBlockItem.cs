@@ -3,6 +3,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
     public class CodeBlockItem : SyntaxNode
     {
+        public enum CodeBlockItemType
+        {
+            Statement,
+            Declaration,
+            TypeReference,
+        }
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
@@ -12,11 +19,19 @@ namespace PenguinLangSyntax.SyntaxNodes
                 if (context.statement() is not null)
                 {
                     Statement = Build<Statement>(walker, context.statement());
+                    Type = CodeBlockItemType.Statement;
                 }
                 else if (context.declaration() is not null)
                 {
                     Declaration = Build<Declaration>(walker, context.declaration());
+                    Type = CodeBlockItemType.Declaration;
                 }
+                else if (context.typeReferenceDeclaration() is not null)
+                {
+                    TypeReference = Build<TypeReferenceDeclaration>(walker, context.typeReferenceDeclaration());
+                    Type = CodeBlockItemType.TypeReference;
+                }
+                else throw new NotImplementedException();
             }
             else throw new NotImplementedException();
         }
@@ -29,12 +44,26 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Statement? Statement { get; private set; }
+        public Statement? Statement { get; set; }
 
         [ChildrenNode]
-        public Declaration? Declaration { get; private set; }
+        public Declaration? Declaration { get; set; }
 
-        public bool IsDeclaration => Declaration is not null;
+        [ChildrenNode]
+        public TypeReferenceDeclaration? TypeReference { get; set; }
+
+        public CodeBlockItemType Type { get; private set; }
+
+        public override string BuildSourceText()
+        {
+            return Type switch
+            {
+                CodeBlockItemType.Statement => Statement!.BuildSourceText(),
+                CodeBlockItemType.Declaration => Declaration!.BuildSourceText(),
+                CodeBlockItemType.TypeReference => TypeReference!.BuildSourceText(),
+                _ => throw new NotImplementedException($"Unsupported CodeBlockItemType: {Type}")
+            };
+        }
     }
 
 }

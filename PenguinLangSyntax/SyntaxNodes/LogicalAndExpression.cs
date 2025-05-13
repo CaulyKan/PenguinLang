@@ -40,5 +40,15 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpressions = [this],
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (SubExpressions.Count == 1)
+            {
+                return SubExpressions[0].BuildSourceText();
+            }
+
+            return string.Join(" && ", SubExpressions.Select(e => e.BuildSourceText()));
+        }
     }
 }

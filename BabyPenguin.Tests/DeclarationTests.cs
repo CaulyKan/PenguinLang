@@ -119,7 +119,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 fun test1() -> string {}
                 namespace Test {
-                fun test1() {}
+                fun test1 {}
                 }
             ");
             var model = compiler.Compile();
@@ -1075,6 +1075,60 @@ namespace BabyPenguin.Tests
             Assert.Equal("__builtin.IIterator<u8>", a!.TypeInfo.FullName);
             var b = model.ResolveSymbol("ns.b");
             Assert.Equal("__builtin.IIterator<ns.Foo>", b!.TypeInfo.FullName);
+        }
+
+        [Fact]
+        public void TypeReferenceTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo {}
+
+                    type t1 = Foo;
+                    type t2 = ns.Foo;
+
+                    fun test() {
+                        type t3 = Foo;
+                        val a : t1 = new t1();
+                        val b : t2 = new t2();
+                        val c : t3 = new t3();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var t1 = model.ResolveSymbol("ns.t1");
+            Assert.True(t1!.TypeInfo.Type == TypeEnum.TypeReference);
+            Assert.True((t1 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+            var t2 = model.ResolveSymbol("ns.t2");
+            Assert.True(t2!.TypeInfo.Type == TypeEnum.TypeReference);
+            Assert.True((t2 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+            var t3 = model.ResolveSymbol("ns.test.t3");
+            Assert.True(t3!.TypeInfo.Type == TypeEnum.TypeReference);
+            Assert.True((t3 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+        }
+
+
+        [Fact]
+        public void FunctionReferenceTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class Foo {
+                        fun foo(){}
+                    }
+                    fun test() {
+                        var f : fun<void> = Foo.foo;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+
+            var t1 = model.ResolveSymbol("ns.Foo.foo");
+            Assert.True(t1 is FunctionSymbol s);
+            Assert.Equal("ns.Foo.foo", (t1 as FunctionSymbol)!.FullName);
         }
     }
 }

@@ -45,5 +45,21 @@ namespace PenguinLangSyntax.SyntaxNodes
             }
             else throw new NotImplementedException();
         }
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add(IsReadonly ? "val" : "var");
+            parts.Add(Identifier!.BuildSourceText());
+            parts.Add(":");
+            parts.Add(TypeSpecifier!.BuildSourceText());
+            if (Initializer != null)
+            {
+                parts.Add("=");
+                parts.Add(Initializer.BuildSourceText());
+            }
+            parts.Add(";");
+            return string.Join(" ", parts);
+        }
     }
 }

@@ -64,5 +64,35 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; private set; } = [];
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add("class");
+            parts.Add(ClassIdentifier!.BuildSourceText());
+            if (GenericDefinitions != null)
+            {
+                parts.Add(GenericDefinitions.BuildSourceText());
+            }
+            parts.Add("{");
+            if (InterfaceImplementations.Count > 0)
+            {
+                parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildSourceText())));
+            }
+            if (ClassDeclarations.Count > 0)
+            {
+                parts.Add(string.Join("\n", ClassDeclarations.Select(decl => decl.BuildSourceText())));
+            }
+            if (Functions.Count > 0)
+            {
+                parts.Add(string.Join("\n", Functions.Select(func => func.BuildSourceText())));
+            }
+            if (InitialRoutines.Count > 0)
+            {
+                parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildSourceText())));
+            }
+            parts.Add("}");
+            return string.Join(" ", parts);
+        }
     }
 }

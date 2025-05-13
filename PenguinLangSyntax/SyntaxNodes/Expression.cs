@@ -32,5 +32,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         {
             throw new NotImplementedException();
         }
+
+        public override string BuildSourceText()
+        {
+            return SubExpression!.BuildSourceText();
+        }
     }
 }

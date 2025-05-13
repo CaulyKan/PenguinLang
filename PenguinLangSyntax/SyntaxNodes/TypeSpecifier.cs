@@ -27,5 +27,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         public string Name => IsIterable ? $"__builtin.IIterator<{TypeName}>" : TypeName;
 
         public bool IsIterable { get; set; } = false;
+
+        public override string BuildSourceText()
+        {
+            return IsIterable ? $"__builtin.IIterator<{TypeName}>" : TypeName;
+        }
     }
 }

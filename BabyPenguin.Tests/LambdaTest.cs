@@ -55,21 +55,21 @@ namespace BabyPenguin.Tests
             Assert.Equal("1", vm.CollectOutput());
         }
 
-        //         [Fact]
-        //         public void LambdaBasicTest()
-        //         {
-        //             var compiler = new SemanticCompiler(new ErrorReporter(this));
-        //             compiler.AddSource(@"
-        //                 initial {
-        //                     val x : fun<void> = fun { print(""hello""); };
-        //                     x();
-        //                 }
-        //             ");
-        //             var model = compiler.Compile();
-        //             var vm = new BabyPenguinVM(model);
-        //             vm.Run();
-        //             Assert.Equal("hello", vm.CollectOutput());
-        //         }
+        [Fact]
+        public void LambdaBasicTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    val x : fun<void> = fun { print(""hello""); };
+                    x();
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("hello", vm.CollectOutput());
+        }
 
         //         [Fact]
         //         public void LambdaBasicReturnTest()

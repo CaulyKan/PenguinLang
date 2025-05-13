@@ -37,13 +37,19 @@ namespace BabyPenguin.SemanticPass
 
         public void AddCodeBlockItem(CodeBlockItem item)
         {
-            if (item.IsDeclaration)
+            switch (item.Type)
             {
-                AddLocalDeclearation(item.Declaration!, null);
-            }
-            else
-            {
-                AddStatement(item.Statement!);
+                case CodeBlockItem.CodeBlockItemType.Statement:
+                    AddStatement(item.Statement!);
+                    break;
+                case CodeBlockItem.CodeBlockItemType.Declaration:
+                    AddLocalDeclearation(item.Declaration!, null);
+                    break;
+                case CodeBlockItem.CodeBlockItemType.TypeReference:
+                    // no need to emit instructions, do nothing
+                    break;
+                default:
+                    throw new NotImplementedException();
             }
         }
 
@@ -530,39 +536,100 @@ namespace BabyPenguin.SemanticPass
             throw new NotImplementedException();
         }
 
-        public void ResolveMemberAccessExpressionSymbol(MemberAccessExpression expression, out IType owner, out ISymbol member)
+        public void ResolveMemberAccessExpressionSymbol(MemberAccessExpression expression, out IType? ownerType, out ISymbol targetSymbol)
         {
-            ISymbol? member_ = null;
-            var t = ResolveExpressionType(expression.PrimaryExpression!);
-            if (t == null)
-                throw new BabyPenguinException($"Cant resolve owner type of member access expression", expression.SourceLocation);
-            var ma = expression;
-            for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
+            // global static variable
+            if (Model.ResolveSymbol(expression.Text, s => s.IsVariable || s.IsStatic, scope: this) is ISymbol symbol)
             {
-                var isLastRound = i == ma.MemberIdentifiers.Count - 1;
-                member_ = Model.ResolveSymbol(t.FullName + "." + ma.MemberIdentifiers[i].Name);
-
-                if (member_ == null && t is IVTableContainer cls)
+                targetSymbol = symbol;
+                ownerType = null;
+            }
+            else
+            {
+                ISymbol? member = null;
+                IType? t = null;
+                for (int i = -1; i < expression.MemberIdentifiers.Count; i++)
                 {
-                    // try implicit conversion to interface
-                    var candidates = cls.ImplementedInterfaces.Select(
-                        intf => Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, scope: intf)
-                    ).Where(s => s != null).ToList();
-                    if (candidates.Count > 1)
-                        throw new BabyPenguinException($"Ambiguous interface method for {ma.MemberIdentifiers[i].Name}, please explicitly specify cast to interface", expression.SourceLocation);
-                    else if (candidates.Count == 1)
-                        member_ = candidates[0];
+                    try
+                    {
+                        if (i == -1)
+                        {
+                            t = ResolveExpressionType(expression.PrimaryExpression!);
+                            break;
+                        }
+                        else
+                        {
+                            t = Model.ResolveType(string.Join(".",
+                                [expression.PrimaryExpression!.Text, .. expression.MemberIdentifiers.Select(i => i.Text).Take(i + 1)]), scope: this);
+                            if (t != null) break;
+                        }
+                    }
+                    catch (BabyPenguinException)
+                    {
+                        // ignore and try next
+                    }
                 }
 
-                if (member_ == null)
-                    throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
+                if (t == null)
+                    throw new BabyPenguinException($"Cant resolve owner type of member access expression", expression.SourceLocation);
 
-                if (isLastRound) break;
-                t = member_.TypeInfo;
+                if (t is TypeReferenceType typeReference)
+                {
+                    // find function symbol like 'Foo.foo'
+                    var type = typeReference.TypeReference;
+                    var ma = expression;
+                    for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
+                    {
+                        var isLastRound = i == ma.MemberIdentifiers.Count - 1;
+                        if (Model.ResolveType(t.FullName + "." + ma.MemberIdentifiers[i].Name) is IType newType)
+                        {
+                            type = newType;
+                        }
+                        else
+                        {
+                            var funcSymbol = Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, s => s.IsFunction, scope: type as ISemanticScope);
+                            if (funcSymbol != null && isLastRound)
+                            {
+                                ownerType = null;
+                                targetSymbol = funcSymbol;
+                                return;
+                            }
+                            else break;
+                        }
+                    }
+                    throw new BabyPenguinException($"Since '{type}' is a type, '{expression.Text} is expected to be a function'");
+                }
+                else
+                {
+                    ownerType = t;
+                    var ma = expression;
+                    for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
+                    {
+                        var isLastRound = i == ma.MemberIdentifiers.Count - 1;
+                        member = Model.ResolveSymbol(ownerType.FullName + "." + ma.MemberIdentifiers[i].Name);
+
+                        if (member == null && ownerType is IVTableContainer cls)
+                        {
+                            // try implicit conversion to interface
+                            var candidates = cls.ImplementedInterfaces.Select(
+                                intf => Model.ResolveShortSymbol(ma.MemberIdentifiers[i].Name, scope: intf)
+                            ).Where(s => s != null).ToList();
+                            if (candidates.Count > 1)
+                                throw new BabyPenguinException($"Ambiguous interface method for {ma.MemberIdentifiers[i].Name}, please explicitly specify cast to interface", expression.SourceLocation);
+                            else if (candidates.Count == 1)
+                                member = candidates[0];
+                        }
+
+                        if (member == null)
+                            throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
+
+                        if (isLastRound) break;
+                        ownerType = member.TypeInfo;
+                    }
+
+                    targetSymbol = member ?? throw new BabyPenguinException($"Cant resolve symbol {expression}'", expression.SourceLocation);
+                }
             }
-
-            member = member_ ?? throw new BabyPenguinException($"Cant resolve symbol {expression}'", expression.SourceLocation);
-            owner = t ?? throw new BabyPenguinException($"$Cant resolve owner type {expression}", expression.SourceLocation);
         }
 
         public IType ResolveExpressionType(ISyntaxExpression expression)
@@ -658,66 +725,34 @@ namespace BabyPenguin.SemanticPass
                 case FunctionCallExpression exp:
                     {
                         IType funcType;
-                        bool isInstanceCall = false;
+                        // bool isInstanceCall = false;
                         if (exp.IsMemberAccess)
                         {
-                            if (CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
-                            {
-                                var symbol = Model.ResolveSymbol(exp.MemberAccessExpression!.Text, s => s.IsStatic, scope: this);
-                                if (symbol == null)
-                                    throw new BabyPenguinException($"Cant resolve symbol '{exp.MemberAccessExpression!.Text}'", exp.SourceLocation);
-                                funcType = symbol.TypeInfo;
-                                isInstanceCall = false;
-                            }
-                            else
-                            {
-                                funcType = ResolveExpressionType(exp.MemberAccessExpression!);
-                                isInstanceCall = true;
-                            }
+                            funcType = ResolveExpressionType(exp.MemberAccessExpression!);
                         }
                         else
                         {
                             funcType = ResolveExpressionType(exp.PrimaryExpression!);
                         }
-                        if (!funcType.IsFunctionType)
-                            throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", expression.SourceLocation);
-                        var actualParamsCount = isInstanceCall ? exp.ArgumentsExpression.Count + 1 : exp.ArgumentsExpression.Count;
-                        if (funcType.GenericArguments.Count - 1 != actualParamsCount)
-                            throw new BabyPenguinException($"Function expects {funcType.GenericArguments.Count - 1} params, but got '{actualParamsCount}'", expression.SourceLocation);
-                        for (int i = 0; i < funcType.GenericArguments.Count - 1; i++)
-                        {
-                            var expectedType = funcType.GenericArguments[i + 1];
-                            IType actualType;
-                            SourceLocation sourceLocation;
-                            if (i == 0 && isInstanceCall)
-                            {
-                                ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out actualType, out _);
-                                sourceLocation = exp.SourceLocation;
-                            }
-                            else
-                            {
-                                actualType = ResolveExpressionType(exp.ArgumentsExpression[isInstanceCall ? i - 1 : i]);
-                                sourceLocation = exp.ArgumentsExpression[isInstanceCall ? i - 1 : i].SourceLocation;
-                            }
-                            if (!actualType.CanImplicitlyCastTo(expectedType))
-                                throw new BabyPenguinException($"Function expects {expectedType} param, but got '{actualType}'", sourceLocation);
-                        }
+
                         return funcType.GenericArguments.First();
                     }
                 case MemberAccessExpression exp:
                     {
-                        if (CheckMemberAccessExpressionIsStatic(exp))
-                        {
-                            var symbol = Model.ResolveSymbol(exp.Text, s => s.IsStatic, scope: this);
-                            if (symbol == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
-                            return symbol.TypeInfo;
-                        }
-                        else
-                        {
-                            ResolveMemberAccessExpressionSymbol(exp, out _, out ISymbol symbol);
-                            return symbol.TypeInfo;
-                        }
+                        // if (CheckMemberAccessExpressionIsStatic(exp))
+                        // {
+                        //     var symbol = Model.ResolveSymbol(exp.Text, s => s.IsStatic, scope: this);
+                        //     if (symbol == null)
+                        //         throw new BabyPenguinException($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
+                        //     return symbol.TypeInfo;
+                        // }
+                        // else
+                        // {
+                        //     ResolveMemberAccessExpressionSymbol(exp, out _, out ISymbol symbol);
+                        //     return symbol.TypeInfo;
+                        // }
+                        ResolveMemberAccessExpressionSymbol(exp, out _, out ISymbol symbol);
+                        return symbol.TypeInfo;
                     }
                 case PrimaryExpression exp:
                     switch (exp.PrimaryExpressionType)
@@ -725,10 +760,13 @@ namespace BabyPenguin.SemanticPass
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
                                 s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
-                            if (symbol == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
+                            if (symbol != null) return symbol.TypeInfo;
                             else
-                                return symbol.TypeInfo;
+                            {
+                                var type = Model.ResolveType(exp.Identifier.Name, scope: this);
+                                if (type != null) return new TypeReferenceType(type);
+                            }
+                            throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
                         case PrimaryExpression.Type.Constant:
                             var t = BasicType.ResolveLiteralType(exp.Literal!);
                             if (t == null)
@@ -811,7 +849,12 @@ namespace BabyPenguin.SemanticPass
             {
                 symbol = Model.ResolveSymbol(exp.Text, s => s.IsStatic || s.IsEnum, scope: this);
                 if (symbol == null)
-                    throw new BabyPenguinException($"Cant determine expression type for '{exp.Text}'", exp.SourceLocation);
+                {
+                    symbol = Model.ResolveSymbol(exp.Text, s => !s.IsStatic, scope: this);
+                    if (symbol == null)
+                        throw new BabyPenguinException($"Cant determine expression type for '{exp.Text}'", exp.SourceLocation);
+                    else return false;
+                }
                 else
                     return true;
             }
@@ -819,7 +862,37 @@ namespace BabyPenguin.SemanticPass
                 return false;
         }
 
-        public ISymbol SchedulerAddSimpleJob(ISymbol functionSymbol, SourceLocation sourceLocation, ISymbol targetSymbol)
+        public IType FunctionSymbolToCallableType(ISymbol functionSymbol, ISymbol? ownerSymbol)
+        {
+            bool isAsync = false;
+            IType? resultType;
+            if (functionSymbol is FunctionSymbol funcSymbol)
+            {
+                resultType = funcSymbol.ReturnTypeInfo;
+                isAsync = funcSymbol.IsAsync;
+            }
+            else if (functionSymbol is FunctionVariableSymbol funcVarSymbol)
+            {
+                resultType = funcVarSymbol.ReturnTypeInfo;
+                isAsync = funcVarSymbol.IsAsync;
+            }
+            else throw new BabyPenguinException($"unsupported symbol type '{functionSymbol}', expecting FunctionSymbol or FunctionVariableSymbol");
+
+            if (!isAsync)
+            {
+                return ownerSymbol == null ?
+                    Model.ResolveType($"__builtin._ThinFunction<{resultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._ThinFunction<{resultType.FullName}>' is not found.") :
+                    Model.ResolveType($"__builtin._FatFunction<{resultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._FatFunction<{resultType.FullName}>' is not found.");
+            }
+            else
+            {
+                return ownerSymbol == null ?
+                    Model.ResolveType($"__builtin._ThinAsyncFunction<{resultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._ThinAsyncFunction<{resultType.FullName}>' is not found.") :
+                    Model.ResolveType($"__builtin._FatAsyncFunction<{resultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._FatAsyncFunction<{resultType.FullName}>' is not found.");
+            }
+        }
+
+        public ISymbol SchedulerAddSimpleJob(ISymbol functionSymbol, ISymbol? ownerSymbol, SourceLocation sourceLocation, ISymbol targetSymbol)
         {
             if (targetSymbol.TypeInfo.GenericType?.FullName != "__builtin.IFuture<?>")
                 throw new BabyPenguinException($"expecting symbol '{targetSymbol.FullName}' to be of type '__builtin.IFuture<?>'", sourceLocation);
@@ -831,49 +904,44 @@ namespace BabyPenguin.SemanticPass
 
             var DefaultRoutineType = Model.ResolveType($"__builtin._DefaultRoutine<{futureResultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._DefaultRoutine<{futureResultType.FullName}>' is not found.");
             var DefaultRoutineConstructor = Model.ResolveSymbol($"__builtin._DefaultRoutine<{futureResultType.FullName}>.new") ?? throw new BabyPenguinException($"symbol '__builtin._DefaultRoutine<{futureResultType.FullName}>.new' is not found.");
+            var callableType = FunctionSymbolToCallableType(functionSymbol, ownerSymbol);
+            var callableConstructor = Model.ResolveSymbol(callableType.FullName + ".new") ?? throw new BabyPenguinException($"symbol '{callableType.FullName}.new' is not found.");
+            var icallableType = Model.ResolveType($"__builtin.ICallable<{futureResultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin.ICallable<{futureResultType.FullName}>' is not found.");
 
             var trueSymbol = AllocTempSymbol(BasicType.Bool, sourceLocation);
             var routineSymbol = AllocTempSymbol(DefaultRoutineType, sourceLocation);
+            var callableSymbol = AllocTempSymbol(callableType, sourceLocation);
+            var icallableSymbol = AllocTempSymbol(icallableType, sourceLocation);
             AddInstruction(new AssignLiteralToSymbolInstruction(sourceLocation, trueSymbol, BasicType.Bool, "true"));
+            AddInstruction(new NewInstanceInstruction(sourceLocation, callableSymbol));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, callableConstructor, ownerSymbol == null ? [callableSymbol, functionSymbol] : [callableSymbol, functionSymbol, ownerSymbol], null));
+            AddInstruction(new CastInstruction(sourceLocation, callableSymbol, icallableType, icallableSymbol));
             AddInstruction(new NewInstanceInstruction(sourceLocation, routineSymbol));
-            AddInstruction(new FunctionCallInstruction(sourceLocation, DefaultRoutineConstructor, [routineSymbol, functionSymbol, trueSymbol], null));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, DefaultRoutineConstructor, [routineSymbol, icallableSymbol, trueSymbol], null));
             AddInstruction(new CastInstruction(sourceLocation, routineSymbol, targetSymbol.TypeInfo, targetSymbol));
             return targetSymbol;
         }
 
         public ISymbol AddMemberAccessExpression(MemberAccessExpression exp, ISymbol to, out ISymbol? owner, out ISymbol? ownerBeforeImplicitConversion_)
         {
-            ISymbol owner_var;
+            IType? ownerType;
             ISymbol? ownerBeforeImplicitConversion = null;
-            if (CheckMemberAccessExpressionIsStatic(exp))
+            ISymbol symbol;
+
+            ResolveMemberAccessExpressionSymbol(exp, out ownerType, out symbol);
+
+            if (ownerType == null)
             {
+                // static access
                 owner = null;
                 ownerBeforeImplicitConversion_ = null;
-                var res = Model.ResolveSymbol(exp.Text, s => s.IsStatic, scope: this);
-                if (res == null)
-                    throw new BabyPenguinException($"Cant resolve symbol '{exp.Text}'", exp.SourceLocation);
-                AddAssignmentExpression(new(res), to, false, null, exp.SourceLocation);
-                return res;
-            }
-            else
-            {
-                if (exp.PrimaryExpression!.IsSimple)
-                {
-                    var temp = Model.ResolveShortSymbol(exp.PrimaryExpression.Text,
-                        s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
-
-                    if (temp == null)
-                        throw new BabyPenguinException($"Cant resolve symbol '{exp.PrimaryExpression.Text}'", exp.PrimaryExpression.SourceLocation);
-                    owner_var = temp;
-                }
-                else
-                {
-                    owner_var = AddExpression(exp.PrimaryExpression, false);
-                }
+                AddAssignmentExpression(new(symbol), to, false, null, exp.SourceLocation);
+                return to;
             }
 
+            var ownerSymbol = AddExpression(exp.PrimaryExpression!, false);
             var ma = exp;
-            ISymbol target = owner_var;
+            ISymbol target = ownerSymbol;
             for (int i = 0; i < ma.MemberIdentifiers.Count; i++)
             {
                 var isLastRound = i == ma.MemberIdentifiers.Count - 1;
@@ -1060,6 +1128,9 @@ namespace BabyPenguin.SemanticPass
             {
                 if (!funcType.IsFunctionType)
                     throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", sourceLocation);
+
+                if (funcType.GenericArguments.Count - 1 != paramVars.Count)
+                    throw new BabyPenguinException($"Function call expects {funcType.GenericArguments.Count - 1} parameters, but got {paramVars.Count}", sourceLocation);
 
                 return paramVars.Select((p, i) =>
                 {
@@ -1358,9 +1429,9 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (exp.IsMemberAccess)
                         {
-                            var isStatic = CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!);
                             var temp = AllocTempSymbol(ResolveExpressionType(exp.MemberAccessExpression!), expression.SourceLocation);
                             var funcVar = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out _, out ISymbol? ownerVarBeforeImplicitConversion);
+                            var isStatic = ownerVarBeforeImplicitConversion == null;
                             var paramVars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
                             paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             paramVars = convertParams(funcVar.TypeInfo, paramVars, exp.SourceLocation);
@@ -1521,7 +1592,7 @@ namespace BabyPenguin.SemanticPass
                         var funcSymbol = functionCallExpression.IsMemberAccess ? AddExpression(functionCallExpression.MemberAccessExpression!, false) : AddExpression(functionCallExpression.PrimaryExpression!, false);
                         var type = ResolveSpawnAsyncExpressionType(spawnAsyncExpression);
                         var symbol = targetSymbol ?? AllocTempSymbol(type, spawnAsyncExpression.SourceLocation);
-                        return SchedulerAddSimpleJob(funcSymbol, spawnAsyncExpression.SourceLocation, symbol);
+                        return SchedulerAddSimpleJob(funcSymbol, null, spawnAsyncExpression.SourceLocation, symbol);
                     }
                 default:
                     throw new NotImplementedException($"unsupported expression: {expression}");

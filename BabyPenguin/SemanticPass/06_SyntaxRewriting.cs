@@ -5,7 +5,7 @@ namespace BabyPenguin.SemanticPass
 {
 
 
-    public class AsyncRewritingPass(SemanticModel model, int passIndex) : ISemanticPass
+    public class SyntaxRewritingPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;
 
@@ -20,8 +20,8 @@ namespace BabyPenguin.SemanticPass
 
             if (node is ICodeContainer codeContainer)
             {
-                RewriteAsyncWait(codeContainer);
                 RewriteImplicitWait(codeContainer);
+                RewriteAsyncWait(codeContainer);
             }
 
             if (node is IFunction function1)
@@ -57,6 +57,21 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
+        public void RewriteLambdaFunction(ICodeContainer codeContainer)
+        {
+            codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
+            {
+                if (node is LambdaFunctionExpression lambdaFunctionExpression)
+                {
+                    // var typeContainer = (this as ITypeContainer) ?? ((this as ISemanticScope)?.Parent as ITypeContainer) ?? throw new NotImplementedException();
+                    // var lambdaClass = typeContainer.AddLambdaClass(lambdaFunctionExpression.Name) as IClass;
+                    // var callFunc = new Function(Model, )
+
+                }
+                return true;
+            });
+        }
+
         public void RewriteImplicitWait(ICodeContainer codeContainer)
         {
             codeContainer.CodeSyntaxNode?.TraverseChildren((node, parent) =>
@@ -66,14 +81,7 @@ namespace BabyPenguin.SemanticPass
                     ISymbol? symbol;
                     if (exp.IsMemberAccess)
                     {
-                        if (codeContainer.CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
-                        {
-                            symbol = Model.ResolveSymbol(exp.MemberAccessExpression!.Text, s => s.IsStatic, scope: codeContainer);
-                        }
-                        else
-                        {
-                            codeContainer.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
-                        }
+                        codeContainer.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
                     }
                     else
                     {
@@ -222,14 +230,7 @@ namespace BabyPenguin.SemanticPass
                         ISymbol? symbol;
                         if (exp.IsMemberAccess)
                         {
-                            if (func.CheckMemberAccessExpressionIsStatic(exp.MemberAccessExpression!))
-                            {
-                                symbol = Model.ResolveSymbol(exp.MemberAccessExpression!.Text, s => s.IsStatic, scope: func);
-                            }
-                            else
-                            {
-                                func.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
-                            }
+                            func.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
                         }
                         else
                         {
@@ -246,19 +247,32 @@ namespace BabyPenguin.SemanticPass
 
                         if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
 
-                        var callingFunc = (symbol as FunctionSymbol)?.CodeContainer as IFunction;
-                        if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+                        if (symbol is FunctionSymbol callingFuncSymbol)
+                        {
+                            var callingFunc = callingFuncSymbol.CodeContainer as IFunction;
+                            if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
 
-                        if (callingFunc.IsAsync == null)
-                        {
-                            IdentifyAsyncFunction(callingFunc);
+                            if (callingFunc.IsAsync == null)
+                            {
+                                IdentifyAsyncFunction(callingFunc);
+                            }
+                            if (callingFunc.IsAsync == true)
+                            {
+                                func.IsAsync = true;
+                                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunc.FullName}'", exp.SourceLocation);
+                                return false;
+                            }
                         }
-                        if (callingFunc.IsAsync == true)
+                        else if (symbol is FunctionVariableSymbol callingFunctionVariableSymbol)
                         {
-                            func.IsAsync = true;
-                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunc.FullName}'", exp.SourceLocation);
-                            return false;
+                            if (callingFunctionVariableSymbol.IsAsync == true)
+                            {
+                                func.IsAsync = true;
+                                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunctionVariableSymbol.FullName}'", exp.SourceLocation);
+                                return false;
+                            }
                         }
+                        else throw new NotImplementedException();
                     }
                     return true;
                 });
@@ -268,7 +282,7 @@ namespace BabyPenguin.SemanticPass
         {
             if (func.IsGenerator == true)
             {
-                if (func.Parent is not ISymbolContainer symbolContainer) throw new BabyPenguinException($"Can't find symbol container for function {func.FullName}");
+                if (func.Parent is not ITypeContainer typeContainer) throw new BabyPenguinException($"Parent is not a type container: {func.FullName}");
 
                 IType? returnType = null;
 
@@ -301,16 +315,19 @@ namespace BabyPenguin.SemanticPass
                         return true;
                     });
 
-                    var wrapperFunction = symbolContainer.AddLambdaFunction(Model, functionDefinition, func.Name, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync);
+                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlock, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync);
                     var cb = new CodeBlock();
                     cb.FromString(@$"
                             {{
-                                return new __builtin._DefaultRoutine<{returnType.FullName}>({wrapperFunction.Name}, true) as __builtin.IGenerator<{returnType.FullName}>;
+                                var owner: {lambdaClass.Name} = new {lambdaClass.Name}();
+                                var func : ICallable<{returnType.FullName}> = new _FatAsyncFunction<{returnType.FullName}>(owner.call, owner);
+                                return new __builtin._DefaultRoutine<{returnType.FullName}>(func, true) as __builtin.IGenerator<{returnType.FullName}>;
                             }}
                         ", functionDefinition.ScopeDepth + 1, Model.Reporter);
                     functionDefinition.CodeBlock = cb;
+                    Model.GetPass<SymbolElaboratePass>().ElaborateLocalSymbol(func);
 
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{wrapperFunction.FullName}`");
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{lambdaClass.Name}`");
                 }
                 else
                 {

@@ -26,5 +26,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string BuildSourceText()
+        {
+            if (TypeParameters.Count == 0)
+            {
+                return "";
+            }
+
+            return $"<{string.Join(", ", TypeParameters.Select(p => p.BuildSourceText()))}>";
+        }
     }
 }

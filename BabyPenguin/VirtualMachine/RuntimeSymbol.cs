@@ -225,7 +225,7 @@ namespace BabyPenguin.VirtualMachine
 
         private IRuntimeValue? value { get; set; }
 
-        public IRuntimeValue Value { get => value ?? new BasicRuntimeValue(BasicType.Void); set => this.value = value; }
+        public IRuntimeValue Value { get => value ?? new NotInitializedRuntimeValue(TypeInfo); set => this.value = value; }
 
         public void AssignFrom(IRuntimeSymbol other)
         {

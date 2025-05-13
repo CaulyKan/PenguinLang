@@ -25,5 +25,15 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public List<Identifier> TypeParameters { get; private set; } = [];
+
+        public override string BuildSourceText()
+        {
+            if (TypeParameters.Count == 0)
+            {
+                return "";
+            }
+
+            return $"<{string.Join(", ", TypeParameters.Select(p => p.BuildSourceText()))}>";
+        }
     }
 }

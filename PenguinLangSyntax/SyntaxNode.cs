@@ -31,6 +31,8 @@ namespace PenguinLangSyntax
             set => rewritedText = value;
         }
 
+        public abstract string BuildSourceText();
+
         public override string ToString() => $"[{GetType().Name}] {shorten(RewritedText ?? string.Empty)}";
 
         public static T Build<T>(SyntaxWalker walker, ParserRuleContext context) where T : SyntaxNode, new()

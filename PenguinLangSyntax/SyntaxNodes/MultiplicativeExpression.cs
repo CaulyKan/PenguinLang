@@ -49,5 +49,31 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpressions = [this],
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (SubExpressions.Count == 1)
+            {
+                return SubExpressions[0].BuildSourceText();
+            }
+
+            var result = new List<string>();
+            result.Add(SubExpressions[0].BuildSourceText());
+
+            for (int i = 0; i < Operators.Count; i++)
+            {
+                var op = Operators[i] switch
+                {
+                    BinaryOperatorEnum.Multiply => "*",
+                    BinaryOperatorEnum.Divide => "/",
+                    BinaryOperatorEnum.Modulo => "%",
+                    _ => throw new NotImplementedException($"Unsupported multiplicative operator: {Operators[i]}")
+                };
+                result.Add(op);
+                result.Add(SubExpressions[i + 1].BuildSourceText());
+            }
+
+            return string.Join(" ", result);
+        }
     }
 }

@@ -8,19 +8,22 @@ namespace BabyPenguin.VirtualMachine
 
     public class RuntimeFrame
     {
-        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeSymbol> parameters, RuntimeFrame? parentFrame)
+        public RuntimeFrame(ICodeContainer container, RuntimeGlobal runtimeGlobal, List<IRuntimeValue> parameters, RuntimeFrame? parentFrame)
         {
             CodeContainer = container;
             Global = runtimeGlobal;
             FrameLevel = parentFrame?.FrameLevel + 1 ?? 0;
             ParentFrame = parentFrame;
+            Model = container.Model;
             if (ParentFrame != null)
                 ParentFrame.ChildFrame = this;
             foreach (var local in container.Symbols)
             {
                 if (local.IsParameter)
                 {
-                    LocalVariables.Add(local.FullName, parameters[local.ParameterIndex]);
+                    var symbol = IRuntimeSymbol.FromSymbol(container.Model, local);
+                    symbol.AssignFrom(parameters[local.ParameterIndex]);
+                    LocalVariables.Add(local.FullName, symbol);
                 }
                 else
                 {
@@ -28,6 +31,8 @@ namespace BabyPenguin.VirtualMachine
                 }
             }
         }
+
+        public SemanticModel Model { get; }
 
         public Dictionary<string, IRuntimeSymbol> LocalVariables { get; } = [];
 
@@ -198,11 +203,11 @@ namespace BabyPenguin.VirtualMachine
                     case FunctionCallInstruction cmd:
                         {
                             IRuntimeSymbol funVar = resolveVariable(cmd.FunctionSymbol);
-                            FunctionSymbol funSymbol = funVar.As<FunctionRuntimeSymbol>().FunctionValue.FunctionSymbol as FunctionSymbol ??
+                            FunctionSymbol funSymbol = funVar.As<FunctionRuntimeSymbol>().FunctionValue?.FunctionSymbol as FunctionSymbol ??
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
                             IRuntimeSymbol? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
-                            List<IRuntimeSymbol> args = cmd.Arguments.Select(resolveVariable).ToList();
-                            DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToDebugString())), result: retVar?.Symbol.FullName);
+                            var args = cmd.Arguments.Select(resolveVariable).Select(i => i.Value).ToList();
+                            DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToString())), result: retVar?.Symbol.FullName);
                             if (!funSymbol.IsExtern)
                             {
                                 LastReturnVar = retVar;
@@ -665,6 +670,10 @@ namespace BabyPenguin.VirtualMachine
 
                             if (!members.ContainsKey(cmd.Member.Name))
                                 throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
+
+                            if (rightVar.TypeInfo.FullName != members[cmd.Member.Name].TypeInfo.FullName)
+                                throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {members[cmd.Member.Name].TypeInfo}");
+
                             members[cmd.Member.Name] = rightVar.Value;
                             DebugPrint(cmd, op1: members[cmd.Member.Name].ToString(), op2: rightVar.ToDebugString(), result: owner.ToDebugString());
                         }

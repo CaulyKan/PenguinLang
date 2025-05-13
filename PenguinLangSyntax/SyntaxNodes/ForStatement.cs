@@ -29,6 +29,10 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }
-    }
 
+        public override string BuildSourceText()
+        {
+            return $"for ({Declaration!.BuildSourceText()} in {Expression!.BuildSourceText()}) {BodyStatement!.BuildSourceText()}";
+        }
+    }
 }

@@ -72,6 +72,12 @@ namespace PenguinLangSyntax
                         break;
                     }
 
+                case SyntaxScopeType.LambdaFunction:
+                    {
+                        var _ = scope as LambdaFunctionExpression ?? throw new NotImplementedException();
+                        break;
+                    }
+
                 case SyntaxScopeType.InitialRoutine:
                     {
                         var _ = scope as InitialRoutineDefinition ?? throw new NotImplementedException();
@@ -120,6 +126,7 @@ namespace PenguinLangSyntax
         Namespace,
         Class,
         Function,
+        LambdaFunction,
         InitialRoutine,
         CodeBlock,
         Enum,

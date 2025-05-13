@@ -49,5 +49,30 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpressions = [this],
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (SubExpressions.Count == 1)
+            {
+                return SubExpressions[0].BuildSourceText();
+            }
+
+            var parts = new List<string>();
+            for (int i = 0; i < SubExpressions.Count; i++)
+            {
+                parts.Add(SubExpressions[i].BuildSourceText());
+                if (i < SubExpressions.Count - 1)
+                {
+                    parts.Add(Operator switch
+                    {
+                        BinaryOperatorEnum.Equal => "==",
+                        BinaryOperatorEnum.NotEqual => "!=",
+                        BinaryOperatorEnum.Is => "is",
+                        _ => throw new NotImplementedException("Invalid equality operator")
+                    });
+                }
+            }
+            return string.Join(" ", parts);
+        }
     }
 }

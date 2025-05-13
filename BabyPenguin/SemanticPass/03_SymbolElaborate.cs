@@ -6,39 +6,6 @@ namespace BabyPenguin.SemanticPass
 
         static ulong counter = 0;
 
-        IFunction AddLambdaFunction(SemanticModel model, SyntaxNode? syntaxNode, string nameHint, List<FunctionParameter> parameters, IType returnType, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false)
-        {
-            var name = $"__lambda_{nameHint}_{counter++}";
-            var isStatic = parameters.Count > 0 && parameters[0].Name == "this";
-            var function = new Function(model, name, parameters, returnType, sourceLocation, false, isStatic, isPure, false, returnValueIsReadonly, isAsync);
-
-            if (syntaxNode is FunctionDefinition functionDefinition)
-            {
-                function.SyntaxNode = new FunctionDefinition
-                {
-                    CodeBlock = functionDefinition.CodeBlock,
-                    FunctionIdentifier = new SymbolIdentifier { LiteralName = name },
-                    Parameters = functionDefinition.Parameters.ToList(),
-                    ReturnType = new TypeSpecifier { TypeName = returnType.FullName },
-                    ScopeDepth = scopeDepth + 1,
-                    IsAsync = isAsync,
-                    IsPure = isPure,
-                    IsExtern = false,
-                };
-            }
-
-            if (this is IRoutineContainer routineContainer)
-                routineContainer.AddFunction(function);
-            else if (this.Parent is IRoutineContainer routineContainer1)
-                routineContainer1.AddFunction(function);
-            else
-                throw new NotImplementedException();
-
-            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Add lambda function {function.FullName}");
-            model.CatchUp(function);
-            return function;
-        }
-
         ISymbol AllocTempSymbol(IType type, SourceLocation sourceLocation)
         {
             var name = $"__temp_{counter++}";
@@ -177,6 +144,17 @@ namespace BabyPenguin.SemanticPass
             Symbols.Add(symbol);
             return symbol;
         }
+
+        ISymbol AddTypeReferenceSymbol(string name, IType typeReference, bool isLocal, uint scopeDepth, SourceLocation sourceLocation)
+        {
+            var symbol = new TypeReferenceSymbol(this, isLocal, name, typeReference, sourceLocation, scopeDepth);
+            if (Model.Symbols.Any(s => s.FullName == symbol.FullName))
+            {
+                throw new BabyPenguinException($"Symbol '{symbol.FullName}' already exists", symbol.SourceLocation);
+            }
+            Symbols.Add(symbol);
+            return symbol;
+        }
     }
 
     public class SymbolElaboratePass(SemanticModel model, int passIndex) : ISemanticPass
@@ -188,6 +166,9 @@ namespace BabyPenguin.SemanticPass
         public void Process()
         {
             var symbolContainers = Model.FindAll(o => o is ISymbolContainer).ToList();
+            foreach (var obj in symbolContainers)
+                ElaborateTypeReference(obj);
+
             foreach (var obj in symbolContainers)
                 ElaborateGlobalSymbol(obj);
 
@@ -207,13 +188,46 @@ namespace BabyPenguin.SemanticPass
             if (obj.PassIndex >= PassIndex)
                 return;
 
+            ElaborateTypeReference(obj);
             ElaborateGlobalSymbol(obj);
             ElaborateLocalSymbol(obj);
 
             obj.PassIndex = PassIndex;
         }
 
-        private void ElaborateGlobalSymbol(ISemanticNode obj)
+        public void ElaborateTypeReference(ISemanticNode obj)
+        {
+            if (obj is INamespace ns && ns.SyntaxNode is NamespaceDefinition syntaxNode)
+            {
+                foreach (var typeRefDecl in syntaxNode.TypeReferenceDeclarations)
+                {
+                    var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation);
+                    var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation);
+                    var type = Model.ResolveType(typeName, scope: ns);
+                    if (type == null)
+                        throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation);
+                    ns.AddTypeReferenceSymbol(typeRefDecl.Identifier.Name, type, false, typeRefDecl.ScopeDepth, typeRefDecl.SourceLocation);
+                }
+            }
+            else if (obj is ISymbolContainer symbolContainer)
+            {
+                symbolContainer.SyntaxNode?.TraverseChildren((node, parent) =>
+                {
+                    if (node is TypeReferenceDeclaration typeRefDecl)
+                    {
+                        var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation);
+                        var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation);
+                        var type = Model.ResolveType(typeName, scope: symbolContainer);
+                        if (type == null)
+                            throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation);
+                        symbolContainer.AddTypeReferenceSymbol(typeRefDecl.Identifier.Name, type, true, typeRefDecl.ScopeDepth, typeRefDecl.SourceLocation);
+                    }
+                    return true;
+                });
+            }
+        }
+
+        public void ElaborateGlobalSymbol(ISemanticNode obj)
         {
             switch (obj)
             {
@@ -376,7 +390,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        private void ElaborateLocalSymbol(ISemanticNode obj)
+        public void ElaborateLocalSymbol(ISemanticNode obj)
         {
             if (obj is ICodeContainer container)
             {
@@ -390,7 +404,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (node is CodeBlockItem item)
                         {
-                            if (item.IsDeclaration)
+                            if (item.Type == CodeBlockItem.CodeBlockItemType.Declaration)
                             {
                                 var typeName = item.Declaration!.TypeSpecifier!.Name; // TODO: type inference
                                 container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, item.Declaration.IsReadonly, false);

@@ -46,7 +46,7 @@ namespace __builtin {
     impl __builtin.ICopy<float> for float;
     impl __builtin.ICopy<double> for double;
 
-        enum Result<T, E> {
+    enum Result<T, E> {
         ok: T;
         error: E;
     
@@ -165,6 +165,70 @@ namespace __builtin {
         extern fun size(val this: Queue<T>) -> u64;
     }
 
+    interface ICallable<TReturn> {
+        fun call(var this: ICallable<TReturn>) -> TReturn;
+    }
+
+    class _ThinFunction<TReturn> {
+        var func: fun<TReturn>;
+        fun new(var this: Self, val func: fun<TReturn>) {
+            this.func = func;
+        }
+        impl ICallable<TReturn> {
+            fun call(var this: ICallable<TReturn>) -> TReturn {
+                var self: Self = this as Self;
+                var f : fun<TReturn> = self.func;
+                return f();
+            }
+        }
+    }
+
+    class _FatFunction<TReturn> {
+        var func: fun<TReturn, ICallable<TReturn>>;
+        var owner: ICallable<TReturn>;
+        fun new(var this: Self, val func: fun<TReturn, ICallable<TReturn>>, val owner: ICallable<TReturn>) {
+            this.func = func;
+            this.owner = owner;
+        }
+        impl ICallable<TReturn> {
+            fun call(var this: ICallable<TReturn>) -> TReturn {
+                var self: Self = this as Self;
+                var f: fun<TReturn, ICallable<TReturn>> = self.func;
+                return f(self.owner);
+            }
+        }
+    }
+   
+    class _ThinAsyncFunction<TReturn> {
+        var func: async_fun<TReturn>;
+        fun new(var this: Self, val func: async_fun<TReturn>) {
+            this.func = func;
+        }
+        impl ICallable<TReturn> {
+            fun call(var this: ICallable<TReturn>) -> TReturn {
+                var self: Self = this as Self;
+                var f : async_fun<TReturn> = self.func;
+                return f();
+            }
+        }
+    }
+
+    class _FatAsyncFunction<TReturn> {
+        var func: async_fun<TReturn, ICallable<TReturn>>;
+        var owner: ICallable<TReturn>;
+        fun new(var this: Self, val func: async_fun<TReturn, ICallable<TReturn>>, val owner: ICallable<TReturn>) {
+            this.func = func;
+            this.owner = owner;
+        }
+        impl ICallable<TReturn> {
+            fun call(var this: ICallable<TReturn>) -> TReturn {
+                var self: Self = this as Self;
+                var f: async_fun<TReturn, ICallable<TReturn>> = self.func;
+                return f(self.owner);
+            }
+        }
+    }
+     
     enum RoutineState {
         pending;
         running;
@@ -270,15 +334,6 @@ namespace __builtin {
         }
     }
 
-    class RoutineContext<T> {
-        var target: i64;
-        var frame: i64;
-        var result: Option<T> = new Option<T>.none();
-
-        extern fun new(var this: Self, val symbol: fun<T>);
-        extern fun call(var this: Self) -> i64;
-    }
-
     class Scheduler {
         var pending_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
 
@@ -315,12 +370,23 @@ namespace __builtin {
         impl IIterator<T>;
     }
 
+    class RoutineContext<T> {
+        var frame: i64;
+        var result: Option<T> = new Option<T>.none();
+        var target: ICallable<T>;
+
+        fun new(var this: Self, val target: ICallable<T>) {
+            this.target = target;
+        }
+        extern fun call(var this: Self) -> i64;
+    }
+
     class _DefaultRoutine<T> {
         var state: AtomicI64 = new AtomicI64(0);
         var context: RoutineContext<T>;
 
-        fun new(var this: Self, val context_symbol: fun<T>, val scheduleNow: bool) {
-            this.context = new RoutineContext<T>(context_symbol);
+        fun new(var this: Self, val target: ICallable<T>, val scheduleNow: bool) {
+            this.context = new RoutineContext<T>(target);
             if (scheduleNow) {
                 _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
             }
@@ -342,6 +408,7 @@ namespace __builtin {
                 val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
                 if (!res) 
                     return false;
+                __signal 0;
                 val return_state : i64 = self.context.call();
 
                 // Blocked = 0, YieldNotFinished = 2, Finished = 3, YieldFinished = 4

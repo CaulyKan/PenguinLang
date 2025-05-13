@@ -26,5 +26,10 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }
+
+        public override string BuildSourceText()
+        {
+            return $"while {Condition!.BuildSourceText()} {BodyStatement!.BuildSourceText()}";
+        }
     }
 }

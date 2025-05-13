@@ -55,5 +55,25 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubUnaryExpression = this,
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (this.HasUnaryOperator)
+            {
+                var op = this.UnaryOperator! switch
+                {
+                    UnaryOperatorEnum.Ref => "&",
+                    UnaryOperatorEnum.Deref => "*",
+                    UnaryOperatorEnum.Plus => "+",
+                    (UnaryOperatorEnum?)UnaryOperatorEnum.Minus => "-",
+                    (UnaryOperatorEnum?)UnaryOperatorEnum.LogicalNot => "!",
+                    (UnaryOperatorEnum?)UnaryOperatorEnum.BitwiseNot => "~",
+                    _ => throw new System.NotImplementedException("Invalid unary operator"),
+                };
+                return $"{op}{SubExpression!.BuildSourceText()}";
+            }
+            else
+                return SubExpression!.BuildSourceText();
+        }
     }
 }

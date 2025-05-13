@@ -39,5 +39,13 @@ namespace PenguinLangSyntax.SyntaxNodes
                 PostfixExpressionType = PostfixExpression.Type.Wait
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (FunctionCallExpression == null)
+                return "wait;";
+            else
+                return $"wait {FunctionCallExpression!.BuildSourceText()}";
+        }
     }
 }

@@ -40,6 +40,18 @@ namespace PenguinLangSyntax.SyntaxNodes
         public ISyntaxScope? ParentScope { get; set; }
 
         public bool IsAnonymous => true;
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add("{");
+            if (BlockItems.Count > 0)
+            {
+                parts.Add(string.Join("\n", BlockItems.Select(item => item.BuildSourceText())));
+            }
+            parts.Add("}");
+            return string.Join("\n", parts);
+        }
     }
 
 }

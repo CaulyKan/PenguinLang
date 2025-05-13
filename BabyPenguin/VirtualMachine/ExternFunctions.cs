@@ -18,13 +18,13 @@ namespace BabyPenguin.VirtualMachine
         {
             vm.Global.RegisterExternFunction("__builtin.print", (result, args) =>
             {
-                var s = args[0].As<BasicRuntimeSymbol>().BasicValue.StringValue;
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
                 vm.Global.Print(s);
             });
 
             vm.Global.RegisterExternFunction("__builtin.println", (result, args) =>
             {
-                var s = args[0].As<BasicRuntimeSymbol>().BasicValue.StringValue;
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
                 vm.Global.Print(s, true);
             });
         }
@@ -35,7 +35,7 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(ICopy.FullName + ".copy", (result, args) =>
                 {
-                    var v = args[0].Value;
+                    var v = args[0];
                     if (v is BasicRuntimeValue)
                         result!.AssignFrom(v.Clone());
                 });
@@ -46,25 +46,25 @@ namespace BabyPenguin.VirtualMachine
         {
             vm.Global.RegisterExternFunction("__builtin.AtomicI64.swap", (result, args) =>
             {
-                var atomic = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["value"].As<BasicRuntimeValue>();
-                var other_value = args[1].As<BasicRuntimeSymbol>().BasicValue.I64Value;
+                var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
+                var other_value = args[1].As<BasicRuntimeValue>().I64Value;
                 var org = Interlocked.Exchange(ref atomic.I64Value, other_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = org;
             });
 
             vm.Global.RegisterExternFunction("__builtin.AtomicI64.compare_exchange", (result, args) =>
             {
-                var atomic = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["value"].As<BasicRuntimeValue>();
-                var current_value = args[1].As<BasicRuntimeSymbol>().BasicValue.I64Value;
-                var new_value = args[2].As<BasicRuntimeSymbol>().BasicValue.I64Value;
+                var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
+                var current_value = args[1].As<BasicRuntimeValue>().I64Value;
+                var new_value = args[2].As<BasicRuntimeValue>().I64Value;
                 var org = Interlocked.CompareExchange(ref atomic.I64Value, new_value, current_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = org;
             });
 
             vm.Global.RegisterExternFunction("__builtin.AtomicI64.fetch_add", (result, args) =>
             {
-                var atomic = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["value"].As<BasicRuntimeValue>();
-                var add_value = (Int64)args[1].As<BasicRuntimeSymbol>().BasicValue.I64Value;
+                var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
+                var add_value = (Int64)args[1].As<BasicRuntimeValue>().I64Value;
                 var res = Interlocked.Add(ref atomic.I64Value, add_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = res;
             });
@@ -76,20 +76,20 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(queue.FullName + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     impl.ExternImplenmentationValue = new Queue<IRuntimeValue>();
                 });
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".enqueue", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
-                    q!.Enqueue(args[1].Value);
+                    q!.Enqueue(args[1]);
                 });
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".dequeue", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     if (q!.Count == 0)
                     {
@@ -105,7 +105,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".peek", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     if (q!.Count == 0)
                     {
@@ -121,7 +121,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".size", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)q!.Count;
                 });
@@ -131,20 +131,20 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(list.FullName + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     impl.ExternImplenmentationValue = new List<IRuntimeValue>();
                 });
 
                 vm.Global.RegisterExternFunction(list.FullName + ".push", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
-                    l!.Add(args[1].Value);
+                    l!.Add(args[1]);
                 });
 
                 vm.Global.RegisterExternFunction(list.FullName + ".pop", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     if (l!.Count == 0)
                     {
@@ -161,8 +161,8 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(list.FullName + ".at", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
-                    var idx = args[1].As<BasicRuntimeSymbol>().BasicValue.U64Value;
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var idx = args[1].As<BasicRuntimeValue>().U64Value;
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     if ((ulong)l!.Count <= idx)
                     {
@@ -178,17 +178,17 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(list.FullName + ".size", (result, args) =>
                 {
-                    var impl = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)l!.Count;
                 });
             }
         }
 
-        private static IEnumerable<RuntimeBreak> RoutineContextCall(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeSymbol> args)
+        private static IEnumerable<RuntimeBreak> RoutineContextCall(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
         {
-            var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<BasicRuntimeValue>();
-            var frameRuntimeVar = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["frame"].As<BasicRuntimeValue>();
+            var target = args[0].As<ReferenceRuntimeValue>().Fields["target"].As<ReferenceRuntimeValue>();
+            var frameRuntimeVar = args[0].As<ReferenceRuntimeValue>().Fields["frame"].As<BasicRuntimeValue>();
             RuntimeFrameResult? frameResult = null;
             if (frameRuntimeVar.ExternImplenmentationValue is RuntimeFrame f)
             {
@@ -202,25 +202,28 @@ namespace BabyPenguin.VirtualMachine
             }
             else
             {
-                if (target.ExternImplenmentationValue is FunctionRuntimeSymbol functionRuntimeSymbol)
+                // target is a ICallable<T>
+                var func = target.Fields["func"] as FunctionRuntimeValue;
+                var funcSymbol = func?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + func.ToString());
+                List<IRuntimeValue> funcArguments = [];
+                if (target.TypeInfo.GenericType is IType t && (t.FullName == "__builtin._ThinAsyncFunction<?>" || t.FullName == "__builtin._ThinFunction<?>"))
                 {
-                    var codeContainer = (functionRuntimeSymbol.FunctionValue.FunctionSymbol as FunctionSymbol)?.CodeContainer as ICodeContainer;
-                    if (codeContainer == null)
-                    {
-                        throw new BabyPenguinRuntimeException($"Cannot call non-function symbol as a routine context");
-                    }
-                    var newFrame = new RuntimeFrame(codeContainer, frame.Global, [], frame);
-                    frameRuntimeVar.ExternImplenmentationValue = newFrame;
-                    foreach (var res in newFrame.Run())
-                    {
-                        if (res.IsLeft)
-                            yield return res.Left!;
-                        else
-                            frameResult = res.Right!;
-                    }
+                    // no arguments
                 }
-                else
-                    throw new BabyPenguinRuntimeException($"Cannot call non-function symbol as a routine context");
+                else if (target.TypeInfo.GenericType is IType t2 && (t2.FullName == "__builtin._FatAsyncFunction<?>" || t2.FullName == "__builtin._FatFunction<?>"))
+                {
+                    funcArguments.Add(target.Fields["owner"]);
+                }
+
+                var newFrame = new RuntimeFrame(funcSymbol.CodeContainer, frame.Global, funcArguments, frame);
+                frameRuntimeVar.ExternImplenmentationValue = newFrame;
+                foreach (var res in newFrame.Run())
+                {
+                    if (res.IsLeft)
+                        yield return res.Left!;
+                    else
+                        frameResult = res.Right!;
+                }
             }
 
             if (frameResult!.ReturnStatus == ReturnStatus.YieldFinished || frameResult!.ReturnStatus == ReturnStatus.Finished)
@@ -229,7 +232,7 @@ namespace BabyPenguin.VirtualMachine
                 frameRuntimeVar.ExternImplenmentationValue = null;
             }
 
-            var routineContextResult = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["result"].As<EnumRuntimeValue>();
+            var routineContextResult = args[0].As<ReferenceRuntimeValue>().Fields["result"].As<EnumRuntimeValue>();
             if (frameResult.ReturnValue != null)
             {
                 routineContextResult.ContainingValue = frameResult.ReturnValue.Value;
@@ -250,19 +253,6 @@ namespace BabyPenguin.VirtualMachine
             foreach (var routineContext in vm.Model.ResolveType("__builtin.RoutineContext<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(routineContext.FullName + ".call", RoutineContextCall);
-
-                vm.Global.RegisterExternFunction(routineContext.FullName + ".new", (result, args) =>
-                {
-                    var target = args[0].As<ClassRuntimeSymbol>().ReferenceValue.Fields["target"].As<BasicRuntimeValue>();
-                    if (args[1] is FunctionRuntimeSymbol functionRuntimeSymbol)
-                    {
-                        target.ExternImplenmentationValue = functionRuntimeSymbol;
-                    }
-                    else
-                    {
-                        throw new BabyPenguinRuntimeException($"Cannot build RoutineContext on non-function symbol");
-                    }
-                });
             }
         }
     }

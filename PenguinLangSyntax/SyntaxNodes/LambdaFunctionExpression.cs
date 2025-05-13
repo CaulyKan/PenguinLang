@@ -1,25 +1,17 @@
 namespace PenguinLangSyntax.SyntaxNodes
 {
 
-    public class FunctionDefinition : SyntaxNode, ISyntaxScope
+    public class LambdaFunctionExpression : SyntaxNode, ISyntaxScope
     {
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
 
-            if (ctx is FunctionDefinitionContext context)
+            if (ctx is LambdaFunctionExpressionContext context)
             {
-                walker.PushScope(SyntaxScopeType.Function, this);
+                walker.PushScope(SyntaxScopeType.LambdaFunction, this);
 
-                if (context.identifier() != null)
-                    FunctionIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
-                else
-                    FunctionIdentifier = new SymbolIdentifier
-                    {
-                        LiteralName = "new"
-                    };
-
-                walker.DefineSymbol(Name, "fun", this);
+                IsAsync = context.GetText().StartsWith("async_fun");
 
                 if (context.parameterList()?.children == null)
                 {
@@ -44,34 +36,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                     ReturnType = Build<TypeSpecifier>(walker, context.typeSpecifier());
                 }
 
-                IsExtern = false;
-                IsAsync = null;
-                IsPure = null;
-
-                foreach (var specifierContext in context.children.OfType<FunctionSpecifierContext>())
-                {
-                    if (specifierContext.GetText() == "extern")
-                    {
-                        IsExtern = true;
-                    }
-                    else if (specifierContext.GetText() == "pure")
-                    {
-                        IsPure = true;
-                    }
-                    else if (specifierContext.GetText() == "!pure")
-                    {
-                        IsPure = false;
-                    }
-                    else if (specifierContext.GetText() == "async")
-                    {
-                        IsAsync = true;
-                    }
-                    else if (specifierContext.GetText() == "!async")
-                    {
-                        IsAsync = false;
-                    }
-                }
-
                 if (context.codeBlock() != null)
                     CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
 
@@ -85,13 +49,10 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.functionDefinition(), reporter);
+            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.lambdaFunctionExpression(), reporter);
             var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
-
-        [ChildrenNode]
-        public Identifier? FunctionIdentifier { get; set; }
 
         [ChildrenNode]
         public List<Declaration> Parameters { get; set; } = [];
@@ -104,8 +65,6 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public CodeBlock? CodeBlock { get; set; }
 
-        public string Name => FunctionIdentifier!.Name;
-
         public SyntaxScopeType ScopeType => SyntaxScopeType.Function;
 
         public List<SyntaxSymbol> Symbols { get; set; } = [];
@@ -114,43 +73,25 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public ISyntaxScope? ParentScope { get; set; }
 
-        public bool IsAnonymous => false;
+        public bool IsAnonymous => true;
 
-        public bool IsExtern { get; set; }
+        public bool IsAsync { get; set; }
 
-        public bool? IsPure { get; set; }
-
-        public bool? IsAsync { get; set; }
+        private static uint counter = 0;
+        public string Name => $"__lambda_{counter++}";
 
         public override string BuildSourceText()
         {
             var parts = new List<string>();
-
-            if (IsExtern)
+            if (IsAsync)
             {
-                parts.Add("extern");
+                parts.Add("async_fun");
+            }
+            else
+            {
+                parts.Add("fun");
             }
 
-            if (IsPure == true)
-            {
-                parts.Add("pure");
-            }
-            else if (IsPure == false)
-            {
-                parts.Add("!pure");
-            }
-
-            if (IsAsync == true)
-            {
-                parts.Add("async");
-            }
-            else if (IsAsync == false)
-            {
-                parts.Add("!async");
-            }
-
-            parts.Add("fun");
-            parts.Add(FunctionIdentifier!.BuildSourceText());
             parts.Add("(");
             if (Parameters.Count > 0)
             {

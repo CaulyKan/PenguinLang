@@ -44,5 +44,29 @@ namespace PenguinLangSyntax.SyntaxNodes
         public Expression? RightHandSide { get; private set; }
 
         public AssignmentOperatorEnum AssignmentOperator { get; private set; }
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add(LeftHandSide!.BuildSourceText());
+            parts.Add(AssignmentOperator switch
+            {
+                AssignmentOperatorEnum.Assign => "=",
+                AssignmentOperatorEnum.AddAssign => "+=",
+                AssignmentOperatorEnum.SubtractAssign => "-=",
+                AssignmentOperatorEnum.MultiplyAssign => "*=",
+                AssignmentOperatorEnum.DivideAssign => "/=",
+                AssignmentOperatorEnum.ModuloAssign => "%=",
+                AssignmentOperatorEnum.BitwiseAndAssign => "&=",
+                AssignmentOperatorEnum.BitwiseOrAssign => "|=",
+                AssignmentOperatorEnum.BitwiseXorAssign => "^=",
+                AssignmentOperatorEnum.LeftShiftAssign => "<<=",
+                AssignmentOperatorEnum.RightShiftAssign => ">>=",
+                _ => throw new NotImplementedException($"Invalid assignment operator: {AssignmentOperator}")
+            });
+            parts.Add(RightHandSide!.BuildSourceText());
+            parts.Add(";");
+            return string.Join(" ", parts);
+        }
     }
 }

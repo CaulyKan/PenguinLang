@@ -32,11 +32,16 @@ namespace BabyPenguin
                 new SymbolElaboratePass(this, 3),
                 new ConstructorPass(this, 4),
                 new InterfaceImplementationPass(this, 5),
-                new AsyncRewritingPass(this, 6),
+                new SyntaxRewritingPass(this, 6),
                 new CodeGenerationPass(this, 7),
                 new MainFunctionGenerationPass(this, 8),
                 new CheckReturnValuePass(this, 9),
             ];
+        }
+
+        public T GetPass<T>() where T : ISemanticPass
+        {
+            return Passes.OfType<T>().First();
         }
 
         public void Traverse(Action<ISemanticScope> action)
@@ -80,6 +85,12 @@ namespace BabyPenguin
             if (ns != null)
                 return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, scopeDepth, checkImportedNamespaces);
 
+            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces);
+            if (prefixSymbol is FunctionSymbol functionSymbol)
+            {
+                var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces);
+                if (symbol != null) return symbol;
+            }
             return null;
         }
 
@@ -166,6 +177,15 @@ namespace BabyPenguin
                 }
             }
 
+            // check local type symbol
+            if (scope is ISymbolContainer symbolContainer)
+            {
+                if (symbolContainer.Symbols.FirstOrDefault(s => s is TypeReferenceSymbol t && t.Name == name && predicate_(t.TypeReference)) is TypeReferenceSymbol typeRefSymbol)
+                {
+                    return typeRefSymbol.TypeReference;
+                }
+            }
+
             // check avaiable namespaces
             var namespace_ = Namespaces.FirstOrDefault(ns => ns.Name == nameComponents.PrefixString);
             if (namespace_ == null && scope == null) return null;
@@ -188,6 +208,11 @@ namespace BabyPenguin
                 else if (ns.Interfaces.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is IType intf)
                 {
                     typeCandidate = intf;
+                    break;
+                }
+                else if (ns.Symbols.FirstOrDefault(symbol => symbol is TypeReferenceSymbol s && s.Name == nameComponents.Name && predicate_(s.TypeReference)) is TypeReferenceSymbol typeRefSymbol)
+                {
+                    typeCandidate = typeRefSymbol.TypeReference;
                     break;
                 }
             }

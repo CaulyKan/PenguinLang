@@ -51,5 +51,14 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpressions = [this],
             };
         }
+
+        public override string BuildSourceText()
+        {
+            if (!IsTypeCast)
+            {
+                return SubUnaryExpression!.BuildSourceText();
+            }
+            return $"{SubUnaryExpression!.BuildSourceText()} as {CastTypeSpecifier!.BuildSourceText()}";
+        }
     }
 }

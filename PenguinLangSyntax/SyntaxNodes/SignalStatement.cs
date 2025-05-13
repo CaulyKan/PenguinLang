@@ -23,5 +23,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             }
             else throw new NotImplementedException();
         }
+
+        public override string BuildSourceText()
+        {
+            return $"__signal {SignalExpression!.BuildSourceText()};";
+        }
     }
 }

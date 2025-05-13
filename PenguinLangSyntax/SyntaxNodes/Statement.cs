@@ -121,6 +121,25 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public SignalStatement? SignalStatement { get; set; }
+
+        public override string BuildSourceText()
+        {
+            return StatementType switch
+            {
+                Type.Empty => ";",
+                Type.SubBlock => CodeBlock!.BuildSourceText(),
+                Type.ExpressionStatement => ExpressionStatement!.BuildSourceText(),
+                Type.IfStatement => IfStatement!.BuildSourceText(),
+                Type.WhileStatement => WhileStatement!.BuildSourceText(),
+                Type.ForStatement => ForStatement!.BuildSourceText(),
+                Type.JumpStatement => JumpStatement!.BuildSourceText(),
+                Type.AssignmentStatement => AssignmentStatement!.BuildSourceText(),
+                Type.ReturnStatement => ReturnStatement!.BuildSourceText(),
+                Type.YieldStatement => YieldStatement!.BuildSourceText(),
+                Type.SignalStatement => SignalStatement!.BuildSourceText(),
+                _ => throw new NotImplementedException($"Unsupported StatementType: {StatementType}")
+            };
+        }
     }
 
 }

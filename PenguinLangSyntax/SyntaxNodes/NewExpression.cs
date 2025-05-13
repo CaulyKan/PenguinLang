@@ -45,5 +45,13 @@ namespace PenguinLangSyntax.SyntaxNodes
                 PostfixExpressionType = PostfixExpression.Type.New
             };
         }
+
+        public override string BuildSourceText()
+        {
+            var args = ArgumentsExpression.Count > 0
+                ? $"({string.Join(", ", ArgumentsExpression.Select(e => e.BuildSourceText()))})"
+                : "()";
+            return $"new {TypeSpecifier!.BuildSourceText()}{args}";
+        }
     }
 }

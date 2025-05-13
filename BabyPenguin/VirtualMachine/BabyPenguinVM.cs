@@ -50,9 +50,9 @@ namespace BabyPenguin.VirtualMachine
 
         public Dictionary<string, IRuntimeSymbol> GlobalVariables { get; } = [];
 
-        public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeSymbol>, IEnumerable<RuntimeBreak>>> ExternFunctions { get; } = [];
+        public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>> ExternFunctions { get; } = [];
 
-        public void RegisterExternFunction(string name, Action<IRuntimeSymbol?, List<IRuntimeSymbol>> func)
+        public void RegisterExternFunction(string name, Action<IRuntimeSymbol?, List<IRuntimeValue>> func)
         {
             ExternFunctions.Add(name, (frame, result, args) =>
             {
@@ -61,7 +61,7 @@ namespace BabyPenguin.VirtualMachine
             });
         }
 
-        public void RegisterExternFunction(string name, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeSymbol>, IEnumerable<RuntimeBreak>> func)
+        public void RegisterExternFunction(string name, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>> func)
         {
             ExternFunctions.Add(name, func);
         }

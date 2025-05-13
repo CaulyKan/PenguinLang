@@ -39,5 +39,10 @@ namespace PenguinLangSyntax.SyntaxNodes
                 PostfixExpressionType = PostfixExpression.Type.SpawnAsync
             };
         }
+
+        public override string BuildSourceText()
+        {
+            return $"async {Expression!.BuildSourceText()};";
+        }
     }
 }

@@ -41,5 +41,21 @@ namespace PenguinLangSyntax.SyntaxNodes
         public bool IsIdentifier => Identifier is not null;
 
         public bool IsMemberAccess => MemberAccess is not null;
+
+        public override string BuildSourceText()
+        {
+            if (IsIdentifier)
+            {
+                return Identifier!.BuildSourceText();
+            }
+            else if (IsMemberAccess)
+            {
+                return MemberAccess!.BuildSourceText();
+            }
+            else
+            {
+                throw new NotImplementedException("Neither identifier nor member access is set");
+            }
+        }
     }
 }

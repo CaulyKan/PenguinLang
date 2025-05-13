@@ -10,6 +10,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             StringLiteral,
             BoolLiteral,
             VoidLiteral,
+            LambdaFunction,
             ParenthesizedExpression,
         }
 
@@ -44,6 +45,11 @@ namespace PenguinLangSyntax.SyntaxNodes
                     Literal = context.GetText();
                     PrimaryExpressionType = Type.VoidLiteral;
                 }
+                else if (context.lambdaFunctionExpression() != null)
+                {
+                    LambdaFunction = Build<LambdaFunctionExpression>(walker, context.lambdaFunctionExpression());
+                    PrimaryExpressionType = Type.LambdaFunction;
+                }
                 else if (context.children.OfType<ExpressionContext>().Any())
                 {
                     ParenthesizedExpression = Build<Expression>(walker, context.expression());
@@ -71,6 +77,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             Type.StringLiteral => this,
             Type.BoolLiteral => this,
             Type.VoidLiteral => this,
+            Type.LambdaFunction => this,
             Type.ParenthesizedExpression => ParenthesizedExpression!.GetEffectiveExpression(),
             _ => throw new NotImplementedException(),
         };
@@ -84,6 +91,9 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public Expression? ParenthesizedExpression { get; set; }
+
+        [ChildrenNode]
+        public LambdaFunctionExpression LambdaFunction { get; set; }
 
         public bool IsSimple => PrimaryExpressionType switch
         {
@@ -105,6 +115,21 @@ namespace PenguinLangSyntax.SyntaxNodes
                 ScopeDepth = this.ScopeDepth,
                 SubPrimaryExpression = this,
                 PostfixExpressionType = PostfixExpression.Type.PrimaryExpression
+            };
+        }
+
+        public override string BuildSourceText()
+        {
+            return PrimaryExpressionType switch
+            {
+                Type.Identifier => Identifier!.BuildSourceText(),
+                Type.Constant => Literal!,
+                Type.StringLiteral => Literal!,
+                Type.BoolLiteral => Literal!,
+                Type.VoidLiteral => Literal!,
+                Type.LambdaFunction => LambdaFunction.BuildSourceText(),
+                Type.ParenthesizedExpression => $"({ParenthesizedExpression!.BuildSourceText()})",
+                _ => throw new NotImplementedException($"Unsupported PrimaryExpressionType: {PrimaryExpressionType}")
             };
         }
     }

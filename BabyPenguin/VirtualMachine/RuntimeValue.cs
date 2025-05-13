@@ -205,6 +205,11 @@ namespace BabyPenguin.VirtualMachine
         {
             return new FunctionRuntimeValue(TypeInfo, FunctionSymbol);
         }
+
+        public override string? ToString()
+        {
+            return FunctionSymbol.ToString();
+        }
     }
 
     public class ReferenceRuntimeValue : IRuntimeValue

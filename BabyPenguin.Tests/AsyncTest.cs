@@ -217,12 +217,18 @@ namespace BabyPenguin.Tests
                             print(i as string);
                         }
                     } 
-                    fun test() -> i32 {
-                        __yield_not_finished_return 1;
-                        __yield_not_finished_return 2;
+                    class _lambda {
+                        impl ICallable<i32> {
+                            fun call(var this: ICallable<i32>) -> i32 {
+                                __yield_not_finished_return 1;
+                                __yield_not_finished_return 2;
+                            }
+                        }
                     }
                     fun test1() -> i32[] {
-                        return new _DefaultRoutine<i32>(test, true) as i32[];
+                        var owner: _lambda = new _lambda();
+                        var func : ICallable<i32> = new _FatAsyncFunction<i32>(owner.call, owner);
+                        return new _DefaultRoutine<i32>(func, true) as i32[];
                     }
                 }
             ");

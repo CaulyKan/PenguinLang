@@ -35,16 +35,31 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Identifier? Identifier { get; private set; }
+        public Identifier? Identifier { get; set; }
 
         [ChildrenNode]
-        public TypeSpecifier? TypeSpecifier { get; private set; }
+        public TypeSpecifier? TypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public Expression? InitializeExpression { get; private set; }
+        public Expression? InitializeExpression { get; set; }
 
         public bool IsReadonly;
 
         public string Name => Identifier!.Name;
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add(IsReadonly ? "val" : "var");
+            parts.Add(Identifier!.BuildSourceText());
+            parts.Add(":");
+            parts.Add(TypeSpecifier!.BuildSourceText());
+            if (InitializeExpression != null)
+            {
+                parts.Add("=");
+                parts.Add(InitializeExpression.BuildSourceText());
+            }
+            return string.Join(" ", parts);
+        }
     }
 }

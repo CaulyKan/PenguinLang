@@ -115,5 +115,19 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpression = this,
             };
         }
+
+        public override string BuildSourceText()
+        {
+            return PostfixExpressionType switch
+            {
+                Type.PrimaryExpression => SubPrimaryExpression!.BuildSourceText(),
+                Type.FunctionCall => SubFunctionCallExpression!.BuildSourceText(),
+                Type.MemberAccess => SubMemberAccessExpression!.BuildSourceText(),
+                Type.New => SubNewExpression!.BuildSourceText(),
+                Type.Wait => SubWaitExpression!.BuildSourceText(),
+                Type.SpawnAsync => SubSpawnAsyncExpression!.BuildSourceText(),
+                _ => throw new NotImplementedException($"Unsupported PostfixExpressionType: {PostfixExpressionType}")
+            };
+        }
     }
 }

@@ -106,6 +106,19 @@ namespace BabyPenguin.SemanticPass
                         var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: cls)!;
                         var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor)!;
                         var temp = constructorBody.AddExpression(initializer, true);
+                        if (temp.TypeInfo.FullName != memberSymbol.TypeInfo.FullName)
+                        {
+                            if (!temp.TypeInfo.CanImplicitlyCastTo(memberSymbol.TypeInfo))
+                            {
+                                throw new BabyPenguinException($"Cannot assign type '{temp.TypeInfo.FullName}' to type '{memberSymbol.TypeInfo.FullName}'", varDecl.SourceLocation);
+                            }
+                            else
+                            {
+                                var castedTemp = constructorBody.AllocTempSymbol(memberSymbol.TypeInfo, varDecl.SourceLocation);
+                                constructorBody.AddCastExpression(new(temp), castedTemp, varDecl.SourceLocation);
+                                temp = castedTemp;
+                            }
+                        }
                         constructorBody.AddInstruction(new WriteMemberInstruction(varDecl.SourceLocation, memberSymbol, temp, thisSymbol));
                     }
                 }

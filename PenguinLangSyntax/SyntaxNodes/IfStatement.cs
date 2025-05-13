@@ -44,6 +44,21 @@ namespace PenguinLangSyntax.SyntaxNodes
         public Statement? ElseStatement { get; private set; }
 
         public bool HasElse => ElseStatement is not null;
-    }
 
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add("if");
+            parts.Add("(" + Condition!.BuildSourceText() + ")");
+            parts.Add(MainStatement!.BuildSourceText());
+
+            if (HasElse)
+            {
+                parts.Add("else");
+                parts.Add(ElseStatement!.BuildSourceText());
+            }
+
+            return string.Join(" ", parts);
+        }
+    }
 }

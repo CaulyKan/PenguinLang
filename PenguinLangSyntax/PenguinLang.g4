@@ -6,6 +6,7 @@ primaryExpression:
 	| boolLiteral
 	| voidLiteral
 	| identifierWithGeneric
+	| lambdaFunctionExpression
 	| '(' expression ')';
 
 identifierWithGeneric: identifier genericArguments?;
@@ -115,6 +116,8 @@ declaration:
 		':' typeSpecifier
 	)? ('=' expression)?;
 
+typeReferenceDeclaration: 'type' identifier '=' typeSpecifier;
+
 declarationKeyword: 'var' | 'val';
 
 typeQualifier: 'const';
@@ -211,7 +214,10 @@ nestedParenthesesBlock: (
 
 codeBlock: '{' codeBlockItem* '}';
 
-codeBlockItem: statement | (declaration ';');
+codeBlockItem:
+	statement
+	| (declaration ';')
+	| (typeReferenceDeclaration ';');
 
 statement:
 	codeBlock
@@ -262,6 +268,7 @@ compilationUnit: namespaceDeclaration* EOF;
 
 namespaceDeclaration:
 	declaration
+	| typeReferenceDeclaration
 	| namespaceDefinition
 	| initialRoutine
 	| functionDefinition
@@ -280,10 +287,18 @@ functionSpecifier:
 	| 'async'
 	| '!async';
 
-functionDefinition:
-	functionSpecifier* 'fun' (identifier | 'new') '(' parameterList ')' (
+lambdaFunctionExpression:
+	('fun' | 'async_fun') ('(' parameterList ')')? (
 		'->' declarationKeyword? typeSpecifier
-	)? (codeBlock | ';');
+	)? codeBlock;
+
+functionDefinition:
+	functionSpecifier* 'fun' (identifier | 'new') (
+		'(' parameterList ')'
+	)? ('->' declarationKeyword? typeSpecifier)? (
+		codeBlock
+		| ';'
+	);
 
 initialRoutine: 'initial' identifier? codeBlock;
 

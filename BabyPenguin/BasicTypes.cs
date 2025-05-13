@@ -293,4 +293,41 @@ namespace BabyPenguin.SemanticNode
 
         override public string ToString() => FullName;
     }
+
+    public class TypeReferenceType(IType literalType) : IType
+    {
+        public IType TypeReference { get; set; } = literalType;
+
+        public INamespace? Namespace => throw new NotImplementedException();
+
+        public TypeEnum Type => TypeEnum.TypeReference;
+
+        public List<string> GenericDefinitions => [];
+
+        public List<IType> GenericArguments { get; set; } = [];
+
+        public List<IType> GenericInstances => [];
+
+        public IType? GenericType { get; set; } = null;
+
+        public string Name => TypeReference.Name;
+
+        string ISemanticNode.FullName => TypeReference.FullName;
+
+        public SemanticModel Model => throw new NotImplementedException();
+
+        public SourceLocation SourceLocation => throw new NotImplementedException();
+
+        public SyntaxNode? SyntaxNode => null;
+
+        public int PassIndex { get; set; }
+
+        public bool CanImplicitlyCastTo(IType other) => false;
+
+        public IType Specialize(List<IType> genericArguments)
+        {
+            throw new NotImplementedException();
+        }
+
+    }
 }

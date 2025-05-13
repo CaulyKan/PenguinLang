@@ -53,5 +53,30 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public WhereDefinition? WhereDefinition { get; set; }
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add("impl");
+            parts.Add(InterfaceType!.BuildSourceText());
+            parts.Add("for");
+            parts.Add(ForType!.BuildSourceText());
+
+            if (WhereDefinition != null)
+            {
+                parts.Add(WhereDefinition.BuildSourceText());
+            }
+
+            parts.Add("{");
+
+            foreach (var function in Functions)
+            {
+                parts.Add(function.BuildSourceText());
+            }
+
+            parts.Add("}");
+
+            return string.Join(" ", parts);
+        }
     }
 }

@@ -92,4 +92,23 @@ namespace BabyPenguin.SemanticNode
 
         public override string ToString() => (this as ISemanticScope).FullName;
     }
+
+    public class LambdaFunction : Function
+    {
+        public LambdaFunction(SemanticModel model, FunctionDefinition syntaxNode, ICodeContainer parentCodeContainer, SyntaxNode parentSyntaxNode) : base(model, syntaxNode)
+        {
+            this.LambdaParentCodeContainer = parentCodeContainer;
+            this.LambdaParentSyntaxNode = parentSyntaxNode;
+        }
+
+        public LambdaFunction(SemanticModel model, ICodeContainer parentCodeContainer, SyntaxNode parentSyntaxNode, string name, List<FunctionParameter>? parameters = null, IType? returnType = null, SourceLocation? sourceLocation = null, bool isExtern = false, bool isStatic = false, bool isPure = false, bool isDeclarationOnly = false, bool returnValueIsReadonly = false, bool? isAsync = false) : base(model, name, parameters, returnType, sourceLocation, isExtern, isStatic, isPure, isDeclarationOnly, returnValueIsReadonly, isAsync)
+        {
+            this.LambdaParentCodeContainer = parentCodeContainer;
+            this.LambdaParentSyntaxNode = parentSyntaxNode;
+        }
+
+        public ICodeContainer LambdaParentCodeContainer { get; private set; }
+
+        public SyntaxNode? LambdaParentSyntaxNode { get; private set; }
+    }
 }

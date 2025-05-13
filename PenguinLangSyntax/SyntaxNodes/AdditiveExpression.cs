@@ -48,5 +48,10 @@ namespace PenguinLangSyntax.SyntaxNodes
                 SubExpressions = [this],
             };
         }
+
+        public override string BuildSourceText()
+        {
+            return string.Join("+", SubExpressions.Select(x => x.BuildSourceText()));
+        }
     }
 }

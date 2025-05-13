@@ -34,6 +34,20 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            parts.Add(PrimaryExpression!.BuildSourceText());
+
+            foreach (var member in MemberIdentifiers)
+            {
+                parts.Add(".");
+                parts.Add(member.BuildSourceText());
+            }
+
+            return string.Join("", parts);
+        }
+
         public abstract bool IsWrite { get; }
 
         public ISyntaxExpression CreateWrapperExpression()

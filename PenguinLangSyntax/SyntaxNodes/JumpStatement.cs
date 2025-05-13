@@ -39,6 +39,16 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         public Type JumpType { get; private set; }
+
+        public override string BuildSourceText()
+        {
+            return JumpType switch
+            {
+                Type.Break => "break;",
+                Type.Continue => "continue;",
+                _ => throw new NotImplementedException($"Unsupported JumpType: {JumpType}")
+            };
+        }
     }
 
 }

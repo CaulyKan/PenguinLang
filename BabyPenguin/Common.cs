@@ -133,5 +133,6 @@ namespace BabyPenguin
         Class,
         Enum,
         Interface,
+        TypeReference,
     }
 }

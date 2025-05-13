@@ -1,4 +1,3 @@
-
 namespace PenguinLangSyntax.SyntaxNodes
 {
     public class NamespaceDefinition : SyntaxNode, ISyntaxScope
@@ -69,6 +68,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             InterfaceImplementations.AddRange(
                  namespaceDeclarationContext.children.OfType<InterfaceForImplementationContext>()
                     .Select(x => Build<InterfaceForImplementation>(walker, x)));
+
+            TypeReferenceDeclarations.AddRange(
+                 namespaceDeclarationContext.children.OfType<TypeReferenceDeclarationContext>()
+                    .Select(x => Build<TypeReferenceDeclaration>(walker, x)));
         }
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
@@ -79,42 +82,45 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public List<InitialRoutineDefinition> InitialRoutines { get; private set; } = [];
+        public List<InitialRoutineDefinition> InitialRoutines { get; set; } = [];
 
         [ChildrenNode]
-        public List<Declaration> Declarations { get; private set; } = [];
+        public List<Declaration> Declarations { get; set; } = [];
 
         [ChildrenNode]
-        public List<NamespaceDefinition> SubNamespaces { get; private set; } = [];
+        public List<TypeReferenceDeclaration> TypeReferenceDeclarations { get; set; } = [];
 
         [ChildrenNode]
-        public List<FunctionDefinition> Functions { get; private set; } = [];
+        public List<NamespaceDefinition> SubNamespaces { get; set; } = [];
 
         [ChildrenNode]
-        public List<ClassDefinition> Classes { get; private set; } = [];
+        public List<FunctionDefinition> Functions { get; set; } = [];
 
         [ChildrenNode]
-        public List<EnumDefinition> Enums { get; private set; } = [];
+        public List<ClassDefinition> Classes { get; set; } = [];
 
         [ChildrenNode]
-        public List<InterfaceDefinition> Interfaces { get; private set; } = [];
+        public List<EnumDefinition> Enums { get; set; } = [];
 
         [ChildrenNode]
-        public List<InterfaceForImplementation> InterfaceImplementations { get; private set; } = [];
+        public List<InterfaceDefinition> Interfaces { get; set; } = [];
+
+        [ChildrenNode]
+        public List<InterfaceForImplementation> InterfaceImplementations { get; set; } = [];
 
         public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0;
 
-        public string Name { get; private set; } = "";
+        public string Name { get; set; } = "";
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Namespace;
 
-        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+        public List<SyntaxSymbol> Symbols { get; set; } = [];
 
-        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+        public Dictionary<string, ISyntaxScope> SubScopes { get; set; } = [];
 
         public ISyntaxScope? ParentScope { get; set; }
 
-        public bool IsAnonymous { get; private set; }
+        public bool IsAnonymous { get; set; }
 
         public string Fullname
         {
@@ -129,6 +135,69 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 return result;
             }
+        }
+
+        public override string BuildSourceText()
+        {
+            var parts = new List<string>();
+            if (!IsAnonymous)
+            {
+                parts.Add("namespace");
+                parts.Add(Name);
+                parts.Add("{");
+            }
+
+            foreach (var subNamespace in SubNamespaces)
+            {
+                parts.Add(subNamespace.BuildSourceText());
+            }
+
+            foreach (var declaration in Declarations)
+            {
+                parts.Add(declaration.BuildSourceText());
+            }
+
+            foreach (var typeRef in TypeReferenceDeclarations)
+            {
+                parts.Add(typeRef.BuildSourceText());
+            }
+
+            foreach (var function in Functions)
+            {
+                parts.Add(function.BuildSourceText());
+            }
+
+            foreach (var classDef in Classes)
+            {
+                parts.Add(classDef.BuildSourceText());
+            }
+
+            foreach (var enumDef in Enums)
+            {
+                parts.Add(enumDef.BuildSourceText());
+            }
+
+            foreach (var interfaceDef in Interfaces)
+            {
+                parts.Add(interfaceDef.BuildSourceText());
+            }
+
+            foreach (var interfaceImpl in InterfaceImplementations)
+            {
+                parts.Add(interfaceImpl.BuildSourceText());
+            }
+
+            foreach (var initialRoutine in InitialRoutines)
+            {
+                parts.Add(initialRoutine.BuildSourceText());
+            }
+
+            if (!IsAnonymous)
+            {
+                parts.Add("}");
+            }
+
+            return string.Join("\n", parts);
         }
     }
 }

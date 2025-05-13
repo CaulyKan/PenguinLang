@@ -285,12 +285,85 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void CallableTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Foo {
+                    val x: i64 = 1;
+                    impl ICallable<i64> {
+                        fun call(var this: ICallable<i64>) -> i64 {
+                            return (this as Self).x;
+                        }
+                    }
+                }
+                initial {
+                    var foo : Foo = new Foo();
+                    val x : i64 = foo.call();
+                    print(x as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"1", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void FunctionAsCallableTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                fun foo -> i64 {
+                    return 1;
+                }
+                initial {
+                    var bar : ICallable<i64> = new _ThinFunction<i64>(foo);
+                    val x : i64 = bar.call();
+                    print(x as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"1", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void FatFunctionAsCallableTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Foo {
+                    var x: i64 = 1;
+                    impl ICallable<i64> {
+                        fun call(val this : ICallable<i64>) -> i64 {
+                            return (this as Foo).x;
+                        }
+                    }
+                }
+                initial {
+                    var f : Foo = new Foo();
+                    f.x = 2;
+                    var bar : ICallable<i64> = new _FatFunction<i64>(f.call, f);
+                    val x : i64 = bar.call();
+                    print(x as string);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"2", vm.CollectOutput());
+        }
+
+        [Fact]
         public void TestDefaultRoutine()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
+                    var callable : ICallable<void> = new _ThinFunction<void>(__builtin.hello_world);
+                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(callable, false);
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     

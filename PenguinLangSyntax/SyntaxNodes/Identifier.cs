@@ -34,6 +34,11 @@ namespace PenguinLangSyntax.SyntaxNodes
         public string LiteralName { get; set; } = "";
 
         public string Name => LiteralName;
+
+        public override string BuildSourceText()
+        {
+            return LiteralName;
+        }
     }
 
     public class TypeIdentifier : Identifier

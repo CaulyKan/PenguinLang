@@ -113,6 +113,7 @@ namespace BabyPenguin.Symbol
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters).ToList();
             var typeInfo = BasicType.Fun.Specialize(funTypeGenericArguments);
+            (typeInfo as BasicType)!.IsAsyncFunction = isAsync;
             if (typeInfo == null)
                 throw new NotImplementedException();
             TypeInfo = typeInfo;

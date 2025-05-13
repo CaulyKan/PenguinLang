@@ -118,6 +118,38 @@ namespace BabyPenguin.SemanticPass
             intf.Parent = this;
         }
 
+        static ulong counter = 0;
+        public IClass AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false)
+        {
+            if (parameters.Count > 0) throw new NotImplementedException();
+
+            var name = $"__lambda_{nameHint}_{counter++}";
+            var text = syntaxNode?.BuildSourceText();
+            var source = @$"
+                class {name} {{
+                    fun new(var this: {name}) {{
+
+                    }}
+                    impl __builtin.ICallable<{returnType.FullName}> {{
+                        fun call(var this: ICallable<{returnType.FullName}>) -> {returnType.FullName} {{
+                            {text}
+                        }}
+                    }}
+                }}
+            ";
+
+            var classDefinition = new ClassDefinition();
+            classDefinition.FromString(source, (this.SyntaxNode?.ScopeDepth ?? 0) + 1, Reporter);
+            var cls = new Class(Model, classDefinition);
+
+            AddClass(cls);
+
+            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Adding lambda class/function {cls.Name}");
+            Model.CatchUp(cls);
+
+            return cls;
+        }
+
         List<Class> Classes { get; }
 
         List<SemanticNode.Enum> Enums { get; }

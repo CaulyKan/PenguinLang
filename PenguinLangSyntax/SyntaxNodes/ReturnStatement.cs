@@ -40,6 +40,24 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         public ReturnTypeEnum ReturnType { get; set; } = ReturnTypeEnum.Normal;
-    }
 
+        public override string BuildSourceText()
+        {
+            var keyword = ReturnType switch
+            {
+                ReturnTypeEnum.Normal => "return",
+                ReturnTypeEnum.YieldNotFinished => "__yield_not_finished_return",
+                ReturnTypeEnum.YieldFinished => "__yield_finished_return",
+                ReturnTypeEnum.Blocked => "__blocked_return",
+                _ => throw new NotImplementedException($"Unsupported ReturnType: {ReturnType}")
+            };
+
+            if (ReturnExpression == null)
+            {
+                return keyword + ";";
+            }
+
+            return $"{keyword} {ReturnExpression.BuildSourceText()};";
+        }
+    }
 }
