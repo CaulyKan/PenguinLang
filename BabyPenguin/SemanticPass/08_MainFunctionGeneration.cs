@@ -41,7 +41,7 @@ namespace BabyPenguin.SemanticPass
             {
                 var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
                 var targetSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(ifutureVoidType, schedulerEntrySymbol.SourceLocation.StartLocation);
-                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine.FunctionSymbol!, null, schedulerEntrySymbol.SourceLocation.StartLocation, targetSymbol);
+                (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine.FunctionSymbol!, schedulerEntrySymbol.SourceLocation.StartLocation, targetSymbol);
             }
 
             // call __builtin._main_scheduler.entry()

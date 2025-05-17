@@ -189,10 +189,11 @@ namespace BabyPenguin.VirtualMachine
 
     public class FunctionRuntimeValue : IRuntimeValue
     {
-        public FunctionRuntimeValue(IType typeInfo, ISymbol funcSymbol)
+        public FunctionRuntimeValue(IType typeInfo, ISymbol funcSymbol, IRuntimeValue? owner = null)
         {
             TypeInfo = typeInfo;
             FunctionSymbol = funcSymbol;
+            Owner = owner ?? new NotInitializedRuntimeValue(BasicType.Void);
             if (funcSymbol is not Symbol.FunctionSymbol)
                 throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}");
         }
@@ -201,14 +202,16 @@ namespace BabyPenguin.VirtualMachine
 
         public ISymbol FunctionSymbol { get; set; }
 
+        public IRuntimeValue Owner { get; set; }
+
         public IRuntimeValue Clone()
         {
-            return new FunctionRuntimeValue(TypeInfo, FunctionSymbol);
+            return new FunctionRuntimeValue(TypeInfo, FunctionSymbol, Owner);
         }
 
         public override string? ToString()
         {
-            return FunctionSymbol.ToString();
+            return FunctionSymbol.Name;
         }
     }
 

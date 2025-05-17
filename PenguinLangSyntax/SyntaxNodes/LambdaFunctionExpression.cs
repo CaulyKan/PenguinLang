@@ -1,7 +1,7 @@
 namespace PenguinLangSyntax.SyntaxNodes
 {
 
-    public class LambdaFunctionExpression : SyntaxNode, ISyntaxScope
+    public class LambdaFunctionExpression : SyntaxNode, ISyntaxScope, ISyntaxExpression
     {
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
@@ -49,8 +49,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.lambdaFunctionExpression(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.lambdaFunctionExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 
@@ -78,7 +78,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         public bool IsAsync { get; set; }
 
         private static uint counter = 0;
+
         public string Name => $"__lambda_{counter++}";
+
+        public bool IsSimple => false;
 
         public override string BuildSourceText()
         {
@@ -117,5 +120,19 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             return string.Join(" ", parts);
         }
+
+        public ISyntaxExpression CreateWrapperExpression()
+        {
+            return new PrimaryExpression
+            {
+                Text = this.Text,
+                SourceLocation = this.SourceLocation,
+                ScopeDepth = this.ScopeDepth,
+                PrimaryExpressionType = PrimaryExpression.Type.LambdaFunction,
+                LambdaFunction = this
+            };
+        }
+
+        public ISyntaxExpression GetEffectiveExpression() => this;
     }
 }

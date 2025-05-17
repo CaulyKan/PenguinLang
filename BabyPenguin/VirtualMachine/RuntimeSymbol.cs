@@ -129,7 +129,7 @@ namespace BabyPenguin.VirtualMachine
 
         public ISymbol Symbol { get; }
 
-        public FunctionRuntimeValue? FunctionValue { get; private set; }
+        public FunctionRuntimeValue? FunctionValue { get; set; }
 
         public IRuntimeValue Value => (FunctionValue as IRuntimeValue) ?? new NotInitializedRuntimeValue(TypeInfo);
 

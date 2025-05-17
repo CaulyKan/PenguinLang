@@ -113,12 +113,13 @@ namespace BabyPenguin.VirtualMachine
         override public string StringResult => LeftHandSymbol.ToString() ?? "";
     }
 
-    public class ReadMemberInstruction(SourceLocation sourceLocation, ISymbol member, ISymbol memberOwnerSymbol, ISymbol target) : BabyPenguinIR
+    public class ReadMemberInstruction(SourceLocation sourceLocation, ISymbol member, ISymbol memberOwnerSymbol, ISymbol target, bool isFatPointer) : BabyPenguinIR
     {
 
         public ISymbol Member { get; } = member;
         public ISymbol MemberOwnerSymbol { get; } = memberOwnerSymbol;
         public ISymbol Target { get; } = target;
+        public bool IsFatPointer { get; } = isFatPointer;
         public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "RDMBR";
         override public string StringOP1 => Member.ToString() ?? "";

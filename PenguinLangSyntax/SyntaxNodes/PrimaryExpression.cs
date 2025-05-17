@@ -65,8 +65,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.primaryExpression(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.primaryExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 
@@ -93,7 +93,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public Expression? ParenthesizedExpression { get; set; }
 
         [ChildrenNode]
-        public LambdaFunctionExpression LambdaFunction { get; set; }
+        public LambdaFunctionExpression? LambdaFunction { get; set; }
 
         public bool IsSimple => PrimaryExpressionType switch
         {

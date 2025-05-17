@@ -202,11 +202,16 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case FunctionCallInstruction cmd:
                         {
+                            IRuntimeSymbol? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
                             IRuntimeSymbol funVar = resolveVariable(cmd.FunctionSymbol);
                             FunctionSymbol funSymbol = funVar.As<FunctionRuntimeSymbol>().FunctionValue?.FunctionSymbol as FunctionSymbol ??
                                 throw new BabyPenguinRuntimeException("The symbol is not a function: " + cmd.FunctionSymbol.FullName);
-                            IRuntimeSymbol? retVar = cmd.Target == null ? null : resolveVariable(cmd.Target);
+                            IRuntimeValue? funOwner = funVar.As<FunctionRuntimeSymbol>().FunctionValue?.Owner;
+                            if (funOwner is NotInitializedRuntimeValue) funOwner = null;
+
                             var args = cmd.Arguments.Select(resolveVariable).Select(i => i.Value).ToList();
+                            if (funOwner != null) args.Insert(0, funOwner);
+
                             DebugPrint(cmd, op1: funSymbol.FullName, op2: string.Join(", ", args.Select(arg => arg.ToString())), result: retVar?.Symbol.FullName);
                             if (!funSymbol.IsExtern)
                             {
@@ -624,7 +629,15 @@ namespace BabyPenguin.VirtualMachine
                                 if (owner.As<InterfaceRuntimeSymbol>().VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
                                 {
                                     var funVar = IRuntimeSymbol.FromSymbol(owner.Model, vtableSlot.ImplementationSymbol);
-                                    resultVar.AssignFrom(funVar);
+                                    if (cmd.IsFatPointer)
+                                    {
+                                        (resultVar as FunctionRuntimeSymbol)!.FunctionValue = (funVar.Value as FunctionRuntimeValue)!;
+                                        (resultVar as FunctionRuntimeSymbol)!.FunctionValue!.Owner = owner.Value;
+                                    }
+                                    else
+                                    {
+                                        resultVar.AssignFrom(funVar);
+                                    }
                                     DebugPrint(cmd, op1: funVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                                 }
                                 else throw new BabyPenguinRuntimeException($"Interface {owner.TypeInfo} does not have member {cmd.Member.Name}");
@@ -651,6 +664,14 @@ namespace BabyPenguin.VirtualMachine
                                     throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from type {owner.TypeInfo}");
                                 }
                                 resultVar.AssignFrom(memberVar);
+                                if (cmd.IsFatPointer)
+                                {
+                                    if (resultVar.Value is FunctionRuntimeValue functionRuntimeValue)
+                                    {
+                                        functionRuntimeValue.Owner = owner.Value;
+                                    }
+                                    else throw new NotImplementedException();
+                                }
                                 DebugPrint(cmd, op1: memberVar.ToString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                             }
                         }

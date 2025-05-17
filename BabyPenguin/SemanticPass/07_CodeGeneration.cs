@@ -131,7 +131,7 @@ namespace BabyPenguin.SemanticPass
                                     else
                                     {
                                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                                        AddInstruction(new ReadMemberInstruction(item.AssignmentStatement.LeftHandSide.SourceLocation, member, target, temp));
+                                        AddInstruction(new ReadMemberInstruction(item.AssignmentStatement.LeftHandSide.SourceLocation, member, target, temp, member.IsFunction && !member.IsStatic));
                                         target = temp;
                                     }
                                 }
@@ -290,7 +290,7 @@ namespace BabyPenguin.SemanticPass
                         if (nextMethodSymbol == null)
                             throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName}'", forStatement.SourceLocation);
                         var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression!.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol));
+                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol, false));
 
                         // .next result should be an Option
                         var nextResult = AllocTempSymbol(nextMethodSymbol.ReturnTypeInfo, forStatement.Expression.SourceLocation);
@@ -302,7 +302,7 @@ namespace BabyPenguin.SemanticPass
                         // compare Option value is none
                         var tempRightVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
                         var tempLeftVar = AllocTempSymbol(BasicType.I32, forStatement.Expression.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, optionValueSymbol, nextResult, tempLeftVar));
+                        AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, optionValueSymbol, nextResult, tempLeftVar, false));
                         var noneEnumValue = (nextResult.TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Name == "none")?.Value;
                         if (noneEnumValue == null)
                             throw new BabyPenguinException($"Can't resolve 'none' enum value of type '{nextResult.TypeInfo.FullName}'", forStatement.Expression.SourceLocation);
@@ -623,7 +623,11 @@ namespace BabyPenguin.SemanticPass
                         if (member == null)
                             throw new BabyPenguinException($"Cant resolve symbol '{ma.MemberIdentifiers[i].Name}'", ma.MemberIdentifiers[i].SourceLocation);
 
-                        if (isLastRound) break;
+                        if (isLastRound)
+                        {
+
+                            break;
+                        }
                         ownerType = member.TypeInfo;
                     }
 
@@ -752,7 +756,13 @@ namespace BabyPenguin.SemanticPass
                         //     return symbol.TypeInfo;
                         // }
                         ResolveMemberAccessExpressionSymbol(exp, out _, out ISymbol symbol);
-                        return symbol.TypeInfo;
+                        if (symbol is FunctionSymbol fs && !fs.IsStatic)
+                        {
+                            // pack fat pointer, remove first argument
+                            return (fs.IsAsync ? BasicType.AsyncFun : BasicType.Fun).Specialize([.. symbol.TypeInfo.GenericArguments.Take(1), .. symbol.TypeInfo.GenericArguments.Skip(2)]);
+                        }
+                        else
+                            return symbol.TypeInfo;
                     }
                 case PrimaryExpression exp:
                     switch (exp.PrimaryExpressionType)
@@ -781,6 +791,8 @@ namespace BabyPenguin.SemanticPass
                             return BasicType.Void;
                         case PrimaryExpression.Type.ParenthesizedExpression:
                             return ResolveExpressionType(exp.ParenthesizedExpression!);
+                        case PrimaryExpression.Type.LambdaFunction:
+                            return ResolveExpressionType(exp.LambdaFunction!);
                     }
                     break;
                 case NewExpression exp:
@@ -815,6 +827,13 @@ namespace BabyPenguin.SemanticPass
                 case SpawnAsyncExpression exp:
                     {
                         return ResolveSpawnAsyncExpressionType(exp);
+                    }
+                case LambdaFunctionExpression exp:
+                    {
+                        var returnType = Model.ResolveType(exp.ReturnType!.Name, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{exp.ReturnType.Name}'", exp.ReturnType.SourceLocation);
+                        var parameters = exp.Parameters.Select(p => Model.ResolveType(p.Text, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{p.Text}'", p.SourceLocation)).ToList();
+                        var funType = (exp.IsAsync ? BasicType.AsyncFun : BasicType.Fun).Specialize([returnType, .. parameters]);
+                        return funType;
                     }
                 default:
                     break;
@@ -892,7 +911,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public ISymbol SchedulerAddSimpleJob(ISymbol functionSymbol, ISymbol? ownerSymbol, SourceLocation sourceLocation, ISymbol targetSymbol)
+        public ISymbol SchedulerAddSimpleJob(ISymbol functionSymbol, SourceLocation sourceLocation, ISymbol targetSymbol)
         {
             if (targetSymbol.TypeInfo.GenericType?.FullName != "__builtin.IFuture<?>")
                 throw new BabyPenguinException($"expecting symbol '{targetSymbol.FullName}' to be of type '__builtin.IFuture<?>'", sourceLocation);
@@ -904,20 +923,12 @@ namespace BabyPenguin.SemanticPass
 
             var DefaultRoutineType = Model.ResolveType($"__builtin._DefaultRoutine<{futureResultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin._DefaultRoutine<{futureResultType.FullName}>' is not found.");
             var DefaultRoutineConstructor = Model.ResolveSymbol($"__builtin._DefaultRoutine<{futureResultType.FullName}>.new") ?? throw new BabyPenguinException($"symbol '__builtin._DefaultRoutine<{futureResultType.FullName}>.new' is not found.");
-            var callableType = FunctionSymbolToCallableType(functionSymbol, ownerSymbol);
-            var callableConstructor = Model.ResolveSymbol(callableType.FullName + ".new") ?? throw new BabyPenguinException($"symbol '{callableType.FullName}.new' is not found.");
-            var icallableType = Model.ResolveType($"__builtin.ICallable<{futureResultType.FullName}>") ?? throw new BabyPenguinException($"type '__builtin.ICallable<{futureResultType.FullName}>' is not found.");
 
             var trueSymbol = AllocTempSymbol(BasicType.Bool, sourceLocation);
             var routineSymbol = AllocTempSymbol(DefaultRoutineType, sourceLocation);
-            var callableSymbol = AllocTempSymbol(callableType, sourceLocation);
-            var icallableSymbol = AllocTempSymbol(icallableType, sourceLocation);
             AddInstruction(new AssignLiteralToSymbolInstruction(sourceLocation, trueSymbol, BasicType.Bool, "true"));
-            AddInstruction(new NewInstanceInstruction(sourceLocation, callableSymbol));
-            AddInstruction(new FunctionCallInstruction(sourceLocation, callableConstructor, ownerSymbol == null ? [callableSymbol, functionSymbol] : [callableSymbol, functionSymbol, ownerSymbol], null));
-            AddInstruction(new CastInstruction(sourceLocation, callableSymbol, icallableType, icallableSymbol));
             AddInstruction(new NewInstanceInstruction(sourceLocation, routineSymbol));
-            AddInstruction(new FunctionCallInstruction(sourceLocation, DefaultRoutineConstructor, [routineSymbol, icallableSymbol, trueSymbol], null));
+            AddInstruction(new FunctionCallInstruction(sourceLocation, DefaultRoutineConstructor, [routineSymbol, functionSymbol, trueSymbol], null));
             AddInstruction(new CastInstruction(sourceLocation, routineSymbol, targetSymbol.TypeInfo, targetSymbol));
             return targetSymbol;
         }
@@ -969,7 +980,7 @@ namespace BabyPenguin.SemanticPass
                     if (target.TypeInfo.IsEnumType && !member.IsFunction)
                         AddInstruction(new ReadEnumInstruction(exp.SourceLocation, target, to));
                     else
-                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, to));
+                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, to, member.IsFunction && !member.IsStatic));
                 }
                 else
                 {
@@ -982,7 +993,7 @@ namespace BabyPenguin.SemanticPass
                     else
                     {
                         var temp = AllocTempSymbol(member!.TypeInfo, member.SourceLocation);
-                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, temp));
+                        AddInstruction(new ReadMemberInstruction(exp.SourceLocation, member, target, temp, member.IsFunction && !member.IsStatic));
                         target = temp;
                     }
                 }
@@ -1278,7 +1289,7 @@ namespace BabyPenguin.SemanticPass
                             var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName + "._value");
                             if (enumValueSymbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName}._value'", exp.SourceLocation);
-                            AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar));
+                            AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar, false));
                             AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempRightVar, BasicType.I32, rightVar.Value.ToString()));
                             AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
                         }
@@ -1431,9 +1442,9 @@ namespace BabyPenguin.SemanticPass
                         {
                             var temp = AllocTempSymbol(ResolveExpressionType(exp.MemberAccessExpression!), expression.SourceLocation);
                             var funcVar = AddMemberAccessExpression(exp.MemberAccessExpression!, temp, out _, out ISymbol? ownerVarBeforeImplicitConversion);
-                            var isStatic = ownerVarBeforeImplicitConversion == null;
-                            var paramVars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
-                            paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
+                            // var isStatic = ownerVarBeforeImplicitConversion == null;
+                            // var paramVars = isStatic ? [] : new List<ISymbol> { ownerVarBeforeImplicitConversion! };
+                            var paramVars = exp.ArgumentsExpression.Select(e => AddExpression(e, false)).ToList();
                             paramVars = convertParams(funcVar.TypeInfo, paramVars, exp.SourceLocation);
                             AddInstruction(new FunctionCallInstruction(exp.SourceLocation, funcVar, paramVars, to));
                         }
@@ -1590,9 +1601,11 @@ namespace BabyPenguin.SemanticPass
                         if (functionCallExpression == null)
                             throw new BabyPenguinException($"expecting spawn expression to be a function call", exp.SourceLocation);
                         var funcSymbol = functionCallExpression.IsMemberAccess ? AddExpression(functionCallExpression.MemberAccessExpression!, false) : AddExpression(functionCallExpression.PrimaryExpression!, false);
+                        if (funcSymbol.TypeInfo.GenericArguments.Count > 1)
+                            throw new NotImplementedException("should be rewrited to lambda expression with no arguments");
                         var type = ResolveSpawnAsyncExpressionType(spawnAsyncExpression);
                         var symbol = targetSymbol ?? AllocTempSymbol(type, spawnAsyncExpression.SourceLocation);
-                        return SchedulerAddSimpleJob(funcSymbol, null, spawnAsyncExpression.SourceLocation, symbol);
+                        return SchedulerAddSimpleJob(funcSymbol, spawnAsyncExpression.SourceLocation, symbol);
                     }
                 default:
                     throw new NotImplementedException($"unsupported expression: {expression}");

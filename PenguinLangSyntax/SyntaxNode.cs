@@ -7,7 +7,6 @@ global using Antlr4.Runtime;
 global using Antlr4.Runtime.Misc;
 global using static PenguinLangSyntax.PenguinLangParser;
 global using PenguinLangSyntax.SyntaxNodes;
-using System.Buffers.Text;
 
 namespace PenguinLangSyntax
 {
@@ -57,7 +56,7 @@ namespace PenguinLangSyntax
         public virtual void Build(SyntaxWalker walker, ParserRuleContext context)
         {
             Text = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
-            var fileNameIdentifier = Path.GetFileNameWithoutExtension(walker.FileName) + (walker.FileName.GetHashCode() % 0xFF);
+            var fileNameIdentifier = $"{Path.GetFileNameWithoutExtension(walker.FileName)}_{((uint)walker.FileName.GetHashCode()) % 0xFFFF}";
             SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
             ScopeDepth = walker.CurrentScope?.ScopeDepth ?? walker.InitialScopeDepth;
         }

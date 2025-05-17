@@ -1,10 +1,4 @@
                 initial {
-                    for (var i : i32 in test()) {
-                        print(i as string);
-                    } 
-                } 
-                fun test() -> IGenerator<i32> {
-                    yield 1;
-                    wait;
-                    yield 2;
+                    val x : fun<void> = fun { print("hello"); };
+                    x();
                 }

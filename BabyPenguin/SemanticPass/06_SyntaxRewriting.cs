@@ -1,4 +1,3 @@
-
 using System.Security.Cryptography;
 
 namespace BabyPenguin.SemanticPass
@@ -20,6 +19,7 @@ namespace BabyPenguin.SemanticPass
 
             if (node is ICodeContainer codeContainer)
             {
+                RewriteLambdaFunction(codeContainer);
                 RewriteImplicitWait(codeContainer);
                 RewriteAsyncWait(codeContainer);
             }
@@ -38,22 +38,40 @@ namespace BabyPenguin.SemanticPass
                 IdentifyAsyncFunction(func);
             }
 
-            var funcs = Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>().ToList();
-            foreach (var func in funcs)
+            var codeContainers = Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>().ToList();
+            foreach (var codeContainer in codeContainers)
             {
-                if (func is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                if (codeContainer is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Async rewriting pass for '{func.FullName}' is skipped now because it is inside a generic type");
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Async rewriting pass for '{codeContainer.FullName}' is skipped now because it is inside a generic type");
                 }
                 else
                 {
-                    RewriteImplicitWait(func);
-                    RewriteAsyncWait(func);
-                    if (func is IFunction f)
+                    RewriteLambdaFunction(codeContainer);
+                    RewriteImplicitWait(codeContainer);
+                    RewriteAsyncWait(codeContainer);
+                    if (codeContainer is IFunction f)
                     {
                         RewriteGenerator(f);
                     }
                 }
+            }
+        }
+
+        public class ClosureSymbolEqualityComparer : IEqualityComparer<ISymbol>
+        {
+            public bool Equals(ISymbol? x, ISymbol? y)
+            {
+                if (x == null && y == null)
+                    return true;
+                if (x == null || y == null)
+                    return false;
+                return x.Name == y.Name;
+            }
+
+            public int GetHashCode(ISymbol obj)
+            {
+                return obj.Name.GetHashCode();
             }
         }
 
@@ -63,10 +81,74 @@ namespace BabyPenguin.SemanticPass
             {
                 if (node is LambdaFunctionExpression lambdaFunctionExpression)
                 {
-                    // var typeContainer = (this as ITypeContainer) ?? ((this as ISemanticScope)?.Parent as ITypeContainer) ?? throw new NotImplementedException();
-                    // var lambdaClass = typeContainer.AddLambdaClass(lambdaFunctionExpression.Name) as IClass;
-                    // var callFunc = new Function(Model, )
+                    ITypeContainer typeContainer = codeContainer.Parent as ITypeContainer ?? codeContainer.Parent?.Parent as ITypeContainer ??
+                        throw new BabyPenguinException($"Parent is not a type container for lambda function", lambdaFunctionExpression.SourceLocation);
 
+                    // Convert parameters to FunctionParameter list
+                    var parameters = lambdaFunctionExpression.Parameters.Select((p, i) => new FunctionParameter(
+                        p.Name,
+                        Model.ResolveType(p.TypeSpecifier!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve parameter type '{p.TypeSpecifier.Name}'", p.SourceLocation),
+                        p.IsReadonly,
+                        i
+                    )).ToList();
+
+                    // Resolve return type
+                    var returnType = Model.ResolveType(lambdaFunctionExpression.ReturnType!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve return type '{lambdaFunctionExpression.ReturnType.Name}'", lambdaFunctionExpression.ReturnType.SourceLocation);
+
+                    var closureSymbols = new List<ISymbol>();
+                    // Collect non-local symbols from the code block
+                    lambdaFunctionExpression.CodeBlock?.TraverseChildren((node, parent) =>
+                    {
+                        if (node is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                        {
+                            // First try to resolve in the lambda's scope
+                            var localSymbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
+                                 s => s.IsLocal, scopeDepth: primaryExp.ScopeDepth, scope: codeContainer);
+
+                            if (localSymbol != null && localSymbol.ScopeDepth < lambdaFunctionExpression.CodeBlock.ScopeDepth)
+                            {
+                                closureSymbols.Add(localSymbol);
+                            }
+                        }
+                        return true;
+                    });
+                    // remove duplicates
+                    closureSymbols = closureSymbols.Distinct(new ClosureSymbolEqualityComparer()).ToList();
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Found closure symbol: {string.Join(", ", closureSymbols.Select(i => i.Name))}");
+
+                    // Create the lambda class
+                    var lambdaClass = typeContainer.AddLambdaClass(
+                        codeContainer.Name,
+                        lambdaFunctionExpression.CodeBlock,
+                        parameters,
+                        returnType,
+                        closureSymbols,
+                        lambdaFunctionExpression.SourceLocation,
+                        lambdaFunctionExpression.ScopeDepth,
+                        false, // isStatic
+                        lambdaFunctionExpression.ReturnValueIsReadonly ?? false,
+                        lambdaFunctionExpression.IsAsync
+                    );
+
+                    // Create new expression to instantiate the lambda class
+                    var newExp = new ReadMemberAccessExpression();
+                    var newArguments = string.Join(", ", closureSymbols.Select(i => i.Name));
+                    newExp.FromString($"(new {lambdaClass.FullName}({newArguments})).call", lambdaFunctionExpression.ScopeDepth, Model.Reporter);
+
+                    // Replace the lambda function expression with the new expression
+                    if (parent is PrimaryExpression expr)
+                    {
+                        expr.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
+                        expr.ParenthesizedExpression = (newExp as ISyntaxExpression).CreateWrapperExpression<Expression>();
+                    }
+                    else
+                    {
+                        throw new BabyPenguinException($"Unexpected parent type for lambda function expression: {parent.GetType().Name}", lambdaFunctionExpression.SourceLocation);
+                    }
+
+                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrote lambda function to class `{lambdaClass.FullName}`");
+                    AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildSourceText()));
+                    AddRewritedSource(lambdaClass.FullName, Tools.FormatPenguinLangSource(lambdaClass.SyntaxNode!.BuildSourceText()));
                 }
                 return true;
             });
@@ -127,6 +209,9 @@ namespace BabyPenguin.SemanticPass
                                 e.FunctionCallExpression = exp;
                             });
                             postfixExp.SubFunctionCallExpression = null;
+
+                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrote implicit wait for `{codeContainer.FullName}`");
+                            AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildSourceText()));
                         }
                         else throw new NotImplementedException();
                     }
@@ -158,14 +243,14 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (node is WaitExpression waitExp && waitExp.FunctionCallExpression != null)
                     {
-                        RewriteAsyncWait(parent, waitExp);
+                        RewriteAsyncWait(codeContainer, parent, waitExp);
                     }
                     return true;
                 });
             }
         }
 
-        private void RewriteAsyncWait(SyntaxNode parent, FunctionCallExpression functionCallExpression)
+        private void RewriteAsyncWait(ICodeContainer codecontainer, SyntaxNode parent, FunctionCallExpression functionCallExpression)
         {
             var waitFunctionName = "do_wait";
 
@@ -202,12 +287,13 @@ namespace BabyPenguin.SemanticPass
             else throw new NotImplementedException();
 
             Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{functionCallExpression}' to '{waitFunctionCallExp}'", functionCallExpression.SourceLocation);
+            AddRewritedSource(codecontainer.FullName, Tools.FormatPenguinLangSource(codecontainer.SyntaxNode!.BuildSourceText()));
         }
 
-        private void RewriteAsyncWait(SyntaxNode parent, WaitExpression waitExp)
+        private void RewriteAsyncWait(ICodeContainer codecontainer, SyntaxNode parent, WaitExpression waitExp)
         {
             if (waitExp.FunctionCallExpression != null)
-                RewriteAsyncWait(parent, waitExp.FunctionCallExpression);
+                RewriteAsyncWait(codecontainer, parent, waitExp.FunctionCallExpression);
             else
                 throw new BabyPenguinException($"Can't rewrite empty wait expression: '{waitExp.RewritedText}'", waitExp.SourceLocation);
         }
@@ -315,19 +401,19 @@ namespace BabyPenguin.SemanticPass
                         return true;
                     });
 
-                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlock, func.Parameters, returnType, func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync);
+                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlock, func.Parameters, returnType, [], func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, false, func.IsAsync);
                     var cb = new CodeBlock();
                     cb.FromString(@$"
                             {{
                                 var owner: {lambdaClass.Name} = new {lambdaClass.Name}();
-                                var func : ICallable<{returnType.FullName}> = new _FatAsyncFunction<{returnType.FullName}>(owner.call, owner);
-                                return new __builtin._DefaultRoutine<{returnType.FullName}>(func, true) as __builtin.IGenerator<{returnType.FullName}>;
+                                return new __builtin._DefaultRoutine<{returnType.FullName}>(owner.call, true) as __builtin.IGenerator<{returnType.FullName}>;
                             }}
                         ", functionDefinition.ScopeDepth + 1, Model.Reporter);
                     functionDefinition.CodeBlock = cb;
                     Model.GetPass<SymbolElaboratePass>().ElaborateLocalSymbol(func);
 
                     Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{lambdaClass.Name}`");
+                    AddRewritedSource(func.FullName, Tools.FormatPenguinLangSource(func.SyntaxNode.BuildSourceText()));
                 }
                 else
                 {
@@ -336,16 +422,32 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
+        public Dictionary<string, string> RewritedSource { get; } = [];
+        private void AddRewritedSource(string fullName, string source)
+        {
+            RewritedSource.Remove(fullName);
+            RewritedSource.Add(fullName, source);
+        }
+
         public string Report
         {
             get
             {
+                var sb = new StringBuilder();
                 var table = new ConsoleTable("Function", "IsAsync");
                 foreach (var func in Model.FindAll(i => i is IFunction).Cast<IFunction>())
                 {
                     table.AddRow(func.FullName, func.IsAsync);
                 }
-                return table.ToMarkDownString();
+                sb.AppendLine(table.ToMarkDownString());
+
+                foreach (var kvp in RewritedSource)
+                {
+                    sb.AppendLine($"Rewrited source for {kvp.Key}:");
+                    sb.AppendLine(kvp.Value);
+                    sb.AppendLine();
+                }
+                return sb.ToString();
             }
         }
     }

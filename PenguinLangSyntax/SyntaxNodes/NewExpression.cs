@@ -19,16 +19,16 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.newExpression(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.newExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 
         [ChildrenNode]
-        public TypeSpecifier? TypeSpecifier { get; private set; }
+        public TypeSpecifier? TypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public List<Expression> ArgumentsExpression { get; private set; } = [];
+        public List<Expression> ArgumentsExpression { get; set; } = [];
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 

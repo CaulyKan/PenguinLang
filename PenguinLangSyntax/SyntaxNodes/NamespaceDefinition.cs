@@ -22,7 +22,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             }
             else if (parserContext is CompilationUnitContext context2)
             {
-                Name = "_global@" + SourceLocation.FileNameIdentifier;
+                Name = "_ns_" + SourceLocation.FileNameIdentifier;
                 IsAnonymous = true;
 
                 walker.PushScope(SyntaxScopeType.Namespace, this);
@@ -76,8 +76,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.namespaceDefinition(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.namespaceDefinition(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 

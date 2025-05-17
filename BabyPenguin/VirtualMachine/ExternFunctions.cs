@@ -187,7 +187,7 @@ namespace BabyPenguin.VirtualMachine
 
         private static IEnumerable<RuntimeBreak> RoutineContextCall(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
         {
-            var target = args[0].As<ReferenceRuntimeValue>().Fields["target"].As<ReferenceRuntimeValue>();
+            var target = args[0].As<ReferenceRuntimeValue>().Fields["target"].As<FunctionRuntimeValue>() ?? throw new NotImplementedException();
             var frameRuntimeVar = args[0].As<ReferenceRuntimeValue>().Fields["frame"].As<BasicRuntimeValue>();
             RuntimeFrameResult? frameResult = null;
             if (frameRuntimeVar.ExternImplenmentationValue is RuntimeFrame f)
@@ -202,17 +202,16 @@ namespace BabyPenguin.VirtualMachine
             }
             else
             {
-                // target is a ICallable<T>
-                var func = target.Fields["func"] as FunctionRuntimeValue;
-                var funcSymbol = func?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + func.ToString());
+                // target is a async_fun<T>
+                var funcSymbol = target?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + target!.ToString());
                 List<IRuntimeValue> funcArguments = [];
-                if (target.TypeInfo.GenericType is IType t && (t.FullName == "__builtin._ThinAsyncFunction<?>" || t.FullName == "__builtin._ThinFunction<?>"))
+                if (target.TypeInfo.GenericArguments.Count > 1 && target.Owner is not NotInitializedRuntimeValue)
+                {
+                    funcArguments.Add(target.Owner);
+                }
+                else if (target.TypeInfo.GenericArguments.Count == 1 && target.Owner is NotInitializedRuntimeValue)
                 {
                     // no arguments
-                }
-                else if (target.TypeInfo.GenericType is IType t2 && (t2.FullName == "__builtin._FatAsyncFunction<?>" || t2.FullName == "__builtin._FatFunction<?>"))
-                {
-                    funcArguments.Add(target.Fields["owner"]);
                 }
 
                 var newFrame = new RuntimeFrame(funcSymbol.CodeContainer, frame.Global, funcArguments, frame);

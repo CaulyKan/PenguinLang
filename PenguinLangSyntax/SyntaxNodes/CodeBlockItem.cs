@@ -38,8 +38,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.codeBlockItem(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.codeBlockItem(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 
@@ -59,8 +59,8 @@ namespace PenguinLangSyntax.SyntaxNodes
             return Type switch
             {
                 CodeBlockItemType.Statement => Statement!.BuildSourceText(),
-                CodeBlockItemType.Declaration => Declaration!.BuildSourceText(),
-                CodeBlockItemType.TypeReference => TypeReference!.BuildSourceText(),
+                CodeBlockItemType.Declaration => Declaration!.BuildSourceText() + ";",
+                CodeBlockItemType.TypeReference => TypeReference!.BuildSourceText() + ";",
                 _ => throw new NotImplementedException($"Unsupported CodeBlockItemType: {Type}")
             };
         }

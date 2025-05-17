@@ -27,16 +27,16 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "<annoymous>", p => p.identifierOrMemberAccess(), reporter);
-            var walker = new SyntaxWalker("<annoymous>", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.identifierOrMemberAccess(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
 
         [ChildrenNode]
-        public Identifier? Identifier { get; private set; }
+        public Identifier? Identifier { get; set; }
 
         [ChildrenNode]
-        public MemberAccessExpression? MemberAccess { get; private set; }
+        public MemberAccessExpression? MemberAccess { get; set; }
 
         public bool IsIdentifier => Identifier is not null;
 

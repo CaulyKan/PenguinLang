@@ -5,6 +5,13 @@ namespace __builtin {
         println("hello world!");
     }
 
+    class Box<T> {
+        var value: T;
+        fun new(var this: Box<T>, var value: T) {
+            this.value = value;
+        }
+    }
+
     enum Option<T> {
         some: T;
         none;
@@ -165,70 +172,6 @@ namespace __builtin {
         extern fun size(val this: Queue<T>) -> u64;
     }
 
-    interface ICallable<TReturn> {
-        fun call(var this: ICallable<TReturn>) -> TReturn;
-    }
-
-    class _ThinFunction<TReturn> {
-        var func: fun<TReturn>;
-        fun new(var this: Self, val func: fun<TReturn>) {
-            this.func = func;
-        }
-        impl ICallable<TReturn> {
-            fun call(var this: ICallable<TReturn>) -> TReturn {
-                var self: Self = this as Self;
-                var f : fun<TReturn> = self.func;
-                return f();
-            }
-        }
-    }
-
-    class _FatFunction<TReturn> {
-        var func: fun<TReturn, ICallable<TReturn>>;
-        var owner: ICallable<TReturn>;
-        fun new(var this: Self, val func: fun<TReturn, ICallable<TReturn>>, val owner: ICallable<TReturn>) {
-            this.func = func;
-            this.owner = owner;
-        }
-        impl ICallable<TReturn> {
-            fun call(var this: ICallable<TReturn>) -> TReturn {
-                var self: Self = this as Self;
-                var f: fun<TReturn, ICallable<TReturn>> = self.func;
-                return f(self.owner);
-            }
-        }
-    }
-   
-    class _ThinAsyncFunction<TReturn> {
-        var func: async_fun<TReturn>;
-        fun new(var this: Self, val func: async_fun<TReturn>) {
-            this.func = func;
-        }
-        impl ICallable<TReturn> {
-            fun call(var this: ICallable<TReturn>) -> TReturn {
-                var self: Self = this as Self;
-                var f : async_fun<TReturn> = self.func;
-                return f();
-            }
-        }
-    }
-
-    class _FatAsyncFunction<TReturn> {
-        var func: async_fun<TReturn, ICallable<TReturn>>;
-        var owner: ICallable<TReturn>;
-        fun new(var this: Self, val func: async_fun<TReturn, ICallable<TReturn>>, val owner: ICallable<TReturn>) {
-            this.func = func;
-            this.owner = owner;
-        }
-        impl ICallable<TReturn> {
-            fun call(var this: ICallable<TReturn>) -> TReturn {
-                var self: Self = this as Self;
-                var f: async_fun<TReturn, ICallable<TReturn>> = self.func;
-                return f(self.owner);
-            }
-        }
-    }
-     
     enum RoutineState {
         pending;
         running;
@@ -255,14 +198,14 @@ namespace __builtin {
             return RoutineState.from_i64(v);
         }
 
-        fun to_i64(val v: RoutineState) -> i64 {
-            if (v is RoutineState.pending) {
+        fun to_i64(val this: RoutineState) -> i64 {
+            if (this is RoutineState.pending) {
                 return 0;
-            } else if (v is RoutineState.running) {
+            } else if (this is RoutineState.running) {
                 return 1;
-            } else if (v is RoutineState.ready) {
+            } else if (this is RoutineState.ready) {
                 return 2;
-            } else if (v is RoutineState.finished) {
+            } else if (this is RoutineState.finished) {
                 return 3;
             } else {
                 return 4;
@@ -373,9 +316,9 @@ namespace __builtin {
     class RoutineContext<T> {
         var frame: i64;
         var result: Option<T> = new Option<T>.none();
-        var target: ICallable<T>;
+        var target: async_fun<T>;
 
-        fun new(var this: Self, val target: ICallable<T>) {
+        fun new(var this: Self, val target: async_fun<T>) {
             this.target = target;
         }
         extern fun call(var this: Self) -> i64;
@@ -385,7 +328,7 @@ namespace __builtin {
         var state: AtomicI64 = new AtomicI64(0);
         var context: RoutineContext<T>;
 
-        fun new(var this: Self, val target: ICallable<T>, val scheduleNow: bool) {
+        fun new(var this: Self, val target: async_fun<T>, val scheduleNow: bool) {
             this.context = new RoutineContext<T>(target);
             if (scheduleNow) {
                 _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
