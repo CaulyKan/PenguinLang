@@ -8,30 +8,28 @@ enum option<T> {
 	none;
 }
 	
-var a : option<int> = new option<int>.none();
+var a : option<i32> = new option<i32>.none();
 inital {
-	a = new option<int>.some(1);
+	a = new option<i32>.some(1);
 }
 ```
 
 ## Checking a enum
-Penguin-lang supports using 'is' keyword to check if enum matchs a value. '==' works when comparing enum instances, to check if they have some enum and some value.
+Penguin-lang supports using 'is' keyword to check if enum matchs a value.
+Use the enum name to get data from enum, e.g. `a.some`
 ```
 enum option<T> {
 	some: T;
 	none;
 }
 
-var a = new option<int>.some(1);
+var a = new option<i32>.some(1);
 initial {
-	if (a is option<int>.some) {
+	if (a is option<i32>.some) {
 		println("a is some({})", a.some);
-	} else if (a is option<int>.none) {
+	} else if (a is option<i32>.none) {
 		println("a is none");
 	}
-	
-	a == new option<int>.some(1); // true
-	a == new option<int>.none(); // false
 }
 ```
 
@@ -53,21 +51,8 @@ enum option<T> {
 	
 	// however enum can't have a constructor
 	
-	// initial/on is supported 
-	initial {
-		println("hello enum");
-	}
 	on (this is option<T>.none) {
 		println("hello none");
-	}
-}
-
-var a = new option<int>.some(1)
-initial {	
-	if (a is option<int>.some) {
-		println("a is some({})", a.some);
-	} else if (a is option<int>.none) {
-		println("a is none");
 	}
 }
 ```

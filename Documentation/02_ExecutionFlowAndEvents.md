@@ -25,22 +25,14 @@ initial {
 	print("A");
 	raise a_finished; 
 }
-
-event b_finished -> string;  // define an event with data
-
+	
 initial {
 	wait a_finished;
 	print("B");
-	raise b_finished("C");
-}
-	
-initial {
-	val c: string = wait b_finished;
-	print(c as string);
 }
 ```
 
-Since `wait` keyword will block execution flow until event happen,  Above code will print `ABC` definitely. 
+Since `wait` keyword will block execution flow until event happen,  Above code will print `AB` definitely. 
 
 Penguin-lang also provide `on` control block, which is similar to 'callbacks' in most other languages.
 ```
@@ -50,21 +42,17 @@ initial {
 	raise foo;
 }
 	
-on (foo) {
+on foo {
 	print("A");
-}
-	
-on (foo) {
-	print("B");
 }
 	
 initial {
 	wait foo;
-	print("C");
+	print("B");
 }
 ```
 
-In above code, when event `foo` happens, the two `on foo` blocks will be executed, and in same time the code after `wait foo` will be executed, so the result is still uncertain between `ABC` or `CBA` or any combinations. 
+In above code, when event `foo` happens, the `on foo` blocks will be executed, and in same time the code after `wait foo` will be executed, so the result is still uncertain between `AB` or `BA`. 
 
 Event expression
 ----------------
@@ -78,38 +66,45 @@ initial {
 	a = 5;
 }
 
-on (a == 10) {
+on a == 10 {
 	print("a is {}", a);
 }
 ```
-Above code will print `a is 10`, because the `on` block will only happen when `a` 'changes to' 10.
+Above code will print `a is 10`, because the `on` block will only happen when `a` 'changes to' 10. The `a == 10` will generate an annomous event, which will be triggered when `a` is changed.
 
-Events with params
+Events with data
 ------------------
 Events can take parameters, for example:
 ```
-event foo(x: int);
+event foo : i32;
 
 initial {
 	raise foo(1);
 	raise foo(2);
 }
 
-on (foo(x)) {
+on foo(x) {
 	println("foo with x={}", x);
 }
-	
-on (foo(2)) {	 // with pattern matching
-	println("foo with x=2 only!");
-}
 ```
-The result will be (note that order of these lines is uncertain):
+The result will be:
 ```
 foo with x=1
 foo with x=2
-foo with x=2 only!
 ```
-When using wait keyword, the params of event will be unboxed, e.g. `val x = wait foo`
 
+It's also possible to use `wait` keyword with event expression which return a value of event type, for example:
+```
+event foo : i32;
+
+initial {
+	raise foo(1);
+}
+
+initial {
+	val x : i32 = wait foo;
+	println(x as string);
+}
+```
 
 

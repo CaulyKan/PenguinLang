@@ -1,0 +1,13 @@
+val world : string = "wor"+"ld";
+initial {
+  var world1 : string = "";
+  {
+    var world1 : string = world + "!";
+    hello(world1);
+  }
+}
+fun hello(val name : string) -> void {
+  println("Hello, " + name);
+}
+
+class Test{}

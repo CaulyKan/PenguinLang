@@ -22,12 +22,13 @@ initial {
 PenguinLang recommands using `.penguin` as source file extension. PenguinLang do not enforce any restriction on files and directories. 
 
 ## Project
-PenguinLang supports single file compilation, however for larger software a project file is necessary. The project file is recommanded to use `.penguin-project` as extension, and use toml as file format.
+PenguinLang supports single file compilation, however for larger software a project file is necessary. The project file is recommanded to use `.penguins` as extension, and use toml as file format.
 ```
 [project]
 name = "MyPenguin"
 sources = [
 	"a.penguin",
 	"b.penguin",
+	"src/**/*.penguin"
 ]
 ```

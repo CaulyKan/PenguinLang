@@ -8,7 +8,7 @@
             "type": "antlr-debug",
             "request": "launch",
             "name": "antlr-hello_world",
-            "input": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+            "input": "${workspaceFolder}/Examples/test.penguin",
             "grammar": "${workspaceFolder}/PenguinLangSyntax/PenguinLang.g4",
             "startRule": "compilationUnit",
             "visualParseTree": true
@@ -25,7 +25,7 @@
             },
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
             "args": [
-                "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+                "${workspaceFolder}/Examples/test.penguin",
                 "-r",
                 "report.txt"
             ],
@@ -68,7 +68,7 @@
                 "preLaunchTask": "dotnet build linux"
             },
             "request": "launch",
-            "program": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+            "program": "${workspaceFolder}/Examples/test.penguin",
             "stopAtEntry": true
         }
     ]
