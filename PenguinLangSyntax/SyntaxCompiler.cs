@@ -13,7 +13,7 @@ namespace PenguinLangSyntax
             var walker = new SyntaxWalker(FileName, Reporter);
             _ = SyntaxNode.Build<NamespaceDefinition>(walker, Ast);
             Namespaces = walker.Namespaces.FindAll(x => !x.IsEmpty).ToList();
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => x.PrettyPrint(0))));
+            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => (x as ISyntaxNode).PrettyPrint(0))));
         }
         public PenguinLangParser.CompilationUnitContext Ast { get; } = ast;
         public ErrorReporter Reporter { get; } = reporter;
@@ -95,30 +95,6 @@ namespace PenguinLangSyntax
         {
             CurrentScope!.Symbols.Add(new SyntaxSymbol(name, type, symbol));
         }
-    }
-
-    public interface ISyntaxExpression
-    {
-        /// <summary>
-        /// if expression is a constant, symbol, or literal
-        /// </summary>
-        bool IsSimple { get; }
-
-        SourceLocation SourceLocation { get; }
-
-        T CreateWrapperExpression<T>() where T : class, ISyntaxExpression
-        {
-            var exp = this;
-            while (exp is not T)
-            {
-                exp = exp.CreateWrapperExpression();
-            }
-            return (T)exp;
-        }
-
-        ISyntaxExpression CreateWrapperExpression();
-
-        ISyntaxExpression GetEffectiveExpression();
     }
 
     public enum SyntaxScopeType

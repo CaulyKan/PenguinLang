@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class LogicalOrExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<LogicalAndExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
 
@@ -17,7 +17,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is LogicalOrExpressionContext context)
             {
                 SubExpressions = context.children.OfType<LogicalAndExpressionContext>()
-                   .Select(x => Build<LogicalAndExpression>(walker, x))
+                   .Select(x => Build<LogicalAndExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
             }
             else throw new NotImplementedException();

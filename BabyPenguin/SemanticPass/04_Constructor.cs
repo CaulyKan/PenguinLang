@@ -101,7 +101,7 @@ namespace BabyPenguin.SemanticPass
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
                 foreach (var varDecl in syntaxNode.ClassDeclarations)
                 {
-                    if (varDecl.Initializer is Expression initializer)
+                    if (varDecl.Initializer is ISyntaxExpression initializer)
                     {
                         var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: cls)!;
                         var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor)!;

@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class EqualityExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<RelationalExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public BinaryOperatorEnum? Operator { get; private set; }
 
@@ -19,7 +19,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is EqualityExpressionContext context)
             {
                 SubExpressions = context.children.OfType<RelationalExpressionContext>()
-                   .Select(x => Build<RelationalExpression>(walker, x))
+                   .Select(x => Build<RelationalExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
                 Operator = context.equalityOperator() is null ? null : context.equalityOperator().GetText() switch
                 {
@@ -37,17 +37,6 @@ namespace PenguinLangSyntax.SyntaxNodes
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.equalityExpression(), reporter);
             var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new BitwiseAndExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
         }
 
         public override string BuildSourceText()

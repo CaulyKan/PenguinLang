@@ -121,18 +121,6 @@ namespace PenguinLangSyntax.SyntaxNodes
             return string.Join(" ", parts);
         }
 
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PrimaryExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                PrimaryExpressionType = PrimaryExpression.Type.LambdaFunction,
-                LambdaFunction = this
-            };
-        }
-
         public ISyntaxExpression GetEffectiveExpression() => this;
     }
 }

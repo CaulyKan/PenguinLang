@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class BitwiseAndExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<EqualityExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
@@ -24,21 +24,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is BitwiseAndExpressionContext context)
             {
                 SubExpressions = context.children.OfType<EqualityExpressionContext>()
-                   .Select(x => Build<EqualityExpression>(walker, x))
+                   .Select(x => Build<EqualityExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
             }
             else throw new NotImplementedException();
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new BitwiseXorExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
         }
 
         public override string BuildSourceText()

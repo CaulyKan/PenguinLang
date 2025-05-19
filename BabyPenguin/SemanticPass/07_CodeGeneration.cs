@@ -539,7 +539,7 @@ namespace BabyPenguin.SemanticPass
         public void ResolveMemberAccessExpressionSymbol(MemberAccessExpression expression, out IType? ownerType, out ISymbol targetSymbol)
         {
             // global static variable
-            if (Model.ResolveSymbol(expression.Text, s => s.IsVariable || s.IsStatic, scope: this) is ISymbol symbol)
+            if (Model.ResolveSymbol(expression.Text, s => s.IsStatic, scope: this) is ISymbol symbol)
             {
                 targetSymbol = symbol;
                 ownerType = null;
@@ -815,13 +815,20 @@ namespace BabyPenguin.SemanticPass
                     }
                 case WaitExpression exp:
                     {
-                        if (exp.FunctionCallExpression == null)
+                        if (exp.Expression == null)
                         {
                             return BasicType.Void;
                         }
                         else
                         {
-                            throw new NotImplementedException();
+                            var futureType = ResolveExpressionType(exp.Expression);
+                            if (futureType.FullName == "void") return BasicType.Void;
+
+                            if (futureType.GenericType?.FullName != "__builtin.IFuture<?>")
+                            {
+                                throw new BabyPenguinException($"wait expression requires a IFuture type, but got '{futureType}'", expression.SourceLocation);
+                            }
+                            return futureType.GenericArguments.FirstOrDefault() ?? BasicType.Void;
                         }
                     }
                 case SpawnAsyncExpression exp:
@@ -1048,7 +1055,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void AddAssignmentExpression(Or<Expression, ISymbol> from, ISymbol to, bool isInitial, ISymbol? memberOwner = null, SourceLocation? sourceLocation = null)
+        public void AddAssignmentExpression(Or<ISyntaxExpression, ISymbol> from, ISymbol to, bool isInitial, ISymbol? memberOwner = null, SourceLocation? sourceLocation = null)
         {
             var fromSymbol = from.IsLeft ? AddExpression(from.Left!, false) : from.Right!;
             if (fromSymbol.TypeInfo.FullName != to.TypeInfo.FullName)
@@ -1585,11 +1592,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case WaitExpression waitExpression:
                     {
-                        if (waitExpression.FunctionCallExpression == null)
-                        {
-                            AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
-                        }
-                        else throw new NotImplementedException();
+                        AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
                     }
                     break;
                 case SpawnAsyncExpression spawnAsyncExpression:

@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class Expression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public LogicalOrExpression? SubExpression { get; set; }
+        public ISyntaxExpression? SubExpression { get; set; }
 
         public bool IsSimple => SubExpression!.IsSimple;
 
@@ -16,7 +16,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is ExpressionContext context)
             {
-                SubExpression = Build<LogicalOrExpression>(walker, context.logicalOrExpression());
+                SubExpression = Build<LogicalOrExpression>(walker, context.logicalOrExpression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
@@ -26,11 +26,6 @@ namespace PenguinLangSyntax.SyntaxNodes
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.expression(), reporter);
             var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            throw new NotImplementedException();
         }
 
         public override string BuildSourceText()

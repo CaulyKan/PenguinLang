@@ -9,7 +9,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public TypeSpecifier? TypeSpecifier { get; private set; }
 
         [ChildrenNode]
-        public Expression? Initializer { get; private set; }
+        public ISyntaxExpression? Initializer { get; private set; }
 
         public string Name => Identifier!.Name;
 
@@ -40,7 +40,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 Identifier = Build<SymbolIdentifier>(walker, context.identifier());
                 TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
-                Initializer = context.expression() != null ? Build<Expression>(walker, context.expression()) : null;
+                Initializer = context.expression() != null ? Build<Expression>(walker, context.expression()).GetEffectiveExpression() : null;
                 IsReadonly = context.declarationKeyword().GetText() == "val";
             }
             else throw new NotImplementedException();

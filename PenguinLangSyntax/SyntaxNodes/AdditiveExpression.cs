@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class AdditiveExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<MultiplicativeExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
@@ -26,27 +26,16 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is AdditiveExpressionContext context)
             {
                 SubExpressions = context.children.OfType<MultiplicativeExpressionContext>()
-                   .Select(x => Build<MultiplicativeExpression>(walker, x))
+                   .Select(x => Build<MultiplicativeExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
                 Operators = context.additiveOperator().Select(x => x.GetText() switch
                     {
                         "+" => BinaryOperatorEnum.Add,
                         "-" => BinaryOperatorEnum.Subtract,
-                        _ => throw new System.NotImplementedException("Invalid additive operator")
+                        _ => throw new NotImplementedException("Invalid additive operator")
                     }).ToList();
             }
             else throw new NotImplementedException();
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new ShiftExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
         }
 
         public override string BuildSourceText()

@@ -22,7 +22,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 IsReadonly = context.declarationKeyword().GetText() == "val";
 
                 if (context.expression() != null)
-                    InitializeExpression = Build<Expression>(walker, context.expression());
+                    InitializeExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
@@ -41,7 +41,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public TypeSpecifier? TypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public Expression? InitializeExpression { get; set; }
+        public ISyntaxExpression? InitializeExpression { get; set; }
 
         public bool IsReadonly;
 

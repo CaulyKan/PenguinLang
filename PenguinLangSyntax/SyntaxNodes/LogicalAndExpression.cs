@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class LogicalAndExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<BitWiseOrExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
@@ -17,7 +17,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is LogicalAndExpressionContext context)
             {
                 SubExpressions = context.children.OfType<BitwiseOrExpressionContext>()
-                   .Select(x => Build<BitWiseOrExpression>(walker, x))
+                   .Select(x => Build<BitWiseOrExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
             }
             else throw new NotImplementedException();

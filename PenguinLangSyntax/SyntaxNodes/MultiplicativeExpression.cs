@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class MultiplicativeExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<CastExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public List<BinaryOperatorEnum> Operators { get; private set; } = [];
 
@@ -26,7 +26,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is MultiplicativeExpressionContext context)
             {
                 SubExpressions = context.children.OfType<CastExpressionContext>()
-                   .Select(x => Build<CastExpression>(walker, x))
+                   .Select(x => Build<CastExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
                 Operators = context.multiplicativeOperator().Select(x => x.GetText() switch
                     {
@@ -37,17 +37,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                     }).ToList();
             }
             else throw new NotImplementedException();
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new AdditiveExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
         }
 
         public override string BuildSourceText()

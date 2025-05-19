@@ -22,7 +22,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                         _ => throw new System.NotImplementedException("Invalid unary operator"),
                     };
                 }
-                SubExpression = Build<PostfixExpression>(walker, context.postfixExpression());
+                SubExpression = Build<PostfixExpression>(walker, context.postfixExpression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
@@ -37,24 +37,13 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public PostfixExpression? SubExpression { get; set; }
+        public ISyntaxExpression? SubExpression { get; set; }
 
         public UnaryOperatorEnum? UnaryOperator { get; private set; }
 
         public bool HasUnaryOperator => UnaryOperator is not null;
 
         public bool IsSimple => !HasUnaryOperator && SubExpression!.IsSimple;
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new CastExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubUnaryExpression = this,
-            };
-        }
 
         public override string BuildSourceText()
         {

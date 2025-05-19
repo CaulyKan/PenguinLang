@@ -20,22 +20,23 @@ Events
 ---------
 In order to run `initial` blocks in sequence, you can use event, which is a core concept in penguin-lang. Following is a very basic Example of using event:
 ```
+event a_finished;  // define an event
 initial {
 	print("A");
-	raise event a_finished;  // define an event inline
+	raise a_finished; 
 }
 
-event b_finished;  // explicit define an event
+event b_finished -> string;  // define an event with data
 
 initial {
 	wait a_finished;
 	print("B");
-	raise b_finished;
+	raise b_finished("C");
 }
 	
 initial {
-	wait b_finished;
-	print("C");
+	val c: string = wait b_finished;
+	print(c as string);
 }
 ```
 
@@ -43,8 +44,10 @@ Since `wait` keyword will block execution flow until event happen,  Above code w
 
 Penguin-lang also provide `on` control block, which is similar to 'callbacks' in most other languages.
 ```
+event foo;
+
 initial {
-	raise event foo;
+	raise foo;
 }
 	
 on (foo) {
@@ -80,14 +83,6 @@ on (a == 10) {
 }
 ```
 Above code will print `a is 10`, because the `on` block will only happen when `a` 'changes to' 10.
-
-There are other keywords or functions that can create different events, for example :
-* `on A or B`: called either event `A` or `B` happens
-* `on A and B`: only called when `A` and `B` happenes together, not very practical in normal (real-time) event
-* `on changes(a):` called every time var `a` is changed
-* `on first_time(a < 0)`: only called when first time `a` is smaller than zero
-* `on A + 1s`: called on 1 second after event `A` happens
-* `on lasts(a, 1s)`: called when var `a` is changed, and no additional changes happened to `a`  within 1 second
 
 Events with params
 ------------------

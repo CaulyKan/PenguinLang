@@ -452,5 +452,28 @@ namespace BabyPenguin.Tests
             Assert.Equal($"not_ready{EOL}ready_finished(1){EOL}", vm.CollectOutput());
         }
 
+        [Fact]
+        public void AsyncWaitTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : IFuture<i32> = async test();
+                    println(""before"");
+                    wait a;
+                    println(""after"");
+                } 
+                fun test() -> i32 {
+                    wait;
+                    println(""test"");
+                    return 1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"before{EOL}test{EOL}after{EOL}", vm.CollectOutput());
+        }
+
     }
 }

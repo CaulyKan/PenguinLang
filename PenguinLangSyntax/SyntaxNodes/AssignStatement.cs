@@ -10,7 +10,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is AssignmentStatementContext context)
             {
                 LeftHandSide = Build<IdentifierOrMemberAccess>(walker, context.identifierOrMemberAccess());
-                RightHandSide = Build<Expression>(walker, context.expression());
+                RightHandSide = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                 AssignmentOperator = context.assignmentOperator().GetText() switch
                 {
                     "=" => AssignmentOperatorEnum.Assign,
@@ -41,7 +41,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public IdentifierOrMemberAccess? LeftHandSide { get; private set; }
 
         [ChildrenNode]
-        public Expression? RightHandSide { get; private set; }
+        public ISyntaxExpression? RightHandSide { get; private set; }
 
         public AssignmentOperatorEnum AssignmentOperator { get; private set; }
 

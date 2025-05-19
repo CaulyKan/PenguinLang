@@ -9,7 +9,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is MemberAccessExpressionContext context)
             {
-                PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression());
+                PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression()).GetEffectiveExpression();
                 MemberIdentifiers = context.children.OfType<IdentifierWithGenericContext>()
                    .Select(x => Build<SymbolIdentifier>(walker, x) as Identifier)
                    .ToList();
@@ -25,7 +25,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public PrimaryExpression? PrimaryExpression { get; set; }
+        public ISyntaxExpression? PrimaryExpression { get; set; }
 
         [ChildrenNode]
         public List<Identifier> MemberIdentifiers { get; set; } = [];
@@ -49,18 +49,6 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         public abstract bool IsWrite { get; }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubMemberAccessExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.MemberAccess
-            };
-        }
     }
 
     public class ReadMemberAccessExpression : MemberAccessExpression

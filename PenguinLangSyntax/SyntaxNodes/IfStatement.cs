@@ -8,7 +8,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is IfStatementContext context)
             {
-                Condition = Build<Expression>(walker, context.expression());
+                Condition = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                 var statements = context.children.OfType<StatementContext>().ToList();
                 if (statements.Count == 1)
                 {
@@ -35,7 +35,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Expression? Condition { get; private set; }
+        public ISyntaxExpression? Condition { get; private set; }
 
         [ChildrenNode]
         public Statement? MainStatement { get; private set; }

@@ -9,7 +9,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is WaitExpressionContext context)
             {
-                FunctionCallExpression = context.functionCallExpression() != null ? Build<FunctionCallExpression>(walker, context.functionCallExpression()) : null;
+                Expression = context.expression() != null ? Build<Expression>(walker, context.expression()).GetEffectiveExpression() : null;
             }
             else throw new NotImplementedException();
         }
@@ -22,30 +22,18 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public FunctionCallExpression? FunctionCallExpression { get; set; }
+        public ISyntaxExpression? Expression { get; set; }
 
         public bool IsSimple => false;
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubWaitExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.Wait
-            };
-        }
-
         public override string BuildSourceText()
         {
-            if (FunctionCallExpression == null)
+            if (Expression == null)
                 return "wait;";
             else
-                return $"wait {FunctionCallExpression!.BuildSourceText()}";
+                return $"wait {Expression!.BuildSourceText()}";
         }
     }
 }

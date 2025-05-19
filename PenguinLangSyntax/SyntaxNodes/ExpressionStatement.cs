@@ -9,7 +9,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is ExpressionStatementContext context)
             {
-                Expression = Build<Expression>(walker, context.expression());
+                Expression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
@@ -22,7 +22,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Expression? Expression { get; private set; }
+        public ISyntaxExpression? Expression { get; private set; }
 
         public override string BuildSourceText()
         {

@@ -205,7 +205,7 @@ namespace BabyPenguin.VirtualMachine
                 // target is a async_fun<T>
                 var funcSymbol = target?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + target!.ToString());
                 List<IRuntimeValue> funcArguments = [];
-                if (target.TypeInfo.GenericArguments.Count > 1 && target.Owner is not NotInitializedRuntimeValue)
+                if (target!.TypeInfo.GenericArguments.Count > 1 && target.Owner is not NotInitializedRuntimeValue)
                 {
                     funcArguments.Add(target.Owner);
                 }

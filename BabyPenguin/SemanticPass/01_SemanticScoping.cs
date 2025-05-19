@@ -176,7 +176,7 @@ namespace BabyPenguin.SemanticPass
                             closureSymbols.Any(s => s.Name == primary.Identifier.Name))
                         {
                             primary.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
-                            primary.ParenthesizedExpression = (CreateMemberAccess(true, primary.Identifier) as ISyntaxExpression).CreateWrapperExpression<Expression>();
+                            primary.ParenthesizedExpression = CreateMemberAccess(true, primary.Identifier);
                         }
                     }
                     return true;

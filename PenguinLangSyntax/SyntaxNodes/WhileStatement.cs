@@ -8,7 +8,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is WhileStatementContext context)
             {
-                Condition = Build<Expression>(walker, context.expression());
+                Condition = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                 BodyStatement = Build<Statement>(walker, context.statement());
             }
             else throw new NotImplementedException();
@@ -22,7 +22,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Expression? Condition { get; private set; }
+        public ISyntaxExpression? Condition { get; private set; }
 
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }

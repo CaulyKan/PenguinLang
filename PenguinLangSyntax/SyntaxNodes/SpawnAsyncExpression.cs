@@ -9,7 +9,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is SpawnExpressionContext context)
             {
-                Expression = Build<Expression>(walker, context.expression());
+                Expression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
@@ -24,25 +24,13 @@ namespace PenguinLangSyntax.SyntaxNodes
         public ISyntaxExpression GetEffectiveExpression() => this;
 
         [ChildrenNode]
-        public Expression? Expression { get; set; }
+        public ISyntaxExpression? Expression { get; set; }
 
         public bool IsSimple => false;
 
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubSpawnAsyncExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.SpawnAsync
-            };
-        }
-
         public override string BuildSourceText()
         {
-            return $"async {Expression!.BuildSourceText()};";
+            return $"async {Expression!.BuildSourceText()}";
         }
     }
 }

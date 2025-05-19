@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class YieldStatement : SyntaxNode
     {
         [ChildrenNode]
-        public Expression? YieldExpression { get; private set; }
+        public ISyntaxExpression? YieldExpression { get; private set; }
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
@@ -12,7 +12,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is YieldStatementContext context)
             {
-                YieldExpression = context.expression() is not null ? Build<Expression>(walker, context.expression()) : null;
+                YieldExpression = context.expression() is not null ? Build<Expression>(walker, context.expression()).GetEffectiveExpression() : null;
             }
             else throw new NotImplementedException();
         }

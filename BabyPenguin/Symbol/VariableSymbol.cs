@@ -26,7 +26,7 @@ namespace BabyPenguin.Symbol
         public int ParameterIndex { get; } = paramIndex ?? -1;
         public bool IsReadonly { get; set; } = isReadonly;
         public bool IsClassMember { get; } = isClassMember;
-        public bool IsStatic { get; } = !isClassMember;
+        public bool IsStatic { get; } = !isClassMember && !isLocal;
         public bool IsEnum => false;
         public bool IsFunction => false;
         public bool IsVariable => true;

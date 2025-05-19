@@ -11,14 +11,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 if (context.primaryExpression() != null)
                 {
-                    PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression());
+                    PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression()).GetEffectiveExpression();
                 }
                 else if (context.memberAccessExpression() != null)
                 {
                     MemberAccessExpression = Build<ReadMemberAccessExpression>(walker, context.memberAccessExpression());
                 }
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
-                   .Select(x => Build<Expression>(walker, x))
+                   .Select(x => Build<Expression>(walker, x).GetEffectiveExpression())
                    .ToList();
             }
             else throw new NotImplementedException();
@@ -34,7 +34,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public ISyntaxExpression GetEffectiveExpression() => this;
 
         [ChildrenNode]
-        public PrimaryExpression? PrimaryExpression { get; set; }
+        public ISyntaxExpression? PrimaryExpression { get; set; }
 
         [ChildrenNode]
         public MemberAccessExpression? MemberAccessExpression { get; set; }
@@ -42,21 +42,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         public bool IsMemberAccess => MemberAccessExpression is not null;
 
         [ChildrenNode]
-        public List<Expression> ArgumentsExpression { get; private set; } = [];
+        public List<ISyntaxExpression> ArgumentsExpression { get; private set; } = [];
 
         public bool IsSimple => false;
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubFunctionCallExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.FunctionCall
-            };
-        }
 
         public override string BuildSourceText()
         {

@@ -11,7 +11,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 if (context.typeSpecifier() != null)
                 {
-                    SubUnaryExpression = Build<UnaryExpression>(walker, context.unaryExpression());
+                    SubUnaryExpression = Build<UnaryExpression>(walker, context.unaryExpression()).GetEffectiveExpression();
                     CastTypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
                 }
                 else
@@ -33,24 +33,13 @@ namespace PenguinLangSyntax.SyntaxNodes
         public TypeSpecifier? CastTypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public UnaryExpression? SubUnaryExpression { get; set; }
+        public ISyntaxExpression? SubUnaryExpression { get; set; }
 
         public ISyntaxExpression GetEffectiveExpression() => IsTypeCast ? this : (SubUnaryExpression as ISyntaxExpression)!.GetEffectiveExpression();
 
         public bool IsTypeCast => CastTypeSpecifier is not null;
 
         public bool IsSimple => !IsTypeCast && SubUnaryExpression!.IsSimple;
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new MultiplicativeExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
-        }
 
         public override string BuildSourceText()
         {

@@ -52,7 +52,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 else if (context.children.OfType<ExpressionContext>().Any())
                 {
-                    ParenthesizedExpression = Build<Expression>(walker, context.expression());
+                    ParenthesizedExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                     PrimaryExpressionType = Type.ParenthesizedExpression;
                 }
                 else
@@ -90,7 +90,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public string? Literal { get; set; }
 
         [ChildrenNode]
-        public Expression? ParenthesizedExpression { get; set; }
+        public ISyntaxExpression? ParenthesizedExpression { get; set; }
 
         [ChildrenNode]
         public LambdaFunctionExpression? LambdaFunction { get; set; }
@@ -105,18 +105,6 @@ namespace PenguinLangSyntax.SyntaxNodes
             Type.ParenthesizedExpression => ParenthesizedExpression!.IsSimple,
             _ => throw new NotImplementedException("Invalid primary expression type"),
         };
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubPrimaryExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.PrimaryExpression
-            };
-        }
 
         public override string BuildSourceText()
         {

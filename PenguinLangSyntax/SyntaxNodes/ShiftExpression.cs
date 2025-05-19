@@ -4,7 +4,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class ShiftExpression : SyntaxNode, ISyntaxExpression
     {
         [ChildrenNode]
-        public List<AdditiveExpression> SubExpressions { get; set; } = [];
+        public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
         public List<BinaryOperatorEnum> Operators { get; set; } = [];
 
@@ -26,7 +26,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is ShiftExpressionContext context)
             {
                 SubExpressions = context.children.OfType<AdditiveExpressionContext>()
-                   .Select(x => Build<AdditiveExpression>(walker, x))
+                   .Select(x => Build<AdditiveExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
                 Operators = context.shiftOperator().Select(x => x.GetText() switch
                     {
@@ -36,17 +36,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                     }).ToList();
             }
             else throw new NotImplementedException();
-        }
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new RelationalExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
         }
 
         public override string BuildSourceText()

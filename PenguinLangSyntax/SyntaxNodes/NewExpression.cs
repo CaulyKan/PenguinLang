@@ -11,7 +11,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
-                   .Select(x => Build<Expression>(walker, x))
+                   .Select(x => Build<Expression>(walker, x).GetEffectiveExpression())
                    .ToList();
             }
             else throw new NotImplementedException();
@@ -28,23 +28,11 @@ namespace PenguinLangSyntax.SyntaxNodes
         public TypeSpecifier? TypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public List<Expression> ArgumentsExpression { get; set; } = [];
+        public List<ISyntaxExpression> ArgumentsExpression { get; set; } = [];
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
         public bool IsSimple => false;
-
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new PostfixExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubNewExpression = this,
-                PostfixExpressionType = PostfixExpression.Type.New
-            };
-        }
 
         public override string BuildSourceText()
         {
