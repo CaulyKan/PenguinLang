@@ -13,7 +13,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 if (context.typeSpecifier() != null)
                 {
                     TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
-                    walker.DefineSymbol(Name, TypeSpecifier.Name, this);
                 }
                 else
                 {

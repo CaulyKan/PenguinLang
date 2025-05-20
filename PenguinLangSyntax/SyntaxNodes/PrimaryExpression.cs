@@ -115,7 +115,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 Type.StringLiteral => Literal!,
                 Type.BoolLiteral => Literal!,
                 Type.VoidLiteral => Literal!,
-                Type.LambdaFunction => LambdaFunction.BuildSourceText(),
+                Type.LambdaFunction => LambdaFunction!.BuildSourceText(),
                 Type.ParenthesizedExpression => $"({ParenthesizedExpression!.BuildSourceText()})",
                 _ => throw new NotImplementedException($"Unsupported PrimaryExpressionType: {PrimaryExpressionType}")
             };

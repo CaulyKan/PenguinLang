@@ -3,7 +3,7 @@ using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Utilities;
 using PenguinLangSyntax;
 
-namespace BabyPenguin.VirtualMachine
+namespace MagellanicPenguin
 {
     public class DAP : DebugAdapterBase
     {

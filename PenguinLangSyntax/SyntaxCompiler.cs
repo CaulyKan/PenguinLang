@@ -45,55 +45,11 @@ namespace PenguinLangSyntax
             scope.ParentScope = ScopeStack.Count > 0 ? CurrentScope : null;
             scope.ScopeDepth = (scope.ParentScope?.ScopeDepth ?? InitialScopeDepth) + 1;
 
-            switch (type)
-            {
-                case SyntaxScopeType.Namespace:
-                    {
-                        var ns = scope as NamespaceDefinition ?? throw new NotImplementedException();
-                        Namespaces.Add(ns);
-                        break;
-                    }
+            if (type == SyntaxScopeType.Namespace)
+                Namespaces.Add(scope as NamespaceDefinition ?? throw new NotImplementedException());
 
-                case SyntaxScopeType.Class:
-                    {
-                        var _ = scope as ClassDefinition ?? throw new NotImplementedException();
-                        break;
-                    }
-
-                case SyntaxScopeType.Enum:
-                    {
-                        var _ = scope as EnumDefinition ?? throw new NotImplementedException();
-                        break;
-                    }
-
-                case SyntaxScopeType.Function:
-                    {
-                        var _ = scope as FunctionDefinition ?? throw new NotImplementedException();
-                        break;
-                    }
-
-                case SyntaxScopeType.LambdaFunction:
-                    {
-                        var _ = scope as LambdaFunctionExpression ?? throw new NotImplementedException();
-                        break;
-                    }
-
-                case SyntaxScopeType.InitialRoutine:
-                    {
-                        var _ = scope as InitialRoutineDefinition ?? throw new NotImplementedException();
-                        break;
-                    }
-
-                case SyntaxScopeType.CodeBlock:
-                    break;
-            }
 
             ScopeStack.Push(scope);
-        }
-
-        public void DefineSymbol(string name, string type, SyntaxNode symbol)
-        {
-            CurrentScope!.Symbols.Add(new SyntaxSymbol(name, type, symbol));
         }
     }
 
@@ -115,8 +71,6 @@ namespace PenguinLangSyntax
         public string Name { get; }
 
         SyntaxScopeType ScopeType { get; }
-
-        List<SyntaxSymbol> Symbols { get; }
 
         Dictionary<string, ISyntaxScope> SubScopes { get; }
 

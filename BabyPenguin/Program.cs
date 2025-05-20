@@ -59,23 +59,10 @@ namespace BabyPenguin
             // }
         }
 
-        static void RunDAP(Options options)
-        {
-            var dap = new DAP();
-            dap.Protocol.LogMessage += (sender, e) => Debug.WriteLine(e.Message);
-            dap.Protocol.Run();
-        }
 
         static int Run(Options options)
         {
-            if (options.Files.Count() == 0)
-            {
-                RunDAP(options);
-            }
-            else
-            {
-                RunNormal(options);
-            }
+            RunNormal(options);
             return 0;
         }
     }

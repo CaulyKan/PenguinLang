@@ -25,7 +25,9 @@ namespace PenguinLangSyntax.SyntaxNodes
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                     .Select(x => Build<InterfaceImplementation>(walker, x))
                     .ToList();
-
+                Events = context.children.OfType<EventDefinitionContext>()
+                    .Select(x => Build<EventDefinition>(walker, x))
+                    .ToList();
 
                 walker.PopScope();
             }
@@ -69,6 +71,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; private set; } = [];
 
+        [ChildrenNode]
+        public List<EventDefinition> Events { get; set; } = [];
+
 
         public override string BuildSourceText()
         {
@@ -80,6 +85,10 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(GenericDefinitions.BuildSourceText());
             }
             parts.Add("{");
+            if (Events.Count > 0)
+            {
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+            }
             if (InterfaceImplementations.Count > 0)
             {
                 parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildSourceText())));

@@ -19,8 +19,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                         LiteralName = "new"
                     };
 
-                walker.DefineSymbol(Name, "fun", this);
-
                 if (context.parameterList()?.children == null)
                 {
                     Parameters = [];

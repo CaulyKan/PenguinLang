@@ -1,9 +1,5 @@
-using System.Security.Cryptography;
-
 namespace BabyPenguin.SemanticPass
 {
-
-
     public class SyntaxRewritingPass(SemanticModel model, int passIndex) : ISemanticPass
     {
         public SemanticModel Model { get; } = model;

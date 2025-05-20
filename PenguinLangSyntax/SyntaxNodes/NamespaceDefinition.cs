@@ -72,6 +72,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             TypeReferenceDeclarations.AddRange(
                  namespaceDeclarationContext.children.OfType<TypeReferenceDeclarationContext>()
                     .Select(x => Build<TypeReferenceDeclaration>(walker, x)));
+
+            Events.AddRange(
+                namespaceDeclarationContext.children.OfType<EventDefinitionContext>()
+                    .Select(x => Build<EventDefinition>(walker, x)));
         }
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
@@ -108,7 +112,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public List<InterfaceForImplementation> InterfaceImplementations { get; set; } = [];
 
-        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0;
+        [ChildrenNode]
+        public List<EventDefinition> Events { get; set; } = [];
+
+        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0 && Events.Count == 0;
 
         public string Name { get; set; } = "";
 
@@ -185,6 +192,11 @@ namespace PenguinLangSyntax.SyntaxNodes
             foreach (var interfaceImpl in InterfaceImplementations)
             {
                 parts.Add(interfaceImpl.BuildSourceText());
+            }
+
+            foreach (var eventDef in Events)
+            {
+                parts.Add(eventDef.BuildSourceText());
             }
 
             foreach (var initialRoutine in InitialRoutines)

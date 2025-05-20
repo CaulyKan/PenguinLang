@@ -2,6 +2,7 @@
 global using BabyPenguin.SemanticNode;
 global using BabyPenguin.Symbol;
 global using BabyPenguin.SemanticPass;
+global using BabyPenguin.SemanticInterface;
 global using BabyPenguin.VirtualMachine;
 global using PenguinLangSyntax;
 global using PenguinLangSyntax.SyntaxNodes;

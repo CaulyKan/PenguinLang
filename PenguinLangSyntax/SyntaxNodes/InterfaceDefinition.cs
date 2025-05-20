@@ -19,6 +19,9 @@ namespace PenguinLangSyntax.SyntaxNodes
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                    .Select(x => Build<InterfaceImplementation>(walker, x))
                    .ToList();
+                Events = context.children.OfType<EventDefinitionContext>()
+                    .Select(x => Build<EventDefinition>(walker, x))
+                    .ToList();
 
                 walker.PopScope();
             }
@@ -40,6 +43,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         public SyntaxScopeType ScopeType => SyntaxScopeType.Interface;
 
         public List<SyntaxSymbol> Symbols { get; private set; } = [];
+
+        [ChildrenNode]
+        public List<EventDefinition> Events { get; set; } = [];
 
         [ChildrenNode]
         public List<FunctionDefinition> Functions { get; private set; } = [];
@@ -68,6 +74,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             }
 
             parts.Add("{");
+            if (Events.Count > 0)
+            {
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+            }
 
             foreach (var function in Functions)
             {

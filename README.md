@@ -25,9 +25,10 @@ Documents:
 * [Data Types](./Documentation/03_DataTypes.md)
 * [Function](./Documentation/04_Function.md)
 * [Enum](./Documentation/05_Enum.md)
-* [Asynchronization And Concurrency](./Documentation/06_AsynchronizationAndConcurrency.md)
-* [Timing Model](./Documentation/07_TimingModel.md)
-* [Namespace And Project](./Documentation/08_NamespaceAndProject.md)
+* [Interface](./Documentation/06_Interface.md)
+* [Asynchronization And Concurrency](./Documentation/07_AsynchronizationAndConcurrency.md)
+* [Timing Model](./Documentation/08_TimingModel.md)
+* [Namespace And Project](./Documentation/09_NamespaceAndProject.md)
 
 Build And Run:
 * Install the .NET 8.0 SDK from https://dotnet.microsoft.com/download

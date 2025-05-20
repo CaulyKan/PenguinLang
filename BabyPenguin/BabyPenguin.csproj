@@ -16,7 +16,6 @@
     <ProjectReference Include="..\PenguinLangSyntax\PenguinLangSyntax.csproj" />
   </ItemGroup>
   <ItemGroup>
-
     <None Include="Builtin.penguin">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

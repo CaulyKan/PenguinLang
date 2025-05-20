@@ -1,5 +1,3 @@
-using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
-
 namespace BabyPenguin.VirtualMachine
 {
     public record RuntimeFrameResult(IRuntimeSymbol? ReturnValue, ReturnStatus ReturnStatus);

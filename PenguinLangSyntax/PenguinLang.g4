@@ -170,6 +170,7 @@ interfaceDefinition:
 	'interface' identifier genericDefinitions? '{' (
 		functionDefinition
 		| interfaceImplementation
+		| eventDefinition
 	)* '}';
 
 interfaceImplementation:
@@ -189,6 +190,7 @@ classDefinition:
 		classDeclaration
 		| functionDefinition
 		| interfaceImplementation
+		| eventDefinition
 	)* '}';
 
 classDeclaration:
@@ -201,6 +203,7 @@ enumDefinition:
 		enumDeclaration
 		| functionDefinition
 		| interfaceImplementation
+		| eventDefinition
 	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
@@ -276,6 +279,7 @@ namespaceDeclaration:
 	| enumDefinition
 	| interfaceDefinition
 	| interfaceForImplementation
+	| eventDefinition
 	| ';';
 
 parameterList: declaration? (',' declaration)* ','?;
@@ -444,3 +448,5 @@ Newline: ('\r' '\n'? | '\n') -> channel(HIDDEN);
 BlockComment: '/*' .*? '*/' -> channel(HIDDEN);
 
 LineComment: '//' ~[\r\n]* -> channel(HIDDEN);
+
+eventDefinition: 'event' identifier (':' typeSpecifier)? ';';

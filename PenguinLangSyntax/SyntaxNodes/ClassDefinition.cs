@@ -22,6 +22,9 @@ namespace PenguinLangSyntax.SyntaxNodes
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                    .Select(x => Build<InterfaceImplementation>(walker, x))
                    .ToList();
+                Events = context.children.OfType<EventDefinitionContext>()
+                    .Select(x => Build<EventDefinition>(walker, x))
+                    .ToList();
 
                 walker.PopScope();
             }
@@ -36,34 +39,37 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Identifier? ClassIdentifier { get; private set; }
+        public Identifier? ClassIdentifier { get; set; }
 
         public string Name => ClassIdentifier!.Name;
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Class;
 
-        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+        public List<SyntaxSymbol> Symbols { get; set; } = [];
 
         [ChildrenNode]
-        public List<FunctionDefinition> Functions { get; private set; } = [];
+        public List<FunctionDefinition> Functions { get; set; } = [];
 
         [ChildrenNode]
-        public List<InitialRoutineDefinition> InitialRoutines { get; private set; } = [];
+        public List<EventDefinition> Events { get; set; } = [];
+
+        [ChildrenNode]
+        public List<InitialRoutineDefinition> InitialRoutines { get; set; } = [];
 
         public bool IsAnonymous => false;
 
-        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+        public Dictionary<string, ISyntaxScope> SubScopes { get; set; } = [];
 
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
-        public List<ClassDeclaration> ClassDeclarations { get; private set; } = [];
+        public List<ClassDeclaration> ClassDeclarations { get; set; } = [];
 
         [ChildrenNode]
-        public GenericDefinitions? GenericDefinitions { get; private set; } = null;
+        public GenericDefinitions? GenericDefinitions { get; set; } = null;
 
         [ChildrenNode]
-        public List<InterfaceImplementation> InterfaceImplementations { get; private set; } = [];
+        public List<InterfaceImplementation> InterfaceImplementations { get; set; } = [];
 
         public override string BuildSourceText()
         {
@@ -75,6 +81,10 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(GenericDefinitions.BuildSourceText());
             }
             parts.Add("{");
+            if (Events.Count > 0)
+            {
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+            }
             if (InterfaceImplementations.Count > 0)
             {
                 parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildSourceText())));

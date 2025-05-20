@@ -36,10 +36,10 @@
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "D:\\repos\\penguinlang\\BabyPenguin\\bin\\Debug\\net8.0\\BabyPenguin.exe"
+          "program": "D:\\repos\\penguinlang\\MagellanicPenguin\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
         },
         "linux": {
-          "program": "/home/cauly/workspace/repos/penguinlang/BabyPenguin/bin/Debug/net8.0/BabyPenguin"
+          "program": "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/bin/Debug/net8.0/MagellanicPenguinDAP"
         },
         "configurationAttributes": {
           "launch": {
