@@ -28,12 +28,12 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (Expression == null)
                 return "wait;";
             else
-                return $"wait {Expression!.BuildSourceText()}";
+                return $"wait {Expression!.BuildText()}";
         }
     }
 }

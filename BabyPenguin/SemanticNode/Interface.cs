@@ -38,6 +38,10 @@ namespace BabyPenguin.SemanticNode
             else
                 return false;
         }
+
+        bool HasDeclartion { get; set; }
+
+        IFunction? Constructor { get; set; }
     }
 
     public class Interface : BaseSemanticNode, IInterface
@@ -89,5 +93,7 @@ namespace BabyPenguin.SemanticNode
         public List<VTable> VTables { get; } = [];
 
         public override string ToString() => (this as ISemanticScope).FullName;
+
+        public bool HasDeclartion { get; set; } = false;
     }
 }

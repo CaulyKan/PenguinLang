@@ -1,8 +1,13 @@
+                event test_event;
+
                 initial {
-                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
-                    println(routine.start() as string);
-                    println(routine.routine_state() as string);
-                    
-                    val state1 : FutureState<void>  = routine.poll();
-                    println(state1 as string);
+                    wait test_event;
+                    print("2");
                 }
+
+                initial {
+                    __signal 0;
+                    print("1");
+                    emit test_event();
+                }
+ 

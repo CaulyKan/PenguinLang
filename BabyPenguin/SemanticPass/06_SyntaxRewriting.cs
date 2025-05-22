@@ -24,7 +24,6 @@ namespace BabyPenguin.SemanticPass
             {
                 RewriteGenerator(function1);
             }
-
         }
 
         public void Process()
@@ -143,8 +142,8 @@ namespace BabyPenguin.SemanticPass
                     }
 
                     Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrote lambda function to class `{lambdaClass.FullName}`");
-                    AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildSourceText()));
-                    AddRewritedSource(lambdaClass.FullName, Tools.FormatPenguinLangSource(lambdaClass.SyntaxNode!.BuildSourceText()));
+                    AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
+                    AddRewritedSource(lambdaClass.FullName, Tools.FormatPenguinLangSource(lambdaClass.SyntaxNode!.BuildText()));
                 }
                 return true;
             });
@@ -242,18 +241,33 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        private void RewriteAsyncWait(ICodeContainer codecontainer, SyntaxNode parent, WaitExpression waitExpression)
+        private void RewriteAsyncWait(ICodeContainer codeContainer, SyntaxNode parent, WaitExpression waitExpression)
         {
             var waitFunctionName = "do_wait";
             if (waitExpression.Expression is null) return;
-
             var expression = (SyntaxNode)waitExpression.Expression;
 
-            var asyncSpawnExp = expression.Build<SpawnAsyncExpression>(e =>
+            SyntaxNode futureExp;
+
+            var waitType = codeContainer.ResolveExpressionType(waitExpression.Expression);
+            if (waitType.GenericType != null && waitType.GenericType.FullName == "__builtin.Event<?>")
             {
-                e.Expression = expression as ISyntaxExpression;
-            });
-            var futureExp = waitExpression.Expression is FunctionCallExpression ? asyncSpawnExp : expression;
+                var newExp = waitExpression.Build<NewExpression>(e =>
+                {
+                    e.TypeSpecifier = new TypeSpecifier { TypeName = $"__builtin._OnetimeEventReceiver<{waitType.GenericArguments.First()}>" };
+                    e.ArgumentsExpression = [waitExpression.Expression];
+                });
+                futureExp = newExp;
+            }
+            else
+            {
+                var asyncSpawnExp = expression.Build<SpawnAsyncExpression>(e =>
+                {
+                    e.Expression = expression as ISyntaxExpression;
+                });
+                futureExp = waitExpression.Expression is FunctionCallExpression ? asyncSpawnExp : expression;
+            }
+
             var primaryExp = futureExp.Build<PrimaryExpression>(e =>
             {
                 e.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
@@ -278,11 +292,13 @@ namespace BabyPenguin.SemanticPass
             // }
 
             Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{expression}' to '{waitFunctionCallExp}'", expression.SourceLocation);
-            AddRewritedSource(codecontainer.FullName, Tools.FormatPenguinLangSource(codecontainer.SyntaxNode!.BuildSourceText()));
+            AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
         }
 
         public void IdentifyAsyncFunction(IFunction func)
         {
+            if (func.FullName.Contains('?')) return;
+
             var isAsyncKnown = func.IsAsync != null;
 
             if (!isAsyncKnown) func.IsAsync = false;
@@ -395,7 +411,7 @@ namespace BabyPenguin.SemanticPass
                     Model.GetPass<SymbolElaboratePass>().ElaborateLocalSymbol(func);
 
                     Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{lambdaClass.Name}`");
-                    AddRewritedSource(func.FullName, Tools.FormatPenguinLangSource(func.SyntaxNode.BuildSourceText()));
+                    AddRewritedSource(func.FullName, Tools.FormatPenguinLangSource(func.SyntaxNode.BuildText()));
                 }
                 else
                 {

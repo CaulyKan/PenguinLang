@@ -41,7 +41,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public ReturnTypeEnum ReturnType { get; set; } = ReturnTypeEnum.Normal;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var keyword = ReturnType switch
             {
@@ -57,7 +57,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 return keyword + ";";
             }
 
-            return $"{keyword} {ReturnExpression.BuildSourceText()};";
+            return $"{keyword} {ReturnExpression.BuildText()};";
         }
     }
 }

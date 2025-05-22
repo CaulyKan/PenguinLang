@@ -12,8 +12,8 @@ namespace PenguinLangSyntax.SyntaxNodes
                 walker.PushScope(SyntaxScopeType.Class, this);
 
                 ClassIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
-                ClassDeclarations = context.children.OfType<ClassDeclarationContext>()
-                   .Select(x => Build<ClassDeclaration>(walker, x))
+                Declarations = context.children.OfType<DeclarationContext>()
+                   .Select(x => Build<Declaration>(walker, x))
                    .ToList();
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => Build<FunctionDefinition>(walker, x))
@@ -63,7 +63,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
-        public List<ClassDeclaration> ClassDeclarations { get; set; } = [];
+        public List<Declaration> Declarations { get; set; } = [];
 
         [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; set; } = null;
@@ -71,35 +71,35 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; set; } = [];
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("class");
-            parts.Add(ClassIdentifier!.BuildSourceText());
+            parts.Add(ClassIdentifier!.BuildText());
             if (GenericDefinitions != null)
             {
-                parts.Add(GenericDefinitions.BuildSourceText());
+                parts.Add(GenericDefinitions.BuildText());
             }
             parts.Add("{");
             if (Events.Count > 0)
             {
-                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
             }
             if (InterfaceImplementations.Count > 0)
             {
-                parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildSourceText())));
+                parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildText())));
             }
-            if (ClassDeclarations.Count > 0)
+            if (Declarations.Count > 0)
             {
-                parts.Add(string.Join("\n", ClassDeclarations.Select(decl => decl.BuildSourceText())));
+                parts.Add(string.Join("\n", Declarations.Select(decl => decl.BuildText())));
             }
             if (Functions.Count > 0)
             {
-                parts.Add(string.Join("\n", Functions.Select(func => func.BuildSourceText())));
+                parts.Add(string.Join("\n", Functions.Select(func => func.BuildText())));
             }
             if (InitialRoutines.Count > 0)
             {
-                parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildSourceText())));
+                parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildText())));
             }
             parts.Add("}");
             return string.Join(" ", parts);

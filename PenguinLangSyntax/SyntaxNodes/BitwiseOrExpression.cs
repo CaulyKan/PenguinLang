@@ -30,9 +30,9 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return string.Join(" | ", SubExpressions.Select(x => x.BuildSourceText()));
+            return string.Join(" | ", SubExpressions.Select(x => x.BuildText()));
         }
     }
 }

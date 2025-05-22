@@ -176,6 +176,21 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
+                vm.Global.RegisterExternFunction(list.FullName + ".remove", (result, args) =>
+                {
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var idx = args[1].As<BasicRuntimeValue>().U64Value;
+                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
+                    if ((ulong)l!.Count <= idx)
+                    {
+                        // remove out of range
+                    }
+                    else
+                    {
+                        l.RemoveAt((int)idx);
+                    }
+                });
+
                 vm.Global.RegisterExternFunction(list.FullName + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();

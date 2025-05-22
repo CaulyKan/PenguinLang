@@ -5,7 +5,7 @@ namespace BabyPenguin.SemanticNode
 {
     public interface IEnum : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
-        VaraibleSymbol? ValueSymbol { get; set; }
+        VariableSymbol? ValueSymbol { get; set; }
 
         List<EnumDeclaration> EnumDeclarations { get; set; }
 
@@ -62,7 +62,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public VaraibleSymbol? ValueSymbol { get; set; }
+        public VariableSymbol? ValueSymbol { get; set; }
 
         public ISemanticScope? Parent { get; set; }
 

@@ -28,9 +28,9 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"{Identifier!.BuildSourceText()}: {TypeSpecifier!.BuildSourceText()}";
+            return $"{Identifier!.BuildText()}: {TypeSpecifier!.BuildText()}";
         }
     }
 }

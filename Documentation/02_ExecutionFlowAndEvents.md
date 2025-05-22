@@ -23,7 +23,7 @@ In order to run `initial` blocks in sequence, you can use event, which is a core
 event a_finished;  // define an event
 initial {
 	print("A");
-	raise a_finished; 
+	emit a_finished; 
 }
 	
 initial {
@@ -39,7 +39,7 @@ Penguin-lang also provide `on` control block, which is similar to 'callbacks' in
 event foo;
 
 initial {
-	raise foo;
+	emit foo;
 }
 	
 on foo {
@@ -79,8 +79,8 @@ Events can take parameters, for example:
 event foo : i32;
 
 initial {
-	raise foo(1);
-	raise foo(2);
+	emit foo(1);
+	emit foo(2);
 }
 
 on foo(x) {
@@ -98,7 +98,7 @@ It's also possible to use `wait` keyword with event expression which return a va
 event foo : i32;
 
 initial {
-	raise foo(1);
+	emit foo(1);
 }
 
 initial {

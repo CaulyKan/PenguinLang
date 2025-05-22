@@ -42,15 +42,15 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsMemberAccess => MemberAccess is not null;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (IsIdentifier)
             {
-                return Identifier!.BuildSourceText();
+                return Identifier!.BuildText();
             }
             else if (IsMemberAccess)
             {
-                return MemberAccess!.BuildSourceText();
+                return MemberAccess!.BuildText();
             }
             else
             {

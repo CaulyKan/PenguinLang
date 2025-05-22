@@ -105,27 +105,16 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression && SubPrimaryExpression!.IsSimple;
 
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new UnaryExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpression = this,
-            };
-        }
-
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             return PostfixExpressionType switch
             {
-                Type.PrimaryExpression => SubPrimaryExpression!.BuildSourceText(),
-                Type.FunctionCall => SubFunctionCallExpression!.BuildSourceText(),
-                Type.MemberAccess => SubMemberAccessExpression!.BuildSourceText(),
-                Type.New => SubNewExpression!.BuildSourceText(),
-                Type.Wait => SubWaitExpression!.BuildSourceText(),
-                Type.SpawnAsync => SubSpawnAsyncExpression!.BuildSourceText(),
+                Type.PrimaryExpression => SubPrimaryExpression!.BuildText(),
+                Type.FunctionCall => SubFunctionCallExpression!.BuildText(),
+                Type.MemberAccess => SubMemberAccessExpression!.BuildText(),
+                Type.New => SubNewExpression!.BuildText(),
+                Type.Wait => SubWaitExpression!.BuildText(),
+                Type.SpawnAsync => SubSpawnAsyncExpression!.BuildText(),
                 _ => throw new NotImplementedException($"Unsupported PostfixExpressionType: {PostfixExpressionType}")
             };
         }

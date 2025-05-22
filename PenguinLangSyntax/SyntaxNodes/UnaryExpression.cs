@@ -45,7 +45,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => !HasUnaryOperator && SubExpression!.IsSimple;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (this.HasUnaryOperator)
             {
@@ -59,10 +59,10 @@ namespace PenguinLangSyntax.SyntaxNodes
                     (UnaryOperatorEnum?)UnaryOperatorEnum.BitwiseNot => "~",
                     _ => throw new System.NotImplementedException("Invalid unary operator"),
                 };
-                return $"{op}{SubExpression!.BuildSourceText()}";
+                return $"{op}{SubExpression!.BuildText()}";
             }
             else
-                return SubExpression!.BuildSourceText();
+                return SubExpression!.BuildText();
         }
     }
 }

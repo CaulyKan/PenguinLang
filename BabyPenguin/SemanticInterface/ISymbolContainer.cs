@@ -12,7 +12,7 @@ namespace BabyPenguin.SemanticInterface
             var name = $"__temp_{counter++}";
             if (!type.IsFunctionType)
             {
-                ISymbol temp = new VaraibleSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
+                ISymbol temp = new VariableSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, false);
                 Symbols.Add(temp);
                 return temp;
             }
@@ -57,7 +57,7 @@ namespace BabyPenguin.SemanticInterface
             ISymbol? symbol;
             if (!typeinfo.IsFunctionType)
             {
-                symbol = new VaraibleSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
+                symbol = new VariableSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isReadonly, isClassMember);
             }
             else
             {

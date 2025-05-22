@@ -83,7 +83,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             if (IsAsync)
@@ -98,14 +98,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             parts.Add("(");
             if (Parameters.Count > 0)
             {
-                parts.Add(string.Join(", ", Parameters.Select(p => p.BuildSourceText())));
+                parts.Add(string.Join(", ", Parameters.Select(p => p.BuildText())));
             }
             parts.Add(")");
 
             if (ReturnType != null)
             {
                 parts.Add("->");
-                parts.Add(ReturnType.BuildSourceText());
+                parts.Add(ReturnType.BuildText());
             }
 
             if (ReturnValueIsReadonly == true)
@@ -115,7 +115,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (CodeBlock != null)
             {
-                parts.Add(CodeBlock.BuildSourceText());
+                parts.Add(CodeBlock.BuildText());
             }
 
             return string.Join(" ", parts);

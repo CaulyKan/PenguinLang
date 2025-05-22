@@ -30,9 +30,9 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public string Name => Identifier!.Name;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"type {Identifier!.BuildSourceText()} = {TypeSpecifier!.BuildSourceText()}";
+            return $"type {Identifier!.BuildText()} = {TypeSpecifier!.BuildText()}";
         }
     }
 }

@@ -21,9 +21,12 @@ namespace MagellanicPenguin
 
     class Program
     {
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
-            Console.WriteLine("Hello, world!");
+            return Parser.Default.ParseArguments<Options>(args).MapResult(
+                Run,
+                _ => -1
+            );
         }
 
         static void RunDAP(Options options)
@@ -31,6 +34,10 @@ namespace MagellanicPenguin
             var dap = new DAP();
             dap.Protocol.Run();
         }
-
+        static int Run(Options options)
+        {
+            RunDAP(options);
+            return 0;
+        }
     }
 }

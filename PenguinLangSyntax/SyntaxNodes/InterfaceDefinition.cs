@@ -22,6 +22,9 @@ namespace PenguinLangSyntax.SyntaxNodes
                 Events = context.children.OfType<EventDefinitionContext>()
                     .Select(x => Build<EventDefinition>(walker, x))
                     .ToList();
+                Declarations = context.children.OfType<DeclarationContext>()
+                   .Select(x => Build<Declaration>(walker, x))
+                   .ToList();
 
                 walker.PopScope();
             }
@@ -42,51 +45,54 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Interface;
 
-        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+        public List<SyntaxSymbol> Symbols { get; set; } = [];
 
         [ChildrenNode]
         public List<EventDefinition> Events { get; set; } = [];
 
         [ChildrenNode]
-        public List<FunctionDefinition> Functions { get; private set; } = [];
+        public List<FunctionDefinition> Functions { get; set; } = [];
 
         public bool IsAnonymous => false;
 
-        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+        public Dictionary<string, ISyntaxScope> SubScopes { get; set; } = [];
 
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
-        public GenericDefinitions? GenericDefinitions { get; private set; } = null;
+        public GenericDefinitions? GenericDefinitions { get; set; } = null;
 
         [ChildrenNode]
-        public List<InterfaceImplementation> InterfaceImplementations { get; private set; } = [];
+        public List<Declaration> Declarations { get; set; } = [];
 
-        public override string BuildSourceText()
+        [ChildrenNode]
+        public List<InterfaceImplementation> InterfaceImplementations { get; set; } = [];
+
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("interface");
-            parts.Add(InterfaceIdentifier!.BuildSourceText());
+            parts.Add(InterfaceIdentifier!.BuildText());
 
             if (GenericDefinitions != null)
             {
-                parts.Add(GenericDefinitions.BuildSourceText());
+                parts.Add(GenericDefinitions.BuildText());
             }
 
             parts.Add("{");
             if (Events.Count > 0)
             {
-                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
             }
 
             foreach (var function in Functions)
             {
-                parts.Add(function.BuildSourceText());
+                parts.Add(function.BuildText());
             }
 
             foreach (var impl in InterfaceImplementations)
             {
-                parts.Add(impl.BuildSourceText());
+                parts.Add(impl.BuildText());
             }
 
             parts.Add("}");

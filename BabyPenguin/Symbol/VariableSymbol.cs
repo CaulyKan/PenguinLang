@@ -1,7 +1,7 @@
 namespace BabyPenguin.Symbol
 {
 
-    public class VaraibleSymbol(ISymbolContainer parent,
+    public class VariableSymbol(ISymbolContainer parent,
         bool isLocal,
         string name,
         IType type,

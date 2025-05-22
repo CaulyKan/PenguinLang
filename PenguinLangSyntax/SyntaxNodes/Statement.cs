@@ -15,6 +15,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             ReturnStatement,
             YieldStatement,
             SignalStatement,
+            EmitEventStatement,
         }
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
@@ -67,6 +68,11 @@ namespace PenguinLangSyntax.SyntaxNodes
                 {
                     StatementType = Type.SignalStatement;
                     SignalStatement = Build<SignalStatement>(walker, context.signalStatement());
+                }
+                else if (context.emitEventStatement() is not null)
+                {
+                    StatementType = Type.EmitEventStatement;
+                    EmitEventStatement = Build<EmitEventStatement>(walker, context.emitEventStatement());
                 }
                 else if (context.codeBlock() is not null)
                 {
@@ -122,24 +128,27 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public SignalStatement? SignalStatement { get; set; }
 
-        public override string BuildSourceText()
+        [ChildrenNode]
+        public EmitEventStatement? EmitEventStatement { get; set; }
+
+        public override string BuildText()
         {
             return StatementType switch
             {
                 Type.Empty => ";",
-                Type.SubBlock => CodeBlock!.BuildSourceText(),
-                Type.ExpressionStatement => ExpressionStatement!.BuildSourceText(),
-                Type.IfStatement => IfStatement!.BuildSourceText(),
-                Type.WhileStatement => WhileStatement!.BuildSourceText(),
-                Type.ForStatement => ForStatement!.BuildSourceText(),
-                Type.JumpStatement => JumpStatement!.BuildSourceText(),
-                Type.AssignmentStatement => AssignmentStatement!.BuildSourceText(),
-                Type.ReturnStatement => ReturnStatement!.BuildSourceText(),
-                Type.YieldStatement => YieldStatement!.BuildSourceText(),
-                Type.SignalStatement => SignalStatement!.BuildSourceText(),
+                Type.SubBlock => CodeBlock!.BuildText(),
+                Type.ExpressionStatement => ExpressionStatement!.BuildText(),
+                Type.IfStatement => IfStatement!.BuildText(),
+                Type.WhileStatement => WhileStatement!.BuildText(),
+                Type.ForStatement => ForStatement!.BuildText(),
+                Type.JumpStatement => JumpStatement!.BuildText(),
+                Type.AssignmentStatement => AssignmentStatement!.BuildText(),
+                Type.ReturnStatement => ReturnStatement!.BuildText(),
+                Type.YieldStatement => YieldStatement!.BuildText(),
+                Type.SignalStatement => SignalStatement!.BuildText(),
+                Type.EmitEventStatement => EmitEventStatement!.BuildText(),
                 _ => throw new NotImplementedException($"Unsupported StatementType: {StatementType}")
             };
         }
     }
-
 }

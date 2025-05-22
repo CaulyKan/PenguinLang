@@ -111,16 +111,14 @@ assignmentOperator:
 
 constantExpression: conditionalExpression;
 
-declaration:
-	storageClassSpecifier* typeQualifier* declarationKeyword identifier (
-		':' typeSpecifier
-	)? ('=' expression)?;
-
 typeReferenceDeclaration: 'type' identifier '=' typeSpecifier;
 
-declarationKeyword: 'var' | 'val';
+declaration:
+	declarationKeyword identifier (':' typeSpecifier)? (
+		'=' expression
+	)?;
 
-typeQualifier: 'const';
+declarationKeyword: 'var' | 'val';
 
 storageClassSpecifier: 'extern';
 
@@ -168,7 +166,8 @@ whereDefinition: 'where' (whereClause (',' whereClause)*);
 
 interfaceDefinition:
 	'interface' identifier genericDefinitions? '{' (
-		functionDefinition
+		(declaration ';')
+		| functionDefinition
 		| interfaceImplementation
 		| eventDefinition
 	)* '}';
@@ -187,16 +186,11 @@ interfaceForImplementation:
 
 classDefinition:
 	'class' identifier genericDefinitions? '{' (
-		classDeclaration
+		(declaration ';')
 		| functionDefinition
 		| interfaceImplementation
 		| eventDefinition
 	)* '}';
-
-classDeclaration:
-	declarationKeyword identifier ':' typeSpecifier (
-		'=' expression
-	)? ';';
 
 enumDefinition:
 	'enum' identifier genericDefinitions? '{' (
@@ -233,6 +227,7 @@ statement:
 	| returnStatement
 	| yieldStatement
 	| signalStatement
+	| emitEventStatement
 	| ';';
 
 identifierOrMemberAccess: identifier | memberAccessExpression;
@@ -266,6 +261,9 @@ returnKeyword:
 yieldStatement: 'yield' expression? ';';
 
 signalStatement: '__signal' expression;
+
+emitEventStatement:
+	'emit' identifier ('(' expression? ')')? ';';
 
 compilationUnit: namespaceDeclaration* EOF;
 

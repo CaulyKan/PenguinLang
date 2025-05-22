@@ -26,14 +26,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (WhereClauses.Count == 0)
             {
                 return "";
             }
 
-            return $"where {string.Join(", ", WhereClauses.Select(c => c.BuildSourceText()))}";
+            return $"where {string.Join(", ", WhereClauses.Select(c => c.BuildText()))}";
         }
     }
 }

@@ -72,6 +72,17 @@ namespace BabyPenguin.SemanticPass
 
         public void ElaborateGlobalSymbol(ISemanticNode obj)
         {
+            void addEventSymbol(ISymbolContainer container, EventDefinition evt)
+            {
+                var typeName = evt.EventType?.TypeName ?? "void";
+                var type = Model.ResolveType(typeName, scope: container)
+                    ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation);
+                var eventType = (Model.ResolveType("__builtin.Event<?>")?.Specialize([type]))
+                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName}>");
+
+                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, false, false));
+            }
+
             switch (obj)
             {
                 case INamespace ns:
@@ -82,6 +93,11 @@ namespace BabyPenguin.SemanticPass
                             {
                                 var typeName = decl.TypeSpecifier!.Name; // TODO: type inference
                                 ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, decl.IsReadonly, false);
+                            }
+
+                            foreach (var evt in syntaxNode.Events)
+                            {
+                                addEventSymbol(ns, evt);
                             }
                         }
                     }
@@ -95,9 +111,37 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (cls.SyntaxNode is ClassDefinition syntaxNode)
                         {
-                            foreach (var member in syntaxNode.ClassDeclarations)
+                            foreach (var member in syntaxNode.Declarations)
                             {
                                 cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, member.IsReadonly, true);
+                            }
+
+                            foreach (var evt in syntaxNode.Events)
+                            {
+                                addEventSymbol(cls, evt);
+                            }
+                        }
+                    }
+                    break;
+                case IInterface intf:
+                    if (intf.IsGeneric && !intf.IsSpecialized)
+                    {
+                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for class '{intf.Name}' is skipped now because it is generic");
+                    }
+                    else
+                    {
+                        if (intf.SyntaxNode is InterfaceDefinition syntaxNode)
+                        {
+                            foreach (var member in syntaxNode.Declarations)
+                            {
+                                intf.HasDeclartion = true;
+                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, member.IsReadonly, true);
+                            }
+
+                            foreach (var evt in syntaxNode.Events)
+                            {
+                                intf.HasDeclartion = true;
+                                addEventSymbol(intf, evt);
                             }
                         }
                     }
@@ -109,7 +153,7 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, false, true) as VaraibleSymbol;
+                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, false, true) as VariableSymbol;
 
                         if (enm.SyntaxNode is EnumDefinition syntax)
                         {
@@ -231,6 +275,7 @@ namespace BabyPenguin.SemanticPass
                 default:
                     break;
             }
+
         }
 
         public void ElaborateLocalSymbol(ISemanticNode obj)

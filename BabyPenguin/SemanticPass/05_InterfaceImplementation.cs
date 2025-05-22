@@ -22,6 +22,10 @@ namespace BabyPenguin.SemanticPass
             {
                 FinishVTable(obj);
             }
+            foreach (var cls in items.OfType<IClass>())
+            {
+                CallInterfaceConstructor(cls);
+            }
             foreach (var obj in items)
             {
                 obj.PassIndex = PassIndex;
@@ -36,6 +40,12 @@ namespace BabyPenguin.SemanticPass
                 {
                     foreach (var impl in namespaceDefinition.InterfaceImplementations)
                     {
+                        var interfaceType = Model.ResolveType(impl.InterfaceType!.Text, scope: ns);
+                        if (interfaceType == null)
+                            throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName}", impl.SourceLocation);
+                        if (interfaceType is IInterface intf && intf.HasDeclartion)
+                            throw new BabyPenguinException($"Interface {intf.FullName} has declarations, so it must be implemented in the scope of a class.");
+
                         var forType = Model.ResolveType(impl.ForType!.Text, scope: ns);
                         if (forType == null)
                             throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName}", impl.SourceLocation);
@@ -194,6 +204,20 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
+        public void CallInterfaceConstructor(IClass cls)
+        {
+            foreach (var vt in cls.VTables)
+            {
+                var intf = vt.Interface;
+                var funcSymbol = intf.Constructor?.FunctionSymbol ?? throw new BabyPenguinException($"Cant resolve constructor for interface '{intf.Name}'");
+                if (cls.Constructor == null) throw new BabyPenguinException($"Cant resolve constructor for class '{cls.Name}'");
+                var intfSymbol = cls.Constructor.AllocTempSymbol(intf, vt.SourceLocation);
+                var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName}'");
+                cls.Constructor.AddCastExpression(new(thisSymbol), intfSymbol, vt.SourceLocation);
+                cls.Constructor.Instructions.Add(new FunctionCallInstruction(vt.SourceLocation, funcSymbol, [intfSymbol], null));
+            }
+        }
+
         public void Process(ISemanticNode obj)
         {
             if (obj.PassIndex >= PassIndex)
@@ -202,6 +226,8 @@ namespace BabyPenguin.SemanticPass
             BuiltVTable(obj);
             MergeVTables(obj);
             FinishVTable(obj);
+            if (obj is IClass cls)
+                CallInterfaceConstructor(cls);
 
             obj.PassIndex = PassIndex;
         }

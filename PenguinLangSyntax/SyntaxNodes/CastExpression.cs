@@ -41,13 +41,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => !IsTypeCast && SubUnaryExpression!.IsSimple;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (!IsTypeCast)
             {
-                return SubUnaryExpression!.BuildSourceText();
+                return SubUnaryExpression!.BuildText();
             }
-            return $"{SubUnaryExpression!.BuildSourceText()} as {CastTypeSpecifier!.BuildSourceText()}";
+            return $"{SubUnaryExpression!.BuildText()} as {CastTypeSpecifier!.BuildText()}";
         }
     }
 }

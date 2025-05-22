@@ -28,9 +28,9 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"async {Expression!.BuildSourceText()}";
+            return $"async {Expression!.BuildText()}";
         }
     }
 }

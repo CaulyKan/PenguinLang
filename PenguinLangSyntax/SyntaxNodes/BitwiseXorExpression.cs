@@ -29,9 +29,9 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return string.Join(" ^ ", SubExpressions.Select(x => x.BuildSourceText()));
+            return string.Join(" ^ ", SubExpressions.Select(x => x.BuildText()));
         }
     }
 }

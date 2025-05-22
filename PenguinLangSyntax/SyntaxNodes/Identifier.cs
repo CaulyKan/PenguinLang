@@ -35,7 +35,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public string Name => LiteralName;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             return LiteralName;
         }

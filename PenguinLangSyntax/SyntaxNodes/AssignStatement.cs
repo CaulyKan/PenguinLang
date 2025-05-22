@@ -45,10 +45,10 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public AssignmentOperatorEnum AssignmentOperator { get; private set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
-            parts.Add(LeftHandSide!.BuildSourceText());
+            parts.Add(LeftHandSide!.BuildText());
             parts.Add(AssignmentOperator switch
             {
                 AssignmentOperatorEnum.Assign => "=",
@@ -64,7 +64,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 AssignmentOperatorEnum.RightShiftAssign => ">>=",
                 _ => throw new NotImplementedException($"Invalid assignment operator: {AssignmentOperator}")
             });
-            parts.Add(RightHandSide!.BuildSourceText());
+            parts.Add(RightHandSide!.BuildText());
             parts.Add(";");
             return string.Join(" ", parts);
         }

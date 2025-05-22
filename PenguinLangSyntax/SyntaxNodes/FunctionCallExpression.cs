@@ -46,22 +46,22 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             if (IsMemberAccess)
             {
-                parts.Add(MemberAccessExpression!.BuildSourceText());
+                parts.Add(MemberAccessExpression!.BuildText());
             }
             else
             {
-                parts.Add(PrimaryExpression!.BuildSourceText());
+                parts.Add(PrimaryExpression!.BuildText());
             }
 
             parts.Add("(");
             if (ArgumentsExpression.Count > 0)
             {
-                parts.Add(string.Join(", ", ArgumentsExpression.Select(e => e.BuildSourceText())));
+                parts.Add(string.Join(", ", ArgumentsExpression.Select(e => e.BuildText())));
             }
             parts.Add(")");
 

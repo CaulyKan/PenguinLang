@@ -133,6 +133,7 @@ namespace __builtin {
         var __impl: u64;
         extern fun new(var this: List<T>);
         extern fun at(val this: List<T>, val index: u64) -> Option<T>;
+        extern fun remove(val this: List<T>, val index: u64);
         extern fun push(var this: List<T>, val value: T);
         extern fun pop(var this: List<T>) -> Option<T>;
         extern fun size(val this: List<T>) -> u64;
@@ -217,6 +218,14 @@ namespace __builtin {
             val to_i64 : i64 = to.to_i64();
             val res : i64 = v.compare_exchange(from_i64, to_i64);
             return res == from_i64;
+        }
+    }
+
+    var __event_id : AtomicI64 = new AtomicI64(0);
+    interface IObjectID {
+        var object_id : i64 = __event_id.fetch_add(1);
+        fun equals(val this: IObjectID, val other: IObjectID) -> bool {
+            return this.object_id == other.object_id;
         }
     }
 
@@ -386,4 +395,120 @@ namespace __builtin {
             }
         }
     }
+
+    class Event<T> {
+        var receivers : List<IEventReceiver<T>> = new List<IEventReceiver<T>>();
+
+        impl IObjectID;
+
+        fun notify(var this: Self, val ev: T) {
+            for (var receiver : IEventReceiver<T> in this.receivers.iter()) {
+                 receiver.notify(ev);
+            }
+        }
+
+        fun add_receiver(var this: Self, var receiver: IEventReceiver<T>) {
+            for (var r : IEventReceiver<T> in this.receivers.iter()) {
+                if (r.equals(receiver))
+                    return;
+            }
+            this.receivers.push(receiver);
+        }
+
+        fun remove_receiver(var this: Self, var receiver: IEventReceiver<T>) {
+            for (var i : u64 in range(0, this.receivers.size())) {
+                var r : Option<IEventReceiver<T>> = this.receivers.at(i);
+                if (r.is_some()) {
+                    if (r.some.equals(receiver)) {
+                        this.receivers.remove(i);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    interface IEventReceiver<T> {
+        fun notify(var this: IEventReceiver<T>, val ev: T);
+        fun connect(var this: IEventReceiver<T>, var ev: Event<T>);
+
+        impl IFuture<T>;
+        impl IObjectID;
+    }
+
+    class _QueuedEventReceiver<T> {
+        var event_queue : Queue<T> = new Queue<T>();
+        var ev : Event<T>;
+
+        fun new(var this: Self, var ev: Event<T>) {
+            ev.add_receiver(this);
+            this.ev = ev;
+        }
+
+        impl IEventReceiver<T> { 
+            fun notify(var this: IEventReceiver<T>, val ev: T) {
+                var self: Self = this as Self;
+                self.event_queue.enqueue(ev);
+            }
+
+            fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
+                var self: Self = this as Self;
+                self.ev.remove_receiver(self);
+                ev.add_receiver(self);
+                self.ev = ev;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(val this: IFuture<T>) -> FutureState<T> {
+                var self: Self = this as Self;
+                
+                val v : Option<T> = self.event_queue.dequeue();
+                if (v.is_some()) {
+                     return new FutureState<T>.ready(v.some);
+                }
+                else {
+                    return new FutureState<T>.not_ready();
+                }
+            }
+        }
+    }
+
+    class _OnetimeEventReceiver<T> {
+        var value : Option<T> = new Option<T>.none();
+        var ev : Event<T>;
+
+        fun new(var this: Self, var ev: Event<T>) {
+            ev.add_receiver(this);
+            this.ev = ev;
+        }
+
+        impl IEventReceiver<T> { 
+            fun notify(var this: IEventReceiver<T>, val v: T) {
+                var self: Self = this as Self;
+                self.value = new Option<T>.some(v);
+            }
+
+            fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
+                var self: Self = this as Self;
+                self.ev.remove_receiver(self);
+                ev.add_receiver(self);
+                self.ev = ev;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(val this: IFuture<T>) -> FutureState<T> {
+                var self: Self = this as Self;
+                
+                if (self.value.is_some()) {
+                     return new FutureState<T>.ready_finished(self.value.some);
+                }
+                else {
+                    return new FutureState<T>.not_ready();
+                }
+            }
+        }
+    }
+
 }

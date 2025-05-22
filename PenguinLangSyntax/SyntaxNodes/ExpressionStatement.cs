@@ -24,9 +24,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public ISyntaxExpression? Expression { get; private set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"{Expression!.BuildSourceText()};";
+            return $"{Expression!.BuildText()};";
         }
     }
 }

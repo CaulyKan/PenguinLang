@@ -38,15 +38,15 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (SubExpressions.Count == 1)
             {
-                return SubExpressions[0].BuildSourceText();
+                return SubExpressions[0].BuildText();
             }
 
             var result = new List<string>();
-            result.Add(SubExpressions[0].BuildSourceText());
+            result.Add(SubExpressions[0].BuildText());
 
             for (int i = 0; i < Operators.Count; i++)
             {
@@ -57,7 +57,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                     _ => throw new NotImplementedException($"Unsupported shift operator: {Operators[i]}")
                 };
                 result.Add(op);
-                result.Add(SubExpressions[i + 1].BuildSourceText());
+                result.Add(SubExpressions[i + 1].BuildText());
             }
 
             return string.Join(" ", result);

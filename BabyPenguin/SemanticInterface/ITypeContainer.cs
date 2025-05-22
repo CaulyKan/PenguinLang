@@ -25,18 +25,18 @@ namespace BabyPenguin.SemanticInterface
         MemberAccessExpression CreateMemberAccess(bool isRead, Identifier identifier)
         {
             MemberAccessExpression result = isRead ? new ReadMemberAccessExpression() : new WriteMemberAccessExpression();
-            result.Text = $"this.{identifier.Name}";
+            result.SourceText = $"this.{identifier.Name}";
             result.SourceLocation = identifier.SourceLocation;
             result.ScopeDepth = identifier.ScopeDepth;
             result.PrimaryExpression = new PrimaryExpression
             {
-                Text = "this",
+                SourceText = "this",
                 SourceLocation = identifier.SourceLocation,
                 ScopeDepth = identifier.ScopeDepth,
                 PrimaryExpressionType = PrimaryExpression.Type.Identifier,
                 Identifier = new SymbolIdentifier
                 {
-                    Text = "this",
+                    SourceText = "this",
                     SourceLocation = identifier.SourceLocation,
                     ScopeDepth = identifier.ScopeDepth,
                     LiteralName = "this",
@@ -44,7 +44,7 @@ namespace BabyPenguin.SemanticInterface
             };
             result.MemberIdentifiers = [ new SymbolIdentifier
                 {
-                    Text = identifier.Name,
+                    SourceText = identifier.Name,
                     SourceLocation = identifier.SourceLocation,
                     ScopeDepth = identifier.ScopeDepth,
                     LiteralName = identifier.Name
@@ -84,7 +84,7 @@ namespace BabyPenguin.SemanticInterface
                     }
                     return true;
                 });
-                text = syntaxNode.BuildSourceText();
+                text = syntaxNode.BuildText();
             }
 
             var source = @$"

@@ -106,17 +106,17 @@ namespace PenguinLangSyntax.SyntaxNodes
             _ => throw new NotImplementedException("Invalid primary expression type"),
         };
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             return PrimaryExpressionType switch
             {
-                Type.Identifier => Identifier!.BuildSourceText(),
+                Type.Identifier => Identifier!.BuildText(),
                 Type.Constant => Literal!,
                 Type.StringLiteral => Literal!,
                 Type.BoolLiteral => Literal!,
                 Type.VoidLiteral => Literal!,
-                Type.LambdaFunction => LambdaFunction!.BuildSourceText(),
-                Type.ParenthesizedExpression => $"({ParenthesizedExpression!.BuildSourceText()})",
+                Type.LambdaFunction => LambdaFunction!.BuildText(),
+                Type.ParenthesizedExpression => $"({ParenthesizedExpression!.BuildText()})",
                 _ => throw new NotImplementedException($"Unsupported PrimaryExpressionType: {PrimaryExpressionType}")
             };
         }

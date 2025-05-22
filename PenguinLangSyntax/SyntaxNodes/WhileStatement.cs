@@ -27,9 +27,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"while {Condition!.BuildSourceText()} {BodyStatement!.BuildSourceText()}";
+            return $"while {Condition!.BuildText()} {BodyStatement!.BuildText()}";
         }
     }
 }

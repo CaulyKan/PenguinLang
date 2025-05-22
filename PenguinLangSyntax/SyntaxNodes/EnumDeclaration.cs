@@ -41,12 +41,12 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public ISyntaxScope? ParentScope { get; set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (TypeSpecifier == null)
-                return Identifier!.BuildSourceText();
+                return Identifier!.BuildText();
             else
-                return $"{Identifier!.BuildSourceText()} : {TypeSpecifier!.BuildSourceText()};";
+                return $"{Identifier!.BuildText()} : {TypeSpecifier!.BuildText()};";
         }
 
     }

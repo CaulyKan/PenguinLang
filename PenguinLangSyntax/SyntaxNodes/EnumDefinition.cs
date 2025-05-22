@@ -75,35 +75,35 @@ namespace PenguinLangSyntax.SyntaxNodes
         public List<EventDefinition> Events { get; set; } = [];
 
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("enum");
-            parts.Add(EnumIdentifier!.BuildSourceText());
+            parts.Add(EnumIdentifier!.BuildText());
             if (GenericDefinitions != null)
             {
-                parts.Add(GenericDefinitions.BuildSourceText());
+                parts.Add(GenericDefinitions.BuildText());
             }
             parts.Add("{");
             if (Events.Count > 0)
             {
-                parts.Add(string.Join("\n", Events.Select(i => i.BuildSourceText())));
+                parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
             }
             if (InterfaceImplementations.Count > 0)
             {
-                parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildSourceText())));
+                parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildText())));
             }
             if (EnumDeclarations.Count > 0)
             {
-                parts.Add(string.Join("\n", EnumDeclarations.Select(decl => decl.BuildSourceText())));
+                parts.Add(string.Join("\n", EnumDeclarations.Select(decl => decl.BuildText())));
             }
             if (Functions.Count > 0)
             {
-                parts.Add(string.Join("\n", Functions.Select(func => func.BuildSourceText())));
+                parts.Add(string.Join("\n", Functions.Select(func => func.BuildText())));
             }
             if (InitialRoutines.Count > 0)
             {
-                parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildSourceText())));
+                parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildText())));
             }
             parts.Add("}");
             return string.Join(" ", parts);

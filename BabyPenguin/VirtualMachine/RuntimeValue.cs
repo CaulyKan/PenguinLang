@@ -173,14 +173,14 @@ namespace BabyPenguin.VirtualMachine
 
             if (this.ExternImplenmentationValue != null)
             {
-                if (this.ExternImplenmentationValue is ICollection enumerable)
-                {
-                    s += " (extern: [";
-                    s += string.Join(", ", enumerable.Cast<object>().Select(o => o.ToString()));
-                    s += "])";
-                }
-                else
-                    s += " (extern: " + ExternImplenmentationValue.ToString() + ")";
+                // if (this.ExternImplenmentationValue is ICollection enumerable)
+                // {
+                //     s += " (extern: [";
+                //     s += string.Join(", ", enumerable.Cast<object>().Select(o => o.ToString()));
+                //     s += "])";
+                // }
+                // else
+                //     s += " (extern: " + ExternImplenmentationValue.ToString() + ")";
             }
 
             return s;

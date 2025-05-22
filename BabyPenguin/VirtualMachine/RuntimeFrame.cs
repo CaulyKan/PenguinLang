@@ -622,6 +622,36 @@ namespace BabyPenguin.VirtualMachine
                         {
                             IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
                             var owner = resolveVariable(cmd.MemberOwnerSymbol);
+
+                            IRuntimeValue readMember(IRuntimeValue ownerVar)
+                            {
+                                Dictionary<string, IRuntimeValue> fields;
+                                if (ownerVar is ReferenceRuntimeValue refVal)
+                                    fields = refVal.Fields;
+                                else if (ownerVar is EnumRuntimeValue enumVal)
+                                    fields = enumVal.FieldsValue.Fields;
+                                else if (ownerVar is NotInitializedRuntimeValue)
+                                    throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from uninitialized value");
+                                else
+                                    throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from type {ownerVar.TypeInfo}");
+
+                                IRuntimeValue memberVar;
+                                if (!fields.ContainsKey(cmd.Member.Name))
+                                    throw new BabyPenguinRuntimeException($"Type {owner.TypeInfo} does not have member {cmd.Member.Name}");
+                                memberVar = fields[cmd.Member.Name]!;
+                                resultVar.AssignFrom(memberVar);
+
+                                if (cmd.IsFatPointer)
+                                {
+                                    if (resultVar.Value is FunctionRuntimeValue functionRuntimeValue)
+                                        functionRuntimeValue.Owner = ownerVar;
+                                    else
+                                        throw new NotImplementedException();
+                                }
+                                return memberVar;
+                            }
+
+
                             if (owner.Type == TypeEnum.Interface)
                             {
                                 if (owner.As<InterfaceRuntimeSymbol>().VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
@@ -638,38 +668,22 @@ namespace BabyPenguin.VirtualMachine
                                     }
                                     DebugPrint(cmd, op1: funVar.ToDebugString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                                 }
-                                else throw new BabyPenguinRuntimeException($"Interface {owner.TypeInfo} does not have member {cmd.Member.Name}");
+                                else
+                                {
+                                    IRuntimeValue memberVar = readMember(owner.As<InterfaceRuntimeSymbol>().Value);
+                                    DebugPrint(cmd, op1: memberVar.ToString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
+                                }
                             }
                             else
                             {
-                                IRuntimeValue memberVar;
+                                IRuntimeValue ownerVar;
                                 if (owner is ClassRuntimeSymbol clsVar)
-                                {
-                                    var members = clsVar.ReferenceValue.Fields;
-                                    if (!members.ContainsKey(cmd.Member.Name))
-                                        throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
-                                    memberVar = members[cmd.Member.Name]!;
-                                }
+                                    ownerVar = clsVar.ReferenceValue;
                                 else if (owner is EnumRuntimeSymbol enumVar)
-                                {
-                                    var members = enumVar.EnumValue.FieldsValue.Fields;
-                                    if (!members.ContainsKey(cmd.Member.Name))
-                                        throw new BabyPenguinRuntimeException($"Enum {owner.TypeInfo} does not have member {cmd.Member.Name}");
-                                    memberVar = members[cmd.Member.Name]!;
-                                }
-                                else
-                                {
-                                    throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from type {owner.TypeInfo}");
-                                }
-                                resultVar.AssignFrom(memberVar);
-                                if (cmd.IsFatPointer)
-                                {
-                                    if (resultVar.Value is FunctionRuntimeValue functionRuntimeValue)
-                                    {
-                                        functionRuntimeValue.Owner = owner.Value;
-                                    }
-                                    else throw new NotImplementedException();
-                                }
+                                    ownerVar = enumVar.EnumValue;
+                                else throw new BabyPenguinRuntimeException($"Cannot read member {cmd.Member.Name} from type {owner.TypeInfo}");
+
+                                IRuntimeValue memberVar = readMember(ownerVar);
                                 DebugPrint(cmd, op1: memberVar.ToString(), op2: owner.ToDebugString(), result: resultVar.ToDebugString());
                             }
                         }
@@ -684,6 +698,17 @@ namespace BabyPenguin.VirtualMachine
                                 members = clsVar.ReferenceValue.Fields;
                             else if (owner is EnumRuntimeSymbol enumVar)
                                 members = enumVar.EnumValue.FieldsValue.Fields;
+                            else if (owner is InterfaceRuntimeSymbol intfVar)
+                            {
+                                if (intfVar.Value is ReferenceRuntimeValue refVal)
+                                    members = refVal.Fields;
+                                else if (intfVar.Value is EnumRuntimeValue enumVal)
+                                    members = enumVal.FieldsValue.Fields;
+                                else if (intfVar.Value is NotInitializedRuntimeValue)
+                                    throw new BabyPenguinRuntimeException($"Cannot write member {cmd.Member.Name} to {owner.ToDebugString()} which is uninitialized");
+                                else
+                                    throw new BabyPenguinRuntimeException($"Cannot write member {cmd.Member.Name} to type {owner.TypeInfo}");
+                            }
                             else
                                 throw new BabyPenguinRuntimeException($"Cannot write member {cmd.Member.Name} to type {owner.TypeInfo}");
 
@@ -748,6 +773,7 @@ namespace BabyPenguin.VirtualMachine
 
             if (result == null && InstructionPointer >= CodeContainer.Instructions.Count)
                 throw new BabyPenguinRuntimeException($"Function/Routine '{CodeContainer.FullName}' does not return a value");
+
         }
     }
 }

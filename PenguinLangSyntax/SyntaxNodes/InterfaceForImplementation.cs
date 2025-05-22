@@ -54,24 +54,24 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public WhereDefinition? WhereDefinition { get; set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("impl");
-            parts.Add(InterfaceType!.BuildSourceText());
+            parts.Add(InterfaceType!.BuildText());
             parts.Add("for");
-            parts.Add(ForType!.BuildSourceText());
+            parts.Add(ForType!.BuildText());
 
             if (WhereDefinition != null)
             {
-                parts.Add(WhereDefinition.BuildSourceText());
+                parts.Add(WhereDefinition.BuildText());
             }
 
             parts.Add("{");
 
             foreach (var function in Functions)
             {
-                parts.Add(function.BuildSourceText());
+                parts.Add(function.BuildText());
             }
 
             parts.Add("}");

@@ -42,7 +42,18 @@ namespace BabyPenguin.VirtualMachine
             }
             else if (symbol.TypeInfo.IsClassType)
             {
-                return new ClassRuntimeSymbol(model, symbol);
+                var result = new ClassRuntimeSymbol(model, symbol);
+                var fields = result.ReferenceValue.Fields;
+                foreach (var vtable in (symbol.TypeInfo as IClass)!.VTables)
+                {
+                    var intf = vtable.Interface;
+                    foreach (var s in intf.Symbols.Where(i => i.IsVariable))
+                    {
+                        var v = FromSymbol(model, s);
+                        fields[s.Name] = v.Value;
+                    }
+                }
+                return result;
             }
             else if (symbol.TypeInfo.IsInterfaceType)
             {

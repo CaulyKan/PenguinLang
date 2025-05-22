@@ -34,15 +34,15 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
-            parts.Add(PrimaryExpression!.BuildSourceText());
+            parts.Add(PrimaryExpression!.BuildText());
 
             foreach (var member in MemberIdentifiers)
             {
                 parts.Add(".");
-                parts.Add(member.BuildSourceText());
+                parts.Add(member.BuildText());
             }
 
             return string.Join("", parts);

@@ -17,13 +17,15 @@ namespace PenguinLangSyntax.SyntaxNodes
     {
         public uint ScopeDepth { get; set; }
 
-        public abstract string BuildSourceText();
+        public abstract string BuildText();
 
         public abstract void FromString(string text, uint scopeDepth, ErrorReporter reporter);
 
         public SourceLocation SourceLocation { get; set; } = SourceLocation.Empty();
 
-        public string Text { get; set; } = string.Empty;
+        public string Text => BuildText();
+
+        public string SourceText { get; set; } = string.Empty;
 
         protected string shorten(string s)
         {
@@ -31,11 +33,11 @@ namespace PenguinLangSyntax.SyntaxNodes
             return str.Length > 30 ? string.Concat(str.AsSpan(0, 27), "...") : str;
         }
 
-        public override string ToString() => $"[{GetType().Name}] {shorten((this as ISyntaxNode).BuildSourceText() ?? string.Empty)}";
+        public override string ToString() => $"[{GetType().Name}] {shorten((this as ISyntaxNode).BuildText() ?? string.Empty)}";
 
         public virtual void Build(SyntaxWalker walker, ParserRuleContext context)
         {
-            Text = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
+            SourceText = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
             var fileNameIdentifier = $"{Path.GetFileNameWithoutExtension(walker.FileName)}_{((uint)walker.FileName.GetHashCode()) % 0xFFFF}";
             SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
             ScopeDepth = walker.CurrentScope?.ScopeDepth ?? walker.InitialScopeDepth;
@@ -65,7 +67,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 SourceLocation = this.SourceLocation,
                 ScopeDepth = this.ScopeDepth,
-                Text = this.Text
+                SourceText = this.SourceText
             };
             init(result);
             return result;
@@ -88,9 +90,11 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public SourceLocation SourceLocation { get; set; }
 
-        public string Text { get; set; }
+        public string Text { get; }
 
-        public string BuildSourceText();
+        public string SourceText { get; set; }
+
+        public string BuildText();
 
         public void Build(SyntaxWalker walker, ParserRuleContext context);
 

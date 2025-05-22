@@ -46,13 +46,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public string Name => EventIdentifier!.Name;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (EventType == null || EventType.TypeName == "void")
             {
                 return $"event {Name};";
             }
-            return $"event {Name} : {EventType.BuildSourceText()};";
+            return $"event {Name} : {EventType.BuildText()};";
         }
     }
 }

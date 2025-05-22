@@ -39,17 +39,17 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (SubExpressions.Count == 1)
             {
-                return SubExpressions[0].BuildSourceText();
+                return SubExpressions[0].BuildText();
             }
 
             var parts = new List<string>();
             for (int i = 0; i < SubExpressions.Count; i++)
             {
-                parts.Add(SubExpressions[i].BuildSourceText());
+                parts.Add(SubExpressions[i].BuildText());
                 if (i < SubExpressions.Count - 1)
                 {
                     parts.Add(Operator switch

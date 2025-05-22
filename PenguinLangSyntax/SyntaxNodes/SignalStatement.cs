@@ -24,9 +24,9 @@ namespace PenguinLangSyntax.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return $"__signal {SignalExpression!.BuildSourceText()};";
+            return $"__signal {SignalExpression!.BuildText()};";
         }
     }
 }

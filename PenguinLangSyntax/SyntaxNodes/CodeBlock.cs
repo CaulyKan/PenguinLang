@@ -41,13 +41,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsAnonymous => true;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("{");
             if (BlockItems.Count > 0)
             {
-                parts.Add(string.Join("\n", BlockItems.Select(item => item.BuildSourceText())));
+                parts.Add(string.Join("\n", BlockItems.Select(item => item.BuildText())));
             }
             parts.Add("}");
             return string.Join("\n", parts);

@@ -46,7 +46,7 @@ event A : i32;
 
 initial {
 	for (i in 0..10) {
-		raise A(i);
+		emit A(i);
 	}
 }
 
@@ -126,7 +126,7 @@ MpscQueue<Result> result_queue;
 
 initial folk() {
 	job = create_job();
-	raise new_job(job);
+	emit new_job(job);
 }
 	
 initial {

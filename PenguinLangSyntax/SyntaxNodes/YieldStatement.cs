@@ -24,14 +24,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (YieldExpression == null)
             {
                 return "yield";
             }
 
-            return $"yield {YieldExpression.BuildSourceText()};";
+            return $"yield {YieldExpression.BuildText()};";
         }
     }
 }

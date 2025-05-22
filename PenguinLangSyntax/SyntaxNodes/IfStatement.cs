@@ -45,17 +45,17 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool HasElse => ElseStatement is not null;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add("if");
-            parts.Add("(" + Condition!.BuildSourceText() + ")");
-            parts.Add(MainStatement!.BuildSourceText());
+            parts.Add("(" + Condition!.BuildText() + ")");
+            parts.Add(MainStatement!.BuildText());
 
             if (HasElse)
             {
                 parts.Add("else");
-                parts.Add(ElseStatement!.BuildSourceText());
+                parts.Add(ElseStatement!.BuildText());
             }
 
             return string.Join(" ", parts);

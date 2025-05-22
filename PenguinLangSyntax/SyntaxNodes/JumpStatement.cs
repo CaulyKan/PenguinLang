@@ -40,7 +40,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public Type JumpType { get; private set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             return JumpType switch
             {

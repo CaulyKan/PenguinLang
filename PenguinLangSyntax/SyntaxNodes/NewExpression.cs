@@ -34,12 +34,12 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public bool IsSimple => false;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var args = ArgumentsExpression.Count > 0
-                ? $"({string.Join(", ", ArgumentsExpression.Select(e => e.BuildSourceText()))})"
+                ? $"({string.Join(", ", ArgumentsExpression.Select(e => e.BuildText()))})"
                 : "()";
-            return $"new {TypeSpecifier!.BuildSourceText()}{args}";
+            return $"new {TypeSpecifier!.BuildText()}{args}";
         }
     }
 }

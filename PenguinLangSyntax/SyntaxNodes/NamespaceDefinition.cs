@@ -144,7 +144,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             }
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             if (!IsAnonymous)
@@ -156,52 +156,52 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             foreach (var subNamespace in SubNamespaces)
             {
-                parts.Add(subNamespace.BuildSourceText());
+                parts.Add(subNamespace.BuildText());
             }
 
             foreach (var declaration in Declarations)
             {
-                parts.Add(declaration.BuildSourceText());
+                parts.Add(declaration.BuildText());
             }
 
             foreach (var typeRef in TypeReferenceDeclarations)
             {
-                parts.Add(typeRef.BuildSourceText());
+                parts.Add(typeRef.BuildText());
             }
 
             foreach (var function in Functions)
             {
-                parts.Add(function.BuildSourceText());
+                parts.Add(function.BuildText());
             }
 
             foreach (var classDef in Classes)
             {
-                parts.Add(classDef.BuildSourceText());
+                parts.Add(classDef.BuildText());
             }
 
             foreach (var enumDef in Enums)
             {
-                parts.Add(enumDef.BuildSourceText());
+                parts.Add(enumDef.BuildText());
             }
 
             foreach (var interfaceDef in Interfaces)
             {
-                parts.Add(interfaceDef.BuildSourceText());
+                parts.Add(interfaceDef.BuildText());
             }
 
             foreach (var interfaceImpl in InterfaceImplementations)
             {
-                parts.Add(interfaceImpl.BuildSourceText());
+                parts.Add(interfaceImpl.BuildText());
             }
 
             foreach (var eventDef in Events)
             {
-                parts.Add(eventDef.BuildSourceText());
+                parts.Add(eventDef.BuildText());
             }
 
             foreach (var initialRoutine in InitialRoutines)
             {
-                parts.Add(initialRoutine.BuildSourceText());
+                parts.Add(initialRoutine.BuildText());
             }
 
             if (!IsAnonymous)

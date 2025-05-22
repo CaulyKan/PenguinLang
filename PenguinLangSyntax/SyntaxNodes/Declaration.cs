@@ -46,17 +46,17 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public string Name => Identifier!.Name;
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             var parts = new List<string>();
             parts.Add(IsReadonly ? "val" : "var");
-            parts.Add(Identifier!.BuildSourceText());
+            parts.Add(Identifier!.BuildText());
             parts.Add(":");
-            parts.Add(TypeSpecifier!.BuildSourceText());
+            parts.Add(TypeSpecifier!.BuildText());
             if (InitializeExpression != null)
             {
                 parts.Add("=");
-                parts.Add(InitializeExpression.BuildSourceText());
+                parts.Add(InitializeExpression.BuildText());
             }
             return string.Join(" ", parts);
         }

@@ -427,6 +427,22 @@ namespace BabyPenguin.SemanticInterface
                         }
                     }
                     break;
+                case Statement.Type.EmitEventStatement:
+                    {
+                        var emitEventStatement = item.EmitEventStatement!;
+                        var eventSymbol = Model.ResolveSymbol(emitEventStatement.EventIdentifier!.Name, predicate: s => s is EventSymbol, scopeDepth: emitEventStatement.ScopeDepth, scope: this);
+                        if (eventSymbol == null)
+                            throw new BabyPenguinException($"Event '{emitEventStatement.EventIdentifier!.Name}' not found", emitEventStatement.SourceLocation);
+
+                        var notifySymbol = Model.ResolveSymbol($"{eventSymbol.TypeInfo.FullName}.notify") ??
+                            throw new BabyPenguinException($"Can't resolve 'notify' method of event type '{eventSymbol.TypeInfo.FullName}'", emitEventStatement.SourceLocation);
+                        var paramSymbol = emitEventStatement.ArgumentExpression == null ?
+                            AllocTempSymbol(BasicType.Void, emitEventStatement.SourceLocation) :
+                            AddExpression(emitEventStatement.ArgumentExpression, false);
+
+                        AddInstruction(new FunctionCallInstruction(emitEventStatement.SourceLocation, notifySymbol, [eventSymbol, paramSymbol], null));
+                        break;
+                    }
                 default:
                     throw new NotImplementedException();
             }

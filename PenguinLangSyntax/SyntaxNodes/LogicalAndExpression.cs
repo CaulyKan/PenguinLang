@@ -30,25 +30,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public ISyntaxExpression CreateWrapperExpression()
-        {
-            return new LogicalOrExpression
-            {
-                Text = this.Text,
-                SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
-                SubExpressions = [this],
-            };
-        }
-
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             if (SubExpressions.Count == 1)
             {
-                return SubExpressions[0].BuildSourceText();
+                return SubExpressions[0].BuildText();
             }
 
-            return string.Join(" && ", SubExpressions.Select(e => e.BuildSourceText()));
+            return string.Join(" && ", SubExpressions.Select(e => e.BuildText()));
         }
     }
 }

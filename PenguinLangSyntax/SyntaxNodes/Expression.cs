@@ -28,9 +28,9 @@ namespace PenguinLangSyntax.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
-            return SubExpression!.BuildSourceText();
+            return SubExpression!.BuildText();
         }
     }
 }

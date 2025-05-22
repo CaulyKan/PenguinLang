@@ -54,13 +54,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public CodeBlockItemType Type { get; private set; }
 
-        public override string BuildSourceText()
+        public override string BuildText()
         {
             return Type switch
             {
-                CodeBlockItemType.Statement => Statement!.BuildSourceText(),
-                CodeBlockItemType.Declaration => Declaration!.BuildSourceText() + ";",
-                CodeBlockItemType.TypeReference => TypeReference!.BuildSourceText() + ";",
+                CodeBlockItemType.Statement => Statement!.BuildText(),
+                CodeBlockItemType.Declaration => Declaration!.BuildText() + ";",
+                CodeBlockItemType.TypeReference => TypeReference!.BuildText() + ";",
                 _ => throw new NotImplementedException($"Unsupported CodeBlockItemType: {Type}")
             };
         }
