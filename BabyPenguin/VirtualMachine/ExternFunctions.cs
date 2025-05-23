@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Mono.Cecil;
 
 namespace BabyPenguin.VirtualMachine
@@ -27,6 +28,14 @@ namespace BabyPenguin.VirtualMachine
                 var s = args[0].As<BasicRuntimeValue>().StringValue;
                 vm.Global.Print(s, true);
             });
+
+            vm.Global.RegisterExternFunction("__builtin.exit", Exit);
+        }
+
+        private static IEnumerable<RuntimeBreak> Exit(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
+        {
+            frame.Global.ExitCode = args[0].As<BasicRuntimeValue>().I32Value;
+            yield return new RuntimeBreak(RuntimeBreakReason.Exited, frame);
         }
 
         public static void AddCopy(BabyPenguinVM vm)

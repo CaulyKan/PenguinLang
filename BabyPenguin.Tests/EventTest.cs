@@ -8,7 +8,7 @@ namespace BabyPenguin.Tests
     public class EventTest
     {
         [Fact]
-        public void TestEmitAndWaitEvent()
+        public void EmitAndWaitEvent()
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
@@ -18,7 +18,7 @@ namespace BabyPenguin.Tests
                     wait test_event;
                     print(""2"");
                 }
-                
+
                 initial {
                     print(""1"");
                     emit test_event();
@@ -28,6 +28,66 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("12", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void EmitWaitResultEvent()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                event test_event : i32;
+
+                initial {
+                    var a : i32 = wait test_event;
+                    print(a as string);
+                    a = wait test_event;
+                    print(a as string);
+                    a = wait test_event;
+                    print(a as string);
+                }
+                
+                initial {
+                    for (var i : i64 in range(0, 3)) {
+                        emit test_event(i as i32);
+                        wait;
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void OnEventBeforeRewrite()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                event test_event : i32;
+
+                initial {
+                    var eq : _QueuedEventReceiver<i32> = new _QueuedEventReceiver<i32>(test_event);
+                    while (true) {
+                        val a : Option<i32> = eq.do_wait_any();
+                        if (a.is_some()) {
+                            val b : i32 = a.some;
+                            print(b as string);
+                            if (b == 2) exit(0);
+                        }
+                    }
+                }
+                
+                initial {
+                    for (var i : i64 in range(0, 3)) {
+                        emit test_event(i as i32);
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012", vm.CollectOutput());
         }
     }
 }

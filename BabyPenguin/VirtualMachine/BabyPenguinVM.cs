@@ -32,11 +32,21 @@ namespace BabyPenguin.VirtualMachine
             StartFrame = frame;
         }
 
-        public void Run()
+        public int Run()
         {
             if (StartFrame == null)
                 Initialize();
-            foreach (var _ in StartFrame!.Run()) { }
+            foreach (var result in StartFrame!.Run())
+            {
+                if (result.IsLeft)
+                {
+                    if (result.Left!.Reason == RuntimeBreakReason.Exited)
+                    {
+                        return Global.ExitCode;
+                    }
+                }
+            }
+            return 0;
         }
     }
 
@@ -45,6 +55,8 @@ namespace BabyPenguin.VirtualMachine
     public class RuntimeGlobal
     {
         public enum StepModeEnum { StepIn, StepOver, StepOut, Run }
+
+        public int ExitCode { get; set; } = 0;
 
         public StepModeEnum StepMode { get; set; } = StepModeEnum.Run;
 

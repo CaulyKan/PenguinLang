@@ -14,7 +14,7 @@ namespace BabyPenguin
 
     public class Program
     {
-        static int Main(string[] args)
+        public static int Main(string[] args)
         {
             return Parser.Default.ParseArguments<Options>(args).MapResult(
                 Run,
@@ -22,7 +22,7 @@ namespace BabyPenguin
             );
         }
 
-        static void RunNormal(Options options)
+        public static int RunNormal(Options options)
         {
             // try
             // {
@@ -43,13 +43,16 @@ namespace BabyPenguin
             vm.Global.EnableDebugPrint = true;
 
             Console.WriteLine("----------- Start Execution -----------");
-            vm.Run();
+            var code = vm.Run();
 
             if (vm.Global.EnableDebugPrint)
             {
                 Console.WriteLine("----------- Console Output -----------");
                 Console.WriteLine(vm.CollectOutput());
             }
+
+            Console.WriteLine("Program exited with code: " + code);
+            return code;
 
             // }
             // catch (Exception e)
@@ -60,10 +63,9 @@ namespace BabyPenguin
         }
 
 
-        static int Run(Options options)
+        public static int Run(Options options)
         {
-            RunNormal(options);
-            return 0;
+            return RunNormal(options);
         }
     }
 }

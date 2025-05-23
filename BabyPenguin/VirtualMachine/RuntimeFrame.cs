@@ -1,7 +1,7 @@
 namespace BabyPenguin.VirtualMachine
 {
     public record RuntimeFrameResult(IRuntimeSymbol? ReturnValue, ReturnStatus ReturnStatus);
-    public enum RuntimeBreakReason { Step, Breakpoint, Exception }
+    public enum RuntimeBreakReason { Step, Breakpoint, Exception, Exited }
     public record RuntimeBreak(RuntimeBreakReason Reason, RuntimeFrame CurrentFrame);
 
     public class RuntimeFrame

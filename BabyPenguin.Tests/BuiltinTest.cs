@@ -34,6 +34,31 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void ExitTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    print(""hello"");
+                    exit(1);
+                    print(""world"");
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            var code = vm.Run();
+            Assert.Equal($"hello", vm.CollectOutput());
+            Assert.Equal(1, code);
+        }
+
+        [Fact]
+        public void ProgramExitTest()
+        {
+            var code = Program.Main(["TestFiles/HelloWorld.penguin"]);
+            Assert.Equal(0, code);
+        }
+
+        [Fact]
         public void OptionTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

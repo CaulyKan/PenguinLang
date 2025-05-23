@@ -1,4 +1,5 @@
 namespace __builtin {
+    extern fun exit(val code : i32);
     extern fun print(val text : string);
     extern fun println(val text : string);
     fun hello_world() {

@@ -1,13 +1,20 @@
-                event test_event;
+                event test_event : i32;
 
                 initial {
-                    wait test_event;
-                    print("2");
+                    var eq : _QueuedEventReceiver<i32> = new _QueuedEventReceiver<i32>(test_event);
+                    while (true) {
+                        val a : Option<i32> = eq.do_wait_any();
+                        if (a.is_some()) {
+                            val b : i32 = a.some;
+                            print(b as string);
+                            __signal 0;
+                            if (b == 2) exit(0);
+                        }
+                    }
                 }
-
+                
                 initial {
-                    __signal 0;
-                    print("1");
-                    emit test_event();
+                    for (var i : i64 in range(0, 3)) {
+                        emit test_event(i as i32);
+                    }
                 }
- 
