@@ -316,10 +316,18 @@ namespace BabyPenguin
             {
                 foreach (var obj in FindAll(o => o is ICodeContainer))
                 {
+                    sb.WriteLine("==============================================");
+                    sb.WriteLine($"{obj.FullName}");
+                    sb.WriteLine("==============================================");
+                    if (obj.SyntaxNode == null)
+                        sb.WriteLine("No AST available.");
+                    else
+                        sb.WriteLine(Tools.FormatPenguinLangSource(obj.SyntaxNode.BuildText()));
                     if (obj is ICodeContainer codeContainer && codeContainer.Instructions.Count > 0)
                     {
-                        sb.WriteLine($"Compile Result For {obj.FullName}:");
+                        sb.WriteLine("==============================================");
                         sb.WriteLine(codeContainer.PrintInstructionsTable());
+                        sb.WriteLine();
                     }
                 }
             }

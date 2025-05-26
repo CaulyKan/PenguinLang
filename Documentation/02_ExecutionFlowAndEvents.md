@@ -46,13 +46,12 @@ on foo {
 	print("A");
 }
 	
-initial {
-	wait foo;
+on foo {
 	print("B");
 }
 ```
 
-In above code, when event `foo` happens, the `on foo` blocks will be executed, and in same time the code after `wait foo` will be executed, so the result is still uncertain between `AB` or `BA`. 
+In above code, when event `foo` happens, the `on foo` blocks will be executed, however the order of execution is uncertain, so the result is still uncertain between `AB` or `BA`. 
 
 Event expression
 ----------------
@@ -83,7 +82,7 @@ initial {
 	emit foo(2);
 }
 
-on foo(x) {
+on foo(val x: i32) {
 	println("foo with x={}", x);
 }
 ```
@@ -107,4 +106,39 @@ initial {
 }
 ```
 
+Waiting for events
+------------------
+Penguin-lang provide `wait` keyword to wait for an event to happen. It's possible to use `wait` keyword with event expression, for example:
+```
+event foo : i32;
+initial {
+	emit foo(1);
+}
 
+initial {
+	val x : i32 = wait foo;
+	println(x as string);
+}
+```
+
+In above code, the `wait foo` will block execution flow until `foo` event happens, and then the value of `x` will be assigned to `1`.
+
+There's an important difference between `wait` event and `on` routine. The `wait` event will only receive the next event after the time it started waiting, which means it's possible to miss some events. On the other hand, `on` routine will receive all events in order.
+
+```
+event foo : i32;
+initial {
+	for (var i : i32 in range(0,10))
+		emit foo(1);
+}
+
+initial {
+	while (true) {
+		val x = wait foo;	// may miss some events
+	}
+}
+
+on foo(val x: i32) {
+	// will receive all events
+}
+```

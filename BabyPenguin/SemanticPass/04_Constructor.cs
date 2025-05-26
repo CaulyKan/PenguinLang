@@ -78,6 +78,11 @@ namespace BabyPenguin.SemanticPass
 
             if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
             {
+                foreach (var ev in syntaxNode.Events)
+                {
+                    InitializeEventDefinition(constructor!.CodeContainer, ns, ev);
+                }
+
                 foreach (var decl in syntaxNode.Declarations)
                 {
                     if (decl.InitializeExpression != null)
@@ -85,11 +90,6 @@ namespace BabyPenguin.SemanticPass
                         var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.ScopeDepth, scope: ns);
                         constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
                     }
-                }
-
-                foreach (var ev in syntaxNode.Events)
-                {
-                    InitializeEventDefinition(constructor!.CodeContainer, ns, ev);
                 }
             }
         }
@@ -121,14 +121,14 @@ namespace BabyPenguin.SemanticPass
             if (cls.SyntaxNode is ClassDefinition syntaxNode)
             {
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
-                foreach (var varDecl in syntaxNode.Declarations)
-                {
-                    InitializeVariable(new(cls), constructorBody, varDecl);
-                }
-
                 foreach (var ev in syntaxNode.Events)
                 {
                     InitializeEventDefinition(constructorBody, cls, ev);
+                }
+
+                foreach (var varDecl in syntaxNode.Declarations)
+                {
+                    InitializeVariable(new(cls), constructorBody, varDecl);
                 }
             }
         }
@@ -162,14 +162,15 @@ namespace BabyPenguin.SemanticPass
             if (intf.SyntaxNode is InterfaceDefinition syntaxNode)
             {
                 var constructorBody = (intf.Constructor as ICodeContainer)!;
-                foreach (var varDecl in syntaxNode.Declarations)
-                {
-                    InitializeVariable(new(intf), constructorBody, varDecl);
-                }
 
                 foreach (var ev in syntaxNode.Events)
                 {
                     InitializeEventDefinition(constructorBody, intf, ev);
+                }
+
+                foreach (var varDecl in syntaxNode.Declarations)
+                {
+                    InitializeVariable(new(intf), constructorBody, varDecl);
                 }
             }
         }

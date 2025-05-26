@@ -44,12 +44,12 @@ namespace PenguinLangSyntax.SyntaxNodes
         public override string BuildText()
         {
             var parts = new List<string>();
-            parts.Add("{");
+            parts.Add("{\n");
             if (BlockItems.Count > 0)
             {
                 parts.Add(string.Join("\n", BlockItems.Select(item => item.BuildText())));
             }
-            parts.Add("}");
+            parts.Add("}\n");
             return string.Join("\n", parts);
         }
     }

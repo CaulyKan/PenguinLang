@@ -76,6 +76,10 @@ namespace PenguinLangSyntax.SyntaxNodes
             Events.AddRange(
                 namespaceDeclarationContext.children.OfType<EventDefinitionContext>()
                     .Select(x => Build<EventDefinition>(walker, x)));
+
+            OnRoutines.AddRange(
+                namespaceDeclarationContext.children.OfType<OnRoutineContext>()
+                    .Select(x => Build<OnRoutineDefinition>(walker, x)));
         }
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
@@ -115,7 +119,10 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public List<EventDefinition> Events { get; set; } = [];
 
-        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0 && Events.Count == 0;
+        [ChildrenNode]
+        public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
+
+        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0 && Events.Count == 0 && OnRoutines.Count == 0;
 
         public string Name { get; set; } = "";
 
@@ -151,7 +158,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 parts.Add("namespace");
                 parts.Add(Name);
-                parts.Add("{");
+                parts.Add("{\n");
             }
 
             foreach (var subNamespace in SubNamespaces)
@@ -199,6 +206,11 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(eventDef.BuildText());
             }
 
+            foreach (var onRoutine in OnRoutines)
+            {
+                parts.Add(onRoutine.BuildText());
+            }
+
             foreach (var initialRoutine in InitialRoutines)
             {
                 parts.Add(initialRoutine.BuildText());
@@ -206,7 +218,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (!IsAnonymous)
             {
-                parts.Add("}");
+                parts.Add("}\n");
             }
 
             return string.Join("\n", parts);

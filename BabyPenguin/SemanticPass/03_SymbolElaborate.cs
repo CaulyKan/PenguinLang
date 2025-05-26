@@ -77,7 +77,7 @@ namespace BabyPenguin.SemanticPass
                 var typeName = evt.EventType?.TypeName ?? "void";
                 var type = Model.ResolveType(typeName, scope: container)
                     ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation);
-                var eventType = (Model.ResolveType("__builtin.Event<?>")?.Specialize([type]))
+                var eventType = Model.ResolveType($"__builtin.Event<{type.FullName}>")
                     ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName}>");
 
                 container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, false, false));

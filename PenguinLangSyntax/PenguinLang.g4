@@ -113,6 +113,9 @@ constantExpression: conditionalExpression;
 
 typeReferenceDeclaration: 'type' identifier '=' typeSpecifier;
 
+declarationWithoutInitializer:
+	declarationKeyword identifier ':' typeSpecifier;
+
 declaration:
 	declarationKeyword identifier (':' typeSpecifier)? (
 		'=' expression
@@ -190,6 +193,7 @@ classDefinition:
 		| functionDefinition
 		| interfaceImplementation
 		| eventDefinition
+		| onRoutine
 	)* '}';
 
 enumDefinition:
@@ -198,6 +202,7 @@ enumDefinition:
 		| functionDefinition
 		| interfaceImplementation
 		| eventDefinition
+		| onRoutine
 	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
@@ -278,6 +283,7 @@ namespaceDeclaration:
 	| interfaceDefinition
 	| interfaceForImplementation
 	| eventDefinition
+	| onRoutine
 	| ';';
 
 parameterList: declaration? (',' declaration)* ','?;
@@ -302,7 +308,12 @@ functionDefinition:
 		| ';'
 	);
 
+eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
+
 initialRoutine: 'initial' identifier? codeBlock;
+
+onRoutine:
+	'on' identifier ('(' declarationWithoutInitializer? ')')? codeBlock;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';
@@ -446,5 +457,3 @@ Newline: ('\r' '\n'? | '\n') -> channel(HIDDEN);
 BlockComment: '/*' .*? '*/' -> channel(HIDDEN);
 
 LineComment: '//' ~[\r\n]* -> channel(HIDDEN);
-
-eventDefinition: 'event' identifier (':' typeSpecifier)? ';';

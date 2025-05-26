@@ -82,6 +82,31 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void StaticFunctionBindingTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                    namespace ns {
+                        class Temp {
+                            fun call(val b : i32) -> i32 {
+                                return 1+b;
+                            }
+                        }
+                        initial {
+                            var x : Temp = new Temp();
+                            var func : fun<i32, i32> = x.call;
+                            print(func(2) as string);
+                        }
+                    }
+            ");
+            var model = compiler.Compile();
+            model.WriteReport("report.txt");
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("3", vm.CollectOutput());
+        }
+
+        [Fact]
         public void AsyncFunctionBindingTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));

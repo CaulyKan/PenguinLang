@@ -1,3 +1,7 @@
+using System;
+using System.Text;
+using System.Text.RegularExpressions;
+
 namespace PenguinLangSyntax
 {
     public class Tools
@@ -7,115 +11,47 @@ namespace PenguinLangSyntax
             if (string.IsNullOrEmpty(source))
                 return source;
 
-            var result = new System.Text.StringBuilder();
-            int indentLevel = 0;
-            bool isNewLine = true;
-            bool inString = false;
-            bool escapeNext = false;
-            bool lastLineWasEmpty = false;
+            var lines = source.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            var result = new StringBuilder();
+            var indent = 0;
+            var inQuotes = false;
 
-            for (int i = 0; i < source.Length; i++)
+            for (int i = 0; i < lines.Length; i++)
             {
-                char c = source[i];
+                var line = lines[i];
+                var trimmedLine = line.Trim();
 
-                if (escapeNext)
+                // 检查是否为空行
+                if (string.IsNullOrWhiteSpace(trimmedLine))
                 {
-                    result.Append(c);
-                    escapeNext = false;
                     continue;
                 }
 
-                if (c == '\\')
+                // 如果这一行以}开头，先减少缩进
+                if (trimmedLine.StartsWith("}"))
                 {
-                    escapeNext = true;
-                    result.Append(c);
-                    continue;
+                    indent = Math.Max(0, indent - 1);
                 }
 
-                if (c == '"')
-                {
-                    inString = !inString;
-                    result.Append(c);
-                    continue;
-                }
+                // 应用当前行的缩进
+                result.Append(new string(' ', indent * 4));
+                result.AppendLine(trimmedLine);
 
-                if (inString)
+                // 处理引号内的内容
+                for (int j = 0; j < line.Length; j++)
                 {
-                    result.Append(c);
-                    continue;
-                }
-
-                if (isNewLine)
-                {
-                    if (c == '}' && indentLevel > 0)
-                        indentLevel--;
-
-                    bool currentLineIsEmpty = true;
-                    for (int j = i; j < source.Length; j++)
+                    if (line[j] == '"')
                     {
-                        if (source[j] == '\n' || source[j] == '\r')
-                            break;
-                        if (!char.IsWhiteSpace(source[j]))
+                        inQuotes = !inQuotes;
+                    }
+                    else if (!inQuotes)
+                    {
+                        if (line[j] == '{')
                         {
-                            currentLineIsEmpty = false;
+                            indent++;
                             break;
                         }
                     }
-
-                    if (lastLineWasEmpty && currentLineIsEmpty)
-                    {
-                        while (i < source.Length && source[i] != '\n' && source[i] != '\r')
-                            i++;
-                        if (i < source.Length && source[i] == '\r' && i + 1 < source.Length && source[i + 1] == '\n')
-                            i++;
-                        i++;
-                        continue;
-                    }
-
-                    result.Append(new string(' ', indentLevel * 4));
-                    isNewLine = false;
-                    lastLineWasEmpty = currentLineIsEmpty;
-                }
-
-                if (c == '{')
-                {
-                    result.Append(c);
-                    result.AppendLine();
-                    indentLevel++;
-                    isNewLine = true;
-                    lastLineWasEmpty = false;
-                }
-                else if (c == '}')
-                {
-                    result.AppendLine();
-                    result.Append(new string(' ', indentLevel * 4));
-                    result.Append(c);
-                    result.AppendLine();
-                    isNewLine = true;
-                    lastLineWasEmpty = false;
-                }
-                else if (c == ';')
-                {
-                    result.Append(c);
-                    result.AppendLine();
-                    isNewLine = true;
-                    lastLineWasEmpty = false;
-                }
-                else if (c == ' ' || c == '\t')
-                {
-                    if (!isNewLine)
-                        result.Append(' ');
-                }
-                else if (c == '\n' || c == '\r')
-                {
-                    if (c == '\r' && i + 1 < source.Length && source[i + 1] == '\n')
-                        i++;
-                    result.AppendLine();
-                    isNewLine = true;
-                }
-                else
-                {
-                    result.Append(c);
                 }
             }
 

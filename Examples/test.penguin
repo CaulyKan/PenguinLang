@@ -1,16 +1,9 @@
                 event test_event : i32;
 
-                initial {
-                    var eq : _QueuedEventReceiver<i32> = new _QueuedEventReceiver<i32>(test_event);
-                    while (true) {
-                        val a : Option<i32> = eq.do_wait_any();
-                        if (a.is_some()) {
-                            val b : i32 = a.some;
-                            print(b as string);
-                            __signal 0;
-                            if (b == 2) exit(0);
-                        }
-                    }
+                var eq : _AsyncEventReceiver<i32> = new _AsyncEventReceiver<i32>(test_event, on_test_event);
+                fun on_test_event(val b : i32) {
+                    print(b as string);
+                    if (b == 2) exit(0);
                 }
                 
                 initial {

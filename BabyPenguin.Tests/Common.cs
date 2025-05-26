@@ -6,6 +6,8 @@ global using BabyPenguin.VirtualMachine;
 global using BabyPenguin.Symbol;
 global using BabyPenguin.SemanticNode;
 
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace BabyPenguin.Tests
 {
     public class TestBase(ITestOutputHelper testOutputHelper) : TextWriter

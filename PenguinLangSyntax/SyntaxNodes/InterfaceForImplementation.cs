@@ -67,14 +67,14 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(WhereDefinition.BuildText());
             }
 
-            parts.Add("{");
+            parts.Add("{\n");
 
             foreach (var function in Functions)
             {
                 parts.Add(function.BuildText());
             }
 
-            parts.Add("}");
+            parts.Add("}\n");
 
             return string.Join(" ", parts);
         }

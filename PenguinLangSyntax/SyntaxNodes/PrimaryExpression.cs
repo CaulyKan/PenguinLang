@@ -78,7 +78,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             Type.BoolLiteral => this,
             Type.VoidLiteral => this,
             Type.LambdaFunction => this,
-            Type.ParenthesizedExpression => ParenthesizedExpression!.GetEffectiveExpression(),
+            Type.ParenthesizedExpression => this,
             _ => throw new NotImplementedException(),
         };
 

@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace BabyPenguin
 {
 
@@ -81,6 +83,48 @@ namespace BabyPenguin
         bool IsEnumType => Type == TypeEnum.Enum;
 
         bool IsInterfaceType => Type == TypeEnum.Interface;
-    }
 
+        bool IsFutureType
+        {
+            get
+            {
+                if (this.GenericType?.FullName == "__builtin.IFuture<?>")
+                    return true;
+
+                if (this is IVTableContainer vtableContainer)
+                {
+                    foreach (var vtable in vtableContainer.VTables)
+                        if (vtable.Interface.GenericType?.FullName == "__builtin.IFuture<?>")
+                            return true;
+                }
+
+                return false;
+            }
+        }
+
+        IType? GetImplementedInterfaceType(Or<IType, string> interfaceTypeOrName)
+        {
+            IType interfaceType = interfaceTypeOrName.IsLeft ? interfaceTypeOrName.Left! :
+                (Model.ResolveType(interfaceTypeOrName.Right!) ?? throw new PenguinLangException($"Could not resolve interface type '{interfaceTypeOrName.Right!}'"));
+
+            if (this.FullName == interfaceType.FullName)
+                return this;
+
+            if (this.GenericType?.FullName == interfaceType.FullName)
+                return this;
+
+            if (this is IVTableContainer vtableContainer)
+            {
+                foreach (var vtable in vtableContainer.VTables)
+                {
+                    if (vtable.Interface.FullName == interfaceType.FullName)
+                        return vtable.Interface;
+                    else if (vtable.Interface.GenericType?.FullName == interfaceType.FullName)
+                        return vtable.Interface;
+                }
+            }
+
+            return null;
+        }
+    }
 }

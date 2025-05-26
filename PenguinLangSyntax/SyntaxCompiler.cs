@@ -35,15 +35,19 @@ namespace PenguinLangSyntax
 
         public uint InitialScopeDepth { get; } = scopeDepth;
 
+        public uint CurrentScopeDepth { get; private set; } = scopeDepth;
+
         public void PopScope()
         {
             ScopeStack.Pop();
+            CurrentScopeDepth -= 1;
         }
 
         public void PushScope(SyntaxScopeType type, ISyntaxScope scope)
         {
             scope.ParentScope = ScopeStack.Count > 0 ? CurrentScope : null;
-            scope.ScopeDepth = (scope.ParentScope?.ScopeDepth ?? InitialScopeDepth) + 1;
+            scope.ScopeDepth = CurrentScopeDepth;
+            CurrentScopeDepth += 1;
 
             if (type == SyntaxScopeType.Namespace)
                 Namespaces.Add(scope as NamespaceDefinition ?? throw new NotImplementedException());
@@ -60,6 +64,7 @@ namespace PenguinLangSyntax
         Function,
         LambdaFunction,
         InitialRoutine,
+        OnRoutine,
         CodeBlock,
         Enum,
         Interface,

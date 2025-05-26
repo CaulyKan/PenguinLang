@@ -124,7 +124,7 @@ namespace BabyPenguin.VirtualMachine
         override public string StringCommand => "RDMBR";
         override public string StringOP1 => Member.ToString() ?? "";
         override public string StringOP2 => MemberOwnerSymbol.ToString() ?? "";
-        override public string StringResult => Target.ToString() ?? "";
+        override public string StringResult => (Target.ToString() ?? "") + (IsFatPointer ? " (fat)" : "");
     }
 
     public class WriteMemberInstruction(SourceLocation sourceLocation, ISymbol member, ISymbol _value, ISymbol memberOwnerSymbol) : BabyPenguinIR

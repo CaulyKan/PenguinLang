@@ -26,6 +26,9 @@ namespace PenguinLangSyntax.SyntaxNodes
                     .Select(x => Build<EventDefinition>(walker, x))
                     .ToList();
 
+                OnRoutines = context.children.OfType<OnRoutineContext>()
+                    .Select(x => Build<OnRoutineDefinition>(walker, x))
+                    .ToList();
                 walker.PopScope();
             }
             else throw new NotImplementedException();
@@ -54,6 +57,9 @@ namespace PenguinLangSyntax.SyntaxNodes
         public List<EventDefinition> Events { get; set; } = [];
 
         [ChildrenNode]
+        public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
+
+        [ChildrenNode]
         public List<InitialRoutineDefinition> InitialRoutines { get; set; } = [];
 
         public bool IsAnonymous => false;
@@ -80,10 +86,14 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 parts.Add(GenericDefinitions.BuildText());
             }
-            parts.Add("{");
+            parts.Add("{\n");
             if (Events.Count > 0)
             {
                 parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
+            }
+            if (OnRoutines.Count > 0)
+            {
+                parts.Add(string.Join("\n", OnRoutines.Select(i => i.BuildText())));
             }
             if (InterfaceImplementations.Count > 0)
             {
@@ -101,7 +111,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildText())));
             }
-            parts.Add("}");
+            parts.Add("}\n");
             return string.Join(" ", parts);
         }
     }

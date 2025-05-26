@@ -10,6 +10,11 @@ namespace BabyPenguin.SemanticNode
             if (genericArguments.Count > 0 && genericArguments.Count != GenericDefinitions.Count)
                 throw new BabyPenguinException("Count of generic arguments and definitions do not match.");
 
+            // var namecomponents = NameComponents.ParseName(FullName);
+            // var newNameComponents = new NameComponents(namecomponents.Prefix, namecomponents.Name, genericArguments.Select(a => a.FullName).ToList());
+            // if (Model.ResolveType(newNameComponents.ToString()) is IClass specialized)
+            //     return specialized;
+
             Class result;
             if (SyntaxNode is ClassDefinition syntax)
             {

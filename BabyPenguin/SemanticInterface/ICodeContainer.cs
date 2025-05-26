@@ -835,14 +835,19 @@ namespace BabyPenguin.SemanticInterface
                         }
                         else
                         {
-                            var futureType = ResolveExpressionType(exp.Expression);
-                            if (futureType.FullName == "void") return BasicType.Void;
+                            var waitExpType = ResolveExpressionType(exp.Expression);
+                            if (waitExpType.FullName == "void") return BasicType.Void;
 
-                            if (futureType.GenericType?.FullName != "__builtin.IFuture<?>")
+                            if (waitExpType.IsFutureType)
                             {
-                                throw new BabyPenguinException($"wait expression requires a IFuture type, but got '{futureType}'", expression.SourceLocation);
+                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>") ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", exp.SourceLocation);
+
+                                return futureType.GenericArguments.FirstOrDefault() ?? BasicType.Void;
                             }
-                            return futureType.GenericArguments.FirstOrDefault() ?? BasicType.Void;
+                            else
+                            {
+                                return waitExpType;
+                            }
                         }
                     }
                 case SpawnAsyncExpression exp:
@@ -1011,6 +1016,12 @@ namespace BabyPenguin.SemanticInterface
             {
                 tempSymbol = from.Right!;
                 type = tempSymbol.TypeInfo;
+            }
+
+            if (type.FullName == to.TypeInfo.FullName)
+            {
+                AddInstruction(new AssignmentInstruction(sourceLocation, tempSymbol, to));
+                return;
             }
 
             if (type.IsInterfaceType)
@@ -1576,7 +1587,30 @@ namespace BabyPenguin.SemanticInterface
                     break;
                 case WaitExpression waitExpression:
                     {
-                        AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
+                        if (waitExpression.Expression == null)
+                        {
+                            AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
+                        }
+                        else
+                        {
+                            var waitExpType = ResolveExpressionType(waitExpression.Expression);
+                            if (waitExpType.IsFutureType)
+                            {
+                                var waitExpressionSymbol = AddExpression(waitExpression.Expression, isVariableInitializer);
+                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>") ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation);
+                                var futureSymbol = AllocTempSymbol(futureType, waitExpression.SourceLocation);
+                                AddCastExpression(new(waitExpressionSymbol), futureSymbol, waitExpression.SourceLocation);
+                                var doWaitFuncSymbol = Model.ResolveSymbol($"{futureType.FullName}.do_wait", i => i.IsFunction) ??
+                                    throw new BabyPenguinException($"Cant find do_wait function for future type '{waitExpType.FullName}'", waitExpression.SourceLocation);
+                                var doWaitSymbol = AllocTempSymbol(doWaitFuncSymbol.TypeInfo, waitExpression.SourceLocation);
+                                AddInstruction(new ReadMemberInstruction(waitExpression.SourceLocation, doWaitFuncSymbol, futureSymbol, doWaitSymbol, true));
+                                AddInstruction(new FunctionCallInstruction(waitExpression.SourceLocation, doWaitSymbol, [], to));
+                            }
+                            else
+                            {
+                                AddExpression(waitExpression.Expression, isVariableInitializer, to);
+                            }
+                        }
                     }
                     break;
                 case SpawnAsyncExpression spawnAsyncExpression:

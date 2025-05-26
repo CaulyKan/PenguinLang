@@ -23,6 +23,19 @@ namespace PenguinLangSyntax.SyntaxNodes
                 if (context.expression() != null)
                     InitializeExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
             }
+            else if (ctx is DeclarationWithoutInitializerContext context2)
+            {
+                Identifier = Build<SymbolIdentifier>(walker, context2.identifier());
+                if (context2.typeSpecifier() != null)
+                {
+                    TypeSpecifier = Build<TypeSpecifier>(walker, context2.typeSpecifier());
+                }
+                else
+                {
+                    throw new NotImplementedException("Type infer is not supported yet");
+                }
+                IsReadonly = context2.declarationKeyword().GetText() == "val";
+            }
             else throw new NotImplementedException();
         }
 

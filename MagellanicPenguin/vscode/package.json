@@ -1,6 +1,6 @@
 {
   "name": "penguinlangvscode",
-  "displayName": "PenguinLangVscode",
+  "displayName": "Penguin Language",
   "repository": "https://github.com/CaulyKan/PenguinLang",
   "description": "",
   "version": "0.0.1",
@@ -36,7 +36,7 @@
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "D:\\repos\\penguinlang\\MagellanicPenguin\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
+          "program": "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
         },
         "linux": {
           "program": "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/bin/Debug/net8.0/MagellanicPenguinDAP"
@@ -73,7 +73,7 @@
     ]
   },
   "scripts": {
-    "package": "make-dir server/windows && make-dir server/ && cpy \"../BabyPenguin/bin/Debug/net8.0/*\" server/  && vsce package -o penguinlang-all-in-one.vsix",
+    "package": "make-dir server/windows && make-dir server/ && cpy \"../BabyPenguin/bin/Debug/net8.0/*\" server/  && vsce package -o penguinlang.vsix",
     "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../BabyPenguin/bin/Debug/net8.0/*\" server/ ",
     "compile": "tsc -b",
     "watch": "tsc -b -w",

@@ -1,6 +1,6 @@
 namespace BabyPenguin.Tests
 {
-    public class SchedulerTest(ITestOutputHelper helper) : TestBase(helper)
+    public class AsyncTest(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
         public void MultiInitialRoutinesTest()
@@ -411,7 +411,7 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void AsyncTest()
+        public void AsyncSimpleTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
@@ -465,6 +465,91 @@ namespace BabyPenguin.Tests
                 } 
                 fun test() -> i32 {
                     wait;
+                    println(""test"");
+                    return 1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"before{EOL}test{EOL}after{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AsyncWithArgumentsTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : IFuture<i32> = async test(1);
+                    val b : i32 = wait a;
+                    print(b as string);
+                } 
+                fun test(val a : i32) -> i32 {
+                    wait;
+                    return a+1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"2", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void AsyncNormalFunctionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : IFuture<i32> = async test();
+                    println(""before"");
+                    wait a;
+                    println(""after"");
+                } 
+                fun test() -> i32 {
+                    println(""test"");
+                    return 1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"before{EOL}test{EOL}after{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void WaitNormalFunctionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var a : i32 = wait test();
+                    println(a as string);
+                } 
+                fun test() -> i32 {
+                    println(""test"");
+                    return 1;
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal($"test{EOL}1{EOL}", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ImplicitCastForFunToAsyncFunTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    var t : async_fun<i32> = test;
+                    println(""before"");
+                    wait t();
+                    println(""after"");
+                } 
+                fun test() -> i32 {
                     println(""test"");
                     return 1;
                 }

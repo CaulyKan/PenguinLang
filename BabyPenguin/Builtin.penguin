@@ -406,6 +406,7 @@ namespace __builtin {
             for (var receiver : IEventReceiver<T> in this.receivers.iter()) {
                  receiver.notify(ev);
             }
+            wait;
         }
 
         fun add_receiver(var this: Self, var receiver: IEventReceiver<T>) {
@@ -430,33 +431,48 @@ namespace __builtin {
     }
 
     interface IEventReceiver<T> {
-        fun notify(var this: IEventReceiver<T>, val ev: T);
-        fun connect(var this: IEventReceiver<T>, var ev: Event<T>);
+        var ev : Event<T>;
 
-        impl IFuture<T>;
+        fun notify(var this: IEventReceiver<T>, val ev: T);
+
+        fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
+            this.ev.remove_receiver(this);
+            ev.add_receiver(this);
+            this.ev = ev;
+        }
+
         impl IObjectID;
+    }
+
+    class _AsyncEventReceiver<T> {
+        var f : async_fun<void, T>;
+
+        fun new(var this: Self, var ev: Event<T>, var f: async_fun<void, T>) {
+            ev.add_receiver(this);
+            (this as  IEventReceiver<T>).ev = ev;
+            this.f = f;
+        }
+
+        impl IEventReceiver<T> {
+            fun notify(var this: IEventReceiver<T>, val ev: T) {
+                var self: Self = this as Self;
+                self.f(ev);
+            }
+        }
     }
 
     class _QueuedEventReceiver<T> {
         var event_queue : Queue<T> = new Queue<T>();
-        var ev : Event<T>;
 
         fun new(var this: Self, var ev: Event<T>) {
             ev.add_receiver(this);
-            this.ev = ev;
+            (this as IEventReceiver<T>).ev = ev;
         }
 
         impl IEventReceiver<T> { 
             fun notify(var this: IEventReceiver<T>, val ev: T) {
                 var self: Self = this as Self;
                 self.event_queue.enqueue(ev);
-            }
-
-            fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
-                var self: Self = this as Self;
-                self.ev.remove_receiver(self);
-                ev.add_receiver(self);
-                self.ev = ev;
             }
         }
 
@@ -477,24 +493,16 @@ namespace __builtin {
 
     class _OnetimeEventReceiver<T> {
         var value : Option<T> = new Option<T>.none();
-        var ev : Event<T>;
 
         fun new(var this: Self, var ev: Event<T>) {
             ev.add_receiver(this);
-            this.ev = ev;
+            (this as IEventReceiver<T>).ev = ev;
         }
 
         impl IEventReceiver<T> { 
             fun notify(var this: IEventReceiver<T>, val v: T) {
                 var self: Self = this as Self;
                 self.value = new Option<T>.some(v);
-            }
-
-            fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
-                var self: Self = this as Self;
-                self.ev.remove_receiver(self);
-                ev.add_receiver(self);
-                self.ev = ev;
             }
         }
 

@@ -2,6 +2,6 @@ bin
 obj
 .antlr
 node_modules
-PenguinLangVscode/server/*
-PenguinLangVscode/penguinlang-all-in-one.vsix
+MagellanicPenguin/vscode/server/*
+MagellanicPenguin/vscode/*.vsix
 report.txt

@@ -79,7 +79,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(GenericDefinitions.BuildText());
             }
 
-            parts.Add("{");
+            parts.Add("{\n");
             if (Events.Count > 0)
             {
                 parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
@@ -95,7 +95,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add(impl.BuildText());
             }
 
-            parts.Add("}");
+            parts.Add("}\n");
 
             return string.Join(" ", parts);
         }

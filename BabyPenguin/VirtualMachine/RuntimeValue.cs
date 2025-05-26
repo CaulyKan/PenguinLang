@@ -193,7 +193,6 @@ namespace BabyPenguin.VirtualMachine
         {
             TypeInfo = typeInfo;
             FunctionSymbol = funcSymbol;
-            Owner = owner ?? new NotInitializedRuntimeValue(BasicType.Void);
             if (funcSymbol is not Symbol.FunctionSymbol)
                 throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}");
         }
@@ -202,7 +201,20 @@ namespace BabyPenguin.VirtualMachine
 
         public ISymbol FunctionSymbol { get; set; }
 
-        public IRuntimeValue Owner { get; set; }
+        public bool IsStatic => FunctionSymbol.IsStatic;
+
+        private IRuntimeValue owner = new NotInitializedRuntimeValue(BasicType.Void);
+        public IRuntimeValue Owner
+        {
+            get { return owner; }
+            set
+            {
+                if (!FunctionSymbol.IsStatic)
+                    owner = value;
+                else
+                    owner = new NotInitializedRuntimeValue(BasicType.Void);
+            }
+        }
 
         public IRuntimeValue Clone()
         {
