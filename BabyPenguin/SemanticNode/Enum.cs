@@ -66,7 +66,7 @@ namespace BabyPenguin.SemanticNode
 
         public ISemanticScope? Parent { get; set; }
 
-        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines).Concat(VTables);
+        public IEnumerable<ISemanticScope> Children => Functions.Cast<ISemanticScope>().Concat(InitialRoutines).Concat(VTables).Concat(OnRoutines);
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
@@ -91,6 +91,8 @@ namespace BabyPenguin.SemanticNode
         public List<VTable> VTables { get; } = [];
 
         public override string ToString() => (this as ISemanticScope).FullName;
+
+        public List<IOnRoutine> OnRoutines { get; } = [];
     }
 
 
@@ -121,6 +123,5 @@ namespace BabyPenguin.SemanticNode
         public EnumSymbol? MemberSymbol { get; set; }
 
         public int Value { get; set; }
-
     }
 }

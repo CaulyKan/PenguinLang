@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace BabyPenguin.SemanticPass
 {
     public class SymbolElaboratePass(SemanticModel model, int passIndex) : ISemanticPass
@@ -197,6 +199,43 @@ namespace BabyPenguin.SemanticPass
                                     initialRoutine, initialRoutine.SourceLocation, syntaxNode.ScopeDepth, false);
 
                                 initialRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
+                            }
+                        }
+                    }
+                    break;
+                case IOnRoutine onRoutine:
+                    {
+                        var parent = onRoutine.Parent as IType;
+                        if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
+                        {
+                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
+                        }
+                        else
+                        {
+                            if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode)
+                            {
+                                var eventParamDecl = syntaxNode.Parameter;
+                                var eventType = eventParamDecl == null ? BasicType.Void : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
+                                onRoutine.EventType = eventType;
+
+                                var eventSymbol = Model.ResolveSymbol(syntaxNode.EventName!.Name, scopeDepth: syntaxNode.ScopeDepth, scope: onRoutine);
+                                if (eventSymbol == null)
+                                    throw new BabyPenguinException($"Cant resolve event '{syntaxNode.EventName.Name}'", syntaxNode.EventName.SourceLocation);
+                                if (eventSymbol.TypeInfo.GenericType?.FullName != "__builtin.Event<?>")
+                                    throw new BabyPenguinException($"on '{syntaxNode.EventName.Name}' is not an event", syntaxNode.EventName.SourceLocation);
+                                if (eventSymbol.TypeInfo.GenericArguments[0].FullName != eventType.FullName)
+                                    throw new BabyPenguinException($"on '{syntaxNode.EventName.Name}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName}', but got '{eventType.FullName}'", syntaxNode.EventName.SourceLocation);
+
+                                onRoutine.EventSymbol = eventSymbol;
+
+                                var funcSymbol = (onRoutine.Parent as ISymbolContainer)!.AddOnRoutineSymbol(
+                                    onRoutine, onRoutine.SourceLocation, syntaxNode.ScopeDepth, false);
+
+                                onRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
+
+                                onRoutine.EventReceiverSymbol = (onRoutine.Parent as ISymbolContainer)!.AddVariableSymbol($"__{onRoutine.Name}_receiver", false,
+                                    $"__builtin._AsyncEventReceiver<{eventSymbol.TypeInfo.GenericArguments[0]}>", syntaxNode.Parameter!.SourceLocation,
+                                    syntaxNode.Parameter.ScopeDepth, null, false, parent is not INamespace);
                             }
                         }
                     }

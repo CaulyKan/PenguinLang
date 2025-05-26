@@ -1,7 +1,6 @@
                 event test_event : i32;
 
-                var eq : _AsyncEventReceiver<i32> = new _AsyncEventReceiver<i32>(test_event, on_test_event);
-                fun on_test_event(val b : i32) {
+                on test_event (val b: i32) {
                     print(b as string);
                     if (b == 2) exit(0);
                 }

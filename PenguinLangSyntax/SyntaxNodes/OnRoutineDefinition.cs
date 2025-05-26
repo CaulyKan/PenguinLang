@@ -16,9 +16,11 @@ namespace PenguinLangSyntax.SyntaxNodes
         public Declaration? Parameter { get; set; }
 
         [ChildrenNode]
-        public CodeBlock? Body { get; set; }
+        public CodeBlock? CodeBlock { get; set; }
 
-        public string Name => "on_" + EventName!.Text;
+        public string Name => $"on_{EventName!.Text}_{counter++}";
+
+        private static ulong counter = 0;
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
@@ -33,7 +35,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 {
                     Parameter = Build<Declaration>(walker, context.declarationWithoutInitializer());
                 }
-                Body = Build<CodeBlock>(walker, context.codeBlock());
+                CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
 
                 walker.PopScope();
             }
@@ -52,7 +54,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 sb.Append(")");
             }
             sb.Append(" ");
-            sb.Append(Body!.BuildText());
+            sb.Append(CodeBlock!.BuildText());
             return sb.ToString();
         }
 

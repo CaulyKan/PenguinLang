@@ -95,5 +95,7 @@ namespace BabyPenguin.SemanticNode
         public override string ToString() => (this as ISemanticScope).FullName;
 
         public bool HasDeclartion { get; set; } = false;
+
+        public List<IOnRoutine> OnRoutines { get; } = [];
     }
 }

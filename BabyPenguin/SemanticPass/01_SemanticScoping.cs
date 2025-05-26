@@ -43,6 +43,14 @@ namespace BabyPenguin.SemanticPass
                             ns.AddInitialRoutine(initialRoutine);
                         }
 
+                        foreach (var onRoutineNode in namespaceSyntax.OnRoutines)
+                        {
+                            var onRoutine = new OnRoutine(Model, onRoutineNode);
+                            if (ns.InitialRoutines.Any(c => c.Name == onRoutine.Name))
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{ns.Name}'.", onRoutine.SourceLocation);
+                            ns.AddOnRoutine(onRoutine);
+                        }
+
                         foreach (var func in namespaceSyntax.Functions)
                         {
                             var function = new Function(Model, func);
@@ -80,6 +88,15 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation);
                             cls.AddInitialRoutine(initialRoutine);
                         }
+
+                        foreach (var onRoutineNode in classSyntax.OnRoutines)
+                        {
+                            var onRoutine = new OnRoutine(Model, onRoutineNode);
+                            if (cls.InitialRoutines.Any(c => c.Name == onRoutine.Name))
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{cls.Name}'.", onRoutine.SourceLocation);
+                            cls.AddOnRoutine(onRoutine);
+                        }
+
                         foreach (var func in classSyntax.Functions)
                         {
                             var function = new Function(Model, func);
@@ -113,6 +130,15 @@ namespace BabyPenguin.SemanticPass
                                 throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in enum '{enm.Name}'.", initialRoutineNode.SourceLocation);
                             enm.AddInitialRoutine(initialRoutine);
                         }
+
+                        foreach (var onRoutineNode in enumSyntax.OnRoutines)
+                        {
+                            var onRoutine = new OnRoutine(Model, onRoutineNode);
+                            if (enm.InitialRoutines.Any(c => c.Name == onRoutine.Name))
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{enm.Name}'.", onRoutine.SourceLocation);
+                            enm.AddOnRoutine(onRoutine);
+                        }
+
                         foreach (var func in enumSyntax.Functions)
                         {
                             var function = new Function(Model, func);

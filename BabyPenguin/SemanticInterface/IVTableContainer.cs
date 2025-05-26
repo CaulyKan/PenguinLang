@@ -49,6 +49,8 @@ namespace BabyPenguin.SemanticInterface
         public string FullName => Parent!.FullName + "." + Name;
 
         public bool IsMerged { get; set; } = false;
+
+        public List<IOnRoutine> OnRoutines { get; } = [];
     }
 
 }

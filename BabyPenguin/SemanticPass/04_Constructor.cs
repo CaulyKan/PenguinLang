@@ -1,3 +1,4 @@
+
 namespace BabyPenguin.SemanticPass
 {
 
@@ -91,7 +92,20 @@ namespace BabyPenguin.SemanticPass
                         constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
                     }
                 }
+
+                foreach (var onRoutine in ns.OnRoutines)
+                {
+                    ProcessOnRoutine(onRoutine, constructor!.CodeContainer);
+                }
             }
+        }
+
+        public void ProcessOnRoutine(IOnRoutine onRoutine, ICodeContainer constructorBody)
+        {
+            constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName}'", onRoutine.SourceLocation)));
+            var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName}'", onRoutine.SourceLocation);
+            constructorBody.AllocTempSymbol(receiverConstructor.TypeInfo, onRoutine.SourceLocation);
+            constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [onRoutine.EventReceiverSymbol, onRoutine.EventSymbol, onRoutine.FunctionSymbol], null));
         }
 
         public void ProcessClass(IClass cls)
@@ -129,6 +143,11 @@ namespace BabyPenguin.SemanticPass
                 foreach (var varDecl in syntaxNode.Declarations)
                 {
                     InitializeVariable(new(cls), constructorBody, varDecl);
+                }
+
+                foreach (var onRoutine in cls.OnRoutines)
+                {
+                    ProcessOnRoutine(onRoutine, constructorBody);
                 }
             }
         }

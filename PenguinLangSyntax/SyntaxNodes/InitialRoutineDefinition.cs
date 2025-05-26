@@ -28,15 +28,15 @@ namespace PenguinLangSyntax.SyntaxNodes
         static UInt64 counter = 0;
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; private set; } = null;
+        public CodeBlock? CodeBlock { get; set; } = null;
 
-        public string Name { get; private set; } = "";
+        public string Name { get; set; } = "";
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.InitialRoutine;
 
-        public List<SyntaxSymbol> Symbols { get; private set; } = [];
+        public List<SyntaxSymbol> Symbols { get; set; } = [];
 
-        public Dictionary<string, ISyntaxScope> SubScopes { get; private set; } = [];
+        public Dictionary<string, ISyntaxScope> SubScopes { get; set; } = [];
 
         public ISyntaxScope? ParentScope { get; set; }
         public bool IsAnonymous => false;
