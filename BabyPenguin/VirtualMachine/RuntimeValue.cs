@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Runtime.CompilerServices;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -138,7 +139,6 @@ namespace BabyPenguin.VirtualMachine
             DoubleValue = otherVar.DoubleValue;
             StringValue = otherVar.StringValue;
             CharValue = otherVar.CharValue;
-            ExternImplenmentationValue = otherVar.ExternImplenmentationValue;
         }
 
         public IRuntimeValue Clone()
@@ -147,8 +147,6 @@ namespace BabyPenguin.VirtualMachine
             result.AssignFrom(this);
             return result;
         }
-
-        public object? ExternImplenmentationValue { get; set; } = null;
 
         public override string ToString()
         {
@@ -170,19 +168,6 @@ namespace BabyPenguin.VirtualMachine
                 TypeEnum.Void => "void",
                 _ => "unknown"
             };
-
-            if (this.ExternImplenmentationValue != null)
-            {
-                // if (this.ExternImplenmentationValue is ICollection enumerable)
-                // {
-                //     s += " (extern: [";
-                //     s += string.Join(", ", enumerable.Cast<object>().Select(o => o.ToString()));
-                //     s += "])";
-                // }
-                // else
-                //     s += " (extern: " + ExternImplenmentationValue.ToString() + ")";
-            }
-
             return s;
         }
     }
@@ -227,6 +212,23 @@ namespace BabyPenguin.VirtualMachine
         }
     }
 
+    public class ExternRuntimeValue : IRuntimeValue
+    {
+        public IType TypeInfo => BasicType.Void;
+
+        public object? Object { get; set; }
+
+        public override string ToString()
+        {
+            return Object == null ? "null" : RuntimeHelpers.GetHashCode(Object).ToString();
+        }
+
+        public IRuntimeValue Clone()
+        {
+            return new ExternRuntimeValue { Object = Object };
+        }
+    }
+
     public class ReferenceRuntimeValue : IRuntimeValue
     {
         public ReferenceRuntimeValue(IType typeInfo, Dictionary<string, IRuntimeValue> fields)
@@ -247,15 +249,29 @@ namespace BabyPenguin.VirtualMachine
 
         private static ulong counter = 0;
 
+        public object? ExternImplenmentationValue
+        {
+            get
+            {
+                if (Fields.TryGetValue("__extern_impl", out IRuntimeValue? result)) return (result as ExternRuntimeValue)!.Object;
+                else return null;
+            }
+            set
+            {
+                Fields["__extern_impl"] = new ExternRuntimeValue { Object = value };
+            }
+        }
+
         public override string ToString()
         {
-            var fields = Fields.Select(kvp => kvp.Key + ": " + kvp.Value.ToString());
-            return "{" + string.Join(", ", fields) + "}";
+            var fields = Fields.Where(kvp => kvp.Value is not FunctionRuntimeValue).Select(kvp => kvp.Key + ": " + kvp.Value.ToString()).ToList();
+            return RefId.ToString() + "@{" + string.Join(", ", fields) + "}";
         }
 
         public IRuntimeValue Clone()
         {
             var result = new ReferenceRuntimeValue(TypeInfo, Fields.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone()));
+            result.ExternImplenmentationValue = ExternImplenmentationValue;
             return result;
         }
     }

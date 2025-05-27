@@ -10,8 +10,6 @@ namespace BabyPenguin.SemanticNode
         public IType? EventType { get; set; }
 
         public ISymbol? EventReceiverSymbol { get; set; }
-
-        public ISymbol? EventSymbol { get; set; }
     }
 
     public class OnRoutine : BaseSemanticNode, IOnRoutine
@@ -53,7 +51,5 @@ namespace BabyPenguin.SemanticNode
         public IType? EventType { get; set; }
 
         public ISymbol? EventReceiverSymbol { get; set; }
-
-        public ISymbol? EventSymbol { get; set; }
     }
 }

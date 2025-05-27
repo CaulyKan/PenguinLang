@@ -13,8 +13,11 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is EmitEventStatementContext context)
             {
-                EventIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
-                ArgumentExpression = context.expression() == null ? null : Build<Expression>(walker, context.expression()).GetEffectiveExpression();
+                var expression = context.expression();
+                EventExpression = Build<Expression>(walker, expression[0]);
+                if (expression.Length > 1)
+                    ArgumentExpression = Build<Expression>(walker, expression[1]).GetEffectiveExpression();
+                else ArgumentExpression = null;
             }
             else throw new NotImplementedException();
         }
@@ -27,7 +30,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         }
 
         [ChildrenNode]
-        public Identifier? EventIdentifier { get; set; }
+        public ISyntaxExpression? EventExpression { get; set; }
 
         [ChildrenNode]
         public ISyntaxExpression? ArgumentExpression { get; set; }
@@ -37,7 +40,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             var args = ArgumentExpression is not null
                 ? $"({ArgumentExpression.BuildText()})"
                 : "";
-            return $"emit {EventIdentifier!.BuildText()}{args};";
+            return $"emit {EventExpression!.BuildText()}{args};";
         }
     }
 }

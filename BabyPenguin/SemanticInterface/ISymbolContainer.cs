@@ -87,7 +87,8 @@ namespace BabyPenguin.SemanticInterface
             var name = onRoutine.Name;
             var originName = name;
             var eventParamDecl = (onRoutine.SyntaxNode as OnRoutineDefinition)?.Parameter;
-            var eventParam = eventParamDecl == null ? BasicType.Void : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
+            var eventParam = eventParamDecl == null ? BasicType.Void : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: this) ??
+                throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
             var param = eventParamDecl == null ? new FunctionParameter("___void", eventParam, true, 0) : new FunctionParameter(eventParamDecl.Identifier!.Name, eventParam, eventParamDecl.IsReadonly, 0);
             var symbol = new FunctionSymbol(this, onRoutine, false, name, sourceLocation, BasicType.Void, [param], scopeDepth, originName, false, -1, true, isClassMember, true, false, null);
             onRoutine.AddVariableSymbol(param.Name, true, new(param.Type), eventParamDecl?.SourceLocation ?? SourceLocation.Empty(), onRoutine.SyntaxNode!.ScopeDepth, 0, param.IsReadonly, false);

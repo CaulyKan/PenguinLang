@@ -615,9 +615,12 @@ namespace BabyPenguin.VirtualMachine
                             break;
                         }
                     case NewInstanceInstruction cmd:
-                        // do nothing
-                        DebugPrint(cmd, result: cmd.Target.FullName);
-                        break;
+                        {
+                            // do nothing
+                            IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
+                            DebugPrint(cmd, result: resultVar.ToDebugString());
+                            break;
+                        }
                     case ReadMemberInstruction cmd:
                         {
                             IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
@@ -719,7 +722,7 @@ namespace BabyPenguin.VirtualMachine
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {members[cmd.Member.Name].TypeInfo}");
 
                             members[cmd.Member.Name] = rightVar.Value;
-                            DebugPrint(cmd, op1: members[cmd.Member.Name].ToString(), op2: rightVar.ToDebugString(), result: owner.ToDebugString());
+                            DebugPrint(cmd, op1: cmd.Member.Name, op2: rightVar.ToDebugString(), result: owner.ToDebugString());
                         }
                         break;
                     case WriteEnumInstruction cmd:

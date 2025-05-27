@@ -60,6 +60,34 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void EmitWithImplicitCastWaitResultEvent()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                event test_event : i32;
+
+                initial {
+                    var a : i32 = wait test_event;
+                    print(a as string);
+                    a = wait test_event;
+                    print(a as string);
+                    a = wait test_event;
+                    print(a as string);
+                }
+                
+                initial {
+                    emit test_event(0);
+                    emit test_event(1);
+                    emit test_event(2);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("012", vm.CollectOutput());
+        }
+
+        [Fact]
         public void QueuedEventReceiverTest()
         {
             var compiler = new SemanticCompiler();
@@ -137,6 +165,40 @@ namespace BabyPenguin.Tests
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("012", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void OnEventClassTest()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                class Foo {
+                    event test_event : i32;
+
+                    on this.test_event (val b: i32) {
+                        print(b as string);
+                    }
+                    
+                    fun foo(var this: Foo) {
+                        emit this.test_event(1 as i32);
+                        emit this.test_event(2 as i32);
+                    }
+                }
+
+                var f : Foo = new Foo();
+
+                on f.test_event (val b: i32) {
+                    print(b as string);
+                }
+
+                initial {
+                    f.foo();
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("1122", vm.CollectOutput());
         }
     }
 }

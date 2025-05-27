@@ -430,15 +430,23 @@ namespace BabyPenguin.SemanticInterface
                 case Statement.Type.EmitEventStatement:
                     {
                         var emitEventStatement = item.EmitEventStatement!;
-                        var eventSymbol = Model.ResolveSymbol(emitEventStatement.EventIdentifier!.Name, predicate: s => s is EventSymbol, scopeDepth: emitEventStatement.ScopeDepth, scope: this);
-                        if (eventSymbol == null)
-                            throw new BabyPenguinException($"Event '{emitEventStatement.EventIdentifier!.Name}' not found", emitEventStatement.SourceLocation);
-
+                        if (emitEventStatement.EventExpression == null)
+                            throw new BabyPenguinException($"Event expression is required", emitEventStatement.SourceLocation);
+                        var eventSymbol = AddExpression(emitEventStatement.EventExpression, false);
                         var notifySymbol = Model.ResolveSymbol($"{eventSymbol.TypeInfo.FullName}.notify") ??
                             throw new BabyPenguinException($"Can't resolve 'notify' method of event type '{eventSymbol.TypeInfo.FullName}'", emitEventStatement.SourceLocation);
                         var paramSymbol = emitEventStatement.ArgumentExpression == null ?
                             AllocTempSymbol(BasicType.Void, emitEventStatement.SourceLocation) :
                             AddExpression(emitEventStatement.ArgumentExpression, false);
+
+                        if (eventSymbol.TypeInfo.GenericType?.FullName != "__builtin.Event<?>")
+                            throw new BabyPenguinException($"This emit event statement requires event type to be __builtin.Event<?>, but got '{eventSymbol.TypeInfo}'", emitEventStatement.EventExpression.SourceLocation);
+                        if (paramSymbol.TypeInfo.FullName != eventSymbol.TypeInfo.GenericArguments.First().FullName)
+                        {
+                            var temp = AllocTempSymbol(eventSymbol.TypeInfo.GenericArguments.First(), emitEventStatement.SourceLocation);
+                            AddCastExpression(new(paramSymbol), temp, emitEventStatement.SourceLocation);
+                            paramSymbol = temp;
+                        }
 
                         AddInstruction(new FunctionCallInstruction(emitEventStatement.SourceLocation, notifySymbol, [eventSymbol, paramSymbol], null));
                         break;

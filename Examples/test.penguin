@@ -1,12 +1,23 @@
-                event test_event : i32;
+                class Foo {
+                    event test_event : i32;
+                    var x: i32=0;
 
-                on test_event (val b: i32) {
-                    print(b as string);
-                    if (b == 2) exit(0);
-                }
-                
-                initial {
-                    for (var i : i64 in range(0, 3)) {
-                        emit test_event(i as i32);
+                    on this.test_event (val b: i32) {
+                        print(b as string);
                     }
+                    
+                    fun foo(var this: Foo) {
+                        emit this.test_event(1 as i32);
+                        emit this.test_event(2 as i32);
+                    }
+                }
+
+                var f : Foo = new Foo();
+
+                on f.test_event (val b: i32) {
+                    print(b as string);
+                }
+
+                initial {
+                    f.foo();
                 }

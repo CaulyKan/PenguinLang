@@ -13,6 +13,8 @@ namespace __builtin {
         }
     }
 
+    class __ExternImpl {}
+
     enum Option<T> {
         some: T;
         none;
@@ -131,7 +133,7 @@ namespace __builtin {
     }
 
     class List<T> {
-        var __impl: u64;
+        var __impl: __ExternImpl = new __ExternImpl();
         extern fun new(var this: List<T>);
         extern fun at(val this: List<T>, val index: u64) -> Option<T>;
         extern fun remove(val this: List<T>, val index: u64);
@@ -166,7 +168,7 @@ namespace __builtin {
     }
 
     class Queue<T> {
-        var __impl: u64;
+        var __impl: __ExternImpl = new __ExternImpl();
         extern fun new(var this: Queue<T>);
         extern fun enqueue(var this: Queue<T>, val value: T);
         extern fun dequeue(var this: Queue<T>) -> Option<T>;
@@ -324,7 +326,7 @@ namespace __builtin {
     }
 
     class RoutineContext<T> {
-        var frame: i64;
+        var __impl: __ExternImpl = new __ExternImpl();
         var result: Option<T> = new Option<T>.none();
         var target: async_fun<T>;
 

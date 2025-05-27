@@ -10,7 +10,7 @@ namespace PenguinLangSyntax.SyntaxNodes
     public class OnRoutineDefinition : SyntaxNode, ISyntaxScope
     {
         [ChildrenNode]
-        public SymbolIdentifier? EventName { get; set; }
+        public Expression? EventExpression { get; set; }
 
         [ChildrenNode]
         public Declaration? Parameter { get; set; }
@@ -18,7 +18,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public CodeBlock? CodeBlock { get; set; }
 
-        public string Name => $"on_{EventName!.Text}_{counter++}";
+        public string Name => $"on_{counter++}";
 
         private static ulong counter = 0;
 
@@ -30,7 +30,7 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 walker.PushScope(SyntaxScopeType.Function, this);
 
-                EventName = Build<SymbolIdentifier>(walker, context.identifier());
+                EventExpression = Build<Expression>(walker, context.expression());
                 if (context.declarationWithoutInitializer() != null)
                 {
                     Parameter = Build<Declaration>(walker, context.declarationWithoutInitializer());
@@ -46,7 +46,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         {
             var sb = new StringBuilder();
             sb.Append("on ");
-            sb.Append(EventName!.BuildText());
+            sb.Append(EventExpression!.BuildText());
             if (Parameter != null)
             {
                 sb.Append("(");

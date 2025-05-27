@@ -267,8 +267,7 @@ yieldStatement: 'yield' expression? ';';
 
 signalStatement: '__signal' expression;
 
-emitEventStatement:
-	'emit' identifier ('(' expression? ')')? ';';
+emitEventStatement: 'emit' expression '(' expression? ')' ';';
 
 compilationUnit: namespaceDeclaration* EOF;
 
@@ -313,7 +312,7 @@ eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
 initialRoutine: 'initial' identifier? codeBlock;
 
 onRoutine:
-	'on' identifier ('(' declarationWithoutInitializer? ')')? codeBlock;
+	'on' expression ('(' declarationWithoutInitializer? ')')? codeBlock;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';

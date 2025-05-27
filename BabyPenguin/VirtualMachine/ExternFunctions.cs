@@ -85,20 +85,20 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(queue.FullName + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     impl.ExternImplenmentationValue = new Queue<IRuntimeValue>();
                 });
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".enqueue", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     q!.Enqueue(args[1]);
                 });
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".dequeue", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     if (q!.Count == 0)
                     {
@@ -114,7 +114,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".peek", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     if (q!.Count == 0)
                     {
@@ -130,7 +130,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(queue.FullName + ".size", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)q!.Count;
                 });
@@ -140,20 +140,20 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(list.FullName + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     impl.ExternImplenmentationValue = new List<IRuntimeValue>();
                 });
 
                 vm.Global.RegisterExternFunction(list.FullName + ".push", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     l!.Add(args[1]);
                 });
 
                 vm.Global.RegisterExternFunction(list.FullName + ".pop", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     if (l!.Count == 0)
                     {
@@ -170,7 +170,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(list.FullName + ".at", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var idx = args[1].As<BasicRuntimeValue>().U64Value;
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     if ((ulong)l!.Count <= idx)
@@ -187,7 +187,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(list.FullName + ".remove", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var idx = args[1].As<BasicRuntimeValue>().U64Value;
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     if ((ulong)l!.Count <= idx)
@@ -202,7 +202,7 @@ namespace BabyPenguin.VirtualMachine
 
                 vm.Global.RegisterExternFunction(list.FullName + ".size", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<BasicRuntimeValue>();
+                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)l!.Count;
                 });
@@ -212,7 +212,7 @@ namespace BabyPenguin.VirtualMachine
         private static IEnumerable<RuntimeBreak> RoutineContextCall(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
         {
             var target = args[0].As<ReferenceRuntimeValue>().Fields["target"].As<FunctionRuntimeValue>() ?? throw new NotImplementedException();
-            var frameRuntimeVar = args[0].As<ReferenceRuntimeValue>().Fields["frame"].As<BasicRuntimeValue>();
+            var frameRuntimeVar = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
             RuntimeFrameResult? frameResult = null;
             if (frameRuntimeVar.ExternImplenmentationValue is RuntimeFrame f)
             {

@@ -24,7 +24,7 @@ namespace BabyPenguin.VirtualMachine
 
         string? ValueToString => TypeInfo.FullName;
 
-        string ToDebugString() => $"[ {ConsoleColor.YELLOW}{Symbol?.Name}{ConsoleColor.CYAN}({TypeInfo})={ValueToString}{ConsoleColor.NORMAL} ]";
+        string ToDebugString() => $"[ {ConsoleColor.YELLOW}{Symbol?.FullName}{ConsoleColor.CYAN}({TypeInfo})={ValueToString}{ConsoleColor.NORMAL} ]";
 
         static IRuntimeSymbol FromSymbol(SemanticModel model, ISymbol symbol)
         {

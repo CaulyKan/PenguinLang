@@ -82,7 +82,7 @@ namespace BabyPenguin.SemanticPass
                 var eventType = Model.ResolveType($"__builtin.Event<{type.FullName}>")
                     ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName}>");
 
-                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, false, false));
+                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, false, container is not INamespace));
             }
 
             switch (obj)
@@ -186,8 +186,8 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case IInitialRoutine initialRoutine:
                     {
-                        var parent = initialRoutine.Parent as IType;
-                        if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
+                        var parent = initialRoutine.Parent as IRoutineContainer;
+                        if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
                             Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for initial routine '{initialRoutine.Name}' is skipped now because it is generic");
                         }
@@ -205,8 +205,8 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case IOnRoutine onRoutine:
                     {
-                        var parent = onRoutine.Parent as IType;
-                        if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
+                        var parent = onRoutine.Parent as IRoutineContainer;
+                        if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
                             Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
                         }
@@ -218,23 +218,13 @@ namespace BabyPenguin.SemanticPass
                                 var eventType = eventParamDecl == null ? BasicType.Void : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
                                 onRoutine.EventType = eventType;
 
-                                var eventSymbol = Model.ResolveSymbol(syntaxNode.EventName!.Name, scopeDepth: syntaxNode.ScopeDepth, scope: onRoutine);
-                                if (eventSymbol == null)
-                                    throw new BabyPenguinException($"Cant resolve event '{syntaxNode.EventName.Name}'", syntaxNode.EventName.SourceLocation);
-                                if (eventSymbol.TypeInfo.GenericType?.FullName != "__builtin.Event<?>")
-                                    throw new BabyPenguinException($"on '{syntaxNode.EventName.Name}' is not an event", syntaxNode.EventName.SourceLocation);
-                                if (eventSymbol.TypeInfo.GenericArguments[0].FullName != eventType.FullName)
-                                    throw new BabyPenguinException($"on '{syntaxNode.EventName.Name}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName}', but got '{eventType.FullName}'", syntaxNode.EventName.SourceLocation);
-
-                                onRoutine.EventSymbol = eventSymbol;
-
                                 var funcSymbol = (onRoutine.Parent as ISymbolContainer)!.AddOnRoutineSymbol(
                                     onRoutine, onRoutine.SourceLocation, syntaxNode.ScopeDepth, false);
 
                                 onRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
 
                                 onRoutine.EventReceiverSymbol = (onRoutine.Parent as ISymbolContainer)!.AddVariableSymbol($"__{onRoutine.Name}_receiver", false,
-                                    $"__builtin._AsyncEventReceiver<{eventSymbol.TypeInfo.GenericArguments[0]}>", syntaxNode.Parameter!.SourceLocation,
+                                    $"__builtin._AsyncEventReceiver<{eventType.FullName}>", syntaxNode.Parameter!.SourceLocation,
                                     syntaxNode.Parameter.ScopeDepth, null, false, parent is not INamespace);
                             }
                         }
