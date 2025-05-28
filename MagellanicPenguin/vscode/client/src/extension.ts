@@ -24,20 +24,70 @@ import {
 	LanguageClientOptions,
 	RevealOutputChannelOn,
 	ServerOptions,
+	TransportKind,
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
-// type a = Parameters<>;
 
-const interpreter_program: Map<string, string> = new Map([["linux", "/home/cauly/workspace/repos/penguinlang/BabyPenguin/bin/Debug/net8.0/BabyPenguin"], ["win32", "X:\\repos\\penguinlang\\BabyPenguin\\bin\\Debug\\net8.0\\BabyPenguin"]]);
+// LSP server path configuration
+const lspServerPath: Map<string, string> = new Map([
+	["linux", "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/LSP/bin/Debug/net8.0/MagellanicPenguinLSP"],
+	["win32", "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\LSP\\bin\\Debug\\net8.0\\MagellanicPenguinLSP.exe"]
+]);
+
+// Command to restart the language server
+async function restartLanguageServer() {
+	if (client) {
+		await client.stop();
+	}
+	await startLanguageServer();
+}
+
+// Function to start the language server
+async function startLanguageServer() {
+	const traceOutputChannel = window.createOutputChannel("PenguinLang Language Server");
+
+	// Server options
+	const serverOptions: ServerOptions = {
+		run: {
+			command: lspServerPath.get(platform()) || "",
+			transport: TransportKind.stdio,
+		},
+		debug: {
+			command: lspServerPath.get(platform()) || "",
+			transport: TransportKind.stdio,
+		}
+	};
+
+	// Client options
+	const clientOptions: LanguageClientOptions = {
+		documentSelector: [{ scheme: 'file', language: 'penguinlang' }],
+		revealOutputChannelOn: RevealOutputChannelOn.Never,
+		traceOutputChannel
+	};
+
+	// Create and start the client
+	client = new LanguageClient(
+		'penguinlangvscode',
+		'Penguin Language Server',
+		serverOptions,
+		clientOptions
+	);
+
+	// Start the client
+	await client.start();
+}
+
 export async function activate(context: ExtensionContext) {
-	const traceOutputChannel = window.createOutputChannel("Brainfuck Language Server Client");
+	// Register the restart command
+	context.subscriptions.push(
+		commands.registerCommand('penguinlangvscode.restartLanguageServer', restartLanguageServer)
+	);
 
+	// Start the language server
+	await startLanguageServer();
 
-	// If the extension is launched in debug mode then the debug server options are used
-	// Otherwise the run options are used
-	// Options to control the language client
-
+	// Register debug adapter tracker
 	const debugTraceOutputChannel = window.createOutputChannel("penguinlang DAP");
 	debug.registerDebugAdapterTrackerFactory('penguinlang', {
 		createDebugAdapterTracker(session: DebugSession) {
@@ -49,10 +99,8 @@ export async function activate(context: ExtensionContext) {
 	});
 }
 
-
-
 async function createTerminal(): Promise<Terminal> {
-	const name = "Brainfuck/Launch";
+	const name = "PenguinLang/Launch";
 	for (const term of window.terminals) {
 		if (term.name == name) {
 			return term;

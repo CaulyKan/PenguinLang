@@ -21,6 +21,15 @@ namespace PenguinLangSyntax
 
         public SourceLocation EndLocation => new SourceLocation(FileName, FileNameIdentifier, RowEnd, RowEnd, ColEnd, ColEnd);
 
+        public bool Contains(SourceLocation other)
+        {
+            return Path.GetFullPath(FileName) == Path.GetFullPath(other.FileName) &&
+                RowStart <= other.RowStart &&
+                RowEnd >= other.RowEnd &&
+                (RowStart != other.RowStart || ColStart <= other.ColStart) &&
+                (RowEnd != other.RowEnd || ColEnd >= other.ColEnd);
+        }
+
         public override string ToString()
         {
             return $"{FileName}:{RowStart}";
@@ -31,7 +40,7 @@ namespace PenguinLangSyntax
     {
         private readonly TextWriter writer = writer ?? Console.Out;
 
-        public List<DiagnosticMessage> Errors { get; set; } = [];
+        public List<DiagnosticMessage> Messages { get; set; } = [];
 
         StringBuilder stringBuilder = new StringBuilder();
 
@@ -39,19 +48,15 @@ namespace PenguinLangSyntax
         {
             var msg = new DiagnosticMessage(level, message, sourceLocation);
             writer.WriteLine(msg.ToString());
-            Errors.Add(msg);
-            stringBuilder.AppendLine(msg.ToString());
+            Messages.Add(msg);
         }
 
         public void Write(DiagnosticLevel level, string message)
         {
             var msg = new DiagnosticMessage(level, message);
             writer.WriteLine(msg.ToString());
-            Errors.Add(msg);
-            stringBuilder.AppendLine(msg.ToString());
+            Messages.Add(msg);
         }
-
-        public string Report => stringBuilder.ToString();
 
         public enum DiagnosticLevel
         {

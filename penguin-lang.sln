@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -9,7 +9,15 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PenguinLangSyntax", "Pengui
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BabyPenguin.Tests", "BabyPenguin.Tests\BabyPenguin.Tests.csproj", "{1644E680-C71D-45C1-9622-9046395AA486}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagellanicPenguinDAP", "MagellanicPenguin\MagellanicPenguinDAP.csproj", "{5A3B8D9E-1D2F-4E5C-9F7A-8B6C9D0E1F2B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagellanicPenguinDAP", "MagellanicPenguin\DAP\MagellanicPenguinDAP.csproj", "{5A3B8D9E-1D2F-4E5C-9F7A-8B6C9D0E1F2B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagellanicPenguinLSP", "MagellanicPenguin\LSP\MagellanicPenguinLSP.csproj", "{F5E4CD1D-E261-484E-B19A-781B52C17097}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "MagellanicPenguin", "MagellanicPenguin", "{54EE158E-E738-4639-86AA-00E1389A9BB6}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ThirdParty", "ThirdParty", "{0BA1568C-7F86-4183-A1EF-64E3CF750861}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "LanguageServerProtocol", "LanguageServerProtocol", "{D4F4CEB2-C7BD-41B3-B577-DBD34754385F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -36,5 +44,13 @@ Global
 		{5A3B8D9E-1D2F-4E5C-9F7A-8B6C9D0E1F2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5A3B8D9E-1D2F-4E5C-9F7A-8B6C9D0E1F2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5A3B8D9E-1D2F-4E5C-9F7A-8B6C9D0E1F2B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0BA1568C-7F86-4183-A1EF-64E3CF750861} = {54EE158E-E738-4639-86AA-00E1389A9BB6}
+		{D4F4CEB2-C7BD-41B3-B577-DBD34754385F} = {0BA1568C-7F86-4183-A1EF-64E3CF750861}
 	EndGlobalSection
 EndGlobal

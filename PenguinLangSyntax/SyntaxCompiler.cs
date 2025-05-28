@@ -87,6 +87,8 @@ namespace PenguinLangSyntax
         uint ScopeDepth { get; set; }
 
         ISyntaxScope? ParentScope { get; set; }
+
+        SourceLocation SourceLocation { get; }
     }
 
     public class SyntaxSymbol(string name, string typeName, SyntaxNode symbol)

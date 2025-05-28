@@ -1,11 +1,11 @@
 {
-  "name": "penguinlangvscode",
-  "displayName": "Penguin Language",
+  "name": "penguinlang",
+  "displayName": "PenguinLang",
   "repository": "https://github.com/CaulyKan/PenguinLang",
-  "description": "",
+  "description": "PenguinLang language support for VS Code",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.94.0"
+    "vscode": "^1.60.0"
   },
   "categories": [
     "Programming Languages"
@@ -27,19 +27,58 @@
     "grammars": [
       {
         "language": "penguinlang",
-        "scopeName": "penguin",
+        "scopeName": "source.penguinlang",
         "path": "./syntaxes/penguinlang.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "penguinlangvscode.restartLanguageServer",
+        "title": "PenguinLang: Restart Language Server",
+        "category": "PenguinLang"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "penguinlang-lsp configuration",
+      "properties": {
+        "penguinlangvscode.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        },
+        "penguinlangvscode.dapTrace": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "on"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the DAP server."
+        },
+        "penguinlangvscode.enableInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inlay hints for Brainfuck code. default: true"
+        }
+      }
+    },
     "debuggers": [
       {
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
+          "program": "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\DAP\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
         },
         "linux": {
-          "program": "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/bin/Debug/net8.0/MagellanicPenguinDAP"
+          "program": "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/DAP/bin/Debug/net8.0/MagellanicPenguinDAP"
         },
         "configurationAttributes": {
           "launch": {
@@ -73,8 +112,8 @@
     ]
   },
   "scripts": {
-    "package": "make-dir server/windows && make-dir server/ && cpy \"../BabyPenguin/bin/Debug/net8.0/*\" server/  && vsce package -o penguinlang.vsix",
-    "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../BabyPenguin/bin/Debug/net8.0/*\" server/ ",
+    "package": "make-dir server/windows && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net8.0/*\" server/  && vsce package -o penguinlang.vsix",
+    "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net8.0/*\" server/ ",
     "compile": "tsc -b",
     "watch": "tsc -b -w",
     "lint": "eslint ./client/src --ext .ts,.tsx",
@@ -99,5 +138,9 @@
     "mocha": "^9.2.1",
     "typescript": "^4.8.4",
     "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "vscode-languageserver": "^8.1.0",
+    "vscode-languageserver-textdocument": "^1.0.8"
   }
 }

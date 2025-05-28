@@ -5,3 +5,4 @@ node_modules
 MagellanicPenguin/vscode/server/*
 MagellanicPenguin/vscode/*.vsix
 report.txt
+*.log

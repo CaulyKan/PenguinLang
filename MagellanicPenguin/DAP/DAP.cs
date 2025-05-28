@@ -1,3 +1,5 @@
+using BabyPenguin;
+using BabyPenguin.VirtualMachine;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Utilities;
@@ -5,6 +7,15 @@ using PenguinLangSyntax;
 
 namespace MagellanicPenguin
 {
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var dap = new DAP();
+            dap.Protocol.Run();
+        }
+    }
+
     public class DAP : DebugAdapterBase
     {
         BabyPenguinVM? vm;

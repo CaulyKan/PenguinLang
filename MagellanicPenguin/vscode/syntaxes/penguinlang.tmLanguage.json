@@ -1,34 +1,113 @@
 {
 	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-	"name": "Penguin Lang",
+	"name": "PenguinLang",
+	"scopeName": "source.penguinlang",
+	"fileTypes": [
+		"penguin"
+	],
 	"patterns": [
 		{
+			"include": "#comments"
+		},
+		{
 			"include": "#keywords"
+		},
+		{
+			"include": "#types"
+		},
+		{
+			"include": "#literals"
+		},
+		{
+			"include": "#operators"
 		},
 		{
 			"include": "#strings"
 		}
 	],
 	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash.penguinlang",
+					"match": "//.*$"
+				},
+				{
+					"name": "comment.block.penguinlang",
+					"begin": "/\\*",
+					"end": "\\*/"
+				}
+			]
+		},
 		"keywords": {
 			"patterns": [
 				{
 					"name": "keyword.control.penguinlang",
-					"match": "\\b(if|while|for|return)\\b"
+					"match": "\\b(if|else|while|for|in|return|break|continue|yield|emit|wait|async|new)\\b"
+				},
+				{
+					"name": "keyword.declaration.penguinlang",
+					"match": "\\b(var|val|fun|async_fun|class|interface|enum|namespace|type|event|on|initial|impl|pure|!pure|extern|!async)\\b"
+				},
+				{
+					"name": "keyword.operator.penguinlang",
+					"match": "\\b(as|is|Self|void|true|false)\\b"
+				}
+			]
+		},
+		"types": {
+			"patterns": [
+				{
+					"name": "storage.type.penguinlang",
+					"match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|float|double|string|bool|char)\\b"
+				}
+			]
+		},
+		"literals": {
+			"patterns": [
+				{
+					"name": "constant.numeric.penguinlang",
+					"match": "\\b(0[bB][01]+|0[xX][0-9a-fA-F]+|\\d+(\\.\\d+)?([eE][+-]?\\d+)?)\\b"
+				},
+				{
+					"name": "constant.language.penguinlang",
+					"match": "\\b(true|false|void)\\b"
+				}
+			]
+		},
+		"operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator.penguinlang",
+					"match": "\\b(\\+|-|\\*|/|%|&|\\||\\^|!|~|=|==|!=|<|>|<=|>=|<<|>>|&&|\\|\\||\\?|:|->)\\b"
 				}
 			]
 		},
 		"strings": {
-			"name": "string.quoted.double.penguinlang",
-			"begin": "\"",
-			"end": "\"",
 			"patterns": [
 				{
-					"name": "constant.character.escape.penguinlang",
-					"match": "\\\\."
+					"name": "string.quoted.double.penguinlang",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape.penguinlang",
+							"match": "\\\\."
+						}
+					]
+				},
+				{
+					"name": "string.quoted.single.penguinlang",
+					"begin": "'",
+					"end": "'",
+					"patterns": [
+						{
+							"name": "constant.character.escape.penguinlang",
+							"match": "\\\\."
+						}
+					]
 				}
 			]
 		}
-	},
-	"scopeName": "penguin"
+	}
 }

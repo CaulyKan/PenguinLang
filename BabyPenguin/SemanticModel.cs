@@ -5,6 +5,7 @@ namespace BabyPenguin
     public partial class SemanticModel
     {
         public List<MergedNamespace> Namespaces { get; } = [];
+        public IEnumerable<Namespace> AllNamespaces => Namespaces.SelectMany(n => n.Namespaces);
         public IEnumerable<Class> Classes => FindAll(s => s is Class).Cast<Class>();
         public IEnumerable<Interface> Interfaces => FindAll(s => s is Interface).Cast<Interface>();
         public IEnumerable<SemanticNode.Enum> Enums => FindAll(s => s is SemanticNode.Enum).Cast<SemanticNode.Enum>();
@@ -12,7 +13,7 @@ namespace BabyPenguin
         public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
-        public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new PenguinLangException("Builtin namespace not found.");
+        public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new BabyPenguinException("Builtin namespace not found.", SourceLocation.Empty());
 
         public SemanticModel(bool addBuiltin = true, ErrorReporter? reporter = null)
         {
@@ -69,6 +70,30 @@ namespace BabyPenguin
                 Namespaces.Add(merged);
                 ns.Parent = merged;
             }
+        }
+
+        public ISemanticScope? GetScopeFromSourceLocation(SourceLocation location)
+        {
+            ISemanticScope? result = null;
+
+            void FindSmallestScope(ISemanticScope scope)
+            {
+                if (scope.SourceLocation.Contains(location))
+                {
+                    result = scope;
+                    foreach (var child in scope.Children)
+                    {
+                        FindSmallestScope(child);
+                    }
+                }
+            }
+
+            foreach (var ns in AllNamespaces)
+            {
+                FindSmallestScope(ns);
+            }
+
+            return result;
         }
 
         public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true)
@@ -147,7 +172,7 @@ namespace BabyPenguin
             if (name == "Self")
             {
                 if (scope is null)
-                    throw new PenguinLangException("Self is not allowed here.");
+                    throw new BabyPenguinException("Self is not allowed here.", SourceLocation.Empty());
                 if (scope is IType typ)
                     return typ;
                 else

@@ -10,4 +10,5 @@ fun hello(val name : string) -> void {
   println("Hello, " + name);
 }
 
-class Test{}
+class Test{
+}

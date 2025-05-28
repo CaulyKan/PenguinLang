@@ -44,18 +44,24 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "Attach dap",
+            "name": "Attach",
             "type": "coreclr",
             "request": "attach",
-            "processName": "BabyPenguin.exe"
+            "processName": "MagellanicPenguinLSP.exe"
             // "processId": "${command:pickProcess}"
         },
         {
             "name": "Extension",
             "type": "extensionHost",
             "request": "launch",
+            "windows": {
+                "preLaunchTask": "dotnet build win"
+            },
+            "linux": {
+                "preLaunchTask": "dotnet build linux"
+            },
             "args": [
-                "--extensionDevelopmentPath=${workspaceFolder}/PenguinLangVscode"
+                "--extensionDevelopmentPath=${workspaceFolder}/MagellanicPenguin/vscode"
             ]
         },
         {
