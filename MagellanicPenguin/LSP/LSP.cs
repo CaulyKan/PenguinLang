@@ -14,6 +14,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using BabyPenguin.SemanticNode;
 using BabyPenguin.SemanticInterface;
+using BabyPenguin.Symbol;
 
 namespace MagellanicPenguin
 {
@@ -50,7 +51,9 @@ namespace MagellanicPenguin
                     {
                         triggerCharacters = new[] { ".", ":", ">", "(", "[", "{", "\"", "'", "`", "@", "#", "$", "%", "&", "*", "+", "-", "=", "|", "\\", "/", "<", "?", "~", "!", "^" }
                     },
-                    documentSymbolProvider = true
+                    documentSymbolProvider = true,
+                    definitionProvider = true,
+                    referencesProvider = true,
                 }
             };
             Logger.Instance.Log("Leave Initialize");
@@ -155,6 +158,11 @@ namespace MagellanicPenguin
                 end = new Position { line = Math.Max(0, e.RowEnd - 1), character = Math.Max(0, e.ColEnd) }
             };
             return result;
+        }
+
+        private static Uri ConvertPathToUri(string fileName)
+        {
+            return new Uri("file:///" + fileName.Replace("\\", "/"));
         }
 
         protected override void DidChangeWatchedFiles(DidChangeWatchedFilesParams @params)
@@ -307,6 +315,54 @@ namespace MagellanicPenguin
             return Result<DocumentSymbolResult, ResponseError>.Success(symbols.ToArray());
         }
 
+        protected override Result<LocationSingleOrArray, ResponseError> GotoDefinition(TextDocumentPositionParams @params)
+        {
+            Logger.Instance.Log($"Enter Definition(textDocument={@params.textDocument.uri}, position={@params.position.line}:{@params.position.character})");
+
+            var document = _documents.All.FirstOrDefault(d => d.uri == @params.textDocument.uri);
+            if (document == null)
+            {
+                Logger.Instance.Log("Leave Definition: document not found");
+                return Result<LocationSingleOrArray, ResponseError>.Error(new ResponseError { code = ErrorCodes.InvalidParams, message = "Document not found" });
+            }
+
+            var model = _documents.GetCompilationResult(document.uri).LastSuccessModel;
+            if (model == null)
+            {
+                Logger.Instance.Log("Leave Definition: no successful compilation result is available.");
+                return Result<LocationSingleOrArray, ResponseError>.Error(new ResponseError { code = ErrorCodes.InternalError, message = "no successful compliation result" });
+            }
+
+            // Convert position to SourceLocation
+            var sourceLocation = new SourceLocation(
+                ConvertUriToPath(document.uri),
+                "",
+                (int)@params.position.line + 1,
+                (int)@params.position.line + 1,
+                (int)@params.position.character,
+                (int)@params.position.character
+            );
+
+            // Find definition
+            var definitionLocation = model.GetDefinitionFromSourceLocation(sourceLocation);
+            if (definitionLocation == null)
+            {
+                Logger.Instance.Log("Leave Definition: no definition found");
+                return Result<LocationSingleOrArray, ResponseError>.Success(new LocationSingleOrArray([]));
+            }
+
+            // Convert definition location to LSP Location
+            var definition = definitionLocation.IsLeft ? definitionLocation.Left.SourceLocation : definitionLocation.Right.SourceLocation;
+            var location = new Location
+            {
+                uri = ConvertPathToUri(definition.FileName),
+                range = ConvertSourceLocation(definition)
+            };
+
+            Logger.Instance.Log($"Leave Definition: {definition}");
+            return Result<LocationSingleOrArray, ResponseError>.Success(new LocationSingleOrArray(location));
+        }
+
         private IEnumerable<DocumentSymbol> CollectDocumentSymbols(ISemanticScope scope)
         {
             SymbolKind kind;
@@ -386,6 +442,7 @@ namespace MagellanicPenguin
         {
             if (!_compilationResults.ContainsKey(uri))
             {
+                result.LastSuccessModel = result.Model;
                 _compilationResults[uri] = result;
             }
             else

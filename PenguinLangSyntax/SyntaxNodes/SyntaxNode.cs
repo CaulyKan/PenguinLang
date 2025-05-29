@@ -38,8 +38,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public virtual void Build(SyntaxWalker walker, ParserRuleContext context)
         {
             SourceText = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
-            var fileNameIdentifier = $"{Path.GetFileNameWithoutExtension(walker.FileName)}_{((uint)walker.FileName.GetHashCode()) % 0xFFFF}";
-            SourceLocation = new SourceLocation(walker.FileName, fileNameIdentifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
+            SourceLocation = SourceLocation.From(walker.FileName, context);
             ScopeDepth = walker.CurrentScopeDepth;
         }
 

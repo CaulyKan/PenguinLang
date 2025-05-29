@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 
 namespace BabyPenguin
 {
@@ -102,10 +103,10 @@ namespace BabyPenguin
             }
         }
 
-        IType? GetImplementedInterfaceType(Or<IType, string> interfaceTypeOrName)
+        IType? GetImplementedInterfaceType(Or<IType, string> interfaceTypeOrName, SourceLocation sourceLocation)
         {
             IType interfaceType = interfaceTypeOrName.IsLeft ? interfaceTypeOrName.Left! :
-                (Model.ResolveType(interfaceTypeOrName.Right!) ?? throw new PenguinLangException($"Could not resolve interface type '{interfaceTypeOrName.Right!}'"));
+                (Model.ResolveType(interfaceTypeOrName.Right!) ?? throw new BabyPenguinException($"Could not resolve interface type '{interfaceTypeOrName.Right!}'", sourceLocation));
 
             if (this.FullName == interfaceType.FullName)
                 return this;

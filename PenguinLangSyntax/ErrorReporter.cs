@@ -6,8 +6,9 @@ using System.Text;
 
 namespace PenguinLangSyntax
 {
-    public class PenguinLangException(string message) : Exception(message)
+    public class PenguinLangException(string message, string? currentContext) : Exception(message)
     {
+        public string CurrentContext { get; set; } = currentContext ?? "";
     }
 
 
@@ -20,6 +21,23 @@ namespace PenguinLangSyntax
         public SourceLocation StartLocation => new SourceLocation(FileName, FileNameIdentifier, RowStart, RowStart, ColStart, ColStart);
 
         public SourceLocation EndLocation => new SourceLocation(FileName, FileNameIdentifier, RowEnd, RowEnd, ColEnd, ColEnd);
+
+        public static SourceLocation From(string filename, ParserRuleContext context)
+        {
+            var identifier = $"{Path.GetFileNameWithoutExtension(filename)}_{((uint)filename.GetHashCode()) % 0xFFFF}";
+
+            if (context.Start.Line == context.Stop.Line && context.Start.Column == context.Stop.Column && context.GetText() is string text)
+            {
+                var row = context.Start.Line;
+                var col = context.Start.Column;
+                var lines = text.Split(new string[] { @"\r\n", @"\n", @"\r" }, StringSplitOptions.None);
+                row += lines.Length - 1;
+                col = lines.Length == 1 ? col + lines[0].Length : lines[lines.Length - 1].Length;
+                return new SourceLocation(filename, identifier, context.Start.Line, row, context.Start.Column, col);
+            }
+
+            return new SourceLocation(filename, identifier, context.Start.Line, context.Stop.Line, context.Start.Column, context.Stop.Column);
+        }
 
         public bool Contains(SourceLocation other)
         {

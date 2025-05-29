@@ -65,7 +65,7 @@ namespace BabyPenguin.SemanticPass
 
         public void ProcessNamespace(INamespace ns)
         {
-            var sourceLocation = ns.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
+            var sourceLocation = ns.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
             var constructor = Model.ResolveSymbol(ns.FullName + ".new", checkImportedNamespaces: false) as FunctionSymbol;
 
@@ -132,7 +132,7 @@ namespace BabyPenguin.SemanticPass
 
         public void ProcessClass(IClass cls)
         {
-            var sourceLocation = cls.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
+            var sourceLocation = cls.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
             if (cls.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
@@ -140,6 +140,7 @@ namespace BabyPenguin.SemanticPass
                     constructorFunc.Parameters[0].Type.FullName == cls.FullName)
                 {
                     cls.Constructor = constructorFunc;
+                    sourceLocation = constructorFunc.SourceLocation;
                 }
                 else
                 {
@@ -176,7 +177,7 @@ namespace BabyPenguin.SemanticPass
 
         public void ProcessInterface(IInterface intf)
         {
-            var sourceLocation = intf.SyntaxNode?.SourceLocation ?? SourceLocation.Empty();
+            var sourceLocation = intf.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
             if (intf.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
@@ -186,6 +187,7 @@ namespace BabyPenguin.SemanticPass
                     if (constructorFunc.Parameters.Count > 1)
                         throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter of type '{intf.FullName}'", sourceLocation);
                     intf.Constructor = constructorFunc;
+                    sourceLocation = constructorFunc.SourceLocation;
                 }
                 else
                 {

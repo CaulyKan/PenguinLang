@@ -848,7 +848,7 @@ namespace BabyPenguin.SemanticInterface
 
                             if (waitExpType.IsFutureType)
                             {
-                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>") ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", exp.SourceLocation);
+                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>", exp.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", exp.SourceLocation);
 
                                 return futureType.GenericArguments.FirstOrDefault() ?? BasicType.Void;
                             }
@@ -1605,7 +1605,7 @@ namespace BabyPenguin.SemanticInterface
                             if (waitExpType.IsFutureType)
                             {
                                 var waitExpressionSymbol = AddExpression(waitExpression.Expression, isVariableInitializer);
-                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>") ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation);
+                                var futureType = waitExpType.GetImplementedInterfaceType("__builtin.IFuture<?>", waitExpression.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation);
                                 var futureSymbol = AllocTempSymbol(futureType, waitExpression.SourceLocation);
                                 AddCastExpression(new(waitExpressionSymbol), futureSymbol, waitExpression.SourceLocation);
                                 var doWaitFuncSymbol = Model.ResolveSymbol($"{futureType.FullName}.do_wait", i => i.IsFunction) ??

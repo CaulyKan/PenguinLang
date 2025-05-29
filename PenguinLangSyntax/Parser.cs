@@ -27,6 +27,8 @@ namespace PenguinLangSyntax
 
         public string File { get; }
 
+        public ParserRuleContext? CurrentContext { get; set; }
+
         public ErrorListener(ErrorReporter reporter, string file)
         {
             File = file;
@@ -38,6 +40,7 @@ namespace PenguinLangSyntax
         {
             HasError = true;
             var loc = new SourceLocation(File, "", line, line, col, col);
+            CurrentContext = (recognizer as PenguinLangParser)?.Context as ParserRuleContext;
             Reporter.Write(ErrorReporter.DiagnosticLevel.Error, msg, loc);
             // base.SyntaxError(output, recognizer, offendingSymbol, line, col, msg, e);
         }
@@ -45,6 +48,11 @@ namespace PenguinLangSyntax
 
     public class PenguinParser
     {
+        public static void GetContext(string s)
+        {
+
+        }
+
         public static PenguinLangParser.CompilationUnitContext Parse(string source, string file, ErrorReporter? reporter_ = null)
         {
             var parser = PrepareParser(source, file, reporter_);
@@ -63,7 +71,7 @@ namespace PenguinLangSyntax
             }
             catch (PenguinLangException e)
             {
-                throw new PenguinLangException(e.Message + "\n\nSource:\n" + source);
+                throw new PenguinLangException(e.Message + "\n\nSource:\n" + source, e.CurrentContext);
             }
             return result;
         }
@@ -73,7 +81,11 @@ namespace PenguinLangSyntax
             public void ReportError()
             {
                 if (ParserListener.HasError || LexerListener.HasError)
-                    throw new PenguinLangException("Failed to parse input");
+                {
+                    var rule = (ParserListener.CurrentContext ?? LexerListener.CurrentContext)?.RuleIndex;
+
+                    throw new PenguinLangException("Failed to parse input", rule == null ? null : Parser.RuleNames[rule.Value]);
+                }
             }
         }
 
@@ -86,6 +98,7 @@ namespace PenguinLangSyntax
             var lexer = new PenguinLangLexer(str);
             var tokens = new CommonTokenStream(lexer);
             var parser = new PenguinLangParser(tokens);
+            ParserRuleContext? currentContext = null;
             var listener_lexer = new ErrorListener<int>(reporter, file);
             var listener_parser = new ErrorListener<IToken>(reporter, file);
             lexer.RemoveErrorListeners();

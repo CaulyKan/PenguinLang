@@ -357,5 +357,38 @@ namespace BabyPenguin
                 }
             }
         }
+
+        public Or<ISymbol, IType>? GetDefinitionFromSourceLocation(SourceLocation sourceLocation)
+        {
+            var scope = GetScopeFromSourceLocation(sourceLocation);
+            if (scope?.SyntaxNode == null) return null;
+
+            Or<ISymbol, IType>? result = null;
+
+            scope.SyntaxNode.TraverseChildren((node, parent) =>
+            {
+                if (node.SourceLocation.Contains(sourceLocation))
+                {
+                    if (node is TypeSpecifier typeSpecifier)
+                    {
+                        var type = ResolveType(typeSpecifier.Name, scope: scope);
+                        if (type != null)
+                            result = new(type);
+                    }
+                    else if (node is Identifier identifier)
+                    {
+                        var symbol = ResolveSymbol(identifier.Name, scope: scope);
+                        if (symbol != null)
+                            result = new(symbol);
+                    }
+                    else return true;
+
+                    return false;
+                }
+                return true;
+            });
+
+            return result;
+        }
     }
 }
