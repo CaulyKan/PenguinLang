@@ -10,6 +10,12 @@ namespace BabyPenguin
 
         [Option('r', "report", HelpText = "Generate a report file")]
         public required string Report { get; set; }
+
+        [Option('v', "verbose", Default = 3, HelpText = "Verbose output level, 0-3, higher is more verbose")]
+        public int Verbose { get; set; }
+
+        [Option('c', "compile-only", Default = false, HelpText = "Only compile dont run")]
+        public bool CompileOnly { get; set; }
     }
 
     public class Program
@@ -26,7 +32,7 @@ namespace BabyPenguin
         {
             // try
             // {
-            var compiler = new SemanticCompiler();
+            var compiler = new SemanticCompiler(new ErrorReporter(Console.Out, (DiagnosticLevel)options.Verbose));
             foreach (var file in options.Files)
             {
                 compiler.AddFile(file);
@@ -42,17 +48,25 @@ namespace BabyPenguin
             var vm = new BabyPenguinVM(model);
             vm.Global.EnableDebugPrint = true;
 
-            Console.WriteLine("----------- Start Execution -----------");
-            var code = vm.Run();
-
-            if (vm.Global.EnableDebugPrint)
+            if (!options.CompileOnly)
             {
-                Console.WriteLine("----------- Console Output -----------");
-                Console.WriteLine(vm.CollectOutput());
+                if (vm.Global.EnableDebugPrint)
+                    Console.WriteLine("----------- Start Execution -----------");
+                var code = vm.Run();
+
+                if (vm.Global.EnableDebugPrint)
+                {
+                    Console.WriteLine("----------- Console Output -----------");
+                    Console.WriteLine(vm.CollectOutput());
+                }
+
+                if (vm.Global.EnableDebugPrint)
+                    Console.WriteLine("Program exited with code: " + code);
+
+                return code;
             }
 
-            Console.WriteLine("Program exited with code: " + code);
-            return code;
+            return 0;
 
             // }
             // catch (Exception e)

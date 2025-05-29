@@ -92,6 +92,12 @@ namespace MagellanicPenguin
                 this.runEvent.WaitOne();
             }
 
+            var output = this.VM.CollectOutput();
+            SendDebug("===========Program Output=============\n");
+            SendOutput(output);
+            SendDebug("======================================\n");
+            SendDebug("Program exited with code " + this.VM.Global.ExitCode.ToString());
+
             Protocol.SendEvent(new ThreadEvent(ThreadEvent.ReasonValue.Exited, threadId: 0));
             Protocol.SendEvent(new ExitedEvent(exitCode: 0));
             Protocol.SendEvent(new TerminatedEvent());

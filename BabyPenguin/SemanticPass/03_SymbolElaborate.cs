@@ -107,7 +107,7 @@ namespace BabyPenguin.SemanticPass
                 case IClass cls:
                     if (cls.IsGeneric && !cls.IsSpecialized)
                     {
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for class '{cls.Name}' is skipped now because it is generic");
+                        Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{cls.Name}' is skipped now because it is generic");
                     }
                     else
                     {
@@ -128,7 +128,7 @@ namespace BabyPenguin.SemanticPass
                 case IInterface intf:
                     if (intf.IsGeneric && !intf.IsSpecialized)
                     {
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for class '{intf.Name}' is skipped now because it is generic");
+                        Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{intf.Name}' is skipped now because it is generic");
                     }
                     else
                     {
@@ -151,7 +151,7 @@ namespace BabyPenguin.SemanticPass
                 case IEnum enm:
                     if (enm.IsGeneric && !enm.IsSpecialized)
                     {
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for class '{enm.Name}' is skipped now because it is generic");
+                        Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{enm.Name}' is skipped now because it is generic");
                     }
                     else
                     {
@@ -189,7 +189,7 @@ namespace BabyPenguin.SemanticPass
                         var parent = initialRoutine.Parent as IRoutineContainer;
                         if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
-                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for initial routine '{initialRoutine.Name}' is skipped now because it is generic");
+                            Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for initial routine '{initialRoutine.Name}' is skipped now because it is generic");
                         }
                         else
                         {
@@ -208,7 +208,7 @@ namespace BabyPenguin.SemanticPass
                         var parent = onRoutine.Parent as IRoutineContainer;
                         if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
-                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
+                            Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
                         }
                         else
                         {
@@ -235,7 +235,7 @@ namespace BabyPenguin.SemanticPass
                         var parent = func.Parent as IType;
                         if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
                         {
-                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Symbol elaboration for function '{func.Name}' is skipped now because it is generic");
+                            Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for function '{func.Name}' is skipped now because it is generic");
                         }
                         else
                         {
@@ -313,7 +313,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName}' is skipped now because it is inside a generic type");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName}' is skipped now because it is inside a generic type");
                 }
                 else
                 {

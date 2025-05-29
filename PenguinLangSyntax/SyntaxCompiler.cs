@@ -13,7 +13,7 @@ namespace PenguinLangSyntax
             var walker = new SyntaxWalker(FileName, Reporter);
             _ = SyntaxNode.Build<NamespaceDefinition>(walker, Ast);
             Namespaces = walker.Namespaces.FindAll(x => !x.IsEmpty).ToList();
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => (x as ISyntaxNode).PrettyPrint(0))));
+            Reporter.Write(DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => (x as ISyntaxNode).PrettyPrint(0))));
         }
         public PenguinLangParser.CompilationUnitContext Ast { get; } = ast;
         public ErrorReporter Reporter { get; } = reporter;

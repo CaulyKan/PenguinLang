@@ -48,40 +48,84 @@ namespace PenguinLangSyntax
                 (RowEnd != other.RowEnd || ColEnd >= other.ColEnd);
         }
 
+        public string GetText(string text)
+        {
+            var lines = text.Split(new string[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+
+            // Handle out of range cases
+            if (RowStart > lines.Length || RowEnd < 1 || RowStart > RowEnd)
+                return string.Empty;
+
+            // Adjust to 0-based index
+            var startRow = Math.Max(0, RowStart - 1);
+            var endRow = Math.Min(lines.Length - 1, RowEnd - 1);
+
+            var result = new StringBuilder();
+
+            for (int i = startRow; i <= endRow; i++)
+            {
+                var line = lines[i];
+                var startCol = i == startRow ? Math.Max(0, ColStart - 1) : 0;
+                var endCol = i == endRow ? Math.Min(line.Length, ColEnd) : line.Length;
+
+                if (startCol < endCol)
+                {
+                    result.Append(line[startCol..endCol]);
+                    if (i < endRow)
+                        result.AppendLine();
+                }
+            }
+
+            return result.ToString();
+        }
+
         public override string ToString()
         {
             return $"{FileName}:{RowStart}";
         }
     }
 
-    public class ErrorReporter(TextWriter? writer = null)
+    public enum DiagnosticLevel
     {
-        private readonly TextWriter writer = writer ?? Console.Out;
+        Error,
+        Warning,
+        Info,
+        Debug
+    }
+
+    public class BlackholeWriter : TextWriter
+    {
+        public override Encoding Encoding => throw new NotImplementedException();
+    }
+
+    public class ErrorReporter(TextWriter? writer = null, DiagnosticLevel diagnosticLevel = DiagnosticLevel.Debug)
+    {
+        private readonly TextWriter writer = writer ?? new BlackholeWriter();
 
         public List<DiagnosticMessage> Messages { get; set; } = [];
 
         StringBuilder stringBuilder = new StringBuilder();
 
+        public DiagnosticLevel DiagnosticLevel { get; set; } = diagnosticLevel;
+
         public void Write(DiagnosticLevel level, string message, SourceLocation sourceLocation)
         {
-            var msg = new DiagnosticMessage(level, message, sourceLocation);
-            writer.WriteLine(msg.ToString());
-            Messages.Add(msg);
+            if ((int)level <= (int)DiagnosticLevel)
+            {
+                var msg = new DiagnosticMessage(level, message, sourceLocation);
+                writer.WriteLine(msg.ToString());
+                Messages.Add(msg);
+            }
         }
 
         public void Write(DiagnosticLevel level, string message)
         {
-            var msg = new DiagnosticMessage(level, message);
-            writer.WriteLine(msg.ToString());
-            Messages.Add(msg);
-        }
-
-        public enum DiagnosticLevel
-        {
-            Error,
-            Warning,
-            Info,
-            Debug
+            if ((int)level <= (int)DiagnosticLevel)
+            {
+                var msg = new DiagnosticMessage(level, message);
+                writer.WriteLine(msg.ToString());
+                Messages.Add(msg);
+            }
         }
 
         public class DiagnosticMessage

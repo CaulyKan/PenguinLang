@@ -41,7 +41,7 @@ namespace PenguinLangSyntax
             HasError = true;
             var loc = new SourceLocation(File, "", line, line, col, col);
             CurrentContext = (recognizer as PenguinLangParser)?.Context as ParserRuleContext;
-            Reporter.Write(ErrorReporter.DiagnosticLevel.Error, msg, loc);
+            Reporter.Write(DiagnosticLevel.Error, msg, loc);
             // base.SyntaxError(output, recognizer, offendingSymbol, line, col, msg, e);
         }
     }
@@ -92,13 +92,12 @@ namespace PenguinLangSyntax
         public static ParserData PrepareParser(string source, string file, ErrorReporter? reporter_)
         {
             var reporter = reporter_ ?? new ErrorReporter();
-            reporter.Write(ErrorReporter.DiagnosticLevel.Info, "parsing " + file);
+            reporter.Write(DiagnosticLevel.Info, "parsing " + file);
 
             var str = new AntlrInputStream(source);
             var lexer = new PenguinLangLexer(str);
             var tokens = new CommonTokenStream(lexer);
             var parser = new PenguinLangParser(tokens);
-            ParserRuleContext? currentContext = null;
             var listener_lexer = new ErrorListener<int>(reporter, file);
             var listener_parser = new ErrorListener<IToken>(reporter, file);
             lexer.RemoveErrorListeners();

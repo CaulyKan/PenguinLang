@@ -67,7 +67,7 @@ namespace BabyPenguin.Tests
                     val test1 : u8 = 1;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -311,7 +311,7 @@ namespace BabyPenguin.Tests
                 class A {}
                 class A {}
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -321,7 +321,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 fun test(val param1: u64, var param1: char){}
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -647,7 +647,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -662,7 +662,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
 
@@ -840,7 +840,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -868,7 +868,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -893,7 +893,7 @@ namespace BabyPenguin.Tests
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]

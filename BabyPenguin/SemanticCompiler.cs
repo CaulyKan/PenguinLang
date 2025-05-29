@@ -27,9 +27,9 @@ namespace BabyPenguin
             return this;
         }
 
-        public SemanticModel Compile()
+        public SemanticModel Compile(bool addBuiltin = true)
         {
-            var model = new SemanticModel(true, Reporter);
+            var model = new SemanticModel(addBuiltin, Reporter);
 
             foreach (var source in Sources)
             {

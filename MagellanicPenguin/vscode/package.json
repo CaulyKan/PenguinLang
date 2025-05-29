@@ -4,6 +4,8 @@
   "repository": "https://github.com/CaulyKan/PenguinLang",
   "description": "PenguinLang language support for VS Code",
   "version": "0.0.1",
+  "publisher": "BabyPenguin",
+  "author": "CaulyKan",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -75,10 +77,10 @@
         "type": "penguinlang",
         "label": "Penguin Lang Debugger",
         "windows": {
-          "program": "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\DAP\\bin\\Debug\\net8.0\\MagellanicPenguinDAP.exe"
+          "program": "server/windows/MagellanicPenguinDAP.exe"
         },
         "linux": {
-          "program": "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/DAP/bin/Debug/net8.0/MagellanicPenguinDAP"
+          "program": "server/linux/MagellanicPenguinDAP"
         },
         "configurationAttributes": {
           "launch": {
@@ -104,7 +106,7 @@
             "name": "PenguinLang Debug",
             "type": "penguinlang",
             "request": "launch",
-            "program": "${workspaceFolder}/Examples/HelloWorld/test.penguin",
+            "program": "${file}",
             "stopAtEntry": false
           }
         ]
@@ -112,7 +114,7 @@
     ]
   },
   "scripts": {
-    "package": "make-dir server/windows && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net8.0/*\" server/  && vsce package -o penguinlang.vsix",
+    "package": "cpy \"../DAP/bin/Release/net8.0/win-x64/publish/*\" server/windows && cpy \"../LSP/bin/Release/net8.0/win-x64/publish/*\" server/windows && cpy \"../DAP/bin/Release/net8.0/linux-x64/publish/*\" server/linux && cpy \"../LSP/bin/Release/net8.0/linux-x64/publish/*\" server/linux && vsce package -o penguinlang.vsix",
     "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net8.0/*\" server/ ",
     "compile": "tsc -b",
     "watch": "tsc -b -w",
@@ -137,7 +139,8 @@
     "make-dir-cli": "^3.0.0",
     "mocha": "^9.2.1",
     "typescript": "^4.8.4",
-    "vsce": "^2.15.0"
+    "vsce": "^2.15.0",
+    "rm-cli": "^1.4.2"
   },
   "dependencies": {
     "vscode-languageserver": "^8.1.0",

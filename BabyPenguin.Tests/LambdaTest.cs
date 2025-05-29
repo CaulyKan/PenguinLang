@@ -30,7 +30,7 @@ namespace BabyPenguin.Tests
                     val y : fun<void> = x;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]

@@ -105,7 +105,7 @@ namespace BabyPenguin.SemanticInterface
 
             AddClass(cls);
 
-            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Adding lambda class/function {cls.Name}");
+            Model.Reporter.Write(DiagnosticLevel.Debug, $"Adding lambda class/function {cls.Name}");
             Model.CatchUp(cls);
 
             return cls;

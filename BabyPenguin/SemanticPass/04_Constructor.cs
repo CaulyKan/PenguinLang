@@ -35,7 +35,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (cls.IsGeneric && !cls.IsSpecialized)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Class constructor pass for class '{cls.Name}' is skipped now because it is generic");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Class constructor pass for class '{cls.Name}' is skipped now because it is generic");
                 }
                 else
                 {
@@ -47,7 +47,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (intf.IsGeneric && !intf.IsSpecialized)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Interface constructor pass for interface '{intf.Name}' is skipped now because it is generic");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Interface constructor pass for interface '{intf.Name}' is skipped now because it is generic");
                 }
                 else
                 {

@@ -63,7 +63,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (container.IsGeneric && !container.IsSpecialized)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Interface implementation for '{container.FullName}' is skipped now because it is generic");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Interface implementation for '{container.FullName}' is skipped now because it is generic");
                 }
                 else
                 {

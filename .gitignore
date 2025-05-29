@@ -4,5 +4,6 @@ obj
 node_modules
 MagellanicPenguin/vscode/server/*
 MagellanicPenguin/vscode/*.vsix
+MagellanicPenguin/vscode/out/*
 report.txt
 *.log

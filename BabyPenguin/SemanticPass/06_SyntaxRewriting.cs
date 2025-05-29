@@ -39,7 +39,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (codeContainer is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Async rewriting pass for '{codeContainer.FullName}' is skipped now because it is inside a generic type");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Async rewriting pass for '{codeContainer.FullName}' is skipped now because it is inside a generic type");
                 }
                 else
                 {
@@ -91,7 +91,7 @@ namespace BabyPenguin.SemanticPass
                 isAsync
             );
 
-            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Created lambda class `{lambdaClass.FullName}`");
+            Model.Reporter.Write(DiagnosticLevel.Debug, $"Created lambda class `{lambdaClass.FullName}`");
             AddRewritedSource(lambdaClass.FullName, Tools.FormatPenguinLangSource(lambdaClass.SyntaxNode!.BuildText()));
 
             return lambdaClass;
@@ -116,7 +116,7 @@ namespace BabyPenguin.SemanticPass
             });
 
             closureSymbols = closureSymbols.Distinct(new ClosureSymbolEqualityComparer()).ToList();
-            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Found closure symbols: {string.Join(", ", closureSymbols.Select(i => i.Name))}");
+            Model.Reporter.Write(DiagnosticLevel.Debug, $"Found closure symbols: {string.Join(", ", closureSymbols.Select(i => i.Name))}");
 
             return closureSymbols;
         }
@@ -166,7 +166,7 @@ namespace BabyPenguin.SemanticPass
                         throw new BabyPenguinException($"Unexpected parent type for lambda function expression: {parent.GetType().Name}", lambdaFunctionExpression.SourceLocation);
                     }
 
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrote lambda function to class `{lambdaClass.FullName}`");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Rewrote lambda function to class `{lambdaClass.FullName}`");
                     AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
                 }
                 return true;
@@ -230,7 +230,7 @@ namespace BabyPenguin.SemanticPass
                             {
                                 e.Expression = exp;
                             }));
-                            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Added implicit wait for function call: {exp}", exp.SourceLocation);
+                            Model.Reporter.Write(DiagnosticLevel.Debug, $"Added implicit wait for function call: {exp}", exp.SourceLocation);
                         }
                     }
                 }
@@ -290,7 +290,7 @@ namespace BabyPenguin.SemanticPass
                 });
 
                 waitExpression.Expression = primaryExp;
-                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewriting wait expression: '{expression}' to '{primaryExp}'", expression.SourceLocation);
+                Model.Reporter.Write(DiagnosticLevel.Debug, $"rewriting wait expression: '{expression}' to '{primaryExp}'", expression.SourceLocation);
                 AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
             }
         }
@@ -349,7 +349,7 @@ namespace BabyPenguin.SemanticPass
 
                         spawnAsyncExp.Expression = newExp;
 
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrote async expression to class `{lambdaClass.FullName}`");
+                        Model.Reporter.Write(DiagnosticLevel.Debug, $"Rewrote async expression to class `{lambdaClass.FullName}`");
                         AddRewritedSource(codeContainer.FullName, Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
                     }
                 }
@@ -369,7 +369,7 @@ namespace BabyPenguin.SemanticPass
                     if (node is WaitExpression)
                     {
                         if (!isAsyncKnown) func.IsAsync = true;
-                        Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has wait statement", node.SourceLocation);
+                        Model.Reporter.Write(DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it has wait statement", node.SourceLocation);
                         return false;
                     }
                     else if (node is FunctionCallExpression exp && !isAsyncKnown)
@@ -406,7 +406,7 @@ namespace BabyPenguin.SemanticPass
                             if (callingFunc.IsAsync == true)
                             {
                                 func.IsAsync = true;
-                                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunc.FullName}'", exp.SourceLocation);
+                                Model.Reporter.Write(DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunc.FullName}'", exp.SourceLocation);
                                 return false;
                             }
                         }
@@ -415,7 +415,7 @@ namespace BabyPenguin.SemanticPass
                             if (callingFunctionVariableSymbol.IsAsync == true)
                             {
                                 func.IsAsync = true;
-                                Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunctionVariableSymbol.FullName}'", exp.SourceLocation);
+                                Model.Reporter.Write(DiagnosticLevel.Debug, $"Mark function {func.FullName} as async because it calls async function '{callingFunctionVariableSymbol.FullName}'", exp.SourceLocation);
                                 return false;
                             }
                         }
@@ -472,12 +472,12 @@ namespace BabyPenguin.SemanticPass
                     functionDefinition.CodeBlock = cb;
                     Model.GetPass<SymbolElaboratePass>().ElaborateLocalSymbol(func);
 
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{lambdaClass.Name}`");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName}` to `{lambdaClass.Name}`");
                     AddRewritedSource(func.FullName, Tools.FormatPenguinLangSource(func.SyntaxNode.BuildText()));
                 }
                 else
                 {
-                    Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"skip rewrite generator function `{func.FullName}` because no syntax node is found.");
+                    Model.Reporter.Write(DiagnosticLevel.Warning, $"skip rewrite generator function `{func.FullName}` because no syntax node is found.");
                 }
             }
         }
@@ -487,7 +487,7 @@ namespace BabyPenguin.SemanticPass
         {
             RewritedSource.Remove(fullName);
             RewritedSource.Add(fullName, source);
-            Model.Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Rewrited source for {fullName}: \n{source}");
+            Model.Reporter.Write(DiagnosticLevel.Debug, $"Rewrited source for {fullName}: \n{source}");
         }
 
         public string Report

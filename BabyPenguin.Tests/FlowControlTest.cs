@@ -259,7 +259,7 @@ namespace BabyPenguin.Tests
         //             }
         //         }
         //     ");
-        //     Assert.Throws<BabyPenguinException>(compiler.Compile);
+        //     Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         // }
 
 
@@ -303,7 +303,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -320,7 +320,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -337,7 +337,7 @@ namespace BabyPenguin.Tests
                     return a + b;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]

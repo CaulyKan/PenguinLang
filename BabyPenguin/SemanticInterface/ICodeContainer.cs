@@ -1093,7 +1093,7 @@ namespace BabyPenguin.SemanticInterface
                     var fromStr = fromSymbol.IsReadonly ? "readonly" : "non-readonly";
                     var toStr = to.IsReadonly ? "readonly" : "non-readonly";
                     // TODO: change warning to error later
-                    Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant assign {fromStr} symbol '{fromSymbol.FullName}' to {toStr} symbol '{to.FullName}'", sourceLocation ?? SourceLocation.Empty());
+                    Reporter.Write(DiagnosticLevel.Warning, $"Cant assign {fromStr} symbol '{fromSymbol.FullName}' to {toStr} symbol '{to.FullName}'", sourceLocation ?? SourceLocation.Empty());
                     // throw new BabyPenguinException($"Cant assign {fromStr} symbol '{fromSymbol.FullName}' to {toStr} symbol '{to.FullName}'", sourceLocation);
                 }
             }

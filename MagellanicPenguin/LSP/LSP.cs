@@ -15,6 +15,7 @@ using System.Threading;
 using BabyPenguin.SemanticNode;
 using BabyPenguin.SemanticInterface;
 using BabyPenguin.Symbol;
+using Antlr4.Runtime;
 
 namespace MagellanicPenguin
 {
@@ -96,16 +97,17 @@ namespace MagellanicPenguin
         private void CompileDocument(TextDocumentItem document)
         {
             Logger.Instance.Log($"Enter CompileDocument(uri={document.uri}, version={document.version})");
-            var stringWriter = new StringWriter();
-            var errorReporter = new ErrorReporter(stringWriter);
+            var errorReporter = new ErrorReporter(null, DiagnosticLevel.Warning);
             var compiler = new SemanticCompiler(errorReporter);
-            compiler.AddSource(document.text, ConvertUriToPath(document.uri));
 
             var result = new CompilationResult();
+            result.Source = document.text;
             var diagnostics = new List<Diagnostic>();
             try
             {
-                result.Model = compiler.Compile();
+                var path = ConvertUriToPath(document.uri);
+                compiler.AddSource(document.text, path);
+                result.Model = compiler.Compile(Path.GetFileName(path) != "Builtin.penguin");
             }
             catch (BabyPenguinException e)
             {
@@ -126,11 +128,11 @@ namespace MagellanicPenguin
                 });
             }
 
-            diagnostics.AddRange(errorReporter.Messages.Where(i => i.Level != ErrorReporter.DiagnosticLevel.Debug && i.Level != ErrorReporter.DiagnosticLevel.Info).Select(i => new Diagnostic
+            diagnostics.AddRange(errorReporter.Messages.Where(i => i.Level != DiagnosticLevel.Debug && i.Level != DiagnosticLevel.Info).Select(i => new Diagnostic
             {
                 range = ConvertSourceLocation(i.SourceLocation),
                 message = i.Message,
-                severity = i.Level == ErrorReporter.DiagnosticLevel.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning
+                severity = i.Level == DiagnosticLevel.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning
             }));
 
             _documents.UpdateCompilationResult(document.uri, result);
@@ -165,10 +167,41 @@ namespace MagellanicPenguin
             return new Uri("file:///" + fileName.Replace("\\", "/"));
         }
 
+        private static CompletionItem ConvertTypeToCompletionItem(IType type, bool fullName = false)
+        {
+            return new CompletionItem
+            {
+                label = (fullName ? type.FullName : type.Name).Replace("__builtin.", ""),
+                kind = type switch
+                {
+                    IClass => CompletionItemKind.Class,
+                    IInterface => CompletionItemKind.Interface,
+                    IEnum => CompletionItemKind.Enum,
+                    BasicType => CompletionItemKind.TypeParameter,
+                    TypeReferenceSymbol => CompletionItemKind.TypeParameter,
+                    _ => CompletionItemKind.Text
+                }
+            };
+        }
+
+        private static CompletionItem ConvertSymbolToCompletionItem(ISymbol symbol, bool fullName = false)
+        {
+            return new CompletionItem
+            {
+                label = (fullName ? symbol.FullName : symbol.Name).Replace("__builtin.", ""),
+                kind = symbol switch
+                {
+                    FunctionVariableSymbol => CompletionItemKind.Function,
+                    VariableSymbol => CompletionItemKind.Variable,
+                    FunctionSymbol => CompletionItemKind.Function,
+                    TypeReferenceSymbol => CompletionItemKind.TypeParameter,
+                    _ => CompletionItemKind.Text
+                }
+            };
+        }
+
         protected override void DidChangeWatchedFiles(DidChangeWatchedFilesParams @params)
         {
-            Logger.Instance.Log($"Enter DidChangeWatchedFiles(changes={@params.changes.Length})");
-            Logger.Instance.Log("Leave DidChangeWatchedFiles");
         }
 
         protected override Result<CompletionResult, ResponseError> Completion(CompletionParams @params)
@@ -186,12 +219,14 @@ namespace MagellanicPenguin
                 });
             }
 
-            var model = _documents.GetCompilationResult(document.uri).LastSuccessModel;
-            if (model == null)
+            var compilationResult = _documents.GetCompilationResult(document.uri);
+            if (compilationResult.LastSuccessModel == null)
             {
                 Logger.Instance.Log("Leave Completion: no successful compilation result is available.");
                 return Result<CompletionResult, ResponseError>.Success(new CompletionResult(new CompletionItem[] { }));
             }
+
+            var model = compilationResult.LastSuccessModel;
 
             // Convert position to SourceLocation
             var sourceLocation = new SourceLocation(
@@ -245,6 +280,7 @@ namespace MagellanicPenguin
                 case "Function":
                 case "InitialRoutine":
                 case "OnRoutine":
+                case "VTable":
                     items.AddRange(new[]
                     {
                         new CompletionItem { label = "var", kind = CompletionItemKind.Keyword },
@@ -262,6 +298,10 @@ namespace MagellanicPenguin
                     });
                     break;
             }
+
+            items.AddRange(model.Symbols.Where(i => !i.IsTemp && i.IsLocal && i.Parent.FullName == currentScope.FullName).Select(i => ConvertSymbolToCompletionItem(i, false)));
+            items.AddRange(model.Symbols.Where(i => !i.IsTemp && i.IsStatic).Select(i => ConvertSymbolToCompletionItem(i, true)));
+            items.AddRange(model.Types.Select(i => ConvertTypeToCompletionItem(i, true)).Distinct());
 
             Logger.Instance.Log($"Leave Completion: {items.Count}");
             return Result<CompletionResult, ResponseError>.Success(new CompletionResult(items.ToArray()));
@@ -326,8 +366,8 @@ namespace MagellanicPenguin
                 return Result<LocationSingleOrArray, ResponseError>.Error(new ResponseError { code = ErrorCodes.InvalidParams, message = "Document not found" });
             }
 
-            var model = _documents.GetCompilationResult(document.uri).LastSuccessModel;
-            if (model == null)
+            var compileResult = _documents.GetCompilationResult(document.uri);
+            if (compileResult?.LastSuccessModel == null)
             {
                 Logger.Instance.Log("Leave Definition: no successful compilation result is available.");
                 return Result<LocationSingleOrArray, ResponseError>.Error(new ResponseError { code = ErrorCodes.InternalError, message = "no successful compliation result" });
@@ -344,7 +384,7 @@ namespace MagellanicPenguin
             );
 
             // Find definition
-            var definitionLocation = model.GetDefinitionFromSourceLocation(sourceLocation);
+            var definitionLocation = compileResult.LastSuccessModel.GetDefinitionFromSourceLocation(sourceLocation);
             if (definitionLocation == null)
             {
                 Logger.Instance.Log("Leave Definition: no definition found");
@@ -531,6 +571,7 @@ namespace MagellanicPenguin
 
     public class CompilationResult
     {
+        public string Source { get; set; }
         public SemanticModel Model { get; set; }
         public SemanticModel LastSuccessModel { get; set; }
     }

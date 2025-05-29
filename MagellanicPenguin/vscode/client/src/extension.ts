@@ -31,30 +31,30 @@ let client: LanguageClient;
 
 // LSP server path configuration
 const lspServerPath: Map<string, string> = new Map([
-	["linux", "/home/cauly/workspace/repos/penguinlang/MagellanicPenguin/LSP/bin/Debug/net8.0/MagellanicPenguinLSP"],
-	["win32", "Y:\\Workspace\\penguinlang\\MagellanicPenguin\\LSP\\bin\\Debug\\net8.0\\MagellanicPenguinLSP.exe"]
+	["linux", "server/linux/MagellanicPenguinLSP"],
+	["win32", "server\\windows\\MagellanicPenguinLSP.exe"]
 ]);
 
 // Command to restart the language server
-async function restartLanguageServer() {
+async function restartLanguageServer(context: ExtensionContext) {
 	if (client) {
 		await client.stop();
 	}
-	await startLanguageServer();
+	await startLanguageServer(context);
 }
 
 // Function to start the language server
-async function startLanguageServer() {
+async function startLanguageServer(context: ExtensionContext) {
 	const traceOutputChannel = window.createOutputChannel("PenguinLang Language Server");
 
 	// Server options
 	const serverOptions: ServerOptions = {
 		run: {
-			command: lspServerPath.get(platform()) || "",
+			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
 			transport: TransportKind.stdio,
 		},
 		debug: {
-			command: lspServerPath.get(platform()) || "",
+			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
 			transport: TransportKind.stdio,
 		}
 	};
@@ -81,11 +81,11 @@ async function startLanguageServer() {
 export async function activate(context: ExtensionContext) {
 	// Register the restart command
 	context.subscriptions.push(
-		commands.registerCommand('penguinlangvscode.restartLanguageServer', restartLanguageServer)
+		commands.registerCommand('penguinlangvscode.restartLanguageServer', () => restartLanguageServer(context))
 	);
 
 	// Start the language server
-	await startLanguageServer();
+	await startLanguageServer(context);
 
 	// Register debug adapter tracker
 	const debugTraceOutputChannel = window.createOutputChannel("penguinlang DAP");

@@ -244,7 +244,7 @@ namespace BabyPenguin
 
             if (typeCandidate is null)
             {
-                // Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type {nameComponents.NameWithPrefix}");
+                // Reporter.Write(DiagnosticLevel.Warning, $"Cant resolve type {nameComponents.NameWithPrefix}");
                 return null;
             }
 
@@ -262,7 +262,7 @@ namespace BabyPenguin
                     {
                         if (genericArgumentsFromName[i] == null)
                         {
-                            // Reporter.Write(ErrorReporter.DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
+                            // Reporter.Write(DiagnosticLevel.Warning, $"Cant resolve type for {nameComponents.Generics[i]}");
                             return null;
                         }
                     }
@@ -314,8 +314,8 @@ namespace BabyPenguin
 
                 var report = pass.Report;
                 if (!string.IsNullOrEmpty(report))
-                    Reporter.Write(ErrorReporter.DiagnosticLevel.Debug, $"Pass {pass.GetType().Name} report:\n" + pass.Report);
-                Reporter.Write(ErrorReporter.DiagnosticLevel.Info, $"Pass {pass.GetType().Name} completed");
+                    Reporter.Write(DiagnosticLevel.Debug, $"Pass {pass.GetType().Name} report:\n" + pass.Report);
+                Reporter.Write(DiagnosticLevel.Info, $"Pass {pass.GetType().Name} completed");
             }
         }
 

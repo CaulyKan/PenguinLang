@@ -325,7 +325,7 @@ namespace BabyPenguin.Tests
                     yield 3;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -385,7 +385,7 @@ namespace BabyPenguin.Tests
                     print(""2"");
                 }
             ");
-            Assert.Throws<BabyPenguinException>(compiler.Compile);
+            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
