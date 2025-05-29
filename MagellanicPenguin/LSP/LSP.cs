@@ -346,7 +346,7 @@ namespace MagellanicPenguin
             {
                 foreach (var ns in mergedNamespace.Namespaces)
                 {
-                    if (Path.GetFullPath(ns.SourceLocation.FileName) == ConvertUriToPath(document.uri))
+                    if (Path.GetFullPath(ns.SourceLocation.FileName).ToLower() == ConvertUriToPath(document.uri).ToLower())
                         symbols.AddRange(CollectDocumentSymbols(ns));
                 }
             }

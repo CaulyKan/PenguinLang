@@ -47,7 +47,7 @@
             "name": "Attach",
             "type": "coreclr",
             "request": "attach",
-            "processName": "MagellanicPenguinLSP.exe"
+            "processName": "MagellanicPenguinDAP.exe"
             // "processId": "${command:pickProcess}"
         },
         {

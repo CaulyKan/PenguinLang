@@ -745,9 +745,17 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case SignalInstruction cmd:
                         {
-                            var codeVar = resolveVariable(cmd.CodeSymbol);
-                            var value = Convert.ToInt32(codeVar.As<BasicRuntimeSymbol>().ValueToString!);
-                            DebugPrint(cmd, op1: codeVar.ToDebugString());
+                            int value;
+                            if (cmd.Code != null)
+                            {
+                                value = cmd.Code.Value;
+                            }
+                            else
+                            {
+                                var codeVar = resolveVariable(cmd.CodeSymbol!);
+                                value = Convert.ToInt32(codeVar.As<BasicRuntimeSymbol>().ValueToString!);
+                            }
+                            DebugPrint(cmd, op1: value.ToString());
                             switch (value)
                             {
                                 case (int)SignalCode.Breakpoint:

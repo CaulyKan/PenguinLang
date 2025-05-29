@@ -62,13 +62,15 @@ namespace BabyPenguin.VirtualMachine
         Breakpoint = 0,
     }
 
-    public class SignalInstruction(SourceLocation sourceLocation, ISymbol codeSymbol) : BabyPenguinIR
+    public class SignalInstruction(SourceLocation sourceLocation, ISymbol? codeSymbol, int? code) : BabyPenguinIR
     {
-        public ISymbol CodeSymbol { get; } = codeSymbol;
+        public ISymbol? CodeSymbol { get; } = codeSymbol;
+        public int? Code { get; } = code;
+
         public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "SIGNAL";
-
-        override public string StringOP1 => CodeSymbol.ToString() ?? "";
+        override public string StringOP1 => CodeSymbol?.ToString() ?? "";
+        override public string StringOP2 => Code?.ToString() ?? "";
     }
 
     public class BinaryOperationInstruction(SourceLocation sourceLocation, BinaryOperatorEnum _operator, ISymbol leftSymbol, ISymbol rightSymbol, ISymbol target) : BabyPenguinIR

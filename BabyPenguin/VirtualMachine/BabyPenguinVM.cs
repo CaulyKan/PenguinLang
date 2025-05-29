@@ -1,3 +1,6 @@
+using CommandLine;
+using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
+
 namespace BabyPenguin.VirtualMachine
 {
     public class BabyPenguinVM
@@ -47,6 +50,37 @@ namespace BabyPenguin.VirtualMachine
                 }
             }
             return 0;
+        }
+
+        public bool InsertBreakPoint(SourceLocation location)
+        {
+            var result = false;
+            foreach (var container in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
+            {
+                if (container.SourceLocation.Contains(location))
+                {
+                    var instructionIndex = container.Instructions.FindIndex(i => i.SourceLocation >= location);
+                    var instruction = new SignalInstruction(location, null, 0);
+                    container.Instructions.Insert(instructionIndex, instruction);
+                    result = true;
+                }
+            }
+            return result;
+        }
+
+        public bool RemoveBreakPoint(SourceLocation location)
+        {
+            var result = false;
+            foreach (var container in Model.FindAll(i => i is ICodeContainer && i.SourceLocation.Contains(location)).Cast<ICodeContainer>())
+            {
+                var instructionIndex = container.Instructions.FindIndex(i => i.SourceLocation >= location && i is SignalInstruction signalInstruction && signalInstruction.Code == 0);
+                if (instructionIndex >= 0)
+                {
+                    container.Instructions.RemoveAt(instructionIndex);
+                    result = true;
+                }
+            }
+            return result;
         }
     }
 

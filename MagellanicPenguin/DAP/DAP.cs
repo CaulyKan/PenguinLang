@@ -25,6 +25,7 @@ namespace MagellanicPenguin
         private AutoResetEvent runEvent = new AutoResetEvent(true);
         private StoppedEvent.ReasonValue? stopReason;
         private bool stopped = true;
+        private Dictionary<string, HashSet<(int line, int column)>> currentBreakpoints = new();
 
         public BabyPenguinVM VM => vm ?? throw new InvalidOperationException("VM not initialized.");
 
@@ -160,6 +161,18 @@ namespace MagellanicPenguin
                         threadId: 0));
 
                 VM.Initialize();
+
+                // // Insert all saved breakpoints
+                // foreach (var fileBreakpoints in currentBreakpoints)
+                // {
+                //     foreach (var (line, column) in fileBreakpoints.Value)
+                //     {
+                //         var location = new SourceLocation(fileBreakpoints.Key, "", line, line, column, column);
+                //         var success = VM.InsertBreakPoint(location);
+                //         SendDebug($"Breakpoint set {(success ? "successfully" : "unsuccessfully")} at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+                //     }
+                // }
+
                 runtimeControl = VM.StartFrame!.Run();
                 this.runEvent.Reset();
 
@@ -323,7 +336,67 @@ namespace MagellanicPenguin
 
         protected override SetBreakpointsResponse HandleSetBreakpointsRequest(SetBreakpointsArguments arguments)
         {
-            return new SetBreakpointsResponse();
+            List<Breakpoint> breakpoints = [];
+            var filePath = arguments.Source.Path;
+            var newBreakpoints = new HashSet<(int line, int column)>();
+
+            // Get current breakpoints for this file
+            if (!currentBreakpoints.TryGetValue(filePath, out var oldBreakpoints))
+            {
+                oldBreakpoints = new HashSet<(int line, int column)>();
+            }
+
+            foreach (var sourceBreakpoint in arguments.Breakpoints)
+            {
+                var line = sourceBreakpoint.Line;
+                var column = sourceBreakpoint.Column ?? 0;
+                var location = new SourceLocation(filePath, "", line, line, column, column);
+
+                if (vm != null)
+                {
+                    // Remove existing breakpoint at this location if any
+                    var success = vm.RemoveBreakPoint(location);
+                    SendDebug($"Breakpoint unset {(success ? "successfully" : "unsuccessfully")} at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+
+                    // Add new breakpoint
+                    if (vm.InsertBreakPoint(location))
+                    {
+                        breakpoints.Add(new Breakpoint { Verified = true, Line = line, Column = column });
+                        SendDebug($"Breakpoint set successfully at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+                        newBreakpoints.Add((line, column));
+                    }
+                    else
+                    {
+                        breakpoints.Add(new Breakpoint { Verified = false, Line = line, Column = column });
+                        SendDebug($"Breakpoint set unsuccessfully at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+                    }
+                }
+                else
+                {
+                    // When VM is not initialized, assume all breakpoints are valid
+                    breakpoints.Add(new Breakpoint { Verified = true, Line = line, Column = column });
+                    newBreakpoints.Add((line, column));
+                }
+            }
+
+            // Remove breakpoints that are no longer in the list
+            if (vm != null)
+            {
+                foreach (var oldBreakpoint in oldBreakpoints)
+                {
+                    if (!newBreakpoints.Contains(oldBreakpoint))
+                    {
+                        var location = new SourceLocation(filePath, "", oldBreakpoint.line, oldBreakpoint.line, oldBreakpoint.column, oldBreakpoint.column);
+                        var success = vm.RemoveBreakPoint(location);
+                        SendDebug($"Breakpoint unset {(success ? "successfully" : "unsuccessfully")} at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+                    }
+                }
+            }
+
+            // Update current breakpoints
+            currentBreakpoints[filePath] = newBreakpoints;
+
+            return new SetBreakpointsResponse(breakpoints);
         }
 
         protected override SetExceptionBreakpointsResponse HandleSetExceptionBreakpointsRequest(SetExceptionBreakpointsArguments arguments)

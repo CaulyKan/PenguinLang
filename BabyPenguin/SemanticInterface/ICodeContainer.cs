@@ -419,7 +419,7 @@ namespace BabyPenguin.SemanticInterface
                         var signalValue = AddExpression(signalStatement.SignalExpression!, false);
                         if (signalValue.TypeInfo.IsIntType)
                         {
-                            AddInstruction(new SignalInstruction(item.SourceLocation, signalValue));
+                            AddInstruction(new SignalInstruction(item.SourceLocation, signalValue, null));
                         }
                         else
                         {
