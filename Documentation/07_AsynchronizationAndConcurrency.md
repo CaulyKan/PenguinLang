@@ -34,13 +34,66 @@ If a function uses `wait` keyword, or it calls a statefull function, the functio
 		bar();				// implicit wait 
 		wait (async bar());	// equivalent to above line
 	}
+	wa
 ```
 
 A `wait` keyword without expression tells penguin-lang runtime to pause the current job and wait for another schedule.
 
+## Threading and Coroutine
+One purpose of penguin-lang is to provide a simple and efficient way to write concurrent programs. In most time, programmer only need to focus on the logic of the program, and the runtime will automatically handle the concurrency. Under the hood, penguin-lang uses stackless coroutine to implement asynchronization. This allows the compiler to transform a stateful function into several jobs,
+each with its own input, output, and data.
+
+As penguin-lang strictly defines that Value Types are always copied by value, they can always safely passed between threads. Howver this doesnot apply to Reference Types, such as Box. 
+So when penguin-lang found a job that only contains value types (or reference types that implements ISynchronized), this job can be dispatched to a different thread. 
+
+Consider a very simple code:
+```
+var foo : Box<i32> = new Box(0);
+
+fun bar() {
+	var i : i32 = foo.get();
+	i+=1;
+	foo.set(i);
+}
+```
+
+Although above code is an anti-pattern use of global variable, it's a good example that many programming languages will have data-racing issue when 'bar' is working concurrently and how penguin-lang can handle this case. The Box type provides 'get'/'set' method, which is stateful function, so it will cause 'bar' to be stateful, and be split into three jobs:
+```
+class bar_job1 {
+	var i : i32;
+	var foo : Box<i32>;
+	fun execute(var this: bar_job1) {
+		this.i = this.foo.get();
+		// continue with bar_job2
+	}
+}
+
+class bar_job2 {
+	var i : i32;
+	fun execute(var this: bar_job2) {
+		this.i+=1;
+		// continue with bar_job3
+	}
+}
+
+class bar_job3 {
+	var i : i32;
+	var foo : Box<i32>;
+	fun execute(var this: bar_job3) {
+		this.foo.set(this.i);
+	}
+}
+```
+
+You can see that 'bar_job1' & 'bar_job3' has a reference-typed variable `foo`, so they are stick to the same thread (penguin-lang enforce one thread for each global reference-typed variable). 
+But 'bar_job2' only has value-typed variable, so 'bar_job2' can be safely dispatched to a different thread.
+
+Note that BabyPenguin (which is a minimal implementation of penguin-lang used to implement EmperorPenguin) is single threaded and uses stackful coroutine. 
+
+
 ## Event Asynchronization
 
-Event is by default run asynchronously. Consider following code:
+Event must be value-typed and is by default run asynchronously and parallelly. Consider following code:
 ```
 event A : i32;
 
@@ -65,14 +118,13 @@ on !pure A(x) {
 
 However, the compiler can automatically detect if a function is pure or not, such as visiting a mutable variable or calling a non-pure function.
 ```
-var global_var : i32 = 0;
 on A(x) {
 	global_var = x;
 	print(x as string);   // guaranteed to receive events in order
 }
 ```
 
-Another way is to use initial and wait syntax, you can also ensure the order of event handlers.
+Another way is to use initial and wait syntax, the order of events are guaranteed, however not all events are guaranteed to be received, because `wait` only waits for next event.
 ```
 initial {
 	while (true) {
@@ -82,66 +134,42 @@ initial {
 }
 ```
 
-## Concurrency
-
-While according to the specification of penguin-lang, the compiler can implement everything into one thread. However, because one design goal of penguin-lang is to be as concurrent as possible, so it's recommanded that the compiler by default create a thread-pool with size equal to cpu cores, and if no data race is detected, automatically utilizes work loads onto these threads. Consider following code:
-
-```
-var a = 0;
-
-initial {
-    for (i in 0..5) {
-        a++;
-	}
-}
-
-initial {
-    for (i in 0..5) {
-        a++;
-	}
-}
-```
-
-If two routines mutablely visit one variable, the compiler **MUST** ensure there are no data race. In this case, the compiler will automatically apply a RW lock to 'a'.
-
-If you want them to be parallel, you can change definition of `a` to `var a: Atomic<i32> = 0`, so the compiler can safely dispatch the two routines to different threads.
-This is because class `Atomic<?>` and `MpscQueue<?>` used below implements `ISynchronized`.
-
 
 ## Folking
 You can use folk keyword to generate parallel initial blocks.
 ```
-initial folk(5) {
+folk(5) initial {
 	log.info("hello!");
 }
 ```
-Above code will print 5 'hello' as expected. You can also use `initial folk():` to automatically get best parallel performance.
+Above code will print 5 'hello' as expected. You can also use `fork initial:` to automatically get best parallel performance.
 
 
-## Event & Queues
+## ISynchronized
+
+penguin-lang provides a `ISynchronized` interface to mark a reference-typed variable as thread-safe. Typical types are Atmoic, Mutex, RWLock and ConcurrentQueues.
+
+```
 Events can also be dispatcher to different handlers running in multiple threads. This is because event parameters are read-only, so multiple handlers will not cause data race. However, events are not good at collecting results, so we can use a queue. A typicial multiple producers multiple consumers program may look like:
 ```
-event new_job: Job;
-MpscQueue<Result> result_queue;
+var counter : Atomic<i32> = new Atomic(0);
+var job_queue: ConcurrentQueue<i32> = new ConcurrentQueue<i32>();
 
-initial folk() {
-	job = create_job();
-	emit new_job(job);
-}
-	
 initial {
-	wait result_queue.size == 10;
-	print("all done!");
-	exit();
-}
-	
-on new_job(job) {
-	val result = process(job);
-	result_queue.enqueue(result);
+	for (var i : i32 in range(0, 10)) {
+		job_queue.enqueue(i);
+	}
+	wait counter.load() == 10;
 }
 
+folk initial {
+	while (true) {
+		val job : Option<i32> = job_queue.dequeue();
+		if (job.is_none()) 
+			break;
+		else 
+			counter.fetch_add(1);
+	}
+}
 ```
-Above code will automatically dispatch jobs according to max concurrency allowed, because compiler can infer that different `on new_job` handler mutates an thread-safe object `result_queue`, so it's considered as a 'pure' function.
-
-## Scalability
-The penguin-lang by natural allows scalable concurrency, from one single thread to multi-threads, multi-processes, or even multi-hosts. It's ok to design a scheduler that run on multiple hosts, and the can automatically distribute the workloads to different hosts.
+Above code will generate multiple jobs that visit global reference-typed variable, however they are all `ISynchronized` so they can be safely dispatched to different threads. 

@@ -113,3 +113,15 @@ initial {
 ```
 
 Immutable class member can only be initialized in the constructor or variable declaration.
+
+### Lambda Function
+Lambda function is a function that is defined inline in a block of code.
+```
+fun foo() {
+	val f : fun<i32, i32> = fun(val x: i32) -> i32 {
+		return x * 2;
+	};
+	println(f(3) as string);
+}
+```
+
