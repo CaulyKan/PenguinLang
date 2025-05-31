@@ -42,14 +42,10 @@ var b: f32 = 2.0;		// mutable with explicit type int
 ```
 
 Types in penguin-lang can be solid or reference. A solid type is always copied when performing any assignment. A reference type follows following rules when performing an assignment:
-* 'var' to 'var': if the type is value type, its data is copied. Otherwise referenced
-* 'val' to 'val': if the type is value type, its data is copied. Otherwise referenced
-* 'val' to 'var': if the type is value type, its data is copied. Otherwise the compiler will throw an error.
-* 'var' to 'val':  
-  * if the type is value type, its data is copied.
-  * otherwise:
-    * if the compiler is able to determine the lifetime of the variable, the data is referenced.
-    * otherwise, the compiler will generate a RW lock on the variable, to ensure that there is only one mutable reference to the variable or multiple immutable references.
+- Value types are free to be assigned regardless of mutability -- they are always copied
+- Reference types:
+ - immutable to mutable: not allowed unless explicitly casted or cloned.
+ - mutable to immutable: implicitly allowed
 
 Some examples for value types:
 ```

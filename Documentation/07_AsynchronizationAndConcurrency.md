@@ -59,34 +59,23 @@ fun bar() {
 
 Although above code is an anti-pattern use of global variable, it's a good example that many programming languages will have data-racing issue when 'bar' is working concurrently and how penguin-lang can handle this case. The Box type provides 'get'/'set' method, which is stateful function, so it will cause 'bar' to be stateful, and be split into three jobs:
 ```
-class bar_job1 {
+class bar {
 	var i : i32;
 	var foo : Box<i32>;
-	fun execute(var this: bar_job1) {
+	fun step1(var this: bar) {
 		this.i = this.foo.get();
-		// continue with bar_job2
 	}
-}
-
-class bar_job2 {
-	var i : i32;
-	fun execute(var this: bar_job2) {
-		this.i+=1;
-		// continue with bar_job3
+	fun step2(var this: bar) {
+		this.i += 1;
 	}
-}
-
-class bar_job3 {
-	var i : i32;
-	var foo : Box<i32>;
-	fun execute(var this: bar_job3) {
+	fun step3(var this: bar) {
 		this.foo.set(this.i);
 	}
 }
 ```
 
-You can see that 'bar_job1' & 'bar_job3' has a reference-typed variable `foo`, so they are stick to the same thread (penguin-lang enforce one thread for each global reference-typed variable). 
-But 'bar_job2' only has value-typed variable, so 'bar_job2' can be safely dispatched to a different thread.
+You can see that 'step1' & 'step3' has a reference-typed variable `foo`, so they are stick to the same thread (penguin-lang enforce one thread for each global reference-typed variable). 
+But 'step2' only has value-typed variable, so 'bar_job2' can be safely dispatched to a different thread.
 
 Note that BabyPenguin (which is a minimal implementation of penguin-lang used to implement EmperorPenguin) is single threaded and uses stackful coroutine. 
 

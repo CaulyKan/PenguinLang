@@ -20,6 +20,9 @@ Roadmap:
 * MagellanicPenguin: Language Server Protocol & Debug Adapter Protocol implementation for Penguin-lang based on BabyPenguin (DAP Working, LSP not started)
 * EmperorPenguin: A BabyPenguin implementation of Penguin-lang compiler, emits llvm IR (Not started)
 
+Get Started:
+* [Basic Introduction Slides](./Documentation/BasicIntroductionSlide/BasicIntroduction.md)
+
 Documents:
 * [Execution Flow And Events](./Documentation/02_ExecutionFlowAndEvents.md)
 * [Data Types](./Documentation/03_DataTypes.md)

@@ -1,5 +1,5 @@
 ## Penguin Language
-Penguin language (or 'penguin-lang') is designed to be a programming language that is easy-to-use, easy-to-understand, and concurrent-friendly. 
+Penguin language (or 'penguin-lang') is designed to be a programming language that is modern, easy-to-understand, and concurrent-friendly. 
 
 Following is a minimal hello-world examle:
 ```

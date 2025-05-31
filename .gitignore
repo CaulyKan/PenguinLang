@@ -7,3 +7,4 @@ MagellanicPenguin/vscode/*.vsix
 MagellanicPenguin/vscode/out/*
 report.txt
 *.log
+Documentation/BasicIntroductionSlide/BasicIntroduction
