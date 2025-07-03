@@ -1,57 +1,50 @@
-
 ## Enum Types
-Penguin-lang supports rust-like enums, which can contain values. One of the most commonly used enum type is `option<T>`, which can be `some` or `none`.
-Note that
+Penguin-lang supports Rust-style enums, which can contain values. One of the most commonly used enum types is `Option<T>`, which can be `some` or `none`.
+
 ```
-enum option<T> {
-	some: T;
-	none;
+enum Option<T> {
+	some: T,
+	none,
 }
 	
-var a : option<i32> = new option<i32>.none();
-inital {
-	a = new option<i32>.some(1);
-}
-```
-
-## Checking a enum
-Penguin-lang supports using 'is' keyword to check if enum matchs a value.
-Use the enum name to get data from enum, e.g. `a.some`
-```
-enum option<T> {
-	some: T;
-	none;
-}
-
-var a = new option<i32>.some(1);
+var a : Option<i32> = new Option<i32>.none();
 initial {
-	if (a is option<i32>.some) {
+	a = new Option<i32>.some(1);
+}
+```
+
+## Checking an enum
+Penguin-lang supports using the 'is' keyword to check if an enum matches a value. Use the enum name to get data from the enum, e.g. `a.some`.
+```
+var a = new Option<i32>.some(1);
+initial {
+	if (a is Option<i32>.some) {
 		println("a is some({})", a.some);
-	} else if (a is option<i32>.none) {
+	} else if (a is Option<i32>.none) {
 		println("a is none");
 	}
 }
 ```
 
 ## Enum members
-Like classes, enum can have its members
+Like classes, enums can have their own members:
 ```
-enum option<T> {
-	some: T;
-	none;
+enum Option<T> {
+	some: T,
+	none,
 	
 	// method
-	fun value_or(val this: option<T>, val default: T) -> T {
-		if (this is option<T>.none) {
+	fun value_or(const this: Option<T>, const default: T) -> T {
+		if (this is Option<T>.none) {
 			return default;
 		} else {
 			return this.some;
 		}
 	}
 	
-	// however enum can't have a constructor
+	// however, enums can't have a constructor
 	
-	on (this is option<T>.none) {
+	on (this is Option<T>.none) {
 		println("hello none");
 	}
 }

@@ -1,5 +1,5 @@
-## Asynchronization
-The penguin-lang is built with asynchronization. You can call a function using `async` keyword, so it will return a IFuture and you can use `await` keyword to wait for the result.
+## Asynchronization and Concurrency
+Penguin-lang is built with asynchronization and concurrency in mind. You can spawn a function using `async`, which returns an IFuture, and use `wait` to wait for the result.
 ```
 	fun foo() -> i32 {
 		return 1;
@@ -8,33 +8,19 @@ The penguin-lang is built with asynchronization. You can call a function using `
 	fun bar() -> i32 {
 		val task : IFuture<i32> = async foo();
 		println("before wait");
-		val a : i32 = wait task;
+		var a : i32 = wait task;
 		println("wait done");
 	}
 ```
-However, under the hood, a function can be stateful function or a simple function. If a function is stateful function, it uses `wait` keyword inside, or calls another stateful function.
-When calling a stateful function without `async` keyword, the function is actually rewrited to wait for the result of the function.
 
-If a function uses `wait` keyword, or it calls a statefull function, the function itself will be a stateful function.
+PenguinLang adopts a full stackless coroutine model, and will automatically identify if a function is 'async' or not. If a function uses `wait`, or calls a stateful function, the function itself will be a stateful function.
+
+If you call an async function directly (e.g. `bar()`), it is a shorthand for `wait async bar();`
 ```
-	// simple function
-	fun foo() -> i32 {
-		return 1;
-	}
-
-	// stateful function
-	fun bar() -> i32 {
-		wait;
-		return 2;
-	}
-
 	initial {
-		foo();	// normal function call
-
 		bar();				// implicit wait 
 		wait (async bar());	// equivalent to above line
 	}
-	wa
 ```
 
 A `wait` keyword without expression tells penguin-lang runtime to pause the current job and wait for another schedule.
@@ -46,13 +32,13 @@ each with its own input, output, and data.
 As penguin-lang strictly defines that Value Types are always copied by value, they can always safely passed between threads. Howver this doesnot apply to Reference Types, such as Box. 
 So when penguin-lang found a job that only contains value types (or reference types that implements ISynchronized), this job can be dispatched to a different thread. 
 
-Consider a very simple code:
+For example:
 ```
 var foo : Box<i32> = new Box(0);
 
 fun bar() {
 	var i : i32 = foo.get();
-	i+=1;
+	i += 1;
 	foo.set(i);
 }
 ```
@@ -81,13 +67,12 @@ Note that BabyPenguin (which is a minimal implementation of penguin-lang used to
 
 
 ## Event Asynchronization
-
-Event must be value-typed and is by default run asynchronously and parallelly. Consider following code:
+Events must be value-typed and are by default run asynchronously and in parallel. For example:
 ```
 event A : i32;
 
 initial {
-	for (i in 0..10) {
+	for (var i : i32 in range(0, 10)) {
 		emit A(i);
 	}
 }
@@ -96,7 +81,7 @@ on A(x) {
 	print(x as string);
 }
 ```
-Possible output can be: `03241...`. This is because penguin-lang compiler see no dependency between event handlers (considered as 'pure'),so penguin-lang runtime is free to re-order or parallelize these event handlers.
+The output order is uncertain, because the runtime is free to parallelize event handlers if there is no dependency.
 
 To ensure the order of event handlers, you can use `!pure` keyword to mark the event handler as 'pure', which means it has no side effect and is not a 'pure function'. 
 ```
@@ -138,8 +123,7 @@ Above code will print 5 'hello' as expected. You can also use `fork initial:` to
 
 penguin-lang provides a `ISynchronized` interface to mark a reference-typed variable as thread-safe. Typical types are Atmoic, Mutex, RWLock and ConcurrentQueues.
 
-```
-Events can also be dispatcher to different handlers running in multiple threads. This is because event parameters are read-only, so multiple handlers will not cause data race. However, events are not good at collecting results, so we can use a queue. A typicial multiple producers multiple consumers program may look like:
+For example:
 ```
 var counter : Atomic<i32> = new Atomic(0);
 var job_queue: ConcurrentQueue<i32> = new ConcurrentQueue<i32>();
@@ -153,12 +137,12 @@ initial {
 
 folk initial {
 	while (true) {
-		val job : Option<i32> = job_queue.dequeue();
-		if (job.is_none()) 
+		const job : Option<i32> = job_queue.dequeue();
+		if (job is Option<i32>.None)
 			break;
-		else 
+		else
 			counter.fetch_add(1);
 	}
 }
 ```
-Above code will generate multiple jobs that visit global reference-typed variable, however they are all `ISynchronized` so they can be safely dispatched to different threads. 
+All these global reference-typed variables are `ISynchronized`, so jobs can be safely dispatched to different threads.

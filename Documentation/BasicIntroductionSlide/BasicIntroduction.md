@@ -151,24 +151,6 @@ multi-threading safety automatically.
 PenguinLang ships a builtin Event system, which is a very useful for auto parallelization:
 
 ```
-event a_finished;  		// define an event
-initial {
-	print("A");
-	sleep(1); 			// avoid running too fast
-	emit a_finished; 
-}
-	
-initial {
-	wait a_finished;	// wait for event
-	print("B");
-}
-```
-
-[comment]: # (|||)
-
-Use OnRoutine to handle events:
-
-```
 event foo;
 
 initial { emit foo; }
@@ -208,6 +190,42 @@ on foo(const i : i32) {
   
 </div>
 
+[comment]: # (|||)
+
+Use `wait` to wait for an event:
+
+```
+event a_finished;  		// define an event
+initial {
+	print("A");
+	sleep(1); 			// avoid running too fast
+	emit a_finished; 
+}
+	
+initial {
+	wait a_finished;	// wait for event
+	print("B");
+}
+```
+
+[comment]: # (|||)
+
+Using expression as event:
+
+```
+var a : i32 = 0;
+
+initial {
+	for (var i : i32 in range(0, 10)) {
+		a = i;
+	}
+}
+	
+on a == 5 {
+	println("a is 5");
+}
+```
+
 [comment]: # (!!!)
 
 ## Functions
@@ -226,20 +244,20 @@ Spawn a new function asynchronosly:
 ```
 fun foo() -> i32 { return 1; }
 fun bar() {
-	var x : IFuture<i32> = spawn foo();		// foo can be async or not
+	var x : IFuture<i32> = async foo();		// foo can be async or not
 	var y : i32 = wait x;
 }
 ```
 
 <div style="font-size: 0.8em;">
 
-- In fact, direct calling of an async function (e.g. `bar()`) is a shorthand for `wait spawn bar();`
+- In fact, direct calling of an async function (e.g. `bar()`) is a shorthand for `wait async bar();`
 
 </div>
 
 [comment]: # (|||)
 
-How PenguinLang parrallelize workload without breaking thread-safety?
+ enguinLang can't prevent data-racing between coroutines, but it can parrallelize workload without introducing additional data-racing
 
 <div style="font-size: 0.8em;">
 
@@ -257,19 +275,12 @@ fun bar() {
 }
 ```
 
-<div style="font-size: 0.8em;">
-
-- In many programming languages, above code will cause race condition if bar() is parallelized.
-
-</div>
-
 [comment]: # (|||)
 
-PenguinLang achieves thread-safety by following rules:
+PenguinLang can shedule a job on another thread when following rules are met:
 
 <div style="font-size: 0.8em;">
 
-- Global variables must be reference types.
 - Initially, every routines that access one global variable must run on one same thread. 
 	- Combined with following, one global variable is always accessed on same thread.
 - A new spawned routine is safe to schedule on another thread ONLY IF:
@@ -364,7 +375,7 @@ interface IHello {
 	}
 }
 
-class Hello : IHello {
+class Hello {
 	impl IHello;
 }
 ```
@@ -374,10 +385,12 @@ class Hello : IHello {
 Override default implementation in class:
 
 ```
-class Hi : IHello {
+class Hi {
 	var name: string;
 	impl IHello {
 		fun hello(const this: IHello) {
+			IHello.hello(this); 		// can call default implementation
+
 			const self = this as Hi; 	// must cast to `Hi` to access `name` field
 			println("hi" + self.name);
 		}

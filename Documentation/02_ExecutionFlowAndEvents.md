@@ -1,114 +1,92 @@
 Execution Flow
 ----------------------
-Differs from most programming languages, penguin-lang starts with `initial` not `main`. The interesting part is that there can be multiple `initial` parts, executing together in same time. So, given following code:
+Unlike most programming languages, penguin-lang starts with `initial` instead of `main`. There can be multiple `initial` parts, which may execute concurrently. For example:
 ```
 initial {
 	print("A");
 }
-	
+
 initial {
 	print("B");
 }
-	
-initial {
-	print("C");
-}
 ```
-The result of above code is uncertain. It may prints `ABC`, or `CBA`, or any possible combinations. These routines also are not guranteed to run in one thread or multiple threads. Yes, penguin-lang takes control of threading away from programmer, in most circumstances.
+The result of the above code is uncertain, because these routines are not guaranteed to run in one thread or multiple threads.
+
+Penguin-lang is designed to take control of threading away from the programmer, while ensuring multi-threading safety automatically.
 
 Events
 ---------
-In order to run `initial` blocks in sequence, you can use event, which is a core concept in penguin-lang. Following is a very basic Example of using event:
+Penguin-lang provides a builtin event system. You can use events to control execution order:
 ```
-event a_finished;  // define an event
+event a_finished;
 initial {
 	print("A");
-	emit a_finished; 
+	sleep(1);
+	emit a_finished;
 }
-	
+
 initial {
 	wait a_finished;
 	print("B");
 }
 ```
 
-Since `wait` keyword will block execution flow until event happen,  Above code will print `AB` definitely. 
+The `wait` keyword will block execution flow until the event happens. The above code will always print `A` then `B`.
 
-Penguin-lang also provide `on` control block, which is similar to 'callbacks' in most other languages.
+You can also use `on` blocks, which are similar to callbacks:
 ```
 event foo;
 
 initial {
 	emit foo;
 }
-	
+
 on foo {
 	print("A");
 }
-	
+
 on foo {
 	print("B");
 }
 ```
+The result of the above code is uncertain, because the two routines can be parallelized.
 
-In above code, when event `foo` happens, the `on foo` blocks will be executed, however the order of execution is uncertain, so the result is still uncertain between `AB` or `BA`. 
-
-Event expression
+Event expressions
 ----------------
-There are some expression that can produce an event. For example:
+You can use expressions as events:
 ```
-var a = 0;
+var a : i32 = 0;
 
 initial {
-	a = 1;
-	a = 10;
-	a = 5;
+	for (var i : i32 in range(0, 10)) {
+		a = i;
+	}
 }
 
-on a == 10 {
-	print("a is {}", a);
+on a == 5 {
+	println("a is 5");
 }
 ```
-Above code will print `a is 10`, because the `on` block will only happen when `a` 'changes to' 10. The `a == 10` will generate an annomous event, which will be triggered when `a` is changed.
 
 Events with data
 ------------------
-Events can take parameters, for example:
+Events can take parameters:
 ```
 event foo : i32;
 
 initial {
-	emit foo(1);
-	emit foo(2);
+	for (var i : i32 in range(0, 10))
+		emit foo(i);
 }
 
-on foo(val x: i32) {
-	println("foo with x={}", x);
-}
-```
-The result will be:
-```
-foo with x=1
-foo with x=2
-```
-
-It's also possible to use `wait` keyword with event expression which return a value of event type, for example:
-```
-event foo : i32;
-
-initial {
-	emit foo(1);
-}
-
-initial {
-	val x : i32 = wait foo;
-	println(x as string);
+on foo(const i : i32) {
+	print(i as string);
 }
 ```
 
 Waiting for events
 ------------------
-Penguin-lang provide `wait` keyword to wait for an event to happen. It's possible to use `wait` keyword with event expression, for example:
+The `wait` keyword can be used with events that have data:
 ```
 event foo : i32;
 initial {
@@ -116,7 +94,7 @@ initial {
 }
 
 initial {
-	val x : i32 = wait foo;
+	var x : i32 = wait foo;
 	println(x as string);
 }
 ```
