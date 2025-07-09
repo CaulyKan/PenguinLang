@@ -1,14 +1,14 @@
 namespace __builtin {
-    extern fun exit(val code : i32);
-    extern fun print(val text : string);
-    extern fun println(val text : string);
+    extern fun exit(code : i32);
+    extern fun print(text : string);
+    extern fun println(text : string);
     fun hello_world() {
         println("hello world!");
     }
 
     class Box<T> {
-        var value: T;
-        fun new(var this: Box<T>, var value: T) {
+        value: T;
+        fun new(mut this, value: T) {
             this.value = value;
         }
     }
@@ -19,15 +19,15 @@ namespace __builtin {
         some: T;
         none;
     
-        fun is_some(val this: Option<T>) -> bool {
+        fun is_some(this) -> bool {
             return this is Option<T>.some;
         }
 
-        fun is_none(val this: Option<T>) -> bool {
+        fun is_none(this) -> bool {
             return this is Option<T>.none;
         }
     
-        fun value_or(val this: Option<T>, val default_val: T) -> T {
+        fun value_or(this, default_val: T) -> T {
             if (this is Option<T>.some) {
                 return this.some;
             } else {
@@ -39,7 +39,7 @@ namespace __builtin {
     }
 
     interface ICopy<T> {
-        extern fun copy(val this: T) -> T;
+        extern fun copy(this: T) -> T;
     }
         
     impl __builtin.ICopy<i64> for i64;
@@ -60,15 +60,15 @@ namespace __builtin {
         ok: T;
         error: E;
     
-        fun is_ok(val this: Result<T, E>) -> bool {
+        fun is_ok(this) -> bool {
             return this is Result<T, E>.ok;
         }
 
-        fun is_error(val this: Result<T, E>) -> bool {
+        fun is_error(this) -> bool {
             return this is Result<T, E>.error;
         }
     
-        fun value_or(val this: Result<T, E>, val default_val: T) -> T {
+        fun value_or(this, default_val: T) -> T {
             if (this is Result<T, E>.ok) {
                 return this.ok;
             } else {
@@ -80,29 +80,29 @@ namespace __builtin {
     }
 
     interface IIterator<T> {
-        fun next(var this: IIterator<T>) -> Option<T>;
+        fun next(mut this) -> Option<T>;
     }
 
     interface IIterable<T> {
-        fun iter(var this: IIterable<T>) -> IIterator<T>;
+        fun iter(mut this) -> IIterator<T>;
     }
 
     class RangeIterator {
-        val start: i64;
-        val end: i64;
-        var current: i64;
+        start: mut i64;
+        end: mut i64;
+        current: mut i64;
 
-        fun new(var this: RangeIterator, val start: i64, val end: i64) {
+        fun new(mut this, start: i64, end: i64) {
             this.start = start;
             this.end = end;
             this.current = start;
         }
 
         impl IIterator<i64> {
-            fun next(var this: IIterator<i64>) -> Option<i64> {
-                var self : RangeIterator = this as RangeIterator;
+            fun next(this: mut IIterator<i64>) -> Option<i64> {
+                let self : mut Self = this as mut Self;
                 if (self.current < self.end) {
-                    val res : Option<i64> =new Option<i64>.some(self.current);
+                    let res : mut Option<i64> = new Option<i64>.some(self.current);
                     self.current += 1;
                     return res;
                 } else {
@@ -112,55 +112,55 @@ namespace __builtin {
         }
     }
 
-    fun range(val start: i64, val end: i64) -> IIterator<i64> {
+    fun range(start: i64, end: i64) -> IIterator<i64> {
         return new RangeIterator(start, end) as IIterator<i64>;
     }
 
     class AtomicI64 {
-        var value: i64;
-        fun new(var this: AtomicI64, val value: i64) {
+        value: mut i64;
+        fun new(mut this, value: i64) {
             this.value = value;
         }
-        fun load(val this: AtomicI64) -> i64 {
+        fun load(this) -> i64 {
             return this.value;
         }
-        fun store(var this: AtomicI64, val value: i64) {
+        fun store(mut this, value: i64) {
             this.value = value;
         }
-        extern fun swap(var this: AtomicI64, val value: i64) -> i64;
-        extern fun compare_exchange(var this: AtomicI64, var current_val: i64, val new_val: i64) -> i64;
-        extern fun fetch_add(var this: AtomicI64, val value: i64) -> i64;
+        extern fun swap(mut this, value: i64) -> i64;
+        extern fun compare_exchange(mut this, current_val: i64, new_val: i64) -> i64;
+        extern fun fetch_add(mut this, value: i64) -> i64;
     }
 
     class List<T> {
-        var __impl: __ExternImpl = new __ExternImpl();
-        extern fun new(var this: List<T>);
-        extern fun at(val this: List<T>, val index: u64) -> Option<T>;
-        extern fun remove(val this: List<T>, val index: u64);
-        extern fun push(var this: List<T>, val value: T);
-        extern fun pop(var this: List<T>) -> Option<T>;
-        extern fun size(val this: List<T>) -> u64;
+        __impl: __ExternImpl = new __ExternImpl();
+        extern fun new(mut this);
+        extern fun at(this, index: u64) -> Option<T>;
+        extern fun remove(mut this, index: u64);
+        extern fun push(mut this, value: T);
+        extern fun pop(mut this) -> Option<T>;
+        extern fun size(this) -> u64;
 
         impl IIterable<T> {
-            fun iter(var this: IIterable<T>) -> IIterator<T> {
-                return new ListIterator<T>(this as List<T>) as IIterator<T>;
+            fun iter(this: mut IIterable<T>) -> IIterator<T> {
+                return new ListIterator<T>(this as mut Self) as IIterator<T>;
             }
         }
     }
 
     class ListIterator<T> {
-        var list : List<T>;
-        var current: u64;
+        list : mut List<T>;
+        current: mut u64;
 
-        fun new(var this: ListIterator<T>, var list: List<T>) {
+        fun new(mut this, list: List<T>) {
             this.list = list;
             this.current = 0;
         }
 
         impl IIterator<T> {
-            fun next(var this: IIterator<T>) -> Option<T> {
-                var self : ListIterator<T> = this as ListIterator<T>;
-                var res : Option<T> = self.list.at(self.current);
+            fun next(this: mut IIterator<T>) -> Option<T> {
+                let self : mut ListIterator<T> = this as mut ListIterator<T>;
+                let res : Option<T> = self.list.at(self.current);
                 self.current += 1;
                 return res;
             }
@@ -168,12 +168,12 @@ namespace __builtin {
     }
 
     class Queue<T> {
-        var __impl: __ExternImpl = new __ExternImpl();
-        extern fun new(var this: Queue<T>);
-        extern fun enqueue(var this: Queue<T>, val value: T);
-        extern fun dequeue(var this: Queue<T>) -> Option<T>;
-        extern fun peek(var this: Queue<T>) -> Option<T>;
-        extern fun size(val this: Queue<T>) -> u64;
+        __impl:  __ExternImpl = new __ExternImpl();
+        extern fun new(mut this);
+        extern fun enqueue(mut this, value: T);
+        extern fun dequeue(mut this) -> Option<T>;
+        extern fun peek(this) -> Option<T>;
+        extern fun size(this) -> u64;
     }
 
     enum RoutineState {
@@ -183,7 +183,7 @@ namespace __builtin {
         finished;
         ready_finished;
 
-        fun from_i64(val v: i64) -> RoutineState {
+        fun from_i64(v: i64) -> mut RoutineState {
             if (v == 0) {
                 return new RoutineState.pending();
             } else if (v == 1) {
@@ -197,12 +197,12 @@ namespace __builtin {
             }
         }
 
-        fun from_atomic(val a: AtomicI64) -> RoutineState {
-            val v : i64 = a.load();
+        fun from_atomic(a: AtomicI64) -> mut RoutineState {
+            let v : mut i64 = a.load();
             return RoutineState.from_i64(v);
         }
 
-        fun to_i64(val this: RoutineState) -> i64 {
+        fun to_i64(this) -> i64 {
             if (this is RoutineState.pending) {
                 return 0;
             } else if (this is RoutineState.running) {
@@ -216,18 +216,18 @@ namespace __builtin {
             }
         }
 
-        fun switch(var v: AtomicI64, val from: RoutineState, val to: RoutineState) -> bool {
-            val from_i64 : i64 = from.to_i64();
-            val to_i64 : i64 = to.to_i64();
-            val res : i64 = v.compare_exchange(from_i64, to_i64);
+        fun switch(v: mut AtomicI64, from: RoutineState, to: RoutineState) -> bool {
+            let from_i64 : mut i64 = from.to_i64();
+            let to_i64 : mut i64 = to.to_i64();
+            let res : mut i64 = v.compare_exchange(from_i64, to_i64);
             return res == from_i64;
         }
     }
 
-    var __event_id : AtomicI64 = new AtomicI64(0);
+    let __object_id : mut AtomicI64 = new AtomicI64(0);
     interface IObjectID {
-        var object_id : i64 = __event_id.fetch_add(1);
-        fun equals(val this: IObjectID, val other: IObjectID) -> bool {
+        object_id : mut i64 = __object_id.fetch_add(1);
+        fun equals(this, other: IObjectID) -> bool {
             return this.object_id == other.object_id;
         }
     }
@@ -240,20 +240,20 @@ namespace __builtin {
     }
 
     interface IFutureBase {
-        fun routine_state(val this: IFutureBase) -> RoutineState;
-        fun switch_state(var this: IFutureBase, val from: RoutineState, val to: RoutineState) -> bool;
-        fun start(var this: IFutureBase) -> bool;
+        fun routine_state(this) -> RoutineState;
+        fun switch_state(mut this, from: RoutineState, to: RoutineState) -> bool;
+        fun start(mut this) -> bool;
     }
 
     interface IFuture<T> {
         impl IFutureBase;
-        fun poll(val this: IFuture<T>) -> FutureState<T>;
+        fun poll(this) -> mut FutureState<T>;
         
-        !async fun do_wait(var this: IFuture<T>) -> T {
-            var result: T;
+        !async fun do_wait(mut this) -> T {
+            let result: mut T;
             while(true) {
                 wait;
-                var state: FutureState<T> = this.poll();
+                let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
                     result = state.ready_finished;
                     break;
@@ -269,10 +269,10 @@ namespace __builtin {
             return result;
         }
 
-        !async fun do_wait_any(var this: IFuture<T>) -> Option<T> {
+        !async fun do_wait_any(this: IFuture<T>) -> Option<T> {
             while(true) {
                 wait;
-                var state: FutureState<T> = this.poll();
+                let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
                     this.switch_state(new RoutineState.ready_finished(), new RoutineState.finished());
                     return new Option<T>.some(state.ready_finished);
@@ -290,15 +290,15 @@ namespace __builtin {
     }
 
     class Scheduler {
-        var pending_jobs : Queue<IFutureBase> = new Queue<IFutureBase>();
+        pending_jobs : mut Queue<IFutureBase> = new Queue<IFutureBase>();
 
-        fun entry(var this: Scheduler) {
+        fun entry(mut this) {
             while (true) {
-                var job_opt : Option<IFutureBase> = this.pending_jobs.dequeue();
+                let job_opt : Option<IFutureBase> = this.pending_jobs.dequeue();
                 if (job_opt.is_some()) {
-                    var job : IFutureBase = job_opt.some;
-                    val result: bool = job.start();
-                    val state : RoutineState = job.routine_state();
+                    let job : mut IFutureBase = job_opt.some;
+                    let result: bool = job.start();
+                    let state : RoutineState = job.routine_state();
                     if (!result) {
                         // job is in invalid state, skip it for now
                         println("Scheduler: job in '" + (state as string) + "' state, failed to run");
@@ -319,28 +319,28 @@ namespace __builtin {
         }
     }
 
-    var _main_scheduler : Scheduler = new Scheduler();
+    let _main_scheduler : mut Scheduler = new Scheduler();
 
     interface IGenerator<T> {
         impl IIterator<T>;
     }
 
     class RoutineContext<T> {
-        var __impl: __ExternImpl = new __ExternImpl();
-        var result: Option<T> = new Option<T>.none();
-        var target: async_fun<T>;
+        __impl: __ExternImpl = new __ExternImpl();
+        result: mut Option<T> = new Option<T>.none();
+        target: mut async_fun<T>;
 
-        fun new(var this: Self, val target: async_fun<T>) {
+        fun new(mut this, target: async_fun<T>) {
             this.target = target;
         }
-        extern fun call(var this: Self) -> i64;
+        extern fun call(mut this) -> i64;
     }
 
     class _DefaultRoutine<T> {
-        var state: AtomicI64 = new AtomicI64(0);
-        var context: RoutineContext<T>;
+        state: mut AtomicI64 = new AtomicI64(0);
+        context: mut RoutineContext<T>;
 
-        fun new(var this: Self, val target: async_fun<T>, val scheduleNow: bool) {
+        fun new(mut this, target: async_fun<T>, scheduleNow: bool) {
             this.context = new RoutineContext<T>(target);
             if (scheduleNow) {
                 _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
@@ -348,23 +348,23 @@ namespace __builtin {
         }
 
         impl IFutureBase {
-            fun routine_state(val this: IFutureBase) -> RoutineState {
-                var self: Self = this as Self;
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                let self: Self = this as Self;
                 return RoutineState.from_atomic(self.state);
             }
 
-            fun switch_state(var this: IFutureBase, val from: RoutineState, val to: RoutineState) -> bool {
-                var self: Self = this as Self;
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                let self: mut Self = this as mut Self;
                 return RoutineState.switch(self.state, from, to);
             }
 
-            fun start(val this: IFutureBase) -> bool {
-                var self: Self = this as Self;
-                val res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
+            fun start(this: mut IFutureBase) -> bool {
+                let self: mut Self = this as mut Self;
+                let res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
                 if (!res) 
                     return false;
                 __signal 0;
-                val return_state : i64 = self.context.call();
+                let return_state : i64 = self.context.call();
 
                 // Blocked = 0, YieldNotFinished = 2, Finished = 3, YieldFinished = 4
                 RoutineState.switch(self.state, new RoutineState.running(), RoutineState.from_i64(return_state));
@@ -374,9 +374,9 @@ namespace __builtin {
         }
 
         impl IFuture<T> {
-            fun poll(val this: IFuture<T>) -> FutureState<T> {
-                var self: Self = this as Self;
-                val state_val: i64 = self.state.load();
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: Self = this as Self;
+                let state_val: i64 = self.state.load();
                 
                 if (state_val == 2) {
                     return new FutureState<T>.ready(self.context.result.some);
@@ -392,36 +392,36 @@ namespace __builtin {
     
         impl IGenerator<T>;
         impl IIterator<T> {
-            fun next(var this: IIterator<T>) -> Option<T> {
-                var self: IFuture<T> = this as IFuture<T>;
+            fun next(this: mut IIterator<T>) -> Option<T> {
+                let self: mut Self = this as mut Self;
                 return self.do_wait_any();
             }
         }
     }
 
     class Event<T> {
-        var receivers : List<IEventReceiver<T>> = new List<IEventReceiver<T>>();
+        receivers : mut List<IEventReceiver<T>> = new List<IEventReceiver<T>>();
 
         impl IObjectID;
 
-        fun notify(var this: Self, val ev: T) {
-            for (var receiver : IEventReceiver<T> in this.receivers.iter()) {
+        fun notify(this, ev: T) {
+            for (let receiver : mut IEventReceiver<T> in this.receivers.iter()) {
                  receiver.notify(ev);
             }
             wait;
         }
 
-        fun add_receiver(var this: Self, var receiver: IEventReceiver<T>) {
-            for (var r : IEventReceiver<T> in this.receivers.iter()) {
+        fun add_receiver(mut this, receiver: IEventReceiver<T>) {
+            for (let r : IEventReceiver<T> in this.receivers.iter()) {
                 if (r.equals(receiver))
                     return;
             }
             this.receivers.push(receiver);
         }
 
-        fun remove_receiver(var this: Self, var receiver: IEventReceiver<T>) {
-            for (var i : u64 in range(0, this.receivers.size())) {
-                var r : Option<IEventReceiver<T>> = this.receivers.at(i);
+        fun remove_receiver(mut this, receiver: IEventReceiver<T>) {
+            for (let i : u64 in range(0, this.receivers.size())) {
+                let r : Option<IEventReceiver<T>> = this.receivers.at(i);
                 if (r.is_some()) {
                     if (r.some.equals(receiver)) {
                         this.receivers.remove(i);
@@ -433,11 +433,11 @@ namespace __builtin {
     }
 
     interface IEventReceiver<T> {
-        var ev : Event<T>;
+        ev : mut Event<T>;
 
-        fun notify(var this: IEventReceiver<T>, val ev: T);
+        fun notify(mut this, ev: T);
 
-        fun connect(var this: IEventReceiver<T>, var ev: Event<T>) {
+        fun connect(mut this, ev: Event<T>) {
             this.ev.remove_receiver(this);
             ev.add_receiver(this);
             this.ev = ev;
@@ -447,42 +447,42 @@ namespace __builtin {
     }
 
     class _AsyncEventReceiver<T> {
-        var f : async_fun<void, T>;
+        f : async_fun<void, T>;
 
-        fun new(var this: Self, var ev: Event<T>, var f: async_fun<void, T>) {
+        fun new(mut this, ev: mut Event<T>, f: async_fun<void, T>) {
             ev.add_receiver(this);
             (this as  IEventReceiver<T>).ev = ev;
             this.f = f;
         }
 
         impl IEventReceiver<T> {
-            fun notify(var this: IEventReceiver<T>, val ev: T) {
-                var self: Self = this as Self;
+            fun notify(this: mut IEventReceiver<T>, ev: T) {
+                let self: mut Self = this as mut Self;
                 self.f(ev);
             }
         }
     }
 
     class _QueuedEventReceiver<T> {
-        var event_queue : Queue<T> = new Queue<T>();
+        event_queue : mut Queue<T> = new Queue<T>();
 
-        fun new(var this: Self, var ev: Event<T>) {
+        fun new(mut this, ev: mut Event<T>) {
             ev.add_receiver(this);
             (this as IEventReceiver<T>).ev = ev;
         }
 
         impl IEventReceiver<T> { 
-            fun notify(var this: IEventReceiver<T>, val ev: T) {
-                var self: Self = this as Self;
+            fun notify(this: mut IEventReceiver<T>, ev: T) {
+                let self: mut Self = this as mut Self;
                 self.event_queue.enqueue(ev);
             }
         }
 
         impl IFuture<T> {
-            fun poll(val this: IFuture<T>) -> FutureState<T> {
-                var self: Self = this as Self;
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: Self = this as Self;
                 
-                val v : Option<T> = self.event_queue.dequeue();
+                let v : Option<T> = self.event_queue.dequeue();
                 if (v.is_some()) {
                      return new FutureState<T>.ready(v.some);
                 }
@@ -494,23 +494,23 @@ namespace __builtin {
     }
 
     class _OnetimeEventReceiver<T> {
-        var value : Option<T> = new Option<T>.none();
+        value : mut Option<T> = new Option<T>.none();
 
-        fun new(var this: Self, var ev: Event<T>) {
+        fun new(mut this, ev: mut Event<T>) {
             ev.add_receiver(this);
             (this as IEventReceiver<T>).ev = ev;
         }
 
         impl IEventReceiver<T> { 
-            fun notify(var this: IEventReceiver<T>, val v: T) {
-                var self: Self = this as Self;
+            fun notify(this: mut IEventReceiver<T>, v: T) {
+                let self: mut Self = this as mut Self;
                 self.value = new Option<T>.some(v);
             }
         }
 
         impl IFuture<T> {
-            fun poll(val this: IFuture<T>) -> FutureState<T> {
-                var self: Self = this as Self;
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: Self = this as Self;
                 
                 if (self.value.is_some()) {
                      return new FutureState<T>.ready_finished(self.value.some);

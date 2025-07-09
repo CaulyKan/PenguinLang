@@ -271,7 +271,7 @@ namespace MagellanicPenguin
 
             while (frame != null)
             {
-                stackFrames.Add(new StackFrame(frame.GetHashCode(), frame.CodeContainer.FullName, frame.CurrentSourceLocation.RowStart, frame.CurrentSourceLocation.ColStart)
+                stackFrames.Add(new StackFrame(frame.GetHashCode(), frame.CodeContainer.FullName(), frame.CurrentSourceLocation.RowStart, frame.CurrentSourceLocation.ColStart)
                 {
                     Source = new Source { Path = frame.CodeContainer.SourceLocation.FileName }
                 });

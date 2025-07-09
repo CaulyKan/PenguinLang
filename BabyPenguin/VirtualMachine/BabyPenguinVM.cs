@@ -11,7 +11,7 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var symbol in model.Symbols.Where(s => !s.IsEnum && !s.IsLocal && !s.IsClassMember))
             {
-                Global.GlobalVariables.Add(symbol.FullName, IRuntimeSymbol.FromSymbol(model, symbol));
+                Global.GlobalVariables.Add(symbol.FullName(), IRuntimeSymbol.FromSymbol(model, symbol));
             }
 
             ExternFunctions.Build(this);

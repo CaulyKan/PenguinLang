@@ -11,7 +11,7 @@ namespace BabyPenguin.SemanticNode
                 throw new BabyPenguinException("Count of generic arguments and definitions do not match.");
 
             // var namecomponents = NameComponents.ParseName(FullName);
-            // var newNameComponents = new NameComponents(namecomponents.Prefix, namecomponents.Name, genericArguments.Select(a => a.FullName).ToList());
+            // var newNameComponents = new NameComponents(namecomponents.Prefix, namecomponents.Name, genericArguments.Select(a => a.FullName()).ToList());
             // if (Model.ResolveType(newNameComponents.ToString()) is IClass specialized)
             //     return specialized;
 
@@ -34,12 +34,12 @@ namespace BabyPenguin.SemanticNode
             return result;
         }
 
-        bool IType.CanImplicitlyCastTo(IType other)
+        bool IType.CanImplicitlyCastToWithoutMutability(IType other)
         {
-            if (FullName == other.FullName)
+            if (FullName() == other.WithMutability(false).FullName())
                 return true;
-            else if (other is IInterface intf)
-                return ImplementedInterfaces.Any(i => i.FullName == intf.FullName);
+            else if (other.WithMutability(false) is IInterface intf)
+                return ImplementedInterfaces.Any(i => i.FullName() == intf.FullName());
             else
                 return false;
         }
@@ -87,17 +87,18 @@ namespace BabyPenguin.SemanticNode
 
         public List<IType> GenericInstances { get; set; } = [];
 
-        public override bool Equals(object? obj) => (this as IClass).FullName == (obj as IClass)?.FullName;
+        public override bool Equals(object? obj) => (this as IClass).FullName() == (obj as IClass)?.FullName();
 
-        public override int GetHashCode() => (this as IClass).FullName.GetHashCode();
+        public override int GetHashCode() => (this as IClass).FullName().GetHashCode();
 
         public IFunction? Constructor { get; set; }
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
 
         public List<VTable> VTables { get; } = [];
 
         public List<IOnRoutine> OnRoutines { get; } = [];
 
+        public bool IsMutable => false;
     }
 }

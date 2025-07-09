@@ -33,7 +33,7 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
-        public string FullName => Name;
+        public string FullName() => Name;
 
         public ISemanticScope? Parent { get; set; }
 
@@ -49,7 +49,7 @@ namespace BabyPenguin.SemanticNode
 
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
 
         public IFunction? Constructor { get; set; }
 
@@ -73,7 +73,7 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
-        public string FullName => Name;
+        public string FullName() => Name;
 
         public SemanticModel Model { get; }
 

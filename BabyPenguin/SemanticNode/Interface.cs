@@ -29,12 +29,12 @@ namespace BabyPenguin.SemanticNode
             return result;
         }
 
-        bool IType.CanImplicitlyCastTo(IType other)
+        bool IType.CanImplicitlyCastToWithoutMutability(IType other)
         {
-            if (FullName == other.FullName)
+            if (FullName() == other.WithMutability(false).FullName())
                 return true;
-            else if (other is IInterface intf)
-                return ImplementedInterfaces.Any(i => i.FullName == intf.FullName);
+            else if (other.WithMutability(false) is IInterface intf)
+                return ImplementedInterfaces.Any(i => i.FullName() == intf.FullName());
             else
                 return false;
         }
@@ -84,18 +84,20 @@ namespace BabyPenguin.SemanticNode
 
         public List<IType> GenericInstances { get; set; } = [];
 
-        public override bool Equals(object? obj) => (this as IInterface).FullName == (obj as IInterface)?.FullName;
+        public override bool Equals(object? obj) => (this as IInterface).FullName() == (obj as IInterface)?.FullName();
 
-        public override int GetHashCode() => (this as IInterface).FullName.GetHashCode();
+        public override int GetHashCode() => (this as IInterface).FullName().GetHashCode();
 
         public IFunction? Constructor { get; set; }
 
         public List<VTable> VTables { get; } = [];
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
 
         public bool HasDeclartion { get; set; } = false;
 
         public List<IOnRoutine> OnRoutines { get; } = [];
+
+        public bool IsMutable => false;
     }
 }

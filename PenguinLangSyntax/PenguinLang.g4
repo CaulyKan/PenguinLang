@@ -1,4 +1,4 @@
-﻿grammar PenguinLang;
+grammar PenguinLang;
 
 primaryExpression:
 	Constant
@@ -113,19 +113,18 @@ constantExpression: conditionalExpression;
 
 typeReferenceDeclaration: 'type' identifier '=' typeSpecifier;
 
-declarationWithoutInitializer:
-	declarationKeyword identifier ':' typeSpecifier;
+declarationWithoutInitializer: identifier ':' typeSpecifier;
 
-declaration:
-	declarationKeyword identifier (':' typeSpecifier)? (
-		'=' expression
-	)?;
+declaration: identifier (':' typeSpecifier)? ( '=' expression)?;
 
-declarationKeyword: 'var' | 'val';
+letKeyword: 'let';
 
 storageClassSpecifier: 'extern';
 
-typeSpecifier: typeSpecifierWithoutIterable iterableType?;
+typeMutabilitySpecifier: 'mut';
+
+typeSpecifier:
+	typeMutabilitySpecifier? typeSpecifierWithoutIterable iterableType?;
 
 typeSpecifierWithoutIterable:
 	'void'
@@ -218,7 +217,7 @@ codeBlock: '{' codeBlockItem* '}';
 
 codeBlockItem:
 	statement
-	| (declaration ';')
+	| (letKeyword declaration ';')
 	| (typeReferenceDeclaration ';');
 
 statement:
@@ -249,7 +248,7 @@ ifStatement:
 whileStatement: 'while' '(' expression ')' statement;
 
 forStatement:
-	'for' '(' declaration 'in' expression ')' statement;
+	'for' '(' letKeyword declaration 'in' expression ')' statement;
 
 jumpStatement: jumpKeyword ';';
 
@@ -272,7 +271,7 @@ emitEventStatement: 'emit' expression '(' expression? ')' ';';
 compilationUnit: namespaceDeclaration* EOF;
 
 namespaceDeclaration:
-	declaration
+	(letKeyword declaration ';')
 	| typeReferenceDeclaration
 	| namespaceDefinition
 	| initialRoutine
@@ -285,7 +284,8 @@ namespaceDeclaration:
 	| onRoutine
 	| ';';
 
-parameterList: declaration? (',' declaration)* ','?;
+thisParameter: 'mut'? 'this';
+parameterList: (thisParameter | declaration)? (',' declaration)* ','?;
 
 functionSpecifier:
 	'pure'
@@ -296,16 +296,13 @@ functionSpecifier:
 
 lambdaFunctionExpression:
 	('fun' | 'async_fun') ('(' parameterList ')')? (
-		'->' declarationKeyword? typeSpecifier
+		'->' typeSpecifier
 	)? codeBlock;
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') (
 		'(' parameterList ')'
-	)? ('->' declarationKeyword? typeSpecifier)? (
-		codeBlock
-		| ';'
-	);
+	)? ('->' typeSpecifier)? (codeBlock | ';');
 
 eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
 
@@ -317,7 +314,7 @@ onRoutine:
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';
 
-identifier: Identifier;
+identifier: Identifier | 'this';
 
 Identifier: IdentifierNondigit (IdentifierNondigit | Digit)*;
 

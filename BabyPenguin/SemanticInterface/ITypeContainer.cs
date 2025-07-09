@@ -53,10 +53,10 @@ namespace BabyPenguin.SemanticInterface
             return result;
         }
 
-        public IClass AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool returnValueIsReadonly = false, bool? isAsync = false)
+        public IClass AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool? isAsync = false)
         {
-            var parametersString = string.Join(", ", parameters.Select(p => $"{(p.IsReadonly ? "val" : "var")} {p.Name} : {p.Type.FullName}"));
-            var declarationStrings = closureSymbols.Select(s => $"{(s.IsReadonly ? "val" : "var")} {s.Name} : {s.TypeInfo.FullName}").ToList();
+            var parametersString = string.Join(", ", parameters.Select(p => $"{p.Name} : {p.Type.FullName()}"));
+            var declarationStrings = closureSymbols.Select(s => $"{s.Name} : {s.TypeInfo.FullName()}").ToList();
 
             var name = $"__lambda_{nameHint}_{counter++}";
             string text = "";
@@ -90,10 +90,10 @@ namespace BabyPenguin.SemanticInterface
             var source = @$"
                 class {name} {{
                     {string.Join("\n", declarationStrings.Select(i => i + ";"))}
-                    fun new(var this: {name}{(declarationStrings.Count > 0 ? ", " : "")}{string.Join(", ", declarationStrings)}) {{
+                    fun new(this: {name}{(declarationStrings.Count > 0 ? ", " : "")}{string.Join(", ", declarationStrings)}) {{
                         {string.Join("\n", closureSymbols.Select(s => $"this.{s.Name} = {s.Name};"))}
                     }}
-                    fun call(var this: {name}{(!string.IsNullOrEmpty(parametersString) ? ", " : "")}{parametersString}) -> {returnType.FullName} {{
+                    fun call(this: {name}{(!string.IsNullOrEmpty(parametersString) ? ", " : "")}{parametersString}) -> {returnType.FullName()} {{
                         {text}
                     }}
                 }}

@@ -46,10 +46,10 @@ namespace BabyPenguin.SemanticNode
             { "char", Char },
         };
 
-        public bool CanImplicitlyCastTo(IType other)
+        public bool CanImplicitlyCastToWithoutMutability(IType other)
         {
-            if (FullName == other.FullName) return true;
-            return implicitlyCastOrders.ContainsKey(Type) && implicitlyCastOrders[Type].Contains(other.Type);
+            if (FullName() == other.WithMutability(false).FullName()) return true;
+            return implicitlyCastOrders.ContainsKey(Type) && implicitlyCastOrders[Type].Contains(other.WithMutability(false).Type);
         }
 
         static readonly Dictionary<TypeEnum, List<TypeEnum>> implicitlyCastOrders = new Dictionary<TypeEnum, List<TypeEnum>>{
@@ -162,17 +162,14 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
-        public string FullName
+        public string FullName()
         {
-            get
+            var result = Name;
+            if (GenericArguments.Count > 0)
             {
-                var result = Name;
-                if (GenericArguments.Count > 0)
-                {
-                    result += "<" + string.Join(",", GenericArguments.Select((t, i) => t.FullName)) + ">";
-                }
-                return result;
+                result += "<" + string.Join(",", GenericArguments.Select((t, i) => t.FullName())) + ">";
             }
+            return result;
         }
 
         public INamespace? Namespace => null;
@@ -206,6 +203,8 @@ namespace BabyPenguin.SemanticNode
         IEnumerable<MergedNamespace> ISemanticScope.GetImportedNamespaces(bool includeBuiltin) => [];
 
         public bool IsAsyncFunction { get; set; } = false;
+
+        public bool IsMutable => false;
 
         public static IType? ResolveLiteralType(string literal)
         {
@@ -279,7 +278,7 @@ namespace BabyPenguin.SemanticNode
                     GenericArguments = genericArguments,
                     IsAsyncFunction = this.IsAsyncFunction
                 } as IType;
-                if (self.GenericInstances.Find(i => i.FullName == typeInfo.FullName) is IType existingType)
+                if (self.GenericInstances.Find(i => i.FullName() == typeInfo.FullName()) is IType existingType)
                     return existingType;
                 self.GenericInstances.Add(typeInfo);
                 typeInfo.GenericType = self;
@@ -291,7 +290,7 @@ namespace BabyPenguin.SemanticNode
             }
         }
 
-        override public string ToString() => FullName;
+        override public string ToString() => FullName();
     }
 
     public class TypeReferenceType(IType literalType) : IType
@@ -312,7 +311,7 @@ namespace BabyPenguin.SemanticNode
 
         public string Name => TypeReference.Name;
 
-        string ISemanticNode.FullName => TypeReference.FullName;
+        string ISemanticNode.FullName() => TypeReference.FullName();
 
         public SemanticModel Model => throw new NotImplementedException();
 
@@ -322,12 +321,13 @@ namespace BabyPenguin.SemanticNode
 
         public int PassIndex { get; set; }
 
-        public bool CanImplicitlyCastTo(IType other) => false;
+        public bool IsMutable => false;
+
+        public bool CanImplicitlyCastToWithoutMutability(IType other) => false;
 
         public IType Specialize(List<IType> genericArguments)
         {
             throw new NotImplementedException();
         }
-
     }
 }

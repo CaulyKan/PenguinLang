@@ -32,7 +32,6 @@ namespace BabyPenguin.SemanticNode
             IsPure = isPure;
             IsAsync = isAsync;
             IsDeclarationOnly = isDeclarationOnly;
-            ReturnValueIsReadonly = returnValueIsReadonly;
             SourceLocation = sourceLocation ?? SourceLocation.Empty();
             if (parameters != null)
                 Parameters = parameters;
@@ -47,7 +46,6 @@ namespace BabyPenguin.SemanticNode
             IsPure = syntaxNode.IsPure;
             IsAsync = syntaxNode.IsAsync;
             IsDeclarationOnly = syntaxNode.CodeBlock == null && !IsExtern;
-            ReturnValueIsReadonly = syntaxNode.ReturnValueIsReadonly ?? false;
         }
 
         public string Name { get; }
@@ -60,11 +58,9 @@ namespace BabyPenguin.SemanticNode
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public string FullName => Parent!.FullName + "." + Name;
+        public string FullName() => Parent!.FullName() + "." + Name;
 
         public List<FunctionParameter> Parameters { get; } = [];
-
-        public bool ReturnValueIsReadonly { get; }
 
         public IType ReturnTypeInfo { get; set; } = BasicType.Void;
 
@@ -78,7 +74,7 @@ namespace BabyPenguin.SemanticNode
 
         public bool? IsAsync { get; set; }
 
-        public bool IsGenerator => ReturnTypeInfo.IsGeneric && ReturnTypeInfo.GenericType!.FullName == "__builtin.IGenerator<?>";
+        public bool IsGenerator => ReturnTypeInfo.IsGeneric && ReturnTypeInfo.GenericType!.FullName() == "__builtin.IGenerator<?>";
 
         public IType? GeneratorReturnTypeInfo => !IsGenerator ? null : ReturnTypeInfo.GenericArguments[0];
 
@@ -90,7 +86,7 @@ namespace BabyPenguin.SemanticNode
 
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
     }
 
     public class LambdaFunction : Function

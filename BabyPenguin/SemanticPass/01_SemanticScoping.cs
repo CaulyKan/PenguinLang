@@ -166,7 +166,7 @@ namespace BabyPenguin.SemanticPass
             get
             {
                 var table = new ConsoleTable("Name", "Type");
-                Model.Traverse(t => table.AddRow(t.FullName, t.GetType().Name));
+                Model.Traverse(t => table.AddRow(t.FullName(), t.GetType().Name));
                 return table.ToMarkDownString();
             }
         }

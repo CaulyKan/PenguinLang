@@ -25,8 +25,23 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 else
                 {
-                    Parameters = context.parameterList().children.OfType<DeclarationContext>()
-                        .Select(x => Build<Declaration>(walker, x)).ToList();
+                    Parameters = [];
+                    if (context.parameterList().thisParameter() != null)
+                    {
+                        var isMutable = context.parameterList().thisParameter().GetText() != "this";
+                        var text = isMutable ? "mut this" : "this";
+                        var sourceLocation = SourceLocation.From(walker.FileName, context.parameterList().thisParameter());
+                        Parameters.Add(new Declaration
+                        {
+                            Identifier = new SymbolIdentifier { LiteralName = "this", ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text },
+                            ScopeDepth = ScopeDepth,
+                            SourceLocation = sourceLocation,
+                            SourceText = text,
+                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable, ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
+                        });
+                    }
+                    Parameters.AddRange(context.parameterList().children.OfType<DeclarationContext>()
+                        .Select(x => Build<Declaration>(walker, x)));
                 }
 
                 if (context.typeSpecifier() == null)
@@ -73,9 +88,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 if (context.codeBlock() != null)
                     CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
 
-                if (context.declarationKeyword() != null)
-                    ReturnValueIsReadonly = context.declarationKeyword().GetText() == "val";
-
                 walker.PopScope();
             }
             else throw new NotImplementedException();
@@ -96,8 +108,6 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public TypeSpecifier? ReturnType { get; set; }
-
-        public bool? ReturnValueIsReadonly { get; set; }
 
         [ChildrenNode]
         public CodeBlock? CodeBlock { get; set; }
@@ -161,12 +171,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 parts.Add("->");
                 parts.Add(ReturnType.BuildText());
             }
-
-            if (ReturnValueIsReadonly == true)
-            {
-                parts.Add("val");
-            }
-
             if (CodeBlock != null)
             {
                 parts.Add(CodeBlock.BuildText());

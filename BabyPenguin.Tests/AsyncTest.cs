@@ -167,7 +167,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : i32 = wait test();
+                    let a : i32= wait test();
                     print(a as string);
                 } 
                 fun test() -> i32{
@@ -189,7 +189,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : i32 = test();
+                    let a : i32= test();
                     print(a as string);
                 } 
                 fun test() -> i32{
@@ -212,19 +212,19 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns{
                     initial {
-                        val v : i32[] = test1();
-                        for (var i : i32 in v) {
+                        let v: i32[] = test1();
+                        for (let i : i32 in v) {
                             print(i as string);
                         }
                     } 
                     class _lambda {
-                        fun call(var this: Self) -> i32 {
+                        fun call(this: Self) -> i32 {
                             __yield_not_finished_return 1;
                             __yield_not_finished_return 2;
                         }
                     }
                     fun test1() -> i32[] {
-                        var owner: _lambda = new _lambda();
+                        let owner: _lambda = new _lambda();
                         return new _DefaultRoutine<i32>(owner.call, true) as i32[];
                     }
                 }
@@ -241,15 +241,15 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : IGenerator<i64> = test();
-                    for (var i : i64 in v) {
+                    let v: IGenerator<i64> = test();
+                    for (let i : i64 in v) {
                         print(i as string);
                     }
                 } 
                 fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
-                    for (var i : i64 in range(0, 3)) 
+                    for (let i : i64 in range(0, 3)) 
                         yield i + 3;
                     yield 6;
                 }
@@ -266,8 +266,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : IGenerator<i64> = test();
-                    for (var i : i64 in v) {
+                    let v: IGenerator<i64> = test();
+                    for (let i : i64 in v) {
                         print(i as string);
                     }
                 } 
@@ -290,8 +290,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : IGenerator<i64> = test();
-                    for (var i : i64 in v) {
+                    let v: IGenerator<i64> = test();
+                    for (let i : i64 in v) {
                         print(i as string);
                     }
                 } 
@@ -313,8 +313,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v : IGenerator<i32> = test();
-                    for (var i : i32 in v) {
+                    let v: IGenerator<i32> = test();
+                    for (let i : i32 in v) {
                         print(i as string);
                     }
                 } 
@@ -334,7 +334,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                   for (var i : void in test()) {} 
+                   for (let i : void in test()) {} 
                 } 
                 fun test() -> IGenerator<void> {
                     print(""1"");
@@ -356,7 +356,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : Option<i32> = (test()).next();
+                    let a : Option<i32> = (test()).next();
                     print(a.some as string);
                 } 
                 fun test() -> IGenerator<i32> {
@@ -394,7 +394,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    for (var i : i32 in test()) {
+                    for (let i : i32 in test()) {
                         print(i as string);
                     } 
                 } 
@@ -435,11 +435,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : IFuture<i32> = async test();
-                    var poll1 : FutureState<i32> = a.poll();
+                    let a : IFuture<i32> = async test();
+                    let poll1 : FutureState<i32> = a.poll();
                     println(poll1 as string);
                     wait;
-                    var poll2 : FutureState<i32> = a.poll();
+                    let poll2 : FutureState<i32> = a.poll();
                     println(poll2 as string);
                 } 
                 fun test() -> i32 {
@@ -458,7 +458,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : IFuture<i32> = async test();
+                    let a : IFuture<i32> = async test();
                     println(""before"");
                     wait a;
                     println(""after"");
@@ -481,11 +481,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : IFuture<i32> = async test(1);
-                    val b : i32 = wait a;
+                    let a : IFuture<i32> = async test(1);
+                    let b : i32 = wait a;
                     print(b as string);
                 } 
-                fun test(val a : i32) -> i32 {
+                fun test(a : i32) -> i32 {
                     wait;
                     return a+1;
                 }
@@ -502,7 +502,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : IFuture<i32> = async test();
+                    let a : IFuture<i32> = async test();
                     println(""before"");
                     wait a;
                     println(""after"");
@@ -524,7 +524,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : i32 = wait test();
+                    let a : i32 = wait test();
                     println(a as string);
                 } 
                 fun test() -> i32 {
@@ -544,7 +544,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var t : async_fun<i32> = test;
+                    let t : async_fun<i32> = test;
                     println(""before"");
                     wait t();
                     println(""after"");

@@ -8,3 +8,4 @@ MagellanicPenguin/vscode/out/*
 report.txt
 *.log
 Documentation/BasicIntroductionSlide/BasicIntroduction
+.aider*

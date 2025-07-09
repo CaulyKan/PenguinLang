@@ -13,7 +13,7 @@ namespace BabyPenguin.SemanticInterface
     {
         public VTable(SemanticModel model, IVTableContainer implementingClass, IInterface interfaceType) : base(model)
         {
-            Name = "vtable-" + interfaceType.FullName.Replace(".", "-");
+            Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
             Interface = interfaceType;
         }
@@ -23,7 +23,7 @@ namespace BabyPenguin.SemanticInterface
             var type = Model.ResolveType(syntaxNode.InterfaceType!.Text, s => s.IsInterfaceType, implementingClass);
             if (type is not IInterface interfaceType)
                 throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}");
-            Name = "vtable-" + interfaceType.FullName.Replace(".", "-");
+            Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
             Interface = interfaceType;
         }
@@ -46,7 +46,7 @@ namespace BabyPenguin.SemanticInterface
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public string FullName => Parent!.FullName + "." + Name;
+        public string FullName() => Parent!.FullName() + "." + Name;
 
         public bool IsMerged { get; set; } = false;
 

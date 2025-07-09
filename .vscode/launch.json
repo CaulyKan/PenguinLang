@@ -8,7 +8,7 @@
             "type": "antlr-debug",
             "request": "launch",
             "name": "antlr-hello_world",
-            "input": "${workspaceFolder}/Examples/test.penguin",
+            "input": "${workspaceFolder}/BabyPenguin/Builtin.penguin",
             "grammar": "${workspaceFolder}/PenguinLangSyntax/PenguinLang.g4",
             "startRule": "compilationUnit",
             "visualParseTree": true

@@ -32,7 +32,7 @@ namespace BabyPenguin.SemanticPass
             // init global variables
             foreach (var mergedNamespace in Model.Namespaces)
             {
-                var constructor = Model.ResolveSymbol(mergedNamespace.FullName + ".new") ?? throw new BabyPenguinException($"symbol '{mergedNamespace.FullName + ".new"}' is not found.");
+                var constructor = Model.ResolveSymbol(mergedNamespace.FullName() + ".new") ?? throw new BabyPenguinException($"symbol '{mergedNamespace.FullName() + ".new"}' is not found.");
                 mainFunc.Instructions.Add(new FunctionCallInstruction(constructor.SourceLocation, constructor, [], null));
             }
 

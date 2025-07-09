@@ -9,7 +9,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 fun x() { print(""hello""); }
                 initial {
-                    val y : fun<void> = x;
+                    let y : fun<void> = x;
                     y();
                 }
             ");
@@ -27,7 +27,7 @@ namespace BabyPenguin.Tests
                 fun x() -> i32 { 
                 }
                 initial {
-                    val y : fun<void> = x;
+                    let y : fun<void> = x;
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -43,8 +43,8 @@ namespace BabyPenguin.Tests
                     return 1;
                 }
                 initial {
-                    val y : async_fun<i32> = x;
-                    val z : i32 = y();
+                    let y : async_fun<i32> = x;
+                    let z : i32 = y();
                     print(z as string);
                 }
             ");
@@ -62,14 +62,14 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                     namespace ns {
                         class Temp {
-                            var a : i32 = 1;
-                            fun call(var this: Self, val b : i32) -> i32 {
+                            a : i32 = 1;
+                            fun call(this: Self, b : i32) -> i32 {
                                 return this.a + b;
                             }
                         }
                         initial {
-                            var x : Temp = new Temp();
-                            var func : fun<i32, i32> = x.call;
+                            let x : Temp = new Temp();
+                            let func : fun<i32, i32> = x.call;
                             print(func(2) as string);
                         }
                     }
@@ -88,13 +88,13 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                     namespace ns {
                         class Temp {
-                            fun call(val b : i32) -> i32 {
+                            fun call(b : i32) -> i32 {
                                 return 1+b;
                             }
                         }
                         initial {
-                            var x : Temp = new Temp();
-                            var func : fun<i32, i32> = x.call;
+                            let x : Temp = new Temp();
+                            let func : fun<i32, i32> = x.call;
                             print(func(2) as string);
                         }
                     }
@@ -113,15 +113,15 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                     namespace ns {
                         class Temp {
-                            var a : i32 = 1;
-                            fun call(var this: Self) -> i32 {
+                            a : i32 = 1;
+                            fun call(this: Self) -> i32 {
                                 wait;
                                 return this.a;
                             }
                         }
                         initial {
-                            var x : Temp = new Temp();
-                            var func : async_fun<i32> = x.call;
+                            let x : Temp = new Temp();
+                            let func : async_fun<i32> = x.call;
                             print(func() as string);
                         }
                     }
@@ -140,12 +140,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                         namespace ns {
                             class Temp {
-                                fun call(var this: Self, val a : i32, val b : i32) -> i32 {
+                                fun call(this: Self, a : i32, b : i32) -> i32 {
                                     return a + b;
                                 }
                             }
                             initial {
-                                var x : Temp = new Temp();
+                                let x : Temp = new Temp();
                                 print(x.call(1,2) as string);
                             }
                         }
@@ -162,7 +162,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val x : fun<void> = fun { print(""hello""); };
+                    let x : fun<void> = fun { print(""hello""); };
                     x();
                 }
             ");
@@ -178,7 +178,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                         initial {
-                            val x : fun<i32, i32, i32> = fun (val a : i32, val b: i32) -> i32 { return a + b; };
+                            let x : fun<i32, i32, i32> = fun (a : i32, b: i32) -> i32 { return a + b; };
                             print(x(1, 2) as string);
                         }
                     ");
@@ -210,7 +210,7 @@ namespace BabyPenguin.Tests
         //             var compiler = new SemanticCompiler(new ErrorReporter(this));
         //             compiler.AddSource(@"
         //                 initial {
-        //                     fun x(val a: i32) => i32 { return a+1; };
+        //                     fun x(const a: i32) => i32 { return a+1; };
         //                     print(x(1) as string);
         //                 }
         //             ");
@@ -227,17 +227,17 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Temp {
-                        val a : i32;
-                        fun new(var this: Temp, val a : i32) {
+                        a : i32;
+                        fun new(this: mut Temp, a : i32) {
                             this.a = a;
                         }
-                        fun call(var this: Temp) -> i32 {
+                        fun call(this) -> i32 {
                             return this.a + 1;
                         }
                     }
                     initial {
-                        val a : i32 = 1;
-                        val x : fun<i32> = (new Temp(a)).call;
+                        let a : i32 = 1;
+                        let x : fun<i32> = (new Temp(a)).call;
                         print(x() as string);
                     }
                 }
@@ -254,8 +254,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : i32 = 1;
-                    val x : fun<i32> = fun -> i32 { return a + 1; };
+                    let a : i32 = 1;
+                    let x : fun<i32> = fun -> i32 { return a + 1; };
                     print(x() as string);
                 }
             ");
@@ -271,8 +271,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                         initial {
-                            var a : i32 = 1;
-                            val x : fun<i32> = fun -> i32 { a=a+1; return a; };
+                            let a : i32 = 1;
+                            let x : fun<i32> = fun -> i32 { a=a+1; return a; };
                             print(x() as string);
                             print(a as string);
                         }
@@ -289,8 +289,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                         initial {
-                            val a : Box<i32> = new Box<i32>(1);
-                            val x : fun<i32> = fun -> i32 { a.value = a.value + 1; return a.value; };
+                            let a : Box<i32> = new Box<i32>(1);
+                            let x : fun<i32> = fun -> i32 { a.value = a.value + 1; return a.value; };
                             print(x() as string);
                             print(a.value as string);
                         }

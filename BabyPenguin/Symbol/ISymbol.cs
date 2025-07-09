@@ -2,7 +2,7 @@ namespace BabyPenguin.Symbol
 {
     public interface ISymbol
     {
-        string FullName { get; }
+        string FullName();
 
         string Name { get; }
 
@@ -23,7 +23,6 @@ namespace BabyPenguin.Symbol
         bool IsTemp { get; }
         bool IsParameter { get; }
         int ParameterIndex { get; }
-        bool IsReadonly { get; }
         bool IsClassMember { get; }
         bool IsStatic { get; }
         bool IsEnum { get; }

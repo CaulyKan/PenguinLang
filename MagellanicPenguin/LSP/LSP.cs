@@ -171,7 +171,7 @@ namespace MagellanicPenguin
         {
             return new CompletionItem
             {
-                label = (fullName ? type.FullName : type.Name).Replace("__builtin.", ""),
+                label = (fullName ? type.FullName() : type.Name).Replace("__builtin.", ""),
                 kind = type switch
                 {
                     IClass => CompletionItemKind.Class,
@@ -188,7 +188,7 @@ namespace MagellanicPenguin
         {
             return new CompletionItem
             {
-                label = (fullName ? symbol.FullName : symbol.Name).Replace("__builtin.", ""),
+                label = (fullName ? symbol.FullName() : symbol.Name).Replace("__builtin.", ""),
                 kind = symbol switch
                 {
                     FunctionVariableSymbol => CompletionItemKind.Function,
@@ -299,7 +299,7 @@ namespace MagellanicPenguin
                     break;
             }
 
-            items.AddRange(model.Symbols.Where(i => !i.IsTemp && i.IsLocal && i.Parent.FullName == currentScope.FullName).Select(i => ConvertSymbolToCompletionItem(i, false)));
+            items.AddRange(model.Symbols.Where(i => !i.IsTemp && i.IsLocal && i.Parent.FullName() == currentScope.FullName()).Select(i => ConvertSymbolToCompletionItem(i, false)));
             items.AddRange(model.Symbols.Where(i => !i.IsTemp && i.IsStatic).Select(i => ConvertSymbolToCompletionItem(i, true)));
             items.AddRange(model.Types.Select(i => ConvertTypeToCompletionItem(i, true)).Distinct());
 

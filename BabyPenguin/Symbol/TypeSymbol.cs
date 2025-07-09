@@ -8,7 +8,7 @@ namespace BabyPenguin.Symbol
         SourceLocation sourceLocation,
         uint scopeDepth) : ISymbol
     {
-        public string FullName => Parent.FullName + "." + Name;
+        public string FullName() => Parent.FullName() + "." + Name;
         public string Name { get; } = name;
         public ISymbolContainer Parent { get; } = parent;
         public IType TypeInfo => new TypeReferenceType(TypeReference);
@@ -20,7 +20,7 @@ namespace BabyPenguin.Symbol
         public bool IsTemp { get; } = false;
         public bool IsParameter { get; } = false;
         public int ParameterIndex { get; } = -1;
-        public bool IsReadonly { get; set; } = false;
+        public bool IsConst => true;
         public bool IsClassMember { get; } = false;
         public bool IsStatic { get; } = true;
         public bool IsEnum => false;

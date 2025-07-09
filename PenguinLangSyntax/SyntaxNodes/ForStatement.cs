@@ -32,7 +32,7 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         public override string BuildText()
         {
-            return $"for ({Declaration!.BuildText()} in {Expression!.BuildText()}) {BodyStatement!.BuildText()}";
+            return $"for (let {Declaration!.BuildText()} in {Expression!.BuildText()}) {BodyStatement!.BuildText()}";
         }
     }
 }

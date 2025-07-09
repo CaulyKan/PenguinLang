@@ -39,9 +39,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 if (context.codeBlock() != null)
                     CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
 
-                if (context.declarationKeyword() != null)
-                    ReturnValueIsReadonly = context.declarationKeyword().GetText() == "val";
-
                 walker.PopScope();
             }
             else throw new NotImplementedException();
@@ -59,8 +56,6 @@ namespace PenguinLangSyntax.SyntaxNodes
 
         [ChildrenNode]
         public TypeSpecifier? ReturnType { get; set; }
-
-        public bool? ReturnValueIsReadonly { get; set; }
 
         [ChildrenNode]
         public CodeBlock? CodeBlock { get; set; }
@@ -106,11 +101,6 @@ namespace PenguinLangSyntax.SyntaxNodes
             {
                 parts.Add("->");
                 parts.Add(ReturnType.BuildText());
-            }
-
-            if (ReturnValueIsReadonly == true)
-            {
-                parts.Add("val");
             }
 
             if (CodeBlock != null)

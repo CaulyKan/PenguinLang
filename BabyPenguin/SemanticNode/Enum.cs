@@ -82,15 +82,17 @@ namespace BabyPenguin.SemanticNode
 
         public List<IType> GenericInstances { get; set; } = [];
 
-        public override bool Equals(object? obj) => (this as IEnum).FullName == (obj as IEnum)?.FullName;
+        public bool IsMutable => false;
 
-        public override int GetHashCode() => (this as IEnum).FullName.GetHashCode();
+        public override bool Equals(object? obj) => (this as IEnum).FullName() == (obj as IEnum)?.FullName();
 
-        public bool CanImplicitlyCastTo(IType other) => (this as ISemanticScope).FullName == other.FullName;
+        public override int GetHashCode() => (this as IEnum).FullName().GetHashCode();
+
+        public bool CanImplicitlyCastToWithoutMutability(IType other) => (this as ISemanticScope).FullName() == other.WithMutability(false).FullName();
 
         public List<VTable> VTables { get; } = [];
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
 
         public List<IOnRoutine> OnRoutines { get; } = [];
     }

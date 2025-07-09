@@ -3,7 +3,7 @@ namespace BabyPenguin.Symbol
 
     public class EnumSymbol(ISymbolContainer parent, string name, IType type, int value, SourceLocation sourceLocation) : ISymbol
     {
-        public string FullName => Parent.FullName + "." + Name;
+        public string FullName() => Parent.FullName() + "." + Name;
 
         public string Name { get; } = name;
 
@@ -25,7 +25,7 @@ namespace BabyPenguin.Symbol
 
         public int ParameterIndex { get; } = 0;
 
-        public bool IsReadonly { get; } = true;
+        public bool IsConst { get; } = true;
 
         public bool IsClassMember { get; } = false;
 

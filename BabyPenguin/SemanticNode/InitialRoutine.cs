@@ -28,7 +28,7 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
-        public string FullName => Parent!.FullName + "." + Name;
+        public string FullName() => Parent!.FullName() + "." + Name;
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 
@@ -42,6 +42,6 @@ namespace BabyPenguin.SemanticNode
 
         public FunctionSymbol? FunctionSymbol { get; set; }
 
-        public override string ToString() => (this as ISemanticScope).FullName;
+        public override string ToString() => (this as ISemanticScope).FullName();
     }
 }

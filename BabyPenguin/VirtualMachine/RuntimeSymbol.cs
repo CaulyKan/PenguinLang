@@ -22,9 +22,9 @@ namespace BabyPenguin.VirtualMachine
 
         T As<T>() where T : class, IRuntimeSymbol => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
 
-        string? ValueToString => TypeInfo.FullName;
+        string? ValueToString => TypeInfo.FullName();
 
-        string ToDebugString() => $"[ {ConsoleColor.YELLOW}{Symbol?.FullName}{ConsoleColor.CYAN}({TypeInfo})={ValueToString}{ConsoleColor.NORMAL} ]";
+        string ToDebugString() => $"[ {ConsoleColor.YELLOW}{Symbol?.FullName()}{ConsoleColor.CYAN}({TypeInfo})={ValueToString}{ConsoleColor.NORMAL} ]";
 
         static IRuntimeSymbol FromSymbol(SemanticModel model, ISymbol symbol)
         {
@@ -44,7 +44,9 @@ namespace BabyPenguin.VirtualMachine
             {
                 var result = new ClassRuntimeSymbol(model, symbol);
                 var fields = result.ReferenceValue.Fields;
-                foreach (var vtable in (symbol.TypeInfo as IClass)!.VTables)
+                var cls = (symbol.TypeInfo is MutableTypeProxy t ? t.TypeInfo : symbol.TypeInfo) as IClass
+                    ?? throw new BabyPenguinRuntimeException($"Cannot create class {symbol.TypeInfo.FullName()} because it is not a class");
+                foreach (var vtable in cls.VTables)
                 {
                     var intf = vtable.Interface;
                     foreach (var s in intf.Symbols.Where(i => i.IsVariable))
@@ -96,12 +98,12 @@ namespace BabyPenguin.VirtualMachine
             if (other is BasicRuntimeSymbol otherVar)
             {
                 if (!other.TypeInfo.CanImplicitlyCastTo(TypeInfo))
-                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
                 BasicValue.AssignFrom(otherVar.BasicValue);
             }
             else
             {
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
             }
         }
 
@@ -110,12 +112,12 @@ namespace BabyPenguin.VirtualMachine
             if (other is BasicRuntimeValue otherVar)
             {
                 if (!other.TypeInfo.CanImplicitlyCastTo(TypeInfo))
-                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
                 BasicValue.AssignFrom(otherVar);
             }
             else
             {
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
             }
         }
 
@@ -146,12 +148,12 @@ namespace BabyPenguin.VirtualMachine
 
         public IType TypeInfo => Symbol.TypeInfo;
 
-        public string? ValueToString => "fun(" + (FunctionValue?.FunctionSymbol?.FullName ?? "not initialized") + ")";
+        public string? ValueToString => "fun(" + (FunctionValue?.FunctionSymbol?.FullName() ?? "not initialized") + ")";
 
         public void AssignFrom(IRuntimeSymbol other)
         {
-            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not FunctionRuntimeSymbol funVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+            if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not FunctionRuntimeSymbol funVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             FunctionValue = funVar.FunctionValue;
         }
@@ -159,7 +161,7 @@ namespace BabyPenguin.VirtualMachine
         public void AssignFrom(IRuntimeValue other)
         {
             if (other is not FunctionRuntimeValue funVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             FunctionValue = funVar;
         }
@@ -181,7 +183,9 @@ namespace BabyPenguin.VirtualMachine
         {
             Model = model;
             Symbol = symbol;
-            var symbols = (TypeInfo as ISymbolContainer)!.Symbols;
+            var symbolContainer = (TypeInfo is MutableTypeProxy t ? t.TypeInfo : TypeInfo) as ISymbolContainer
+                ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
+            var symbols = symbolContainer.Symbols;
             var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
             ReferenceValue = new ReferenceRuntimeValue(TypeInfo, fields);
         }
@@ -200,18 +204,34 @@ namespace BabyPenguin.VirtualMachine
 
         public void AssignFrom(IRuntimeSymbol other)
         {
-            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not ClassRuntimeSymbol clsVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+            if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not ClassRuntimeSymbol clsVar)
+            {
+                if (other.TypeInfo.WithMutability(false).FullName() == TypeInfo.WithMutability(false).FullName())
+                {
+                    // TODO: temp disable runtime mutability check
+                    // throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
+                }
+                else
+                    throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
+            }
 
-            ReferenceValue = clsVar.ReferenceValue;
+            ReferenceValue = (other as ClassRuntimeSymbol)!.ReferenceValue;
         }
 
         public void AssignFrom(IRuntimeValue other)
         {
-            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not ReferenceRuntimeValue clsVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+            if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not ReferenceRuntimeValue clsVar)
+            {
+                if (other.TypeInfo.WithMutability(false).FullName() == TypeInfo.WithMutability(false).FullName())
+                {
+                    // TODO: temp disable runtime mutability check
+                    // throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
+                }
+                else
+                    throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
+            }
 
-            ReferenceValue = clsVar;
+            ReferenceValue = (other as ReferenceRuntimeValue)!;
         }
 
         public override string ToString() => (this as IRuntimeSymbol).ToDebugString();
@@ -241,17 +261,17 @@ namespace BabyPenguin.VirtualMachine
         public void AssignFrom(IRuntimeSymbol other)
         {
             if (other is not InterfaceRuntimeSymbol intfVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             if (intfVar.Value is null)
-                throw new BabyPenguinRuntimeException($"Cannot assign null to interface {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign null to interface {TypeInfo.FullName()}");
 
-            if (intfVar.Value.TypeInfo is not IClass cls)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not a class");
+            if (intfVar.Value.TypeInfo.WithMutability(false) is not IClass cls)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.FullName()} because it is not a class");
 
-            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == TypeInfo.FullName);
+            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.WithMutability(false).FullName());
             if (vtable == null)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not implementing the interface");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.WithMutability(false).FullName()} because it is not implementing the interface");
 
             Value = intfVar.Value;     // using reference
             VTable = vtable;
@@ -260,14 +280,14 @@ namespace BabyPenguin.VirtualMachine
         public void AssignFrom(IRuntimeValue other)
         {
             if (other is not ReferenceRuntimeValue refVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
-            if (refVar.TypeInfo is not IClass cls)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not a class");
+            if (refVar.TypeInfo.WithMutability(false) is not IClass cls)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.FullName()} because it is not a class");
 
-            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName == TypeInfo.FullName);
+            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.WithMutability(false).FullName());
             if (vtable == null)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName} behind {other.TypeInfo.FullName} to interface {TypeInfo.FullName} because it is not implementing the interface");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.WithMutability(false).FullName()} because it is not implementing the interface");
 
             Value = refVar;
             VTable = vtable;
@@ -305,15 +325,17 @@ namespace BabyPenguin.VirtualMachine
             Model = model;
             Symbol = symbol;
 
-            var symbols = (TypeInfo as ISymbolContainer)!.Symbols;
+            var symbolContainer = (TypeInfo is MutableTypeProxy t ? t.TypeInfo : TypeInfo) as ISymbolContainer
+                ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
+            var symbols = symbolContainer.Symbols;
             var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
             EnumValue = new EnumRuntimeValue(TypeInfo, new ReferenceRuntimeValue(TypeInfo, fields), null);
         }
 
         public void AssignFrom(IRuntimeSymbol other)
         {
-            if (other.TypeInfo.FullName != TypeInfo.FullName || other is not EnumRuntimeSymbol enumVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+            if (other.TypeInfo.WithMutability(false).FullName() != TypeInfo.WithMutability(false).FullName() || other is not EnumRuntimeSymbol enumVar)
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             EnumValue.AssignFrom(enumVar.EnumValue);
         }
@@ -321,7 +343,7 @@ namespace BabyPenguin.VirtualMachine
         public void AssignFrom(IRuntimeValue other)
         {
             if (other is not EnumRuntimeValue enumVar)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName} to type {TypeInfo.FullName}");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             EnumValue.AssignFrom(enumVar);
         }

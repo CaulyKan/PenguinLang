@@ -38,16 +38,16 @@ namespace BabyPenguin.Tests
                 event test_event : i32;
 
                 initial {
-                    var a : i32 = wait test_event;
+                    let a : i32 = wait test_event;
                     print(a as string);
-                    a = wait test_event;
-                    print(a as string);
-                    a = wait test_event;
-                    print(a as string);
+                    let b : i32 = wait test_event;
+                    print(b as string);
+                    let c : i32 = wait test_event;
+                    print(c as string);
                 }
                 
                 initial {
-                    for (var i : i64 in range(0, 3)) {
+                    for (let i : i64 in range(0, 3)) {
                         emit test_event(i as i32);
                         wait;
                     }
@@ -67,12 +67,12 @@ namespace BabyPenguin.Tests
                 event test_event : i32;
 
                 initial {
-                    var a : i32 = wait test_event;
+                    let a : i32 = wait test_event;
                     print(a as string);
-                    a = wait test_event;
-                    print(a as string);
-                    a = wait test_event;
-                    print(a as string);
+                    let b : i32 = wait test_event;
+                    print(b as string);
+                    let c : i32 = wait test_event;
+                    print(c as string);
                 }
                 
                 initial {
@@ -94,12 +94,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 event test_event : i32;
 
-                var eq : _QueuedEventReceiver<i32> = new _QueuedEventReceiver<i32>(test_event);
+                let eq : mut _QueuedEventReceiver<i32> = new _QueuedEventReceiver<i32>(test_event);
                 initial {
                     while (true) {
-                        val a : Option<i32> = eq.do_wait_any();
+                        let a : Option<i32> = eq.do_wait_any();
                         if (a.is_some()) {
-                            val b : i32 = a.some;
+                            let b : i32 = a.some;
                             print(b as string);
                             if (b == 2) exit(0);
                         }
@@ -107,7 +107,7 @@ namespace BabyPenguin.Tests
                 }
                 
                 initial {
-                    for (var i : i64 in range(0, 3)) {
+                    for (let i : i64 in range(0, 3)) {
                         emit test_event(i as i32);
                     }
                 }
@@ -125,14 +125,14 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 event test_event : i32;
 
-                var eq : _AsyncEventReceiver<i32> = new _AsyncEventReceiver<i32>(test_event, on_test_event);
-                fun on_test_event(val b : i32) {
+                let eq : _AsyncEventReceiver<i32> = new _AsyncEventReceiver<i32>(test_event, on_test_event);
+                fun on_test_event(b : i32) {
                     print(b as string);
                     if (b == 2) exit(0);
                 }
                 
                 initial {
-                    for (var i : i64 in range(0, 3)) {
+                    for (let i : i64 in range(0, 3)) {
                         emit test_event(i as i32);
                     }
                 }
@@ -150,13 +150,13 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 event test_event : i32;
 
-                on test_event (val b: i32) {
+                on test_event (b: i32) {
                     print(b as string);
                     if (b == 2) exit(0);
                 }
                 
                 initial {
-                    for (var i : i64 in range(0, 3)) {
+                    for (let i : i64 in range(0, 3)) {
                         emit test_event(i as i32);
                     }
                 }
@@ -175,19 +175,19 @@ namespace BabyPenguin.Tests
                 class Foo {
                     event test_event : i32;
 
-                    on this.test_event (val b: i32) {
+                    on this.test_event (b: i32) {
                         print(b as string);
                     }
                     
-                    fun foo(var this: Foo) {
+                    fun foo(this: Foo) {
                         emit this.test_event(1 as i32);
                         emit this.test_event(2 as i32);
                     }
                 }
 
-                var f : Foo = new Foo();
+                let f : Foo = new Foo();
 
-                on f.test_event (val b: i32) {
+                on f.test_event (b: i32) {
                     print(b as string);
                 }
 

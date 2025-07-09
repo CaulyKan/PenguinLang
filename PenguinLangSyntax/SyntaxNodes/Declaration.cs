@@ -18,7 +18,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 {
                     throw new NotImplementedException("Type infer is not supported yet");
                 }
-                IsReadonly = context.declarationKeyword().GetText() == "val";
 
                 if (context.expression() != null)
                     InitializeExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
@@ -34,7 +33,6 @@ namespace PenguinLangSyntax.SyntaxNodes
                 {
                     throw new NotImplementedException("Type infer is not supported yet");
                 }
-                IsReadonly = context2.declarationKeyword().GetText() == "val";
             }
             else throw new NotImplementedException();
         }
@@ -55,14 +53,11 @@ namespace PenguinLangSyntax.SyntaxNodes
         [ChildrenNode]
         public ISyntaxExpression? InitializeExpression { get; set; }
 
-        public bool IsReadonly;
-
         public string Name => Identifier!.Name;
 
         public override string BuildText()
         {
             var parts = new List<string>();
-            parts.Add(IsReadonly ? "val" : "var");
             parts.Add(Identifier!.BuildText());
             parts.Add(":");
             parts.Add(TypeSpecifier!.BuildText());

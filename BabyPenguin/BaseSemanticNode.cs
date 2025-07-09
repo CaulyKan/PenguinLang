@@ -5,7 +5,7 @@ namespace BabyPenguin
     {
         string Name { get; }
 
-        string FullName { get; }
+        string FullName();
 
         SemanticModel Model { get; }
 

@@ -76,7 +76,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
+                    let i : u8 = 0;
                     while (i < 3) {
                         print(i as string);
                         i += 1;
@@ -95,8 +95,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
-                    var j : u8 = 0;
+                    let i : u8 = 0;
+                    let j : u8 = 0;
                     while (i < 2) 
                         while (i < 2) {
                             j = 0;
@@ -120,7 +120,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
+                    let i : u8 = 0;
                     while (i < 3) {
                         print(i as string);
                         if (i == 1) break;
@@ -140,7 +140,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
+                    let i : u8 = 0;
                     while (i < 3) {
                         i += 1;
                         if (i == 2) continue;
@@ -160,8 +160,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
-                    var j : u8 = 0;
+                    let i : u8 = 0;
+                    let j : u8 = 0;
                     while (i < 3) {
                         i += 1;
                         j = 0;
@@ -187,7 +187,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var i : u8 = 0;
+                    let i : u8 = 0;
                     while (true) {
                         if (i == 3) break;
                         i+=1;
@@ -210,7 +210,7 @@ namespace BabyPenguin.Tests
                     add(1,2);
                 } 
 
-                fun add(val a : u8, val b : u8) {
+                fun add(a : u8, b : u8) {
                     print((a + b) as string);
                 }
             ");
@@ -226,11 +226,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val res : u8 = add(1,2);
+                    let res : u8 = add(1,2);
                     print(res as string);
                 } 
 
-                fun add(val a : u8, val b : u8) -> u8 {
+                fun add(a : u8, b : u8) -> u8 {
                     return a + b;
                 }
             ");
@@ -247,11 +247,11 @@ namespace BabyPenguin.Tests
         //     var compiler = new SemanticCompiler(new ErrorReporter(this));
         //     compiler.AddSource(@"
         //         initial {
-        //             val res : u8 = add(1,2);
+        //             let res : u8 = add(1,2);
         //             print(res as string);
         //         } 
 
-        //         fun add(val a : u8, val b : u8) -> u8 {
+        //         fun add(a : u8, b : u8) -> u8 {
         //             if (false) {
         //                 return 0;
         //             } else 
@@ -269,11 +269,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val res : u32 = fib(10);
+                    let res : u32 = fib(10);
                     print(res as string);
                 } 
 
-                fun fib(val n: u32) -> u32 {
+                fun fib(n: u32) -> u32 {
                     if (n == 0) {
                         return 0;
                     } else if (n == 1) {
@@ -295,11 +295,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val res : u8 = add(1);
+                    let res : u8 = add(1);
                     print(res as string);
                 } 
 
-                fun add(val a : u8, val b : u8) -> u8 {
+                fun add(a : u8, b : u8) -> u8 {
                     return a + b;
                 }
             ");
@@ -312,11 +312,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val res : u8 = add(1,2,3);
+                    let res : u8 = add(1,2,3);
                     print(res as string);
                 } 
 
-                fun add(val a : u8, val b : u8) -> u8 {
+                fun add(a : u8, b : u8) -> u8 {
                     return a + b;
                 }
             ");
@@ -329,11 +329,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val res : u8 = add(1, 2 as string);
+                    let res : u8 = add(1, 2 as string);
                     print(res as string);
                 } 
 
-                fun add(val a : u8, val b : u8) -> u8 {
+                fun add(a : u8, b : u8) -> u8 {
                     return a + b;
                 }
             ");
@@ -346,7 +346,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    for (var i : i64 in range(0, 3)) 
+                    for (let i : i64 in range(0, 3)) 
                         print(i as string);
                 } 
             ");
@@ -362,7 +362,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    for (var i : i64 in range(0, 10)) {
+                    for (let i : i64 in range(0, 10)) {
                         if (i == 3) break;
                         print(i as string); 
                     }
@@ -380,7 +380,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    for (var i : i64 in range(0, 10)) { 
+                    for (let i : i64 in range(0, 10)) { 
                         if (i % 2 == 0) continue;
                         print(i as string);
                     }
@@ -398,8 +398,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    for (var i : i64 in range(0, 3))  
-                        for (var j : i64 in range(0, 3)) 
+                    for (let i : i64 in range(0, 3))  
+                        for (let j : i64 in range(0, 3)) 
                             print(j as string);
                 } 
             ");

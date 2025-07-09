@@ -10,10 +10,9 @@ namespace BabyPenguin.Symbol
         string originName,
         bool isTemp,
         int? paramIndex,
-        bool isReadonly,
         bool isClassMember) : ISymbol
     {
-        public string FullName => Parent.FullName + "." + Name;
+        public string FullName() => Parent.FullName() + "." + Name;
         public string Name { get; } = name;
         public ISymbolContainer Parent { get; } = parent;
         public IType TypeInfo { get; } = type;
@@ -24,7 +23,7 @@ namespace BabyPenguin.Symbol
         public bool IsTemp { get; } = isTemp;
         public bool IsParameter { get; } = paramIndex.HasValue && paramIndex >= 0;
         public int ParameterIndex { get; } = paramIndex ?? -1;
-        public bool IsReadonly { get; set; } = isReadonly;
+        public bool IsConst => TypeInfo.IsMutable;
         public bool IsClassMember { get; } = isClassMember;
         public bool IsStatic { get; } = !isClassMember && !isLocal;
         public bool IsEnum => false;

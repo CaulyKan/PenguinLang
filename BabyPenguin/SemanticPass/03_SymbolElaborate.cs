@@ -79,10 +79,10 @@ namespace BabyPenguin.SemanticPass
                 var typeName = evt.EventType?.TypeName ?? "void";
                 var type = Model.ResolveType(typeName, scope: container)
                     ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation);
-                var eventType = Model.ResolveType($"__builtin.Event<{type.FullName}>")
-                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName}>");
+                var eventType = Model.ResolveType($"__builtin.Event<{type.FullName()}>")
+                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName()}>");
 
-                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, false, container is not INamespace));
+                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, container is not INamespace));
             }
 
             switch (obj)
@@ -94,7 +94,7 @@ namespace BabyPenguin.SemanticPass
                             foreach (var decl in syntaxNode.Declarations)
                             {
                                 var typeName = decl.TypeSpecifier!.Name; // TODO: type inference
-                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, decl.IsReadonly, false);
+                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, false);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -115,7 +115,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var member in syntaxNode.Declarations)
                             {
-                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, member.IsReadonly, true);
+                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -137,7 +137,7 @@ namespace BabyPenguin.SemanticPass
                             foreach (var member in syntaxNode.Declarations)
                             {
                                 intf.HasDeclartion = true;
-                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, member.IsReadonly, true);
+                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -155,7 +155,7 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, false, true) as VariableSymbol;
+                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, true) as VariableSymbol;
 
                         if (enm.SyntaxNode is EnumDefinition syntax)
                         {
@@ -224,8 +224,8 @@ namespace BabyPenguin.SemanticPass
                                 onRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
 
                                 onRoutine.EventReceiverSymbol = (onRoutine.Parent as ISymbolContainer)!.AddVariableSymbol($"__{onRoutine.Name}_receiver", false,
-                                    $"__builtin._AsyncEventReceiver<{eventType.FullName}>", syntaxNode.Parameter!.SourceLocation,
-                                    syntaxNode.Parameter.ScopeDepth, null, false, parent is not INamespace);
+                                    $"__builtin._AsyncEventReceiver<{eventType.FullName()}>", syntaxNode.Parameter!.SourceLocation,
+                                    syntaxNode.Parameter.ScopeDepth, null, parent is not INamespace);
                             }
                         }
                     }
@@ -270,8 +270,8 @@ namespace BabyPenguin.SemanticPass
                                         }
                                         else
                                         {
-                                            func.Parameters.Add(new FunctionParameter(param.Name, paramType, param.IsReadonly, i));
-                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.ScopeDepth, i, param.IsReadonly, false);
+                                            func.Parameters.Add(new FunctionParameter(param.Name, paramType, i));
+                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.ScopeDepth, i, false);
                                         }
                                     }
 
@@ -293,7 +293,7 @@ namespace BabyPenguin.SemanticPass
                                 for (int i = 0; i < func.Parameters.Count; i++)
                                 {
                                     var param = func.Parameters[i];
-                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, param.IsReadonly, false);
+                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, false);
                                 }
 
                                 func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, func.SourceLocation, 0, null, true, false, func.IsStatic!.Value) as FunctionSymbol;
@@ -313,7 +313,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
-                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName}' is skipped now because it is inside a generic type");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName()}' is skipped now because it is inside a generic type");
                 }
                 else
                 {
@@ -324,13 +324,13 @@ namespace BabyPenguin.SemanticPass
                             if (item.Type == CodeBlockItem.CodeBlockItemType.Declaration)
                             {
                                 var typeName = item.Declaration!.TypeSpecifier!.Name; // TODO: type inference
-                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, item.Declaration.IsReadonly, false);
+                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, false);
                             }
                         }
                         else if (node is ForStatement forStatement)
                         {
                             var typeName = forStatement.Declaration!.TypeSpecifier!.Name;
-                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.ScopeDepth, null, forStatement.Declaration.IsReadonly, false);
+                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.ScopeDepth, null, false);
                         }
                         return true;
                     });
@@ -343,7 +343,7 @@ namespace BabyPenguin.SemanticPass
             get
             {
                 var table = new ConsoleTable("Name", "Type", "IsLocal", "Source");
-                _ = Model.Symbols.Select(s => table.AddRow(s.FullName, s.TypeInfo, s.IsLocal, s.SourceLocation)).ToList();
+                _ = Model.Symbols.Select(s => table.AddRow(s.FullName(), s.TypeInfo, s.IsLocal, s.SourceLocation)).ToList();
                 return table.ToMarkDownString();
             }
         }

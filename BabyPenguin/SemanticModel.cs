@@ -127,7 +127,7 @@ namespace BabyPenguin
             if (scope == null)
             {
                 symbol = Symbols.OrderByDescending(s => s.ScopeDepth)
-                   .FirstOrDefault(s => s.FullName == name && s.ScopeDepth <= scopeDepth && predicate_(s));
+                   .FirstOrDefault(s => s.FullName() == name && s.ScopeDepth <= scopeDepth && predicate_(s));
             }
             else
             {
@@ -162,19 +162,25 @@ namespace BabyPenguin
         public IType? ResolveType(string name, Predicate<IType>? predicate = null, ISemanticScope? scope = null)
         {
             var nameComponents = NameComponents.ParseName(name);
+            var nameWithoutMut = nameComponents.IsMutable ? name[4..] : name;
             var predicate_ = predicate ?? (t => true);
 
             // check if is a built-in type
-            if (BasicType.BasicTypes.TryGetValue(name, out BasicType? value))
-                return value;
+            if (BasicType.BasicTypes.TryGetValue(nameWithoutMut, out BasicType? value))
+                return (value as IType).WithMutability(nameComponents.IsMutable);
 
             // check if is 'Self'
-            if (name == "Self")
+            if (name == "Self" || name == "mut Self")
             {
                 if (scope is null)
                     throw new BabyPenguinException("Self is not allowed here.", SourceLocation.Empty());
                 if (scope is IType typ)
-                    return typ;
+                {
+                    if (name == "Self")
+                        return typ.WithMutability(false);
+                    else
+                        return typ.WithMutability(true);
+                }
                 else
                     return ResolveType(name, predicate, scope.Parent);
             }
@@ -186,19 +192,19 @@ namespace BabyPenguin
                 if (genericArgumentsFromName.Any(a => a == null))
                     return null;
                 var funType = nameComponents.NameWithPrefix == "async_fun" ? BasicType.AsyncFun : BasicType.Fun;
-                return funType.Specialize(genericArgumentsFromName!);
+                return funType.Specialize(genericArgumentsFromName!).WithMutability(nameComponents.IsMutable);
             }
 
             // check if is a generic definition
             if (scope != null && nameComponents.Prefix.Count == 0 && nameComponents.Generics.Count == 0)
             {
                 var genericAncestor = scope.FindAncestorIncludingSelf(s => s is IType genericable && genericable.IsGeneric &&
-                    genericable.IsSpecialized && genericable.GenericDefinitions.Contains(name)) as IType;
+                    genericable.IsSpecialized && genericable.GenericDefinitions.Contains(nameWithoutMut)) as IType;
                 if (genericAncestor != null)
                 {
-                    var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(name)];
+                    var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(nameWithoutMut)];
                     if (predicate_(genericArgument))
-                        return genericArgument;
+                        return genericArgument.WithMutability(nameComponents.IsMutable);
                 }
             }
 
@@ -253,7 +259,7 @@ namespace BabyPenguin
             {
                 if (nameComponents.Generics.All(i => i == "?"))
                 {
-                    return typeCandidate;
+                    return typeCandidate.WithMutability(nameComponents.IsMutable);
                 }
                 else
                 {
@@ -271,7 +277,7 @@ namespace BabyPenguin
 
                     genericTypeInfo ??= typeCandidate.Specialize(genericArgumentsFromName.Select(i => i!).ToList());
 
-                    return genericTypeInfo;
+                    return genericTypeInfo.WithMutability(nameComponents.IsMutable);
                 }
             }
             else if (typeCandidate.IsGeneric && nameComponents.Generics.Count == 0)
@@ -280,7 +286,7 @@ namespace BabyPenguin
             }
             else
             {
-                return typeCandidate;
+                return typeCandidate.WithMutability(nameComponents.IsMutable);
             }
         }
 
@@ -342,7 +348,7 @@ namespace BabyPenguin
                 foreach (var obj in FindAll(o => o is ICodeContainer))
                 {
                     sb.WriteLine("==============================================");
-                    sb.WriteLine($"{obj.FullName}");
+                    sb.WriteLine($"{obj.FullName()}");
                     sb.WriteLine("==============================================");
                     if (obj.SyntaxNode == null)
                         sb.WriteLine("No AST available.");

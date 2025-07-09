@@ -1,7 +1,7 @@
 namespace BabyPenguin.Symbol
 {
 
-    public record FunctionParameter(string Name, IType Type, bool IsReadonly, int Index);
+    public record FunctionParameter(string Name, IType Type, int Index);
 
     public class FunctionSymbol : ISymbol
     {
@@ -16,7 +16,6 @@ namespace BabyPenguin.Symbol
             string originName,
             bool isTemp,
             int? paramIndex,
-            bool isReadonly,
             bool isClassMember,
             bool isStatic,
             bool isExtern,
@@ -33,7 +32,6 @@ namespace BabyPenguin.Symbol
             IsParameter = paramIndex.HasValue && paramIndex >= 0;
             ParameterIndex = paramIndex ?? -1;
             IsTemp = isTemp;
-            IsReadonly = isReadonly;
             CodeContainer = codeContainer;
             IsStatic = isStatic;
             IsClassMember = isClassMember;
@@ -47,7 +45,7 @@ namespace BabyPenguin.Symbol
             TypeInfo = typeInfo;
         }
 
-        public string FullName => Parent.FullName + "." + Name;
+        public string FullName() => Parent.FullName() + "." + Name;
         public string Name { get; }
         public ISymbolContainer Parent { get; }
         public IType ReturnTypeInfo { get; }
@@ -60,7 +58,7 @@ namespace BabyPenguin.Symbol
         public bool IsTemp { get; }
         public bool IsParameter { get; }
         public int ParameterIndex { get; }
-        public bool IsReadonly { get; set; }
+        public bool IsConst => TypeInfo.IsMutable;
         public ICodeContainer CodeContainer { get; }
         public bool IsClassMember { get; }
         public bool IsStatic { get; }
@@ -92,7 +90,6 @@ namespace BabyPenguin.Symbol
             string originName,
             bool isTemp,
             int? paramIndex,
-            bool isReadonly,
             bool isClassMember,
             bool isAsync)
         {
@@ -107,7 +104,6 @@ namespace BabyPenguin.Symbol
             IsParameter = paramIndex.HasValue && paramIndex >= 0;
             ParameterIndex = paramIndex ?? -1;
             IsTemp = isTemp;
-            IsReadonly = isReadonly;
             IsClassMember = isClassMember;
             IsAsync = isAsync;
 
@@ -119,7 +115,7 @@ namespace BabyPenguin.Symbol
             TypeInfo = typeInfo;
         }
 
-        public string FullName => Parent.FullName + "." + Name;
+        public string FullName() => Parent.FullName() + "." + Name;
         public string Name { get; }
         public ISymbolContainer Parent { get; }
         public IType ReturnTypeInfo { get; }
@@ -132,7 +128,7 @@ namespace BabyPenguin.Symbol
         public bool IsTemp { get; }
         public bool IsParameter { get; }
         public int ParameterIndex { get; }
-        public bool IsReadonly { get; set; }
+        public bool IsConst => TypeInfo.IsMutable;
         public bool IsClassMember { get; }
         public bool IsEnum => false;
         public bool IsFunction => true;

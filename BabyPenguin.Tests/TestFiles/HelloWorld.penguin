@@ -1,13 +1,13 @@
-val world : string = "Wor"+"ld";
+let world : string = "Wor"+"ld";
 initial {
-  var world1 : string = "";
+  let world1 : string = "";
   {
-    var world1 : string = world + "!";
+    let world1 : string = world + "!";
     hello(world1);
   }
 }
 
-fun hello(val name : string) -> void {
+fun hello(name : string) -> void {
   println("Hello, " + name);
 }
 

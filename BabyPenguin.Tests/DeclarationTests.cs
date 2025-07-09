@@ -7,20 +7,20 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                val test1 : string = "" "";
-                val test2 : u8 = 1;
-                val test3 : i32 = 1;
-                val test4 : bool = true;
-                val test5 : float = 3.14159;
+                let test1 : string = "" "";
+                let test2 : u8 = 1;
+                let test3 : i32 = 1;
+                let test4 : bool = true;
+                let test5 : float = 3.14159;
             ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
             Assert.Equal(5, ns.Symbols.Where(i => !i.IsTemp && i.Name != "new").Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
-            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "u8");
             Assert.Equal("test2", ns.Symbols.ElementAt(1).Name);
-            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName == "i32");
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "i32");
             Assert.Equal("test3", ns.Symbols.ElementAt(2).Name);
             Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
             Assert.Equal("test4", ns.Symbols.ElementAt(3).Name);
@@ -35,26 +35,26 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace Test {
-                    val test1 : string = "" "";
-                    val test2 : u8 = 1;
-                    val test3 : i32 = 1;
-                    val test4 : bool = true;
-                    val test5 : float = 3.14159;
+                    let test1 : string = "" "";
+                    let test2 : u8 = 1;
+                    let test3 : i32 = 1;
+                    let test4 : bool = true;
+                    let test5 : float = 3.14159;
                 }
             ");
             var model = compiler.Compile();
             var ns = model.Namespaces.Find(x => x.Name == "Test");
             Assert.Equal(5, ns!.Symbols.Where(i => !i.IsTemp && i.Name != "new").Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
-            Assert.True(ns.Symbols.ElementAt(0).FullName == "Test.test1");
-            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName == "u8");
-            Assert.True(ns.Symbols.ElementAt(1).FullName == "Test.test2");
-            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName == "i32");
-            Assert.True(ns.Symbols.ElementAt(2).FullName == "Test.test3");
+            Assert.True(ns.Symbols.ElementAt(0).FullName() == "Test.test1");
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "u8");
+            Assert.True(ns.Symbols.ElementAt(1).FullName() == "Test.test2");
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "i32");
+            Assert.True(ns.Symbols.ElementAt(2).FullName() == "Test.test3");
             Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
-            Assert.True(ns.Symbols.ElementAt(3).FullName == "Test.test4");
+            Assert.True(ns.Symbols.ElementAt(3).FullName() == "Test.test4");
             Assert.True(ns.Symbols.ElementAt(4).TypeInfo.IsFloatType);
-            Assert.True(ns.Symbols.ElementAt(4).FullName == "Test.test5");
+            Assert.True(ns.Symbols.ElementAt(4).FullName() == "Test.test5");
         }
 
         [Fact]
@@ -63,8 +63,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace Test {
-                    val test1 : string = "" "";
-                    val test1 : u8 = 1;
+                    let test1 : string = "" "";
+                    let test1 : u8 = 1;
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -76,11 +76,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace Test {
-                    val test1 : string = "" "";
+                    let test1 : string = "" "";
                 }
 
                 namespace Test {
-                    val test2 : string = "" "";
+                    let test2 : string = "" "";
                 }
             ");
             var model = compiler.Compile();
@@ -109,7 +109,7 @@ namespace BabyPenguin.Tests
 
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Equal(2, ns2.Classes.Count());
-            Assert.Equal("Test.TestClass", (ns2.Classes.First() as IClass).FullName);
+            Assert.Equal("Test.TestClass", (ns2.Classes.First() as IClass).FullName());
         }
 
         [Fact]
@@ -134,7 +134,7 @@ namespace BabyPenguin.Tests
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Single(ns2.Symbols.Where(i => i.Name != "new"));
             Assert.Single(ns2.Functions.Where(i => i.Name != "new"));
-            Assert.Equal("Test.test1", ns2.Symbols.ElementAt(0).FullName);
+            Assert.Equal("Test.test1", ns2.Symbols.ElementAt(0).FullName());
             Assert.True(ns2.Symbols.ElementAt(0) is FunctionSymbol);
             Assert.True(((FunctionSymbol)ns2.Symbols.ElementAt(0)).ReturnTypeInfo.IsVoidType);
             Assert.True(((FunctionSymbol)ns2.Symbols.ElementAt(0)).Parameters.Count == 0);
@@ -168,11 +168,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var test1 : string = "" "";
-                    val test2 : u8 = 1;
-                    val test3 : i32 = 1;
-                    val test4 : bool = true;
-                    val test5 : float = 3.14159;
+                    let test1 : string = "" "";
+                    let test2 : u8 = 1;
+                    let test3 : i32 = 1;
+                    let test4 : bool = true;
+                    let test5 : float = 3.14159;
                 }
             ");
             var model = compiler.Compile();
@@ -184,9 +184,9 @@ namespace BabyPenguin.Tests
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
             Assert.True(symbols[0].IsLocal);
-            Assert.True(symbols[1].TypeInfo.FullName == "u8");
+            Assert.True(symbols[1].TypeInfo.FullName() == "u8");
             Assert.Equal("test2", symbols[1].Name);
-            Assert.True(symbols[2].TypeInfo.FullName == "i32");
+            Assert.True(symbols[2].TypeInfo.FullName() == "i32");
             Assert.Equal("test3", symbols[2].Name);
             Assert.True(symbols[3].TypeInfo.IsBoolType);
             Assert.Equal("test4", symbols[3].Name);
@@ -199,12 +199,12 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                fun test(val param1: u64, var param2: char) {
-                    var test1 : string = "" "";
-                    val test2 : u8 = 1;
-                    val test3 : i32 = 1;
-                    val test4 : bool = true;
-                    val test5 : float = 3.14159;
+                fun test(param1: u64, param2: char) {
+                    let test1 : string = "" "";
+                    let test2 : u8 = 1;
+                    let test3 : i32 = 1;
+                    let test4 : bool = true;
+                    let test5 : float = 3.14159;
                 }
             ");
             var model = compiler.Compile();
@@ -214,23 +214,21 @@ namespace BabyPenguin.Tests
             var symbols = ns.Functions.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Equal(7, symbols.Count());
             Assert.Equal("param1", symbols[0].Name);
-            Assert.Equal("u64", symbols[0].TypeInfo.FullName);
-            Assert.True(symbols[0].IsReadonly);
+            Assert.Equal("u64", symbols[0].TypeInfo.FullName());
             Assert.True(symbols[0].IsParameter);
 
             Assert.Equal("param2", symbols[1].Name);
-            Assert.Equal("char", symbols[1].TypeInfo.FullName);
-            Assert.False(symbols[1].IsReadonly);
+            Assert.Equal("char", symbols[1].TypeInfo.FullName());
             Assert.True(symbols[1].IsParameter);
 
             Assert.True(symbols[2].TypeInfo.IsStringType);
             Assert.True(symbols[2].IsLocal);
 
-            Assert.True(symbols[3].TypeInfo.FullName == "u8");
+            Assert.True(symbols[3].TypeInfo.FullName() == "u8");
             Assert.False(symbols[3].IsParameter);
             Assert.Equal("test2", symbols[3].Name);
 
-            Assert.True(symbols[4].TypeInfo.FullName == "i32");
+            Assert.True(symbols[4].TypeInfo.FullName() == "i32");
             Assert.Equal("test3", symbols[4].Name);
 
             Assert.True(symbols[5].TypeInfo.IsBoolType);
@@ -246,10 +244,10 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var test1 : string = "" "";
-                    var test1 : string = "" "";
+                    let test1 : string = "" "";
+                    let test1 : string = "" "";
                     {
-                        var test1 : string = "" "";
+                        let test1 : string = "" "";
                     }
                 }
             ");
@@ -282,9 +280,9 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                var test1 : string = "" "";
+                let test1 : string = "" "";
                 initial {
-                    var test1 : string = "" "";
+                    let test1 : string = "" "";
                 }
             ");
             var model = compiler.Compile();
@@ -319,7 +317,7 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                fun test(val param1: u64, var param1: char){}
+                fun test(param1: u64, param1: char){}
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
         }
@@ -330,11 +328,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 class Test {
-                    var test1 : string = "" "";
-                    var test2 : u8 = 1;
-                    var test3 : i32 = 1;
-                    val test4 : bool = true;
-                    val test5 : float = 3.14159;
+                    test1 : string = "" "";
+                    test2 : u8 = 1;
+                    test3 : i32 = 1;
+                    test4 : bool = true;
+                    test5 : float = 3.14159;
                 }
             ");
             var model = compiler.Compile();
@@ -346,16 +344,14 @@ namespace BabyPenguin.Tests
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
             Assert.True(symbols[0].IsClassMember);
-            Assert.False(symbols[0].IsReadonly);
-            Assert.True(symbols[1].TypeInfo.FullName == "u8");
+            Assert.True(symbols[1].TypeInfo.FullName() == "u8");
             Assert.Equal("test2", symbols[1].Name);
-            Assert.True(symbols[2].TypeInfo.FullName == "i32");
+            Assert.True(symbols[2].TypeInfo.FullName() == "i32");
             Assert.Equal("test3", symbols[2].Name);
             Assert.True(symbols[3].TypeInfo.IsBoolType);
             Assert.Equal("test4", symbols[3].Name);
             Assert.True(symbols[4].TypeInfo.IsFloatType);
             Assert.Equal("test5", symbols[4].Name);
-            Assert.True(symbols[4].IsReadonly);
         }
 
         [Fact]
@@ -365,7 +361,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 class Test {
                     fun test1() {}
-                    fun test2(var this: Test) {}
+                    fun test2(this: Test) {}
                 }
             ");
             var model = compiler.Compile();
@@ -428,19 +424,19 @@ namespace BabyPenguin.Tests
 
             var foo1 = model.ResolveType("ns.Foo");
             Assert.NotNull(foo1);
-            Assert.Equal("ns.Foo", foo1.FullName);
+            Assert.Equal("ns.Foo", foo1.FullName());
 
             var foo2 = model.ResolveType("Foo", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(foo2);
-            Assert.Equal("ns.Foo", foo2.FullName);
+            Assert.Equal("ns.Foo", foo2.FullName());
 
             var bar1 = model.ResolveType("ns.Bar");
             Assert.NotNull(bar1);
-            Assert.Equal("ns.Bar", bar1.FullName);
+            Assert.Equal("ns.Bar", bar1.FullName());
 
             var bar2 = model.ResolveType("Bar", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(bar2);
-            Assert.Equal("ns.Bar", bar2.FullName);
+            Assert.Equal("ns.Bar", bar2.FullName());
         }
 
         [Fact]
@@ -458,19 +454,19 @@ namespace BabyPenguin.Tests
             Assert.NotNull(bar1);
             Assert.True(bar1.IsGeneric);
             Assert.False(bar1.IsSpecialized);
-            Assert.Equal("ns.Bar<?,?,?>", bar1.FullName);
+            Assert.Equal("ns.Bar<?,?,?>", bar1.FullName());
 
             var bar2 = model.ResolveType("ns.Bar<u8,i8,string>");
             Assert.NotNull(bar2);
             Assert.True(bar2.IsGeneric);
             Assert.True(bar2.IsSpecialized);
-            Assert.Equal("u8", bar2.GenericArguments[0].FullName);
-            Assert.Equal("i8", bar2.GenericArguments[1].FullName);
-            Assert.Equal("string", bar2.GenericArguments[2].FullName);
-            Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName);
+            Assert.Equal("u8", bar2.GenericArguments[0].FullName());
+            Assert.Equal("i8", bar2.GenericArguments[1].FullName());
+            Assert.Equal("string", bar2.GenericArguments[2].FullName());
+            Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName());
 
             var bar3 = model.ResolveType("Bar<?,?,?>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
-            Assert.True(bar1.FullName == bar3!.FullName);
+            Assert.True(bar1.FullName() == bar3!.FullName());
             Assert.Single(bar3.GenericInstances);
             Assert.True(bar3.GenericInstances.First() == bar2);
         }
@@ -490,16 +486,16 @@ namespace BabyPenguin.Tests
             Assert.NotNull(foo1);
             Assert.True(foo1.IsGeneric);
             Assert.False(foo1.IsSpecialized);
-            Assert.Equal("ns.Foo<?>", foo1.FullName);
+            Assert.Equal("ns.Foo<?>", foo1.FullName());
 
             var foo2 = model.ResolveType("ns.Foo<u8>");
             Assert.NotNull(foo2);
             Assert.True(foo2.IsGeneric);
             Assert.True(foo2.IsSpecialized);
-            Assert.Equal("ns.Foo<u8>", foo2.FullName);
+            Assert.Equal("ns.Foo<u8>", foo2.FullName());
 
             var foo3 = model.ResolveType("Foo<?>", scope: model.Namespaces.Find(i => i.Name == "ns"));
-            Assert.True(foo1.FullName == foo3!.FullName);
+            Assert.True(foo1.FullName() == foo3!.FullName());
             Assert.Single(foo3.GenericInstances);
             Assert.True(foo3.GenericInstances.First() == foo2);
         }
@@ -520,16 +516,16 @@ namespace BabyPenguin.Tests
             Assert.NotNull(bar1);
             Assert.True(bar1.IsGeneric);
             Assert.True(bar1.IsSpecialized);
-            Assert.Equal("ns.Bar<u8,i8>", bar1.FullName);
+            Assert.Equal("ns.Bar<u8,i8>", bar1.FullName());
 
             var T1 = model.ResolveType("T", scope: bar1 as IClass);
-            Assert.Equal("u8", T1!.FullName);
+            Assert.Equal("u8", T1!.FullName());
 
             var T2 = model.ResolveType("Foo", scope: bar1 as IClass);
-            Assert.Equal("i8", T2!.FullName);
+            Assert.Equal("i8", T2!.FullName());
 
             var fooOutOfScope = model.ResolveType("Foo", scope: model.Namespaces.Find(i => i.Name == "ns"));
-            Assert.Equal("ns.Foo", fooOutOfScope!.FullName);
+            Assert.Equal("ns.Foo", fooOutOfScope!.FullName());
         }
 
         [Fact]
@@ -540,7 +536,7 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo<T> {}
                     class Bar<T> { 
-                        val a : T;
+                        a : T;
                     }
                 }
             ");
@@ -548,18 +544,18 @@ namespace BabyPenguin.Tests
 
             var bar1 = model.ResolveType("ns.Bar<ns.Foo<u8>>");
             Assert.True(bar1!.IsSpecialized);
-            Assert.Equal("ns.Bar<ns.Foo<u8>>", bar1.FullName);
-            Assert.Equal("ns.Foo<u8>", bar1.GenericArguments[0].FullName);
-            Assert.Equal("u8", bar1.GenericArguments[0].GenericArguments[0].FullName);
+            Assert.Equal("ns.Bar<ns.Foo<u8>>", bar1.FullName());
+            Assert.Equal("ns.Foo<u8>", bar1.GenericArguments[0].FullName());
+            Assert.Equal("u8", bar1.GenericArguments[0].GenericArguments[0].FullName());
 
             var bar2 = model.ResolveType("Bar<Foo<u8>>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
-            Assert.Equal(bar1.FullName, bar2!.FullName);
+            Assert.Equal(bar1.FullName(), bar2!.FullName());
 
             var foo1 = model.ResolveType("T", scope: bar1 as IClass);
-            Assert.Equal("ns.Foo<u8>", foo1!.FullName);
+            Assert.Equal("ns.Foo<u8>", foo1!.FullName());
 
             var u8 = model.ResolveType("T", scope: foo1 as IClass);
-            Assert.Equal("u8", u8!.FullName);
+            Assert.Equal("u8", u8!.FullName());
         }
 
         [Fact]
@@ -568,9 +564,9 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    var a : u8 = 1;
+                    let a : u8 = 1;
                     class Foo {
-                        var a : u8 = 1;
+                        a : u8 = 1;
                     }
                 }
             ");
@@ -578,8 +574,8 @@ namespace BabyPenguin.Tests
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
             var foo = ns!.Classes.FirstOrDefault(i => i.Name == "Foo");
-            Assert.Equal("ns.a", model.ResolveShortSymbol("a", scope: ns)!.FullName);
-            Assert.Equal("ns.Foo.a", model.ResolveShortSymbol("a", scope: foo)!.FullName);
+            Assert.Equal("ns.a", model.ResolveShortSymbol("a", scope: ns)!.FullName());
+            Assert.Equal("ns.Foo.a", model.ResolveShortSymbol("a", scope: foo)!.FullName());
         }
 
         [Fact]
@@ -588,9 +584,9 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    var a : u8 = 1;
+                    let a : u8 = 1;
                     class Foo {
-                        var a : u8 = 1;
+                        a : u8 = 1;
                     }
                 }
             ");
@@ -598,12 +594,12 @@ namespace BabyPenguin.Tests
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
             var foo = ns!.Classes.FirstOrDefault(i => i.Name == "Foo");
-            Assert.Equal("ns.a", model.ResolveSymbol("ns.a")!.FullName);
-            Assert.Equal("ns.a", model.ResolveSymbol("a", scope: ns)!.FullName);
-            Assert.Equal("ns.a", model.ResolveSymbol("ns.a", scope: ns)!.FullName);
-            Assert.Equal("ns.Foo.a", model.ResolveSymbol("a", scope: foo)!.FullName);
-            Assert.Equal("ns.Foo.a", model.ResolveSymbol("Foo.a", scope: foo)!.FullName);
-            Assert.Equal("ns.Foo.a", model.ResolveSymbol("ns.Foo.a", scope: foo)!.FullName);
+            Assert.Equal("ns.a", model.ResolveSymbol("ns.a")!.FullName());
+            Assert.Equal("ns.a", model.ResolveSymbol("a", scope: ns)!.FullName());
+            Assert.Equal("ns.a", model.ResolveSymbol("ns.a", scope: ns)!.FullName());
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("a", scope: foo)!.FullName());
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("Foo.a", scope: foo)!.FullName());
+            Assert.Equal("ns.Foo.a", model.ResolveSymbol("ns.Foo.a", scope: foo)!.FullName());
         }
 
         [Fact]
@@ -614,7 +610,7 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo<T> {}
                     class Bar<T> { 
-                        val a : T;
+                        a : T;
                     }
                 }
             ");
@@ -622,17 +618,17 @@ namespace BabyPenguin.Tests
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
             var symbol1 = model.ResolveSymbol("ns.Bar<ns.Foo<u8>>.a");
-            Assert.Equal("ns.Bar<ns.Foo<u8>>.a", symbol1!.FullName);
-            Assert.Equal("ns.Foo<u8>", symbol1.TypeInfo.FullName);
+            Assert.Equal("ns.Bar<ns.Foo<u8>>.a", symbol1!.FullName());
+            Assert.Equal("ns.Foo<u8>", symbol1.TypeInfo.FullName());
 
             var symbol2 = model.ResolveSymbol("Bar<Foo<i8>>.a", scope: ns);
-            Assert.Equal("ns.Bar<ns.Foo<i8>>.a", symbol2!.FullName);
-            Assert.Equal("ns.Foo<i8>", symbol2.TypeInfo.FullName);
+            Assert.Equal("ns.Bar<ns.Foo<i8>>.a", symbol2!.FullName());
+            Assert.Equal("ns.Foo<i8>", symbol2.TypeInfo.FullName());
 
             var bar1 = model.ResolveType("ns.Bar<ns.Foo<string>>");
             var symbol3 = model.ResolveSymbol("a", scope: bar1 as IClass);
-            Assert.Equal("ns.Bar<ns.Foo<string>>.a", symbol3!.FullName);
-            Assert.Equal("ns.Foo<string>", symbol3.TypeInfo.FullName);
+            Assert.Equal("ns.Bar<ns.Foo<string>>.a", symbol3!.FullName());
+            Assert.Equal("ns.Foo<string>", symbol3.TypeInfo.FullName());
         }
 
         [Fact]
@@ -643,7 +639,7 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo<T> {}
                     class Bar { 
-                        val a : Foo;
+                        a : Foo;
                     }
                 }
             ");
@@ -658,7 +654,7 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo<T> {}
                     initial {
-                        val a : Foo;
+                        let a : Foo;
                     }
                 }
             ");
@@ -675,7 +671,7 @@ namespace BabyPenguin.Tests
                     interface IFoo {}
                     interface IBar<T> { 
                         fun bar() -> T;
-                        fun bar2(val this: IBar<T>) {}
+                        fun bar2(this: IBar<T>) {}
                     }
                 }
             ");
@@ -692,10 +688,10 @@ namespace BabyPenguin.Tests
             Assert.NotNull(ibar_u8);
 
             var bar = ibar_u8.Functions.Find(i => i.Name == "bar");
-            Assert.Equal("u8", bar!.ReturnTypeInfo.FullName);
+            Assert.Equal("u8", bar!.ReturnTypeInfo.FullName());
             Assert.True(bar.IsDeclarationOnly);
             var bar2 = ibar_u8.Functions.Find(i => i.Name == "bar2");
-            Assert.Equal("ns.IBar<u8>", bar2!.Parameters[0].Type.FullName);
+            Assert.Equal("ns.IBar<u8>", bar2!.Parameters[0].Type.FullName());
             Assert.Equal("this", bar2!.Parameters[0].Name);
             Assert.False(bar2.IsDeclarationOnly);
         }
@@ -721,7 +717,7 @@ namespace BabyPenguin.Tests
             Assert.NotNull(ifoo);
             Assert.NotNull(foo);
             Assert.Single(foo.VTables);
-            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName);
+            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName());
         }
 
         [Fact]
@@ -746,7 +742,7 @@ namespace BabyPenguin.Tests
             Assert.NotNull(ifoo);
             Assert.NotNull(foo);
             Assert.Single(foo.VTables);
-            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName);
+            Assert.Equal("ns.IFoo", foo.VTables[0].Interface?.FullName());
         }
 
         [Fact]
@@ -778,10 +774,10 @@ namespace BabyPenguin.Tests
             Assert.Single(foo!.VTables);
             var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
             var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName);
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
-            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
-            Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName());
         }
 
         [Fact]
@@ -813,10 +809,10 @@ namespace BabyPenguin.Tests
             Assert.Single(foo!.VTables);
             var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
             var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName);
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName);
-            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName);
-            Assert.Equal("ns.Foo<u8>.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName);
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.Foo<u8>.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName());
 
             var foo2 = model.ResolveType("ns.Foo<u16>") as IClass;
             Assert.Empty(foo2!.VTables);
@@ -919,9 +915,9 @@ namespace BabyPenguin.Tests
             var ns = model.Namespaces.Find(i => i.Name == "ns");
             var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClass;
             Assert.Equal(3, qux!.ImplementedInterfaces.Count());
-            Assert.Contains("ns.IFoo", qux.ImplementedInterfaces.Select(i => i.FullName));
-            Assert.Contains("ns.IBar<u8>", qux.ImplementedInterfaces.Select(i => i.FullName));
-            Assert.Contains("ns.IQux<u8>", qux.ImplementedInterfaces.Select(i => i.FullName));
+            Assert.Contains("ns.IFoo", qux.ImplementedInterfaces.Select(i => i.FullName()));
+            Assert.Contains("ns.IBar<u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
+            Assert.Contains("ns.IQux<u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
         }
 
         [Fact]
@@ -981,7 +977,7 @@ namespace BabyPenguin.Tests
                         fun a() -> Self {}
                         impl IFoo {
                             fun a() -> IFoo {
-                                val b: Self; 
+                                let b: Self; 
                             } 
                         }
                     }
@@ -990,12 +986,12 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ifoo_a = model.ResolveSymbol("ns.IFoo.a") as FunctionSymbol;
-            Assert.Equal("ns.IFoo", ifoo_a!.ReturnTypeInfo.FullName);
+            Assert.Equal("ns.IFoo", ifoo_a!.ReturnTypeInfo.FullName());
             var foo_a = model.ResolveSymbol("ns.Foo.a") as FunctionSymbol;
-            Assert.Equal("ns.Foo", foo_a!.ReturnTypeInfo.FullName);
+            Assert.Equal("ns.Foo", foo_a!.ReturnTypeInfo.FullName());
             var vtable_foo = model.Classes.First(i => i.Name == "Foo")!.VTables.First();
             var f = vtable_foo.Functions.First()!;
-            Assert.Equal("ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName);
+            Assert.Equal("ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1024,7 +1020,7 @@ namespace BabyPenguin.Tests
 
             var foo_bar = model.ResolveType("ns.Foo<ns.Bar>") as IClass;
             Assert.Single(foo_bar!.ImplementedInterfaces);
-            Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName);
+            Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName());
         }
 
         [Fact]
@@ -1065,16 +1061,16 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo {}
 
-                    var a : u8[];
-                    var b : ns.Foo[];
+                    let a : u8[];
+                    let b : ns.Foo[];
                 }
             ");
             var model = compiler.Compile();
 
             var a = model.ResolveSymbol("ns.a");
-            Assert.Equal("__builtin.IIterator<u8>", a!.TypeInfo.FullName);
+            Assert.Equal("__builtin.IIterator<u8>", a!.TypeInfo.FullName());
             var b = model.ResolveSymbol("ns.b");
-            Assert.Equal("__builtin.IIterator<ns.Foo>", b!.TypeInfo.FullName);
+            Assert.Equal("__builtin.IIterator<ns.Foo>", b!.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1090,9 +1086,9 @@ namespace BabyPenguin.Tests
 
                     fun test() {
                         type t3 = Foo;
-                        val a : t1 = new t1();
-                        val b : t2 = new t2();
-                        val c : t3 = new t3();
+                        let a : t1 = new t1();
+                        let b : t2 = new t2();
+                        let c : t3 = new t3();
                     }
                 }
             ");
@@ -1100,13 +1096,13 @@ namespace BabyPenguin.Tests
 
             var t1 = model.ResolveSymbol("ns.t1");
             Assert.True(t1!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t1 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+            Assert.True((t1 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
             var t2 = model.ResolveSymbol("ns.t2");
             Assert.True(t2!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t2 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+            Assert.True((t2 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
             var t3 = model.ResolveSymbol("ns.test.t3");
             Assert.True(t3!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t3 as TypeReferenceSymbol)!.TypeReference.FullName == "ns.Foo");
+            Assert.True((t3 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
         }
 
 
@@ -1120,7 +1116,7 @@ namespace BabyPenguin.Tests
                         fun foo(){}
                     }
                     fun test() {
-                        var f : fun<void> = Foo.foo;
+                        let f : fun<void> = Foo.foo;
                     }
                 }
             ");
@@ -1128,7 +1124,7 @@ namespace BabyPenguin.Tests
 
             var t1 = model.ResolveSymbol("ns.Foo.foo");
             Assert.True(t1 is FunctionSymbol s);
-            Assert.Equal("ns.Foo.foo", (t1 as FunctionSymbol)!.FullName);
+            Assert.Equal("ns.Foo.foo", (t1 as FunctionSymbol)!.FullName());
         }
     }
 }

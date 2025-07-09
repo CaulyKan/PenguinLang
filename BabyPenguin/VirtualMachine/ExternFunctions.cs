@@ -42,7 +42,7 @@ namespace BabyPenguin.VirtualMachine
         {
             foreach (var ICopy in vm.Model.ResolveType("__builtin.ICopy<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(ICopy.FullName + ".copy", (result, args) =>
+                vm.Global.RegisterExternFunction(ICopy.FullName() + ".copy", (result, args) =>
                 {
                     var v = args[0];
                     if (v is BasicRuntimeValue)
@@ -83,20 +83,20 @@ namespace BabyPenguin.VirtualMachine
         {
             foreach (var queue in vm.Model.ResolveType("__builtin.Queue<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(queue.FullName + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName() + ".new", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     impl.ExternImplenmentationValue = new Queue<IRuntimeValue>();
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName + ".enqueue", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName() + ".enqueue", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     q!.Enqueue(args[1]);
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName + ".dequeue", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName() + ".dequeue", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
@@ -112,7 +112,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName + ".peek", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName() + ".peek", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
@@ -128,7 +128,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName + ".size", (result, args) =>
+                vm.Global.RegisterExternFunction(queue.FullName() + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
@@ -138,20 +138,20 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var list in vm.Model.ResolveType("__builtin.List<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(list.FullName + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".new", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     impl.ExternImplenmentationValue = new List<IRuntimeValue>();
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName + ".push", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".push", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
                     l!.Add(args[1]);
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName + ".pop", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".pop", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
@@ -168,7 +168,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName + ".at", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".at", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var idx = args[1].As<BasicRuntimeValue>().U64Value;
@@ -185,7 +185,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName + ".remove", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".remove", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var idx = args[1].As<BasicRuntimeValue>().U64Value;
@@ -200,7 +200,7 @@ namespace BabyPenguin.VirtualMachine
                     }
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName + ".size", (result, args) =>
+                vm.Global.RegisterExternFunction(list.FullName() + ".size", (result, args) =>
                 {
                     var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
@@ -275,7 +275,7 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var routineContext in vm.Model.ResolveType("__builtin.RoutineContext<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(routineContext.FullName + ".call", RoutineContextCall);
+                vm.Global.RegisterExternFunction(routineContext.FullName() + ".call", RoutineContextCall);
             }
         }
     }

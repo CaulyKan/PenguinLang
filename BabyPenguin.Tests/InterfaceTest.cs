@@ -9,23 +9,23 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun bar(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun bar(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
                     
                     class Foo {
                         impl IFoo<u8> {
-                            fun foo(val this: IFoo<u8>) -> u8 {
+                            fun foo(this: IFoo<u8>) -> u8 {
                                 return 0;
                             }
                         }
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f as IFoo<u8>;
                         print(f2.foo() as string);
                         print(f2.bar() as string);
                     }
@@ -44,25 +44,25 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun bar(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun bar(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
                     
                     class Foo {
-                        val a: u8 = 9;
+                        a: u8 = 9;
                         impl IFoo<u8> {
-                            fun foo(val this: IFoo<u8>) -> u8 {
-                                val f : Foo = this as Foo;
+                            fun foo(this: IFoo<u8>) -> u8 {
+                                let f : Foo = this as Foo;
                                 return f.a;
                             }
                         }
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f as IFoo<u8>;
                         print(f2.foo() as string);
                         print(f2.bar() as string);
                     }
@@ -81,35 +81,35 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun foo2(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun foo2(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
 
                     interface IBar<T> {
                         impl IFoo<T> {
-                            fun foo(val this: IFoo<T>) -> T {
+                            fun foo(this: IFoo<T>) -> T {
                                 return 2;
                             }
                         }
-                        fun bar(val this: IBar<T>) -> T {
+                        fun bar(this: IBar<T>) -> T {
                             return 3;
                         }
                     }
                     
                     class Foo {
                         impl IBar<u8>;
-                        val a: u8 = 9;
+                        a: u8 = 9;
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
-                        val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IBar<u8> = f as IBar<u8>;
-                        val f5 : IFoo<u8> = f3 as IFoo<u8>;
-                        val f6 : Foo = f4 as Foo;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f as IFoo<u8>;
+                        let f3 : IBar<u8> = f2 as IBar<u8>;
+                        let f4 : IBar<u8> = f as IBar<u8>;
+                        let f5 : IFoo<u8> = f3 as IFoo<u8>;
+                        let f6 : Foo = f4 as Foo;
                         print(f2.foo() as string);
                         print(f2.foo2() as string);
                         print(f3.bar() as string);
@@ -133,18 +133,18 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun foo2(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun foo2(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
 
                     interface IBar<T> {
                         impl IFoo<T> {
-                            fun foo(val this: IFoo<T>) -> T {
+                            fun foo(this: IFoo<T>) -> T {
                                 return 2;
                             }
-                            fun foo2(val this: IFoo<T>) -> T {
+                            fun foo2(this: IFoo<T>) -> T {
                                 return 2;
                             }
                         }
@@ -153,21 +153,21 @@ namespace BabyPenguin.Tests
                     class Foo {
                         impl IBar<u8>;
                         impl IFoo<u8> {
-                            fun foo(val this: IFoo<u8>) -> u8 {
+                            fun foo(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
-                            fun foo2(val this: IFoo<u8>) -> u8 {
+                            fun foo2(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
                         }
-                        val a: u8 = 9;
+                        a: u8 = 9;
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
-                        val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IFoo<u8> = f as IFoo<u8>;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f as IFoo<u8>;
+                        let f3 : IBar<u8> = f2 as IBar<u8>;
+                        let f4 : IFoo<u8> = f as IFoo<u8>;
                         print(f2.foo() as string);
                         print(f2.foo2() as string);
                         print(f4.foo() as string);
@@ -188,18 +188,18 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun foo2(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun foo2(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
 
                     interface IBar<T> {
                         impl IFoo<T> {
-                            fun foo(val this: IFoo<T>) -> T {
+                            fun foo(this: IFoo<T>) -> T {
                                 return 2;
                             }
-                            fun foo2(val this: IFoo<T>) -> T {
+                            fun foo2(this: IFoo<T>) -> T {
                                 return 2;
                             }
                         }
@@ -207,24 +207,24 @@ namespace BabyPenguin.Tests
                     
                     class Foo {
                         impl IFoo<u8> {
-                            fun foo(val this: IFoo<u8>) -> u8 {
+                            fun foo(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
                         }
                         impl IBar<u8>;
                         impl IFoo<u8> {
-                            fun foo2(val this: IFoo<u8>) -> u8 {
+                            fun foo2(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
                         }
-                        val a: u8 = 9;
+                        a: u8 = 9;
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f as IFoo<u8>;
-                        val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IFoo<u8> = f3 as IFoo<u8>;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f as IFoo<u8>;
+                        let f3 : IBar<u8> = f2 as IBar<u8>;
+                        let f4 : IFoo<u8> = f3 as IFoo<u8>;
                         print(f2.foo() as string);
                         print(f2.foo2() as string);
                         print(f4.foo() as string);
@@ -245,18 +245,18 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo<T> {
-                        fun foo(val this: IFoo<T>) -> T;
-                        fun foo2(val this: IFoo<T>) -> T {
+                        fun foo(this: IFoo<T>) -> T;
+                        fun foo2(this: IFoo<T>) -> T {
                             return 1;
                         }
                     }
 
                     interface IBar<T> {
                         impl IFoo<T> {
-                            fun foo(val this: IFoo<T>) -> T {
+                            fun foo(this: IFoo<T>) -> T {
                                 return 2;
                             }
-                            fun foo2(val this: IFoo<T>) -> T {
+                            fun foo2(this: IFoo<T>) -> T {
                                 return 2;
                             }
                         }
@@ -264,24 +264,24 @@ namespace BabyPenguin.Tests
                     
                     class Foo {
                         impl IFoo<u8> {
-                            fun foo(val this: IFoo<u8>) -> u8 {
+                            fun foo(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
                         }
                         impl IBar<u8>;
                         impl IFoo<u8> {
-                            fun foo2(val this: IFoo<u8>) -> u8 {
+                            fun foo2(this: IFoo<u8>) -> u8 {
                                 return 3;
                             }
                         }
-                        val a: u8 = 9;
+                        a: u8 = 9;
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
-                        val f2 : IFoo<u8> = f;
-                        val f3 : IBar<u8> = f2 as IBar<u8>;
-                        val f4 : IFoo<u8> = f3;
+                        let f : Foo = new Foo();
+                        let f2 : IFoo<u8> = f;
+                        let f3 : IBar<u8> = f2 as IBar<u8>;
+                        let f4 : IFoo<u8> = f3;
                         print(f2.foo() as string);
                         print(f2.foo2() as string);
                         print(f4.foo() as string);
@@ -302,23 +302,23 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {
-                        fun foo(val this: IFoo) {
+                        fun foo(this: IFoo) {
                             print(""1"");
                         }
-                        fun foo2(val this: Foo) {
+                        fun foo2(this: Foo) {
                             print(this.a as string);
                         }
                     }
                     
                     class Foo {
                         impl IFoo;
-                        val a : u8 = 2;
+                        a : u8 = 2;
                     }
 
-                    fun test(val a : Foo, val b: IFoo) {}
+                    fun test(a : Foo, b: IFoo) {}
                 
                     initial {
-                        var f : Foo = new Foo();
+                        let f : Foo = new Foo();
                         test(f,f);
                         f.foo();
                         f.foo2();
@@ -338,8 +338,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {
-                        var a : u8 = 1;
-                        fun foo(val this: IFoo) {
+                        a : u8 = 1;
+                        fun foo(this: IFoo) {
                             print(this.a as string);
                         }
                     }
@@ -349,7 +349,7 @@ namespace BabyPenguin.Tests
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
+                        let f : Foo = new Foo();
                         f.foo();
                     }
                 }
@@ -367,8 +367,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {
-                        var a : u8 = 1;
-                        fun foo(val this: IFoo) {
+                        a : u8 = 1;
+                        fun foo(this: IFoo) {
                             print(this.a as string);
                         }
                     }
@@ -379,7 +379,7 @@ namespace BabyPenguin.Tests
                     impl IFoo for Foo;
                 
                     initial {
-                        var f : Foo = new Foo();
+                        let f : Foo = new Foo();
                         f.foo();
                     }
                 }
@@ -394,22 +394,22 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {
-                        var a : u8 = 1;
-                        fun foo(val this: IFoo) {
+                        a : u8 = 1;
+                        fun foo(this: IFoo) {
                             print(this.a as string);
                         }
                     }
                     
                     class Foo {
                         impl IFoo;
-                        fun bar(val this: Foo) {
-                            var f : IFoo = this as IFoo;
+                        fun bar(this: Foo) {
+                            let f : IFoo = this as IFoo;
                             print(f.a as string);
                         }
                     }
                 
                     initial {
-                        var f : Foo = new Foo();
+                        let f : Foo = new Foo();
                         f.bar();
                     }
                 }

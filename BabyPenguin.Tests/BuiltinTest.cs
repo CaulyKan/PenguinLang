@@ -8,7 +8,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val v: void = void;
+                    let v: void = void;
                 }
             ");
             var model = compiler.Compile();
@@ -64,12 +64,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : Option<u32> = new Option<u32>.some(10);
+                    let a : Option<u32> = new Option<u32>.some(10);
                     println(a.is_some() as string);
                     println(a.is_none() as string);
                     println(a.value_or(9) as string);
 
-                    val b : Option<u32> = new Option<u32>.none();
+                    let b : Option<u32> = new Option<u32>.none();
                     println(b.is_some() as string);
                     println(b.is_none() as string);
                     println(b.value_or(9) as string);
@@ -87,9 +87,9 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val rg : IIterator<i64> = range(0, 5);
+                    let rg : IIterator<i64> = range(0, 5);
                     while(true) {
-                        val n : Option<i64> = rg.next();
+                        let n : Option<i64> = rg.next();
                         if (n.is_none())
                             break;
                         else 
@@ -109,9 +109,9 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val rg : i64[] = range(0, 5);
+                    let rg : i64[] = range(0, 5);
                     while(true) {
-                        val n : Option<i64> = rg.next();
+                        let n : Option<i64> = rg.next();
                         if (n.is_none())
                             break;
                         else 
@@ -131,16 +131,16 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 class Foo {
-                    var x : i64;
-                    var y : i64;
+                    x : i64;
+                    y : i64;
 
                     impl ICopy<Self>;
                 }
                 initial {
-                    var a : Foo = new Foo();
+                    let a : Foo = new Foo();
                     a.x = 1;
                     a.y = 2;
-                    var b : Foo = a.copy();
+                    let b : Foo = a.copy();
                     b.x = 3;
                     b.y = 4;
                     print(a.x as string);
@@ -161,8 +161,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : u8 = 1;
-                    var b : u8 = a.copy();
+                    let a : u8 = 1;
+                    let b : u8 = a.copy();
                     b = 2;
                     print(a as string);
                     print(b as string);
@@ -180,12 +180,12 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    val a : Result<u32,string> = new Result<u32,string>.ok(10);
+                    let a : Result<u32,string> = new Result<u32,string>.ok(10);
                     println(a.is_ok() as string);
                     println(a.is_error() as string);
                     println(a.value_or(9) as string);
 
-                    val b : Result<u32,string> = new Result<u32,string>.error(""err"");
+                    let b : Result<u32,string> = new Result<u32,string>.error(""err"");
                     println(b.error);
                     println(b.is_ok() as string);
                     println(b.is_error() as string);
@@ -204,19 +204,19 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : AtomicI64 = new AtomicI64(1);
+                    let a : AtomicI64 = new AtomicI64(1);
                     println(a.load() as string);
                     a.store(2);
                     println(a.load() as string);
-                    val res1: i64 = a.compare_exchange(2, 3);
+                    let res1: i64 = a.compare_exchange(2, 3);
                     println(res1 as string);
                     println(a.load() as string);
-                    val res2: i64 = a.compare_exchange(8888, 4);
+                    let res2: i64 = a.compare_exchange(8888, 4);
                     println(res2 as string);
                     println(a.load() as string);
-                    val res3 : i64 = a.fetch_add(1);
+                    let res3 : i64 = a.fetch_add(1);
                     println(res3 as string);
-                    val res4 : i64 = a.swap(5);
+                    let res4 : i64 = a.swap(5);
                     println(res4 as string);
                     println(a.load() as string);
                 }
@@ -233,20 +233,20 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : List<i64> = new List<i64>();
+                    let a : List<i64> = new List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
                     println(a.size() as string);
-                    val res1 : Option<i64> = a.at(0);
+                    let res1 : Option<i64> = a.at(0);
                     println(res1.some as string);
-                    val res2 : Option<i64> = a.at(2);
+                    let res2 : Option<i64> = a.at(2);
                     println(res2.some as string);
                     a.pop();
                     println(a.size() as string);
-                    val res3 : Option<i64> = a.at(1);
+                    let res3 : Option<i64> = a.at(1);
                     println(res3.some as string);
-                    val res4 : Option<i64> = a.at(2);
+                    let res4 : Option<i64> = a.at(2);
                     println(res4.is_none() as string);
                 }
             ");
@@ -262,11 +262,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : List<i64> = new List<i64>();
+                    let a : List<i64> = new List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
-                    for (val x : i64 in a.iter()) {
+                    for (let x : i64 in a.iter()) {
                         print(x as string);
                     }
                 }
@@ -283,23 +283,23 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var a : Queue<i64> = new Queue<i64>();
+                    let a : Queue<i64> = new Queue<i64>();
                     a.enqueue(1);
                     a.enqueue(2);
                     println(a.size() as string);
-                    val res1 : Option<i64> = a.peek();
+                    let res1 : Option<i64> = a.peek();
                     println(res1.some as string);
                     a.enqueue(3);
-                    val res2 : Option<i64> = a.peek();
+                    let res2 : Option<i64> = a.peek();
                     println(res2.some as string);
                     a.dequeue();
                     println(a.size() as string);
-                    val res3 : Option<i64> = a.peek();
+                    let res3 : Option<i64> = a.peek();
                     println(res3.some as string);
                     a.dequeue();
-                    val res4 : Option<i64> = a.dequeue();
+                    let res4 : Option<i64> = a.dequeue();
                     println(res4.some as string);
-                    val res5 : Option<i64> = a.peek();
+                    let res5 : Option<i64> = a.peek();
                     println(res5.is_none() as string);
                 }
             ");
@@ -315,11 +315,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    var routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
+                    let routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     
-                    val state1 : FutureState<void>  = routine.poll();
+                    let state1 : FutureState<void>  = routine.poll();
                     println(state1 as string);
                 }
             ");

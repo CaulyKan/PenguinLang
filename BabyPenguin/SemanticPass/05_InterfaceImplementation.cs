@@ -42,15 +42,15 @@ namespace BabyPenguin.SemanticPass
                     {
                         var interfaceType = Model.ResolveType(impl.InterfaceType!.Text, scope: ns);
                         if (interfaceType == null)
-                            throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName}", impl.SourceLocation);
+                            throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
                         if (interfaceType is IInterface intf && intf.HasDeclartion)
-                            throw new BabyPenguinException($"Interface {intf.FullName} has declarations, so it must be implemented in the scope of a class.");
+                            throw new BabyPenguinException($"Interface {intf.FullName()} has declarations, so it must be implemented in the scope of a class.");
 
                         var forType = Model.ResolveType(impl.ForType!.Text, scope: ns);
                         if (forType == null)
-                            throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName}", impl.SourceLocation);
+                            throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
 
-                        if (forType.FullName == implementingClass.FullName)
+                        if (forType.FullName() == implementingClass.FullName())
                             yield return impl;
                     }
                 }
@@ -63,7 +63,7 @@ namespace BabyPenguin.SemanticPass
             {
                 if (container.IsGeneric && !container.IsSpecialized)
                 {
-                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Interface implementation for '{container.FullName}' is skipped now because it is generic");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Interface implementation for '{container.FullName()}' is skipped now because it is generic");
                 }
                 else
                 {
@@ -86,7 +86,7 @@ namespace BabyPenguin.SemanticPass
                             continue;
 
                         var vtable = new VTable(Model, implSyntax, container);
-                        if (container.VTables.Find(v => v.Interface.FullName == vtable.Interface.FullName) is VTable existingVTable)
+                        if (container.VTables.Find(v => v.Interface.FullName() == vtable.Interface.FullName()) is VTable existingVTable)
                         {
                             vtable = existingVTable;
                         }
@@ -110,13 +110,13 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is IFunction implFunc)
                             {
-                                if (implFunc.ReturnTypeInfo.FullName != interfaceFunc.ReturnTypeInfo.FullName
+                                if (implFunc.ReturnTypeInfo.FullName() != interfaceFunc.ReturnTypeInfo.FullName()
                                         || implFunc.Parameters.Count != interfaceFunc.Parameters.Count
-                                        || implFunc.Parameters.Zip(interfaceFunc.Parameters, (p1, p2) => p1.Type.FullName != p2.Type.FullName).Any(b => b))
+                                        || implFunc.Parameters.Zip(interfaceFunc.Parameters, (p1, p2) => p1.Type.FullName() != p2.Type.FullName()).Any(b => b))
                                 {
                                     throw new BabyPenguinException($"Function {interfaceFunc.Name} in interface {vtable.Interface.Name} does not match the implementation in class {container.Name}");
                                 }
-                                vtable.Slots.RemoveAll(s => s.InterfaceSymbol.FullName == interfaceFunc.FunctionSymbol!.FullName);
+                                vtable.Slots.RemoveAll(s => s.InterfaceSymbol.FullName() == interfaceFunc.FunctionSymbol!.FullName());
                                 vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
                             }
                         }
@@ -159,7 +159,7 @@ namespace BabyPenguin.SemanticPass
 
                     foreach (var interfaceVtable in vtable.Interface.VTables)
                     {
-                        if (container.VTables.Find(v => v.Interface.FullName == interfaceVtable.Interface.FullName) is VTable existingVTable)
+                        if (container.VTables.Find(v => v.Interface.FullName() == interfaceVtable.Interface.FullName()) is VTable existingVTable)
                         {
                             // already have directly implemented vtable, ignore from interface
                         }
@@ -188,11 +188,11 @@ namespace BabyPenguin.SemanticPass
                 {
                     foreach (var interfaceFunc in vtable.Interface.Functions)
                     {
-                        if (!vtable.Slots.Exists(vs => vs.InterfaceSymbol.FullName == interfaceFunc.FunctionSymbol!.FullName))
+                        if (!vtable.Slots.Exists(vs => vs.InterfaceSymbol.FullName() == interfaceFunc.FunctionSymbol!.FullName()))
                         {
                             if (interfaceFunc.IsDeclarationOnly && !container.IsInterfaceType)
                             {
-                                throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName}'");
+                                throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName()}'");
                             }
                             else
                             {
@@ -212,7 +212,7 @@ namespace BabyPenguin.SemanticPass
                 var funcSymbol = intf.Constructor?.FunctionSymbol ?? throw new BabyPenguinException($"Cant resolve constructor for interface '{intf.Name}'");
                 if (cls.Constructor == null) throw new BabyPenguinException($"Cant resolve constructor for class '{cls.Name}'");
                 var intfSymbol = cls.Constructor.AllocTempSymbol(intf, vt.SourceLocation);
-                var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName}'");
+                var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName()}'");
                 cls.Constructor.AddCastExpression(new(thisSymbol), intfSymbol, vt.SourceLocation);
                 cls.Constructor.Instructions.Add(new FunctionCallInstruction(vt.SourceLocation, funcSymbol, [intfSymbol], null));
             }
@@ -243,7 +243,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         foreach (var slot in vtable.Slots)
                         {
-                            table.AddRow((cls as IClass).FullName, vtable.Interface.FullName, slot.InterfaceSymbol.FullName, slot.ImplementationSymbol.FullName);
+                            table.AddRow((cls as IClass).FullName(), vtable.Interface.FullName(), slot.InterfaceSymbol.FullName(), slot.ImplementationSymbol.FullName());
                         }
                     }
                 }

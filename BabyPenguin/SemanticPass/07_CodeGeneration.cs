@@ -20,13 +20,14 @@ namespace BabyPenguin.SemanticPass
         {
             if (obj is ICodeContainer container)
             {
+                var fullName = container.FullName();
                 if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
-                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Code generation pass for '{obj.FullName}' is skipped now because it is inside a generic type");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Code generation pass for '{fullName}' is skipped now because it is inside a generic type");
                 }
                 else
                 {
-                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Generating code for '{obj.FullName}'...");
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Generating code for '{fullName}'...");
                     container.CompileSyntaxStatements();
                 }
             }
@@ -43,7 +44,7 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (obj is ICodeContainer codeContainer && codeContainer.Instructions.Count > 0)
                     {
-                        sb.AppendLine($"Compile Result For {obj.FullName}:");
+                        sb.AppendLine($"Compile Result For {obj.FullName()}:");
                         sb.AppendLine(codeContainer.PrintInstructionsTable());
                     }
                 }

@@ -1,23 +1,56 @@
-                class Foo {
-                    event test_event : i32;
-                    var x: i32=0;
+namespace ll {
+    class LinkedList <T> {
+        head: mut LinkedListNode<T>;
+        tail: mut LinkedListNode<T>;
+        size: mut i32 = 0;
 
-                    on this.test_event (val b: i32) {
-                        print(b as string);
+        fun add(this: mut LinkedList<T>, v: T) {
+            if (this.size == 0) {
+               this.head = new LinkedListNode<T>();
+               this.head.value = v;
+               this.head.link = new LinkedListLink<T>.end();
+               this.tail = this.head;
+            } else {
+               let newNode : mut LinkedListNode<T> = new LinkedListNode<T>();
+               newNode.value = v;
+               newNode.link = new LinkedListLink<T>.end();
+               this.tail.link = new LinkedListLink<T>.next(newNode);
+               this.tail = newNode;
+            }
+            this.size += 1;
+        }
+
+        fun print_all(this: LinkedList<T>) {
+            if (this.size > 0) {
+                let current : LinkedListNode<T> = this.head;
+                while (true) {
+                    print(current.value);
+                    if (current.link is LinkedListLink<T>.end) {
+                        break;
+                    } else {
+                        current = current.link.next;
+                        print(",");
                     }
-                    
-                    fun foo(var this: Foo) {
-                        emit this.test_event(1 as i32);
-                        emit this.test_event(2 as i32);
-                    }
                 }
+            }
+        }
+    }
 
-                var f : Foo = new Foo();
+    enum LinkedListLink <T> {
+        end;
+        next: LinkedListNode<T>;
+    }
 
-                on f.test_event (val b: i32) {
-                    print(b as string);
-                }
+    class LinkedListNode <T> {
+        value: T;
+        link: LinkedListLink<T> = new LinkedListLink<T>.end();
+    }
 
-                initial {
-                    f.foo();
-                }
+    initial {
+        let ll : mut LinkedList<i32> = new LinkedList<i32>();
+        ll.add(1);
+        ll.add(2);
+        ll.add(3);
+        ll.print_all();
+    }
+}

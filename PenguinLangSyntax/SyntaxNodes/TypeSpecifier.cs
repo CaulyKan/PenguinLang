@@ -10,7 +10,11 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is TypeSpecifierContext context)
             {
                 TypeName = context.typeSpecifierWithoutIterable().GetText();
+                IsMutable = context.typeMutabilitySpecifier() != null;
                 IsIterable = context.iterableType() != null;
+
+                if (IsMutable)
+                    TypeName = "mut " + TypeName;
             }
             else throw new NotImplementedException();
         }
@@ -21,6 +25,8 @@ namespace PenguinLangSyntax.SyntaxNodes
             var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
             Build(walker, syntaxNode);
         }
+
+        public bool IsMutable { get; set; } = false;
 
         public string TypeName { get; set; } = "";
 

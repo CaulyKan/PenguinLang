@@ -67,7 +67,7 @@ namespace BabyPenguin.SemanticPass
         {
             var sourceLocation = ns.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
-            var constructor = Model.ResolveSymbol(ns.FullName + ".new", checkImportedNamespaces: false) as FunctionSymbol;
+            var constructor = Model.ResolveSymbol(ns.FullName() + ".new", checkImportedNamespaces: false) as FunctionSymbol;
 
             if (constructor == null)
             {
@@ -104,15 +104,15 @@ namespace BabyPenguin.SemanticPass
         {
             if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode && syntaxNode.EventExpression != null)
             {
-                var eventReceiverSymbol = onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName}'", onRoutine.SourceLocation);
-                var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName}'", onRoutine.SourceLocation);
+                var eventReceiverSymbol = onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName()}'", onRoutine.SourceLocation);
+                var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName() + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName()}'", onRoutine.SourceLocation);
                 constructorBody.AllocTempSymbol(receiverConstructor.TypeInfo, onRoutine.SourceLocation);
                 var eventSymbol = constructorBody.AddExpression(syntaxNode.EventExpression, false);
 
-                if (eventSymbol.TypeInfo.GenericType?.FullName != "__builtin.Event<?>")
+                if (eventSymbol.TypeInfo.GenericType?.FullName() != "__builtin.Event<?>")
                     throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' is not an event", syntaxNode.EventExpression.SourceLocation);
-                if (eventSymbol.TypeInfo.GenericArguments[0].FullName != onRoutine.EventType?.FullName)
-                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName}', but got '{onRoutine.EventType?.FullName}'", syntaxNode.EventExpression.SourceLocation);
+                if (eventSymbol.TypeInfo.GenericArguments[0].FullName() != onRoutine.EventType?.FullName())
+                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName()}', but got '{onRoutine.EventType?.FullName()}'", syntaxNode.EventExpression.SourceLocation);
 
                 if (!eventReceiverSymbol.IsClassMember)
                 {
@@ -137,19 +137,19 @@ namespace BabyPenguin.SemanticPass
             if (cls.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
                 if (constructorFunc.Parameters.Count > 0 &&
-                    constructorFunc.Parameters[0].Type.FullName == cls.FullName)
+                    constructorFunc.Parameters[0].Type.WithMutability(false).FullName() == cls.FullName())
                 {
                     cls.Constructor = constructorFunc;
                     sourceLocation = constructorFunc.SourceLocation;
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter of type '{cls.FullName}'", sourceLocation);
+                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter of type '{cls.FullName()}'", sourceLocation);
                 }
             }
             else
             {
-                List<FunctionParameter> param = [new FunctionParameter("this", cls, false, 0)];
+                List<FunctionParameter> param = [new FunctionParameter("this", cls, 0)];
                 cls.Constructor = new Function(Model, "new", param, BasicType.Void, sourceLocation, false, false);
                 cls.AddFunction(cls.Constructor);
                 Model.CatchUp(cls.Constructor);
@@ -182,21 +182,21 @@ namespace BabyPenguin.SemanticPass
             if (intf.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
                 if (constructorFunc.Parameters.Count > 0 &&
-                    constructorFunc.Parameters[0].Type.FullName == intf.FullName)
+                    constructorFunc.Parameters[0].Type.FullName() == intf.FullName())
                 {
                     if (constructorFunc.Parameters.Count > 1)
-                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter of type '{intf.FullName}'", sourceLocation);
+                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter of type '{intf.FullName()}'", sourceLocation);
                     intf.Constructor = constructorFunc;
                     sourceLocation = constructorFunc.SourceLocation;
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have first parameter of type '{intf.FullName}'", sourceLocation);
+                    throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have first parameter of type '{intf.FullName()}'", sourceLocation);
                 }
             }
             else
             {
-                List<FunctionParameter> param = [new FunctionParameter("this", intf, false, 0)];
+                List<FunctionParameter> param = [new FunctionParameter("this", intf, 0)];
                 intf.Constructor = new Function(Model, "new", param, BasicType.Void, sourceLocation, false, false);
                 intf.AddFunction(intf.Constructor);
                 Model.CatchUp(intf.Constructor);
@@ -225,11 +225,11 @@ namespace BabyPenguin.SemanticPass
                 var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: intfOrCls.IsLeft ? intfOrCls.Left : intfOrCls.Right)!;
                 var thisSymbol = Model.ResolveShortSymbol("this", scope: intfOrCls.IsLeft ? intfOrCls.Left!.Constructor : intfOrCls.Right!.Constructor)!;
                 var temp = constructorBody.AddExpression(initializer, true);
-                if (temp.TypeInfo.FullName != memberSymbol.TypeInfo.FullName)
+                if (temp.TypeInfo.FullName() != memberSymbol.TypeInfo.FullName())
                 {
                     if (!temp.TypeInfo.CanImplicitlyCastTo(memberSymbol.TypeInfo))
                     {
-                        throw new BabyPenguinException($"Cannot assign type '{temp.TypeInfo.FullName}' to type '{memberSymbol.TypeInfo.FullName}'", varDecl.SourceLocation);
+                        throw new BabyPenguinException($"Cannot assign type '{temp.TypeInfo.FullName()}' to type '{memberSymbol.TypeInfo.FullName()}'", varDecl.SourceLocation);
                     }
                     else
                     {

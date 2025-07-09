@@ -294,7 +294,7 @@ namespace BabyPenguin.VirtualMachine
         public override string ToString()
         {
             var enumValue = FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value;
-            var enumName = (TypeInfo as IEnum)?.EnumDeclarations.Find(e => e.Value == enumValue);
+            var enumName = (TypeInfo.WithMutability(false) as IEnum)?.EnumDeclarations.Find(e => e.Value == enumValue);
             var name = enumName?.Name ?? "?invalid?";
             return ContainingValue is null ? name : $"{name}({ContainingValue})";
         }

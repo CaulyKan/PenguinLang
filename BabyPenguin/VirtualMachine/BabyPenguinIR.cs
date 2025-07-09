@@ -159,7 +159,7 @@ namespace BabyPenguin.VirtualMachine
         public ISymbol? Target { get; } = target;
         public override SourceLocation SourceLocation { get; set; } = sourceLocation;
         override public string StringCommand => "CALL";
-        override public string StringOP1 => FunctionSymbol.FullName ?? "";
+        override public string StringOP1 => FunctionSymbol.FullName() ?? "";
         override public string StringOP2 => string.Join(", ", Arguments);
         override public string StringResult => Target?.ToString() ?? "";
     }
