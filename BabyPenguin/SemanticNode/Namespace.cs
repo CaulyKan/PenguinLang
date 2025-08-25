@@ -10,18 +10,20 @@ namespace BabyPenguin.SemanticNode
         public Namespace(SemanticModel model, string name) : base(model)
         {
             Name = name;
+            ReturnTypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
         public Namespace(SemanticModel model, NamespaceDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
+            ReturnTypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
-        public List<Class> Classes { get; } = [];
+        public List<ClassNode> Classes { get; } = [];
 
-        public List<Interface> Interfaces { get; } = [];
+        public List<InterfaceNode> Interfaces { get; } = [];
 
-        public List<Enum> Enums { get; } = [];
+        public List<EnumNode> Enums { get; } = [];
 
         public List<IFunction> Functions { get; } = [];
 
@@ -45,7 +47,7 @@ namespace BabyPenguin.SemanticNode
 
         public SyntaxNode? CodeSyntaxNode => SyntaxNode;
 
-        public IType ReturnTypeInfo { get; set; } = BasicType.Void;
+        public IType ReturnTypeInfo { get; set; }
 
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 
@@ -83,11 +85,11 @@ namespace BabyPenguin.SemanticNode
 
         public int PassIndex { get; set; }
 
-        public IEnumerable<Class> Classes => Namespaces.SelectMany(n => n.Classes);
+        public IEnumerable<ClassNode> Classes => Namespaces.SelectMany(n => n.Classes);
 
-        public IEnumerable<Interface> Interfaces => Namespaces.SelectMany(n => n.Interfaces);
+        public IEnumerable<InterfaceNode> Interfaces => Namespaces.SelectMany(n => n.Interfaces);
 
-        public IEnumerable<Enum> Enums => Namespaces.SelectMany(n => n.Enums);
+        public IEnumerable<EnumNode> Enums => Namespaces.SelectMany(n => n.Enums);
 
         public IEnumerable<IFunction> Functions => Namespaces.SelectMany(n => n.Functions);
 

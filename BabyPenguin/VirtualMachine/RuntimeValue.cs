@@ -174,10 +174,12 @@ namespace BabyPenguin.VirtualMachine
 
     public class FunctionRuntimeValue : IRuntimeValue
     {
-        public FunctionRuntimeValue(IType typeInfo, ISymbol funcSymbol, IRuntimeValue? owner = null)
+        public FunctionRuntimeValue(IType typeInfo, ISymbol funcSymbol, IRuntimeValue? owner_ = null)
         {
+            Model = typeInfo.Model;
             TypeInfo = typeInfo;
             FunctionSymbol = funcSymbol;
+            owner = owner_ ?? new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
             if (funcSymbol is not Symbol.FunctionSymbol)
                 throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}");
         }
@@ -188,7 +190,9 @@ namespace BabyPenguin.VirtualMachine
 
         public bool IsStatic => FunctionSymbol.IsStatic;
 
-        private IRuntimeValue owner = new NotInitializedRuntimeValue(BasicType.Void);
+        public SemanticModel Model { get; }
+
+        private IRuntimeValue owner;
         public IRuntimeValue Owner
         {
             get { return owner; }
@@ -197,7 +201,7 @@ namespace BabyPenguin.VirtualMachine
                 if (!FunctionSymbol.IsStatic)
                     owner = value;
                 else
-                    owner = new NotInitializedRuntimeValue(BasicType.Void);
+                    owner = new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
             }
         }
 
@@ -212,9 +216,9 @@ namespace BabyPenguin.VirtualMachine
         }
     }
 
-    public class ExternRuntimeValue : IRuntimeValue
+    public class ExternRuntimeValue(SemanticModel model) : IRuntimeValue
     {
-        public IType TypeInfo => BasicType.Void;
+        public IType TypeInfo => model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
 
         public object? Object { get; set; }
 
@@ -225,7 +229,7 @@ namespace BabyPenguin.VirtualMachine
 
         public IRuntimeValue Clone()
         {
-            return new ExternRuntimeValue { Object = Object };
+            return new ExternRuntimeValue(model) { Object = Object };
         }
     }
 
@@ -258,7 +262,7 @@ namespace BabyPenguin.VirtualMachine
             }
             set
             {
-                Fields["__extern_impl"] = new ExternRuntimeValue { Object = value };
+                Fields["__extern_impl"] = new ExternRuntimeValue(TypeInfo.Model) { Object = value };
             }
         }
 
@@ -294,7 +298,7 @@ namespace BabyPenguin.VirtualMachine
         public override string ToString()
         {
             var enumValue = FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value;
-            var enumName = (TypeInfo.WithMutability(false) as IEnum)?.EnumDeclarations.Find(e => e.Value == enumValue);
+            var enumName = (TypeInfo.TypeNode as IEnumNode)?.EnumDeclarations.Find(e => e.Value == enumValue);
             var name = enumName?.Name ?? "?invalid?";
             return ContainingValue is null ? name : $"{name}({ContainingValue})";
         }

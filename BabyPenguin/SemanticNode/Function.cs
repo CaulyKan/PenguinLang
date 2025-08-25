@@ -33,6 +33,7 @@ namespace BabyPenguin.SemanticNode
             IsAsync = isAsync;
             IsDeclarationOnly = isDeclarationOnly;
             SourceLocation = sourceLocation ?? SourceLocation.Empty();
+            ReturnTypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
             if (parameters != null)
                 Parameters = parameters;
             if (returnType != null)
@@ -46,6 +47,7 @@ namespace BabyPenguin.SemanticNode
             IsPure = syntaxNode.IsPure;
             IsAsync = syntaxNode.IsAsync;
             IsDeclarationOnly = syntaxNode.CodeBlock == null && !IsExtern;
+            ReturnTypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
         public string Name { get; }
@@ -62,7 +64,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<FunctionParameter> Parameters { get; } = [];
 
-        public IType ReturnTypeInfo { get; set; } = BasicType.Void;
+        public IType ReturnTypeInfo { get; set; }
 
         public bool IsExtern { get; set; }
 
@@ -74,7 +76,7 @@ namespace BabyPenguin.SemanticNode
 
         public bool? IsAsync { get; set; }
 
-        public bool IsGenerator => ReturnTypeInfo.IsGeneric && ReturnTypeInfo.GenericType!.FullName() == "__builtin.IGenerator<?>";
+        public bool IsGenerator => ReturnTypeInfo.TypeNode!.IsGeneric && ReturnTypeInfo.TypeNode.GenericType!.FullName() == "__builtin.IGenerator<?>";
 
         public IType? GeneratorReturnTypeInfo => !IsGenerator ? null : ReturnTypeInfo.GenericArguments[0];
 

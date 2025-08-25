@@ -76,7 +76,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
+                    let i : mut u8 = 0;
                     while (i < 3) {
                         print(i as string);
                         i += 1;
@@ -95,8 +95,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
-                    let j : u8 = 0;
+                    let i : mut u8 = 0;
+                    let j : mut u8 = 0;
                     while (i < 2) 
                         while (i < 2) {
                             j = 0;
@@ -120,7 +120,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
+                    let i : mut u8 = 0;
                     while (i < 3) {
                         print(i as string);
                         if (i == 1) break;
@@ -140,7 +140,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
+                    let i : mut u8 = 0;
                     while (i < 3) {
                         i += 1;
                         if (i == 2) continue;
@@ -160,8 +160,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
-                    let j : u8 = 0;
+                    let i : mut u8 = 0;
+                    let j : mut u8 = 0;
                     while (i < 3) {
                         i += 1;
                         j = 0;
@@ -187,7 +187,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let i : u8 = 0;
+                    let i : mut u8 = 0;
                     while (true) {
                         if (i == 3) break;
                         i+=1;

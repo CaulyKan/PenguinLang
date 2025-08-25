@@ -87,7 +87,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let rg : IIterator<i64> = range(0, 5);
+                    let rg : mut IIterator<i64> = range(0, 5);
                     while(true) {
                         let n : Option<i64> = rg.next();
                         if (n.is_none())
@@ -137,10 +137,10 @@ namespace BabyPenguin.Tests
                     impl ICopy<Self>;
                 }
                 initial {
-                    let a : Foo = new Foo();
+                    let a : mut Foo = new Foo();
                     a.x = 1;
                     a.y = 2;
-                    let b : Foo = a.copy();
+                    let b : mut Foo = a.copy();
                     b.x = 3;
                     b.y = 4;
                     print(a.x as string);
@@ -161,8 +161,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : u8 = 1;
-                    let b : u8 = a.copy();
+                    let a : mut u8 = 1;
+                    let b : mut u8 = a.copy();
                     b = 2;
                     print(a as string);
                     print(b as string);
@@ -204,7 +204,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : AtomicI64 = new AtomicI64(1);
+                    let a : mut AtomicI64 = new AtomicI64(1);
                     println(a.load() as string);
                     a.store(2);
                     println(a.load() as string);
@@ -233,7 +233,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : List<i64> = new List<i64>();
+                    let a : mut List<i64> = new List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
@@ -262,7 +262,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : List<i64> = new List<i64>();
+                    let a : mut List<i64> = new List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
@@ -283,7 +283,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : Queue<i64> = new Queue<i64>();
+                    let a : mut Queue<i64> = new Queue<i64>();
                     a.enqueue(1);
                     a.enqueue(2);
                     println(a.size() as string);
@@ -315,7 +315,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let routine : _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
+                    let routine : mut _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
                     println(routine.start() as string);
                     println(routine.routine_state() as string);
                     

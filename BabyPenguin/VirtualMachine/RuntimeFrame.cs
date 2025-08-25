@@ -271,7 +271,7 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {cmd.TypeInfo} to type {resultVar.TypeInfo}");
                             }
-                            if (rightVar.TypeInfo.WithMutability(false).FullName() == resultVar.TypeInfo.WithMutability(false).FullName())
+                            if (rightVar.TypeInfo.TypeNode!.FullName() == resultVar.TypeInfo.TypeNode!.FullName())
                             {
                                 resultVar.AssignFrom(rightVar);
 
@@ -330,7 +330,7 @@ namespace BabyPenguin.VirtualMachine
                                         else if (rightVar.TypeInfo.IsEnumType)
                                         {
                                             var enumInt = rightVar.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value;
-                                            var name = (rightVar.As<EnumRuntimeSymbol>().TypeInfo as IEnum)?.EnumDeclarations.Find(i => i.Value == enumInt)?.Name ??
+                                            var name = (rightVar.As<EnumRuntimeSymbol>().TypeInfo.TypeNode as IEnumNode)?.EnumDeclarations.Find(i => i.Value == enumInt)?.Name ??
                                                 throw new BabyPenguinRuntimeException($"Converting unknown enum value '{enumInt}' for '{rightVar.As<EnumRuntimeSymbol>().TypeInfo.FullName()}' to string.");
                                             resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = rightVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue == null ? name : $"{name}({rightVar.As<EnumRuntimeSymbol>().EnumValue.ContainingValue})";
                                         }
@@ -358,8 +358,8 @@ namespace BabyPenguin.VirtualMachine
                                         }
                                         else
                                         {
-                                            var cls = (cmd.Operand.TypeInfo.WithMutability(false) as IVTableContainer) ?? throw new InvalidOperationException("Operand is not a class");
-                                            var intf = (cmd.TypeInfo as IInterface) ?? throw new InvalidOperationException("TypeInfo is not an interface");
+                                            var cls = (cmd.Operand.TypeInfo.TypeNode as IVTableContainer) ?? throw new InvalidOperationException("Operand is not a class");
+                                            var intf = (cmd.TypeInfo.TypeNode as IInterfaceNode) ?? throw new InvalidOperationException("TypeInfo is not an interface");
                                             var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == intf.FullName()) ?? throw new BabyPenguinRuntimeException($"Class {cls.FullName()} does not implement interface {intf.FullName()}");
                                             resultVar.As<InterfaceRuntimeSymbol>().VTable = vtable;
                                             resultVar.As<InterfaceRuntimeSymbol>().Value = rightVar.Value;
@@ -728,7 +728,7 @@ namespace BabyPenguin.VirtualMachine
                             if (!members.ContainsKey(cmd.Member.Name))
                                 throw new BabyPenguinRuntimeException($"Class {owner.TypeInfo} does not have member {cmd.Member.Name}");
 
-                            if (rightVar.TypeInfo.WithMutability(false).FullName() != members[cmd.Member.Name].TypeInfo.WithMutability(false).FullName())
+                            if (rightVar.TypeInfo.TypeNode!.FullName() != members[cmd.Member.Name].TypeInfo.TypeNode!.FullName())
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {members[cmd.Member.Name].TypeInfo}");
 
                             members[cmd.Member.Name] = rightVar.Value;

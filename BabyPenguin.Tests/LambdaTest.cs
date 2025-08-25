@@ -271,7 +271,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                         initial {
-                            let a : i32 = 1;
+                            let a : mut i32 = 1;
                             let x : fun<i32> = fun -> i32 { a=a+1; return a; };
                             print(x() as string);
                             print(a as string);
@@ -289,7 +289,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                         initial {
-                            let a : Box<i32> = new Box<i32>(1);
+                            let a : mut Box<mut i32> = new Box<mut i32>(1);
                             let x : fun<i32> = fun -> i32 { a.value = a.value + 1; return a.value; };
                             print(x() as string);
                             print(a.value as string);

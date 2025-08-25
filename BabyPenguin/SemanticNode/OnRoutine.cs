@@ -17,11 +17,13 @@ namespace BabyPenguin.SemanticNode
         public OnRoutine(SemanticModel model, string name) : base(model)
         {
             Name = name;
+            ReturnTypeInfo = model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
         public OnRoutine(SemanticModel model, OnRoutineDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
+            ReturnTypeInfo = model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
         public ISemanticScope? Parent { get; set; }
@@ -38,7 +40,7 @@ namespace BabyPenguin.SemanticNode
 
         public SyntaxNode? CodeSyntaxNode => (SyntaxNode as OnRoutineDefinition)?.CodeBlock;
 
-        public IType ReturnTypeInfo { get; set; } = BasicType.Void;
+        public IType ReturnTypeInfo { get; set; }
 
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 

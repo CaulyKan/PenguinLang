@@ -241,7 +241,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let v: IGenerator<i64> = test();
+                    let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
                         print(i as string);
                     }
@@ -266,7 +266,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let v: IGenerator<i64> = test();
+                    let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
                         print(i as string);
                     }
@@ -290,7 +290,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let v: IGenerator<i64> = test();
+                    let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
                         print(i as string);
                     }
@@ -336,7 +336,7 @@ namespace BabyPenguin.Tests
                 initial {
                    for (let i : void in test()) {} 
                 } 
-                fun test() -> IGenerator<void> {
+                fun test() -> mut IGenerator<void> {
                     print(""1"");
                     yield;
                     print(""2"");
@@ -359,7 +359,7 @@ namespace BabyPenguin.Tests
                     let a : Option<i32> = (test()).next();
                     print(a.some as string);
                 } 
-                fun test() -> IGenerator<i32> {
+                fun test() -> mut IGenerator<i32> {
                     yield 1;
                     yield 2;
                 }
@@ -398,7 +398,7 @@ namespace BabyPenguin.Tests
                         print(i as string);
                     } 
                 } 
-                fun test() -> IGenerator<i32> {
+                fun test() -> mut IGenerator<i32> {
                     yield 1;
                     wait;
                     yield 2;

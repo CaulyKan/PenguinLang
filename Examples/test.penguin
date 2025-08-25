@@ -1,56 +1,13 @@
-namespace ll {
-    class LinkedList <T> {
-        head: mut LinkedListNode<T>;
-        tail: mut LinkedListNode<T>;
-        size: mut i32 = 0;
-
-        fun add(this: mut LinkedList<T>, v: T) {
-            if (this.size == 0) {
-               this.head = new LinkedListNode<T>();
-               this.head.value = v;
-               this.head.link = new LinkedListLink<T>.end();
-               this.tail = this.head;
-            } else {
-               let newNode : mut LinkedListNode<T> = new LinkedListNode<T>();
-               newNode.value = v;
-               newNode.link = new LinkedListLink<T>.end();
-               this.tail.link = new LinkedListLink<T>.next(newNode);
-               this.tail = newNode;
-            }
-            this.size += 1;
-        }
-
-        fun print_all(this: LinkedList<T>) {
-            if (this.size > 0) {
-                let current : LinkedListNode<T> = this.head;
-                while (true) {
-                    print(current.value);
-                    if (current.link is LinkedListLink<T>.end) {
-                        break;
-                    } else {
-                        current = current.link.next;
-                        print(",");
+                class A {
+                    a: i32 = 1;
+                    fun immutable(this) {
+                        print(this.a as string);
+                    }
+                    fun mutable(mut this) {
+                        print(this.a as string);
                     }
                 }
-            }
-        }
-    }
-
-    enum LinkedListLink <T> {
-        end;
-        next: LinkedListNode<T>;
-    }
-
-    class LinkedListNode <T> {
-        value: T;
-        link: LinkedListLink<T> = new LinkedListLink<T>.end();
-    }
-
-    initial {
-        let ll : mut LinkedList<i32> = new LinkedList<i32>();
-        ll.add(1);
-        ll.add(2);
-        ll.add(3);
-        ll.print_all();
-    }
-}
+                initial {
+                    let a : A = new A();
+                    a.mutable();
+                }

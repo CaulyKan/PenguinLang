@@ -37,7 +37,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                             ScopeDepth = ScopeDepth,
                             SourceLocation = sourceLocation,
                             SourceText = text,
-                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable, ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
+                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable ? Mutability.Mutable : Mutability.Immutable, ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
                         });
                     }
                     Parameters.AddRange(context.parameterList().children.OfType<DeclarationContext>()

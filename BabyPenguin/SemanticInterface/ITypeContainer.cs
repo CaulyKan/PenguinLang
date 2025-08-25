@@ -3,19 +3,19 @@ namespace BabyPenguin.SemanticInterface
 
     public interface ITypeContainer : ISemanticScope
     {
-        void AddClass(Class cls)
+        void AddClass(ClassNode cls)
         {
             Classes.Add(cls);
             cls.Parent = this;
         }
 
-        void AddEnum(SemanticNode.Enum enm)
+        void AddEnum(SemanticNode.EnumNode enm)
         {
             Enums.Add(enm);
             enm.Parent = this;
         }
 
-        void AddInterface(Interface intf)
+        void AddInterface(InterfaceNode intf)
         {
             Interfaces.Add(intf);
             intf.Parent = this;
@@ -53,7 +53,7 @@ namespace BabyPenguin.SemanticInterface
             return result;
         }
 
-        public IClass AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool? isAsync = false)
+        public IClassNode AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool? isAsync = false)
         {
             var parametersString = string.Join(", ", parameters.Select(p => $"{p.Name} : {p.Type.FullName()}"));
             var declarationStrings = closureSymbols.Select(s => $"{s.Name} : {s.TypeInfo.FullName()}").ToList();
@@ -90,10 +90,10 @@ namespace BabyPenguin.SemanticInterface
             var source = @$"
                 class {name} {{
                     {string.Join("\n", declarationStrings.Select(i => i + ";"))}
-                    fun new(this: {name}{(declarationStrings.Count > 0 ? ", " : "")}{string.Join(", ", declarationStrings)}) {{
+                    fun new(this: mut {name}{(declarationStrings.Count > 0 ? ", " : "")}{string.Join(", ", declarationStrings)}) {{
                         {string.Join("\n", closureSymbols.Select(s => $"this.{s.Name} = {s.Name};"))}
                     }}
-                    fun call(this: {name}{(!string.IsNullOrEmpty(parametersString) ? ", " : "")}{parametersString}) -> {returnType.FullName()} {{
+                    fun call(this: mut {name}{(!string.IsNullOrEmpty(parametersString) ? ", " : "")}{parametersString}) -> {returnType.FullName()} {{
                         {text}
                     }}
                 }}
@@ -101,7 +101,7 @@ namespace BabyPenguin.SemanticInterface
 
             var classDefinition = new ClassDefinition();
             classDefinition.FromString(source, (this.SyntaxNode?.ScopeDepth ?? 0) + 1, Reporter);
-            var cls = new Class(Model, classDefinition);
+            var cls = new ClassNode(Model, classDefinition);
 
             AddClass(cls);
 
@@ -111,11 +111,11 @@ namespace BabyPenguin.SemanticInterface
             return cls;
         }
 
-        List<Class> Classes { get; }
+        List<ClassNode> Classes { get; }
 
-        List<SemanticNode.Enum> Enums { get; }
+        List<SemanticNode.EnumNode> Enums { get; }
 
-        List<Interface> Interfaces { get; }
+        List<InterfaceNode> Interfaces { get; }
     }
 
 }

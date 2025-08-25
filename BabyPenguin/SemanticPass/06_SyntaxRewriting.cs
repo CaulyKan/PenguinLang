@@ -37,7 +37,7 @@ namespace BabyPenguin.SemanticPass
             var codeContainers = Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>().ToList();
             foreach (var codeContainer in codeContainers)
             {
-                if (codeContainer is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                if (codeContainer is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is ITypeNode t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
                     Model.Reporter.Write(DiagnosticLevel.Debug, $"Async rewriting pass for '{codeContainer.FullName()}' is skipped now because it is inside a generic type");
                 }
@@ -72,7 +72,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        private IType CreateLambdaClass(ICodeContainer codeContainer, CodeBlock codeBlock, List<FunctionParameter> parameters, IType returnType,
+        private ITypeNode CreateLambdaClass(ICodeContainer codeContainer, CodeBlock codeBlock, List<FunctionParameter> parameters, IType returnType,
             List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isStatic, bool isAsync)
         {
             ITypeContainer typeContainer = codeContainer.FindAncestorIncludingSelf(i => i is ITypeContainer) as ITypeContainer ??
@@ -271,7 +271,7 @@ namespace BabyPenguin.SemanticPass
             SyntaxNode futureExp;
 
             var waitType = codeContainer.ResolveExpressionType(waitExpression.Expression);
-            if (waitType.GenericType != null && waitType.GenericType.FullName() == "__builtin.Event<?>")
+            if (waitType.TypeNode!.GenericType != null && waitType.TypeNode!.GenericType.FullName() == "__builtin.Event<?>")
             {
                 var newExp = waitExpression.Build<NewExpression>(e =>
                 {
@@ -390,6 +390,9 @@ namespace BabyPenguin.SemanticPass
 
                         if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
 
+                        if (symbol is MutableSymbolProxy proxy)
+                            symbol = proxy.Symbol;
+
                         if (symbol is FunctionSymbol callingFuncSymbol)
                         {
                             var callingFunc = callingFuncSymbol.CodeContainer as IFunction;
@@ -429,10 +432,10 @@ namespace BabyPenguin.SemanticPass
 
                 IType? returnType = null;
 
-                if (func.ReturnTypeInfo.GenericType?.FullName() == "__builtin.IGenerator<?>" && func.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType t)
+                if (func.ReturnTypeInfo.TypeNode!.GenericType?.FullName() == "__builtin.IGenerator<?>" && func.ReturnTypeInfo.GenericArguments.FirstOrDefault() is IType t)
                     returnType = t;
                 else if (func.ReturnTypeInfo.IsVoidType)
-                    returnType = BasicType.Void;
+                    returnType = Model.BasicTypeNodes.Void.ToType(Mutability.Auto);
                 else throw new BabyPenguinException($"Generator function '{func.FullName()}' return type should be an iterator or void");
 
                 if (func.SyntaxNode is FunctionDefinition functionDefinition)

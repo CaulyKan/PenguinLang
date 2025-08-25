@@ -3,13 +3,13 @@ using PenguinLangSyntax;
 
 namespace BabyPenguin.SemanticNode
 {
-    public interface IEnum : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
+    public interface IEnumNode : ISemanticNode, ISemanticScope, ITypeNode, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
         VariableSymbol? ValueSymbol { get; set; }
 
         List<EnumDeclaration> EnumDeclarations { get; set; }
 
-        IType IType.Specialize(List<IType> genericArguments)
+        ITypeNode ITypeNode.Specialize(List<IType> genericArguments)
         {
             if (genericArguments.Count == 0)
                 throw new BabyPenguinException("Cannot specialize without generic arguments.");
@@ -17,18 +17,18 @@ namespace BabyPenguin.SemanticNode
             if (genericArguments.Count > 0 && genericArguments.Count != GenericDefinitions.Count)
                 throw new BabyPenguinException("Count of generic arguments and definitions do not match.");
 
-            Enum result;
+            EnumNode result;
             if (SyntaxNode is EnumDefinition syntax)
             {
-                result = new Enum(Model, syntax);
+                result = new EnumNode(Model, syntax);
             }
             else
             {
-                result = new Enum(Model, Name);
+                result = new EnumNode(Model, Name);
                 result.EnumDeclarations = EnumDeclarations.Select(i => new EnumDeclaration(Model, result, i.Name, i.Value)).ToList();
             }
 
-            (result as IType).GenericType = this;
+            result.GenericType = this;
             GenericInstances.Add(result);
             result.GenericArguments = genericArguments;
             result.Parent = Parent;
@@ -38,15 +38,15 @@ namespace BabyPenguin.SemanticNode
         }
     }
 
-    public class Enum : BaseSemanticNode, IEnum
+    public class EnumNode : BaseSemanticNode, IEnumNode
     {
-        public Enum(SemanticModel model, string name, List<string>? genericDefinitions = null) : base(model)
+        public EnumNode(SemanticModel model, string name, List<string>? genericDefinitions = null) : base(model)
         {
             Name = name;
             GenericDefinitions = genericDefinitions ?? [];
         }
 
-        public Enum(SemanticModel model, EnumDefinition syntaxNode) : base(model, syntaxNode)
+        public EnumNode(SemanticModel model, EnumDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(gd => gd.Name).ToList() ?? [];
@@ -72,27 +72,24 @@ namespace BabyPenguin.SemanticNode
 
         public List<EnumDeclaration> EnumDeclarations { get; set; } = [];
 
-        public TypeEnum Type => TypeEnum.Enum;
-
         public List<string> GenericDefinitions { get; }
 
-        public IType? GenericType { get; set; }
+        public ITypeNode? GenericType { get; set; }
 
         public List<IType> GenericArguments { get; set; } = [];
 
-        public List<IType> GenericInstances { get; set; } = [];
-
-        public bool IsMutable => false;
-
-        public override bool Equals(object? obj) => (this as IEnum).FullName() == (obj as IEnum)?.FullName();
-
-        public override int GetHashCode() => (this as IEnum).FullName().GetHashCode();
-
-        public bool CanImplicitlyCastToWithoutMutability(IType other) => (this as ISemanticScope).FullName() == other.WithMutability(false).FullName();
+        public List<ITypeNode> GenericInstances { get; set; } = [];
 
         public List<VTable> VTables { get; } = [];
 
+        public TypeEnum Type => TypeEnum.Enum;
+
         public override string ToString() => (this as ISemanticScope).FullName();
+
+        public IType ToType(Mutability isMutable)
+        {
+            return new EnumType(this.Model, this, isMutable);
+        }
 
         public List<IOnRoutine> OnRoutines { get; } = [];
     }
@@ -100,25 +97,25 @@ namespace BabyPenguin.SemanticNode
 
     public class EnumDeclaration : BaseSemanticNode
     {
-        public EnumDeclaration(SemanticModel model, IEnum enum_, string name, int value, IType? typeInfo = null) : base(model)
+        public EnumDeclaration(SemanticModel model, IEnumNode enum_, string name, int value, IType? typeInfo = null) : base(model)
         {
             Name = name;
-            Enum = enum_;
+            EnumNode = enum_;
             Value = value;
-            TypeInfo = typeInfo ?? BasicType.Void;
+            TypeInfo = typeInfo ?? model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
-        public EnumDeclaration(SemanticModel model, IEnum enum_, PenguinLangSyntax.SyntaxNodes.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
+        public EnumDeclaration(SemanticModel model, IEnumNode enum_, PenguinLangSyntax.SyntaxNodes.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
-            Enum = enum_;
+            EnumNode = enum_;
             Value = value;
-            TypeInfo = BasicType.Void; // Type is elaborated in SymbolElaboratePass
+            TypeInfo = model.BasicTypeNodes.Void.ToType(Mutability.Immutable); // Type is elaborated in SymbolElaboratePass
         }
 
         public string Name { get; }
 
-        public IEnum Enum { get; }
+        public IEnumNode EnumNode { get; }
 
         public IType TypeInfo { get; set; }
 

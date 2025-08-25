@@ -9,7 +9,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            var items = BasicType.BasicTypes.Values.Concat(Model.FindAll(o => o is IVTableContainer)).ToList();
+            var items = Model.BasicTypeNodes.Nodes.Values.Concat(Model.FindAll(o => o is IVTableContainer)).ToList();
             foreach (var obj in items)
             {
                 BuiltVTable(obj);
@@ -22,7 +22,7 @@ namespace BabyPenguin.SemanticPass
             {
                 FinishVTable(obj);
             }
-            foreach (var cls in items.OfType<IClass>())
+            foreach (var cls in items.OfType<IClassNode>())
             {
                 CallInterfaceConstructor(cls);
             }
@@ -40,17 +40,17 @@ namespace BabyPenguin.SemanticPass
                 {
                     foreach (var impl in namespaceDefinition.InterfaceImplementations)
                     {
-                        var interfaceType = Model.ResolveType(impl.InterfaceType!.Text, scope: ns);
-                        if (interfaceType == null)
+                        var interfaceTypeNode = Model.ResolveTypeNode(impl.InterfaceType!.Text, scope: ns);
+                        if (interfaceTypeNode == null)
                             throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
-                        if (interfaceType is IInterface intf && intf.HasDeclartion)
+                        if (interfaceTypeNode is IInterfaceNode intf && intf.HasDeclartion)
                             throw new BabyPenguinException($"Interface {intf.FullName()} has declarations, so it must be implemented in the scope of a class.");
 
-                        var forType = Model.ResolveType(impl.ForType!.Text, scope: ns);
+                        var forType = Model.ResolveType(impl.ForType!.Text, scope: ns, useImmutableAsDefault: false);
                         if (forType == null)
                             throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
 
-                        if (forType.FullName() == implementingClass.FullName())
+                        if (forType.TypeNode.FullName() == implementingClass.FullName())
                             yield return impl;
                     }
                 }
@@ -190,7 +190,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         if (!vtable.Slots.Exists(vs => vs.InterfaceSymbol.FullName() == interfaceFunc.FunctionSymbol!.FullName()))
                         {
-                            if (interfaceFunc.IsDeclarationOnly && !container.IsInterfaceType)
+                            if (interfaceFunc.IsDeclarationOnly && container is not IInterfaceNode)
                             {
                                 throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName()}'");
                             }
@@ -204,15 +204,15 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void CallInterfaceConstructor(IClass cls)
+        public void CallInterfaceConstructor(IClassNode cls)
         {
             foreach (var vt in cls.VTables)
             {
                 var intf = vt.Interface;
                 var funcSymbol = intf.Constructor?.FunctionSymbol ?? throw new BabyPenguinException($"Cant resolve constructor for interface '{intf.Name}'");
                 if (cls.Constructor == null) throw new BabyPenguinException($"Cant resolve constructor for class '{cls.Name}'");
-                var intfSymbol = cls.Constructor.AllocTempSymbol(intf, vt.SourceLocation);
                 var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName()}'");
+                var intfSymbol = cls.Constructor.AllocTempSymbol(intf.ToType(thisSymbol.IsMutable), vt.SourceLocation);
                 cls.Constructor.AddCastExpression(new(thisSymbol), intfSymbol, vt.SourceLocation);
                 cls.Constructor.Instructions.Add(new FunctionCallInstruction(vt.SourceLocation, funcSymbol, [intfSymbol], null));
             }
@@ -226,7 +226,7 @@ namespace BabyPenguin.SemanticPass
             BuiltVTable(obj);
             MergeVTables(obj);
             FinishVTable(obj);
-            if (obj is IClass cls)
+            if (obj is IClassNode cls)
                 CallInterfaceConstructor(cls);
 
             obj.PassIndex = PassIndex;
@@ -243,7 +243,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         foreach (var slot in vtable.Slots)
                         {
-                            table.AddRow((cls as IClass).FullName(), vtable.Interface.FullName(), slot.InterfaceSymbol.FullName(), slot.ImplementationSymbol.FullName());
+                            table.AddRow((cls as IClassNode).FullName(), vtable.Interface.FullName(), slot.InterfaceSymbol.FullName(), slot.ImplementationSymbol.FullName());
                         }
                     }
                 }

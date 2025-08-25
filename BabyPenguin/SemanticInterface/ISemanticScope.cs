@@ -67,7 +67,7 @@ namespace BabyPenguin.SemanticInterface
             if (predicate(this))
                 yield return this;
 
-            if (this is IType typeObj)
+            if (this is ITypeNode typeObj)
                 foreach (var specialization in typeObj.GenericInstances.Cast<ISemanticScope>())
                     foreach (var res in specialization.FindChildrenIncludingSelf(predicate))
                         yield return res;

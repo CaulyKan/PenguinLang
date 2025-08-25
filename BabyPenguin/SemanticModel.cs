@@ -6,18 +6,21 @@ namespace BabyPenguin
     {
         public List<MergedNamespace> Namespaces { get; } = [];
         public IEnumerable<Namespace> AllNamespaces => Namespaces.SelectMany(n => n.Namespaces);
-        public IEnumerable<Class> Classes => FindAll(s => s is Class).Cast<Class>();
-        public IEnumerable<Interface> Interfaces => FindAll(s => s is Interface).Cast<Interface>();
-        public IEnumerable<SemanticNode.Enum> Enums => FindAll(s => s is SemanticNode.Enum).Cast<SemanticNode.Enum>();
-        public IEnumerable<IType> Types => FindAll(s => s is IType).Cast<IType>();
+        public IEnumerable<ClassNode> Classes => FindAll(s => s is ClassNode).Cast<ClassNode>();
+        public IEnumerable<InterfaceNode> Interfaces => FindAll(s => s is InterfaceNode).Cast<InterfaceNode>();
+        public IEnumerable<SemanticNode.EnumNode> Enums => FindAll(s => s is SemanticNode.EnumNode).Cast<SemanticNode.EnumNode>();
+        public IEnumerable<ITypeNode> Types => FindAll(s => s is ITypeNode).Cast<ITypeNode>();
         public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
         public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new BabyPenguinException("Builtin namespace not found.", SourceLocation.Empty());
 
+        public BasicTypeNodes BasicTypeNodes { get; }
+
         public SemanticModel(bool addBuiltin = true, ErrorReporter? reporter = null)
         {
             Reporter = reporter ?? new ErrorReporter();
+            BasicTypeNodes = new BasicTypeNodes(this);
 
             if (addBuiltin)
             {
@@ -102,24 +105,35 @@ namespace BabyPenguin
             if (nameComponents.Prefix.Count == 0)
                 return ResolveShortSymbol(name, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces);
 
-            var type = ResolveType(nameComponents.PrefixString, scope: scope);
+            var type = ResolveTypeNode(nameComponents.PrefixString, scope: scope);
             if (type as ISemanticScope != null)
-                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, scopeDepth, checkImportedNamespaces);
+                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, scopeDepth, checkImportedNamespaces, nameComponents.IsMutable);
 
             var ns = Namespaces.FirstOrDefault(n => n.Name == nameComponents.PrefixString);
             if (ns != null)
                 return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, scopeDepth, checkImportedNamespaces);
 
             var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces);
-            if (prefixSymbol is FunctionSymbol functionSymbol)
+            if (prefixSymbol != null)
             {
-                var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces);
-                if (symbol != null) return symbol;
+                if (prefixSymbol.WithoutMutability() is FunctionSymbol functionSymbol)
+                {
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces);
+                    if (symbol != null) return symbol;
+                }
+                else if (prefixSymbol.WithoutMutability() is VariableSymbol variableSymbol)
+                {
+                    var parentType = variableSymbol.TypeInfo.TypeNode as ISymbolContainer ??
+                        throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type");
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, scopeDepth, checkImportedNamespaces, prefixSymbol.IsMutable);
+                    if (symbol != null)
+                        return symbol;
+                }
             }
             return null;
         }
 
-        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true)
+        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable)
         {
             ISymbol? symbol = null;
             var predicate_ = predicate ?? (s => true);
@@ -156,33 +170,34 @@ namespace BabyPenguin
                     }
                 }
             }
+
+            if (symbol?.IsMutable == Mutability.Auto)
+            {
+                symbol = new MutableSymbolProxy(symbol, parentMutability);
+            }
             return symbol;
         }
 
-        public IType? ResolveType(string name, Predicate<IType>? predicate = null, ISemanticScope? scope = null)
+        public ITypeNode? ResolveTypeNode(string name, Predicate<ITypeNode>? predicate = null, ISemanticScope? scope = null)
         {
-            var nameComponents = NameComponents.ParseName(name);
-            var nameWithoutMut = nameComponents.IsMutable ? name[4..] : name;
             var predicate_ = predicate ?? (t => true);
+            var nameComponents = NameComponents.ParseName(name);
+            if (nameComponents.IsMutable != Mutability.Auto)
+                throw new BabyPenguinException("ResolveTypeNode dont support mutability");
 
             // check if is a built-in type
-            if (BasicType.BasicTypes.TryGetValue(nameWithoutMut, out BasicType? value))
-                return (value as IType).WithMutability(nameComponents.IsMutable);
+            if (BasicTypeNodes.Nodes.TryGetValue(name, out BasicTypeNode? value))
+                return value;
 
             // check if is 'Self'
-            if (name == "Self" || name == "mut Self")
+            if (name == "Self")
             {
                 if (scope is null)
                     throw new BabyPenguinException("Self is not allowed here.", SourceLocation.Empty());
-                if (scope is IType typ)
-                {
-                    if (name == "Self")
-                        return typ.WithMutability(false);
-                    else
-                        return typ.WithMutability(true);
-                }
+                if (scope is ITypeNode typ)
+                    return typ;
                 else
-                    return ResolveType(name, predicate, scope.Parent);
+                    return ResolveTypeNode(name, predicate, scope.Parent);
             }
 
             // check if is a function type
@@ -191,29 +206,32 @@ namespace BabyPenguin
                 var genericArgumentsFromName = nameComponents.Generics.Select(g => ResolveType(g, scope: scope)).ToList();
                 if (genericArgumentsFromName.Any(a => a == null))
                     return null;
-                var funType = nameComponents.NameWithPrefix == "async_fun" ? BasicType.AsyncFun : BasicType.Fun;
-                return funType.Specialize(genericArgumentsFromName!).WithMutability(nameComponents.IsMutable);
+                var funType = nameComponents.NameWithPrefix == "async_fun" ? BasicTypeNodes.AsyncFun : BasicTypeNodes.Fun;
+                return funType.Specialize(genericArgumentsFromName!);
             }
 
             // check if is a generic definition
             if (scope != null && nameComponents.Prefix.Count == 0 && nameComponents.Generics.Count == 0)
             {
-                var genericAncestor = scope.FindAncestorIncludingSelf(s => s is IType genericable && genericable.IsGeneric &&
-                    genericable.IsSpecialized && genericable.GenericDefinitions.Contains(nameWithoutMut)) as IType;
+                var genericAncestor = scope.FindAncestorIncludingSelf(s => s is ITypeNode genericable && genericable.IsGeneric &&
+                    genericable.IsSpecialized && genericable.GenericDefinitions.Contains(name)) as ITypeNode;
                 if (genericAncestor != null)
                 {
-                    var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(nameWithoutMut)];
-                    if (predicate_(genericArgument))
-                        return genericArgument.WithMutability(nameComponents.IsMutable);
+                    var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(name)];
+                    var res = genericArgument.TypeNode;
+                    if (res == null) return null;
+                    else if (predicate_(res))
+                        return res;
                 }
             }
 
             // check local type symbol
             if (scope is ISymbolContainer symbolContainer)
             {
-                if (symbolContainer.Symbols.FirstOrDefault(s => s is TypeReferenceSymbol t && t.Name == name && predicate_(t.TypeReference)) is TypeReferenceSymbol typeRefSymbol)
+                if (symbolContainer.Symbols.FirstOrDefault(s => s is TypeReferenceSymbol t && t.Name == name
+                    && t.TypeReference.TypeNode != null && predicate_(t.TypeReference.TypeNode)) is TypeReferenceSymbol typeRefSymbol)
                 {
-                    return typeRefSymbol.TypeReference;
+                    return typeRefSymbol.TypeReference.TypeNode;
                 }
             }
 
@@ -223,27 +241,28 @@ namespace BabyPenguin
             var namespaceCandidates = namespace_ != null ? [namespace_] : scope!.GetImportedNamespaces().ToArray();
 
             // determine type without generic arguments
-            IType? typeCandidate = null;
+            ITypeNode? typeCandidate = null;
             foreach (var ns in namespaceCandidates)
             {
-                if (ns.Classes.FirstOrDefault(c => c.Name == nameComponents.Name && predicate_(c)) is IType cls)
+                if (ns.Classes.FirstOrDefault(c => c.Name == nameComponents.Name && predicate_(c)) is ITypeNode cls)
                 {
                     typeCandidate = cls;
                     break;
                 }
-                else if (ns.Enums.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is IType enm)
+                else if (ns.Enums.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is ITypeNode enm)
                 {
                     typeCandidate = enm;
                     break;
                 }
-                else if (ns.Interfaces.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is IType intf)
+                else if (ns.Interfaces.FirstOrDefault(e => e.Name == nameComponents.Name && predicate_(e)) is ITypeNode intf)
                 {
                     typeCandidate = intf;
                     break;
                 }
-                else if (ns.Symbols.FirstOrDefault(symbol => symbol is TypeReferenceSymbol s && s.Name == nameComponents.Name && predicate_(s.TypeReference)) is TypeReferenceSymbol typeRefSymbol)
+                else if (ns.Symbols.FirstOrDefault(symbol => symbol is TypeReferenceSymbol s && s.Name == nameComponents.Name
+                    && s.TypeReference.TypeNode != null && predicate_(s.TypeReference.TypeNode)) is TypeReferenceSymbol typeRefSymbol)
                 {
-                    typeCandidate = typeRefSymbol.TypeReference;
+                    typeCandidate = typeRefSymbol.TypeReference.TypeNode;
                     break;
                 }
             }
@@ -259,7 +278,7 @@ namespace BabyPenguin
             {
                 if (nameComponents.Generics.All(i => i == "?"))
                 {
-                    return typeCandidate.WithMutability(nameComponents.IsMutable);
+                    return typeCandidate;
                 }
                 else
                 {
@@ -273,11 +292,12 @@ namespace BabyPenguin
                         }
                     }
                     var genericTypeInfo = typeCandidate.GenericInstances.FirstOrDefault(i =>
-                        i.GenericArguments.SequenceEqual(genericArgumentsFromName));
+                        i.GenericArguments.Select(i => i.FullName()).ToList().SequenceEqual(
+                            genericArgumentsFromName.Select(j => j!.FullName()).ToList()));
 
                     genericTypeInfo ??= typeCandidate.Specialize(genericArgumentsFromName.Select(i => i!).ToList());
 
-                    return genericTypeInfo.WithMutability(nameComponents.IsMutable);
+                    return genericTypeInfo;
                 }
             }
             else if (typeCandidate.IsGeneric && nameComponents.Generics.Count == 0)
@@ -286,8 +306,39 @@ namespace BabyPenguin
             }
             else
             {
-                return typeCandidate.WithMutability(nameComponents.IsMutable);
+                return typeCandidate;
             }
+        }
+
+        public IType? ResolveType(string name, Predicate<IType>? predicate = null, ISemanticScope? scope = null, bool useImmutableAsDefault = true)
+        {
+            var predicate_ = predicate ?? (t => true);
+            var nameComponents = NameComponents.ParseName(name);
+            var nameWithoutMut = nameComponents.ToStringWithoutMutability();
+            var isMutable = nameComponents.IsMutable;
+            if (useImmutableAsDefault && isMutable == Mutability.Auto)
+                isMutable = Mutability.Immutable;
+
+            var typeNode = ResolveTypeNode(nameWithoutMut, t => predicate_(t.ToType(isMutable)), scope);
+            if (typeNode == null)
+                return null;
+
+            // double check the generic type for correct mutability
+            if (scope != null && nameComponents.Prefix.Count == 0 && nameComponents.Generics.Count == 0)
+            {
+                var genericAncestor = scope.FindAncestorIncludingSelf(s => s is ITypeNode genericable && genericable.IsGeneric &&
+                    genericable.IsSpecialized && genericable.GenericDefinitions.Contains(name)) as ITypeNode;
+                if (genericAncestor != null)
+                {
+                    var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(name)];
+                    if (!useImmutableAsDefault && isMutable != Mutability.Auto)
+                        throw new BabyPenguinException($"Setting mutability of generic argument is not allowed");
+                    else
+                        isMutable = genericArgument.IsMutable;
+                }
+            }
+
+            return typeNode.ToType(isMutable);
         }
 
         public int CurrentPassIndex { get; set; } = 0;
@@ -325,6 +376,8 @@ namespace BabyPenguin
             }
         }
 
+        public List<string> Files { get; } = [];
+
         public void AddSource(string? source, string fileName)
         {
             var context = PenguinParser.Parse(source ?? File.ReadAllText(fileName), fileName, Reporter);
@@ -336,6 +389,7 @@ namespace BabyPenguin
             {
                 AddNamespace(new Namespace(this, ns));
             }
+            Files.Add(fileName);
         }
 
         public void WriteReport(string file)
@@ -345,18 +399,52 @@ namespace BabyPenguin
             using (var f = File.OpenWrite(file))
             using (var sb = new StreamWriter(f))
             {
+                sb.WriteLine($"BabyPenguin Compile report for: ");
+                foreach (var s in Files.Select(i => Path.GetFullPath(file)))
+                    sb.WriteLine($"    {s}");
+                sb.WriteLine("");
+
+                sb.WriteLine("=======================================================");
+                sb.WriteLine($"Symbols:");
+                sb.WriteLine("=======================================================");
+
+                foreach (var obj in FindAll(o => o is ISymbolContainer).Cast<ISymbolContainer>())
+                {
+                    sb.WriteLine("----------------------------------------------");
+                    sb.WriteLine($"{obj.FullName()}");
+                    sb.WriteLine("----------------------------------------------");
+                    sb.WriteLine(obj.PrintSymbolTable());
+                    sb.WriteLine();
+
+                    if (obj is ITypeNode typeNode)
+                    {
+                        foreach (var inst in typeNode.GenericInstances.Cast<ISymbolContainer>())
+                        {
+                            sb.WriteLine("----------------------------------------------");
+                            sb.WriteLine($"{obj.FullName()}");
+                            sb.WriteLine("----------------------------------------------");
+                            sb.WriteLine(obj.PrintSymbolTable());
+                            sb.WriteLine();
+                        }
+                    }
+                }
+
+                sb.WriteLine("=======================================================");
+                sb.WriteLine($"Compiled IL:");
+                sb.WriteLine("=======================================================");
+
                 foreach (var obj in FindAll(o => o is ICodeContainer))
                 {
-                    sb.WriteLine("==============================================");
+                    sb.WriteLine("----------------------------------------------");
                     sb.WriteLine($"{obj.FullName()}");
-                    sb.WriteLine("==============================================");
+                    sb.WriteLine("----------------------------------------------");
                     if (obj.SyntaxNode == null)
                         sb.WriteLine("No AST available.");
                     else
                         sb.WriteLine(Tools.FormatPenguinLangSource(obj.SyntaxNode.BuildText()));
                     if (obj is ICodeContainer codeContainer && codeContainer.Instructions.Count > 0)
                     {
-                        sb.WriteLine("==============================================");
+                        sb.WriteLine("----------------------------------------------");
                         sb.WriteLine(codeContainer.PrintInstructionsTable());
                         sb.WriteLine();
                     }

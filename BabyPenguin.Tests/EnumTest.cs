@@ -10,7 +10,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        let test : Test = new Test.a();
+                        let test : mut Test = new Test.a();
                         if (test is Test.a) {
                             print(""a"");
                         }
@@ -41,7 +41,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        let test : Test<u8> = new Test<u8>.a();
+                        let test : mut Test<u8> = new Test<u8>.a();
                         if (test is Test<u8>.a) {
                             print(""a"");
                         }
@@ -72,16 +72,16 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     initial {
-                        let test : Test<Foo> = new Test<Foo>.a();
-                        if (test is Test<Foo>.a) {
+                        let test : mut Test<mut Foo> = new Test<mut Foo>.a();
+                        if (test is Test<mut Foo>.a) {
                             print(""a"");
                         }
-                        test = new Test<Foo>.b(new Foo());
-                        if (test is Test<Foo>.b) {
+                        test = new Test<mut Foo>.b(new Foo());
+                        if (test is Test<mut Foo>.b) {
                             print(test.b.x as string);
                             test.b.x = 1;
                             print(test.b.x as string);
-                        } else if (test is Test<Foo>.a) {
+                        } else if (test is Test<mut Foo>.a) {
                             print(""not possible"");
                         }
                     }

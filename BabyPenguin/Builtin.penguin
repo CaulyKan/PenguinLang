@@ -84,7 +84,7 @@ namespace __builtin {
     }
 
     interface IIterable<T> {
-        fun iter(mut this) -> IIterator<T>;
+        fun iter(mut this) -> mut IIterator<T>;
     }
 
     class RangeIterator {
@@ -112,8 +112,8 @@ namespace __builtin {
         }
     }
 
-    fun range(start: i64, end: i64) -> IIterator<i64> {
-        return new RangeIterator(start, end) as IIterator<i64>;
+    fun range(start: i64, end: i64) -> mut IIterator<i64> {
+        return new RangeIterator(start, end) as mut IIterator<i64>;
     }
 
     class AtomicI64 {
@@ -142,14 +142,14 @@ namespace __builtin {
         extern fun size(this) -> u64;
 
         impl IIterable<T> {
-            fun iter(this: mut IIterable<T>) -> IIterator<T> {
-                return new ListIterator<T>(this as mut Self) as IIterator<T>;
+            fun iter(this: mut IIterable<T>) -> mut IIterator<T> {
+                return new ListIterator<T>(this as mut Self) as mut IIterator<T>;
             }
         }
     }
 
     class ListIterator<T> {
-        list : mut List<T>;
+        list : !mut List<T>;
         current: mut u64;
 
         fun new(mut this, list: List<T>) {
@@ -269,7 +269,7 @@ namespace __builtin {
             return result;
         }
 
-        !async fun do_wait_any(this: IFuture<T>) -> Option<T> {
+        !async fun do_wait_any(this: mut IFuture<T>) -> Option<T> {
             while(true) {
                 wait;
                 let state: mut FutureState<T> = this.poll();
@@ -330,7 +330,7 @@ namespace __builtin {
         result: mut Option<T> = new Option<T>.none();
         target: mut async_fun<T>;
 
-        fun new(mut this, target: async_fun<T>) {
+        fun new(mut this, target: mut async_fun<T>) {
             this.target = target;
         }
         extern fun call(mut this) -> i64;
@@ -437,7 +437,7 @@ namespace __builtin {
 
         fun notify(mut this, ev: T);
 
-        fun connect(mut this, ev: Event<T>) {
+        fun connect(mut this, ev: mut Event<T>) {
             this.ev.remove_receiver(this);
             ev.add_receiver(this);
             this.ev = ev;
@@ -447,9 +447,9 @@ namespace __builtin {
     }
 
     class _AsyncEventReceiver<T> {
-        f : async_fun<void, T>;
+        f : mut async_fun<void, T>;
 
-        fun new(mut this, ev: mut Event<T>, f: async_fun<void, T>) {
+        fun new(mut this, ev: mut Event<T>, f: mut async_fun<void, T>) {
             ev.add_receiver(this);
             (this as  IEventReceiver<T>).ev = ev;
             this.f = f;

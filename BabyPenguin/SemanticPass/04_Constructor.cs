@@ -10,14 +10,50 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (var obj in Model.FindAll(o => o is IClass).ToList())
+            var classes = Model.FindAll(o => o is IClassNode).Cast<IClassNode>().ToList();
+            foreach (var cls in classes)
             {
-                Process(obj);
+                if (cls.IsGeneric && !cls.IsSpecialized)
+                {
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Class constructor pass for class '{cls.Name}' is skipped now because it is generic");
+                }
+                else
+                {
+                    InitClassConstructor(cls);
+                }
+            }
+            foreach (var cls in classes)
+            {
+                if (cls.IsGeneric && !cls.IsSpecialized)
+                {
+                }
+                else
+                {
+                    ProcessClass(cls);
+                }
             }
 
-            foreach (var obj in Model.FindAll(o => o is IInterface).ToList())
+            var interfaces = Model.FindAll(o => o is IInterfaceNode).Cast<IInterfaceNode>().ToList();
+            foreach (var intf in interfaces)
             {
-                Process(obj);
+                if (intf.IsGeneric && !intf.IsSpecialized)
+                {
+                    Model.Reporter.Write(DiagnosticLevel.Debug, $"Interface constructor pass for interface '{intf.Name}' is skipped now because it is generic");
+                }
+                else
+                {
+                    InitInterfaceConstructor(intf);
+                }
+            }
+            foreach (var intf in interfaces)
+            {
+                if (intf.IsGeneric && !intf.IsSpecialized)
+                {
+                }
+                else
+                {
+                    ProcessInterface(intf);
+                }
             }
 
             foreach (var obj in Model.FindAll(o => o is INamespace).ToList())
@@ -31,7 +67,7 @@ namespace BabyPenguin.SemanticPass
             if (obj.PassIndex >= PassIndex)
                 return;
 
-            if (obj is IClass cls)
+            if (obj is IClassNode cls)
             {
                 if (cls.IsGeneric && !cls.IsSpecialized)
                 {
@@ -39,11 +75,12 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
+                    InitClassConstructor(cls);
                     ProcessClass(cls);
                 }
             }
 
-            if (obj is IInterface intf)
+            if (obj is IInterfaceNode intf)
             {
                 if (intf.IsGeneric && !intf.IsSpecialized)
                 {
@@ -51,6 +88,7 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
+                    InitInterfaceConstructor(intf);
                     ProcessInterface(intf);
                 }
             }
@@ -71,7 +109,8 @@ namespace BabyPenguin.SemanticPass
 
             if (constructor == null)
             {
-                ns.Constructor = new Function(Model, "new", [], BasicType.Void, sourceLocation, false, false);
+
+                ns.Constructor = new Function(Model, "new", [], Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), sourceLocation, false, false);
                 ns.AddFunction(ns.Constructor);
                 Model.CatchUp(ns.Constructor);
                 constructor = ns.Constructor.FunctionSymbol;
@@ -109,7 +148,7 @@ namespace BabyPenguin.SemanticPass
                 constructorBody.AllocTempSymbol(receiverConstructor.TypeInfo, onRoutine.SourceLocation);
                 var eventSymbol = constructorBody.AddExpression(syntaxNode.EventExpression, false);
 
-                if (eventSymbol.TypeInfo.GenericType?.FullName() != "__builtin.Event<?>")
+                if (eventSymbol.TypeNode!.GenericType?.FullName() != "__builtin.Event<?>")
                     throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' is not an event", syntaxNode.EventExpression.SourceLocation);
                 if (eventSymbol.TypeInfo.GenericArguments[0].FullName() != onRoutine.EventType?.FullName())
                     throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName()}', but got '{onRoutine.EventType?.FullName()}'", syntaxNode.EventExpression.SourceLocation);
@@ -130,31 +169,39 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void ProcessClass(IClass cls)
+        public void InitClassConstructor(IClassNode cls)
         {
             var sourceLocation = cls.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
             if (cls.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
                 if (constructorFunc.Parameters.Count > 0 &&
-                    constructorFunc.Parameters[0].Type.WithMutability(false).FullName() == cls.FullName())
+                    constructorFunc.Parameters[0].Type.TypeNode!.FullName() == cls.FullName() && constructorFunc.Parameters[0].Name == "this")
                 {
+                    if (constructorFunc.Parameters[0].Type.IsMutable == Mutability.Auto)
+                    {
+                        constructorFunc.Parameters[0] = new FunctionParameter("this", constructorFunc.Parameters[0].Type.WithMutability(Mutability.Immutable), 0);
+                    }
                     cls.Constructor = constructorFunc;
                     sourceLocation = constructorFunc.SourceLocation;
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter of type '{cls.FullName()}'", sourceLocation);
+                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter 'this' with type '{cls.FullName()}'", sourceLocation);
                 }
             }
             else
             {
-                List<FunctionParameter> param = [new FunctionParameter("this", cls, 0)];
-                cls.Constructor = new Function(Model, "new", param, BasicType.Void, sourceLocation, false, false);
+                List<FunctionParameter> param = [new FunctionParameter("this", cls.ToType(Mutability.Mutable), 0)];
+                cls.Constructor = new Function(Model, "new", param, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), sourceLocation, false, false);
                 cls.AddFunction(cls.Constructor);
                 Model.CatchUp(cls.Constructor);
             }
 
+        }
+
+        public void ProcessClass(IClassNode cls)
+        {
             if (cls.SyntaxNode is ClassDefinition syntaxNode)
             {
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
@@ -175,7 +222,7 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void ProcessInterface(IInterface intf)
+        public void InitInterfaceConstructor(IInterfaceNode intf)
         {
             var sourceLocation = intf.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
@@ -184,8 +231,12 @@ namespace BabyPenguin.SemanticPass
                 if (constructorFunc.Parameters.Count > 0 &&
                     constructorFunc.Parameters[0].Type.FullName() == intf.FullName())
                 {
-                    if (constructorFunc.Parameters.Count > 1)
-                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter of type '{intf.FullName()}'", sourceLocation);
+                    if (constructorFunc.Parameters.Count > 1 || constructorFunc.Parameters[0].Name != "this")
+                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter 'this' with type '{intf.FullName()}'", sourceLocation);
+                    if (constructorFunc.Parameters[0].Type.IsMutable == Mutability.Auto)
+                    {
+                        constructorFunc.Parameters[0] = new FunctionParameter("this", constructorFunc.Parameters[0].Type.WithMutability(Mutability.Immutable), 0);
+                    }
                     intf.Constructor = constructorFunc;
                     sourceLocation = constructorFunc.SourceLocation;
                 }
@@ -196,12 +247,15 @@ namespace BabyPenguin.SemanticPass
             }
             else
             {
-                List<FunctionParameter> param = [new FunctionParameter("this", intf, 0)];
-                intf.Constructor = new Function(Model, "new", param, BasicType.Void, sourceLocation, false, false);
+                List<FunctionParameter> param = [new FunctionParameter("this", intf.ToType(Mutability.Mutable), 0)];
+                intf.Constructor = new Function(Model, "new", param, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), sourceLocation, false, false);
                 intf.AddFunction(intf.Constructor);
                 Model.CatchUp(intf.Constructor);
             }
+        }
 
+        public void ProcessInterface(IInterfaceNode intf)
+        {
             if (intf.SyntaxNode is InterfaceDefinition syntaxNode)
             {
                 var constructorBody = (intf.Constructor as ICodeContainer)!;
@@ -218,14 +272,14 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        public void InitializeVariable(Or<IInterface, IClass> intfOrCls, ICodeContainer constructorBody, Declaration varDecl)
+        public void InitializeVariable(Or<IInterfaceNode, IClassNode> intfOrCls, ICodeContainer constructorBody, Declaration varDecl)
         {
             if (varDecl.InitializeExpression is ISyntaxExpression initializer)
             {
                 var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: intfOrCls.IsLeft ? intfOrCls.Left : intfOrCls.Right)!;
                 var thisSymbol = Model.ResolveShortSymbol("this", scope: intfOrCls.IsLeft ? intfOrCls.Left!.Constructor : intfOrCls.Right!.Constructor)!;
                 var temp = constructorBody.AddExpression(initializer, true);
-                if (temp.TypeInfo.FullName() != memberSymbol.TypeInfo.FullName())
+                if (temp.TypeInfo.FullName() != memberSymbol.TypeInfo.WithMutability(temp.TypeInfo.IsMutable).FullName())
                 {
                     if (!temp.TypeInfo.CanImplicitlyCastTo(memberSymbol.TypeInfo))
                     {

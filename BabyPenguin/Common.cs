@@ -2,6 +2,7 @@
 global using BabyPenguin.SemanticNode;
 global using BabyPenguin.Symbol;
 global using BabyPenguin.SemanticPass;
+global using BabyPenguin.Type;
 global using BabyPenguin.SemanticInterface;
 global using BabyPenguin.VirtualMachine;
 global using PenguinLangSyntax;
@@ -42,21 +43,47 @@ namespace BabyPenguin
         public SourceLocation? Location { get; }
     }
 
-    public partial record NameComponents(bool IsMutable, List<string> Prefix, string Name, List<string> Generics)
+    public partial record NameComponents(Mutability IsMutable, List<string> Prefix, string Name, List<string> Generics)
     {
         public string PrefixString => string.Join(".", Prefix);
         public string NameWithPrefix => string.IsNullOrEmpty(PrefixString) ? Name : PrefixString + "." + Name;
-        public sealed override string ToString() => NameWithPrefix + (Generics.Count > 0 ? "<" + string.Join(",", Generics) + ">" : "");
+        public sealed override string ToString()
+        {
+            var m = IsMutable switch
+            {
+                Mutability.Mutable => "mut ",
+                Mutability.Immutable => "!mut ",
+                Mutability.Auto => "",
+                _ => throw new NotImplementedException()
+            };
+            return m + ToStringWithoutMutability();
+        }
+        public string ToStringWithoutMutability() => NameWithPrefix + (Generics.Count > 0 ? "<" + string.Join(",", Generics) + ">" : "");
         public static NameComponents ParseName(string nameStr)
         {
-            var isMut = nameStr.StartsWith("mut ");
-            var name = isMut ? nameStr.Substring(4) : nameStr;
+            var isMut = parseMutability(nameStr);
+            var name = nameStr.Substring(isMut switch
+            {
+                Mutability.Auto => 0,
+                Mutability.Mutable => 4,
+                Mutability.Immutable => 5,
+                _ => throw new NotImplementedException()
+            });
             var list = SplitStringPreservingAngleBrackets(name, '.');
             var prefix = list.Take(list.Count - 1).Select(i => i.Trim()).ToList();
             var last = list.Last();
             var simpleName = last.Contains('<') ? last.Split('<')[0] : last;
             var generics = last.Contains('<') ? SplitStringPreservingAngleBrackets(last.Substring(simpleName.Length + 1, last.LastIndexOf('>') - simpleName.Length - 1), ',') : [];
             return new NameComponents(isMut, prefix, simpleName.Trim(), generics);
+        }
+        private static Mutability parseMutability(string s)
+        {
+            if (s.StartsWith("mut "))
+                return Mutability.Mutable;
+            else if (s.StartsWith("!mut "))
+                return Mutability.Immutable;
+            else
+                return Mutability.Auto;
         }
 
         public static List<string> SplitStringPreservingAngleBrackets(string input, char deli)

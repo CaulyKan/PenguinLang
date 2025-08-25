@@ -18,6 +18,7 @@ namespace BabyPenguin.Symbol
         uint ScopeDepth { get; }
         ISymbolContainer Parent { get; }
         IType TypeInfo { get; }
+        ITypeNode TypeNode => TypeInfo.TypeNode;
         SourceLocation SourceLocation { get; }
         bool IsLocal { get; }
         bool IsTemp { get; }
@@ -28,5 +29,14 @@ namespace BabyPenguin.Symbol
         bool IsEnum { get; }
         bool IsFunction { get; }
         bool IsVariable { get; }
+        Mutability IsMutable { get; set; }
+        ISymbol WithoutMutability()
+        {
+            if (this is MutableSymbolProxy proxy)
+            {
+                return proxy.Symbol;
+            }
+            else return this;
+        }
     }
 }

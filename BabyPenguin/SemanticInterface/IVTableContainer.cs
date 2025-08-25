@@ -1,17 +1,17 @@
 namespace BabyPenguin.SemanticInterface
 {
-    public interface IVTableContainer : ISemanticScope, IType
+    public interface IVTableContainer : ISemanticScope, ITypeNode
     {
         List<VTable> VTables { get; }
 
-        IEnumerable<IInterface> ImplementedInterfaces => VTables.Select(v => v.Interface);
+        IEnumerable<IInterfaceNode> ImplementedInterfaces => VTables.Select(v => v.Interface);
     }
 
     public record VTableSlot(ISymbol InterfaceSymbol, ISymbol ImplementationSymbol);
 
     public class VTable : BaseSemanticNode, ISemanticNode, IRoutineContainer, ISymbolContainer
     {
-        public VTable(SemanticModel model, IVTableContainer implementingClass, IInterface interfaceType) : base(model)
+        public VTable(SemanticModel model, IVTableContainer implementingClass, IInterfaceNode interfaceType) : base(model)
         {
             Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
@@ -20,15 +20,15 @@ namespace BabyPenguin.SemanticInterface
 
         public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass) : base(model, syntaxNode as SyntaxNode)
         {
-            var type = Model.ResolveType(syntaxNode.InterfaceType!.Text, s => s.IsInterfaceType, implementingClass);
-            if (type is not IInterface interfaceType)
+            var type = Model.ResolveTypeNode(syntaxNode.InterfaceType!.Text, s => s is IInterfaceNode, implementingClass);
+            if (type is not IInterfaceNode interfaceType)
                 throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}");
             Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
             Interface = interfaceType;
         }
 
-        public IInterface Interface { get; }
+        public IInterfaceNode Interface { get; }
 
         public List<VTableSlot> Slots { get; } = [];
 

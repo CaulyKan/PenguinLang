@@ -10,7 +10,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (var obj in Model.FindAll(o => o is ICodeContainer || o is IType).ToList())
+            foreach (var obj in Model.FindAll(o => o is ICodeContainer || o is ITypeNode).ToList())
             {
                 Process(obj);
             }
@@ -21,7 +21,7 @@ namespace BabyPenguin.SemanticPass
             if (obj is ICodeContainer container)
             {
                 var fullName = container.FullName();
-                if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is ITypeNode t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
                     Model.Reporter.Write(DiagnosticLevel.Debug, $"Code generation pass for '{fullName}' is skipped now because it is inside a generic type");
                 }

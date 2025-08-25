@@ -93,6 +93,15 @@ namespace PenguinLangSyntax
 
         public static bool operator >=(SourceLocation left, SourceLocation right) =>
             left.CompareTo(right) >= 0;
+
+
     }
 
+    public static class ParserRuleContextHelper
+    {
+        public static string GetRawText(this ParserRuleContext context)
+        {
+            return context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
+        }
+    }
 }

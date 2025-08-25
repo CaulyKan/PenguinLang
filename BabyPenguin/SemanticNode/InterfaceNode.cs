@@ -1,8 +1,8 @@
 namespace BabyPenguin.SemanticNode
 {
-    public interface IInterface : ISemanticNode, ISemanticScope, IType, IRoutineContainer, ISymbolContainer, IVTableContainer
+    public interface IInterfaceNode : ISemanticNode, ISemanticScope, ITypeNode, IRoutineContainer, ISymbolContainer, IVTableContainer
     {
-        IType IType.Specialize(List<IType> genericArguments)
+        ITypeNode ITypeNode.Specialize(List<IType> genericArguments)
         {
             if (genericArguments.Count == 0)
                 throw new BabyPenguinException("Cannot specialize without generic arguments.");
@@ -10,17 +10,17 @@ namespace BabyPenguin.SemanticNode
             if (genericArguments.Count > 0 && genericArguments.Count != GenericDefinitions.Count)
                 throw new BabyPenguinException("Count of generic arguments and definitions do not match.");
 
-            Interface result;
+            InterfaceNode result;
             if (SyntaxNode is InterfaceDefinition syntax)
             {
-                result = new Interface(Model, syntax);
+                result = new InterfaceNode(Model, syntax);
             }
             else
             {
-                result = new Interface(Model, Name);
+                result = new InterfaceNode(Model, Name);
             }
 
-            (result as IInterface).GenericType = this;
+            (result as IInterfaceNode).GenericType = this;
             GenericInstances.Add(result);
             result.GenericArguments = genericArguments;
             result.Parent = Parent;
@@ -29,30 +29,20 @@ namespace BabyPenguin.SemanticNode
             return result;
         }
 
-        bool IType.CanImplicitlyCastToWithoutMutability(IType other)
-        {
-            if (FullName() == other.WithMutability(false).FullName())
-                return true;
-            else if (other.WithMutability(false) is IInterface intf)
-                return ImplementedInterfaces.Any(i => i.FullName() == intf.FullName());
-            else
-                return false;
-        }
-
         bool HasDeclartion { get; set; }
 
         IFunction? Constructor { get; set; }
     }
 
-    public class Interface : BaseSemanticNode, IInterface
+    public class InterfaceNode : BaseSemanticNode, IInterfaceNode
     {
-        public Interface(SemanticModel model, string name, List<string>? genericDefinitions = null) : base(model)
+        public InterfaceNode(SemanticModel model, string name, List<string>? genericDefinitions = null) : base(model)
         {
             Name = name;
             GenericDefinitions = genericDefinitions ?? [];
         }
 
-        public Interface(SemanticModel model, InterfaceDefinition syntaxNode) : base(model, syntaxNode)
+        public InterfaceNode(SemanticModel model, InterfaceDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(gd => gd.Name).ToList() ?? [];
@@ -74,30 +64,31 @@ namespace BabyPenguin.SemanticNode
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
-        public TypeEnum Type => TypeEnum.Interface;
-
         public List<string> GenericDefinitions { get; }
 
-        public IType? GenericType { get; set; }
+        public ITypeNode? GenericType { get; set; }
 
         public List<IType> GenericArguments { get; set; } = [];
 
-        public List<IType> GenericInstances { get; set; } = [];
-
-        public override bool Equals(object? obj) => (this as IInterface).FullName() == (obj as IInterface)?.FullName();
-
-        public override int GetHashCode() => (this as IInterface).FullName().GetHashCode();
+        public List<ITypeNode> GenericInstances { get; set; } = [];
 
         public IFunction? Constructor { get; set; }
 
         public List<VTable> VTables { get; } = [];
 
+        public TypeEnum Type => TypeEnum.Interface;
+
         public override string ToString() => (this as ISemanticScope).FullName();
+
+        public IType ToType(Mutability isMutable)
+        {
+            return new InterfaceType(this.Model, this, isMutable);
+        }
 
         public bool HasDeclartion { get; set; } = false;
 
         public List<IOnRoutine> OnRoutines { get; } = [];
 
-        public bool IsMutable => false;
+        public Mutability IsMutable => Mutability.Immutable;
     }
 }

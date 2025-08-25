@@ -18,9 +18,9 @@ namespace BabyPenguin.Tests
             Assert.Equal(5, ns.Symbols.Where(i => !i.IsTemp && i.Name != "new").Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
-            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "u8");
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "!mut u8");
             Assert.Equal("test2", ns.Symbols.ElementAt(1).Name);
-            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "i32");
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "!mut i32");
             Assert.Equal("test3", ns.Symbols.ElementAt(2).Name);
             Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
             Assert.Equal("test4", ns.Symbols.ElementAt(3).Name);
@@ -47,9 +47,9 @@ namespace BabyPenguin.Tests
             Assert.Equal(5, ns!.Symbols.Where(i => !i.IsTemp && i.Name != "new").Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.True(ns.Symbols.ElementAt(0).FullName() == "Test.test1");
-            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "u8");
+            Assert.True(ns.Symbols.ElementAt(1).TypeInfo.FullName() == "!mut u8");
             Assert.True(ns.Symbols.ElementAt(1).FullName() == "Test.test2");
-            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "i32");
+            Assert.True(ns.Symbols.ElementAt(2).TypeInfo.FullName() == "!mut i32");
             Assert.True(ns.Symbols.ElementAt(2).FullName() == "Test.test3");
             Assert.True(ns.Symbols.ElementAt(3).TypeInfo.IsBoolType);
             Assert.True(ns.Symbols.ElementAt(3).FullName() == "Test.test4");
@@ -109,7 +109,7 @@ namespace BabyPenguin.Tests
 
             var ns2 = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Equal(2, ns2.Classes.Count());
-            Assert.Equal("Test.TestClass", (ns2.Classes.First() as IClass).FullName());
+            Assert.Equal("Test.TestClass", (ns2.Classes.First() as IClassNode).FullName());
         }
 
         [Fact]
@@ -184,9 +184,9 @@ namespace BabyPenguin.Tests
             Assert.Equal("test1", symbols[0].Name);
             Assert.True(symbols[0].TypeInfo.IsStringType);
             Assert.True(symbols[0].IsLocal);
-            Assert.True(symbols[1].TypeInfo.FullName() == "u8");
+            Assert.True(symbols[1].TypeInfo.FullName() == "!mut u8");
             Assert.Equal("test2", symbols[1].Name);
-            Assert.True(symbols[2].TypeInfo.FullName() == "i32");
+            Assert.True(symbols[2].TypeInfo.FullName() == "!mut i32");
             Assert.Equal("test3", symbols[2].Name);
             Assert.True(symbols[3].TypeInfo.IsBoolType);
             Assert.Equal("test4", symbols[3].Name);
@@ -214,21 +214,21 @@ namespace BabyPenguin.Tests
             var symbols = ns.Functions.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
             Assert.Equal(7, symbols.Count());
             Assert.Equal("param1", symbols[0].Name);
-            Assert.Equal("u64", symbols[0].TypeInfo.FullName());
+            Assert.Equal("!mut u64", symbols[0].TypeInfo.FullName());
             Assert.True(symbols[0].IsParameter);
 
             Assert.Equal("param2", symbols[1].Name);
-            Assert.Equal("char", symbols[1].TypeInfo.FullName());
+            Assert.Equal("!mut char", symbols[1].TypeInfo.FullName());
             Assert.True(symbols[1].IsParameter);
 
             Assert.True(symbols[2].TypeInfo.IsStringType);
             Assert.True(symbols[2].IsLocal);
 
-            Assert.True(symbols[3].TypeInfo.FullName() == "u8");
+            Assert.True(symbols[3].TypeInfo.FullName() == "!mut u8");
             Assert.False(symbols[3].IsParameter);
             Assert.Equal("test2", symbols[3].Name);
 
-            Assert.True(symbols[4].TypeInfo.FullName() == "i32");
+            Assert.True(symbols[4].TypeInfo.FullName() == "!mut i32");
             Assert.Equal("test3", symbols[4].Name);
 
             Assert.True(symbols[5].TypeInfo.IsBoolType);
@@ -422,19 +422,19 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var foo1 = model.ResolveType("ns.Foo");
+            var foo1 = model.ResolveTypeNode("ns.Foo");
             Assert.NotNull(foo1);
             Assert.Equal("ns.Foo", foo1.FullName());
 
-            var foo2 = model.ResolveType("Foo", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
+            var foo2 = model.ResolveTypeNode("Foo", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(foo2);
             Assert.Equal("ns.Foo", foo2.FullName());
 
-            var bar1 = model.ResolveType("ns.Bar");
+            var bar1 = model.ResolveTypeNode("ns.Bar");
             Assert.NotNull(bar1);
             Assert.Equal("ns.Bar", bar1.FullName());
 
-            var bar2 = model.ResolveType("Bar", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
+            var bar2 = model.ResolveTypeNode("Bar", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.NotNull(bar2);
             Assert.Equal("ns.Bar", bar2.FullName());
         }
@@ -450,22 +450,22 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var bar1 = model.ResolveType("ns.Bar<?,?,?>");
+            var bar1 = model.ResolveTypeNode("ns.Bar<?,?,?>");
             Assert.NotNull(bar1);
             Assert.True(bar1.IsGeneric);
             Assert.False(bar1.IsSpecialized);
             Assert.Equal("ns.Bar<?,?,?>", bar1.FullName());
 
-            var bar2 = model.ResolveType("ns.Bar<u8,i8,string>");
+            var bar2 = model.ResolveTypeNode("ns.Bar<u8,i8,string>");
             Assert.NotNull(bar2);
             Assert.True(bar2.IsGeneric);
             Assert.True(bar2.IsSpecialized);
-            Assert.Equal("u8", bar2.GenericArguments[0].FullName());
-            Assert.Equal("i8", bar2.GenericArguments[1].FullName());
-            Assert.Equal("string", bar2.GenericArguments[2].FullName());
-            Assert.Equal("ns.Bar<u8,i8,string>", bar2.FullName());
+            Assert.Equal("!mut u8", bar2.GenericArguments[0].FullName());
+            Assert.Equal("!mut i8", bar2.GenericArguments[1].FullName());
+            Assert.Equal("!mut string", bar2.GenericArguments[2].FullName());
+            Assert.Equal("ns.Bar<!mut u8,!mut i8,!mut string>", bar2.FullName());
 
-            var bar3 = model.ResolveType("Bar<?,?,?>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
+            var bar3 = model.ResolveTypeNode("Bar<?,?,?>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.True(bar1.FullName() == bar3!.FullName());
             Assert.Single(bar3.GenericInstances);
             Assert.True(bar3.GenericInstances.First() == bar2);
@@ -482,19 +482,19 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var foo1 = model.ResolveType("ns.Foo<?>");
+            var foo1 = model.ResolveTypeNode("ns.Foo<?>");
             Assert.NotNull(foo1);
             Assert.True(foo1.IsGeneric);
             Assert.False(foo1.IsSpecialized);
             Assert.Equal("ns.Foo<?>", foo1.FullName());
 
-            var foo2 = model.ResolveType("ns.Foo<u8>");
+            var foo2 = model.ResolveTypeNode("ns.Foo<u8>");
             Assert.NotNull(foo2);
             Assert.True(foo2.IsGeneric);
             Assert.True(foo2.IsSpecialized);
-            Assert.Equal("ns.Foo<u8>", foo2.FullName());
+            Assert.Equal("ns.Foo<!mut u8>", foo2.FullName());
 
-            var foo3 = model.ResolveType("Foo<?>", scope: model.Namespaces.Find(i => i.Name == "ns"));
+            var foo3 = model.ResolveTypeNode("Foo<?>", scope: model.Namespaces.Find(i => i.Name == "ns"));
             Assert.True(foo1.FullName() == foo3!.FullName());
             Assert.Single(foo3.GenericInstances);
             Assert.True(foo3.GenericInstances.First() == foo2);
@@ -512,19 +512,19 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var bar1 = model.ResolveType("ns.Bar <  u8, i8>");
+            var bar1 = model.ResolveTypeNode("ns.Bar <  u8, i8>");
             Assert.NotNull(bar1);
             Assert.True(bar1.IsGeneric);
             Assert.True(bar1.IsSpecialized);
-            Assert.Equal("ns.Bar<u8,i8>", bar1.FullName());
+            Assert.Equal("ns.Bar<!mut u8,!mut i8>", bar1.FullName());
 
-            var T1 = model.ResolveType("T", scope: bar1 as IClass);
+            var T1 = model.ResolveTypeNode("T", scope: bar1 as IClassNode);
             Assert.Equal("u8", T1!.FullName());
 
-            var T2 = model.ResolveType("Foo", scope: bar1 as IClass);
+            var T2 = model.ResolveTypeNode("Foo", scope: bar1 as IClassNode);
             Assert.Equal("i8", T2!.FullName());
 
-            var fooOutOfScope = model.ResolveType("Foo", scope: model.Namespaces.Find(i => i.Name == "ns"));
+            var fooOutOfScope = model.ResolveTypeNode("Foo", scope: model.Namespaces.Find(i => i.Name == "ns"));
             Assert.Equal("ns.Foo", fooOutOfScope!.FullName());
         }
 
@@ -542,19 +542,19 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var bar1 = model.ResolveType("ns.Bar<ns.Foo<u8>>");
+            var bar1 = model.ResolveTypeNode("ns.Bar<ns.Foo<u8>>");
             Assert.True(bar1!.IsSpecialized);
-            Assert.Equal("ns.Bar<ns.Foo<u8>>", bar1.FullName());
-            Assert.Equal("ns.Foo<u8>", bar1.GenericArguments[0].FullName());
-            Assert.Equal("u8", bar1.GenericArguments[0].GenericArguments[0].FullName());
+            Assert.Equal("ns.Bar<!mut ns.Foo<!mut u8>>", bar1.FullName());
+            Assert.Equal("!mut ns.Foo<!mut u8>", bar1.GenericArguments[0].FullName());
+            Assert.Equal("!mut u8", bar1.GenericArguments[0].GenericArguments[0].FullName());
 
-            var bar2 = model.ResolveType("Bar<Foo<u8>>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
+            var bar2 = model.ResolveTypeNode("Bar<Foo<u8>>", scope: model.Classes.FirstOrDefault(c => c.Name == "Bar"));
             Assert.Equal(bar1.FullName(), bar2!.FullName());
 
-            var foo1 = model.ResolveType("T", scope: bar1 as IClass);
-            Assert.Equal("ns.Foo<u8>", foo1!.FullName());
+            var foo1 = model.ResolveTypeNode("T", scope: bar1 as IClassNode);
+            Assert.Equal("ns.Foo<!mut u8>", foo1!.FullName());
 
-            var u8 = model.ResolveType("T", scope: foo1 as IClass);
+            var u8 = model.ResolveTypeNode("T", scope: foo1 as IClassNode);
             Assert.Equal("u8", u8!.FullName());
         }
 
@@ -618,17 +618,17 @@ namespace BabyPenguin.Tests
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
             var symbol1 = model.ResolveSymbol("ns.Bar<ns.Foo<u8>>.a");
-            Assert.Equal("ns.Bar<ns.Foo<u8>>.a", symbol1!.FullName());
-            Assert.Equal("ns.Foo<u8>", symbol1.TypeInfo.FullName());
+            Assert.Equal("ns.Bar<!mut ns.Foo<!mut u8>>.a", symbol1!.FullName());
+            Assert.Equal("!mut ns.Foo<!mut u8>", symbol1.TypeInfo.FullName());
 
             var symbol2 = model.ResolveSymbol("Bar<Foo<i8>>.a", scope: ns);
-            Assert.Equal("ns.Bar<ns.Foo<i8>>.a", symbol2!.FullName());
-            Assert.Equal("ns.Foo<i8>", symbol2.TypeInfo.FullName());
+            Assert.Equal("ns.Bar<!mut ns.Foo<!mut i8>>.a", symbol2!.FullName());
+            Assert.Equal("!mut ns.Foo<!mut i8>", symbol2.TypeInfo.FullName());
 
-            var bar1 = model.ResolveType("ns.Bar<ns.Foo<string>>");
-            var symbol3 = model.ResolveSymbol("a", scope: bar1 as IClass);
-            Assert.Equal("ns.Bar<ns.Foo<string>>.a", symbol3!.FullName());
-            Assert.Equal("ns.Foo<string>", symbol3.TypeInfo.FullName());
+            var bar1 = model.ResolveTypeNode("ns.Bar<ns.Foo<string>>");
+            var symbol3 = model.ResolveSymbol("a", scope: bar1 as IClassNode);
+            Assert.Equal("ns.Bar<!mut ns.Foo<!mut string>>.a", symbol3!.FullName());
+            Assert.Equal("!mut ns.Foo<!mut string>", symbol3.TypeInfo.FullName());
         }
 
         [Fact]
@@ -684,14 +684,14 @@ namespace BabyPenguin.Tests
             Assert.NotNull(ibar);
             Assert.Single(ibar.GenericDefinitions);
 
-            var ibar_u8 = model.ResolveType("ns.IBar<u8>") as Interface;
+            var ibar_u8 = model.ResolveTypeNode("ns.IBar<u8>") as InterfaceNode;
             Assert.NotNull(ibar_u8);
 
             var bar = ibar_u8.Functions.Find(i => i.Name == "bar");
-            Assert.Equal("u8", bar!.ReturnTypeInfo.FullName());
+            Assert.Equal("!mut u8", bar!.ReturnTypeInfo.FullName());
             Assert.True(bar.IsDeclarationOnly);
             var bar2 = ibar_u8.Functions.Find(i => i.Name == "bar2");
-            Assert.Equal("ns.IBar<u8>", bar2!.Parameters[0].Type.FullName());
+            Assert.Equal("!mut ns.IBar<!mut u8>", bar2!.Parameters[0].Type.FullName());
             Assert.Equal("this", bar2!.Parameters[0].Name);
             Assert.False(bar2.IsDeclarationOnly);
         }
@@ -774,10 +774,10 @@ namespace BabyPenguin.Tests
             Assert.Single(foo!.VTables);
             var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
             var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName());
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName());
-            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName());
-            Assert.Equal("ns.Foo.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.bar", slotBar!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.bar", slotBar.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.foo", slotFoo!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.Foo.vtable-ns-IFoo<!mut u8>.foo", slotFoo.ImplementationSymbol.FullName());
         }
 
         [Fact]
@@ -805,16 +805,16 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var foo = model.ResolveType("ns.Foo<u8>") as IClass;
+            var foo = model.ResolveTypeNode("ns.Foo<u8>") as IClassNode;
             Assert.Single(foo!.VTables);
             var slotFoo = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "foo");
             var slotBar = foo.VTables[0].Slots.Find(i => i.InterfaceSymbol.Name == "bar");
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar!.InterfaceSymbol.FullName());
-            Assert.Equal("ns.IFoo<u8>.bar", slotBar.ImplementationSymbol.FullName());
-            Assert.Equal("ns.IFoo<u8>.foo", slotFoo!.InterfaceSymbol.FullName());
-            Assert.Equal("ns.Foo<u8>.vtable-ns-IFoo<u8>.foo", slotFoo.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.bar", slotBar!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.bar", slotBar.ImplementationSymbol.FullName());
+            Assert.Equal("ns.IFoo<!mut u8>.foo", slotFoo!.InterfaceSymbol.FullName());
+            Assert.Equal("ns.Foo<!mut u8>.vtable-ns-IFoo<!mut u8>.foo", slotFoo.ImplementationSymbol.FullName());
 
-            var foo2 = model.ResolveType("ns.Foo<u16>") as IClass;
+            var foo2 = model.ResolveTypeNode("ns.Foo<u16>") as IClassNode;
             Assert.Empty(foo2!.VTables);
         }
 
@@ -913,11 +913,11 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClass;
+            var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClassNode;
             Assert.Equal(3, qux!.ImplementedInterfaces.Count());
             Assert.Contains("ns.IFoo", qux.ImplementedInterfaces.Select(i => i.FullName()));
-            Assert.Contains("ns.IBar<u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
-            Assert.Contains("ns.IQux<u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
+            Assert.Contains("ns.IBar<!mut u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
+            Assert.Contains("ns.IQux<!mut u8>", qux.ImplementedInterfaces.Select(i => i.FullName()));
         }
 
         [Fact]
@@ -941,10 +941,10 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ns = model.Namespaces.Find(i => i.Name == "ns");
-            var qux = ns!.Classes.FirstOrDefault(i => i.Name == "Qux") as IClass;
-            var ifoo = ns.Interfaces.FirstOrDefault(i => i.Name == "IFoo") as IInterface;
-            var iqux = model.ResolveType("ns.IQux<u8>") as IInterface;
-            var ibar = model.ResolveType("ns.IBar<u8>") as IInterface;
+            var qux = model.ResolveType("ns.Qux");
+            var ifoo = model.ResolveType("ns.IFoo");
+            var iqux = model.ResolveType("ns.IQux<!mut u8>");
+            var ibar = model.ResolveType("ns.IBar<!mut u8>");
 
             Assert.True(qux!.CanImplicitlyCastTo(qux!));
             Assert.True(qux!.CanImplicitlyCastTo(iqux!));
@@ -986,12 +986,12 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var ifoo_a = model.ResolveSymbol("ns.IFoo.a") as FunctionSymbol;
-            Assert.Equal("ns.IFoo", ifoo_a!.ReturnTypeInfo.FullName());
+            Assert.Equal("!mut ns.IFoo", ifoo_a!.ReturnTypeInfo.FullName());
             var foo_a = model.ResolveSymbol("ns.Foo.a") as FunctionSymbol;
-            Assert.Equal("ns.Foo", foo_a!.ReturnTypeInfo.FullName());
+            Assert.Equal("!mut ns.Foo", foo_a!.ReturnTypeInfo.FullName());
             var vtable_foo = model.Classes.First(i => i.Name == "Foo")!.VTables.First();
             var f = vtable_foo.Functions.First()!;
-            Assert.Equal("ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName());
+            Assert.Equal("!mut ns.Foo", model.ResolveShortSymbol("b", scope: f)!.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1012,13 +1012,13 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var bar = model.Classes.First(i => i.Name == "Bar") as IClass;
+            var bar = model.Classes.First(i => i.Name == "Bar") as IClassNode;
             Assert.Single(bar.ImplementedInterfaces);
 
-            var foo_u8 = model.ResolveType("ns.Foo<u8>") as IClass;
+            var foo_u8 = model.ResolveTypeNode("ns.Foo<u8>") as IClassNode;
             Assert.Empty(foo_u8!.ImplementedInterfaces);
 
-            var foo_bar = model.ResolveType("ns.Foo<ns.Bar>") as IClass;
+            var foo_bar = model.ResolveTypeNode("ns.Foo<ns.Bar>") as IClassNode;
             Assert.Single(foo_bar!.ImplementedInterfaces);
             Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName());
         }
@@ -1046,10 +1046,10 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
 
-            var foo = model.Classes.First(i => i.Name == "Foo") as IClass;
+            var foo = model.Classes.First(i => i.Name == "Foo") as IClassNode;
             Assert.Equal(2, foo.ImplementedInterfaces.Count());
 
-            var ibar = model.ResolveType("ns.IBar") as IInterface;
+            var ibar = model.ResolveTypeNode("ns.IBar") as IInterfaceNode;
             Assert.Single(ibar!.ImplementedInterfaces);
         }
 
@@ -1068,9 +1068,9 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
 
             var a = model.ResolveSymbol("ns.a");
-            Assert.Equal("__builtin.IIterator<u8>", a!.TypeInfo.FullName());
+            Assert.Equal("mut __builtin.IIterator<!mut u8>", a!.TypeInfo.FullName());
             var b = model.ResolveSymbol("ns.b");
-            Assert.Equal("__builtin.IIterator<ns.Foo>", b!.TypeInfo.FullName());
+            Assert.Equal("mut __builtin.IIterator<!mut ns.Foo>", b!.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1091,18 +1091,18 @@ namespace BabyPenguin.Tests
                         let c : t3 = new t3();
                     }
                 }
-            ");
+            "); ;
             var model = compiler.Compile();
 
             var t1 = model.ResolveSymbol("ns.t1");
             Assert.True(t1!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t1 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
+            Assert.Equal("!mut ns.Foo", (t1 as TypeReferenceSymbol)!.TypeReference.FullName());
             var t2 = model.ResolveSymbol("ns.t2");
             Assert.True(t2!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t2 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
+            Assert.Equal("!mut ns.Foo", (t2 as TypeReferenceSymbol)!.TypeReference.FullName());
             var t3 = model.ResolveSymbol("ns.test.t3");
             Assert.True(t3!.TypeInfo.Type == TypeEnum.TypeReference);
-            Assert.True((t3 as TypeReferenceSymbol)!.TypeReference.FullName() == "ns.Foo");
+            Assert.Equal("!mut ns.Foo", (t3 as TypeReferenceSymbol)!.TypeReference.FullName());
         }
 
 

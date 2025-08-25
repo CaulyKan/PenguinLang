@@ -114,7 +114,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 initial {
-                    let test : Test2 = new Test2();
+                    let test : mut Test2 = new Test2();
                     test.test1 = new Test1();
                     test.test1.a = 1;
                     test.test1.b = 1;
@@ -157,7 +157,7 @@ namespace BabyPenguin.Tests
                 }
 
                 fun foo() -> Test {
-                    let test : Test = new Test();
+                    let test : mut Test = new Test();
                     test.a = 1;
                     test.b = 1;
                     return test;
@@ -315,15 +315,15 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Test <T> {
-                        x: T;
+                        x: auto T;
                     }
 
                     initial {
-                        let t : Test<u8> = new Test<u8>();
+                        let t : mut Test<u8> = new Test<u8>();
                         t.x = 1;
                         print(t.x as string);
 
-                        let t2 : Test<string> = new Test<string>();
+                        let t2 : mut Test<string> = new Test<string>();
                         t2.x = ""2"";
                         print(t2.x);
                     }
@@ -342,20 +342,20 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Test <T> {
-                        x: T;
+                        x: auto T;
                     }
 
                     class Test2 <T> {
-                        y: T;
+                        y: auto T;
                     }
 
                     initial {
-                        let t : Test<Test2<u8>> = new Test<Test2<u8>>();
+                        let t : mut Test<Test2<u8>> = new Test<Test2<u8>>();
                         t.x = new Test2<u8>();
                         t.x.y = 1;
                         print(t.x.y as string);
 
-                        let t2 : Test<Test2<string>> = new Test<Test2<string>>();
+                        let t2 : mut Test<Test2<string>> = new Test<Test2<string>>();
                         t2.x = new Test2<string>();
                         t2.x.y = ""2"";
                         print(t2.x.y);
@@ -376,12 +376,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Test <T, U> {
-                        x: T;
-                        y: U;
+                        x: auto T;
+                        y: auto U;
                     }
 
                     initial {
-                        let t : Test<u8, string> = new Test<u8, string>();
+                        let t : mut Test<u8, string> = new Test<u8, string>();
                         t.x = 1;
                         t.y = ""2"";
                         print(t.x as string);
@@ -402,15 +402,15 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Test <T, U> {
-                        x: T;
-                        y: U;
+                        x: auto T;
+                        y: auto U;
                         fun print_sum(this) {
                             print((this.x + this.y) as string);
                         }
                     }
 
                     initial {
-                        let t : Test<u8, u16> = new Test<u8, u16>();
+                        let t : mut Test<u8, u16> = new Test<u8, u16>();
                         t.x = 1;
                         t.y = 2;
                         t.print_sum();

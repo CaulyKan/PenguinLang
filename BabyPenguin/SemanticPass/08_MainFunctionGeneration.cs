@@ -22,11 +22,11 @@ namespace BabyPenguin.SemanticPass
             var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
             var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
 
-            var mainFunc = new Function(Model, "_main", [], BasicType.Void, schedulerEntrySymbol.SourceLocation.StartLocation, false, true, false, false, true, false);
+            var mainFunc = new Function(Model, "_main", [], Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), schedulerEntrySymbol.SourceLocation.StartLocation, false, true, false, false, true, false);
             if (Model.Namespaces.Find(ns => ns.Name == "__builtin")?.Namespaces.First() is not INamespace builtinNamespace)
                 throw new BabyPenguinException("namespace '__builtin' is not found.");
 
-            builtinNamespace.AddFunctionSymbol(mainFunc, true, BasicType.Void, [], schedulerEntrySymbol.SourceLocation.StartLocation, 0, null, true, false, true);
+            builtinNamespace.AddFunctionSymbol(mainFunc, true, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [], schedulerEntrySymbol.SourceLocation.StartLocation, 0, null, true, false, true, Mutability.Immutable);
             builtinNamespace.AddFunction(mainFunc);
 
             // init global variables

@@ -117,11 +117,16 @@ declarationWithoutInitializer: identifier ':' typeSpecifier;
 
 declaration: identifier (':' typeSpecifier)? ( '=' expression)?;
 
+classDeclaration:
+	identifier (':' typeMutabilitySpecifier? typeSpecifier)? (
+		'=' expression
+	)?;
+
 letKeyword: 'let';
 
 storageClassSpecifier: 'extern';
 
-typeMutabilitySpecifier: 'mut';
+typeMutabilitySpecifier: 'mut' | '!mut' | 'auto';
 
 typeSpecifier:
 	typeMutabilitySpecifier? typeSpecifierWithoutIterable iterableType?;
@@ -144,14 +149,17 @@ typeSpecifierWithoutIterable:
 	| 'Self'
 	| (('fun' | 'async_fun') genericArguments)
 	| (
-		identifierWithDots genericArguments? (
-			'.' identifierWithDots genericArguments?
+		identifierWithDotsAndGenericArguments (
+			'.' identifierWithDotsAndGenericArguments
 		)*
 	);
 
 iterableType: '[]';
 
 identifierWithDots: identifier ('.' identifier)*;
+
+identifierWithDotsAndGenericArguments:
+	identifierWithDots genericArguments?;
 
 genericArguments:
 	'<' typeSpecifier (',' typeSpecifier)* (
@@ -188,7 +196,7 @@ interfaceForImplementation:
 
 classDefinition:
 	'class' identifier genericDefinitions? '{' (
-		(declaration ';')
+		(classDeclaration ';')
 		| functionDefinition
 		| interfaceImplementation
 		| eventDefinition

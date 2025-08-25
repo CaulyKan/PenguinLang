@@ -16,6 +16,7 @@ using BabyPenguin.SemanticNode;
 using BabyPenguin.SemanticInterface;
 using BabyPenguin.Symbol;
 using Antlr4.Runtime;
+using BabyPenguin.Type;
 
 namespace MagellanicPenguin
 {
@@ -167,17 +168,17 @@ namespace MagellanicPenguin
             return new Uri("file:///" + fileName.Replace("\\", "/"));
         }
 
-        private static CompletionItem ConvertTypeToCompletionItem(IType type, bool fullName = false)
+        private static CompletionItem ConvertTypeToCompletionItem(ITypeNode type, bool fullName = false)
         {
             return new CompletionItem
             {
                 label = (fullName ? type.FullName() : type.Name).Replace("__builtin.", ""),
                 kind = type switch
                 {
-                    IClass => CompletionItemKind.Class,
-                    IInterface => CompletionItemKind.Interface,
-                    IEnum => CompletionItemKind.Enum,
-                    BasicType => CompletionItemKind.TypeParameter,
+                    IClassNode => CompletionItemKind.Class,
+                    IInterfaceNode => CompletionItemKind.Interface,
+                    IEnumNode => CompletionItemKind.Enum,
+                    BasicTypeNode => CompletionItemKind.TypeParameter,
                     TypeReferenceSymbol => CompletionItemKind.TypeParameter,
                     _ => CompletionItemKind.Text
                 }
@@ -392,7 +393,7 @@ namespace MagellanicPenguin
             }
 
             // Convert definition location to LSP Location
-            var definition = definitionLocation.IsLeft ? definitionLocation.Left.SourceLocation : definitionLocation.Right.SourceLocation;
+            var definition = definitionLocation.IsLeft ? definitionLocation.Left.SourceLocation : definitionLocation.Right.TypeNode.SourceLocation;
             var location = new Location
             {
                 uri = ConvertPathToUri(definition.FileName),
@@ -408,9 +409,9 @@ namespace MagellanicPenguin
             SymbolKind kind;
             if (scope is Namespace)
                 kind = SymbolKind.Namespace;
-            else if (scope is BabyPenguin.SemanticNode.Enum)
+            else if (scope is BabyPenguin.SemanticNode.EnumNode)
                 kind = SymbolKind.Enum;
-            else if (scope is Class)
+            else if (scope is ClassNode)
                 kind = SymbolKind.Class;
             else if (scope is InitialRoutine)
                 kind = SymbolKind.Method;
@@ -418,7 +419,7 @@ namespace MagellanicPenguin
                 kind = SymbolKind.Method;
             else if (scope is Function)
                 kind = SymbolKind.Function;
-            else if (scope is Interface)
+            else if (scope is InterfaceNode)
                 kind = SymbolKind.Interface;
             else
                 yield break;

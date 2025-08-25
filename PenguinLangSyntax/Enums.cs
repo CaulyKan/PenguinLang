@@ -49,4 +49,11 @@ namespace PenguinLangSyntax
         LogicalNot,
     }
 
+    public enum Mutability
+    {
+        Unspecified,
+        Auto,
+        Immutable,
+        Mutable,
+    }
 }

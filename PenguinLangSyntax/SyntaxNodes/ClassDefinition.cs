@@ -12,8 +12,8 @@ namespace PenguinLangSyntax.SyntaxNodes
                 walker.PushScope(SyntaxScopeType.Class, this);
 
                 ClassIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
-                Declarations = context.children.OfType<DeclarationContext>()
-                   .Select(x => Build<Declaration>(walker, x))
+                Declarations = context.children.OfType<ClassDeclarationContext>()
+                   .Select(x => Build<ClassDeclaration>(walker, x))
                    .ToList();
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => Build<FunctionDefinition>(walker, x))
@@ -69,7 +69,7 @@ namespace PenguinLangSyntax.SyntaxNodes
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
-        public List<Declaration> Declarations { get; set; } = [];
+        public List<ClassDeclaration> Declarations { get; set; } = [];
 
         [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; set; } = null;

@@ -104,7 +104,7 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IClass cls:
+                case IClassNode cls:
                     if (cls.IsGeneric && !cls.IsSpecialized)
                     {
                         Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{cls.Name}' is skipped now because it is generic");
@@ -115,7 +115,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var member in syntaxNode.Declarations)
                             {
-                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true);
+                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member.IsMutable);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -125,7 +125,7 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IInterface intf:
+                case IInterfaceNode intf:
                     if (intf.IsGeneric && !intf.IsSpecialized)
                     {
                         Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{intf.Name}' is skipped now because it is generic");
@@ -148,14 +148,14 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IEnum enm:
+                case IEnumNode enm:
                     if (enm.IsGeneric && !enm.IsSpecialized)
                     {
                         Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for class '{enm.Name}' is skipped now because it is generic");
                     }
                     else
                     {
-                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, BasicType.I32, enm.SourceLocation, 0, null, true) as VariableSymbol;
+                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, new(Model.BasicTypeNodes.I32.ToType(Mutability.Auto)), enm.SourceLocation, 0, null, true) as VariableSymbol;
 
                         if (enm.SyntaxNode is EnumDefinition syntax)
                         {
@@ -172,12 +172,12 @@ namespace BabyPenguin.SemanticPass
                             {
                                 if (enumDeclSyntax.TypeSpecifier != null)
                                 {
-                                    var type = Model.ResolveType(enumDeclSyntax.TypeSpecifier.Name, scope: enm);
+                                    var type = Model.ResolveType(enumDeclSyntax.TypeSpecifier.Name, scope: enm, useImmutableAsDefault: false);
                                     if (type == null)
                                         throw new BabyPenguinException($"Cant resolve type '{enumDeclSyntax.TypeSpecifier.Name}'", enumDeclSyntax.SourceLocation);
                                     enumDecl.TypeInfo = type;
                                 }
-                                else enumDecl.TypeInfo = BasicType.Void;
+                                else enumDecl.TypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
                             }
 
                             enumDecl.MemberSymbol = enm.AddEnumSymbol(enm, enumDecl.Name, enumDecl.TypeInfo, enumDecl.Value, enumDecl.SourceLocation) as EnumSymbol;
@@ -187,7 +187,7 @@ namespace BabyPenguin.SemanticPass
                 case IInitialRoutine initialRoutine:
                     {
                         var parent = initialRoutine.Parent as IRoutineContainer;
-                        if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
+                        if (parent is ITypeNode parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
                             Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for initial routine '{initialRoutine.Name}' is skipped now because it is generic");
                         }
@@ -206,7 +206,7 @@ namespace BabyPenguin.SemanticPass
                 case IOnRoutine onRoutine:
                     {
                         var parent = onRoutine.Parent as IRoutineContainer;
-                        if (parent is IType parentType && parentType.IsGeneric && !parentType.IsSpecialized)
+                        if (parent is ITypeNode parentType && parentType.IsGeneric && !parentType.IsSpecialized)
                         {
                             Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
                         }
@@ -215,7 +215,7 @@ namespace BabyPenguin.SemanticPass
                             if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode)
                             {
                                 var eventParamDecl = syntaxNode.Parameter;
-                                var eventType = eventParamDecl == null ? BasicType.Void : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
+                                var eventType = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
                                 onRoutine.EventType = eventType;
 
                                 var funcSymbol = (onRoutine.Parent as ISymbolContainer)!.AddOnRoutineSymbol(
@@ -232,7 +232,7 @@ namespace BabyPenguin.SemanticPass
                     break;
                 case IFunction func:
                     {
-                        var parent = func.Parent as IType;
+                        var parent = func.Parent as ITypeNode;
                         if (parent != null && parent.IsGeneric && !parent.IsSpecialized)
                         {
                             Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for function '{func.Name}' is skipped now because it is generic");
@@ -248,7 +248,7 @@ namespace BabyPenguin.SemanticPass
                                 }
                                 else
                                 {
-                                    func.ReturnTypeInfo = retType;
+                                    func.ReturnTypeInfo = retType.IsMutable == Mutability.Auto ? retType.WithMutability(Mutability.Immutable) : retType;
                                 }
 
                                 func.Parameters.Clear();
@@ -277,7 +277,7 @@ namespace BabyPenguin.SemanticPass
 
                                     if (param.Name == "this")
                                     {
-                                        if ((func.Parent is IClass || func.Parent is IEnum || func.Parent is IInterface || func.Parent is VTable) && i == 0)
+                                        if ((func.Parent is IClassNode || func.Parent is IEnumNode || func.Parent is IInterfaceNode || func.Parent is VTable) && i == 0)
                                             func.IsStatic = false;
                                         else
                                             throw new BabyPenguinException($"'this' parameter can only be the first parameter for class method in function '{syntaxNode.Name}'", param.SourceLocation);
@@ -285,7 +285,7 @@ namespace BabyPenguin.SemanticPass
                                     i++;
                                 }
 
-                                var funcSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, syntaxNode.SourceLocation, syntaxNode.ScopeDepth, null, true, false, func.IsStatic!.Value);
+                                var funcSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, syntaxNode.SourceLocation, syntaxNode.ScopeDepth, null, true, false, func.IsStatic!.Value, Mutability.Immutable);
                                 func.FunctionSymbol = (FunctionSymbol)funcSymbol;
                             }
                             else
@@ -296,7 +296,7 @@ namespace BabyPenguin.SemanticPass
                                     func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, false);
                                 }
 
-                                func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, func.SourceLocation, 0, null, true, false, func.IsStatic!.Value) as FunctionSymbol;
+                                func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, func.SourceLocation, 0, null, true, false, func.IsStatic!.Value, Mutability.Immutable) as FunctionSymbol;
                             }
                         }
                         break;
@@ -311,7 +311,7 @@ namespace BabyPenguin.SemanticPass
         {
             if (obj is ICodeContainer container)
             {
-                if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is IType t && t.IsGeneric && !t.IsSpecialized) != null)
+                if (obj is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is ITypeNode t && t.IsGeneric && !t.IsSpecialized) != null)
                 {
                     Model.Reporter.Write(DiagnosticLevel.Debug, $"Local Symbol elaborating pass for '{obj.FullName()}' is skipped now because it is inside a generic type");
                 }

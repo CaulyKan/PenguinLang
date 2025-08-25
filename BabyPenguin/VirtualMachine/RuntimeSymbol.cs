@@ -44,7 +44,7 @@ namespace BabyPenguin.VirtualMachine
             {
                 var result = new ClassRuntimeSymbol(model, symbol);
                 var fields = result.ReferenceValue.Fields;
-                var cls = (symbol.TypeInfo is MutableTypeProxy t ? t.TypeInfo : symbol.TypeInfo) as IClass
+                var cls = symbol.TypeInfo.TypeNode as IClassNode
                     ?? throw new BabyPenguinRuntimeException($"Cannot create class {symbol.TypeInfo.FullName()} because it is not a class");
                 foreach (var vtable in cls.VTables)
                 {
@@ -152,7 +152,8 @@ namespace BabyPenguin.VirtualMachine
 
         public void AssignFrom(IRuntimeSymbol other)
         {
-            if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not FunctionRuntimeSymbol funVar)
+            // TODO: ignore mutability for now
+            if (other.TypeInfo.TypeNode.FullName() != TypeInfo.TypeNode.FullName() || other is not FunctionRuntimeSymbol funVar)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             FunctionValue = funVar.FunctionValue;
@@ -183,7 +184,7 @@ namespace BabyPenguin.VirtualMachine
         {
             Model = model;
             Symbol = symbol;
-            var symbolContainer = (TypeInfo is MutableTypeProxy t ? t.TypeInfo : TypeInfo) as ISymbolContainer
+            var symbolContainer = TypeInfo.TypeNode as ISymbolContainer
                 ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
             var symbols = symbolContainer.Symbols;
             var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
@@ -206,7 +207,7 @@ namespace BabyPenguin.VirtualMachine
         {
             if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not ClassRuntimeSymbol clsVar)
             {
-                if (other.TypeInfo.WithMutability(false).FullName() == TypeInfo.WithMutability(false).FullName())
+                if (other.TypeInfo.TypeNode!.FullName() == TypeInfo.TypeNode!.FullName())
                 {
                     // TODO: temp disable runtime mutability check
                     // throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
@@ -222,7 +223,7 @@ namespace BabyPenguin.VirtualMachine
         {
             if (other.TypeInfo.FullName() != TypeInfo.FullName() || other is not ReferenceRuntimeValue clsVar)
             {
-                if (other.TypeInfo.WithMutability(false).FullName() == TypeInfo.WithMutability(false).FullName())
+                if (other.TypeInfo.TypeNode!.FullName() == TypeInfo.TypeNode!.FullName())
                 {
                     // TODO: temp disable runtime mutability check
                     // throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
@@ -266,12 +267,12 @@ namespace BabyPenguin.VirtualMachine
             if (intfVar.Value is null)
                 throw new BabyPenguinRuntimeException($"Cannot assign null to interface {TypeInfo.FullName()}");
 
-            if (intfVar.Value.TypeInfo.WithMutability(false) is not IClass cls)
+            if (intfVar.Value.TypeInfo.TypeNode is not IClassNode cls)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.FullName()} because it is not a class");
 
-            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.WithMutability(false).FullName());
+            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.TypeNode!.FullName());
             if (vtable == null)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.WithMutability(false).FullName()} because it is not implementing the interface");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {intfVar.Value.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.TypeNode!.FullName()} because it is not implementing the interface");
 
             Value = intfVar.Value;     // using reference
             VTable = vtable;
@@ -282,12 +283,12 @@ namespace BabyPenguin.VirtualMachine
             if (other is not ReferenceRuntimeValue refVar)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
-            if (refVar.TypeInfo.WithMutability(false) is not IClass cls)
+            if (refVar.TypeInfo.TypeNode is not IClassNode cls)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.FullName()} because it is not a class");
 
-            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.WithMutability(false).FullName());
+            var vtable = cls.VTables.FirstOrDefault(v => v.Interface.FullName() == TypeInfo.TypeNode!.FullName());
             if (vtable == null)
-                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.WithMutability(false).FullName()} because it is not implementing the interface");
+                throw new BabyPenguinRuntimeException($"Cannot assign type {refVar.TypeInfo.FullName()} behind {other.TypeInfo.FullName()} to interface {TypeInfo.TypeNode!.FullName()} because it is not implementing the interface");
 
             Value = refVar;
             VTable = vtable;
@@ -325,7 +326,7 @@ namespace BabyPenguin.VirtualMachine
             Model = model;
             Symbol = symbol;
 
-            var symbolContainer = (TypeInfo is MutableTypeProxy t ? t.TypeInfo : TypeInfo) as ISymbolContainer
+            var symbolContainer = TypeInfo.TypeNode as ISymbolContainer
                 ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
             var symbols = symbolContainer.Symbols;
             var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
@@ -334,7 +335,7 @@ namespace BabyPenguin.VirtualMachine
 
         public void AssignFrom(IRuntimeSymbol other)
         {
-            if (other.TypeInfo.WithMutability(false).FullName() != TypeInfo.WithMutability(false).FullName() || other is not EnumRuntimeSymbol enumVar)
+            if (other.TypeInfo.TypeNode!.FullName() != TypeInfo.TypeNode!.FullName() || other is not EnumRuntimeSymbol enumVar)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
             EnumValue.AssignFrom(enumVar.EnumValue);

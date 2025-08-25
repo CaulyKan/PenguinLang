@@ -19,7 +19,8 @@ namespace BabyPenguin.Symbol
             bool isClassMember,
             bool isStatic,
             bool isExtern,
-            bool? isAsync)
+            bool? isAsync,
+            Mutability isMutable)
         {
             Parent = parent;
             Name = name;
@@ -39,36 +40,58 @@ namespace BabyPenguin.Symbol
             this.isAsync = isAsync;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters.Select(p => p.Type)).ToList();
-            var typeInfo = BasicType.Fun.Specialize(funTypeGenericArguments);
+            var typeInfo = parent.Model.BasicTypeNodes.Fun.Specialize(funTypeGenericArguments);
             if (typeInfo == null)
                 throw new NotImplementedException();
-            TypeInfo = typeInfo;
+            TypeInfo = typeInfo.ToType(isMutable);
+            IsMutable = isMutable;
         }
 
         public string FullName() => Parent.FullName() + "." + Name;
+
         public string Name { get; }
+
         public ISymbolContainer Parent { get; }
+
         public IType ReturnTypeInfo { get; }
+
         public List<FunctionParameter> Parameters { get; }
+
         public SourceLocation SourceLocation { get; }
+
         public IType TypeInfo { get; }
+
         public bool IsLocal { get; }
+
         public string OriginName { get; }
+
         public uint ScopeDepth { get; }
+
         public bool IsTemp { get; }
+
         public bool IsParameter { get; }
+
         public int ParameterIndex { get; }
-        public bool IsConst => TypeInfo.IsMutable;
+
         public ICodeContainer CodeContainer { get; }
+
         public bool IsClassMember { get; }
+
         public bool IsStatic { get; }
+
         public bool IsEnum => false;
+
         public bool IsFunction => true;
+
         public bool IsVariable => false;
+
         public bool IsExtern { get; }
 
         private bool? isAsync { get; }
+
         public bool IsAsync => isAsync ?? (CodeContainer as IFunction)?.IsAsync ?? true;
+
+        public Mutability IsMutable { get; set; }
 
         public bool IsGenerator => (CodeContainer as IFunction)?.IsGenerator ?? false;
 
@@ -91,7 +114,8 @@ namespace BabyPenguin.Symbol
             bool isTemp,
             int? paramIndex,
             bool isClassMember,
-            bool isAsync)
+            bool isAsync,
+            Mutability isMutable)
         {
             Parent = parent;
             Name = name;
@@ -108,34 +132,55 @@ namespace BabyPenguin.Symbol
             IsAsync = isAsync;
 
             var funTypeGenericArguments = new[] { returnType }.Concat(parameters).ToList();
-            var typeInfo = BasicType.Fun.Specialize(funTypeGenericArguments);
-            (typeInfo as BasicType)!.IsAsyncFunction = isAsync;
+            var typeInfo = parent.Model.BasicTypeNodes.Fun.Specialize(funTypeGenericArguments);
+            (typeInfo as BasicTypeNode)!.IsAsyncFunction = isAsync;
             if (typeInfo == null)
                 throw new NotImplementedException();
-            TypeInfo = typeInfo;
+            TypeInfo = typeInfo.ToType(isMutable);
+            IsMutable = isMutable;
         }
 
         public string FullName() => Parent.FullName() + "." + Name;
+
         public string Name { get; }
+
         public ISymbolContainer Parent { get; }
+
         public IType ReturnTypeInfo { get; }
+
         public List<IType> Parameters { get; }
+
         public SourceLocation SourceLocation { get; }
+
         public IType TypeInfo { get; }
+
         public bool IsLocal { get; }
+
         public string OriginName { get; }
+
         public uint ScopeDepth { get; }
+
         public bool IsTemp { get; }
+
         public bool IsParameter { get; }
+
         public int ParameterIndex { get; }
-        public bool IsConst => TypeInfo.IsMutable;
+
         public bool IsClassMember { get; }
+
         public bool IsEnum => false;
+
         public bool IsFunction => true;
+
         public bool IsVariable => true;
+
         public bool IsExtern { get; }
+
         public bool IsAsync { get; }
+
         public bool IsStatic => false;
+
+        public Mutability IsMutable { get; set; }
 
         public override string ToString()
         {

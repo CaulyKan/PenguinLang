@@ -12,7 +12,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (var obj in Model.FindAll(o => o is IType).ToList())
+            foreach (var obj in Model.FindAll(o => o is ITypeNode).ToList())
             {
                 Process(obj);
             }
@@ -23,20 +23,6 @@ namespace BabyPenguin.SemanticPass
             if (obj.PassIndex >= PassIndex)
                 return;
 
-            switch (obj)
-            {
-                case Class class_:
-                    {
-                        break;
-                    }
-                case SemanticNode.Enum enum_:
-                    {
-                        break;
-                    }
-                default:
-                    break;
-            }
-
             obj.PassIndex = PassIndex;
         }
 
@@ -45,7 +31,7 @@ namespace BabyPenguin.SemanticPass
             get
             {
                 var table = new ConsoleTable("Name", "Namespace", "Type", "Generic Parameters");
-                Model.Types.Select(t => table.AddRow(t.Name, t.Namespace, t.Type, string.Join(", ", t.GenericDefinitions))).ToList();
+                Model.Types.Select(t => table.AddRow(t.Name, t.Namespace, t.GetType().Name.Replace("Node", ""), string.Join(", ", t.GenericDefinitions))).ToList();
                 return table.ToMarkDownString();
             }
         }

@@ -9,15 +9,15 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             if (ctx is IdentifierContext context)
             {
-                this.LiteralName = context.GetText();
+                this.LiteralName = context.GetRawText();
             }
             else if (ctx is TypeSpecifierContext context2)
             {
-                this.LiteralName = context2.GetText();
+                this.LiteralName = context2.GetRawText();
             }
             else if (ctx is IdentifierWithGenericContext context3)
             {
-                this.LiteralName = context3.GetText();
+                this.LiteralName = context3.GetRawText();
             }
             else throw new NotImplementedException();
         }

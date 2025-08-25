@@ -40,7 +40,7 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddCopy(BabyPenguinVM vm)
         {
-            foreach (var ICopy in vm.Model.ResolveType("__builtin.ICopy<?>")!.GenericInstances)
+            foreach (var ICopy in vm.Model.ResolveTypeNode("__builtin.ICopy<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(ICopy.FullName() + ".copy", (result, args) =>
                 {
@@ -81,7 +81,7 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddList(BabyPenguinVM vm)
         {
-            foreach (var queue in vm.Model.ResolveType("__builtin.Queue<?>")!.GenericInstances)
+            foreach (var queue in vm.Model.ResolveTypeNode("__builtin.Queue<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(queue.FullName() + ".new", (result, args) =>
                 {
@@ -136,7 +136,7 @@ namespace BabyPenguin.VirtualMachine
                 });
             }
 
-            foreach (var list in vm.Model.ResolveType("__builtin.List<?>")!.GenericInstances)
+            foreach (var list in vm.Model.ResolveTypeNode("__builtin.List<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(list.FullName() + ".new", (result, args) =>
                 {
@@ -273,7 +273,7 @@ namespace BabyPenguin.VirtualMachine
         public static void AddRoutineContext(BabyPenguinVM vm)
         {
 
-            foreach (var routineContext in vm.Model.ResolveType("__builtin.RoutineContext<?>")!.GenericInstances)
+            foreach (var routineContext in vm.Model.ResolveTypeNode("__builtin.RoutineContext<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(routineContext.FullName() + ".call", RoutineContextCall);
             }

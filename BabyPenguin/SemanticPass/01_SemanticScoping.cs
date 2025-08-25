@@ -28,7 +28,7 @@ namespace BabyPenguin.SemanticPass
                     {
                         foreach (var classNode in namespaceSyntax.Classes)
                         {
-                            var class_ = new Class(Model, classNode);
+                            var class_ = new ClassNode(Model, classNode);
                             if (ns.Classes.Any(c => c.Name == class_.Name))
                                 throw new BabyPenguinException($"Class '{class_.Name}' already exists in namespace '{ns.Name}'.", classNode.SourceLocation);
                             ns.AddClass(class_);
@@ -61,7 +61,7 @@ namespace BabyPenguin.SemanticPass
 
                         foreach (var enumNode in namespaceSyntax.Enums)
                         {
-                            var enum_ = new SemanticNode.Enum(Model, enumNode);
+                            var enum_ = new SemanticNode.EnumNode(Model, enumNode);
                             if (ns.Enums.Any(c => c.Name == enum_.Name))
                                 throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation);
                             ns.AddEnum(enum_);
@@ -70,7 +70,7 @@ namespace BabyPenguin.SemanticPass
 
                         foreach (var intf in namespaceSyntax.Interfaces)
                         {
-                            var interface_ = new Interface(Model, intf);
+                            var interface_ = new InterfaceNode(Model, intf);
                             if (ns.Interfaces.Any(c => c.Name == interface_.Name))
                                 throw new BabyPenguinException($"Interface '{interface_.Name}' already exists in namespace '{ns.Name}'.", intf.SourceLocation);
                             ns.AddInterface(interface_);
@@ -78,7 +78,7 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IClass cls:
+                case IClassNode cls:
                     if (cls.SyntaxNode is ClassDefinition classSyntax)
                     {
                         foreach (var initialRoutineNode in classSyntax.InitialRoutines)
@@ -106,7 +106,7 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IInterface intf:
+                case IInterfaceNode intf:
                     if (intf.SyntaxNode is InterfaceDefinition interfaceSyntax)
                     {
                         foreach (var func in interfaceSyntax.Functions)
@@ -120,7 +120,7 @@ namespace BabyPenguin.SemanticPass
                         }
                     }
                     break;
-                case IEnum enm:
+                case IEnumNode enm:
                     if (enm.SyntaxNode is EnumDefinition enumSyntax)
                     {
                         foreach (var initialRoutineNode in enumSyntax.InitialRoutines)

@@ -15,6 +15,8 @@ namespace BabyPenguin.Symbol
 
         public IType TypeInfo { get; } = type;
 
+        public Mutability IsMutable { get; set; } = type.IsMutable;
+
         public SourceLocation SourceLocation { get; } = sourceLocation;
 
         public bool IsLocal { get; } = false;
