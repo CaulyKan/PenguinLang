@@ -1,9 +1,9 @@
 {
-  "name": "penguinlang",
+  "name": "penguin-lang",
   "displayName": "PenguinLang",
   "repository": "https://github.com/CaulyKan/PenguinLang",
   "description": "PenguinLang language support for VS Code",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "BabyPenguin",
   "author": "CaulyKan",
   "engines": {

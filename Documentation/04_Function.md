@@ -9,10 +9,10 @@ fun hello() {
 ### Defining Parameters
 ```
 class MyClass {
-	val foo: i32;
+	foo: i32;
 }
 
-fun hello(const param1: i32, var param2: i32, const param3: MyClass, var param4: MyClass) {
+fun hello(param1: i32, param2: mut i32, param3: MyClass, param4: mut MyClass) {
 	// param1 = 0;		// ERROR: can't change an immutable param
 
 	param2 = 1;  	// can change value of param2, 
@@ -37,13 +37,13 @@ initial {
 }
 ```
 
-Return value also has mutability. By default, return value is mutable. To make it immutable, use `const` keyword.
+Return value also has mutability. By default, return value is immutable. To make it mutable, use `mut` keyword.
 ```
-fun clone(const foo: Foo) -> Foo {
+fun clone(foo: Foo) -> mut Foo {
 	return new Foo(foo.x, foo.y);
 }
 
-fun borrow(const foo: Foo) -> const Foo {
+fun borrow(foo: Foo) -> Foo {
 	return foo;
 }
 ```
@@ -51,14 +51,14 @@ fun borrow(const foo: Foo) -> const Foo {
 ### Generator Function
 PenguinLang supports generator functions.
 ```
-fun test() -> IGenerator<i32> {
+fun test() -> mut IGenerator<i32> {
 	yield 1;
 	yield 2;
 	yield 3;
 }
 
 initial {
-	for (const v : i32 in test()) {
+	for (let mut v : i32 in test()) {
 		println(v as string);
 	}
 }
@@ -74,12 +74,12 @@ We will cover this topic in asynchonous chapter.
 Class can define functions.
 ```
 class Foo {
-	val name: string = "Foo";
+	name: string = "Foo";
 	fun hello_world() {
 		println("hello");
 	}
 
-	fun hello_myself(const this: Foo) {
+	fun hello_myself(this: Foo) {
 		println("hello " + this.name);
 	}
 }
@@ -87,7 +87,7 @@ class Foo {
 
 Note that if the first parameter is 'this', its type should be the class itself, and must specify mutability. If the first parameter is not 'this', the function is similar to a static function.
 ```
-var foo = new Foo();
+let mut foo = new Foo();
 foo.hello_myself();		// OK, 'foo' instance is passed as 'this' parameter
 foo.hello_world();		// OK, however 'foo' instance is not accessible in the function
 Foo.hello_world();		// OK, function can be called without an instance
@@ -97,14 +97,14 @@ Foo.hello_world();		// OK, function can be called without an instance
 Function 'new' is used as constructor in class. The first parameter must be mutable 'this', which is the instance of the class being created. If no 'new' function is defined, a default one is created.
 ```
 class Foo {
-	val x: u8 = 1;
-	fun new(var this: Foo, const x : u8) {
+	x: u8 = 1;
+	fun new(let this: mut Foo, x : u8) {
 		this.x = x;
 	}
 }
 
 initial {
-	var foo = new Foo(2);
+	let foo = new Foo(2);
 }
 ```
 
@@ -114,7 +114,7 @@ Immutable class members can only be initialized in the constructor or variable d
 Lambda function is a function that is defined inline in a block of code.
 ```
 fun foo() {
-	var f : fun<i32, i32> = fun(const x: i32) -> i32 {
+	let f : fun<i32, i32> = fun(x: i32) -> i32 {
 		return x * 2;
 	};
 	println(f(3) as string);

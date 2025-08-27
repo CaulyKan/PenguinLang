@@ -1,4 +1,3 @@
-
 namespace BabyPenguin.SemanticPass
 {
 
@@ -101,6 +100,24 @@ namespace BabyPenguin.SemanticPass
             obj.PassIndex = PassIndex;
         }
 
+        private void ResolveUnresolvedSymbols(ICodeContainer constructorBody, ISymbolContainer symbolContainer)
+        {
+            foreach (var symbol in symbolContainer.Symbols.OfType<VariableSymbol>().Where(s => s.IsUnresolved))
+            {
+                var decl = symbol.Declaration;
+                if (decl?.InitializeExpression != null)
+                {
+                    var type = constructorBody.ResolveExpressionType(decl.InitializeExpression);
+                    symbol.TypeInfo = type;
+                    symbol.IsUnresolved = false;
+                }
+                else
+                {
+                    throw new BabyPenguinException("Cannot infer type of variable without initializer", symbol.SourceLocation);
+                }
+            }
+        }
+
         public void ProcessNamespace(INamespace ns)
         {
             var sourceLocation = ns.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
@@ -115,6 +132,8 @@ namespace BabyPenguin.SemanticPass
                 Model.CatchUp(ns.Constructor);
                 constructor = ns.Constructor.FunctionSymbol;
             }
+
+            ResolveUnresolvedSymbols(constructor!.CodeContainer, ns);
 
             if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
             {
@@ -205,6 +224,7 @@ namespace BabyPenguin.SemanticPass
             if (cls.SyntaxNode is ClassDefinition syntaxNode)
             {
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
+                ResolveUnresolvedSymbols(constructorBody, cls);
                 foreach (var ev in syntaxNode.Events)
                 {
                     InitializeEventDefinition(constructorBody, cls, ev);
@@ -259,6 +279,7 @@ namespace BabyPenguin.SemanticPass
             if (intf.SyntaxNode is InterfaceDefinition syntaxNode)
             {
                 var constructorBody = (intf.Constructor as ICodeContainer)!;
+                ResolveUnresolvedSymbols(constructorBody, intf);
 
                 foreach (var ev in syntaxNode.Events)
                 {

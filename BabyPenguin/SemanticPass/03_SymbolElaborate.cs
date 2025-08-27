@@ -82,7 +82,7 @@ namespace BabyPenguin.SemanticPass
                 var eventType = Model.ResolveType($"__builtin.Event<{type.FullName()}>")
                     ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName()}>");
 
-                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, container is not INamespace));
+                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.ScopeDepth, evt.Name, false, null, container is not INamespace, null));
             }
 
             switch (obj)
@@ -93,8 +93,8 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var decl in syntaxNode.Declarations)
                             {
-                                var typeName = decl.TypeSpecifier!.Name; // TODO: type inference
-                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, false);
+                                var typeName = decl.TypeSpecifier?.Name ?? "";
+                                ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, decl.ScopeDepth, null, false, decl);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -115,7 +115,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var member in syntaxNode.Declarations)
                             {
-                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member.IsMutable);
+                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member, member.IsMutable);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -137,7 +137,7 @@ namespace BabyPenguin.SemanticPass
                             foreach (var member in syntaxNode.Declarations)
                             {
                                 intf.HasDeclartion = true;
-                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true);
+                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -155,7 +155,7 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, new(Model.BasicTypeNodes.I32.ToType(Mutability.Auto)), enm.SourceLocation, 0, null, true) as VariableSymbol;
+                        enm.ValueSymbol = enm.AddVariableSymbol("_value", false, new(Model.BasicTypeNodes.I32.ToType(Mutability.Auto)), enm.SourceLocation, 0, null, true, null) as VariableSymbol;
 
                         if (enm.SyntaxNode is EnumDefinition syntax)
                         {
@@ -225,7 +225,7 @@ namespace BabyPenguin.SemanticPass
 
                                 onRoutine.EventReceiverSymbol = (onRoutine.Parent as ISymbolContainer)!.AddVariableSymbol($"__{onRoutine.Name}_receiver", false,
                                     $"__builtin._AsyncEventReceiver<{eventType.FullName()}>", syntaxNode.Parameter!.SourceLocation,
-                                    syntaxNode.Parameter.ScopeDepth, null, parent is not INamespace);
+                                    syntaxNode.Parameter.ScopeDepth, null, parent is not INamespace, null);
                             }
                         }
                     }
@@ -271,7 +271,7 @@ namespace BabyPenguin.SemanticPass
                                         else
                                         {
                                             func.Parameters.Add(new FunctionParameter(param.Name, paramType, i));
-                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.ScopeDepth, i, false);
+                                            func.AddVariableSymbol(param.Name, true, new Or<string, IType>(paramType), param.SourceLocation, param.ScopeDepth, i, false, param);
                                         }
                                     }
 
@@ -293,7 +293,7 @@ namespace BabyPenguin.SemanticPass
                                 for (int i = 0; i < func.Parameters.Count; i++)
                                 {
                                     var param = func.Parameters[i];
-                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, false);
+                                    func.AddVariableSymbol(param.Name, true, new Or<string, IType>(param.Type), func.SourceLocation, 0, i, false, null);
                                 }
 
                                 func.FunctionSymbol = (func.Parent as ISymbolContainer)!.AddFunctionSymbol(func, false, func.ReturnTypeInfo, func.Parameters, func.SourceLocation, 0, null, true, false, func.IsStatic!.Value, Mutability.Immutable) as FunctionSymbol;
@@ -323,14 +323,14 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (item.Type == CodeBlockItem.CodeBlockItemType.Declaration)
                             {
-                                var typeName = item.Declaration!.TypeSpecifier!.Name; // TODO: type inference
-                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, false);
+                                var typeName = item.Declaration!.TypeSpecifier?.Name ?? "";
+                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, item.ScopeDepth, null, false, item.Declaration);
                             }
                         }
                         else if (node is ForStatement forStatement)
                         {
                             var typeName = forStatement.Declaration!.TypeSpecifier!.Name;
-                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.ScopeDepth, null, false);
+                            container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, forStatement.Declaration.ScopeDepth, null, false, forStatement.Declaration);
                         }
                         return true;
                     });

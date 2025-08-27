@@ -12,7 +12,7 @@ namespace BabyPenguin.SemanticInterface
             var name = $"__temp_{counter++}";
             if (!type.IsFunctionType)
             {
-                ISymbol temp = new VariableSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false);
+                ISymbol temp = new VariableSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, null);
                 temp.IsMutable = isMutable ?? temp.IsMutable;
                 Symbols.Add(temp);
                 return temp;
@@ -33,6 +33,7 @@ namespace BabyPenguin.SemanticInterface
             uint scopeDepth,
             int? paramIndex,
             bool isClassMember,
+            Declaration? declaration,
             Mutability isClassMemberMutable = Mutability.Unspecified)
         {
             var originName = name;
@@ -49,6 +50,16 @@ namespace BabyPenguin.SemanticInterface
                 }
             }
 
+            if (type.IsLeft && string.IsNullOrEmpty(type.Left))
+            {
+                var unresolvedSymbol = new VariableSymbol(this, isLocal, name, Model.BasicTypeNodes.Void.ToType(Mutability.Auto), sourceLocation, scopeDepth, originName, false, paramIndex, isClassMember, declaration)
+                {
+                    IsUnresolved = true
+                };
+                Symbols.Add(unresolvedSymbol);
+                return unresolvedSymbol;
+            }
+
             var typeinfo = (type.IsLeft ? Model.ResolveType(type.Left!, scope: this, useImmutableAsDefault: !isClassMember) : type.Right) ?? throw new BabyPenguinException($"Cant resolve type '{type}' for '{Name}'", sourceLocation);
 
             if (isClassMember && isClassMemberMutable != Mutability.Unspecified)
@@ -59,7 +70,7 @@ namespace BabyPenguin.SemanticInterface
             ISymbol? symbol;
             if (!typeinfo.IsFunctionType)
             {
-                symbol = new VariableSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isClassMember);
+                symbol = new VariableSymbol(this, isLocal, name, typeinfo, sourceLocation, scopeDepth, originName, false, paramIndex, isClassMember, declaration);
             }
             else
             {
@@ -93,7 +104,7 @@ namespace BabyPenguin.SemanticInterface
                 throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
             var param = eventParamDecl == null ? new FunctionParameter("___void", eventParam, 0) : new FunctionParameter(eventParamDecl.Identifier!.Name, eventParam, 0);
             var symbol = new FunctionSymbol(this, onRoutine, false, name, sourceLocation, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [param], scopeDepth, originName, false, -1, isClassMember, true, false, null, Mutability.Immutable);
-            onRoutine.AddVariableSymbol(param.Name, true, new(param.Type), eventParamDecl?.SourceLocation ?? SourceLocation.Empty(), onRoutine.SyntaxNode!.ScopeDepth, 0, false);
+            onRoutine.AddVariableSymbol(param.Name, true, new(param.Type), eventParamDecl?.SourceLocation ?? SourceLocation.Empty(), onRoutine.SyntaxNode!.ScopeDepth, 0, false, null);
 
             if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
             {

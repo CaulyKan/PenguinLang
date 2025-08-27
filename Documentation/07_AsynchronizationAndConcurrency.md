@@ -6,7 +6,7 @@ Penguin-lang is built with asynchronization and concurrency in mind. You can spa
 	}
 
 	fun bar() -> i32 {
-		val task : IFuture<i32> = async foo();
+		val task : mut IFuture<i32> = async foo();
 		println("before wait");
 		var a : i32 = wait task;
 		println("wait done");
@@ -34,10 +34,10 @@ So when penguin-lang found a job that only contains value types (or reference ty
 
 For example:
 ```
-var foo : Box<i32> = new Box(0);
+let foo : mut Box<i32> = new Box(0);
 
 fun bar() {
-	var i : i32 = foo.get();
+	let i : mut i32 = foo.get();
 	i += 1;
 	foo.set(i);
 }
@@ -46,15 +46,15 @@ fun bar() {
 Although above code is an anti-pattern use of global variable, it's a good example that many programming languages will have data-racing issue when 'bar' is working concurrently and how penguin-lang can handle this case. The Box type provides 'get'/'set' method, which is stateful function, so it will cause 'bar' to be stateful, and be split into three jobs:
 ```
 class bar {
-	var i : i32;
-	var foo : Box<i32>;
-	fun step1(var this: bar) {
+	i : i32;
+	foo : Box<i32>;
+	fun step1(this: mut bar) {
 		this.i = this.foo.get();
 	}
-	fun step2(var this: bar) {
+	fun step2(this: mut bar) {
 		this.i += 1;
 	}
-	fun step3(var this: bar) {
+	fun step3(this: mut bar) {
 		this.foo.set(this.i);
 	}
 }
@@ -72,7 +72,7 @@ Events must be value-typed and are by default run asynchronously and in parallel
 event A : i32;
 
 initial {
-	for (var i : i32 in range(0, 10)) {
+	for (let mut i : i32 in range(0, 10)) {
 		emit A(i);
 	}
 }
@@ -102,7 +102,7 @@ Another way is to use initial and wait syntax, the order of events are guarantee
 ```
 initial {
 	while (true) {
-		val x : i32 = wait A;  // guaranteed to be receive events in order
+		let x : i32 = wait A;  // guaranteed to be receive events in order
 		print(x as string);
 	}
 }
@@ -125,11 +125,11 @@ penguin-lang provides a `ISynchronized` interface to mark a reference-typed vari
 
 For example:
 ```
-var counter : Atomic<i32> = new Atomic(0);
-var job_queue: ConcurrentQueue<i32> = new ConcurrentQueue<i32>();
+let counter : mut Atomic<i32> = new Atomic(0);
+let job_queue: mut ConcurrentQueue<i32> = new ConcurrentQueue<i32>();
 
 initial {
-	for (var i : i32 in range(0, 10)) {
+	for (let mut i : i32 in range(0, 10)) {
 		job_queue.enqueue(i);
 	}
 	wait counter.load() == 10;
@@ -137,7 +137,7 @@ initial {
 
 folk initial {
 	while (true) {
-		const job : Option<i32> = job_queue.dequeue();
+		let job : Option<i32> = job_queue.dequeue();
 		if (job is Option<i32>.None)
 			break;
 		else

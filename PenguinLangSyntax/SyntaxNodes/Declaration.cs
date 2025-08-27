@@ -16,7 +16,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 else
                 {
-                    throw new NotImplementedException("Type infer is not supported yet");
+                    // Type inference will be handled in a later pass!
                 }
 
                 if (context.expression() != null)
@@ -31,7 +31,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 else
                 {
-                    throw new NotImplementedException("Type infer is not supported yet");
+                    // Type inference will be handled in a later pass!
                 }
             }
             else if (ctx is ClassDeclarationContext)
@@ -63,8 +63,11 @@ namespace PenguinLangSyntax.SyntaxNodes
         {
             var parts = new List<string>();
             parts.Add(Identifier!.BuildText());
-            parts.Add(":");
-            parts.Add(TypeSpecifier!.BuildText());
+            if (TypeSpecifier != null)
+            {
+                parts.Add(":");
+                parts.Add(TypeSpecifier.BuildText());
+            }
             if (InitializeExpression != null)
             {
                 parts.Add("=");

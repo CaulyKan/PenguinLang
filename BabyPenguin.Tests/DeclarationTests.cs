@@ -3,6 +3,20 @@ namespace BabyPenguin.Tests
     public class DeclarationTests(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
+        public void TypeInferenceTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                let x = 10;
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
         public void GlobalDeclare()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -1091,7 +1105,7 @@ namespace BabyPenguin.Tests
                         let c : t3 = new t3();
                     }
                 }
-            "); ;
+            ");
             var model = compiler.Compile();
 
             var t1 = model.ResolveSymbol("ns.t1");

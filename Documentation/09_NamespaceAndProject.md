@@ -4,10 +4,10 @@ PenguinLang uses namespaces to avoid naming conflicts. The concept is similar to
 PenguinLang also supports the `using` statement similar to C#.
 
 ```
-var a = 0;   // full name: _global_xxx.a
+let a = 0;   // full name: _global_xxx.a
 
 namespace MyModule {
-	var b = 0;   // full name: MyModule.b
+	let b = 0;   // full name: MyModule.b
 }
 
 using MyModule;

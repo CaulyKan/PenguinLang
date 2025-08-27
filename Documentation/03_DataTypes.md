@@ -30,36 +30,154 @@ Penguin-lang supports both reference types and value types. A reference type is 
 | Reference types | any other types                                               | GC                             | Shared reference |
 
 ## Mutability
-Use `var`/`const` to declare variables, which are shorthand for annotating types.
-```
-var x: i32 = 1;
-x = 2; // OK
+Penguin-lang features a strong, explicit, and fine-grained mutability system enforced at compile time. This design aims to prevent accidental mutations and promote safer, more predictable code.
 
-const y: i32 = 1;
-y = 2; // ERROR
+### Variable Declaration and Mutability Keywords
+Variables are declared using `let`. By default, `let` declares an **immutable** variable. To make a variable mutable, use the `mut` keyword.
 
-var z : const i32 = 1;
-z = 2; // ERROR, identical to above
+*   **`let`**: Declares an immutable variable.
+    ```penguin
+    let x: i32 = 10; // x is immutable
+    x = 20;          // Compile-time ERROR: Cannot reassign immutable variable
+    ```
+*   **`mut`**: Explicitly marks a variable or type as mutable.
+    ```penguin
+    let y: mut i32 = 20; // y is mutable
+    y = 30;              // OK: Can reassign mutable variable
+    ```
+*   **`!mut`**: Explicitly marks a type as immutable. This is used to enforce immutability in contexts where `mut` might be the default or to explicitly state immutability.
+    ```penguin
+    let z: !mut i32 = 30; // z is explicitly immutable
+    z = 40;               // Compile-time ERROR
+    ```
 
-var foo: const List<i32>;   // can't add/remove elements, nor modify elements
-var bar: List<const i32>;   // can add/remove elements, but can't modify elements
-```
+### Class Member Mutability
+Class members can also be declared with `mut` or `!mut`.
 
-More on mutability:
-- Value types are free to be assigned regardless of mutability -- they are always copied
-- Reference types:
-  - immutable to mutable: not allowed unless explicitly casted, or cloned.
-  - mutable to immutable: implicitly allowed
+*   **Default (Implicit Immutable)**: If a class member is declared without `mut` or `!mut`, its mutability is aligned with its containing object.
+    ```penguin
+    class MyClass {
+        a: i32 = 1; // 'a' is implicitly immutable
+    }
+    let obj: MyClass = new MyClass();
+    obj.a = 2; // Compile-time ERROR: Cannot assign to immutable member
+    let obj2: mut MyClass = new MyClass();
+    obj2.a = 2; // OK
+    ```
+*   **Explicitly Mutable Member**:
+    ```penguin
+    class MyClass {
+        b: mut i32 = 1; // 'b' is explicitly mutable
+    }
+    let obj: MyClass = new MyClass();
+    obj.b = 2; // OK: 'b' is mutable, even if 'obj' is immutable
+    ```
+*   **Explicitly Immutable Member**:
+    ```penguin
+    class MyClass {
+        c: !mut i32 = 1; // 'c' is explicitly immutable
+    }
+    let obj: mut MyClass = new MyClass();
+    obj.c = 2; // Compile-time ERROR: Cannot assign to explicitly immutable member
+    ```
 
-```
-const x: MyClass = new MyClass;
-var a = x;                  // not allowed!
-var b = x.clone();          // clone may be expensive
-var c = x as MyClass;       // use at your risk
+### Mutability and Generics
+Mutability can be applied to generic type parameters and members.
 
-var y : MyClass = new MyClass;
-const d = y;                // OK
-```
+*   **Generic Member Mutability**:
+    ```penguin
+    class Box<T> {
+        value: T; // 'value' inherits mutability from 'T'
+    }
+    initial {
+        let b: Box<mut i32> = new Box<mut i32>(1); // 'value' inside 'b' is mutable
+        b.value = 2; // OK
+    }
+    ```
+*   **Explicit Mutability for Generic Members**:
+    ```penguin
+    class Container<T> {
+        data: mut T; // 'data' is always mutable, regardless of 'T'
+        data2 : !mut T; // 'data2' is always immutable, regardless of 'T'
+    }
+    initial {
+        let c: Container<i32> = new Container<i32>(1);
+        c.data = 2; // OK
+    }
+    ```
+*   **Auto Mutability for Generic Members**:
+    ```penguin
+    class Container<T> {
+        data: auto T; // 'data' mutability is aligned with its container object, regardless of 'T'
+    }
+    initial {
+        let c: Container<i32> = new Container<i32>(1);
+        c.data = 2; // OK
+    }
+    ```
+
+
+### Assignment Compatibility
+Penguin-lang has strict rules for assigning values between variables of different mutability.
+
+*   **Value Types**: Value types are always copied on assignment, so their mutability does not affect assignment compatibility.
+    ```penguin
+    let a: i32 = 1;
+    let b: mut i32;
+    b = a; // OK: 'a's value is copied to 'b'
+    ```
+*   **Reference Types**:
+    *   **Mutable to Immutable (Subsequent Assignment)**: Not allowed. An immutable variable cannot be reassigned to a mutable reference after its initial declaration.
+        ```penguin
+        let a: mut MyClass = new MyClass();
+        let b: MyClass;
+        b = a; // Compile-time ERROR: Cannot reassign immutable variable 'b'
+        ```
+    *   **Immutable to Mutable**: Not allowed unless in initialization. A mutable variable cannot be assigned an immutable reference. This prevents "upgrading" an immutable reference to a mutable one, which could then be used to mutate an object intended to be immutable.
+        ```penguin
+        let a: MyClass = new MyClass();
+        let b: mut MyClass = a; // OK
+        b = a; // Compile-time ERROR
+        ```
+
+### Function Call Mutability
+Function parameters can specify their expected mutability.
+
+*   **Parameter Mutability**:
+    ```penguin
+    fun foo(a: MyClass, b: mut MyClass) {
+        // 'a' is immutable within foo, 'b' is mutable
+    }
+    initial {
+        let x: MyClass = new MyClass();
+        let y: mut MyClass = new MyClass();
+        foo(x, y); // OK
+        foo(y, x); // Compile-time ERROR: Cannot pass immutable 'x' to mutable parameter 'b'
+    }
+    ```
+*   **`this` Mutability in Methods**: Methods can specify the mutability of the instance (`this`) they are called on.
+    *   `fun myMethod(this)`: This method can only be called on immutable or mutable instance. It cannot modify the instance.
+    *   `fun myMutableMethod(mut this)`: This method can only be called on a mutable instance. It is allowed to modify the instance.
+    ```penguin
+    class Example {
+        value: i32 = 0;
+        fun get_value(this) {
+            print(this.value as string);
+        }
+        fun set_value(mut this, new_value: i32) {
+            this.value = new_value;
+        }
+    }
+    initial {
+        let immutable_ex: Example = new Example();
+        immutable_ex.get_value(); // OK
+        immutable_ex.set_value(1); // Compile-time ERROR: Cannot call mutable method on immutable instance
+
+        let mutable_ex: mut Example = new Example();
+        mutable_ex.get_value(); // OK
+        mutable_ex.set_value(1); // OK
+    }
+    ```
 
 ## Option Type
 There is no `null`/`none` value, use `Option<T>` instead.

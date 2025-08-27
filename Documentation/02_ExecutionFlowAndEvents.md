@@ -55,7 +55,7 @@ Event expressions
 ----------------
 You can use expressions as events:
 ```
-var a : i32 = 0;
+let a : mut i32 = 0;
 
 initial {
 	for (var i : i32 in range(0, 10)) {
@@ -94,7 +94,7 @@ initial {
 }
 
 initial {
-	var x : i32 = wait foo;
+	let x : i32 = wait foo;
 	println(x as string);
 }
 ```
@@ -106,13 +106,13 @@ There's an important difference between `wait` event and `on` routine. The `wait
 ```
 event foo : i32;
 initial {
-	for (var i : i32 in range(0,10))
+	for (let mut i : i32 in range(0,10))
 		emit foo(1);
 }
 
 initial {
 	while (true) {
-		val x = wait foo;	// may miss some events
+		let x = wait foo;	// may miss some events
 	}
 }
 

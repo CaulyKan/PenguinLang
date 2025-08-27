@@ -7,7 +7,7 @@ enum Option<T> {
 	none,
 }
 	
-var a : Option<i32> = new Option<i32>.none();
+let a : mut Option<i32> = new Option<i32>.none();
 initial {
 	a = new Option<i32>.some(1);
 }
@@ -16,7 +16,7 @@ initial {
 ## Checking an enum
 Penguin-lang supports using the 'is' keyword to check if an enum matches a value. Use the enum name to get data from the enum, e.g. `a.some`.
 ```
-var a = new Option<i32>.some(1);
+let a = new Option<i32>.some(1);
 initial {
 	if (a is Option<i32>.some) {
 		println("a is some({})", a.some);
@@ -34,7 +34,7 @@ enum Option<T> {
 	none,
 	
 	// method
-	fun value_or(const this: Option<T>, const default: T) -> T {
+	fun value_or(this, default: T) -> T {
 		if (this is Option<T>.none) {
 			return default;
 		} else {

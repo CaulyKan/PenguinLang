@@ -14,7 +14,8 @@ namespace BabyPenguin.Symbol
             string originName,
             bool isTemp,
             int? paramIndex,
-            bool isClassMember) : base(parent, isLocal, name, type, sourceLocation, scopeDepth, originName, isTemp, paramIndex, isClassMember)
+            bool isClassMember,
+            Declaration? declaration) : base(parent, isLocal, name, type, sourceLocation, scopeDepth, originName, isTemp, paramIndex, isClassMember, declaration)
         {
             EventType = eventType;
         }

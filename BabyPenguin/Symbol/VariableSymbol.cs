@@ -10,7 +10,8 @@ namespace BabyPenguin.Symbol
         string originName,
         bool isTemp,
         int? paramIndex,
-        bool isClassMember) : ISymbol
+        bool isClassMember,
+        Declaration? declaration) : ISymbol
     {
         public string FullName() => Parent.FullName() + "." + Name;
 
@@ -18,7 +19,7 @@ namespace BabyPenguin.Symbol
 
         public ISymbolContainer Parent { get; } = parent;
 
-        public IType TypeInfo { get; } = type;
+        public IType TypeInfo { get; set; } = type;
 
         public SourceLocation SourceLocation { get; } = sourceLocation;
 
@@ -43,6 +44,10 @@ namespace BabyPenguin.Symbol
         public bool IsFunction => false;
 
         public bool IsVariable => true;
+
+        public bool IsUnresolved { get; set; } = false;
+
+        public Declaration? Declaration { get; } = declaration;
 
         public Mutability IsMutable { get; set; } = type.IsMutable;
 

@@ -53,7 +53,7 @@ Note that `sleep` only cause the change of wall time, but not simulation time.
 ------------
 Value assignment in custom timing model is different from realtime model. Consider following code:
 ```
-var a = 0;				// initial value, assigned before start of simulation
+let a : mut i32 = 0;				// initial value, assigned before start of simulation
 initial {
 	a = 2;
 	println("a={} @ {} tick", a, time.now());
@@ -69,7 +69,7 @@ a=2 @ 1 tick
 Maybe it doesn't match your expection, but first print is not the value you assigned. This is because it's not possible for you to modify the value at current time. Any value assignment will take 'simulation time' to take effect. This is actually same in realtime model, because still you can't modify a value at current time, CPU will have to spend about 1ns to do an assignment.
 If you have to visit variable after assignment, you can use zero-time. 
 ```
-var a = 0;				// initial value, assigned before start of simulation
+let a : mut i32 = 0;				// initial value, assigned before start of simulation
 initial {
 	a = 2;
 	println("a={} @ {} tick", a, time.now());
