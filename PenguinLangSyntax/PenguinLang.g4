@@ -122,7 +122,7 @@ classDeclaration:
 		'=' expression
 	)?;
 
-letKeyword: 'let';
+letKeyword: 'let' 'mut'?;
 
 storageClassSpecifier: 'extern';
 

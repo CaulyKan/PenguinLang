@@ -143,6 +143,13 @@ namespace BabyPenguin
         override public string? ToString() => IsLeft ? Left?.ToString() : Right?.ToString();
     }
 
+    public enum TypeInferStatus
+    {
+        ExplicitTyped,
+        NeedTypeInfer,
+        NeedTypeInferToMutable
+    }
+
     public enum TypeEnum
     {
         Void,

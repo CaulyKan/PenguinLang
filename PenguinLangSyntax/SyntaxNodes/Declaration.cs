@@ -3,6 +3,8 @@ namespace PenguinLangSyntax.SyntaxNodes
 
     public class Declaration : SyntaxNode
     {
+        public bool SuggestMutableTypeInfer { get; private set; }
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
@@ -10,6 +12,38 @@ namespace PenguinLangSyntax.SyntaxNodes
             if (ctx is DeclarationContext context)
             {
                 Identifier = Build<SymbolIdentifier>(walker, context.identifier());
+
+                if (context.Parent is CodeBlockItemContext codeBlockItem)
+                {
+                    if (codeBlockItem.letKeyword().GetText().EndsWith("mut"))
+                    {
+                        if (context.typeSpecifier() != null)
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+
+                        SuggestMutableTypeInfer = true;
+                    }
+                }
+                else if (context.Parent is NamespaceDeclarationContext namespaceDeclaration)
+                {
+                    if (namespaceDeclaration.letKeyword().GetText().EndsWith("mut"))
+                    {
+                        if (context.typeSpecifier() != null)
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+
+                        SuggestMutableTypeInfer = true;
+                    }
+                }
+                else if (context.Parent is ForStatementContext forStatement)
+                {
+                    if (forStatement.letKeyword().GetText().EndsWith("mut"))
+                    {
+                        if (context.typeSpecifier() != null)
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+
+                        SuggestMutableTypeInfer = true;
+                    }
+                }
+
                 if (context.typeSpecifier() != null)
                 {
                     TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());

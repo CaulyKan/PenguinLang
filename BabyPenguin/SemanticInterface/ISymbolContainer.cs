@@ -54,7 +54,7 @@ namespace BabyPenguin.SemanticInterface
             {
                 var unresolvedSymbol = new VariableSymbol(this, isLocal, name, Model.BasicTypeNodes.Void.ToType(Mutability.Auto), sourceLocation, scopeDepth, originName, false, paramIndex, isClassMember, declaration)
                 {
-                    IsUnresolved = true
+                    TypeInferStatus = declaration!.SuggestMutableTypeInfer ? TypeInferStatus.NeedTypeInferToMutable : TypeInferStatus.NeedTypeInfer
                 };
                 Symbols.Add(unresolvedSymbol);
                 return unresolvedSymbol;

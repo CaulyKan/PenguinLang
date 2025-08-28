@@ -115,7 +115,8 @@ namespace BabyPenguin.SemanticPass
                         {
                             foreach (var member in syntaxNode.Declarations)
                             {
-                                cls.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member, member.IsMutable);
+                                var typeName = member.TypeSpecifier?.Name ?? "";
+                                cls.AddVariableSymbol(member.Name, false, typeName, member.SourceLocation, member.ScopeDepth, null, true, member, member.IsMutable);
                             }
 
                             foreach (var evt in syntaxNode.Events)
@@ -137,7 +138,8 @@ namespace BabyPenguin.SemanticPass
                             foreach (var member in syntaxNode.Declarations)
                             {
                                 intf.HasDeclartion = true;
-                                intf.AddVariableSymbol(member.Name, false, member.TypeSpecifier!.Name, member.SourceLocation, member.ScopeDepth, null, true, member);
+                                var typeName = member.TypeSpecifier?.Name ?? "";
+                                intf.AddVariableSymbol(member.Name, false, typeName, member.SourceLocation, member.ScopeDepth, null, true, member);
                             }
 
                             foreach (var evt in syntaxNode.Events)

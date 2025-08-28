@@ -16,7 +16,7 @@ namespace PenguinLangSyntax.SyntaxNodes
                 }
                 else
                 {
-                    throw new NotImplementedException("Type infer is not supported yet");
+                    // throw new NotImplementedException("Type infer is not supported yet");
                 }
 
                 IsMutable = context.typeMutabilitySpecifier()?.GetText() switch
@@ -53,9 +53,13 @@ namespace PenguinLangSyntax.SyntaxNodes
 
             var parts = new List<string>();
             parts.Add(Identifier!.BuildText());
-            parts.Add(":");
-            parts.Add(mutStr);
-            parts.Add(TypeSpecifier!.BuildText());
+            if (TypeSpecifier != null)
+            {
+                parts.Add(":");
+                parts.Add(mutStr);
+                parts.Add(TypeSpecifier.BuildText());
+            }
+
             if (InitializeExpression != null)
             {
                 parts.Add("=");

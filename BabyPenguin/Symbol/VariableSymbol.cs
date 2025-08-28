@@ -45,7 +45,7 @@ namespace BabyPenguin.Symbol
 
         public bool IsVariable => true;
 
-        public bool IsUnresolved { get; set; } = false;
+        public TypeInferStatus TypeInferStatus { get; set; } = TypeInferStatus.ExplicitTyped;
 
         public Declaration? Declaration { get; } = declaration;
 

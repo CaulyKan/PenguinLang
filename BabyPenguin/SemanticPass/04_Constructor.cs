@@ -102,14 +102,21 @@ namespace BabyPenguin.SemanticPass
 
         private void ResolveUnresolvedSymbols(ICodeContainer constructorBody, ISymbolContainer symbolContainer)
         {
-            foreach (var symbol in symbolContainer.Symbols.OfType<VariableSymbol>().Where(s => s.IsUnresolved))
+            foreach (var symbol in symbolContainer.Symbols.OfType<VariableSymbol>().Where(s => s.TypeInferStatus != TypeInferStatus.ExplicitTyped))
             {
                 var decl = symbol.Declaration;
                 if (decl?.InitializeExpression != null)
                 {
                     var type = constructorBody.ResolveExpressionType(decl.InitializeExpression);
-                    symbol.TypeInfo = type;
-                    symbol.IsUnresolved = false;
+                    if (symbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
+                    {
+                        symbol.TypeInfo = type.WithMutability(Mutability.Mutable);
+                    }
+                    else
+                    {
+                        symbol.TypeInfo = type;
+                    }
+                    symbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
                 }
                 else
                 {

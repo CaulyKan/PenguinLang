@@ -3,20 +3,6 @@ namespace BabyPenguin.Tests
     public class DeclarationTests(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
-        public void TypeInferenceTest()
-        {
-            var compiler = new SemanticCompiler(new ErrorReporter(this));
-            compiler.AddSource(@"
-                let x = 10;
-            ");
-            var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
-            var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
-            Assert.NotNull(symbol);
-            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
-        }
-
-        [Fact]
         public void GlobalDeclare()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
@@ -1139,6 +1125,86 @@ namespace BabyPenguin.Tests
             var t1 = model.ResolveSymbol("ns.Foo.foo");
             Assert.True(t1 is FunctionSymbol s);
             Assert.Equal("ns.Foo.foo", (t1 as FunctionSymbol)!.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                let x = 10;
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceMutTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                let mut x = 10;
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("mut u8", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceInClassMemberTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                class Foo {
+                    x = 10;
+                }
+            ");
+            var model = compiler.Compile();
+            var cls = model.Classes.First(c => c.Name == "Foo");
+            var symbol = cls.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceInInterfaceMemberTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    class A{}
+                    interface Foo {
+                        x = new A();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var cls = model.Interfaces.First(c => c.Name == "Foo");
+            var symbol = cls.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("mut ns.A", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceInFunctionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                fun test() {
+                    let x = 10;
+                }
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var func = ns.Functions.First(f => f.Name == "test");
+            var symbol = func.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
         }
     }
 }

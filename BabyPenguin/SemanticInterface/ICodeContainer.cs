@@ -53,7 +53,6 @@ namespace BabyPenguin.SemanticInterface
 
         public ISymbol AddLocalDeclearation(Declaration item, int? paramIndex)
         {
-            var typeName = item.TypeSpecifier!.Name; // TODO: type inference
             var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.ScopeDepth, scope: this);
             if (symbol == null)
             {
@@ -61,6 +60,25 @@ namespace BabyPenguin.SemanticInterface
             }
             if (item.InitializeExpression != null)
             {
+                if (symbol.WithoutMutability() is VariableSymbol variableSymbol)
+                {
+                    if (variableSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                    {
+                        if (variableSymbol.Declaration?.InitializeExpression == null)
+                            throw new NotImplementedException();
+
+                        var type = ResolveExpressionType(variableSymbol.Declaration.InitializeExpression);
+                        if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
+                        {
+                            variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
+                        }
+                        else
+                        {
+                            variableSymbol.TypeInfo = type;
+                        }
+                        variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
+                    }
+                }
                 AddExpression(item.InitializeExpression, true, symbol);
             }
             return symbol;
