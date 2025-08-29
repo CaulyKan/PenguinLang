@@ -16,8 +16,8 @@ Penguin-lang is inspired from multiple languages:
 * Concurrent from Verilog/SystemC
 
 Roadmap:
-* BabyPenguin: A C# implementation of Penguin-lang compiler & VM, emit BabyPenguinIR (Working)
-* MagellanicPenguin: Language Server Protocol & Debug Adapter Protocol implementation for Penguin-lang based on BabyPenguin (DAP Working, LSP not started)
+* BabyPenguin: A C# implementation of Penguin-lang compiler & VM, emit BabyPenguinIR (Working with limited features)
+* MagellanicPenguin: Language Server Protocol & Debug Adapter Protocol implementation for Penguin-lang based on BabyPenguin (Working with limited features)
 * EmperorPenguin: A BabyPenguin implementation of Penguin-lang compiler, emits llvm IR (Not started)
 
 Get Started:

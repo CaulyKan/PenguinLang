@@ -51,9 +51,9 @@ on foo {
 ```
 The result of the above code is uncertain, because the two routines can be parallelized.
 
-Event expressions
+`on` routines with expressions
 ----------------
-You can use expressions as events:
+You can use expressions as conditions for `on` routines:
 ```
 let a : mut i32 = 0;
 

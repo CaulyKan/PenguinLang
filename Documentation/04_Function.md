@@ -33,7 +33,7 @@ fun foo() -> i32 {
 }
 
 initial {
-	var a: i32 = foo();
+	let a: i32 = foo();
 }
 ```
 
@@ -49,8 +49,9 @@ fun borrow(foo: Foo) -> Foo {
 ```
 
 ### Generator Function
-PenguinLang supports generator functions.
-```
+PenguinLang supports generator functions, which can be paused and resumed. They use the `yield` keyword to return a value and pause execution.
+
+```penguin
 fun test() -> mut IGenerator<i32> {
 	yield 1;
 	yield 2;
@@ -58,9 +59,18 @@ fun test() -> mut IGenerator<i32> {
 }
 
 initial {
-	for (let mut v : i32 in test()) {
+	for (let v : i32 in test()) {
 		println(v as string);
 	}
+}
+```
+
+A generator function can also have a final `return` statement.
+```penguin
+fun test() -> mut IGenerator<i64> {
+    yield 1;
+    yield 2;
+    return 3;
 }
 ```
 
@@ -70,27 +80,30 @@ If 'wait' is used in function, or the function calls a stateful function, the fu
 If a function is a generator function, it is a stateful function.
 We will cover this topic in asynchonous chapter.
 
-### Function in Class
-Class can define functions.
-```
+### Function in Class (Methods)
+Classes can define functions, which are also called methods.
+
+*   **Instance Methods**: If the first parameter of a method is `this`, it's an instance method and can access the object's data. The `this` parameter must have its mutability specified (`this` or `mut this`).
+*   **Static Methods**: If the first parameter is not `this`, the method is a static method. It cannot access the object's data and can be called directly on the class itself.
+
+```penguin
 class Foo {
 	name: string = "Foo";
-	fun hello_world() {
+	fun hello_world() { // Static method
 		println("hello");
 	}
 
-	fun hello_myself(this: Foo) {
+	fun hello_myself(this: Foo) { // Instance method
 		println("hello " + this.name);
 	}
 }
-```
 
-Note that if the first parameter is 'this', its type should be the class itself, and must specify mutability. If the first parameter is not 'this', the function is similar to a static function.
-```
-let mut foo = new Foo();
-foo.hello_myself();		// OK, 'foo' instance is passed as 'this' parameter
-foo.hello_world();		// OK, however 'foo' instance is not accessible in the function
-Foo.hello_world();		// OK, function can be called without an instance
+initial {
+    let mut foo = new Foo();
+    foo.hello_myself();		// OK, 'foo' instance is passed as 'this' parameter
+    foo.hello_world();		// OK, can be called on an instance
+    Foo.hello_world();		// OK, can be called directly on the class
+}
 ```
 
 ### Constructor
@@ -98,7 +111,7 @@ Function 'new' is used as constructor in class. The first parameter must be muta
 ```
 class Foo {
 	x: u8 = 1;
-	fun new(let this: mut Foo, x : u8) {
+	fun new(mut this: Foo, x : u8) {
 		this.x = x;
 	}
 }

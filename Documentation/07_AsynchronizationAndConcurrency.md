@@ -1,16 +1,25 @@
 ## Asynchronization and Concurrency
-Penguin-lang is built with asynchronization and concurrency in mind. You can spawn a function using `async`, which returns an IFuture, and use `wait` to wait for the result.
-```
-	fun foo() -> i32 {
-		return 1;
-	}
+Penguin-lang is built with asynchronization and concurrency in mind. You can spawn a function using `async`, which returns an `IFuture`, and use `wait` to get the result.
 
-	fun bar() -> i32 {
-		val task : mut IFuture<i32> = async foo();
-		println("before wait");
-		var a : i32 = wait task;
-		println("wait done");
-	}
+```penguin
+fun test() -> i32 {
+    wait; // simulate some async work
+    return 1;
+}
+
+initial {
+	let task : mut IFuture<i32> = async test();
+	println("before wait");
+	let a : i32 = wait task;
+	println("wait done");
+    print(a as string);
+}
+```
+This will output:
+```
+before wait
+wait done
+1
 ```
 
 PenguinLang adopts a full stackless coroutine model, and will automatically identify if a function is 'async' or not. If a function uses `wait`, or calls a stateful function, the function itself will be a stateful function.
@@ -23,7 +32,25 @@ If you call an async function directly (e.g. `bar()`), it is a shorthand for `wa
 	}
 ```
 
-A `wait` keyword without expression tells penguin-lang runtime to pause the current job and wait for another schedule.
+A `wait` keyword without an expression tells the penguin-lang runtime to pause the current job and wait for another schedule.
+
+## `on` routines
+
+The `on` keyword allows you to create a routine that executes when a certain condition is met. This is a powerful feature for reactive programming.
+
+```penguin
+let a : mut i32 = 0;
+
+initial {
+	for (let i : i32 in range(0, 10)) {
+		a = i;
+	}
+}
+
+on a == 5 {
+	println("a is 5");
+}
+```
 
 ## Threading and Coroutine
 One purpose of penguin-lang is to provide a simple and efficient way to write concurrent programs. In most time, programmer only need to focus on the logic of the program, and the runtime will automatically handle the concurrency. Under the hood, penguin-lang uses stackless coroutine to implement asynchronization. This allows the compiler to transform a stateful function into several jobs,

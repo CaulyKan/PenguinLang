@@ -105,14 +105,17 @@ Mutability can be applied to generic type parameters and members.
         c.data = 2; // OK
     }
     ```
-*   **Auto Mutability for Generic Members**:
+*   **Auto Mutability for Generic Members**: The `auto` keyword aligns the mutability of a member with its container object, regardless of the mutability of the generic type `T`.
     ```penguin
     class Container<T> {
         data: auto T; // 'data' mutability is aligned with its container object, regardless of 'T'
     }
     initial {
-        let c: Container<i32> = new Container<i32>(1);
-        c.data = 2; // OK
+        let c: mut Container<i32> = new Container<i32>(1);
+        c.data = 2; // OK, because 'c' is mutable
+
+        let c2: Container<mut i32> = new Container<mut i32>(1);
+        c2.data = 2; // Compile-time ERROR, because c2 is immutable
     }
     ```
 
@@ -179,37 +182,72 @@ Function parameters can specify their expected mutability.
     }
     ```
 
-## Option Type
-There is no `null`/`none` value, use `Option<T>` instead.
+## Built-in Data Structures
 
-```
-enum Option<T> {
-    some: T,
-    None,
+Penguin-lang provides several built-in data structures.
+
+*   **`Option<T>`**: Represents an optional value. It can be either `Some(T)` or `None`. This is used instead of `null` to handle the absence of a value safely.
+    ```penguin
+    enum Option<T> {
+        some: T,
+        None,
+    }
+    ```
+*   **`Result<T, E>`**: Used for returning and propagating errors. It can be either `Ok(T)` or `Error(E)`.
+*   **`List<T>`**: A growable, heap-allocated list.
+*   **`Queue<T>`**: A queue.
+
+## `Self` Type
+The `Self` keyword can be used in a class or interface to refer to the type of the current class or interface.
+
+```penguin
+interface IFoo {
+    fun a() -> Self;
 }
+
+class Foo {
+    fun a() -> Self {
+        return new Foo();
+    }
+}
+```
+
+## Type Aliases
+The `type` keyword can be used to create a new name for an existing type.
+
+```penguin
+type MyInt = i32;
+
+let x: MyInt = 10;
+```
 
 ## Class
 Like many other programming languages, penguin-lang supports classes. 
 ```
-Class MyClass {
-	const x: i32;		// immutable field, can't be mutated after create, regardless of mutability of the object.
-	var y: i32;		// mutable field, can be mutated after create if the object is mutable.
+class MyClass {
+	x: !mut i32;		// immutable field, can't be mutated after create, regardless of mutability of the object.
+	y: i32;		// mutable field, can be mutated after create if the object is mutable.
 }
 
-const a = new MyClass();
+let a: MyClass = new MyClass();
 a.x = 1;			// error! x is immutable
 a.y = 2;			// error! a is immutable so a.y is immutable
 
-var b = new MyClass();
+let b: mut MyClass = new MyClass();
 b.x = 1;			// error! x is immutable
 b.y = 2;			// ok! b.y is mutable
 ```
 
-## Type Casting
-Penguin-lang uses `as` as the keyword for type casting.
+## Type Checking and Casting
+Penguin-lang uses `as` as the keyword for type casting. The `is` keyword is used for type checking.
+
 ```
 var a: i32 = 1;
 var b: f32 = a as f32;
+
+if (a is i32) {
+    // ...
+}
 ```
 
 There are some implicit type casting rules:
@@ -230,9 +268,9 @@ a = b as i32; // OK, but may lose data
 Penguin-lang supports generics, which means a type can be parameterized with other types.
 ```
 class MyClass<T> {
-    var x: T;
+    x: T;
 }
 
-var a = new MyClass<i32>();
+let a: MyClass<i32> = new MyClass<i32>();
 a.x = 1;
 ```

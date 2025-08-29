@@ -59,14 +59,14 @@ initial {
 
 - Statically typed
 - Value types and Reference types
-- Type has mutability: `var` and `const`
+- Type has mutability: `let` and `mut`
 - has a `void` type 
 - no `null`/`none` value, use `Option<T>` instead
 - `as` to perform type casting
 
 ```
-var x: i32 = 1;
-const y: string = "hello";
+let x: i32 = 1;
+let mut y: string = "hello";
 ```
 
 [comment]: # (|||)
@@ -84,20 +84,20 @@ All PenguinLang types are either value types or reference types.
 
 [comment]: # (|||)
 
-Mutability: use `var`/`const` to declare variables, which are shorthand for annotating types
+Mutability: use `let`/`mut` to declare variables.
 
 ```
-var x: i32 = 1;
-x = 2; // OK
+let x: i32 = 1;
+x = 2; // ERROR
 
-const y: i32 = 1;
-y = 2; // ERROR
+let mut y: i32 = 1;
+y = 2; // OK
 
-var z : const i32 = 1;
+let z : !mut i32 = 1;
 z = 2; // ERROR, identical to above
 
-var foo: const List<i32>;   // can't add/remove elements, nor modify elements
-var bar: List<const i32>;   // can add/remove elements, but can't modify elements
+let foo: !mut List<i32>;   // can't add/remove elements, nor modify elements
+let bar: List<!mut i32>;   // can add/remove elements, but can't modify elements
 ```
 
 [comment]: # (|||)
@@ -106,17 +106,17 @@ More on mutability:
 
 - Value types are free to be assigned regardless of mutability -- they are always copied
 - Reference types:
-  - immutable to mutable: not allowed unless explicitly casted, or cloned.
+  - immutable to mutable: not allowed unless in initialization.
   - mutable to immutable: implicitly allowed
 
 ```
-const x: Reference;
-var a = x; 					// not allowed!
-var b = x.clone(); 			// clone may be expensive
-var c = x as MyClass;		// use at your risk
+let a: MyClass = new MyClass();
+let b: mut MyClass = a; // OK
+b = a; // Compile-time ERROR
 
-var y : Reference;
-const d = y; 				// OK
+let mut x: MyClass = new MyClass();
+let y: MyClass;
+y = x; // Compile-time ERROR
 ```
 
 [comment]: # (!!!)
@@ -155,9 +155,13 @@ event foo;
 
 initial { emit foo; }
 	
-on foo { print("A"); }
-	
-on foo { print("B"); }
+on foo {
+    print("A");
+}
+
+on foo {
+    print("B");
+}
 ```
 
 <div style="font-size: 0.8em;">
@@ -174,11 +178,11 @@ Even single event handler can be parallelized:
 event foo : i32;
 
 initial { 
-	for (var i : i32 in range(0, 10)) 
+	for (let mut i : i32 in range(0, 10)) 
 		emit foo(i); 
 }
 	
-on foo(const i : i32) {
+on foo(i : i32) {
 	print(i as string);
 }
 ```
@@ -210,13 +214,13 @@ initial {
 
 [comment]: # (|||)
 
-Using expression as event:
+Using expression with `on` routines:
 
 ```
-var a : i32 = 0;
+let mut a : i32 = 0;
 
 initial {
-	for (var i : i32 in range(0, 10)) {
+	for (let i : i32 in range(0, 10)) {
 		a = i;
 	}
 }
@@ -244,8 +248,8 @@ Spawn a new function asynchronosly:
 ```
 fun foo() -> i32 { return 1; }
 fun bar() {
-	var x : IFuture<i32> = async foo();		// foo can be async or not
-	var y : i32 = wait x;
+	let task : mut IFuture<i32> = async foo();		// foo can be async or not
+	let y : i32 = wait task;
 }
 ```
 
@@ -257,7 +261,7 @@ fun bar() {
 
 [comment]: # (|||)
 
- enguinLang can't prevent data-racing between coroutines, but it can parrallelize workload without introducing additional data-racing
+PenguinLang can't prevent data-racing between coroutines, but it can parrallelize workload without introducing additional data-racing
 
 <div style="font-size: 0.8em;">
 
@@ -266,10 +270,10 @@ fun bar() {
 </div>
 
 ```
-var foo : Box<i32> = new Box(0);		// Box<T> warps a value type to reference type
+let foo : mut Box<i32> = new Box(0);		// Box<T> warps a value type to reference type
 										// PenguinLang forbids global value type variables
 fun bar() {
-	var i : i32 = foo.get();			// get() is async function
+	let i : mut i32 = foo.get();			// get() is async function
 	i += 1;
 	foo.set(i);							// set() is also async function	
 }
@@ -299,15 +303,15 @@ PenguinLang can shedule a job on another thread when following rules are met:
 
 ```
 class bar {
-	var i : i32;
-	var foo : Box<i32>;
-	fun step1(var this: bar) {
+	i : mut i32;
+	foo : mut Box<i32>;
+	fun step1(mut this: bar) {
 		this.i = this.foo.get();
 	}
-	fun step2(var this: bar) {
+	fun step2(mut this: bar) {
 		this.i += 1;
 	}
-	fun step3(var this: bar) {
+	fun step3(mut this: bar) {
 		this.foo.set(this.i);
 	}
 }
@@ -335,7 +339,7 @@ Use Class to form a data structure
 ```
 class Person {
 	name: string;
-	age: const i32;   // immutable after valruction
+	age: !mut i32;   // immutable after construction
 }
 ```
 
@@ -355,10 +359,10 @@ Similar to Rust, function in class must have `this` as first parameter to be a '
 ```
 class Person {
 	x: i32;
-	fun set(var this: Person) {			// note that `var` & `const` indicates object mutability
+	fun set(mut this) {
 		this.x = 1;
 	}
-	fun get(const this: Person) -> i32 {
+	fun get(this) -> i32 {
 		return this.x;
 	}
 }
@@ -370,7 +374,7 @@ PenguinLang also has interface similar to Rust's trait, which can have default i
 
 ```
 interface IHello {
-	fun hello(const this: IHello) {
+	fun hello(this: IHello) {
 		println("hello");
 	}
 }
@@ -386,12 +390,12 @@ Override default implementation in class:
 
 ```
 class Hi {
-	var name: string;
+	let name: mut string;
 	impl IHello {
-		fun hello(const this: IHello) {
+		fun hello(this: IHello) {
 			IHello.hello(this); 		// can call default implementation
 
-			const self = this as Hi; 	// must cast to `Hi` to access `name` field
+			let self = this as Hi; 	// must cast to `Hi` to access `name` field
 			println("hi" + self.name);
 		}
 	}
@@ -406,7 +410,7 @@ Extending class from outside is allowed:
 class Foo<T> { }
 
 impl IHello for Foo<i32> {
-	fun hello(const this: IHello) {
+	fun hello(this: IHello) {
 		println("hello from i32");
 	}
 }
@@ -425,7 +429,7 @@ enum Option<T> {
 }
 
 initial {
-	var x : Option<i32> = new Option<i32>.some(1);
+	let x : mut Option<i32> = new Option<i32>.some(1);
 	if (x is Option<i32>.some) {
 		println(x.some as string);
 	}
