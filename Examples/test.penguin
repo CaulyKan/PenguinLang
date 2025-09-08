@@ -1,13 +1,3 @@
-                class A {
-                    a: i32 = 1;
-                    fun immutable(this) {
-                        print(this.a as string);
-                    }
-                    fun mutable(mut this) {
-                        print(this.a as string);
-                    }
-                }
-                initial {
-                    let a : A = new A();
-                    a.mutable();
-                }
+initial {
+    let a : i32 = 1;
+}

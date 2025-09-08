@@ -1,7 +1,7 @@
 
 global using System.Text;
 global using Xunit.Abstractions;
-global using PenguinLangSyntax;
+global using PenguinLangParser;
 global using BabyPenguin.VirtualMachine;
 global using BabyPenguin.Symbol;
 global using BabyPenguin.SemanticNode;

@@ -1,6 +1,6 @@
 namespace BabyPenguin.SemanticPass
 {
-    public record NamespaceImport(string Namespace, PenguinLangSyntax.SourceLocation SourceLocation);
+    public record NamespaceImport(string Namespace, PenguinLangParser.SourceLocation SourceLocation);
 
     public class SemanticScopingPass(SemanticModel model, int passIndex) : ISemanticPass
     {

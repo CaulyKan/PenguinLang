@@ -1,6 +1,6 @@
 using System.Linq;
 using BabyPenguin.SemanticNode;
-using PenguinLangSyntax;
+using PenguinLangParser;
 
 namespace BabyPenguin.SemanticPass
 {

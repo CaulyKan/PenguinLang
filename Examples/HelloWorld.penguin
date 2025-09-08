@@ -1,11 +1,11 @@
-const world : string = "wor"+"ld";
+let world : string = "wor"+"ld";
 initial {
-  var world1 : string = "";
+  let world1 : string = "";
   {
-    var world1 : string = world + "!";
+    let world1 : string = world + "!";
     hello(world1);
   }
 }
-fun hello(const name : string) -> void {
+fun hello(let name : string) -> void {
   println("Hello, " + name);
 }

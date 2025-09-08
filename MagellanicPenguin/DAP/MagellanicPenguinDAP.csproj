@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\PenguinLangSyntax\PenguinLangSyntax.csproj" />
+    <ProjectReference Include="..\..\PenguinLangParser\PenguinLangParser.csproj" />
     <ProjectReference Include="..\..\BabyPenguin\BabyPenguin.csproj" />
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol" Version="18.0.10427.1" />

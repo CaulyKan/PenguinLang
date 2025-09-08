@@ -1,0 +1,29 @@
+<!-- Template generated code from Antlr4BuildTasks.Template v 8.17 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PenguinLangParser</RootNamespace>
+    <AssemblyName>PenguinLangParser</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Antlr4 Include="PenguinLang.g4">
+      <Package>PenguinLangParser</Package>
+    </Antlr4>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
+    <PackageReference Include="Antlr4BuildTasks" Version="12.8.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <NoWarn>3021;1701;1702</NoWarn>
+  </PropertyGroup>
+  
+  <PropertyGroup>
+    <WarningAsError>CS8509</WarningAsError>
+  </PropertyGroup>
+</Project>

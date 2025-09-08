@@ -9,7 +9,7 @@
   <ItemGroup>
     <PackageReference Include="LanguageServerProtocol" Version="7.0.1" />
     <!-- <ProjectReference Include="..\ThirdParty\LanguageServerProtocol\LanguageServer\LanguageServer.csproj" /> -->
-    <ProjectReference Include="..\..\PenguinLangSyntax\PenguinLangSyntax.csproj" />
+    <ProjectReference Include="..\..\PenguinLangParser\PenguinLangParser.csproj" />
     <ProjectReference Include="..\..\BabyPenguin\BabyPenguin.csproj" />
   </ItemGroup>
 

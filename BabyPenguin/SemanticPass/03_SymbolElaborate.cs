@@ -170,7 +170,7 @@ namespace BabyPenguin.SemanticPass
                             var enumDecl = enm.EnumDeclarations[i];
                             enumDecl.Value = i;
 
-                            if (enumDecl.SyntaxNode is PenguinLangSyntax.SyntaxNodes.EnumDeclaration enumDeclSyntax)
+                            if (enumDecl.SyntaxNode is PenguinLangParser.SyntaxNodes.EnumDeclaration enumDeclSyntax)
                             {
                                 if (enumDeclSyntax.TypeSpecifier != null)
                                 {

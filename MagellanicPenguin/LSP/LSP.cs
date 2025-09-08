@@ -9,7 +9,7 @@ using LanguageServer.Parameters.General;
 using LanguageServer.Parameters.TextDocument;
 using LanguageServer.Parameters.Window;
 using LanguageServer.Parameters.Workspace;
-using PenguinLangSyntax;
+using PenguinLangParser;
 using System.Collections.Concurrent;
 using System.Threading;
 using BabyPenguin.SemanticNode;

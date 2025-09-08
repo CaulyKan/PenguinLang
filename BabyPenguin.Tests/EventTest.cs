@@ -1,6 +1,6 @@
 using BabyPenguin;
 using BabyPenguin.SemanticInterface;
-using PenguinLangSyntax;
+using PenguinLangParser;
 using Xunit;
 
 namespace BabyPenguin.Tests

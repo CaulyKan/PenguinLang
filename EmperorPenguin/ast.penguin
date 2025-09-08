@@ -1,0 +1,315 @@
+namespace ast {
+
+//
+// Interfaces
+//
+
+// Base interface for all syntax nodes.
+interface ISyntaxNode {
+    // In the future, we can add methods like:
+    // fun accept(visitor: IVisitor) -> any;
+    // fun to_string() -> string;
+}
+
+// Base interface for all expressions.
+interface IExpression {
+    impl ISyntaxNode;
+}
+
+// Base interface for all statements.
+interface IStatement {
+    impl ISyntaxNode;
+}
+
+// Base interface for all declarations.
+interface IDeclaration {
+    impl ISyntaxNode;
+}
+
+//
+// Common Nodes
+//
+
+// Represents a source location (line, column, file).
+class SourceLocation {
+    impl ISyntaxNode;
+    file_name: string;
+    line: u32;
+    column: u32;
+}
+
+// Represents a type specifier, e.g., 'i32', 'string', 'MyClass<T>'.
+class TypeSpecifier {
+    impl ISyntaxNode;
+    name: string;
+    is_mutable: bool; // Corresponds to Mutability enum in C#
+    // generic_arguments: List<TypeSpecifier>; // To be added later
+}
+
+// Represents an identifier.
+class Identifier {
+    impl IExpression; // Identifiers can be expressions.
+    name: string;
+}
+
+//
+// Expressions
+//
+
+// Base class for all expressions (mirroring C# Expression.cs)
+class Expression {
+    impl IExpression;
+    sub_expression: IExpression; // C# has ISyntaxExpression? SubExpression
+}
+
+// Represents a primary expression (mirroring C# PrimaryExpression.cs)
+// This will likely be an enum in PenguinLang to match the C# enum Type
+enum PrimaryExpressionType {
+    Identifier;
+    Constant;
+    StringLiteral;
+    BoolLiteral;
+    VoidLiteral;
+    LambdaFunction;
+    ParenthesizedExpression;
+}
+
+class PrimaryExpression {
+    impl IExpression;
+    primary_expression_type: PrimaryExpressionType;
+    identifier: Option<Identifier>;
+    literal: Option<string>;
+    parenthesized_expression: Option<IExpression>;
+    // lambda_function: Option<LambdaFunctionExpression>; // To be added later
+}
+
+
+// Represents a literal value like a number, string, bool.
+class LiteralExpression {
+    impl IExpression;
+    // For simplicity, we'll store the raw text of the literal.
+    value: string;
+}
+
+// Represents a binary operation, e.g., 'a + b'.
+class BinaryExpression {
+    impl IExpression;
+    left: IExpression;
+    right: IExpression;
+    operator: string; // e.g., "+", "-", "==", etc.
+}
+
+// Represents a unary operation, e.g., '-a', '!b'.
+class UnaryExpression {
+    impl IExpression;
+    operand: IExpression;
+    operator: string; // e.g., "-", "!"
+}
+
+// Represents a cast expression, e.g., 'x as i32'.
+class CastExpression {
+    impl IExpression;
+    expression: IExpression;
+    target_type: TypeSpecifier;
+}
+
+// Represents a function call.
+class FunctionCallExpression {
+    impl IExpression;
+    callee: IExpression;
+    arguments: List<IExpression>;
+}
+
+// Represents member access, e.g., 'my_obj.field'.
+class MemberAccessExpression {
+    impl IExpression;
+    object: IExpression;
+    member: Identifier; // C# uses IdentifierWithGeneric, we can simplify for now
+}
+
+// Represents a new object instantiation, e.g., 'new MyClass()'.
+class NewExpression {
+    impl IExpression;
+    type_specifier: TypeSpecifier;
+    arguments: List<IExpression>;
+}
+
+// Represents a 'wait' expression.
+class WaitExpression {
+    impl IExpression;
+    expression: Option<IExpression>; // The expression to wait for, if any
+}
+
+// Represents a 'async' expression.
+class SpawnAsyncExpression {
+    impl IExpression;
+    expression: IExpression; // The function call to spawn
+}
+
+//
+// Statements
+//
+
+// Represents a block of code { ... }.
+class CodeBlock {
+    impl IStatement;
+    block_items: List<ISyntaxNode>; // C# has CodeBlockItem, we can flatten for now
+}
+
+// Represents an expression statement, e.g., 'my_func();'.
+class ExpressionStatement {
+    impl IStatement;
+    expression: IExpression;
+}
+
+// Represents an assignment statement, e.g., 'x = 5;'.
+class AssignStatement {
+    impl IStatement;
+    left: IExpression;
+    right: IExpression;
+    operator: string; // e.g., "=", "+=", etc.
+}
+
+// Represents an if statement.
+class IfStatement {
+    impl IStatement;
+    condition: IExpression;
+    then_branch: IStatement;
+    else_branch: Option<IStatement>;
+}
+
+// Represents a while statement.
+class WhileStatement {
+    impl IStatement;
+    condition: IExpression;
+    body: IStatement;
+}
+
+// Represents a for statement.
+class ForStatement {
+    impl IStatement;
+    declaration: VariableDeclaration;
+    collection: IExpression;
+    body: IStatement;
+}
+
+// Represents a jump statement (break, continue).
+class JumpStatement {
+    impl IStatement;
+    keyword: string; // "break" or "continue"
+}
+
+// Represents a return statement.
+class ReturnStatement {
+    impl IStatement;
+    value: Option<IExpression>;
+}
+
+// Represents a yield statement.
+class YieldStatement {
+    impl IStatement;
+    value: Option<IExpression>;
+}
+
+// Represents an emit event statement.
+class EmitEventStatement {
+    impl IStatement;
+    event_expression: IExpression;
+    arguments: List<IExpression>;
+}
+
+//
+// Declarations
+//
+
+// Represents a variable declaration, e.g., 'let x: i32 = 5;'.
+class VariableDeclaration {
+    impl IDeclaration;
+    impl IStatement; // Declarations can also be statements.
+    identifier: Identifier;
+    type_specifier: Option<TypeSpecifier>;
+    initialize_expression: Option<IExpression>;
+    is_mutable: bool;
+}
+
+// Represents a function definition/declaration.
+class FunctionDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    parameters: List<VariableDeclaration>;
+    return_type: TypeSpecifier;
+    code_block: Option<CodeBlock>;
+    is_extern: bool;
+    is_pure: Option<bool>; // true, false, or null (inferred)
+    is_async: Option<bool>; // true, false, or null (inferred)
+}
+
+// Represents an event definition.
+class EventDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    type_specifier: Option<TypeSpecifier>; // Type of data the event carries
+}
+
+// Represents a class definition/declaration.
+class ClassDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    members: List<IDeclaration>; // Fields, methods, nested types
+    // generic_definitions: List<Identifier>; // To be added later
+    // interface_implementations: List<InterfaceImplementation>; // To be added later
+}
+
+// Represents an enum definition.
+class EnumDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    members: List<IDeclaration>; // Enum variants, methods
+    // generic_definitions: List<Identifier>; // To be added later
+}
+
+// Represents an interface definition.
+class InterfaceDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    members: List<IDeclaration>; // Methods, events
+    // generic_definitions: List<Identifier>; // To be added later
+}
+
+// Represents an interface implementation block (impl IInterface for MyClass).
+class InterfaceImplementation {
+    impl IDeclaration;
+    interface_type: TypeSpecifier;
+    // where_clause: Option<WhereClause>; // To be added later
+    members: List<FunctionDefinition>; // Only functions for now
+}
+
+// Represents an 'initial' routine.
+class InitialRoutineDefinition {
+    impl IDeclaration;
+    identifier: Option<Identifier>;
+    code_block: CodeBlock;
+}
+
+// Represents an 'on' routine (event handler).
+class OnRoutineDefinition {
+    impl IDeclaration;
+    expression: IExpression;
+    parameter: Option<VariableDeclaration>;
+    code_block: CodeBlock;
+}
+
+// Represents a namespace definition.
+class NamespaceDefinition {
+    impl IDeclaration;
+    identifier: Identifier;
+    declarations: List<IDeclaration>;
+}
+
+// Represents the root of a source file.
+class CompilationUnit {
+    impl ISyntaxNode;
+    declarations: List<IDeclaration>;
+}
+
+}
