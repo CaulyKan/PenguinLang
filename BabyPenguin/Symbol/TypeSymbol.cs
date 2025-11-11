@@ -48,6 +48,8 @@ namespace BabyPenguin.Symbol
 
         public bool IsVariable => false;
 
+        public TypeInferStatus TypeInferStatus => TypeInferStatus.ExplicitTyped;
+
         public override string ToString()
         {
             return $"{TypeInfo}";

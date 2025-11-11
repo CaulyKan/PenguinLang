@@ -92,6 +92,8 @@ namespace BabyPenguin.VirtualMachine
 
         public int ExitCode { get; set; } = 0;
 
+        public string[] CommandLineArgs { get; set; } = Array.Empty<string>();
+
         public StepModeEnum StepMode { get; set; } = StepModeEnum.Run;
 
         public Dictionary<string, IRuntimeSymbol> GlobalVariables { get; } = [];

@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace BabyPenguin.SemanticInterface
 {
     public interface ICodeContainer : ISymbolContainer, ISemanticNode
@@ -41,7 +43,7 @@ namespace BabyPenguin.SemanticInterface
                     AddStatement(item.Statement!);
                     break;
                 case CodeBlockItem.CodeBlockItemType.Declaration:
-                    AddLocalDeclearation(item.Declaration!, null);
+                    AddLocalDeclaration(item.Declaration!);
                     break;
                 case CodeBlockItem.CodeBlockItemType.TypeReference:
                     // no need to emit instructions, do nothing
@@ -51,36 +53,70 @@ namespace BabyPenguin.SemanticInterface
             }
         }
 
-        public ISymbol AddLocalDeclearation(Declaration item, int? paramIndex)
+        public IType InferVariableType(ISymbol symbol)
         {
-            var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.ScopeDepth, scope: this);
-            if (symbol == null)
+            if (symbol.WithoutMutability() is VariableSymbol variableSymbol)
             {
-                throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
-            }
-            if (item.InitializeExpression != null)
-            {
-                if (symbol.WithoutMutability() is VariableSymbol variableSymbol)
+                // 只处理有初始化表达式的变量
+                if (variableSymbol.Declaration?.InitializeExpression == null)
                 {
+                    // 对于没有初始化表达式的变量，如果需要类型推断，这是一个错误
                     if (variableSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
                     {
-                        if (variableSymbol.Declaration?.InitializeExpression == null)
-                            throw new NotImplementedException();
+                        throw new BabyPenguinException($"Variable '{variableSymbol.Name}' requires type inference but has no initializer", variableSymbol.SourceLocation);
+                    }
+                    else return variableSymbol.TypeInfo;
+                }
 
-                        var type = ResolveExpressionType(variableSymbol.Declaration.InitializeExpression);
-                        if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
-                        {
-                            variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
-                        }
-                        else
-                        {
-                            variableSymbol.TypeInfo = type;
-                        }
+                // 尝试直接解析NewExpression类型
+                if (variableSymbol.Declaration.InitializeExpression is NewExpression newExpr && newExpr.TypeSpecifier != null)
+                {
+                    var typeName = newExpr.TypeSpecifier.Name;
+                    var type = Model.ResolveType(typeName, scope: this);
+                    if (type != null)
+                    {
+                        variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
                         variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
+                        return variableSymbol.TypeInfo;
                     }
                 }
-                AddExpression(item.InitializeExpression, true, symbol);
+
+                // 尝试使用代码容器解析表达式类型
+                ICodeContainer? codeContainer = this;
+
+                if (codeContainer != null)
+                {
+                    var type = codeContainer.ResolveExpressionType(variableSymbol.Declaration.InitializeExpression);
+                    if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
+                    {
+                        variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
+                    }
+                    else
+                    {
+                        variableSymbol.TypeInfo = type;
+                    }
+                    variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
+                    return variableSymbol.TypeInfo;
+                }
+                else
+                {
+                    throw new BabyPenguinException($"Cannot find suitable code container for type inference of variable '{variableSymbol.Name}' in container '{GetType()}'", variableSymbol.SourceLocation);
+                }
             }
+            else throw new NotImplementedException();
+        }
+
+        public ISymbol AddLocalDeclaration(Declaration item, bool generateCode = true)
+        {
+            var symbol = Model.ResolveShortSymbol(item.Name, scopeDepth: item.ScopeDepth, scope: this, requireSymbolTypeInferred: false) ??
+                throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
+
+            if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                InferVariableType(symbol);
+
+            if (item.InitializeExpression != null && generateCode)
+                AddExpression(item.InitializeExpression, true, symbol);
+
             return symbol;
         }
 
@@ -315,7 +351,7 @@ namespace BabyPenguin.SemanticInterface
                         else
                             throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation);
 
-                        var iterItemSymbol = AddLocalDeclearation(forStatement.Declaration!, null);
+                        var iterItemSymbol = AddLocalDeclaration(forStatement.Declaration!);
 
                         // prepare begin label
                         var beginLabel = CreateLabel();
@@ -826,8 +862,13 @@ namespace BabyPenguin.SemanticInterface
                     {
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
-                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this);
-                            if (symbol != null) return symbol.TypeInfo;
+                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: this, requireSymbolTypeInferred: false);
+                            if (symbol != null)
+                            {
+                                if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                                    InferVariableType(symbol);
+                                return symbol.TypeInfo;
+                            }
                             else
                             {
                                 var type = Model.ResolveType(exp.Identifier.Name, scope: this);
@@ -1155,6 +1196,9 @@ namespace BabyPenguin.SemanticInterface
             ISymbol to;
             if (targetSymbol != null)
             {
+                if (targetSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                    throw new NotImplementedException($"Cant infer type of variable '{targetSymbol.FullName()}'");
+
                 var rightType = ResolveExpressionType(expression);
                 if (rightType.FullName() == targetSymbol.TypeInfo.FullName())
                 {

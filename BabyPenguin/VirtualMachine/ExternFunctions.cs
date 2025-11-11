@@ -1,6 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Mono.Cecil;
+using BabyPenguin.Type;
+using BabyPenguin.SemanticInterface;
+using System.Collections;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -13,6 +16,11 @@ namespace BabyPenguin.VirtualMachine
             AddAtmoic(vm);
             AddList(vm);
             AddRoutineContext(vm);
+
+            AddFile(vm);
+            AddArgs(vm);
+            AddStringBuilder(vm);
+            // AddMap(vm);
         }
 
         public static void AddPrint(BabyPenguinVM vm)
@@ -27,6 +35,18 @@ namespace BabyPenguin.VirtualMachine
             {
                 var s = args[0].As<BasicRuntimeValue>().StringValue;
                 vm.Global.Print(s, true);
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.eprint", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                Console.Error.Write(s);
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.eprintln", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                Console.Error.WriteLine(s);
             });
 
             vm.Global.RegisterExternFunction("__builtin.exit", Exit);
@@ -277,6 +297,327 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(routineContext.FullName() + ".call", RoutineContextCall);
             }
+        }
+
+        private static void AddFile(BabyPenguinVM vm)
+        {
+            vm.Global.RegisterExternFunction("__builtin.file_read_text", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                var content = System.IO.File.ReadAllText(path);
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = content;
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.file_write_text", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                var content = args[1].As<BasicRuntimeValue>().StringValue;
+                System.IO.File.WriteAllText(path, content);
+            });
+        }
+        private static void AddArgs(BabyPenguinVM vm)
+        {
+            vm.Global.RegisterExternFunction("__builtin.__args_init", (result, args) =>
+            {
+                var commandLineArgs = vm.Global.CommandLineArgs;
+                var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>(); ;
+                var list = self.ExternImplenmentationValue as List<IRuntimeValue>;
+                var stringType = vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
+
+                foreach (var arg in commandLineArgs)
+                {
+                    var basicStringValue = new BasicRuntimeValue(stringType);
+                    basicStringValue.StringValue = arg;
+                    list!.Add(basicStringValue);
+                }
+            });
+        }
+
+        private static void AddStringBuilder(BabyPenguinVM vm)
+        {
+            var stringBuilderType = vm.Model.ResolveTypeNode("__builtin.StringBuilder");
+            if (stringBuilderType == null) return; // 如果代码中没用到，就跳过
+
+            // 注册 StringBuilder.new()
+            vm.Global.RegisterExternFunction(stringBuilderType.FullName() + ".new", (result, args) =>
+            {
+                // 1. 获取 'this' 实例
+                var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>(); ;
+                // 2. 创建一个 C# StringBuilder 并附加
+                self.ExternImplenmentationValue = new System.Text.StringBuilder();
+            });
+
+            // 注册 StringBuilder.append(text: string)
+            vm.Global.RegisterExternFunction(stringBuilderType.FullName() + ".append", (result, args) =>
+            {
+                // 1. 获取 'this' 实例和底层的 StringBuilder
+                var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>(); ;
+                var sb = self.ExternImplenmentationValue as System.Text.StringBuilder;
+
+                // 2. 获取要追加的文本
+                var textToAppend = args[1].As<BasicRuntimeValue>().StringValue;
+
+                // 3. 执行 append 操作
+                sb!.Append(textToAppend);
+            });
+
+            // 注册 StringBuilder.to_string() -> string
+            vm.Global.RegisterExternFunction(stringBuilderType.FullName() + ".to_string", (result, args) =>
+            {
+                // 1. 获取 'this' 实例和底层的 StringBuilder
+                var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>(); ;
+                var sb = self.ExternImplenmentationValue as System.Text.StringBuilder;
+
+                // 2. 将结果赋给返回值
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = sb!.ToString();
+            });
+        }
+
+        private static void AddMap(BabyPenguinVM vm)
+        {
+            var mapNode = vm.Model.ResolveTypeNode("__builtin.Map<?,?>");
+            if (mapNode == null) return;
+
+            foreach (var mapInstance in mapNode.GenericInstances)
+            {
+                var mapFullName = mapInstance.FullName();
+
+                // new()
+                vm.Global.RegisterExternFunction(mapFullName + ".new", (result, args) =>
+                {
+                    args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue = new Dictionary<IRuntimeValue, IRuntimeValue>(new RuntimeValueComparer());
+                });
+
+                // set(key, value)
+                vm.Global.RegisterExternFunction(mapFullName + ".set", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    map![args[1]] = args[2];
+                });
+
+                // get(key) -> Option<V>
+                vm.Global.RegisterExternFunction(mapFullName + ".get", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    var optionEnum = result!.As<EnumRuntimeSymbol>().EnumValue; // Changed from EnumRuntimeSymbol to EnumRuntimeValue
+                    if (map!.TryGetValue(args[1], out var value))
+                    {
+                        // Some(value)
+                        optionEnum.ContainingValue = value;
+                        optionEnum.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0; // Assuming 0 is Some
+                    }
+                    else
+                    {
+                        // None
+                        optionEnum.ContainingValue = null;
+                        optionEnum.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1; // Assuming 1 is None
+                    }
+                });
+
+                // remove(key) -> bool
+                vm.Global.RegisterExternFunction(mapFullName + ".remove", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = map!.Remove(args[1]);
+                });
+
+                // contains_key(key) -> bool
+                vm.Global.RegisterExternFunction(mapFullName + ".contains_key", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = map!.ContainsKey(args[1]);
+                });
+
+                // size() -> u64
+                vm.Global.RegisterExternFunction(mapFullName + ".size", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)map!.Count;
+                });
+
+                // keys() -> mut IIterator<K>
+                vm.Global.RegisterExternFunction(mapFullName + ".keys", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    var iteratorTypeNode = vm.Model.ResolveTypeNode("__builtin.IIterator<?>");
+                    var keyType = mapInstance.GenericArguments[0]; // 获取 K 的实际类型
+                    var specializedIteratorType = iteratorTypeNode!.Specialize(new List<IType> { keyType }).ToType(Mutability.Mutable);
+
+                    var iteratorInstance = new ReferenceRuntimeValue(specializedIteratorType, new Dictionary<string, IRuntimeValue>());
+                    iteratorInstance.ExternImplenmentationValue = map!.Keys.GetEnumerator();
+                    result!.AssignFrom(iteratorInstance);
+                });
+
+                // values() -> mut IIterator<V>
+                vm.Global.RegisterExternFunction(mapFullName + ".values", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    var iteratorTypeNode = vm.Model.ResolveTypeNode("__builtin.IIterator<?>");
+                    var valueType = mapInstance.GenericArguments[1]; // 获取 V 的实际类型
+                    var specializedIteratorType = iteratorTypeNode!.Specialize(new List<IType> { valueType }).ToType(Mutability.Mutable);
+
+                    var iteratorInstance = new ReferenceRuntimeValue(specializedIteratorType, new Dictionary<string, IRuntimeValue>());
+                    iteratorInstance.ExternImplenmentationValue = map!.Values.GetEnumerator();
+                    result!.AssignFrom(iteratorInstance);
+                });
+
+                // iterator() -> mut IIterator<Pair<K, V>> (for IIteratable impl)
+                vm.Global.RegisterExternFunction(mapFullName + ".iterator", (result, args) =>
+                {
+                    var map = args[0].As<ReferenceRuntimeValue>().ExternImplenmentationValue as Dictionary<IRuntimeValue, IRuntimeValue>;
+                    var iteratorTypeNode = vm.Model.ResolveTypeNode("__builtin.IIterator<?>");
+                    var pairTypeNode = vm.Model.ResolveTypeNode("__builtin.Pair<?,?>");
+                    var keyType = mapInstance.GenericArguments[0];
+                    var valueType = mapInstance.GenericArguments[1];
+                    var specializedPairType = pairTypeNode!.Specialize(new List<IType> { keyType, valueType }).ToType(Mutability.Immutable);
+                    var specializedIteratorType = iteratorTypeNode!.Specialize(new List<IType> { specializedPairType }).ToType(Mutability.Mutable);
+
+                    var iteratorInstance = new ReferenceRuntimeValue(specializedIteratorType, new Dictionary<string, IRuntimeValue>());
+                    iteratorInstance.ExternImplenmentationValue = map!.GetEnumerator();
+                    result!.AssignFrom(iteratorInstance);
+                });
+            }
+
+            // Register IIterator.next() for all specialized iterators
+            foreach (var iteratorInstance in vm.Model.ResolveTypeNode("__builtin.IIterator<?>")!.GenericInstances)
+            {
+                vm.Global.RegisterExternFunction(iteratorInstance.FullName() + ".next", (result, args) =>
+                {
+                    var self = args[0].As<ReferenceRuntimeValue>();
+                    var enumerator = self.ExternImplenmentationValue as IEnumerator; // Changed to non-generic IEnumerator
+                    var optionTypeNode = vm.Model.ResolveTypeNode("__builtin.Option<?>经济");
+                    var containedType = iteratorInstance.GenericArguments[0]; // 获取迭代器包含的类型 (K, V, 或 Pair<K,V>)
+                    var specializedOptionType = optionTypeNode!.Specialize(new List<IType> { containedType }).ToType(Mutability.Immutable);
+
+                    var optionInstance = new EnumRuntimeValue(specializedOptionType, new ReferenceRuntimeValue(specializedOptionType, new Dictionary<string, IRuntimeValue>()), null);
+
+                    if (enumerator!.MoveNext())
+                    {
+                        // Some(current)
+                        IRuntimeValue currentValue;
+                        if (enumerator.Current is KeyValuePair<IRuntimeValue, IRuntimeValue> kvp) // For Map.iterator()
+                        {
+                            var pairTypeNode = vm.Model.ResolveTypeNode("__builtin.Pair<?,?>");
+                            var keyType = kvp.Key.TypeInfo;
+                            var valueType = kvp.Value.TypeInfo;
+                            var specializedPairType = pairTypeNode!.Specialize(new List<IType> { keyType, valueType }).ToType(Mutability.Immutable);
+
+                            var pairInstance = new ReferenceRuntimeValue(specializedPairType, new Dictionary<string, IRuntimeValue>());
+                            pairInstance.Fields["first"] = kvp.Key;
+                            pairInstance.Fields["second"] = kvp.Value;
+                            currentValue = pairInstance;
+                        }
+                        else // For List.iter(), Map.keys(), Map.values()
+                        {
+                            currentValue = (IRuntimeValue)enumerator.Current;
+                        }
+
+                        optionInstance.ContainingValue = currentValue;
+                        optionInstance.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0; // Assuming 0 is Some
+                    }
+                    else
+                    {
+                        // None
+                        optionInstance.ContainingValue = null;
+                        optionInstance.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1; // Assuming 1 is None
+                    }
+                    result!.AssignFrom(optionInstance);
+                });
+            }
+        }
+    }
+
+    // 需要一个辅助类来比较 IRuntimeValue
+    public class RuntimeValueComparer : IEqualityComparer<IRuntimeValue>
+    {
+        public bool Equals(IRuntimeValue? x, IRuntimeValue? y)
+        {
+            if (ReferenceEquals(x, y)) return true;
+            if (x is null || y is null) return false;
+
+            // 对于 BasicRuntimeValue，比较其内部值
+            if (x is BasicRuntimeValue bx && y is BasicRuntimeValue by)
+            {
+                if (bx.TypeInfo.Type != by.TypeInfo.Type) return false;
+                return bx.TypeInfo.Type switch
+                {
+                    TypeEnum.Bool => bx.BoolValue == by.BoolValue,
+                    TypeEnum.U8 => bx.U8Value == by.U8Value,
+                    TypeEnum.U16 => bx.U16Value == by.U16Value,
+                    TypeEnum.U32 => bx.U32Value == by.U32Value,
+                    TypeEnum.U64 => bx.U64Value == by.U64Value,
+                    TypeEnum.I8 => bx.I8Value == by.I8Value,
+                    TypeEnum.I16 => bx.I16Value == by.I16Value,
+                    TypeEnum.I32 => bx.I32Value == by.I32Value,
+                    TypeEnum.I64 => bx.I64Value == by.I64Value,
+                    TypeEnum.Float => bx.FloatValue == by.FloatValue,
+                    TypeEnum.Double => bx.DoubleValue == by.DoubleValue,
+                    TypeEnum.String => bx.StringValue == by.StringValue,
+                    TypeEnum.Char => bx.CharValue == by.CharValue,
+                    _ => false // 其他类型不应作为基本值进行比较
+                };
+            }
+            // 对于 ReferenceRuntimeValue，比较其引用 ID
+            else if (x is ReferenceRuntimeValue rx && y is ReferenceRuntimeValue ry)
+            {
+                return rx.RefId == ry.RefId;
+            }
+            // 对于 FunctionRuntimeValue，比较其函数符号
+            else if (x is FunctionRuntimeValue fx && y is FunctionRuntimeValue fy)
+            {
+                return fx.FunctionSymbol.FullName() == fy.FunctionSymbol.FullName();
+            }
+            // 对于 EnumRuntimeValue，比较其值和类型
+            else if (x is EnumRuntimeValue ex && y is EnumRuntimeValue ey)
+            {
+                return ex.TypeInfo.FullName() == ey.TypeInfo.FullName() &&
+                       ex.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value == ey.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value &&
+                       Equals(ex.ContainingValue, ey.ContainingValue);
+            }
+
+            return false;
+        }
+
+        public int GetHashCode(IRuntimeValue obj)
+        {
+            if (obj is null) return 0;
+
+            if (obj is BasicRuntimeValue bx)
+            {
+                return bx.TypeInfo.Type switch
+                {
+                    TypeEnum.Bool => bx.BoolValue.GetHashCode(),
+                    TypeEnum.U8 => bx.U8Value.GetHashCode(),
+                    TypeEnum.U16 => bx.U16Value.GetHashCode(),
+                    TypeEnum.U32 => bx.U32Value.GetHashCode(),
+                    TypeEnum.U64 => bx.U64Value.GetHashCode(),
+                    TypeEnum.I8 => bx.I8Value.GetHashCode(),
+                    TypeEnum.I16 => bx.I16Value.GetHashCode(),
+                    TypeEnum.I32 => bx.I32Value.GetHashCode(),
+                    TypeEnum.I64 => bx.I64Value.GetHashCode(),
+                    TypeEnum.Float => bx.FloatValue.GetHashCode(),
+                    TypeEnum.Double => bx.DoubleValue.GetHashCode(),
+                    TypeEnum.String => bx.StringValue.GetHashCode(),
+                    TypeEnum.Char => bx.CharValue.GetHashCode(),
+                    _ => obj.GetHashCode() // Fallback
+                };
+            }
+            else if (obj is ReferenceRuntimeValue rx)
+            {
+                return rx.RefId.GetHashCode();
+            }
+            else if (obj is FunctionRuntimeValue fx)
+            {
+                return fx.FunctionSymbol.FullName().GetHashCode();
+            }
+            else if (obj is EnumRuntimeValue ex)
+            {
+                return HashCode.Combine(ex.TypeInfo.FullName().GetHashCode(),
+                                        ex.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value.GetHashCode(),
+                                        ex.ContainingValue?.GetHashCode() ?? 0);
+            }
+
+            return obj.GetHashCode();
         }
     }
 }

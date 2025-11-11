@@ -30,6 +30,7 @@ namespace BabyPenguin.Symbol
         bool IsFunction { get; }
         bool IsVariable { get; }
         Mutability IsMutable { get; set; }
+        TypeInferStatus TypeInferStatus { get; }
         ISymbol WithoutMutability()
         {
             if (this is MutableSymbolProxy proxy)

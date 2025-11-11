@@ -23,12 +23,12 @@ namespace BabyPenguin
         public static int Main(string[] args)
         {
             return Parser.Default.ParseArguments<Options>(args).MapResult(
-                Run,
+                (options) => Run(options, args),
                 _ => -1
             );
         }
 
-        public static int RunNormal(Options options)
+        public static int RunNormal(Options options, string[] args)
         {
             // try
             // {
@@ -46,6 +46,7 @@ namespace BabyPenguin
             }
 
             var vm = new BabyPenguinVM(model);
+            vm.Global.CommandLineArgs = args.Skip(options.Files.Count()).ToArray();
             vm.Global.EnableDebugPrint = true;
 
             if (!options.CompileOnly)
@@ -77,9 +78,9 @@ namespace BabyPenguin
         }
 
 
-        public static int Run(Options options)
+        public static int Run(Options options, string[] args)
         {
-            return RunNormal(options);
+            return RunNormal(options, args);
         }
     }
 }

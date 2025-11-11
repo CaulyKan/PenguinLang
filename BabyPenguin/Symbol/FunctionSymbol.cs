@@ -95,6 +95,8 @@ namespace BabyPenguin.Symbol
 
         public bool IsGenerator => (CodeContainer as IFunction)?.IsGenerator ?? false;
 
+        public TypeInferStatus TypeInferStatus => TypeInferStatus.ExplicitTyped;
+
         public override string ToString()
         {
             return $"{Name}({TypeInfo})";
@@ -181,6 +183,8 @@ namespace BabyPenguin.Symbol
         public bool IsStatic => false;
 
         public Mutability IsMutable { get; set; }
+
+        public TypeInferStatus TypeInferStatus { get; set; } = TypeInferStatus.ExplicitTyped;
 
         public override string ToString()
         {

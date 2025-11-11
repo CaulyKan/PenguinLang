@@ -67,15 +67,8 @@
         {
             "name": "PenguinLang Debug",
             "type": "penguinlang",
-            "windows": {
-                "preLaunchTask": "dotnet build win"
-            },
-            "linux": {
-                "preLaunchTask": "dotnet build linux"
-            },
             "request": "launch",
-            "program": "${workspaceFolder}/Examples/test.penguin",
-            "stopAtEntry": true
+            "program": "${file}",
         }
     ]
 }

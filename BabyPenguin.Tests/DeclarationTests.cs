@@ -1160,15 +1160,18 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
+            namespace ns {
+                enum A { foo; }
                 class Foo {
-                    x = 10;
+                    x = new A.foo();
                 }
+            }
             ");
             var model = compiler.Compile();
             var cls = model.Classes.First(c => c.Name == "Foo");
             var symbol = cls.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
-            Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
+            Assert.Equal("mut ns.A", symbol.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1205,6 +1208,23 @@ namespace BabyPenguin.Tests
             var symbol = func.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
             Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
+        }
+
+        [Fact]
+        public void TypeInferenceInInitialTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    let mut x = 10;
+                }
+            ");
+            var model = compiler.Compile();
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var func = ns.InitialRoutines.First();
+            var symbol = func.Symbols.FirstOrDefault(s => s.Name == "x");
+            Assert.NotNull(symbol);
+            Assert.Equal("mut u8", symbol.TypeInfo.FullName());
         }
     }
 }

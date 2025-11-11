@@ -30,16 +30,17 @@ namespace BabyPenguin
                 this.AddSource(builtinCode, builtinFile);
             }
 
+            int i = 1;
             Passes = [
-                new SemanticScopingPass(this, 1),
-                new TypeElaboratePass(this, 2),
-                new SymbolElaboratePass(this, 3),
-                new ConstructorPass(this, 4),
-                new InterfaceImplementationPass(this, 5),
-                new SyntaxRewritingPass(this, 6),
-                new CodeGenerationPass(this, 7),
-                new MainFunctionGenerationPass(this, 8),
-                new CheckReturnValuePass(this, 9),
+                new SemanticScopingPass(this, i++),
+                new TypeElaboratePass(this, i++),
+                new SymbolElaboratePass(this, i++),
+                new ConstructorPass(this, i++),
+                new InterfaceImplementationPass(this, i++),
+                new SyntaxRewritingPass(this, i++),
+                new CodeGenerationPass(this, i++),
+                new MainFunctionGenerationPass(this, i++),
+                new CheckReturnValuePass(this, i++),
             ];
         }
 
@@ -99,33 +100,33 @@ namespace BabyPenguin
             return result;
         }
 
-        public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true)
+        public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, bool requireSymbolTypeInferred = true)
         {
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.Prefix.Count == 0)
-                return ResolveShortSymbol(name, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces);
+                return ResolveShortSymbol(name, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
 
             var type = ResolveTypeNode(nameComponents.PrefixString, scope: scope);
             if (type as ISemanticScope != null)
-                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, scopeDepth, checkImportedNamespaces, nameComponents.IsMutable);
+                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, scopeDepth, checkImportedNamespaces, nameComponents.IsMutable, requireSymbolTypeInferred);
 
             var ns = Namespaces.FirstOrDefault(n => n.Name == nameComponents.PrefixString);
             if (ns != null)
-                return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, scopeDepth, checkImportedNamespaces);
+                return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
 
-            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces);
+            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
             if (prefixSymbol != null)
             {
                 if (prefixSymbol.WithoutMutability() is FunctionSymbol functionSymbol)
                 {
-                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces);
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
                     if (symbol != null) return symbol;
                 }
                 else if (prefixSymbol.WithoutMutability() is VariableSymbol variableSymbol)
                 {
                     var parentType = variableSymbol.TypeInfo.TypeNode as ISymbolContainer ??
                         throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type");
-                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, scopeDepth, checkImportedNamespaces, prefixSymbol.IsMutable);
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, scopeDepth, checkImportedNamespaces, prefixSymbol.IsMutable, requireSymbolTypeInferred);
                     if (symbol != null)
                         return symbol;
                 }
@@ -133,7 +134,7 @@ namespace BabyPenguin
             return null;
         }
 
-        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable)
+        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable, bool requireSymbolTypeInferred = true)
         {
             ISymbol? symbol = null;
             var predicate_ = predicate ?? (s => true);
@@ -174,6 +175,14 @@ namespace BabyPenguin
             if (symbol?.IsMutable == Mutability.Auto)
             {
                 symbol = new MutableSymbolProxy(symbol, parentMutability);
+            }
+
+            if (symbol?.WithoutMutability() is VariableSymbol variableSymbol)
+            {
+                if (variableSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped && requireSymbolTypeInferred)
+                {
+                    throw new BabyPenguinException($"Variable '{variableSymbol.Name}' type was not inferred", variableSymbol.SourceLocation);
+                }
             }
             return symbol;
         }

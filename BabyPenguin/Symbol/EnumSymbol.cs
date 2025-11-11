@@ -40,6 +40,9 @@ namespace BabyPenguin.Symbol
         public bool IsVariable => false;
 
         public bool IsStatic => false;
+
+        public TypeInferStatus TypeInferStatus => TypeInferStatus.ExplicitTyped;
+
     }
 
 }

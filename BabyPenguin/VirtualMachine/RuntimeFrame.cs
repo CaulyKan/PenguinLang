@@ -650,7 +650,7 @@ namespace BabyPenguin.VirtualMachine
 
                                 IRuntimeValue memberVar;
                                 if (!fields.ContainsKey(cmd.Member.Name))
-                                    throw new BabyPenguinRuntimeException($"Type {owner.TypeInfo} does not have member {cmd.Member.Name}");
+                                    throw new BabyPenguinRuntimeException($"Type '{owner.TypeInfo}' does not have member '{cmd.Member.Name}'");
                                 memberVar = fields[cmd.Member.Name]!;
                                 resultVar.AssignFrom(memberVar);
 

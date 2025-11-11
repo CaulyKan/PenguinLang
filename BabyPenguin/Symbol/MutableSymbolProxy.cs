@@ -37,6 +37,8 @@ namespace BabyPenguin.Symbol
 
         public Mutability IsMutable { get; set; }
 
+        public TypeInferStatus TypeInferStatus => Symbol.TypeInferStatus;
+
         public MutableSymbolProxy(ISymbol symbol, Mutability isMutable)
         {
             var s = symbol;

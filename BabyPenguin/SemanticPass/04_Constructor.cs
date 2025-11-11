@@ -104,24 +104,7 @@ namespace BabyPenguin.SemanticPass
         {
             foreach (var symbol in symbolContainer.Symbols.OfType<VariableSymbol>().Where(s => s.TypeInferStatus != TypeInferStatus.ExplicitTyped))
             {
-                var decl = symbol.Declaration;
-                if (decl?.InitializeExpression != null)
-                {
-                    var type = constructorBody.ResolveExpressionType(decl.InitializeExpression);
-                    if (symbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
-                    {
-                        symbol.TypeInfo = type.WithMutability(Mutability.Mutable);
-                    }
-                    else
-                    {
-                        symbol.TypeInfo = type;
-                    }
-                    symbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
-                }
-                else
-                {
-                    throw new BabyPenguinException("Cannot infer type of variable without initializer", symbol.SourceLocation);
-                }
+                throw new BabyPenguinException($"Variable '{symbol.Name}' type was not inferred in TypeInferencePass", symbol.SourceLocation);
             }
         }
 
@@ -140,7 +123,7 @@ namespace BabyPenguin.SemanticPass
                 constructor = ns.Constructor.FunctionSymbol;
             }
 
-            ResolveUnresolvedSymbols(constructor!.CodeContainer, ns);
+            // ResolveUnresolvedSymbols(constructor!.CodeContainer, ns);
 
             if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
             {
@@ -153,7 +136,12 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (decl.InitializeExpression != null)
                     {
-                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.ScopeDepth, scope: ns);
+                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.ScopeDepth, scope: ns, requireSymbolTypeInferred: false) ??
+                            throw new BabyPenguinException($"Cant resolve symbol '{decl.Name}' in namespace '{ns.FullName()}'", decl.SourceLocation);
+
+                        if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                            constructor!.CodeContainer.InferVariableType(symbol);
+
                         constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
                     }
                 }
@@ -231,15 +219,15 @@ namespace BabyPenguin.SemanticPass
             if (cls.SyntaxNode is ClassDefinition syntaxNode)
             {
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
-                ResolveUnresolvedSymbols(constructorBody, cls);
+                // ResolveUnresolvedSymbols(constructorBody, cls);
                 foreach (var ev in syntaxNode.Events)
                 {
                     InitializeEventDefinition(constructorBody, cls, ev);
                 }
 
-                foreach (var varDecl in syntaxNode.Declarations)
+                foreach (var decl in syntaxNode.Declarations)
                 {
-                    InitializeVariable(new(cls), constructorBody, varDecl);
+                    InitializeVariable(new(cls), constructorBody, decl);
                 }
 
                 foreach (var onRoutine in cls.OnRoutines)
@@ -286,7 +274,7 @@ namespace BabyPenguin.SemanticPass
             if (intf.SyntaxNode is InterfaceDefinition syntaxNode)
             {
                 var constructorBody = (intf.Constructor as ICodeContainer)!;
-                ResolveUnresolvedSymbols(constructorBody, intf);
+                // ResolveUnresolvedSymbols(constructorBody, intf);
 
                 foreach (var ev in syntaxNode.Events)
                 {
@@ -304,7 +292,11 @@ namespace BabyPenguin.SemanticPass
         {
             if (varDecl.InitializeExpression is ISyntaxExpression initializer)
             {
-                var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: intfOrCls.IsLeft ? intfOrCls.Left : intfOrCls.Right)!;
+                var memberSymbol = Model.ResolveShortSymbol(varDecl.Name, scope: intfOrCls.IsLeft ? intfOrCls.Left : intfOrCls.Right, requireSymbolTypeInferred: false)!;
+
+                if (memberSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                    constructorBody!.InferVariableType(memberSymbol);
+
                 var thisSymbol = Model.ResolveShortSymbol("this", scope: intfOrCls.IsLeft ? intfOrCls.Left!.Constructor : intfOrCls.Right!.Constructor)!;
                 var temp = constructorBody.AddExpression(initializer, true);
                 if (temp.TypeInfo.FullName() != memberSymbol.TypeInfo.WithMutability(temp.TypeInfo.IsMutable).FullName())

@@ -14,7 +14,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"", vm.CollectOutput());
+            Assert.Equal("", vm.CollectOutput());
         }
 
         [Fact]
@@ -30,7 +30,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"hello, world!{EOL}", vm.CollectOutput());
+            Assert.Equal("hello, world!" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -47,14 +47,14 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             var code = vm.Run();
-            Assert.Equal($"hello", vm.CollectOutput());
+            Assert.Equal("hello", vm.CollectOutput());
             Assert.Equal(1, code);
         }
 
         [Fact]
         public void ProgramExitTest()
         {
-            var code = Program.Main(["TestFiles/HelloWorld.penguin"]);
+            var code = Program.Main(new[] { "TestFiles/HelloWorld.penguin" });
             Assert.Equal(0, code);
         }
 
@@ -78,7 +78,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"true{EOL}false{EOL}10{EOL}false{EOL}true{EOL}9{EOL}", vm.CollectOutput());
+            Assert.Equal("true" + EOL + "false" + EOL + "10" + EOL + "false" + EOL + "true" + EOL + "9" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -100,7 +100,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"01234", vm.CollectOutput());
+            Assert.Equal("01234", vm.CollectOutput());
         }
 
         [Fact]
@@ -122,7 +122,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"01234", vm.CollectOutput());
+            Assert.Equal("01234", vm.CollectOutput());
         }
 
         [Fact]
@@ -152,7 +152,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"1234", vm.CollectOutput());
+            Assert.Equal("1234", vm.CollectOutput());
         }
 
         [Fact]
@@ -171,7 +171,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"12", vm.CollectOutput());
+            Assert.Equal("12", vm.CollectOutput());
         }
 
         [Fact]
@@ -195,7 +195,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"true{EOL}false{EOL}10{EOL}err{EOL}false{EOL}true{EOL}9{EOL}", vm.CollectOutput());
+            Assert.Equal("true" + EOL + "false" + EOL + "10" + EOL + "err" + EOL + "false" + EOL + "true" + EOL + "9" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -224,7 +224,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"1{EOL}2{EOL}2{EOL}3{EOL}3{EOL}3{EOL}4{EOL}4{EOL}5{EOL}", vm.CollectOutput());
+            Assert.Equal("1" + EOL + "2" + EOL + "2" + EOL + "3" + EOL + "3" + EOL + "3" + EOL + "4" + EOL + "4" + EOL + "5" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -253,7 +253,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"3{EOL}1{EOL}3{EOL}2{EOL}2{EOL}true{EOL}", vm.CollectOutput());
+            Assert.Equal("3" + EOL + "1" + EOL + "3" + EOL + "2" + EOL + "2" + EOL + "true" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -274,7 +274,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"123", vm.CollectOutput());
+            Assert.Equal("123", vm.CollectOutput());
         }
 
         [Fact]
@@ -306,7 +306,7 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"2{EOL}1{EOL}1{EOL}2{EOL}2{EOL}3{EOL}true{EOL}", vm.CollectOutput());
+            Assert.Equal("2" + EOL + "1" + EOL + "1" + EOL + "2" + EOL + "2" + EOL + "3" + EOL + "true" + EOL, vm.CollectOutput());
         }
 
         [Fact]
@@ -326,7 +326,85 @@ namespace BabyPenguin.Tests
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
-            Assert.Equal($"hello world!{EOL}true{EOL}finished{EOL}finished{EOL}", vm.CollectOutput());
+            Assert.Equal("hello world!" + EOL + "true" + EOL + "finished" + EOL + "finished" + EOL, vm.CollectOutput());
+        }
+
+        [Fact]
+        public void FileIO_Test()
+        {
+            var script = @"
+                initial {
+                    let content = file_read_text(""test.tmp"");
+                    println(content);
+                    file_write_text(""test.tmp"", ""hello file"");
+                }
+            ";
+
+            File.WriteAllText("test.tmp", "hello world");
+            var (code, output) = RunScript(script);
+            Assert.Equal(0, code);
+            Assert.Equal("hello world" + EOL, output);
+
+            var f = File.ReadAllText("test.tmp");
+            Assert.Equal("hello file", f);
+            File.Delete("test.tmp");
+        }
+
+        [Fact]
+        public void Stderr_Test()
+        {
+            var script = @"initial { eprintln(""hello error""); }";
+
+            // For now, we don't have stderr capture, just run to ensure no crash
+            var (code, output) = RunScript(script);
+            Assert.Equal(0, code);
+        }
+
+        [Fact]
+        public void StringBuilder_Test()
+        {
+            var script = @"
+                initial {
+                    let mut sb = new StringBuilder();
+                    sb.append(""hello"");
+                    sb.append("" world"");
+                    println(sb.to_string());
+                }
+            ";
+            var (code, output) = RunScript(script);
+            Assert.Equal(0, code);
+            Assert.Equal("hello world" + EOL, output);
+        }
+
+        [Fact]
+        public void Args_Test()
+        {
+            var script = @"
+                initial {
+                    let myargs : List<string> = args();
+                    println(myargs.size() as string);
+                    println(myargs.at(0) as string);
+                    println(myargs.at(1) as string);
+                    println(myargs.at(2) as string);
+                }
+            ";
+            var (code, output) = RunScript(script, new[] { "arg1", "arg2" });
+            Assert.Equal(0, code);
+            Assert.Equal($"2{EOL}some(\"arg1\"){EOL}some(\"arg2\"){EOL}none{EOL}", output);
+        }
+
+        private (int, string) RunScript(string script, string[]? args = null)
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(script);
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            if (args != null)
+            {
+                vm.Global.CommandLineArgs = args;
+            }
+            var code = vm.Run();
+            return (code, vm.CollectOutput());
         }
     }
 }

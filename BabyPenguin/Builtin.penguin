@@ -2,8 +2,28 @@ namespace __builtin {
     extern fun exit(code : i32);
     extern fun print(text : string);
     extern fun println(text : string);
+    extern fun eprint(text : string);
+    extern fun eprintln(text : string);
+    extern fun file_read_text(file: string) -> mut string;
+    extern fun file_write_text(file: string, text: string);
+
+    let __args : mut List<string> = new List<string>();
+    extern fun __args_init(args : mut List<string>);
+    fun args() -> List<string> {
+        if (__args.size() == 0) {
+            __args_init(__args);
+        }
+        return __args;
+    }
+
     fun hello_world() {
         println("hello world!");
+    }
+
+    fun panic(text : string) {
+        print("panic: ");
+        println(text);
+        exit(1);
     }
 
     class Box<T> {
@@ -55,6 +75,13 @@ namespace __builtin {
     impl __builtin.ICopy<string> for string;
     impl __builtin.ICopy<float> for float;
     impl __builtin.ICopy<double> for double;
+
+    class StringBuilder {
+        __impl: __ExternImpl = new __ExternImpl();
+        extern fun new(mut this);
+        extern fun append(mut this, s: string);
+        extern fun to_string(this) -> mut string;
+    }
 
     enum Result<T, E> {
         ok: T;
@@ -175,6 +202,48 @@ namespace __builtin {
         extern fun peek(this) -> Option<T>;
         extern fun size(this) -> u64;
     }
+
+    class Pair<K, V> {
+        first: K;
+        second: V;    
+    }
+   
+    // class Map<K, V> {
+    //     __impl:  __ExternImpl = new __ExternImpl();
+    //     extern fun new(mut this);
+    //     extern fun set(mut this, key: K, value: V);
+    //     extern fun get(this, key: K) -> Option<V>;
+    //     extern fun remove(mut this, key: K) -> Option<V>;
+    //     extern fun size(this) -> u64;
+    //     extern fun contains_key(this, key: K) -> bool;
+    //     extern fun keys(this) -> List<K>;
+    //     extern fun values(this) -> List<V>;
+       
+    //     impl IIterable<Pair<K, V>> {
+    //         fun iter(this: mut IIterable<Pair<K,V>>) -> mut IIterator<Pair<K,V>> {
+    //             return new MapIterator<K, V>(this as mut Self) as mut IIterator<K, V>;
+    //         }
+    //     } 
+    // }
+
+    // class MapIterator<K, V> {
+    //     map: !mut Map<K, V>;
+    //     current: mut u64;
+
+    //     fun new(mut this, map: Map<K, V>) {
+    //         this.map = map;
+    //         this.current = 0;
+    //     }
+
+    //     impl IIterator<T> {
+    //         fun next(this: mut IIterator<T>) -> Option<T> {
+    //             let self : mut ListIterator<T> = this as mut ListIterator<T>;
+    //             let res : Option<T> = self.list.at(self.current);
+    //             self.current += 1;
+    //             return res;
+    //         }
+    //     }
+    // }
 
     enum RoutineState {
         pending;
