@@ -1,5 +1,6 @@
 namespace ll {
-    class LinkedList <T> {
+    #template(T: type)
+    class LinkedList {
         head: LinkedListNode<T>;
         tail: LinkedListNode<T>;
         size: i32 = 0;
@@ -36,12 +37,14 @@ namespace ll {
         }
     }
 
-    enum LinkedListLink <T> {
+    #template(T: type)
+    enum LinkedListLink {
         end;
         next: auto LinkedListNode<T>;
     }
 
-    class LinkedListNode <T> {
+    #template(T: type)
+    class LinkedListNode {
         value: auto T;
         link: mut LinkedListLink<T> = new LinkedListLink<T>.end();
     }

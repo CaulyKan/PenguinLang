@@ -10,6 +10,7 @@ namespace PenguinLangParser.SyntaxNodes
             if (ctx is EnumDefinitionContext context)
             {
                 walker.PushScope(SyntaxScopeType.Enum, this);
+                Template = context.templateDeclaration() != null ? Build<TemplateDeclaration>(walker, context.templateDeclaration()) : null;
 
                 EnumIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
                 EnumDeclarations = context.children.OfType<EnumDeclarationContext>()
@@ -21,7 +22,6 @@ namespace PenguinLangParser.SyntaxNodes
                 InitialRoutines = context.children.OfType<InitialRoutineContext>()
                                    .Select(x => Build<InitialRoutineDefinition>(walker, x))
                                    .ToList();
-                GenericDefinitions = context.genericDefinitions() != null ? Build<GenericDefinitions>(walker, context.genericDefinitions()) : null;
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                     .Select(x => Build<InterfaceImplementation>(walker, x))
                     .ToList();
@@ -68,6 +68,9 @@ namespace PenguinLangParser.SyntaxNodes
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
+        public TemplateDeclaration? Template { get; set; } = null;
+
+        [ChildrenNode]
         public List<EnumDeclaration> EnumDeclarations { get; private set; } = [];
 
         [ChildrenNode]
@@ -85,6 +88,10 @@ namespace PenguinLangParser.SyntaxNodes
         public override string BuildText()
         {
             var parts = new List<string>();
+            if (Template != null)
+            {
+                parts.Add(Template.BuildText());
+            }
             parts.Add("enum");
             parts.Add(EnumIdentifier!.BuildText());
             if (GenericDefinitions != null)

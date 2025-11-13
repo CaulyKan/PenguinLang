@@ -49,7 +49,7 @@ namespace BabyPenguin.SemanticNode
         public EnumNode(SemanticModel model, EnumDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
-            GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(gd => gd.Name).ToList() ?? [];
+            GenericDefinitions = syntaxNode.Template?.Parameters.Where(p => p.IsTypeParameter).Select(gd => gd.Name!.Name).ToList() ?? [];
         }
 
         public string Name { get; }

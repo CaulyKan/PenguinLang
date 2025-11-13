@@ -45,7 +45,7 @@ namespace BabyPenguin.SemanticNode
         public InterfaceNode(SemanticModel model, InterfaceDefinition syntaxNode) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
-            GenericDefinitions = syntaxNode.GenericDefinitions?.TypeParameters.Select(gd => gd.Name).ToList() ?? [];
+            GenericDefinitions = syntaxNode.Template?.Parameters.Where(p => p.IsTypeParameter).Select(gd => gd.Name!.Name).ToList() ?? [];
         }
 
         public List<IFunction> Functions { get; } = [];

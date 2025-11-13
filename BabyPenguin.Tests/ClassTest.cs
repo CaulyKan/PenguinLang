@@ -314,7 +314,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 namespace ns {
-                    class Test <T> {
+                    #template(T: type)
+                    class Test {
                         x: auto T;
                     }
 
@@ -341,11 +342,13 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 namespace ns {
-                    class Test <T> {
+                    #template(T: type)
+                    class Test {
                         x: auto T;
                     }
 
-                    class Test2 <T> {
+                    #template(T: type)
+                    class Test2 {
                         y: auto T;
                     }
 
@@ -375,7 +378,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 namespace ns {
-                    class Test <T, U> {
+                    #template(T: type, U: type)
+                    class Test {
                         x: auto T;
                         y: auto U;
                     }
@@ -401,7 +405,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 namespace ns {
-                    class Test <T, U> {
+                    #template(T: type, U: type)
+                    class Test {
                         x: auto T;
                         y: auto U;
                         fun print_sum(this) {

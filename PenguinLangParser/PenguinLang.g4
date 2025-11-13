@@ -168,14 +168,18 @@ genericArguments:
 
 variadicGenericArguments: '...';
 
-genericDefinitions: '<' identifier (',' identifier)* '>';
+// Template declaration for type/constant parameters on definitions
+templateParameter: identifier ':' ('type' | typeSpecifier);
+
+templateDeclaration:
+	'#' 'template' '(' templateParameter (',' templateParameter)* ')';
 
 whereClause: identifier ':' typeSpecifier;
 
 whereDefinition: 'where' (whereClause (',' whereClause)*);
 
 interfaceDefinition:
-	'interface' identifier genericDefinitions? '{' (
+	(templateDeclaration)? 'interface' identifier '{' (
 		(declaration ';')
 		| functionDefinition
 		| interfaceImplementation
@@ -195,7 +199,7 @@ interfaceForImplementation:
 	);
 
 classDefinition:
-	'class' identifier genericDefinitions? '{' (
+	(templateDeclaration)? 'class' identifier '{' (
 		(classDeclaration ';')
 		| functionDefinition
 		| interfaceImplementation
@@ -204,7 +208,7 @@ classDefinition:
 	)* '}';
 
 enumDefinition:
-	'enum' identifier genericDefinitions? '{' (
+	(templateDeclaration)? 'enum' identifier '{' (
 		enumDeclaration
 		| functionDefinition
 		| interfaceImplementation

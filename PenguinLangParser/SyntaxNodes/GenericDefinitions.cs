@@ -6,21 +6,12 @@ namespace PenguinLangParser.SyntaxNodes
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);
-
-            if (ctx is GenericDefinitionsContext context)
-            {
-                TypeParameters = context.children.OfType<IdentifierContext>()
-                   .Select(x => Build<SymbolIdentifier>(walker, x) as Identifier)
-                   .ToList();
-            }
-            else throw new NotImplementedException();
+            TypeParameters = [];
         }
 
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.genericDefinitions(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
-            Build(walker, syntaxNode);
+            TypeParameters = [];
         }
 
         [ChildrenNode]

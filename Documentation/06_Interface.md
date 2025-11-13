@@ -47,7 +47,8 @@ Note that functions that have `this` as a parameter in the interface must use th
 
 It is possible to use the `where` keyword to specify constraints on the type parameters of the interface.
 ```
-class IntegerBook<T> {
+#template(T: type)
+class IntegerBook {
     impl IBook where T: Integer {
         fun get_title() -> string {
             return "Integer Book";

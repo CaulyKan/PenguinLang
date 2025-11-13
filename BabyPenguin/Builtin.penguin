@@ -26,7 +26,8 @@ namespace __builtin {
         exit(1);
     }
 
-    class Box<T> {
+    #template(T: type)
+    class Box {
         value: T;
         fun new(mut this, value: T) {
             this.value = value;
@@ -35,7 +36,8 @@ namespace __builtin {
 
     class __ExternImpl {}
 
-    enum Option<T> {
+    #template(T: type)
+    enum Option {
         some: T;
         none;
     
@@ -58,7 +60,8 @@ namespace __builtin {
         impl __builtin.ICopy<Option<T>> where T: ICopy<T>;
     }
 
-    interface ICopy<T> {
+    #template(T: type)
+    interface ICopy {
         extern fun copy(this: T) -> T;
     }
         
@@ -83,7 +86,8 @@ namespace __builtin {
         extern fun to_string(this) -> mut string;
     }
 
-    enum Result<T, E> {
+    #template(T: type, E: type)
+    enum Result {
         ok: T;
         error: E;
     
@@ -106,11 +110,13 @@ namespace __builtin {
         impl __builtin.ICopy<Result<T, E>> where T: ICopy<T>, E: ICopy<E>;
     }
 
-    interface IIterator<T> {
+    #template(T: type)
+    interface IIterator {
         fun next(mut this) -> Option<T>;
     }
 
-    interface IIterable<T> {
+    #template(T: type)
+    interface IIterable {
         fun iter(mut this) -> mut IIterator<T>;
     }
 
@@ -159,7 +165,8 @@ namespace __builtin {
         extern fun fetch_add(mut this, value: i64) -> i64;
     }
 
-    class List<T> {
+    #template(T: type)
+    class List {
         __impl: __ExternImpl = new __ExternImpl();
         extern fun new(mut this);
         extern fun at(this, index: u64) -> Option<T>;
@@ -175,7 +182,8 @@ namespace __builtin {
         }
     }
 
-    class ListIterator<T> {
+    #template(T: type)
+    class ListIterator {
         list : !mut List<T>;
         current: mut u64;
 
@@ -194,7 +202,8 @@ namespace __builtin {
         }
     }
 
-    class Queue<T> {
+    #template(T: type)
+    class Queue {
         __impl:  __ExternImpl = new __ExternImpl();
         extern fun new(mut this);
         extern fun enqueue(mut this, value: T);
@@ -203,7 +212,8 @@ namespace __builtin {
         extern fun size(this) -> u64;
     }
 
-    class Pair<K, V> {
+    #template(K: type, V: type)
+    class Pair {
         first: K;
         second: V;    
     }
@@ -301,7 +311,8 @@ namespace __builtin {
         }
     }
 
-    enum FutureState<T> {
+    #template(T: type)
+    enum FutureState {
         not_ready;
         ready: T;
         finished;
@@ -314,7 +325,8 @@ namespace __builtin {
         fun start(mut this) -> bool;
     }
 
-    interface IFuture<T> {
+    #template(T: type)
+    interface IFuture {
         impl IFutureBase;
         fun poll(this) -> mut FutureState<T>;
         
@@ -390,11 +402,13 @@ namespace __builtin {
 
     let _main_scheduler : mut Scheduler = new Scheduler();
 
-    interface IGenerator<T> {
+    #template(T: type)
+    interface IGenerator {
         impl IIterator<T>;
     }
 
-    class RoutineContext<T> {
+    #template(T: type)
+    class RoutineContext {
         __impl: __ExternImpl = new __ExternImpl();
         result: mut Option<T> = new Option<T>.none();
         target: mut async_fun<T>;
@@ -405,7 +419,8 @@ namespace __builtin {
         extern fun call(mut this) -> i64;
     }
 
-    class _DefaultRoutine<T> {
+    #template(T: type)
+    class _DefaultRoutine {
         state: mut AtomicI64 = new AtomicI64(0);
         context: mut RoutineContext<T>;
 
@@ -468,7 +483,8 @@ namespace __builtin {
         }
     }
 
-    class Event<T> {
+    #template(T: type)
+    class Event {
         receivers : mut List<IEventReceiver<T>> = new List<IEventReceiver<T>>();
 
         impl IObjectID;
@@ -501,7 +517,8 @@ namespace __builtin {
         }
     }
 
-    interface IEventReceiver<T> {
+    #template(T: type)
+    interface IEventReceiver {
         ev : mut Event<T>;
 
         fun notify(mut this, ev: T);
@@ -515,7 +532,8 @@ namespace __builtin {
         impl IObjectID;
     }
 
-    class _AsyncEventReceiver<T> {
+    #template(T: type)
+    class _AsyncEventReceiver {
         f : mut async_fun<void, T>;
 
         fun new(mut this, ev: mut Event<T>, f: mut async_fun<void, T>) {
@@ -532,7 +550,8 @@ namespace __builtin {
         }
     }
 
-    class _QueuedEventReceiver<T> {
+    #template(T: type)
+    class _QueuedEventReceiver {
         event_queue : mut Queue<T> = new Queue<T>();
 
         fun new(mut this, ev: mut Event<T>) {
@@ -562,7 +581,8 @@ namespace __builtin {
         }
     }
 
-    class _OnetimeEventReceiver<T> {
+    #template(T: type)
+    class _OnetimeEventReceiver {
         value : mut Option<T> = new Option<T>.none();
 
         fun new(mut this, ev: mut Event<T>) {

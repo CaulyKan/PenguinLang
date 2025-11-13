@@ -53,7 +53,8 @@ namespace BabyPenguin.Tests
                         }
                     }
 
-                    enum Test <T> {
+                    #template(T: type)
+                    enum Test {
                         a;
                         b : T;
                     }
@@ -90,7 +91,8 @@ namespace BabyPenguin.Tests
                         x: u8 = 0;
                     }
 
-                    enum Test <T> {
+                    #template(T: type)
+                    enum Test {
                         a;
                         b : T;
                     }

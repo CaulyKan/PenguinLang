@@ -11,6 +11,8 @@ namespace PenguinLangParser.SyntaxNodes
             {
                 walker.PushScope(SyntaxScopeType.Class, this);
 
+                // Optional template declaration before class keyword
+                Template = context.templateDeclaration() != null ? Build<TemplateDeclaration>(walker, context.templateDeclaration()) : null;
                 ClassIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
                 Declarations = context.children.OfType<ClassDeclarationContext>()
                    .Select(x => Build<ClassDeclaration>(walker, x))
@@ -18,7 +20,7 @@ namespace PenguinLangParser.SyntaxNodes
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => Build<FunctionDefinition>(walker, x))
                    .ToList();
-                GenericDefinitions = context.genericDefinitions() != null ? Build<GenericDefinitions>(walker, context.genericDefinitions()) : null;
+                // GenericDefinitions removed in favor of TemplateDeclaration
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                    .Select(x => Build<InterfaceImplementation>(walker, x))
                    .ToList();
@@ -73,7 +75,7 @@ namespace PenguinLangParser.SyntaxNodes
         public List<ClassDeclaration> Declarations { get; set; } = [];
 
         [ChildrenNode]
-        public GenericDefinitions? GenericDefinitions { get; set; } = null;
+        public TemplateDeclaration? Template { get; set; } = null;
 
         [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; set; } = [];
@@ -81,12 +83,12 @@ namespace PenguinLangParser.SyntaxNodes
         public override string BuildText()
         {
             var parts = new List<string>();
+            if (Template != null)
+            {
+                parts.Add(Template.BuildText());
+            }
             parts.Add("class");
             parts.Add(ClassIdentifier!.BuildText());
-            if (GenericDefinitions != null)
-            {
-                parts.Add(GenericDefinitions.BuildText());
-            }
             parts.Add("{\n");
             if (Events.Count > 0)
             {

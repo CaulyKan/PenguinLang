@@ -278,7 +278,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: T;
                 }
                 initial {
@@ -295,7 +296,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: T;
                 }
                 initial {
@@ -315,7 +317,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: T;
                 }
                 initial {
@@ -332,7 +335,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: auto T;
                 }
                 initial {
@@ -352,7 +356,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: mut T = 0;
                 }
                 initial {
@@ -372,7 +377,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: mut T = 0;
                 }
                 initial {
@@ -392,7 +398,8 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
-                class A<T> {
+                #template(T: type)
+                class A {
                     a: !mut T = 0;
                 }
                 initial {

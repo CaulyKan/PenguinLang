@@ -67,7 +67,7 @@ namespace BabyPenguin.Tests
                     let test1 : u8 = 1;
                 }
             ");
-            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
+            Assert.Throws<BabyPenguin.BabyPenguinException>(() => compiler.Compile());
         }
 
         [Fact]
@@ -445,7 +445,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    class Bar<X,Y,Z> { }
+                    #template(X: type, Y: type, Z: type)
+                    class Bar { }
                 }
             ");
             var model = compiler.Compile();
@@ -477,7 +478,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    enum Foo<T> { }
+                    #template(T: type)
+                    enum Foo { }
                 }
             ");
             var model = compiler.Compile();
@@ -507,7 +509,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     class Foo {}
-                    class Bar<T,Foo> { }
+                    #template(T: type, Foo: type)
+                    class Bar { }
                 }
             ");
             var model = compiler.Compile();
@@ -534,8 +537,10 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    class Foo<T> {}
-                    class Bar<T> { 
+                    #template(T: type)
+                    class Foo {}
+                    #template(T: type)
+                    class Bar { 
                         a : T;
                     }
                 }
@@ -608,8 +613,10 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    class Foo<T> {}
-                    class Bar<T> { 
+                    #template(T: type)
+                    class Foo {}
+                    #template(T: type)
+                    class Bar { 
                         a : T;
                     }
                 }
@@ -637,7 +644,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    class Foo<T> {}
+                    #template(T: type)
+                    class Foo {}
                     class Bar { 
                         a : Foo;
                     }
@@ -652,13 +660,14 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    class Foo<T> {}
+                    #template(T: type)
+                    class Foo {}
                     initial {
                         let a : Foo;
                     }
                 }
             ");
-            Assert.Throws<BabyPenguinException>(() => compiler.Compile());
+            Assert.Throws<BabyPenguin.BabyPenguinException>(() => compiler.Compile());
         }
 
 
@@ -669,7 +678,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {}
-                    interface IBar<T> { 
+                    #template(T: type)
+                    interface IBar { 
                         fun bar() -> T;
                         fun bar2(this: IBar<T>) {}
                     }
@@ -751,7 +761,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    interface IFoo<T> {
+                    #template(T: type)
+                    interface IFoo {
                         fun foo() -> T;
                         fun bar() -> T {
                             return 1;
@@ -786,14 +797,16 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    interface IFoo<T> {
+                    #template(T: type)
+                    interface IFoo {
                         fun foo() -> T;
                         fun bar() -> T {
                             return 1;
                         }
                     }
                     
-                    class Foo<T> {
+                    #template(T: type)
+                    class Foo {
                     }
                     
                     impl IFoo<u8> for Foo<u8> {
@@ -824,7 +837,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    interface IFoo<T> {
+                    #template(T: type)
+                    interface IFoo {
                         fun foo() -> T;
                         fun bar() -> T {
                             return 1;
@@ -845,7 +859,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    interface IFoo<T> {
+                    #template(T: type)
+                    interface IFoo {
                         fun foo() -> T;
                         fun bar() -> T {
                             return 1;
@@ -873,7 +888,8 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 namespace ns {
-                    interface IFoo<T> {
+                    #template(T: type)
+                    interface IFoo {
                         fun foo() -> T;
                         fun bar() -> T {
                             return 1;
@@ -899,10 +915,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {}
-                    interface IBar<T> { 
+                    #template(T: type)
+                    interface IBar { 
                         impl IFoo;
                     }
-                    interface IQux<T> { 
+                    #template(T: type)
+                    interface IQux { 
                         impl IBar<T>;
                     }
                     class Qux {
@@ -927,10 +945,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {}
-                    interface IBar<T> { 
+                    #template(T: type)
+                    interface IBar { 
                         impl IFoo;
                     }
-                    interface IQux<T> { 
+                    #template(T: type)
+                    interface IQux { 
                         impl IBar<T>;
                     }
                     class Qux {
@@ -1005,7 +1025,8 @@ namespace BabyPenguin.Tests
                     class Bar {
                         impl IFoo;
                     }
-                    class Foo<T> {
+                    #template(T: type)
+                    class Foo {
                         impl IFoo where T : IFoo;
                     }
                 }

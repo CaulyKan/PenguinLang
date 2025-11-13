@@ -86,7 +86,8 @@ Mutability can be applied to generic type parameters and members.
 
 *   **Generic Member Mutability**:
     ```penguin
-    class Box<T> {
+    #template(T: type)
+    class Box {
         value: T; // 'value' inherits mutability from 'T'
     }
     initial {
@@ -96,7 +97,8 @@ Mutability can be applied to generic type parameters and members.
     ```
 *   **Explicit Mutability for Generic Members**:
     ```penguin
-    class Container<T> {
+    #template(T: type)
+    class Container {
         data: mut T; // 'data' is always mutable, regardless of 'T'
         data2 : !mut T; // 'data2' is always immutable, regardless of 'T'
     }
@@ -107,7 +109,8 @@ Mutability can be applied to generic type parameters and members.
     ```
 *   **Auto Mutability for Generic Members**: The `auto` keyword aligns the mutability of a member with its container object, regardless of the mutability of the generic type `T`.
     ```penguin
-    class Container<T> {
+    #template(T: type)
+    class Container {
         data: auto T; // 'data' mutability is aligned with its container object, regardless of 'T'
     }
     initial {
@@ -188,7 +191,8 @@ Penguin-lang provides several built-in data structures.
 
 *   **`Option<T>`**: Represents an optional value. It can be either `Some(T)` or `None`. This is used instead of `null` to handle the absence of a value safely.
     ```penguin
-    enum Option<T> {
+    #template(T: type)
+    enum Option {
         some: T,
         None,
     }
@@ -264,10 +268,11 @@ a = b; // compile error
 a = b as i32; // OK, but may lose data
 ```
 
-## Generics
-Penguin-lang supports generics, which means a type can be parameterized with other types.
-```
-class MyClass<T> {
+## Templates (Generics)
+Penguin-lang supports templates (generics), which allow types and functions to be parameterized. The declaration uses the `#template` keyword.
+```penguin
+#template(T: type)
+class MyClass {
     x: T;
 }
 

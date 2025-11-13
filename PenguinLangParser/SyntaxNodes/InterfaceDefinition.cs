@@ -10,12 +10,12 @@ namespace PenguinLangParser.SyntaxNodes
             if (ctx is InterfaceDefinitionContext context)
             {
                 walker.PushScope(SyntaxScopeType.Interface, this);
+                Template = context.templateDeclaration() != null ? Build<TemplateDeclaration>(walker, context.templateDeclaration()) : null;
 
                 InterfaceIdentifier = Build<SymbolIdentifier>(walker, context.identifier());
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => Build<FunctionDefinition>(walker, x))
                    .ToList();
-                GenericDefinitions = context.genericDefinitions() != null ? Build<GenericDefinitions>(walker, context.genericDefinitions()) : null;
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                    .Select(x => Build<InterfaceImplementation>(walker, x))
                    .ToList();
@@ -61,6 +61,9 @@ namespace PenguinLangParser.SyntaxNodes
         public ISyntaxScope? ParentScope { get; set; }
 
         [ChildrenNode]
+        public TemplateDeclaration? Template { get; set; } = null;
+
+        [ChildrenNode]
         public GenericDefinitions? GenericDefinitions { get; set; } = null;
 
         [ChildrenNode]
@@ -72,6 +75,10 @@ namespace PenguinLangParser.SyntaxNodes
         public override string BuildText()
         {
             var parts = new List<string>();
+            if (Template != null)
+            {
+                parts.Add(Template.BuildText());
+            }
             parts.Add("interface");
             parts.Add(InterfaceIdentifier!.BuildText());
 

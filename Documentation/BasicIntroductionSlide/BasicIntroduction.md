@@ -407,7 +407,8 @@ class Hi {
 Extending class from outside is allowed:
 
 ```
-class Foo<T> { }
+#template(T: type)
+class Foo { }
 
 impl IHello for Foo<i32> {
 	fun hello(this: IHello) {
@@ -423,7 +424,8 @@ impl IHello for Foo<i32> {
 PenguinLang use Rust style enum, which can contain value.
 
 ```
-enum Option<T> {
+#template(T: type)
+enum Option {
 	some: T,
 	None,
 }
