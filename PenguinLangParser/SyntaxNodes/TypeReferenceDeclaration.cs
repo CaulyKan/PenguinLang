@@ -30,6 +30,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public string Name => Identifier!.Name;
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return $"type {Identifier!.BuildText()} = {TypeSpecifier!.BuildText()}";

@@ -134,6 +134,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool? IsAsync { get; set; }
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             var parts = new List<string>();

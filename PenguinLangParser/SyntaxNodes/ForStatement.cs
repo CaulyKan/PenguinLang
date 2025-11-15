@@ -30,6 +30,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }
 
+        public override string ToShortString() => "for";
+
         public override string BuildText()
         {
             return $"for (let {Declaration!.BuildText()} in {Expression!.BuildText()}) {BodyStatement!.BuildText()}";

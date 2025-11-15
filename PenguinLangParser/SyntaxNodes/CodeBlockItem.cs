@@ -52,6 +52,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public TypeReferenceDeclaration? TypeReference { get; set; }
 
+        public override string ToShortString() => "";
+
         [SexpValue]
         public CodeBlockItemType Type { get; private set; }
 

@@ -9,3 +9,4 @@ report.txt
 *.log
 Documentation/BasicIntroductionSlide/BasicIntroduction
 .aider*
+.trae

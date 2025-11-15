@@ -26,6 +26,8 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => "where";
+
         public override string BuildText()
         {
             if (WhereClauses.Count == 0)

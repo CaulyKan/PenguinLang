@@ -82,6 +82,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsSimple => false;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             var parts = new List<string>();

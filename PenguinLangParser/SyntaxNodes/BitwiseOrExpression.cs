@@ -10,6 +10,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
 
+        public override string ToShortString() => "|";
+
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
         {
             base.Build(walker, ctx);

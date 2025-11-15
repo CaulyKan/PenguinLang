@@ -1,4 +1,4 @@
-namespace ast {
+namespace EmperorPenguin {
 
 //
 // Interfaces
@@ -32,7 +32,6 @@ interface IDeclaration {
 
 // Represents a source location (line, column, file).
 class SourceLocation {
-    impl ISyntaxNode;
     file_name: string;
     line: u32;
     column: u32;
@@ -310,6 +309,150 @@ class NamespaceDefinition {
 class CompilationUnit {
     impl ISyntaxNode;
     declarations: List<IDeclaration>;
+}
+
+fun printAst(cu: mut CompilationUnit) -> string {
+    let mut sb = new StringBuilder();
+    for (let d : IDeclaration in cu.declarations.iter()) {
+        if (d is NamespaceDefinition) {
+            let ns = d as NamespaceDefinition;
+            _append_pretty(sb, 0, "", ns.identifier.name);
+            // Initial routines
+            for (let sub : IDeclaration in ns.declarations.iter()) {
+                if (sub is InitialRoutineDefinition) {
+                    let init = sub as InitialRoutineDefinition;
+                    let name: mut string = "";
+                    if (init.identifier.is_some()) { name = (init.identifier.some as Identifier).name; }
+                    _append_pretty(sb, 1, "InitialRoutines", name);
+                    _append_pretty(sb, 2, "CodeBlock", "");
+                    _append_pretty(sb, 3, "BlockItems", "");
+                    // Assume first item is ExpressionStatement
+                    let idx: mut i64 = 0;
+                    for (let item : ISyntaxNode in init.code_block.block_items.iter()) {
+                        if (item is ExpressionStatement) {
+                            _append_pretty(sb, 4, "Statement", "");
+                            let es = item as ExpressionStatement;
+                            _append_pretty(sb, 5, "ExpressionStatement", "");
+                            _append_pretty(sb, 6, "Expression", "");
+                            _print_expr_pretty(es.expression, sb, 7);
+                        }
+                        idx += 1;
+                    }
+                }
+            }
+        }
+    }
+    return sb.to_string();
+}
+
+fun _indent(n: i64) -> mut string {
+    let mut out = new StringBuilder();
+    let i: mut i64 = 0;
+    while (i < n) {
+        out.append("  ");
+        i += 1;
+    }
+    return out.to_string();
+}
+
+fun _append_line(sb: mut StringBuilder, depth: i64, text: string) {
+    sb.append(_indent(depth));
+    sb.append(text);
+    sb.append("\n");
+}
+
+fun _append_pretty(sb: mut StringBuilder, depth: i64, note: string, short: string) {
+    sb.append(_indent(depth));
+    sb.append(" ");
+    sb.append(note);
+    sb.append(": ");
+    sb.append(short);
+    sb.append("\n");
+}
+
+fun _print_decl(d: IDeclaration, sb: mut StringBuilder, depth: i64) {
+    if (d is NamespaceDefinition) {
+        let ns = d as NamespaceDefinition;
+        _append_line(sb, depth, "Namespace");
+        for (let sub : IDeclaration in ns.declarations.iter()) {
+            _print_decl(sub, sb, depth + 1);
+        }
+    } else if (d is InitialRoutineDefinition) {
+        let init = d as InitialRoutineDefinition;
+        _append_line(sb, depth, "Initial");
+        _print_code_block(init.code_block, sb, depth + 1);
+    } else if (d is FunctionDefinition) {
+        let f = d as FunctionDefinition;
+        _append_line(sb, depth, "Function");
+        if (f.code_block.is_some()) {
+            _print_code_block(f.code_block.some, sb, depth + 1);
+        }
+    } else if (d is ClassDefinition) {
+        _append_line(sb, depth, "Class");
+    } else if (d is EnumDefinition) {
+        _append_line(sb, depth, "Enum");
+    } else if (d is InterfaceDefinition) {
+        _append_line(sb, depth, "Interface");
+    } else {
+        _append_line(sb, depth, "Declaration");
+    }
+}
+
+fun _print_code_block(block: CodeBlock, sb: mut StringBuilder, depth: i64) {
+    _append_line(sb, depth, "CodeBlock");
+    for (let item : ISyntaxNode in block.block_items.iter()) {
+        _print_block_item(item, sb, depth + 1);
+    }
+}
+
+fun _print_block_item(item: ISyntaxNode, sb: mut StringBuilder, depth: i64) {
+    if (item is ExpressionStatement) {
+        _append_line(sb, depth, "ExpressionStatement");
+        let es = item as ExpressionStatement;
+        _print_expr_pretty(es.expression, sb, depth + 1);
+    } else if (item is VariableDeclaration) {
+        let vd = item as VariableDeclaration;
+        _append_line(sb, depth, "VariableDeclaration");
+        if (vd.initialize_expression.is_some()) {
+            _print_expr_pretty(vd.initialize_expression.some, sb, depth + 1);
+        }
+    } else if (item is CodeBlock) {
+        _print_code_block(item as CodeBlock, sb, depth);
+    } else {
+        _append_line(sb, depth, "BlockItem");
+    }
+}
+
+fun _print_expr_pretty(e: IExpression, sb: mut StringBuilder, depth: i64) {
+    if (e is FunctionCallExpression) {
+        let call = e as FunctionCallExpression;
+        if (call.callee is Identifier) {
+            let id = call.callee as Identifier;
+            _append_pretty(sb, depth, "PrimaryExpression", "");
+            _append_pretty(sb, depth + 1, "Identifier", id.name);
+        } else if (call.callee is MemberAccessExpression) {
+            let ma = call.callee as MemberAccessExpression;
+            _append_pretty(sb, depth, "MemberAccessExpression", "");
+            _append_pretty(sb, depth + 1, "Identifier", ma.member.name);
+            _print_expr_pretty(ma.object, sb, depth + 2);
+        }
+        for (let a : IExpression in call.arguments.iter()) {
+            _append_pretty(sb, depth, "ArgumentsExpression", "");
+            // nested children omitted to match PrettyPrint (literal is not a child)
+        }
+    } else if (e is PrimaryExpression) {
+        let pe = e as PrimaryExpression;
+        if (pe.identifier.is_some()) {
+            _append_pretty(sb, depth, "PrimaryExpression", "");
+            _append_pretty(sb, depth + 1, "Identifier", (pe.identifier.some as Identifier).name);
+        } else if (pe.literal.is_some()) {
+            _append_pretty(sb, depth, "PrimaryExpression", "");
+        } else {
+            _append_pretty(sb, depth, "PrimaryExpression", "");
+        }
+    } else {
+        _append_pretty(sb, depth, "Expression", "");
+    }
 }
 
 }

@@ -22,6 +22,8 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => "as";
+
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.castExpression(), reporter);

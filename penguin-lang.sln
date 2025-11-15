@@ -19,6 +19,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ThirdParty", "ThirdParty", 
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "LanguageServerProtocol", "LanguageServerProtocol", "{D4F4CEB2-C7BD-41B3-B577-DBD34754385F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EmperorPenguin.Tests", "EmperorPenguin.Tests\EmperorPenguin.Tests.csproj", "{7170C554-99B7-4D86-B8E4-17D28A9A28BC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -48,6 +50,10 @@ Global
 		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F5E4CD1D-E261-484E-B19A-781B52C17097}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7170C554-99B7-4D86-B8E4-17D28A9A28BC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7170C554-99B7-4D86-B8E4-17D28A9A28BC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7170C554-99B7-4D86-B8E4-17D28A9A28BC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7170C554-99B7-4D86-B8E4-17D28A9A28BC}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{0BA1568C-7F86-4183-A1EF-64E3CF750861} = {54EE158E-E738-4639-86AA-00E1389A9BB6}

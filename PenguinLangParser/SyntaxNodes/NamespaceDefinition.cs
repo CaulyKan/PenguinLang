@@ -152,6 +152,8 @@ namespace PenguinLangParser.SyntaxNodes
             }
         }
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             var parts = new List<string>();

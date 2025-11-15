@@ -9,6 +9,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
 
+        public override string ToShortString() => "^";
+
         public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.bitwiseXorExpression(), reporter);

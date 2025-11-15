@@ -41,6 +41,15 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => string.Join(" ", Operators.Select(x => x switch
+        {
+            BinaryOperatorEnum.LessThan => "<",
+            BinaryOperatorEnum.GreaterThan => ">",
+            BinaryOperatorEnum.LessThanOrEqual => "<=",
+            BinaryOperatorEnum.GreaterThanOrEqual => ">=",
+            _ => throw new NotImplementedException($"Unsupported relational operator: {x}")
+        }));
+
         public override string BuildText()
         {
             if (SubExpressions.Count == 1)

@@ -48,6 +48,17 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsSimple => !HasUnaryOperator && SubExpression!.IsSimple;
 
+        public override string ToShortString() => UnaryOperator!.Value switch
+        {
+            UnaryOperatorEnum.Ref => "&",
+            UnaryOperatorEnum.Deref => "*",
+            UnaryOperatorEnum.Plus => "+",
+            UnaryOperatorEnum.Minus => "-",
+            UnaryOperatorEnum.LogicalNot => "!",
+            UnaryOperatorEnum.BitwiseNot => "~",
+            _ => throw new System.NotImplementedException("Invalid unary operator"),
+        };
+
         public override string BuildText()
         {
             if (this.HasUnaryOperator)

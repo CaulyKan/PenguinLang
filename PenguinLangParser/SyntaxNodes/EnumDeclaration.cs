@@ -42,6 +42,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxScope? ParentScope { get; set; }
 
+        public override string ToShortString() => Identifier!.BuildText();
+
         public override string BuildText()
         {
             if (TypeSpecifier == null)

@@ -26,6 +26,8 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             if (TypeParameters.Count == 0)

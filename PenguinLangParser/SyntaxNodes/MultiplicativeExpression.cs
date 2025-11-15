@@ -40,6 +40,14 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => string.Join(", ", Operators.Select(x => x switch
+        {
+            BinaryOperatorEnum.Multiply => "*",
+            BinaryOperatorEnum.Divide => "/",
+            BinaryOperatorEnum.Modulo => "%",
+            _ => throw new NotImplementedException($"Unsupported multiplicative operator: {x}")
+        }));
+
         public override string BuildText()
         {
             if (SubExpressions.Count == 1)

@@ -39,6 +39,13 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => string.Join(" ", Operators.Select(x => x switch
+        {
+            BinaryOperatorEnum.LeftShift => "<<",
+            BinaryOperatorEnum.RightShift => ">>",
+            _ => throw new NotImplementedException($"Unsupported shift operator: {x}")
+        }));
+
         public override string BuildText()
         {
             if (SubExpressions.Count == 1)

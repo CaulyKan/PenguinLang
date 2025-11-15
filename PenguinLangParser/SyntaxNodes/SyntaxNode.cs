@@ -36,6 +36,8 @@ namespace PenguinLangParser.SyntaxNodes
             return str.Length > 30 ? string.Concat(str.AsSpan(0, 27), "...") : str;
         }
 
+        public abstract string ToShortString();
+
         public override string ToString() => $"[{GetType().Name}] {shorten((this as ISyntaxNode).BuildText() ?? string.Empty)}";
 
         public virtual void Build(SyntaxWalker walker, ParserRuleContext context)
@@ -59,7 +61,7 @@ namespace PenguinLangParser.SyntaxNodes
 
         public IEnumerable<string> PrettyPrint(int indentLevel, string? note = null)
         {
-            return new List<string> { $"{new string(' ', indentLevel * 2)} {note}: {ToString()}" }
+            return new List<string> { $"{new string(' ', indentLevel * 2)} {note}: {ToShortString()}" }
                 .Concat((this as ISyntaxNode).Children.SelectMany(item => item.Value.PrettyPrint(indentLevel + 1, item.Key)));
         }
 

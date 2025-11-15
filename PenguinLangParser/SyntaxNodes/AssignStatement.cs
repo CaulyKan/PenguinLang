@@ -46,6 +46,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public AssignmentOperatorEnum AssignmentOperator { get; private set; }
 
+        public override string ToShortString() => AssignmentOperator.ToString();
+
         public override string BuildText()
         {
             var parts = new List<string>();

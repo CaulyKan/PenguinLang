@@ -16,6 +16,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public List<BinaryOperatorEnum> Operators { get; private set; } = [];
 
+        public override string ToShortString() => string.Join(", ", Operators);
+
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
         public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;

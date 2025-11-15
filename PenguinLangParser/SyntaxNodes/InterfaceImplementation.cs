@@ -52,6 +52,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public WhereDefinition? WhereDefinition { get; set; }
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             var parts = new List<string>();

@@ -27,6 +27,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public Statement? BodyStatement { get; private set; }
 
+        public override string ToShortString() => "while";
+
         public override string BuildText()
         {
             return $"while {Condition!.BuildText()} {BodyStatement!.BuildText()}";

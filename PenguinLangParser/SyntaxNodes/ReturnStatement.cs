@@ -42,6 +42,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public ReturnTypeEnum ReturnType { get; set; } = ReturnTypeEnum.Normal;
 
+        public override string ToShortString() => $"{ReturnType}";
+
         public override string BuildText()
         {
             var keyword = ReturnType switch

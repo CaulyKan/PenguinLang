@@ -610,5 +610,4 @@ namespace __builtin {
             }
         }
     }
-
 }

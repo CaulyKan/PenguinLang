@@ -40,6 +40,14 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => Operator switch
+        {
+            BinaryOperatorEnum.Equal => "==",
+            BinaryOperatorEnum.NotEqual => "!=",
+            BinaryOperatorEnum.Is => "is",
+            _ => throw new NotImplementedException("Invalid equality operator")
+        };
+
         public override string BuildText()
         {
             if (SubExpressions.Count == 1)

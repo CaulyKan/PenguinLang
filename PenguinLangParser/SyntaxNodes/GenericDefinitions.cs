@@ -17,6 +17,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public List<Identifier> TypeParameters { get; private set; } = [];
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             if (TypeParameters.Count == 0)

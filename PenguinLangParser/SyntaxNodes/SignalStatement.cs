@@ -24,6 +24,8 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => "__signal";
+
         public override string BuildText()
         {
             return $"__signal {SignalExpression!.BuildText()};";

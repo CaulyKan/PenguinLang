@@ -107,6 +107,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression && SubPrimaryExpression!.IsSimple;
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return PostfixExpressionType switch

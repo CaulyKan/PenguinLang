@@ -34,12 +34,6 @@ public class Program
             var ast = PenguinParser.Parse(source, inputFile, reporter);
             var compiler = new SyntaxCompiler(inputFile, ast, reporter);
             compiler.Compile();
-            var sexp = SExpSerializer.Serialize(compiler.Namespaces);
-            if (outputFile == "stdout")
-                Console.WriteLine(sexp);
-            else
-                File.WriteAllText(outputFile, sexp);
-            Console.WriteLine($"Successfully parsed {inputFile} and wrote S-expression to {outputFile}.");
         }
         catch (PenguinLangException ex)
         {

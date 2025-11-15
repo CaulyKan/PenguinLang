@@ -1,9 +1,12 @@
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.IO;
 using Mono.Cecil;
 using BabyPenguin.Type;
 using BabyPenguin.SemanticInterface;
 using System.Collections;
+using PenguinLangParser;
+using PenguinLangParser.SyntaxNodes;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -21,6 +24,7 @@ namespace BabyPenguin.VirtualMachine
             AddArgs(vm);
             AddStringBuilder(vm);
             // AddMap(vm);
+            AddEmperorPenguin(vm);
         }
 
         public static void AddPrint(BabyPenguinVM vm)
@@ -372,6 +376,161 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = sb!.ToString();
             });
         }
+
+        private static void AddEmperorPenguin(BabyPenguinVM vm)
+        {
+            var emperorType = vm.Model.ResolveTypeNode("EmperorPenguin.Compiler");
+            if (emperorType == null) return;
+
+            // Ensure AST types are available (optional)
+            var cuTypeNode = vm.Model.ResolveTypeNode("ast.CompilationUnit");
+            if (cuTypeNode == null)
+            {
+                var astPath1 = Path.Combine(Environment.CurrentDirectory, "EmperorPenguin", "ast.penguin");
+                if (File.Exists(astPath1))
+                    vm.Model.AddSource(File.ReadAllText(astPath1), astPath1);
+                cuTypeNode = vm.Model.ResolveTypeNode("ast.CompilationUnit");
+            }
+
+            // parseAST → returns ast.CompilationUnit
+            vm.Global.RegisterExternFunction(emperorType.FullName() + ".parseAST", (result, args) =>
+            {
+                var name = args[1].As<BasicRuntimeValue>().StringValue;
+                var code = args[2].As<BasicRuntimeValue>().StringValue;
+
+                var reporter = vm.Model.Reporter;
+                var context = PenguinParser.Parse(code, name, reporter);
+                var syntaxCompiler = new SyntaxCompiler(name, context, reporter);
+                syntaxCompiler.Compile();
+
+                var cuType = vm.Model.ResolveTypeNode("ast.CompilationUnit")!.ToType(Mutability.Immutable);
+                var declListTypeNode = vm.Model.ResolveTypeNode("__builtin.List<ast.IDeclaration>");
+                var declListType = declListTypeNode!.ToType(Mutability.Mutable);
+
+                var cuInstance = new ReferenceRuntimeValue(cuType, new Dictionary<string, IRuntimeValue>());
+
+                var declListInstance = new ReferenceRuntimeValue(declListType, new Dictionary<string, IRuntimeValue>());
+                declListInstance.Fields["__impl"] = new ReferenceRuntimeValue(declListType, new Dictionary<string, IRuntimeValue>());
+                declListInstance.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue = new List<IRuntimeValue>();
+
+                var userNs = syntaxCompiler.Namespaces.FirstOrDefault();
+                if (userNs != null)
+                {
+                    var ns = userNs;
+                    var nsType = vm.Model.ResolveTypeNode("ast.NamespaceDefinition")!.ToType(Mutability.Immutable);
+                    var nsInstance = new ReferenceRuntimeValue(nsType, new Dictionary<string, IRuntimeValue>());
+
+                    var idType = vm.Model.ResolveTypeNode("ast.Identifier")!.ToType(Mutability.Immutable);
+                    var idInstance = new ReferenceRuntimeValue(idType, new Dictionary<string, IRuntimeValue>());
+                    idInstance.Fields["name"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable)) { StringValue = ns.Name };
+                    nsInstance.Fields["identifier"] = idInstance;
+
+                    var nsDeclListTypeNode = vm.Model.ResolveTypeNode("__builtin.List<ast.IDeclaration>");
+                    var nsDeclListType = nsDeclListTypeNode!.ToType(Mutability.Mutable);
+                    var nsDeclListInstance = new ReferenceRuntimeValue(nsDeclListType, new Dictionary<string, IRuntimeValue>());
+                    nsDeclListInstance.Fields["__impl"] = new ReferenceRuntimeValue(nsDeclListType, new Dictionary<string, IRuntimeValue>());
+                    nsDeclListInstance.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue = new List<IRuntimeValue>();
+
+                    foreach (var decl in ns.InitialRoutines)
+                    {
+                        var initType = vm.Model.ResolveTypeNode("ast.InitialRoutineDefinition")!.ToType(Mutability.Immutable);
+                        var initInstance = new ReferenceRuntimeValue(initType, new Dictionary<string, IRuntimeValue>());
+
+                        var optIdTypeNode = vm.Model.ResolveTypeNode("__builtin.Option<ast.Identifier>");
+                        var optIdType = optIdTypeNode!.ToType(Mutability.Immutable);
+                        var optIdEnum = new EnumRuntimeValue(optIdType, new ReferenceRuntimeValue(optIdType, new Dictionary<string, IRuntimeValue>()), null);
+                        if (!string.IsNullOrEmpty(decl.Name))
+                        {
+                            var idVal = new ReferenceRuntimeValue(idType, new Dictionary<string, IRuntimeValue>());
+                            idVal.Fields["name"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable)) { StringValue = decl.Name };
+                            optIdEnum.ContainingValue = idVal;
+                            optIdEnum.FieldsValue.Fields["_value"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.I32.ToType(Mutability.Immutable)) { I32Value = 0 };
+                        }
+                        else
+                        {
+                            optIdEnum.FieldsValue.Fields["_value"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.I32.ToType(Mutability.Immutable)) { I32Value = 1 };
+                        }
+                        initInstance.Fields["identifier"] = optIdEnum;
+
+                        var blockType = vm.Model.ResolveTypeNode("ast.CodeBlock")!.ToType(Mutability.Immutable);
+                        var blockInstance = new ReferenceRuntimeValue(blockType, new Dictionary<string, IRuntimeValue>());
+
+                        var blockItemsListTypeNode = vm.Model.ResolveTypeNode("__builtin.List<ast.ISyntaxNode>");
+                        var blockItemsListType = blockItemsListTypeNode!.ToType(Mutability.Mutable);
+                        var blockItemsList = new ReferenceRuntimeValue(blockItemsListType, new Dictionary<string, IRuntimeValue>());
+                        blockItemsList.Fields["__impl"] = new ReferenceRuntimeValue(blockItemsListType, new Dictionary<string, IRuntimeValue>());
+                        var items = new List<IRuntimeValue>();
+                        blockItemsList.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue = items;
+
+                        foreach (var item in decl.CodeBlock!.BlockItems)
+                        {
+                            if (item.Type == PenguinLangParser.SyntaxNodes.CodeBlockItem.CodeBlockItemType.Statement && item.Statement!.StatementType == PenguinLangParser.SyntaxNodes.Statement.Type.ExpressionStatement)
+                            {
+                                var exprStmtType = vm.Model.ResolveTypeNode("ast.ExpressionStatement")!.ToType(Mutability.Immutable);
+                                var exprStmt = new ReferenceRuntimeValue(exprStmtType, new Dictionary<string, IRuntimeValue>());
+
+                                var fce = item.Statement!.ExpressionStatement!.Expression as PenguinLangParser.SyntaxNodes.FunctionCallExpression;
+                                if (fce != null)
+                                {
+                                    var callType = vm.Model.ResolveTypeNode("ast.FunctionCallExpression")!.ToType(Mutability.Immutable);
+                                    var callInst = new ReferenceRuntimeValue(callType, new Dictionary<string, IRuntimeValue>());
+
+                                    var calleeId = new ReferenceRuntimeValue(idType, new Dictionary<string, IRuntimeValue>());
+                                    var calleeName = fce.PrimaryExpression is PenguinLangParser.SyntaxNodes.PrimaryExpression pe && pe.Identifier != null ? pe.Identifier.BuildText() : "";
+                                    calleeId.Fields["name"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable)) { StringValue = calleeName };
+                                    callInst.Fields["callee"] = calleeId;
+
+                                    var argsListTypeNode = vm.Model.ResolveTypeNode("__builtin.List<ast.IExpression>");
+                                    var argsListType = argsListTypeNode!.ToType(Mutability.Mutable);
+                                    var argsList = new ReferenceRuntimeValue(argsListType, new Dictionary<string, IRuntimeValue>());
+                                    argsList.Fields["__impl"] = new ReferenceRuntimeValue(argsListType, new Dictionary<string, IRuntimeValue>());
+                                    var argsData = new List<IRuntimeValue>();
+                                    argsList.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue = argsData;
+
+                                    foreach (var a in fce.ArgumentsExpression)
+                                    {
+                                        if (a is PenguinLangParser.SyntaxNodes.PrimaryExpression ape && ape.PrimaryExpressionType == PenguinLangParser.SyntaxNodes.PrimaryExpression.Type.StringLiteral)
+                                        {
+                                            var litType = vm.Model.ResolveTypeNode("ast.LiteralExpression")!.ToType(Mutability.Immutable);
+                                            var litInst = new ReferenceRuntimeValue(litType, new Dictionary<string, IRuntimeValue>());
+                                            litInst.Fields["value"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable)) { StringValue = ape.Literal! };
+                                            argsData.Add(litInst);
+                                        }
+                                        else
+                                        {
+                                            var litType = vm.Model.ResolveTypeNode("ast.LiteralExpression")!.ToType(Mutability.Immutable);
+                                            var litInst = new ReferenceRuntimeValue(litType, new Dictionary<string, IRuntimeValue>());
+                                            litInst.Fields["value"] = new BasicRuntimeValue(vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable)) { StringValue = a.BuildText() };
+                                            argsData.Add(litInst);
+                                        }
+                                    }
+
+                                    callInst.Fields["arguments"] = argsList;
+                                    exprStmt.Fields["expression"] = callInst;
+                                    items.Add(exprStmt);
+                                }
+                            }
+                        }
+
+                        blockInstance.Fields["block_items"] = blockItemsList;
+                        initInstance.Fields["code_block"] = blockInstance;
+
+                        var nsDecls = nsDeclListInstance.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue as List<IRuntimeValue>;
+                        nsDecls!.Add(initInstance);
+                    }
+
+                    nsInstance.Fields["declarations"] = nsDeclListInstance;
+                    var cuDecls = declListInstance.Fields["__impl"].As<ReferenceRuntimeValue>().ExternImplenmentationValue as List<IRuntimeValue>;
+                    cuDecls!.Add(nsInstance);
+                }
+
+                cuInstance.Fields["declarations"] = declListInstance;
+                result!.AssignFrom(cuInstance);
+            });
+
+            // ast.printAst 由 PenguinLang 实现，无需外部注册
+        }
+
 
         private static void AddMap(BabyPenguinVM vm)
         {

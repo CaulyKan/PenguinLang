@@ -46,6 +46,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public Identifier? ClassIdentifier { get; set; }
 
+        public override string ToShortString() => ClassIdentifier!.BuildText();
+
         public string Name => ClassIdentifier!.Name;
 
         public SyntaxScopeType ScopeType => SyntaxScopeType.Class;

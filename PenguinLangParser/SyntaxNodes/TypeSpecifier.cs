@@ -84,9 +84,11 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsIterable { get; set; } = false;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
-            return IsIterable ? $"mut __builtin.IIterator<{TypeName}>" : TypeName;
+            return Name;
         }
     }
 }

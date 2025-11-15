@@ -49,7 +49,7 @@ namespace PenguinLangParser.SyntaxNodes
 
         public string Name => EnumIdentifier!.Name;
 
-                [SexpValue]
+        [SexpValue]
         public SyntaxScopeType ScopeType => SyntaxScopeType.Enum;
 
         public List<SyntaxSymbol> Symbols { get; private set; } = [];
@@ -84,6 +84,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         [ChildrenNode]
         public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
+
+        public override string ToShortString() => Name;
 
         public override string BuildText()
         {

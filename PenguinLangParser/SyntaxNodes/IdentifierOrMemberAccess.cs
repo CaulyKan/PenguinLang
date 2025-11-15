@@ -44,6 +44,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsMemberAccess => MemberAccess is not null;
 
+        public override string ToShortString() => IsIdentifier ? "Identifier" : "MemberAccess";
+
         public override string BuildText()
         {
             if (IsIdentifier)

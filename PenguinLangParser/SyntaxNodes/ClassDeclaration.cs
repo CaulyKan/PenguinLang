@@ -44,6 +44,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public Mutability IsMutable { get; set; } = Mutability.Immutable;
 
+        public override string ToShortString() => Identifier!.BuildText();
+
         public override string BuildText()
         {
             var mutStr = "";

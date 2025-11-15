@@ -32,6 +32,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public string Name { get; private set; } = $"codeblock_{counter++}";
 
+        public override string ToShortString() => "";
+
         public SyntaxScopeType ScopeType => SyntaxScopeType.CodeBlock;
 
         public List<SyntaxSymbol> Symbols { get; private set; } = [];

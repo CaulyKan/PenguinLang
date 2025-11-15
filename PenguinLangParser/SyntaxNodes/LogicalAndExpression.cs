@@ -31,6 +31,8 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => "&&";
+
         public override string BuildText()
         {
             if (SubExpressions.Count == 1)

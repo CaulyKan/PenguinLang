@@ -13,12 +13,17 @@ namespace PenguinLangParser
             var walker = new SyntaxWalker(FileName, Reporter);
             _ = SyntaxNode.Build<NamespaceDefinition>(walker, Ast);
             Namespaces = walker.Namespaces.FindAll(x => !x.IsEmpty).ToList();
-            Reporter.Write(DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + string.Join("\n", Namespaces.SelectMany(x => (x as ISyntaxNode).PrettyPrint(0))));
+            Reporter.Write(DiagnosticLevel.Debug, $"Syntax Tree for {FileName}:\n" + GenerateAstReport());
         }
         public PenguinLangParser.CompilationUnitContext Ast { get; } = ast;
         public ErrorReporter Reporter { get; } = reporter;
         public string FileName { get; } = file;
         public List<NamespaceDefinition> Namespaces { get; private set; } = [];
+
+        public string GenerateAstReport()
+        {
+            return string.Join("\n", Namespaces.SelectMany(x => (x as ISyntaxNode).PrettyPrint(0)));
+        }
     }
 
     public class SyntaxWalker(string file, ErrorReporter reporter, uint scopeDepth = 0)

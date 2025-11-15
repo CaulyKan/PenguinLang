@@ -29,6 +29,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
+        public override string ToShortString() => "wait";
+
         public override string BuildText()
         {
             if (Expression == null)

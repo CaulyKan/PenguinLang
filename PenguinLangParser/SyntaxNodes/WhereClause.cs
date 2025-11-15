@@ -28,6 +28,8 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return $"{Identifier!.BuildText()}: {TypeSpecifier!.BuildText()}";

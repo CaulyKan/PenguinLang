@@ -24,6 +24,8 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => "yield";
+
         public override string BuildText()
         {
             if (YieldExpression == null)

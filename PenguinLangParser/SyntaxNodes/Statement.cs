@@ -132,6 +132,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public EmitEventStatement? EmitEventStatement { get; set; }
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return StatementType switch

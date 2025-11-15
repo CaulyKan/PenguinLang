@@ -46,6 +46,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public string Name => EventIdentifier!.Name;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             if (EventType == null || EventType.TypeName == "void")

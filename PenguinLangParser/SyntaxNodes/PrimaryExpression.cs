@@ -107,6 +107,8 @@ namespace PenguinLangParser.SyntaxNodes
             _ => throw new NotImplementedException("Invalid primary expression type"),
         };
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return PrimaryExpressionType switch

@@ -29,6 +29,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsSimple => false;
 
+        public override string ToShortString() => "async";
+
         public override string BuildText()
         {
             return $"async {Expression!.BuildText()}";

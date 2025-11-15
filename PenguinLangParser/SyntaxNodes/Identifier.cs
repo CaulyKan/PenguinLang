@@ -36,6 +36,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public string Name => LiteralName;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             return LiteralName;

@@ -43,6 +43,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsAnonymous => false;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             return $"initial {Name} {CodeBlock!.BuildText()}";

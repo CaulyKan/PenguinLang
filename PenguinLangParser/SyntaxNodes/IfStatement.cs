@@ -46,6 +46,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool HasElse => ElseStatement is not null;
 
+        public override string ToShortString() => "if";
+
         public override string BuildText()
         {
             var parts = new List<string>();

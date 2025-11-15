@@ -35,6 +35,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public ISyntaxExpression? ArgumentExpression { get; set; }
 
+        public override string ToShortString() => "emit";
+
         public override string BuildText()
         {
             var args = ArgumentExpression is not null

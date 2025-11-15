@@ -409,9 +409,14 @@ namespace BabyPenguin
             using (var sb = new StreamWriter(f))
             {
                 sb.WriteLine($"BabyPenguin Compile report for: ");
-                foreach (var s in Files.Select(i => Path.GetFullPath(file)))
+                foreach (var s in Files.Select(i => Path.GetFullPath(i)))
                     sb.WriteLine($"    {s}");
                 sb.WriteLine("");
+
+                sb.WriteLine("=======================================================");
+                sb.WriteLine($"AST:");
+                sb.WriteLine("=======================================================");
+                sb.WriteLine(string.Join("\n", Namespaces.SelectMany(x => x.Namespaces).SelectMany(ns => ns.SyntaxNode?.PrettyPrint(0, "Namespace") ?? [])));
 
                 sb.WriteLine("=======================================================");
                 sb.WriteLine($"Symbols:");

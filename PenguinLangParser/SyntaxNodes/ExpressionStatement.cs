@@ -24,6 +24,8 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public ISyntaxExpression? Expression { get; private set; }
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             return $"{Expression!.BuildText()};";

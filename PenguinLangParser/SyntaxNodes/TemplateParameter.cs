@@ -41,6 +41,8 @@ namespace PenguinLangParser.SyntaxNodes
             Build(walker, syntaxNode);
         }
 
+        public override string ToShortString() => "";
+
         public override string BuildText()
         {
             var typeText = IsTypeParameter ? "type" : ParameterType!.BuildText();

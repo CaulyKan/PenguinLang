@@ -94,6 +94,8 @@ namespace PenguinLangParser.SyntaxNodes
 
         public string Name => Identifier!.Name;
 
+        public override string ToShortString() => Name;
+
         public override string BuildText()
         {
             var parts = new List<string>();

@@ -35,6 +35,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool IsSimple => false;
 
+        public override string ToShortString() => "new";
+
         public override string BuildText()
         {
             var args = ArgumentsExpression.Count > 0

@@ -42,6 +42,8 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
+        public override string ToShortString() => "on";
+
         public override string BuildText()
         {
             var sb = new StringBuilder();

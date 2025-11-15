@@ -41,6 +41,8 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public Type JumpType { get; private set; }
 
+        public override string ToShortString() => JumpType.ToString();
+
         public override string BuildText()
         {
             return JumpType switch
