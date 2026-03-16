@@ -1,5 +1,5 @@
 ## Interface
-Penguin-lang supports interfaces, which are similar to Rust traits. 
+Penguin-lang supports interfaces, which are similar to Rust traits.
 
 ```
 interface IBook {
@@ -10,9 +10,9 @@ interface IBook {
     }
 }
 ```
-The above interface defines an unimplemented function `get_title`, and `get_language` with a default implementation. 
+The above interface defines an unimplemented function `get_title`, and `get_language` with a default implementation.
 
-To implement the interface, use the `impl` keyword:
+To implement interface, use `impl` keyword:
 ```
 class BookA {
     impl IBook {
@@ -25,7 +25,7 @@ class BookA {
 }
 ```
 
-You can also implement the interface outside the class:
+You can also implement interface outside of class:
 ```
 class BookB {
     const language: string = "English";
@@ -43,15 +43,20 @@ impl IBook for BookB {
 }
 ```
 
-Note that functions that have `this` as a parameter in the interface must use the interface type, and be cast to the actual type in the implementation.
+Note that functions that have `this` as a parameter in the interface must use the interface type. When implementing, you may need to cast to the actual type.
 
-It is possible to use the `where` keyword to specify constraints on the type parameters of the interface.
+Generic interfaces are implemented with type parameters:
 ```
 #template(T: type)
-class IntegerBook {
-    impl IBook where T: Integer {
-        fun get_title() -> string {
-            return "Integer Book";
+interface IFoo {
+    fun foo(this: IFoo<T>) -> T;
+}
+
+#template(T: type)
+class MyClass {
+    impl IFoo<i32> {
+        fun foo(this: IFoo<i32>) -> i32 {
+            return 1;
         }
     }
 }

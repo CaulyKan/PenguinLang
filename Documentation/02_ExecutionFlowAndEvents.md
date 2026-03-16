@@ -21,7 +21,7 @@ Penguin-lang provides a builtin event system. You can use events to control exec
 event a_finished;
 initial {
 	print("A");
-	sleep(1);
+	wait;
 	emit a_finished;
 }
 
@@ -38,7 +38,7 @@ You can also use `on` blocks, which are similar to callbacks:
 event foo;
 
 initial {
-	emit foo;
+	emit foo();
 }
 
 on foo {
@@ -58,7 +58,7 @@ You can use expressions as conditions for `on` routines:
 let a : mut i32 = 0;
 
 initial {
-	for (var i : i32 in range(0, 10)) {
+	for (let i : i32 in range(0, 10)) {
 		a = i;
 	}
 }
@@ -75,11 +75,11 @@ Events can take parameters:
 event foo : i32;
 
 initial {
-	for (var i : i32 in range(0, 10))
+	for (let i : i32 in range(0, 10))
 		emit foo(i);
 }
 
-on foo(const i : i32) {
+on foo(i : i32) {
 	print(i as string);
 }
 ```
@@ -116,7 +116,7 @@ initial {
 	}
 }
 
-on foo(val x: i32) {
+on foo(x : i32) {
 	// will receive all events
 }
 ```

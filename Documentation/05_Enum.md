@@ -6,7 +6,7 @@ enum Option<T> {
 	some: T,
 	none,
 }
-	
+
 let a : mut Option<i32> = new Option<i32>.none();
 initial {
 	a = new Option<i32>.some(1);
@@ -32,19 +32,19 @@ Like classes, enums can have their own members:
 enum Option<T> {
 	some: T,
 	none,
-	
+
 	// method
 	fun value_or(this, default: T) -> T {
-		if (this is Option<T>.none) {
+		if (this.is_none()) {
 			return default;
 		} else {
 			return this.some;
 		}
 	}
-	
+
 	// however, enums can't have a constructor
-	
-	on (this is Option<T>.none) {
+
+	on (this.is_none()) {
 		println("hello none");
 	}
 }

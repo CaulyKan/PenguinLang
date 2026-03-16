@@ -9,9 +9,8 @@ initial {
 ```
 
 Penguin-lang is inspired by multiple languages:
-* Syntax from C#
+* Syntax from C
 * Garbage collection from C#/Java
 * Type system from Rust
-* Async/coroutines from C#/Rust (Tokio)
-* Thread-safety from Erlang
-* Timing model from Verilog/SystemC
+* Async/coroutines from Golang
+* Concurrent from Verilog/SystemC

@@ -12,7 +12,7 @@ class MyClass {
 	foo: i32;
 }
 
-fun hello(param1: i32, param2: mut i32, param3: MyClass, param4: mut MyClass) {
+fun hello(param1 : i32, param2 : mut i32, param3 : MyClass, param4 : mut MyClass) {
 	// param1 = 0;		// ERROR: can't change an immutable param
 
 	param2 = 1;  	// can change value of param2, 
