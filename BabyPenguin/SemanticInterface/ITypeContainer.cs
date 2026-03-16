@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace BabyPenguin.SemanticInterface
 {
 
@@ -22,6 +24,7 @@ namespace BabyPenguin.SemanticInterface
         }
 
         static ulong counter = 0;
+
         MemberAccessExpression CreateMemberAccess(bool isRead, Identifier identifier)
         {
             MemberAccessExpression result = isRead ? new ReadMemberAccessExpression() : new WriteMemberAccessExpression();
@@ -58,7 +61,7 @@ namespace BabyPenguin.SemanticInterface
             var parametersString = string.Join(", ", parameters.Select(p => $"{p.Name} : {p.Type.FullName()}"));
             var declarationStrings = closureSymbols.Select(s => $"{s.Name} : {s.TypeInfo.FullName()}").ToList();
 
-            var name = $"__lambda_{nameHint}_{counter++}";
+            var name = $"__lambda_{nameHint}_{Interlocked.Increment(ref counter)}";
             string text = "";
             if (syntaxNode != null)
             {

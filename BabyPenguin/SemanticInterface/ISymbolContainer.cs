@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace BabyPenguin.SemanticInterface
 {
 
@@ -9,7 +11,7 @@ namespace BabyPenguin.SemanticInterface
 
         ISymbol AllocTempSymbol(IType type, SourceLocation sourceLocation, Mutability? isMutable = null)
         {
-            var name = $"__temp_{counter++}";
+            var name = $"__temp_{Interlocked.Increment(ref counter)}";
             if (!type.IsFunctionType)
             {
                 ISymbol temp = new VariableSymbol(this, true, name, type, sourceLocation, 0, name, true, null, false, null);

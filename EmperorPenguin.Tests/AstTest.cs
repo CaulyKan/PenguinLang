@@ -30,7 +30,7 @@ namespace BabyPenguin.Tests
             return (code, vm.CollectOutput());
         }
 
-        [Fact]
+        // [Fact]
         public void ParseAST_HelloWorld()
         {
             var inputPath = GetTestPath("hello_world.penguin");

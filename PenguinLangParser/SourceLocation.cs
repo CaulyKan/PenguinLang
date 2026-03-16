@@ -1,10 +1,12 @@
+using System.Threading;
+
 namespace PenguinLangParser
 {
     public record SourceLocation(string FileName, string FileNameIdentifier, int RowStart, int RowEnd, int ColStart, int ColEnd) : IComparable<SourceLocation>
     {
         private static ulong count = 0;
 
-        public static SourceLocation Empty() => new SourceLocation("_anonymous", $"anonymous_{count++}", 0, 0, 0, 0);
+        public static SourceLocation Empty() => new SourceLocation("_anonymous", $"anonymous_{Interlocked.Increment(ref count)}", 0, 0, 0, 0);
 
         public SourceLocation StartLocation => new SourceLocation(FileName, FileNameIdentifier, RowStart, RowStart, ColStart, ColStart);
 

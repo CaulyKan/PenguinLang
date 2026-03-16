@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace BabyPenguin
 {
     public class SemanticCompiler
@@ -23,7 +25,7 @@ namespace BabyPenguin
 
         public SemanticCompiler AddSource(string source, string? fileName = null)
         {
-            Sources.Add(new SourceInput(fileName ?? $"anonymous_{counter++}", source));
+            Sources.Add(new SourceInput(fileName ?? $"anonymous_{Interlocked.Increment(ref counter)}", source));
             return this;
         }
 
