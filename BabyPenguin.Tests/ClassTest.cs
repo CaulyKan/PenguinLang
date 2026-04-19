@@ -12,9 +12,9 @@ namespace BabyPenguin.Tests
                     test.a = 1;
                     test.b = 1;
                     test.b += 1;
-                    print(test.a as string);
-                    print(test.b as string);
-                    print((test.a + test.b) as string);
+                    print(cast<string>(test.a));
+                    print(cast<string>(test.b));
+                    print(cast<string>(test.a + test.b));
                 }
 
                 class Test {
@@ -40,9 +40,9 @@ namespace BabyPenguin.Tests
                     test.test1.a = 1;
                     test.test1.b = 1;
                     test.test1.b += 1;
-                    print(test.test1.a as string);
-                    print(test.test1.b as string);
-                    print((test.test1.a + test.test1.b) as string);
+                    print(cast<string>(test.test1.a));
+                    print(cast<string>(test.test1.b));
+                    print(cast<string>(test.test1.a + test.test1.b));
                 }
 
                 class Test1 {
@@ -78,7 +78,7 @@ namespace BabyPenguin.Tests
                         b : u8;
 
                         fun print_sum(this) {
-                            print((this.a + this.b) as string);
+                            print(cast<string>(this.a + this.b));
                         }
                     }
                 }
@@ -125,7 +125,7 @@ namespace BabyPenguin.Tests
                     a : u8;
                     b : u8;
                     fun print_sum(this) {
-                        print((this.a + this.b) as string);
+                        print(cast<string>(this.a + this.b));
                     }
                 }
 
@@ -152,7 +152,7 @@ namespace BabyPenguin.Tests
                     a : u8;
                     b : u8;
                     fun print_sum(this) {
-                        print((this.a + this.b) as string);
+                        print(cast<string>(this.a + this.b));
                     }
                 }
 
@@ -183,7 +183,7 @@ namespace BabyPenguin.Tests
                     a : u8;
                     b : u8;
                     fun print_sum() {
-                        print((this.a + this.b) as string);
+                        print(cast<string>(this.a + this.b));
                     }
                 }
 
@@ -209,7 +209,7 @@ namespace BabyPenguin.Tests
                         b : u8=1+1;
 
                         fun print_sum(this) {
-                            print((this.a + this.b) as string);
+                            print(cast<string>(this.a + this.b));
                         }
                     }
                 }
@@ -236,7 +236,7 @@ namespace BabyPenguin.Tests
                         b : u8;
 
                         fun print_sum(this) {
-                            print((this.a + this.b) as string);
+                            print(cast<string>(this.a + this.b));
                         }
 
                         fun new(mut this, b: u8) {
@@ -259,7 +259,7 @@ namespace BabyPenguin.Tests
                 compiler.AddSource(@"
                     namespace ns {
                         initial {
-                            print(a as string);
+                            print(cast<string>(a));
                         }
                         let a : u8 = 1+1;
                     }
@@ -322,7 +322,7 @@ namespace BabyPenguin.Tests
                     initial {
                         let t : mut Test<u8> = new Test<u8>();
                         t.x = 1;
-                        print(t.x as string);
+                        print(cast<string>(t.x));
 
                         let t2 : mut Test<string> = new Test<string>();
                         t2.x = ""2"";
@@ -356,7 +356,7 @@ namespace BabyPenguin.Tests
                         let t : mut Test<Test2<u8>> = new Test<Test2<u8>>();
                         t.x = new Test2<u8>();
                         t.x.y = 1;
-                        print(t.x.y as string);
+                        print(cast<string>(t.x.y));
 
                         let t2 : mut Test<Test2<string>> = new Test<Test2<string>>();
                         t2.x = new Test2<string>();
@@ -388,8 +388,8 @@ namespace BabyPenguin.Tests
                         let t : mut Test<u8, string> = new Test<u8, string>();
                         t.x = 1;
                         t.y = ""2"";
-                        print(t.x as string);
-                        print(t.y as string);
+                        print(cast<string>(t.x));
+                        print(cast<string>(t.y));
                     }
                 }
             ");
@@ -410,7 +410,7 @@ namespace BabyPenguin.Tests
                         x: auto T;
                         y: auto U;
                         fun print_sum(this) {
-                            print((this.x + this.y) as string);
+                            print(cast<string>(this.x + this.y));
                         }
                     }
 

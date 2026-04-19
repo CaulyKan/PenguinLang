@@ -9,7 +9,7 @@ namespace PenguinLangParser.SyntaxNodes
             TypeParameters = [];
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             TypeParameters = [];
         }

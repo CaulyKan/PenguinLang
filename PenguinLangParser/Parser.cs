@@ -84,7 +84,9 @@ namespace PenguinLangParser
                 {
                     var rule = (ParserListener.CurrentContext ?? LexerListener.CurrentContext)?.RuleIndex;
 
-                    throw new PenguinLangException("Failed to parse input", rule == null ? null : Parser.RuleNames[rule.Value]);
+                    var err = string.Join("\n", ParserListener.Reporter.Messages.Where(i => i.Level == DiagnosticLevel.Error).Select(i => i.Message + " @ " + i.SourceLocation?.ToString()));
+
+                    throw new PenguinLangException("Failed to parse input, messages: \n" + err, rule == null ? null : Parser.RuleNames[rule.Value]);
                 }
             }
         }
@@ -105,6 +107,18 @@ namespace PenguinLangParser
             lexer.AddErrorListener(listener_lexer);
             parser.AddErrorListener(listener_parser);
             return new ParserData(parser, listener_lexer, listener_parser);
+        }
+
+        /// <summary>
+        /// Parses source code and returns S-expression string representation of the AST.
+        /// </summary>
+        public static string ParseToSexp(string source, string file, ErrorReporter? reporter_ = null)
+        {
+            var reporter = reporter_ ?? new ErrorReporter();
+            var compilationUnit = Parse(source, file, reporter);
+            var walker = new SyntaxWalker(file, reporter);
+            var namespaceDef = SyntaxNode.Build<NamespaceDefinition>(walker, compilationUnit);
+            return SexpSerializer.Serialize(namespaceDef);
         }
     }
 }

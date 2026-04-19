@@ -72,8 +72,8 @@ namespace BabyPenguin.SemanticPass
             }
         }
 
-        private ITypeNode CreateLambdaClass(ICodeContainer codeContainer, CodeBlock codeBlock, List<FunctionParameter> parameters, IType returnType,
-            List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isStatic, bool isAsync)
+        private ITypeNode CreateLambdaClass(ICodeContainer codeContainer, CodeBlockExpression codeBlock, List<FunctionParameter> parameters, IType returnType,
+            List<ISymbol> closureSymbols, SourceLocation sourceLocation, bool isStatic, bool isAsync)
         {
             ITypeContainer typeContainer = codeContainer.FindAncestorIncludingSelf(i => i is ITypeContainer) as ITypeContainer ??
                 throw new BabyPenguinException($"Parent is not a type container for lambda function", sourceLocation);
@@ -85,7 +85,6 @@ namespace BabyPenguin.SemanticPass
                 returnType,
                 closureSymbols,
                 sourceLocation,
-                scopeDepth,
                 isStatic,
                 isAsync
             );
@@ -96,7 +95,7 @@ namespace BabyPenguin.SemanticPass
             return lambdaClass;
         }
 
-        private List<ISymbol> CollectClosureSymbols(CodeBlock codeBlock, ICodeContainer codeContainer)
+        private List<ISymbol> CollectClosureSymbols(CodeBlockExpression codeBlock, ICodeContainer codeContainer)
         {
             var closureSymbols = new List<ISymbol>();
             codeBlock.TraverseChildren((node, parent) =>
@@ -104,9 +103,9 @@ namespace BabyPenguin.SemanticPass
                 if (node is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
                 {
                     var localSymbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
-                        s => s.IsLocal, scopeDepth: primaryExp.ScopeDepth, scope: codeContainer);
+                        s => s.IsLocal, scope: codeContainer);
 
-                    if (localSymbol != null && localSymbol.ScopeDepth < codeBlock.ScopeDepth)
+                    if (localSymbol != null && IsFromOuterScope(localSymbol, codeBlock))
                     {
                         closureSymbols.Add(localSymbol);
                     }
@@ -134,23 +133,22 @@ namespace BabyPenguin.SemanticPass
 
                     var returnType = Model.ResolveType(lambdaFunctionExpression.ReturnType!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve return type '{lambdaFunctionExpression.ReturnType.Name}'", lambdaFunctionExpression.ReturnType.SourceLocation);
 
-                    var closureSymbols = CollectClosureSymbols(lambdaFunctionExpression.CodeBlock!, codeContainer);
+                    var closureSymbols = CollectClosureSymbols(lambdaFunctionExpression.CodeBlockExpression!, codeContainer);
 
                     var lambdaClass = CreateLambdaClass(
                         codeContainer,
-                        lambdaFunctionExpression.CodeBlock!,
+                        lambdaFunctionExpression.CodeBlockExpression!,
                         parameters,
                         returnType,
                         closureSymbols,
                         lambdaFunctionExpression.SourceLocation,
-                        lambdaFunctionExpression.ScopeDepth,
                         false, // isStatic
                         lambdaFunctionExpression.IsAsync
                     );
 
                     var newExp = new ReadMemberAccessExpression();
                     var closureArgs = string.Join(", ", closureSymbols.Select(i => i.Name));
-                    newExp.FromString($"(new {lambdaClass.FullName()}({closureArgs})).call", lambdaFunctionExpression.ScopeDepth, Model.Reporter);
+                    newExp.FromString($"(new {lambdaClass.FullName()}({closureArgs})).call", Model.Reporter);
 
                     if (parent is PrimaryExpression expr)
                     {
@@ -177,21 +175,19 @@ namespace BabyPenguin.SemanticPass
                 if (node is FunctionCallExpression exp)
                 {
                     ISymbol? symbol;
-                    if (exp.IsMemberAccess)
+                    var callee = exp.Callee!.GetEffectiveExpression();
+                    if (callee is MemberAccessExpression memberAccess)
                     {
-                        codeContainer.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
+                        codeContainer.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                    }
+                    else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                    {
+                        symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
+                            s => !s.IsClassMember, scope: codeContainer);
                     }
                     else
                     {
-                        if (exp.PrimaryExpression?.GetEffectiveExpression() is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
-                        {
-                            symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
-                                s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: codeContainer);
-                        }
-                        else
-                        {
-                            throw new NotImplementedException(); // TODO: Handle other types of expressions
-                        }
+                        throw new NotImplementedException(); // TODO: Handle other types of expressions
                     }
 
                     if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
@@ -300,9 +296,9 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (spawnAsyncExp.Expression is FunctionCallExpression funcCallExp && funcCallExp.ArgumentsExpression.Count > 0)
                     {
-                        var codeBlock = new CodeBlock
+                        var codeBlock = new CodeBlockExpression
                         {
-                            ScopeDepth = spawnAsyncExp.ScopeDepth,
+                            ScopeId = spawnAsyncExp.ScopeId,
                             SourceLocation = spawnAsyncExp.SourceLocation
                         };
                         var statement = new Statement
@@ -311,15 +307,15 @@ namespace BabyPenguin.SemanticPass
                             ReturnStatement = new ReturnStatement
                             {
                                 ReturnExpression = funcCallExp,
-                                ScopeDepth = spawnAsyncExp.ScopeDepth,
+                                ScopeId = spawnAsyncExp.ScopeId,
                                 SourceLocation = spawnAsyncExp.SourceLocation
                             },
-                            ScopeDepth = spawnAsyncExp.ScopeDepth,
+                            ScopeId = spawnAsyncExp.ScopeId,
                             SourceLocation = spawnAsyncExp.SourceLocation
                         };
 
                         var codeBlockItem = new CodeBlockItem();
-                        codeBlockItem.FromString(statement.BuildText(), spawnAsyncExp.ScopeDepth, Model.Reporter);
+                        codeBlockItem.FromString(statement.BuildText(), Model.Reporter);
 
                         codeBlock.BlockItems.Add(codeBlockItem);
 
@@ -334,14 +330,13 @@ namespace BabyPenguin.SemanticPass
                             returnType,
                             closureSymbols,
                             spawnAsyncExp.SourceLocation,
-                            spawnAsyncExp.ScopeDepth,
                             false, // isStatic
                             true // isAsync
                         );
 
                         var newExp = new FunctionCallExpression();
                         var closureArgs = string.Join(", ", closureSymbols.Select(i => i.Name));
-                        newExp.FromString($"(new {lambdaClass.FullName()}({closureArgs})).call()", spawnAsyncExp.ScopeDepth, Model.Reporter);
+                        newExp.FromString($"(new {lambdaClass.FullName()}({closureArgs})).call()", Model.Reporter);
 
                         spawnAsyncExp.Expression = newExp;
 
@@ -371,21 +366,19 @@ namespace BabyPenguin.SemanticPass
                     else if (node is FunctionCallExpression exp && !isAsyncKnown)
                     {
                         ISymbol? symbol;
-                        if (exp.IsMemberAccess)
+                        var callee = exp.Callee!.GetEffectiveExpression();
+                        if (callee is MemberAccessExpression memberAccess)
                         {
-                            func.ResolveMemberAccessExpressionSymbol(exp.MemberAccessExpression!, out _, out symbol);
+                            func.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                        }
+                        else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                        {
+                            symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
+                                s => !s.IsClassMember, scope: func);
                         }
                         else
                         {
-                            if (exp.PrimaryExpression!.GetEffectiveExpression() is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
-                            {
-                                symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
-                                    s => !s.IsClassMember, scopeDepth: exp.ScopeDepth, scope: func);
-                            }
-                            else
-                            {
-                                throw new NotImplementedException(); // TODO: Handle other types of expressions
-                            }
+                            throw new NotImplementedException(); // TODO: Handle other types of expressions
                         }
 
                         if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
@@ -440,7 +433,7 @@ namespace BabyPenguin.SemanticPass
 
                 if (func.SyntaxNode is FunctionDefinition functionDefinition)
                 {
-                    functionDefinition.CodeBlock?.TraverseChildren((node, parent) =>
+                    functionDefinition.CodeBlockExpression?.TraverseChildren((node, parent) =>
                     {
                         if (node is YieldStatement yieldStatement)
                         {
@@ -450,7 +443,7 @@ namespace BabyPenguin.SemanticPass
                                 {
                                     ReturnExpression = yieldStatement.YieldExpression,
                                     ReturnType = ReturnStatement.ReturnTypeEnum.YieldNotFinished,
-                                    ScopeDepth = node.ScopeDepth,
+                                    ScopeId = node.ScopeId,
                                     SourceLocation = node.SourceLocation
                                 };
                                 statement.StatementType = Statement.Type.ReturnStatement;
@@ -460,15 +453,15 @@ namespace BabyPenguin.SemanticPass
                         return true;
                     });
 
-                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlock, func.Parameters, returnType, [], func.SourceLocation.StartLocation, functionDefinition.ScopeDepth, false, func.IsAsync);
-                    var cb = new CodeBlock();
+                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlockExpression, func.Parameters, returnType, [], func.SourceLocation.StartLocation, false, func.IsAsync);
+                    var cb = new CodeBlockExpression();
                     cb.FromString(@$"
                             {{
                                 let owner: mut {lambdaClass.Name} = new {lambdaClass.Name}();
-                                return new __builtin._DefaultRoutine<{returnType.FullName()}>(owner.call, true) as __builtin.IGenerator<{returnType.FullName()}>;
+                                return cast<__builtin.IGenerator<{returnType.FullName()}>>(new __builtin._DefaultRoutine<{returnType.FullName()}>(owner.call, true));
                             }}
-                        ", functionDefinition.ScopeDepth + 1, Model.Reporter);
-                    functionDefinition.CodeBlock = cb;
+                        ", Model.Reporter);
+                    functionDefinition.CodeBlockExpression = cb;
                     Model.GetPass<SymbolElaboratePass>().ElaborateLocalSymbol(func);
 
                     Model.Reporter.Write(DiagnosticLevel.Debug, $"rewrite generator function `{func.FullName()}` to `{lambdaClass.Name}`");
@@ -482,6 +475,37 @@ namespace BabyPenguin.SemanticPass
         }
 
         public Dictionary<string, string> RewritedSource { get; } = [];
+
+        /// <summary>
+        /// Checks if a local symbol was declared in a scope that is a STRICT ancestor
+        /// of the codeBlock's scope (not the codeBlock's own scope). Returns true if the
+        /// symbol is from an outer scope (closure needed).
+        /// </summary>
+        private static bool IsFromOuterScope(ISymbol localSymbol, SyntaxNode codeBlock)
+        {
+            if (localSymbol is VariableSymbol varSymbol && varSymbol.DeclaringScopeId != 0)
+            {
+                uint blockScopeId = codeBlock.ScopeId;
+                // The symbol must be from a STRICT ancestor, not the same scope.
+                // Walk up from the codeBlock's parent (skip the codeBlock itself).
+                uint currentId = blockScopeId;
+                if (!SyntaxWalker.ScopeParentMap.TryGetValue(currentId, out var parentId))
+                    return false; // No parent - symbol is not from an outer scope
+                currentId = parentId;
+
+                while (currentId != 0)
+                {
+                    if (currentId == varSymbol.DeclaringScopeId)
+                        return true; // Found in strict ancestor chain
+                    if (!SyntaxWalker.ScopeParentMap.TryGetValue(currentId, out var nextParent))
+                        break;
+                    currentId = nextParent;
+                }
+                return false; // Not found in ancestor chain
+            }
+            return true; // No scope info, assume it's from outer scope
+        }
+
         private void AddRewritedSource(string fullName, string source)
         {
             RewritedSource.Remove(fullName);

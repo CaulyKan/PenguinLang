@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "penguin-debug": {
+      "command": "node",
+      "args": ["MagellanicPenguin/mcp-debug/dist/index.js"],
+      "cwd": "Y:/Workspace/penguinlang"
+    }
+  }
+}

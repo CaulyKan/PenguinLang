@@ -3,13 +3,29 @@ namespace BabyPenguin.Tests
     public class CalculationTest(ITestOutputHelper helper) : TestBase(helper)
     {
         [Fact]
+        public void StringEscape()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                initial {
+                    let a = ""\\\n"";
+                    print(a);
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("\\\n", vm.CollectOutput());
+        }
+
+        [Fact]
         public void AdditionTest()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
                     let a : u8 = 1 + 2 - 4 * 3 / 2;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -27,7 +43,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let temp : i8 = 1;
                     let a : i8 = temp + 2 - 4 * 3 / 2;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -44,7 +60,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : u8 = (4 + (4 - 2) * 3) / 5;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -61,7 +77,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : bool = true && false;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -78,7 +94,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : bool = true && false || true;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -95,7 +111,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : bool = true && false || true && (1>2);
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -112,7 +128,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : bool = (1==1) && (4>=5) || (1<=1) && (1>2) || 1!=2 && 1<2;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -129,7 +145,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : u8 = 30 & 15 | 10 ^ 5;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -150,7 +166,7 @@ namespace BabyPenguin.Tests
                     a -= 1;
                     a *= 3;
                     a /= 2;
-                    let b : mut string = a as mut string;
+                    let b : mut string = cast<mut string>(a);
                     b = b;
                     print(b);
                 }
@@ -167,10 +183,11 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler();
             compiler.AddSource(@"
                 initial {
-                    let a : mut u8 = 1 << 2 >> 1;
-                    a <<= 2;
-                    a >>= 1;
-                    let b : string = a as string;
+                    let a : mut i64 = lshift(1, 2);
+                    a = rshift(a, 1);
+                    a = lshift(a, 2);
+                    a = rshift(a, 1);
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -187,7 +204,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : bool = !(1==1);
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -204,7 +221,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : i16 = -(-1);
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -222,7 +239,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut i8 = 1;
                     a = ~a;
-                    let b : string = a as string;
+                    let b : string = cast<string>(a);
                     print(b);
                 }
             ");
@@ -241,9 +258,9 @@ namespace BabyPenguin.Tests
                     let a : u8 = 1;
                     {
                         let a : u8 = 2;
-                        print(a as string);
+                        print(cast<string>(a));
                     }
-                    print(a as string);
+                    print(cast<string>(a));
                 }
             ");
             var model = compiler.Compile();
@@ -260,11 +277,11 @@ namespace BabyPenguin.Tests
                 let a : u8 = 1;
                 initial {
                     let a : u8 = 2;
-                    print(a as string);
+                    print(cast<string>(a));
                 }
 
                 initial {
-                    print(a as string);
+                    print(cast<string>(a));
                 }
             ");
             var model = compiler.Compile();
@@ -272,6 +289,26 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("21", vm.CollectOutput());
         }
+
+        [Fact]
+        public void ShadowTest3()
+        {
+            var compiler = new SemanticCompiler();
+            compiler.AddSource(@"
+                initial {
+                    {
+                        let a : u8 = 1;
+                    }
+                    let a : u8 = 2;
+                    print(cast<string>(a));
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("2", vm.CollectOutput());
+        }
+
 
 
     }

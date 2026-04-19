@@ -10,12 +10,11 @@ namespace BabyPenguin.Symbol
             IType type,
             IType eventType,
             SourceLocation sourceLocation,
-            uint scopeDepth,
             string originName,
             bool isTemp,
             int? paramIndex,
             bool isClassMember,
-            Declaration? declaration) : base(parent, isLocal, name, type, sourceLocation, scopeDepth, originName, isTemp, paramIndex, isClassMember, declaration)
+            Declaration? declaration) : base(parent, isLocal, name, type, sourceLocation, originName, isTemp, paramIndex, isClassMember, declaration)
         {
             EventType = eventType;
         }

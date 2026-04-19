@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using System.Threading;
 using Antlr4.Runtime.Misc;
 using Antlr4.Runtime.Tree;
 
@@ -26,7 +28,7 @@ namespace PenguinLangParser
         }
     }
 
-    public class SyntaxWalker(string file, ErrorReporter reporter, uint scopeDepth = 0)
+    public class SyntaxWalker(string file, ErrorReporter reporter)
     {
         public ErrorReporter Reporter { get; } = reporter;
 
@@ -38,21 +40,36 @@ namespace PenguinLangParser
 
         Stack<ISyntaxScope> ScopeStack { get; } = [];
 
-        public uint InitialScopeDepth { get; } = scopeDepth;
+        private static uint scopeIdCounter = 0;
 
-        public uint CurrentScopeDepth { get; private set; } = scopeDepth;
+        /// <summary>
+        /// Maps each ScopeId to its parent ScopeId (0 means no parent / root).
+        /// Used to walk the scope chain for variable visibility checks.
+        /// Thread-safe because tests run in parallel.
+        /// </summary>
+        public static ConcurrentDictionary<uint, uint> ScopeParentMap { get; } = [];
+
+        /// <summary>
+        /// Unique scope ID for the innermost scope. ScopeId is monotonically increasing,
+        /// so each scope gets a unique ID. This allows distinguishing sibling scopes.
+        /// </summary>
+        public uint CurrentScopeId { get; private set; } = 0;
 
         public void PopScope()
         {
             ScopeStack.Pop();
-            CurrentScopeDepth -= 1;
+            CurrentScopeId = ScopeStack.Count > 0 ? ScopeStack.Peek().ScopeId : 0;
         }
 
         public void PushScope(SyntaxScopeType type, ISyntaxScope scope)
         {
             scope.ParentScope = ScopeStack.Count > 0 ? CurrentScope : null;
-            scope.ScopeDepth = CurrentScopeDepth;
-            CurrentScopeDepth += 1;
+            scope.ScopeId = (uint)Interlocked.Increment(ref scopeIdCounter);
+            CurrentScopeId = scope.ScopeId;
+
+            // Record parent-child relationship for scope chain walking
+            var parentScopeId = ScopeStack.Count > 0 ? CurrentScope!.ScopeId : 0;
+            ScopeParentMap[scope.ScopeId] = parentScopeId;
 
             if (type == SyntaxScopeType.Namespace)
                 Namespaces.Add(scope as NamespaceDefinition ?? throw new NotImplementedException());
@@ -87,9 +104,10 @@ namespace PenguinLangParser
         bool IsAnonymous { get; }
 
         /// <summary>
-        /// Scope depth of the symbol, each '{}' block increases the depth by 1.
+        /// Unique scope identifier. Monotonically increasing
+        /// so each scope gets a unique ID, allowing sibling scopes to be distinguished.
         /// </summary>
-        uint ScopeDepth { get; set; }
+        uint ScopeId { get; set; }
 
         ISyntaxScope? ParentScope { get; set; }
 

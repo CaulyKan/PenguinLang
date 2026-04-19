@@ -7,48 +7,36 @@ namespace PenguinLangParser.SyntaxNodes
         {
             base.Build(walker, ctx);
 
-            if (ctx is MemberAccessExpressionContext context)
+            if (ctx is PostfixExpressionContext context)
             {
-                PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression()).GetEffectiveExpression();
-                MemberIdentifiers = context.children.OfType<IdentifierWithGenericContext>()
-                   .Select(x => Build<SymbolIdentifier>(walker, x) as Identifier)
-                   .ToList();
+                BaseExpression = Build<PostfixExpression>(walker, context.postfixExpression()).GetEffectiveExpression();
+                Member = Build<SymbolIdentifier>(walker, context.identifierWithGeneric());
             }
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.memberAccessExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.postfixExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         [ChildrenNode]
-        public ISyntaxExpression? PrimaryExpression { get; set; }
+        public ISyntaxExpression? BaseExpression { get; set; }
 
         [ChildrenNode]
-        public List<Identifier> MemberIdentifiers { get; set; } = [];
+        public Identifier? Member { get; set; }
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
-        [SexpValue]
         public bool IsSimple => false;
 
         public override string ToShortString() => "";
 
         public override string BuildText()
         {
-            var parts = new List<string>();
-            parts.Add(PrimaryExpression!.BuildText());
-
-            foreach (var member in MemberIdentifiers)
-            {
-                parts.Add(".");
-                parts.Add(member.BuildText());
-            }
-
-            return string.Join("", parts);
+            return $"{BaseExpression!.BuildText()}.{Member!.BuildText()}";
         }
 
         public abstract bool IsWrite { get; }

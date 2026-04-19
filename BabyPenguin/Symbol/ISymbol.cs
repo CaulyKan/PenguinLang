@@ -12,10 +12,6 @@ namespace BabyPenguin.Symbol
         /// </summary>
         string OriginName { get; }
 
-        /// <summary>
-        /// Scope depth of the symbol, each '{}' block increases the depth by 1.
-        /// </summary>
-        uint ScopeDepth { get; }
         ISymbolContainer Parent { get; }
         IType TypeInfo { get; }
         ITypeNode TypeNode => TypeInfo.TypeNode;

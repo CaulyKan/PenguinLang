@@ -6,7 +6,6 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public List<ISyntaxExpression> SubExpressions { get; set; } = [];
 
-        [SexpValue]
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
         public ISyntaxExpression GetEffectiveExpression() => SubExpressions.Count == 1 ? (SubExpressions[0] as ISyntaxExpression).GetEffectiveExpression() : this;
@@ -24,10 +23,10 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.logicalAndExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 

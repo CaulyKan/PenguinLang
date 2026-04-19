@@ -3,7 +3,24 @@
     "allow": [
       "Bash(find:*)",
       "Bash(dotnet build:*)",
-      "Bash(dotnet test:*)"
+      "Bash(dotnet test:*)",
+      "Bash(ls:*)",
+      "Bash(cd:*)",
+      "Bash(2)",
+      "WebSearch",
+      "Bash(dotnet run:*)",
+      "mcp__penguin-debug__penguin_debug_launch",
+      "mcp__penguin-debug__penguin_debug_continue",
+      "mcp__penguin-debug__penguin_debug_output",
+      "mcp__penguin-debug__penguin_debug_step_over",
+      "Bash(xxd)",
+      "Read(//tmp/claule-1000/-home-cauly-penguinlang/17e84bf0-3172-40e2-b241-da63fdba5b02/tasks/**)",
+      "Read(//tmp/m4_debug/**)",
+      "Bash(dotnet script eval ' *)"
+    ],
+    "additionalDirectories": [
+      "\\tmp",
+      "/tmp"
     ]
   }
 }

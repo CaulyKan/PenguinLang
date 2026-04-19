@@ -3,9 +3,10 @@
   "displayName": "PenguinLang",
   "repository": "https://github.com/CaulyKan/PenguinLang",
   "description": "PenguinLang language support for VS Code",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "BabyPenguin",
   "author": "CaulyKan",
+  "icon": "icons/penguin.png",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -21,9 +22,14 @@
           "penguinlang"
         ],
         "extensions": [
-          ".penguin"
+          ".penguin",
+          ".penguins"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/penguin.png",
+          "dark": "./icons/penguin.png"
+        }
       }
     ],
     "grammars": [
@@ -114,8 +120,8 @@
     ]
   },
   "scripts": {
-    "package": "cpy \"../DAP/bin/Release/net8.0/win-x64/publish/*\" server/windows && cpy \"../LSP/bin/Release/net8.0/win-x64/publish/*\" server/windows && cpy \"../DAP/bin/Release/net8.0/linux-x64/publish/*\" server/linux && cpy \"../LSP/bin/Release/net8.0/linux-x64/publish/*\" server/linux && vsce package -o penguinlang.vsix",
-    "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net8.0/*\" server/ ",
+    "package": "cpy \"../DAP/bin/Release/net10.0/win-x64/publish/*\" server/windows && cpy \"../LSP/bin/Release/net10.0/win-x64/publish/*\" server/windows && cpy \"../DAP/bin/Release/net10.0/linux-x64/publish/*\" server/linux && cpy \"../LSP/bin/Release/net10.0/linux-x64/publish/*\" server/linux && vsce package -o penguinlang.vsix",
+    "vscode:prepublish": "npm run esbuild-base -- --minify && make-dir server/ && cpy \"../MagellanicPenguin/bin/Debug/net10.0/*\" server/ ",
     "compile": "tsc -b",
     "watch": "tsc -b -w",
     "lint": "eslint ./client/src --ext .ts,.tsx",

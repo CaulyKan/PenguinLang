@@ -60,7 +60,7 @@ fun test() -> mut IGenerator<i32> {
 
 initial {
 	for (let v : i32 in test()) {
-		println(v as string);
+		println(cast<string>(v));
 	}
 }
 ```
@@ -130,7 +130,18 @@ fun foo() {
 	let f : fun<i32, i32> = fun(x: i32) -> i32 {
 		return x * 2;
 	};
-	println(f(3) as string);
+	println(cast<string>(f(3)));
 }
 ```
 
+
+### Block Expression
+Block expression is a block of code that is evaluated as a value. 
+```
+fun foo() -> i32 {
+	let x = { 1 };
+	let y = if (x==1) { 2 } else { 3 };
+	let z = while (true) { break 4; };
+	5   // as return value
+}
+```

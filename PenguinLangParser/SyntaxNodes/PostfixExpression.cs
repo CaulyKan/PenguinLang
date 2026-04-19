@@ -5,7 +5,6 @@ namespace PenguinLangParser.SyntaxNodes
         public enum Type
         {
             PrimaryExpression,
-            // Slicing,
             FunctionCall,
             MemberAccess,
             New,
@@ -24,35 +23,33 @@ namespace PenguinLangParser.SyntaxNodes
                     SubPrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression());
                     PostfixExpressionType = Type.PrimaryExpression;
                 }
-                // else if (context.children.OfType<SlicingExpressionContext>().Any())
-                // {
-                //     SubSlicingExpression = new SlicingExpression(walker, context.slicingExpression());
-                //     PostfixExpressionType = Type.Slicing;
-                // }
-                else if (context.functionCallExpression() != null)
+                else if (context.postfixExpression() != null && context.identifierWithGeneric() != null)
                 {
-                    SubFunctionCallExpression = Build<FunctionCallExpression>(walker, context.functionCallExpression());
-                    PostfixExpressionType = Type.FunctionCall;
-                }
-                else if (context.memberAccessExpression() != null)
-                {
-                    SubMemberAccessExpression = Build<ReadMemberAccessExpression>(walker, context.memberAccessExpression());
+                    // Member access: postfixExpression '.' identifierWithGeneric
+                    SubMemberAccessExpression = Build<ReadMemberAccessExpression>(walker, context);
                     PostfixExpressionType = Type.MemberAccess;
                 }
-                else if (context.newExpression() != null)
+                else if (context.postfixExpression() != null)
                 {
-                    SubNewExpression = Build<NewExpression>(walker, context.newExpression());
+                    // Function call: postfixExpression '(' args ')'
+                    SubFunctionCallExpression = Build<FunctionCallExpression>(walker, context);
+                    PostfixExpressionType = Type.FunctionCall;
+                }
+                else if (context.typeSpecifier() != null)
+                {
+                    // New: 'new' typeSpecifier '(' args ')'
+                    SubNewExpression = Build<NewExpression>(walker, context);
                     PostfixExpressionType = Type.New;
                 }
-                else if (context.waitExpression() != null)
+                else if (context.Start.Text == "async")
                 {
-                    SubWaitExpression = Build<WaitExpression>(walker, context.waitExpression());
-                    PostfixExpressionType = Type.Wait;
-                }
-                else if (context.spawnExpression() != null)
-                {
-                    SubSpawnAsyncExpression = Build<SpawnAsyncExpression>(walker, context.spawnExpression());
+                    SubSpawnAsyncExpression = Build<SpawnAsyncExpression>(walker, context);
                     PostfixExpressionType = Type.SpawnAsync;
+                }
+                else if (context.Start.Text == "wait")
+                {
+                    SubWaitExpression = Build<WaitExpression>(walker, context);
+                    PostfixExpressionType = Type.Wait;
                 }
                 else
                 {
@@ -62,17 +59,16 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.postfixExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         public ISyntaxExpression GetEffectiveExpression() => PostfixExpressionType switch
         {
             Type.PrimaryExpression => (SubPrimaryExpression as ISyntaxExpression)!.GetEffectiveExpression(),
-            // Type.Slicing => SubSlicingExpression!.GetEffectiveExpression(),
             Type.FunctionCall => SubFunctionCallExpression!.GetEffectiveExpression(),
             Type.MemberAccess => SubMemberAccessExpression!.GetEffectiveExpression(),
             Type.New => SubNewExpression!.GetEffectiveExpression(),
@@ -86,8 +82,6 @@ namespace PenguinLangParser.SyntaxNodes
 
         [ChildrenNode]
         public PrimaryExpression? SubPrimaryExpression { get; set; }
-
-        // public SlicingExpression? SubSlicingExpression { get; private set; }
 
         [ChildrenNode]
         public FunctionCallExpression? SubFunctionCallExpression { get; set; }
@@ -104,7 +98,6 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public SpawnAsyncExpression? SubSpawnAsyncExpression { get; set; }
 
-        [SexpValue]
         public bool IsSimple => PostfixExpressionType == Type.PrimaryExpression && SubPrimaryExpression!.IsSimple;
 
         public override string ToShortString() => "";

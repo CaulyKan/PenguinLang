@@ -3,9 +3,9 @@ Penguin-lang supports interfaces, which are similar to Rust traits.
 
 ```
 interface IBook {
-    fun get_title() -> string;
+    fun get_title() -> string;  // static function
 
-    fun get_language(this: IBook) -> string {
+    fun get_language(this: IBook) -> string {  // member function
         return "English";
     }
 }
@@ -37,7 +37,7 @@ impl IBook for BookB {
     }
 
     fun get_language(this: IBook) -> string {
-        let self = this as BookB;
+        let self = cast<BookB>(this);
         return self.language;
     }
 }

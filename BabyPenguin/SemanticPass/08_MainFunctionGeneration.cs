@@ -26,7 +26,7 @@ namespace BabyPenguin.SemanticPass
             if (Model.Namespaces.Find(ns => ns.Name == "__builtin")?.Namespaces.First() is not INamespace builtinNamespace)
                 throw new BabyPenguinException("namespace '__builtin' is not found.");
 
-            builtinNamespace.AddFunctionSymbol(mainFunc, true, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [], schedulerEntrySymbol.SourceLocation.StartLocation, 0, null, true, false, true, Mutability.Immutable);
+            builtinNamespace.AddFunctionSymbol(mainFunc, true, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [], schedulerEntrySymbol.SourceLocation.StartLocation, null, true, false, true, Mutability.Immutable);
             builtinNamespace.AddFunction(mainFunc);
 
             // init global variables

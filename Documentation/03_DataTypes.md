@@ -167,7 +167,7 @@ Function parameters can specify their expected mutability.
     class Example {
         value : i32 = 0;
         fun get_value(this) {
-            print(this.value as string);
+            print(cast<string>(this.value));
         }
         fun set_value(mut this, new_value : i32) {
             this.value = new_value;
@@ -242,11 +242,11 @@ b.y = 2;			// ok! b.y is mutable
 ```
 
 ## Type Checking and Casting
-Penguin-lang uses `as` as keyword for type casting. The `is` keyword is used for type checking.
+Penguin-lang uses `cast` function for type casting. The `is` keyword is used for type checking.
 
 ```
 let a : i32 = 1;
-let b : f32 = a as f32;
+let b : f32 = cast<f32>(a);
 
 if (a is i32) {
     // ...
@@ -264,7 +264,7 @@ let b : i64 = 2;
 
 b = a; // OK
 a = b; // compile error
-a = b as i32; // OK, but may lose data
+a = cast<i32>(b); // OK, but may lose data
 ```
 
 ## Templates (Generics)

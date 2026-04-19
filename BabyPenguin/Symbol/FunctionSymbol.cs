@@ -12,7 +12,6 @@ namespace BabyPenguin.Symbol
             SourceLocation sourceLocation,
             IType returnType,
             List<FunctionParameter> parameters,
-            uint scopeDepth,
             string originName,
             bool isTemp,
             int? paramIndex,
@@ -28,7 +27,6 @@ namespace BabyPenguin.Symbol
             SourceLocation = sourceLocation;
             Parameters = parameters;
             IsLocal = isLocal;
-            ScopeDepth = scopeDepth;
             OriginName = originName;
             IsParameter = paramIndex.HasValue && paramIndex >= 0;
             ParameterIndex = paramIndex ?? -1;
@@ -64,8 +62,6 @@ namespace BabyPenguin.Symbol
         public bool IsLocal { get; }
 
         public string OriginName { get; }
-
-        public uint ScopeDepth { get; }
 
         public bool IsTemp { get; }
 
@@ -111,7 +107,6 @@ namespace BabyPenguin.Symbol
             SourceLocation sourceLocation,
             IType returnType,
             List<IType> parameters,
-            uint scopeDepth,
             string originName,
             bool isTemp,
             int? paramIndex,
@@ -125,7 +120,6 @@ namespace BabyPenguin.Symbol
             SourceLocation = sourceLocation;
             Parameters = parameters;
             IsLocal = isLocal;
-            ScopeDepth = scopeDepth;
             OriginName = originName;
             IsParameter = paramIndex.HasValue && paramIndex >= 0;
             ParameterIndex = paramIndex ?? -1;
@@ -159,8 +153,6 @@ namespace BabyPenguin.Symbol
         public bool IsLocal { get; }
 
         public string OriginName { get; }
-
-        public uint ScopeDepth { get; }
 
         public bool IsTemp { get; }
 

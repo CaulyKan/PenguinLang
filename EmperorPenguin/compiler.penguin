@@ -1,6 +1,0 @@
-namespace EmperorPenguin {
-    class Compiler {
-        __impl: __ExternImpl = new __ExternImpl();
-        extern fun parseAST(this, name: string, code: string) -> ast.CompilationUnit;
-    }
-}

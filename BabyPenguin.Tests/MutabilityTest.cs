@@ -63,7 +63,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let x: mut i32 = 1;
                     x += 1;
-                    print(x as string);
+                    print(cast<string>(x));
                 }
             ");
             var model = compiler.Compile();
@@ -80,7 +80,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let x: i32 = 1;
                     x += 1;
-                    print(x as string);
+                    print(cast<string>(x));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -97,7 +97,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A = new A();
                     a.a = 2;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -117,7 +117,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : A = new A();
                     a.a = 1;
-                    print(x as string);
+                    print(cast<string>(x));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -134,7 +134,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A = new A();
                     a.a = 1;
-                    print(x as string);
+                    print(cast<string>(x));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -151,7 +151,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : A = new A();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -174,7 +174,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let b : mut B = new B();
                     b.a.a = 1;
-                    print(b.a.a as string);
+                    print(cast<string>(b.a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -198,7 +198,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let b : mut B = new B.a(new A());
                     b.a.a = 1;
-                    print(b.a.a as string);
+                    print(cast<string>(b.a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -221,7 +221,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let b : B = new B();
                     b.a.a = 1;
-                    print(b.a.a as string);
+                    print(cast<string>(b.a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -244,7 +244,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let b : mut B = new B();
                     b.a.a = 1;
-                    print(b.a.a as string);
+                    print(cast<string>(b.a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -267,7 +267,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let b : B = new B();
                     b.a.a = 1;
-                    print(b.a.a as string);
+                    print(cast<string>(b.a.a));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -285,7 +285,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : A<i32> = new A<i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -303,7 +303,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : A<mut i32> = new A<mut i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -324,7 +324,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A<i32> = new A<i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -342,7 +342,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A<i32> = new A<i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -363,7 +363,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : A<i32> = new A<i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -384,7 +384,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A<!mut i32> = new A<!mut i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             var model = compiler.Compile();
@@ -405,7 +405,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut A<mut i32> = new A<mut i32>();
                     a.a = 1;
-                    print(a.a as string);
+                    print(cast<string>(a.a));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -419,7 +419,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : mut Box<i32> = new Box<i32>(1);
                     let b : Box<i32> = a;
-                    print(b.value as string);
+                    print(cast<string>(b.value));
                 }
             ");
             var model = compiler.Compile();
@@ -437,7 +437,7 @@ namespace BabyPenguin.Tests
                     let a : mut Box<i32> = new Box<i32>(1);
                     let b : Box<i32>;
                     b = a;
-                    print(b.value as string);
+                    print(cast<string>(b.value));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -452,7 +452,7 @@ namespace BabyPenguin.Tests
                     let a : Box<i32> = new Box<i32>(1);
                     let b : mut Box<i32>;
                     b = a;
-                    print(b.value as string);
+                    print(cast<string>(b.value));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -467,7 +467,7 @@ namespace BabyPenguin.Tests
                     let a : i32 = 1;
                     let b : mut i32;
                     b = a;
-                    print(b as string);
+                    print(cast<string>(b));
                 }
             ");
             var model = compiler.Compile();
@@ -489,7 +489,7 @@ namespace BabyPenguin.Tests
                 }
 
                 fun foo(a: Box<i32>, b: mut Box<i32>, c: Box<i32>){
-                    print(a.value as string);
+                    print(cast<string>(a.value));
                 }
             ");
             var model = compiler.Compile();
@@ -509,7 +509,7 @@ namespace BabyPenguin.Tests
                 }
 
                 fun foo(a: mut Box<i32>){
-                    print(a.value as string);
+                    print(cast<string>(a.value));
                 }
             ");
             Assert.Throws<BabyPenguinException>(() => compiler.Compile());
@@ -523,10 +523,10 @@ namespace BabyPenguin.Tests
                 class A {
                     a: i32 = 1;
                     fun immutable(this) {
-                        print(this.a as string);
+                        print(cast<string>(this.a));
                     }
                     fun mutable(mut this) {
-                        print(this.a as string);
+                        print(cast<string>(this.a));
                     }
                 }
                 initial {
@@ -551,10 +551,10 @@ namespace BabyPenguin.Tests
                 class A {
                     a: i32 = 1;
                     fun immutable(this) {
-                        print(this.a as string);
+                        print(cast<string>(this.a));
                     }
                     fun mutable(mut this) {
-                        print(this.a as string);
+                        print(cast<string>(this.a));
                     }
                 }
                 initial {

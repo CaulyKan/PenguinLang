@@ -136,7 +136,7 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (decl.InitializeExpression != null)
                     {
-                        var symbol = Model.ResolveSymbol(decl.Name, scopeDepth: decl.ScopeDepth, scope: ns, requireSymbolTypeInferred: false) ??
+                        var symbol = Model.ResolveSymbol(decl.Name, scope: ns, requireSymbolTypeInferred: false) ??
                             throw new BabyPenguinException($"Cant resolve symbol '{decl.Name}' in namespace '{ns.FullName()}'", decl.SourceLocation);
 
                         if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
@@ -318,15 +318,15 @@ namespace BabyPenguin.SemanticPass
 
         public void InitializeEventDefinition(ICodeContainer constructor, ISymbolContainer parent, EventDefinition eventDefinition)
         {
-            var eventSymbol = Model.ResolveSymbol(eventDefinition.Name, scopeDepth: eventDefinition.ScopeDepth, scope: parent) ?? throw new BabyPenguinException($"Cant resolve symbol '{eventDefinition.Name}'", eventDefinition.SourceLocation);
+            var eventSymbol = Model.ResolveSymbol(eventDefinition.Name, scope: parent) ?? throw new BabyPenguinException($"Cant resolve symbol '{eventDefinition.Name}'", eventDefinition.SourceLocation);
             var initializeExpression = new NewExpression()
             {
                 SourceLocation = eventDefinition.SourceLocation,
-                ScopeDepth = eventDefinition.ScopeDepth,
+                ScopeId = eventDefinition.ScopeId,
                 TypeSpecifier = new TypeSpecifier
                 {
                     SourceLocation = eventDefinition.SourceLocation,
-                    ScopeDepth = eventDefinition.ScopeDepth,
+                    ScopeId = eventDefinition.ScopeId,
                     TypeName = $"__builtin.Event<{eventDefinition.EventType?.Name ?? "void"}>"
                 }
             };

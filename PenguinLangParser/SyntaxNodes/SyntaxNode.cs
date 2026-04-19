@@ -18,11 +18,15 @@ namespace PenguinLangParser.SyntaxNodes
 
     public abstract class SyntaxNode : ISyntaxNode
     {
-        public uint ScopeDepth { get; set; }
+        /// <summary>
+        /// Unique scope identifier from the SyntaxWalker. Used to distinguish
+        /// sibling scopes at the same depth.
+        /// </summary>
+        public uint ScopeId { get; set; }
 
         public abstract string BuildText();
 
-        public abstract void FromString(string text, uint scopeDepth, ErrorReporter reporter);
+        public abstract void FromString(string text, ErrorReporter reporter);
 
         public SourceLocation SourceLocation { get; set; } = SourceLocation.Empty();
 
@@ -44,7 +48,7 @@ namespace PenguinLangParser.SyntaxNodes
         {
             SourceText = context.Start.InputStream.GetText(new Interval(context.Start.StartIndex, context.Stop.StopIndex));
             SourceLocation = SourceLocation.From(walker.FileName, context);
-            ScopeDepth = walker.CurrentScopeDepth;
+            ScopeId = walker.CurrentScopeId;
         }
 
         public void TraverseChildren(Func<SyntaxNode, SyntaxNode, bool> callback)
@@ -70,7 +74,7 @@ namespace PenguinLangParser.SyntaxNodes
             var result = new T
             {
                 SourceLocation = this.SourceLocation,
-                ScopeDepth = this.ScopeDepth,
+                ScopeId = this.ScopeId,
                 SourceText = this.SourceText
             };
             init(result);
@@ -88,9 +92,9 @@ namespace PenguinLangParser.SyntaxNodes
 
     public interface ISyntaxNode : IPrettyPrint
     {
-        public uint ScopeDepth { get; set; }
+        public uint ScopeId { get; set; }
 
-        public abstract void FromString(string text, uint scopeDepth, ErrorReporter reporter);
+        public abstract void FromString(string text, ErrorReporter reporter);
 
         public SourceLocation SourceLocation { get; set; }
 

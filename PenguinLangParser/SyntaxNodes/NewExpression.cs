@@ -7,7 +7,7 @@ namespace PenguinLangParser.SyntaxNodes
         {
             base.Build(walker, ctx);
 
-            if (ctx is NewExpressionContext context)
+            if (ctx is PostfixExpressionContext context)
             {
                 TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
@@ -17,10 +17,10 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.newExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.postfixExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -32,7 +32,6 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
-        [SexpValue]
         public bool IsSimple => false;
 
         public override string ToShortString() => "new";

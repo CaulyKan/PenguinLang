@@ -1,4 +1,5 @@
 using System.Reflection;
+using PenguinLangParser;
 
 namespace BabyPenguin
 {
@@ -100,33 +101,33 @@ namespace BabyPenguin
             return result;
         }
 
-        public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, bool requireSymbolTypeInferred = true)
+        public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, bool checkImportedNamespaces = true, bool requireSymbolTypeInferred = true)
         {
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.Prefix.Count == 0)
-                return ResolveShortSymbol(name, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
+                return ResolveShortSymbol(name, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
 
             var type = ResolveTypeNode(nameComponents.PrefixString, scope: scope);
             if (type as ISemanticScope != null)
-                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, scopeDepth, checkImportedNamespaces, nameComponents.IsMutable, requireSymbolTypeInferred);
+                return ResolveShortSymbol(nameComponents.Name, predicate, type as ISemanticScope, isOriginName, checkImportedNamespaces, nameComponents.IsMutable, requireSymbolTypeInferred);
 
             var ns = Namespaces.FirstOrDefault(n => n.Name == nameComponents.PrefixString);
             if (ns != null)
-                return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
+                return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
 
-            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
+            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
             if (prefixSymbol != null)
             {
                 if (prefixSymbol.WithoutMutability() is FunctionSymbol functionSymbol)
                 {
-                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, scopeDepth, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, functionSymbol.CodeContainer, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
                     if (symbol != null) return symbol;
                 }
                 else if (prefixSymbol.WithoutMutability() is VariableSymbol variableSymbol)
                 {
                     var parentType = variableSymbol.TypeInfo.TypeNode as ISymbolContainer ??
                         throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type");
-                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, scopeDepth, checkImportedNamespaces, prefixSymbol.IsMutable, requireSymbolTypeInferred);
+                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, checkImportedNamespaces, prefixSymbol.IsMutable, requireSymbolTypeInferred);
                     if (symbol != null)
                         return symbol;
                 }
@@ -134,39 +135,43 @@ namespace BabyPenguin
             return null;
         }
 
-        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, uint scopeDepth = uint.MaxValue, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable, bool requireSymbolTypeInferred = true)
+        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable, bool requireSymbolTypeInferred = true, uint expressionScopeId = 0)
         {
             ISymbol? symbol = null;
             var predicate_ = predicate ?? (s => true);
 
             if (scope == null)
             {
-                symbol = Symbols.OrderByDescending(s => s.ScopeDepth)
-                   .FirstOrDefault(s => s.FullName() == name && s.ScopeDepth <= scopeDepth && predicate_(s));
+                symbol = Symbols.FirstOrDefault(s => s.FullName() == name && predicate_(s));
             }
             else
             {
                 if (scope is MergedNamespace mergedNamespace)
                 {
-                    symbol = mergedNamespace.Symbols.OrderByDescending(s => s.ScopeDepth)
-                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && predicate_(s));
+                    symbol = mergedNamespace.Symbols
+                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s));
                 }
                 else if (scope is ISymbolContainer symbolContainer)
                 {
-                    symbol = symbolContainer.Symbols.OrderByDescending(s => s.ScopeDepth)
-                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && s.ScopeDepth <= scopeDepth && predicate_(s));
+                    // When resolving by OriginName, multiple symbols from different scopes
+                    // may match. Use ScopeId parent chain to find the closest visible symbol.
+                    var candidates = symbolContainer.Symbols
+                        .Where(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s))
+                        .ToList();
+
+                    symbol = FindClosestVisibleSymbol(candidates, expressionScopeId);
                 }
 
                 if (symbol == null && scope?.Parent != null)
                 {
-                    symbol = ResolveShortSymbol(name, predicate, scope.Parent, isOriginName, scopeDepth);
+                    symbol = ResolveShortSymbol(name, predicate, scope.Parent, isOriginName, checkImportedNamespaces: checkImportedNamespaces, parentMutability: parentMutability, requireSymbolTypeInferred: requireSymbolTypeInferred, expressionScopeId: expressionScopeId);
                 }
 
                 if (symbol == null && checkImportedNamespaces)
                 {
                     foreach (var ns in scope!.GetImportedNamespaces())
                     {
-                        symbol = ResolveShortSymbol(name, predicate, ns, isOriginName, scopeDepth, false);
+                        symbol = ResolveShortSymbol(name, predicate, ns, isOriginName, false, parentMutability, requireSymbolTypeInferred, expressionScopeId);
                         if (symbol != null) break;
                     }
                 }
@@ -185,6 +190,90 @@ namespace BabyPenguin
                 }
             }
             return symbol;
+        }
+
+        /// <summary>
+        /// Finds the closest visible symbol from a list of candidates by walking up the
+        /// scope parent chain from the expression's scope. This handles both visibility
+        /// (excluding symbols from sibling/unrelated scopes) and shadowing (preferring
+        /// symbols from closer ancestor scopes).
+        /// </summary>
+        private static ISymbol? FindClosestVisibleSymbol(List<ISymbol> candidates, uint expressionScopeId)
+        {
+            if (candidates.Count == 0) return null;
+            if (candidates.Count == 1) return candidates[0];
+
+            // If we have expression scope info, walk the parent chain to find the closest match.
+            if (expressionScopeId != 0)
+            {
+                // Non-variable symbols (class members, functions, etc.) are always visible.
+                // Prefer them only if no scoped variable is closer.
+                ISymbol? nonVariableMatch = null;
+
+                uint currentId = expressionScopeId;
+                while (currentId != 0)
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (candidate is VariableSymbol varSymbol && varSymbol.DeclaringScopeId == currentId)
+                            return candidate; // Found the closest scoped variable
+                        if (nonVariableMatch == null && candidate is not VariableSymbol)
+                            nonVariableMatch = candidate;
+                    }
+
+                    if (!SyntaxWalker.ScopeParentMap.TryGetValue(currentId, out var parentId))
+                        break;
+
+                    currentId = parentId;
+                }
+
+                // Return variables with DeclaringScopeId == 0 (class members, params)
+                // or non-variable symbols
+                foreach (var candidate in candidates)
+                {
+                    if (candidate is VariableSymbol v && v.DeclaringScopeId == 0)
+                        return candidate;
+                }
+
+                return nonVariableMatch ?? candidates.FirstOrDefault();
+            }
+
+            // No expression scope info - fall back to first match
+            return candidates.FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Determines if a symbol is visible from a given scope ID.
+        /// Walks up the scope chain to verify the symbol's declaring scope is an ancestor.
+        /// </summary>
+        private static bool IsSymbolVisibleFrom(ISymbol symbol, uint expressionScopeId)
+        {
+            if (symbol is not VariableSymbol varSymbol)
+                return true; // Non-variable symbols don't have DeclaringScopeId
+
+            if (varSymbol.DeclaringScopeId == 0)
+                return true; // Symbols without scope ID info (e.g., class members, params) are always visible
+
+            if (expressionScopeId == 0)
+                return true; // If we don't have expression scope info, fall back
+
+            // Walk up the scope chain from the expression's scope to check if the
+            // symbol's declaring scope is an ancestor.
+            uint currentId = expressionScopeId;
+            while (currentId != 0)
+            {
+                if (currentId == varSymbol.DeclaringScopeId)
+                    return true; // Found the declaring scope in the ancestor chain
+
+                if (!SyntaxWalker.ScopeParentMap.TryGetValue(currentId, out var parentId))
+                    break; // No parent info, stop walking
+
+                currentId = parentId;
+            }
+
+            // The declaring scope was not found in the ancestor chain.
+            // It might be in a sibling scope or an unrelated scope.
+            return false;
         }
 
         public ITypeNode? ResolveTypeNode(string name, Predicate<ITypeNode>? predicate = null, ISemanticScope? scope = null)
@@ -311,7 +400,7 @@ namespace BabyPenguin
             }
             else if (typeCandidate.IsGeneric && nameComponents.Generics.Count == 0)
             {
-                throw new BabyPenguinException("Resolving generic type without generic arguments is not supported. If non-specialized type is needed, use '?' as generic argument.");
+                throw new BabyPenguinException($"Resolving generic type '{name}' without generic arguments is not supported. If non-specialized type is needed, use '?' as generic argument.");
             }
             else
             {

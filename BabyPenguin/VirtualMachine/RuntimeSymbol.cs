@@ -112,7 +112,7 @@ namespace BabyPenguin.VirtualMachine
             if (other is BasicRuntimeValue otherVar)
             {
                 if (!other.TypeInfo.CanImplicitlyCastTo(TypeInfo))
-                    throw new BabyPenguinRuntimeException($"Cannot implicitly assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
+                    throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
                 BasicValue.AssignFrom(otherVar);
             }
             else
@@ -346,7 +346,15 @@ namespace BabyPenguin.VirtualMachine
             if (other is not EnumRuntimeValue enumVar)
                 throw new BabyPenguinRuntimeException($"Cannot assign type {other.TypeInfo.FullName()} to type {TypeInfo.FullName()}");
 
-            EnumValue.AssignFrom(enumVar);
+            // Create a brand-new EnumRuntimeValue instead of mutating the existing one in place.
+            // Mutating in place causes aliasing bugs: if the old EnumValue is stored in a
+            // Fields dictionary (e.g. via WriteMemberInstruction), later NewInstanceInstruction
+            // calls would modify the shared object, corrupting previously-stored values.
+            EnumValue = new EnumRuntimeValue(
+                TypeInfo,
+                (enumVar.FieldsValue.Clone() as ReferenceRuntimeValue)!,
+                enumVar.ContainingValue  // Keep as reference, don't clone
+            );
         }
 
         public override string ToString() => (this as IRuntimeSymbol).ToDebugString();

@@ -7,8 +7,7 @@ namespace BabyPenguin.Symbol
         bool isLocal,
         string name,
         IType typeReference,
-        SourceLocation sourceLocation,
-        uint scopeDepth) : ISymbol
+        SourceLocation sourceLocation) : ISymbol
     {
         public string FullName() => Parent.FullName() + "." + Name;
 
@@ -27,8 +26,6 @@ namespace BabyPenguin.Symbol
         public bool IsLocal { get; } = isLocal;
 
         public string OriginName { get; } = name;
-
-        public uint ScopeDepth { get; } = scopeDepth;
 
         public bool IsTemp { get; } = false;
 

@@ -30,33 +30,32 @@ namespace BabyPenguin.SemanticInterface
             MemberAccessExpression result = isRead ? new ReadMemberAccessExpression() : new WriteMemberAccessExpression();
             result.SourceText = $"this.{identifier.Name}";
             result.SourceLocation = identifier.SourceLocation;
-            result.ScopeDepth = identifier.ScopeDepth;
-            result.PrimaryExpression = new PrimaryExpression
+            result.ScopeId = identifier.ScopeId;
+            result.BaseExpression = new PrimaryExpression
             {
                 SourceText = "this",
                 SourceLocation = identifier.SourceLocation,
-                ScopeDepth = identifier.ScopeDepth,
+                ScopeId = identifier.ScopeId,
                 PrimaryExpressionType = PrimaryExpression.Type.Identifier,
                 Identifier = new SymbolIdentifier
                 {
                     SourceText = "this",
                     SourceLocation = identifier.SourceLocation,
-                    ScopeDepth = identifier.ScopeDepth,
+                    ScopeId = identifier.ScopeId,
                     LiteralName = "this",
                 }
             };
-            result.MemberIdentifiers = [ new SymbolIdentifier
-                {
-                    SourceText = identifier.Name,
-                    SourceLocation = identifier.SourceLocation,
-                    ScopeDepth = identifier.ScopeDepth,
-                    LiteralName = identifier.Name
-                }
-            ];
+            result.Member = new SymbolIdentifier
+            {
+                SourceText = identifier.Name,
+                SourceLocation = identifier.SourceLocation,
+                ScopeId = identifier.ScopeId,
+                LiteralName = identifier.Name
+            };
             return result;
         }
 
-        public IClassNode AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, uint scopeDepth, bool isPure = false, bool? isAsync = false)
+        public IClassNode AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, bool isPure = false, bool? isAsync = false)
         {
             var parametersString = string.Join(", ", parameters.Select(p => $"{p.Name} : {p.Type.FullName()}"));
             var declarationStrings = closureSymbols.Select(s => $"{s.Name} : {s.TypeInfo.FullName()}").ToList();
@@ -67,23 +66,38 @@ namespace BabyPenguin.SemanticInterface
             {
                 syntaxNode.TraverseChildren((node, parent) =>
                 {
-                    if (node is IdentifierOrMemberAccess identifierOrMember)
+                    if (node is PostfixExpression postfix)
                     {
-                        if (identifierOrMember.Identifier != null && closureSymbols.Any(s => s.Name == identifierOrMember.Identifier.Name))
+                        if (postfix.PostfixExpressionType == PostfixExpression.Type.PrimaryExpression &&
+                            postfix.SubPrimaryExpression != null &&
+                            postfix.SubPrimaryExpression.PrimaryExpressionType == PrimaryExpression.Type.Identifier &&
+                            postfix.SubPrimaryExpression.Identifier != null &&
+                            closureSymbols.Any(s => s.Name == postfix.SubPrimaryExpression.Identifier.Name))
                         {
-                            identifierOrMember.MemberAccess = CreateMemberAccess(false, identifierOrMember.Identifier);
-                            identifierOrMember.Identifier = null;
+                            var memberAccess = CreateMemberAccess(true, postfix.SubPrimaryExpression.Identifier);
+                            postfix.PostfixExpressionType = PostfixExpression.Type.MemberAccess;
+                            postfix.SubPrimaryExpression = null;
+                            postfix.SubMemberAccessExpression = memberAccess;
                         }
                     }
-                    else if (node is PrimaryExpression primary)
+                    else if (node is PrimaryExpression primaryExp &&
+                        primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier &&
+                        primaryExp.Identifier != null &&
+                        closureSymbols.Any(s => s.Name == primaryExp.Identifier.Name))
                     {
-                        if (primary.PrimaryExpressionType == PrimaryExpression.Type.Identifier &&
-                            primary.Identifier != null &&
-                            closureSymbols.Any(s => s.Name == primary.Identifier.Name))
+                        // PrimaryExpression was unwrapped from PostfixExpression via GetEffectiveExpression
+                        // Convert it to a ParenthesizedExpression wrapping the member access
+                        var memberAccess = CreateMemberAccess(true, primaryExp.Identifier);
+                        var wrapper = new PostfixExpression
                         {
-                            primary.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
-                            primary.ParenthesizedExpression = CreateMemberAccess(true, primary.Identifier);
-                        }
+                            PostfixExpressionType = PostfixExpression.Type.MemberAccess,
+                            SubMemberAccessExpression = memberAccess,
+                            SourceLocation = primaryExp.SourceLocation,
+                            ScopeId = primaryExp.ScopeId,
+                        };
+                        primaryExp.PrimaryExpressionType = PrimaryExpression.Type.ParenthesizedExpression;
+                        primaryExp.ParenthesizedExpression = wrapper;
+                        primaryExp.Identifier = null;
                     }
                     return true;
                 });
@@ -103,7 +117,7 @@ namespace BabyPenguin.SemanticInterface
             ";
 
             var classDefinition = new ClassDefinition();
-            classDefinition.FromString(source, (this.SyntaxNode?.ScopeDepth ?? 0) + 1, Reporter);
+            classDefinition.FromString(source, Reporter);
             var cls = new ClassNode(Model, classDefinition);
 
             AddClass(cls);

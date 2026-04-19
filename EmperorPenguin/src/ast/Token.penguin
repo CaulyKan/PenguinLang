@@ -1,0 +1,172 @@
+namespace parser {
+    enum TokenType {
+        EOF;
+        Identifier;
+        Constant;
+        Digitsequence;
+        Stringliteral;
+        InternalBlocked_return;
+        InternalSignal;
+        InternalYield_finished_return;
+        InternalYield_not_finished_return;
+        Minus;
+        MinusAssign;
+        Arrow;
+        Comma;
+        Semicolon;
+        Colon;
+        Bang;
+        BangEqual;
+        NotAsync;
+        NotMut;
+        NotPure;
+        Dot;
+        Ellipsis;
+        LParen;
+        RParen;
+        ArrayBracket;
+        LBrace;
+        RBrace;
+        Star;
+        StarAssign;
+        Slash;
+        SlashAssign;
+        Ampersand;
+        AmpersandAmpersand;
+        AmpersandAssign;
+        Hash;
+        Percent;
+        PercentAssign;
+        Caret;
+        CaretAssign;
+        Plus;
+        PlusAssign;
+        Less;
+        LessEqual;
+        Assign;
+        EqualEqual;
+        Greater;
+        GreaterEqual;
+        Pipe;
+        PipeAssign;
+        PipePipe;
+        Tilde;
+        Async;
+        Async_fun;
+        AutoKw;
+        Bool;
+        Break;
+        Cast;
+        Char;
+        Class;
+        Continue;
+        Double;
+        Else;
+        Emit;
+        Enum;
+        EventKw;
+        Extern;
+        False;
+        Float;
+        For;
+        Fun;
+        I16;
+        I32;
+        I64;
+        I8;
+        If;
+        Impl;
+        In;
+        Initial;
+        Interface;
+        Is;
+        Let;
+        Mut;
+        Namespace;
+        New;
+        On;
+        Pure;
+        Return;
+        SelfKw;
+        StringKw;
+        TemplateKw;
+        ThisKw;
+        True;
+        TypeKw;
+        U16;
+        U32;
+        U64;
+        U8;
+        Void;
+        Wait;
+        Where;
+        While;
+        Yield;
+    }
+
+
+    class Token {
+        token_type: TokenType = new TokenType.EOF();
+        text: string = "";
+        line: i64 = 0;
+        col: i64 = 0;
+
+        fun new(mut this, token_type: mut TokenType, text: string, line: i64, col: i64) {
+            this.token_type = token_type;
+            this.text = text;
+            this.line = line;
+            this.col = col;
+        }
+
+        fun to_string(this) -> string {
+            return "Token(" + cast<string>(this.token_type) + ", \"" + this.text + "\")";
+        }
+    }
+
+
+    class TokenStream {
+        tokens: List<Token> = new List<Token>();
+        pos: mut i64 = 0;
+
+        fun new(mut this, tokens: mut List<Token>) {
+            this.tokens = tokens;
+        }
+
+        fun peek(this) -> Token {
+            if (this.pos >= cast<i64>(this.tokens.size())) {
+                return new Token(new TokenType.EOF(), "", 0, 0);
+            }
+            return this.tokens.at(cast<u64>(this.pos)).some;
+        }
+
+        fun peek_type(this) -> TokenType {
+            return this.peek().token_type;
+        }
+
+        fun advance(this) -> Token {
+            let token: Token = this.peek();
+            this.pos = this.pos + 1;
+            return token;
+        }
+
+        fun expect(this, expected: TokenType) -> Token {
+            let token: Token = this.advance();
+            if (cast<string>(token.token_type) != cast<string>(expected)) {
+                print("Expected " + cast<string>(expected) + " but got " + token.to_string());
+            }
+            return token;
+        }
+
+        fun match(this, expected: TokenType) -> bool {
+            if (cast<string>(this.peek_type()) == cast<string>(expected)) {
+                this.advance();
+                return true;
+            }
+            return false;
+        }
+
+        fun is_at_end(this) -> bool {
+            return this.peek_type() is TokenType.EOF;
+        }
+    }
+}

@@ -15,11 +15,17 @@ namespace PenguinLangParser.SyntaxNodes
 
             if (ctx is JumpStatementContext context)
             {
-                if (context.jumpKeyword().GetText() == "break")
+                var text = context.GetText();
+                if (text.StartsWith("break"))
                 {
                     JumpType = Type.Break;
+                    // Parse optional break expression
+                    if (context.expression() != null)
+                    {
+                        BreakExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
+                    }
                 }
-                else if (context.jumpKeyword().GetText() == "continue")
+                else if (text.StartsWith("continue"))
                 {
                     JumpType = Type.Continue;
                 }
@@ -31,15 +37,21 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.jumpStatement(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         [SexpValue]
         public Type JumpType { get; private set; }
+
+        [ChildrenNode]
+        public ISyntaxExpression? BreakExpression { get; private set; }
+
+        [SexpValue]
+        public bool HasBreakExpression => BreakExpression != null;
 
         public override string ToShortString() => JumpType.ToString();
 
@@ -47,7 +59,7 @@ namespace PenguinLangParser.SyntaxNodes
         {
             return JumpType switch
             {
-                Type.Break => "break;",
+                Type.Break => BreakExpression != null ? $"break {BreakExpression.BuildText()};" : "break;",
                 Type.Continue => "continue;",
                 _ => throw new NotImplementedException($"Unsupported JumpType: {JumpType}")
             };

@@ -10,7 +10,7 @@ Penguin-lang is a concurrent-friendly programming language with C#-like syntax, 
 - **BabyPenguin**: C# implementation of Penguin-lang compiler & VM, emits BabyPenguinIR (actively developed)
 - **PenguinLangParser**: ANTLR4 grammar and parser for the language
 - **MagellanicPenguin**: Language Server Protocol & Debug Adapter Protocol implementation
-- **EmperorPenguin**: LLVM IR emitter (not started)
+- **EmperorPenguin**: Penguin-lang compiler build from BabyPenguin, emits LLVM IR
 
 ## Build and Development Commands
 
@@ -37,6 +37,10 @@ dotnet publish -r linux-x64 --self-contained
 # Build VSCode extension
 cd MagellanicPenguin\vscode && npm run package
 ```
+
+## Important Tips
+* When writing penguinlang code, use skill penguin
+* Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
 
 ## Architecture Overview
 
@@ -113,6 +117,63 @@ When modifying `PenguinLangParser/PenguinLang.g4`:
 1. The grammar uses ANTLR4
 2. After changes, rebuild the solution - Antlr4BuildTasks will regenerate parser code
 3. Generated code is in the `.antlr` directory and compiled automatically
+
+## Debugging with MCP DAP Tools
+
+Claude Code has access to the `penguin-debug` MCP server for debugging PenguinLang programs via DAP (Debug Adapter Protocol). Use these tools to inspect program behavior step by step.
+
+### Typical Debug Workflow
+
+```
+1. penguin_debug_launch    → Start debug session (with optional breakpoints)
+2. penguin_debug_step_over → Step through code
+3. penguin_debug_variables → Inspect variable values
+4. penguin_debug_stack_trace → View call stack
+5. penguin_debug_continue  → Continue to next breakpoint or completion
+6. penguin_debug_output    → View compiler messages and debug logs
+7. penguin_debug_disconnect → End session
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `penguin_debug_launch` | Compile and start debugging. Args: `program`, `stopOnEntry`, `breakpoints` |
+| `penguin_debug_set_breakpoints` | Set breakpoints. Args: `file`, `breakpoints` (array of `{line, column?}`) |
+| `penguin_debug_continue` | Continue execution until next stop or completion |
+| `penguin_debug_step_over` | Step over current line |
+| `penguin_debug_step_into` | Step into function call |
+| `penguin_debug_step_out` | Step out of current function |
+| `penguin_debug_stack_trace` | Get current call stack with source locations |
+| `penguin_debug_variables` | Get local variables (optional `variablesReference` for nested objects) |
+| `penguin_debug_evaluate` | Evaluate an expression |
+| `penguin_debug_output` | Get diagnostic output (compiler messages, breakpoint status, debug logs) |
+| `penguin_debug_status` | Query current debug session state |
+| `penguin_debug_disconnect` | End debug session and get final output |
+
+### Example: Debug with Breakpoints
+
+```
+penguin_debug_launch({
+  program: "Examples/test.penguin",
+  breakpoints: [{file: "Examples/test.penguin", lines: [{line: 2}, {line: 4}]}]
+})
+→ Stops at line 2, shows local variables
+
+penguin_debug_step_over()
+→ Advances one step, shows updated variables
+
+penguin_debug_continue()
+→ Runs to next breakpoint (line 4) or completion
+
+penguin_debug_output()
+→ Shows compiler diagnostics and debug logs
+```
+
+### Notes
+- The `initial` block in user code runs inside `_ns_<name>.initial_0` function
+- Breakpoints in builtin code may trigger before reaching user code; use `continue` to skip to user breakpoints
+- The MCP server source is at `MagellanicPenguin/mcp-debug/` (TypeScript + `@modelcontextprotocol/sdk`)
 
 ## Error Handling
 

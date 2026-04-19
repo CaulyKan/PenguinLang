@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace BabyPenguin.VirtualMachine
@@ -238,7 +239,7 @@ namespace BabyPenguin.VirtualMachine
         public ReferenceRuntimeValue(IType typeInfo, Dictionary<string, IRuntimeValue> fields)
         {
             RefId = Interlocked.Increment(ref counter);
-            AllObjects.Add(RefId, this);
+            AllObjects.TryAdd(RefId, this);
             TypeInfo = typeInfo;
             Fields = fields;
         }
@@ -249,7 +250,7 @@ namespace BabyPenguin.VirtualMachine
 
         public ulong RefId { get; }
 
-        public static Dictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
+        public static ConcurrentDictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
 
         private static ulong counter = 0;
 
@@ -268,7 +269,19 @@ namespace BabyPenguin.VirtualMachine
 
         public override string ToString()
         {
-            var fields = Fields.Where(kvp => kvp.Value is not FunctionRuntimeValue).Select(kvp => kvp.Key + ": " + kvp.Value.ToString()).ToList();
+            return ToString(0);
+        }
+
+        public string ToString(int depth)
+        {
+            if (depth > 5) return RefId.ToString() + "@{...}";
+            var fields = Fields.Where(kvp => kvp.Value is not FunctionRuntimeValue).Select(kvp =>
+            {
+                var valStr = kvp.Value is ReferenceRuntimeValue rv ? rv.ToString(depth + 1)
+                    : kvp.Value is EnumRuntimeValue ev ? ev.ToString(depth + 1)
+                    : kvp.Value.ToString();
+                return kvp.Key + ": " + valStr;
+            }).ToList();
             return RefId.ToString() + "@{" + string.Join(", ", fields) + "}";
         }
 
@@ -297,10 +310,20 @@ namespace BabyPenguin.VirtualMachine
 
         public override string ToString()
         {
+            return ToString(0);
+        }
+
+        public string ToString(int depth)
+        {
             var enumValue = FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value;
             var enumName = (TypeInfo.TypeNode as IEnumNode)?.EnumDeclarations.Find(e => e.Value == enumValue);
             var name = enumName?.Name ?? "?invalid?";
-            return ContainingValue is null ? name : $"{name}({ContainingValue})";
+            if (ContainingValue is null) return name;
+            if (depth > 5) return $"{name}(...)";
+            var valStr = ContainingValue is ReferenceRuntimeValue rv ? rv.ToString(depth + 1)
+                : ContainingValue is EnumRuntimeValue ev ? ev.ToString(depth + 1)
+                : ContainingValue.ToString();
+            return $"{name}({valStr})";
         }
 
         public void AssignFrom(EnumRuntimeValue otherVar)

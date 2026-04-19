@@ -74,10 +74,10 @@ namespace PenguinLangParser.SyntaxNodes
                     StatementType = Type.EmitEventStatement;
                     EmitEventStatement = Build<EmitEventStatement>(walker, context.emitEventStatement());
                 }
-                else if (context.codeBlock() is not null)
+                else if (context.codeBlockExpression() is not null)
                 {
                     StatementType = Type.SubBlock;
-                    CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
+                    CodeBlockExpression = Build<CodeBlockExpression>(walker, context.codeBlockExpression());
                 }
                 else if (context.GetText() == ";")
                 {
@@ -89,10 +89,10 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.statement(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -100,7 +100,7 @@ namespace PenguinLangParser.SyntaxNodes
         public Type StatementType { get; set; }
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; set; }
+        public CodeBlockExpression? CodeBlockExpression { get; set; }
 
         [ChildrenNode]
         public ExpressionStatement? ExpressionStatement { get; set; }
@@ -139,7 +139,7 @@ namespace PenguinLangParser.SyntaxNodes
             return StatementType switch
             {
                 Type.Empty => ";",
-                Type.SubBlock => CodeBlock!.BuildText(),
+                Type.SubBlock => CodeBlockExpression!.BuildText(),
                 Type.ExpressionStatement => ExpressionStatement!.BuildText(),
                 Type.IfStatement => IfStatement!.BuildText(),
                 Type.WhileStatement => WhileStatement!.BuildText(),

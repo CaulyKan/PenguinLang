@@ -7,27 +7,20 @@ namespace PenguinLangParser.SyntaxNodes
         {
             base.Build(walker, ctx);
 
-            if (ctx is CastExpressionContext context)
+            if (ctx is PrimaryExpressionContext context)
             {
-                if (context.typeSpecifier() != null)
-                {
-                    SubUnaryExpression = Build<UnaryExpression>(walker, context.unaryExpression()).GetEffectiveExpression();
-                    CastTypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
-                }
-                else
-                {
-                    SubUnaryExpression = Build<UnaryExpression>(walker, context.unaryExpression());
-                }
+                CastTypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
+                SubExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
             }
             else throw new NotImplementedException();
         }
 
-        public override string ToShortString() => "as";
+        public override string ToShortString() => "cast";
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.castExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.primaryExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -35,21 +28,15 @@ namespace PenguinLangParser.SyntaxNodes
         public TypeSpecifier? CastTypeSpecifier { get; set; }
 
         [ChildrenNode]
-        public ISyntaxExpression? SubUnaryExpression { get; set; }
+        public ISyntaxExpression? SubExpression { get; set; }
 
-        public ISyntaxExpression GetEffectiveExpression() => IsTypeCast ? this : (SubUnaryExpression as ISyntaxExpression)!.GetEffectiveExpression();
+        public ISyntaxExpression GetEffectiveExpression() => this;
 
-        public bool IsTypeCast => CastTypeSpecifier is not null;
-
-        public bool IsSimple => !IsTypeCast && SubUnaryExpression!.IsSimple;
+        public bool IsSimple => false;
 
         public override string BuildText()
         {
-            if (!IsTypeCast)
-            {
-                return SubUnaryExpression!.BuildText();
-            }
-            return $"{SubUnaryExpression!.BuildText()} as {CastTypeSpecifier!.BuildText()}";
+            return $"cast<{CastTypeSpecifier!.BuildText()}>({SubExpression!.BuildText()})";
         }
     }
 }

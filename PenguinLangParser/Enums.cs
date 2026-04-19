@@ -9,8 +9,6 @@ namespace PenguinLangParser
         ModuloAssign,
         AddAssign,
         SubtractAssign,
-        LeftShiftAssign,
-        RightShiftAssign,
         BitwiseAndAssign,
         BitwiseOrAssign,
         BitwiseXorAssign
@@ -34,8 +32,6 @@ namespace PenguinLangParser
         BitwiseAnd,
         BitwiseOr,
         BitwiseXor,
-        LeftShift,
-        RightShift,
         Is
     }
 

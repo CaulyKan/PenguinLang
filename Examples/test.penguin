@@ -1,6 +1,22 @@
-                initial {
-                    let mut sb = new StringBuilder();
-                    sb.append("hello");
-                    sb.append(" world");
-                    println(sb.to_string());
+class IdentifierExpression {
+    name: mut string = "";
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>(); 
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<IdentifierExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append(self.name);
+            if (self.generic_args.size() > 0) {
+                sb.append("<");
+                let i: mut u64 = 0;
+                while (i < self.generic_args.size()) {
+                    sb.append(self.generic_args.at(i).some.build_text());
+                    i=i+1;
+                    if (i != self.generic_args.size()) 
+                        sb.append(", ");
                 }
+                sb.append(">");
+            }
+        }
+    }
+}

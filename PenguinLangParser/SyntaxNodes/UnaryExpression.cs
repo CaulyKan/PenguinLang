@@ -29,10 +29,10 @@ namespace PenguinLangParser.SyntaxNodes
 
         public ISyntaxExpression GetEffectiveExpression() => HasUnaryOperator ? this : SubExpression!.GetEffectiveExpression();
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.unaryExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -45,7 +45,6 @@ namespace PenguinLangParser.SyntaxNodes
         [SexpValue]
         public bool HasUnaryOperator => UnaryOperator is not null;
 
-        [SexpValue]
         public bool IsSimple => !HasUnaryOperator && SubExpression!.IsSimple;
 
         public override string ToShortString() => UnaryOperator!.Value switch

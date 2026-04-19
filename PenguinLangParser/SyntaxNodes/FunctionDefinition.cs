@@ -33,11 +33,11 @@ namespace PenguinLangParser.SyntaxNodes
                         var sourceLocation = SourceLocation.From(walker.FileName, context.parameterList().thisParameter());
                         Parameters.Add(new Declaration
                         {
-                            Identifier = new SymbolIdentifier { LiteralName = "this", ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text },
-                            ScopeDepth = ScopeDepth,
+                            Identifier = new SymbolIdentifier { LiteralName = "this", ScopeId = ScopeId, SourceLocation = sourceLocation, SourceText = text },
+                            ScopeId = ScopeId,
                             SourceLocation = sourceLocation,
                             SourceText = text,
-                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable ? Mutability.Mutable : Mutability.Immutable, ScopeDepth = ScopeDepth, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
+                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable ? Mutability.Mutable : Mutability.Immutable, ScopeId = ScopeId, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
                         });
                     }
                     Parameters.AddRange(context.parameterList().children.OfType<DeclarationContext>()
@@ -85,18 +85,18 @@ namespace PenguinLangParser.SyntaxNodes
                     }
                 }
 
-                if (context.codeBlock() != null)
-                    CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
+                if (context.codeBlockExpression() != null)
+                    CodeBlockExpression = Build<CodeBlockExpression>(walker, context.codeBlockExpression());
 
                 walker.PopScope();
             }
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.functionDefinition(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -110,7 +110,7 @@ namespace PenguinLangParser.SyntaxNodes
         public TypeSpecifier? ReturnType { get; set; }
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; set; }
+        public CodeBlockExpression? CodeBlockExpression { get; set; }
 
         public string Name => FunctionIdentifier!.Name;
 
@@ -177,9 +177,9 @@ namespace PenguinLangParser.SyntaxNodes
                 parts.Add("->");
                 parts.Add(ReturnType.BuildText());
             }
-            if (CodeBlock != null)
+            if (CodeBlockExpression != null)
             {
-                parts.Add(CodeBlock.BuildText());
+                parts.Add(CodeBlockExpression.BuildText());
             }
 
             return string.Join(" ", parts);

@@ -7,24 +7,23 @@ namespace PenguinLangParser.SyntaxNodes
         {
             base.Build(walker, ctx);
 
-            if (ctx is WaitExpressionContext context)
+            if (ctx is PostfixExpressionContext context)
             {
-                Expression = context.expression() != null ? Build<Expression>(walker, context.expression()).GetEffectiveExpression() : null;
+                Expression = context.expression().Length > 0 ? Build<Expression>(walker, context.expression(0)).GetEffectiveExpression() : null;
             }
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.waitExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.postfixExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         [ChildrenNode]
         public ISyntaxExpression? Expression { get; set; }
 
-        [SexpValue]
         public bool IsSimple => false;
 
         public ISyntaxExpression GetEffectiveExpression() => this;
@@ -34,7 +33,7 @@ namespace PenguinLangParser.SyntaxNodes
         public override string BuildText()
         {
             if (Expression == null)
-                return "wait;";
+                return "wait";
             else
                 return $"wait {Expression!.BuildText()}";
         }

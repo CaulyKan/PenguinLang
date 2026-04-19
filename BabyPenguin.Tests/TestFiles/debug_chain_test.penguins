@@ -1,0 +1,3 @@
+[project]
+name = "DebugChainTest"
+sources = ["*.penguin"]

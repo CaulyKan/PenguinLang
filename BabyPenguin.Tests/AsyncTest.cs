@@ -168,8 +168,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : i32= wait test();
-                    print(a as string);
-                } 
+                    print(cast<string>(a));
+                }
                 fun test() -> i32{
                     print(""1"");
                     wait;
@@ -190,8 +190,8 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : i32= test();
-                    print(a as string);
-                } 
+                    print(cast<string>(a));
+                }
                 fun test() -> i32{
                     print(""1"");
                     wait;
@@ -214,9 +214,9 @@ namespace BabyPenguin.Tests
                     initial {
                         let v: i32[] = test1();
                         for (let i : i32 in v) {
-                            print(i as string);
+                            print(cast<string>(i));
                         }
-                    } 
+                    }
                     class _lambda {
                         fun call(this: Self) -> i32 {
                             __yield_not_finished_return 1;
@@ -225,7 +225,7 @@ namespace BabyPenguin.Tests
                     }
                     fun test1() -> i32[] {
                         let owner: _lambda = new _lambda();
-                        return new _DefaultRoutine<i32>(owner.call, true) as i32[];
+                        return cast<i32[]>(new _DefaultRoutine<i32>(owner.call, true));
                     }
                 }
             ");
@@ -243,13 +243,13 @@ namespace BabyPenguin.Tests
                 initial {
                     let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
-                        print(i as string);
+                        print(cast<string>(i));
                     }
-                } 
+                }
                 fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
-                    for (let i : i64 in range(0, 3)) 
+                    for (let i : i64 in range(0, 3))
                         yield i + 3;
                     yield 6;
                 }
@@ -268,9 +268,9 @@ namespace BabyPenguin.Tests
                 initial {
                     let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
-                        print(i as string);
+                        print(cast<string>(i));
                     }
-                } 
+                }
                 fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
@@ -292,9 +292,9 @@ namespace BabyPenguin.Tests
                 initial {
                     let v: mut IGenerator<i64> = test();
                     for (let i : i64 in v) {
-                        print(i as string);
+                        print(cast<string>(i));
                     }
-                } 
+                }
                 fun test() -> IGenerator<i64> {
                     yield 1;
                     yield 2;
@@ -315,7 +315,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let v: IGenerator<i32> = test();
                     for (let i : i32 in v) {
-                        print(i as string);
+                        print(cast<string>(i));
                     }
                 } 
                 fun test() -> IGenerator<i32> {
@@ -357,7 +357,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : Option<i32> = (test()).next();
-                    print(a.some as string);
+                    print(cast<string>(a.some));
                 } 
                 fun test() -> mut IGenerator<i32> {
                     yield 1;
@@ -395,7 +395,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     for (let i : i32 in test()) {
-                        print(i as string);
+                        print(cast<string>(i));
                     } 
                 } 
                 fun test() -> mut IGenerator<i32> {
@@ -437,10 +437,10 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : IFuture<i32> = async test();
                     let poll1 : FutureState<i32> = a.poll();
-                    println(poll1 as string);
+                    println(cast<string>(poll1));
                     wait;
                     let poll2 : FutureState<i32> = a.poll();
-                    println(poll2 as string);
+                    println(cast<string>(poll2));
                 } 
                 fun test() -> i32 {
                     return 1;
@@ -483,7 +483,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : IFuture<i32> = async test(1);
                     let b : i32 = wait a;
-                    print(b as string);
+                    print(cast<string>(b));
                 } 
                 fun test(a : i32) -> i32 {
                     wait;
@@ -525,7 +525,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : i32 = wait test();
-                    println(a as string);
+                    println(cast<string>(a));
                 } 
                 fun test() -> i32 {
                     println(""test"");

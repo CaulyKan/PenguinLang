@@ -7,16 +7,9 @@ namespace PenguinLangParser.SyntaxNodes
         {
             base.Build(walker, ctx);
 
-            if (ctx is FunctionCallExpressionContext context)
+            if (ctx is PostfixExpressionContext context)
             {
-                if (context.primaryExpression() != null)
-                {
-                    PrimaryExpression = Build<PrimaryExpression>(walker, context.primaryExpression()).GetEffectiveExpression();
-                }
-                else if (context.memberAccessExpression() != null)
-                {
-                    MemberAccessExpression = Build<ReadMemberAccessExpression>(walker, context.memberAccessExpression());
-                }
+                Callee = Build<PostfixExpression>(walker, context.postfixExpression()).GetEffectiveExpression();
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
                    .Select(x => Build<Expression>(walker, x).GetEffectiveExpression())
                    .ToList();
@@ -24,52 +17,31 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
-            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.functionCallExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.postfixExpression(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         public ISyntaxExpression GetEffectiveExpression() => this;
 
         [ChildrenNode]
-        public ISyntaxExpression? PrimaryExpression { get; set; }
-
-        [ChildrenNode]
-        public MemberAccessExpression? MemberAccessExpression { get; set; }
-
-        [SexpValue]
-        public bool IsMemberAccess => MemberAccessExpression is not null;
+        public ISyntaxExpression? Callee { get; set; }
 
         [ChildrenNode]
         public List<ISyntaxExpression> ArgumentsExpression { get; private set; } = [];
 
-        [SexpValue]
         public bool IsSimple => false;
 
         public override string ToShortString() => "";
 
         public override string BuildText()
         {
-            var parts = new List<string>();
-            if (IsMemberAccess)
-            {
-                parts.Add(MemberAccessExpression!.BuildText());
-            }
-            else
-            {
-                parts.Add(PrimaryExpression!.BuildText());
-            }
-
-            parts.Add("(");
-            if (ArgumentsExpression.Count > 0)
-            {
-                parts.Add(string.Join(", ", ArgumentsExpression.Select(e => e.BuildText())));
-            }
-            parts.Add(")");
-
-            return string.Join("", parts);
+            var args = ArgumentsExpression.Count > 0
+                ? string.Join(", ", ArgumentsExpression.Select(e => e.BuildText()))
+                : "";
+            return $"{Callee!.BuildText()}({args})";
         }
     }
 }

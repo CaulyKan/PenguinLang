@@ -1,0 +1,3 @@
+[Project]
+name="EmperorPenguin"
+sources=["src/ast/*.penguin", "main.penguin"]

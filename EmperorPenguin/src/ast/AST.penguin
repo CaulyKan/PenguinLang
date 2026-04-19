@@ -1,0 +1,1084 @@
+namespace ast {
+
+enum BinaryOperator {
+    Add;
+    Subtract;
+    Multiply;
+    Divide;
+    Modulo;
+    LessThan;
+    GreaterThan;
+    LessThanOrEqual;
+    GreaterThanOrEqual;
+    Equal;
+    NotEqual;
+    LogicalAnd;
+    LogicalOr;
+    BitwiseAnd;
+    BitwiseOr;
+    BitwiseXor;
+    Is;
+}
+
+enum UnaryOperator {
+    Negate;
+    Not;
+    BitwiseNot;
+    UnaryPlus;
+    Deref;
+    Ref;
+}
+
+fun binary_operator_to_string(op: BinaryOperator) -> string {
+    if (op is BinaryOperator.Add) { return "+"; }
+    if (op is BinaryOperator.Subtract) { return "-"; }
+    if (op is BinaryOperator.Multiply) { return "*"; }
+    if (op is BinaryOperator.Divide) { return "/"; }
+    if (op is BinaryOperator.Modulo) { return "%"; }
+    if (op is BinaryOperator.LessThan) { return "<"; }
+    if (op is BinaryOperator.GreaterThan) { return ">"; }
+    if (op is BinaryOperator.LessThanOrEqual) { return "<="; }
+    if (op is BinaryOperator.GreaterThanOrEqual) { return ">="; }
+    if (op is BinaryOperator.Equal) { return "=="; }
+    if (op is BinaryOperator.NotEqual) { return "!="; }
+    if (op is BinaryOperator.LogicalAnd) { return "&&"; }
+    if (op is BinaryOperator.LogicalOr) { return "||"; }
+    if (op is BinaryOperator.BitwiseAnd) { return "&"; }
+    if (op is BinaryOperator.BitwiseOr) { return "|"; }
+    if (op is BinaryOperator.BitwiseXor) { return "^"; }
+    if (op is BinaryOperator.Is) { return "is"; }
+    return "?";
+}
+
+interface IExpression {
+    fun build_text(this: IExpression) -> string;
+}
+
+class ConstantExpression {
+    value: mut string = "";
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<ConstantExpression>(this);
+            return self.value;
+        }
+    }
+}
+
+class IdentifierExpression {
+    name: mut string = "";
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>(); 
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<IdentifierExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append(self.name);
+            if (self.generic_args.size() > 0) {
+                sb.append("<");
+                let i: mut u64 = 0;
+                while (i < self.generic_args.size()) {
+                    sb.append(self.generic_args.at(i).some.build_text());
+                    i=i+1;
+                    if (i != self.generic_args.size()) 
+                        sb.append(", ");
+                }
+                sb.append(">");
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class StringLiteralExpression {
+    value: mut string = "";
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<StringLiteralExpression>(this);
+            return self.value;
+        }
+    }
+}
+
+class BoolLiteralExpression {
+    value: mut string = "";
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<BoolLiteralExpression>(this);
+            return self.value;
+        }
+    }
+}
+
+class ParenthesizedExpression {
+    inner: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<ParenthesizedExpression>(this);
+            return "(" + self.inner.some.build_text() + ")";
+        }
+    }
+}
+
+class BinaryExpression {
+    operators: mut List<BinaryOperator> = new List<BinaryOperator>();
+    operands: mut List<Expression> = new List<Expression>();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<BinaryExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append(self.operands.at(cast<u64>(0)).some.build_text());
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.operators.size())) {
+                sb.append(" ");
+                sb.append(binary_operator_to_string(self.operators.at(cast<u64>(i)).some));
+                sb.append(" ");
+                sb.append(self.operands.at(cast<u64>(i + 1)).some.build_text());
+                i = i + 1;
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class UnaryExpression {
+    operator_value: mut UnaryOperator = new UnaryOperator.Negate();
+    operand: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<UnaryExpression>(this);
+            let op_str: string = cast<string>(self.operator_value);
+            if (op_str == "Negate") { return "-" + self.operand.some.build_text(); }
+            if (op_str == "Not") { return "!" + self.operand.some.build_text(); }
+            if (op_str == "BitwiseNot") { return "~" + self.operand.some.build_text(); }
+            if (op_str == "UnaryPlus") { return "+" + self.operand.some.build_text(); }
+            return op_str + self.operand.some.build_text();
+        }
+    }
+}
+
+class MemberAccessExpression {
+    base_expr: mut Option<Expression> = new Option<Expression>.none();
+    member_name: mut string = "";
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<MemberAccessExpression>(this);
+            return self.base_expr.some.build_text() + "." + self.member_name;
+        }
+    }
+}
+
+class FunctionCallExpression {
+    callee: mut Option<Expression> = new Option<Expression>.none();
+    arguments: mut List<Expression> = new List<Expression>();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<FunctionCallExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append(self.callee.some.build_text());
+            sb.append("(");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.arguments.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(self.arguments.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(")");
+            return sb.to_string();
+        }
+    }
+}
+
+class IfExpression {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    then_block: mut Option<Expression> = new Option<Expression>.none();
+    else_block: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<IfExpression>(this);
+            let s: mut string = "if (" + self.condition.some.build_text() + ") " + self.then_block.some.build_text();
+            if (self.else_block.is_some()) {
+                s = s + " else " + self.else_block.some.build_text();
+            }
+            return s;
+        }
+    }
+}
+
+class WhileExpression {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    body: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<WhileExpression>(this);
+            return "while (" + self.condition.some.build_text() + ") " + self.body.some.build_text();
+        }
+    }
+}
+
+class CodeBlockExpression {
+    statements: mut List<Statement> = new List<Statement>();
+    trailing_expr: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<CodeBlockExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append("{");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.statements.size())) {
+                sb.append(" ");
+                sb.append(self.statements.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            if (self.trailing_expr.is_some()) {
+                sb.append(" ");
+                sb.append(self.trailing_expr.some.build_text());
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class CastExpression {
+    type_name: mut string = "";
+    inner: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<CastExpression>(this);
+            return "cast<" + self.type_name + ">(" + self.inner.some.build_text() + ")";
+        }
+    }
+}
+
+class NewExpression {
+    type_name: mut string = "";
+    arguments: mut List<Expression> = new List<Expression>();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<NewExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append("new ");
+            sb.append(self.type_name);
+            sb.append("(");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.arguments.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(self.arguments.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(")");
+            return sb.to_string();
+        }
+    }
+}
+
+class LambdaFunctionExpression {
+    parameters: mut List<Parameter> = new List<Parameter>();
+    return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    body: mut Option<Expression> = new Option<Expression>.none();
+    is_async: mut bool = false;
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<LambdaFunctionExpression>(this);
+            let s: mut string = "fun(";
+            if (self.is_async) { s = "async_fun("; }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.parameters.size())) {
+                if (i > 0) { s = s + ", "; }
+                s = s + self.parameters.at(cast<u64>(i)).some.build_text();
+                i = i + 1;
+            }
+            s = s + ")";
+            if (self.return_type.is_some()) { s = s + " -> " + self.return_type.some.build_text(); }
+            if (self.body.is_some()) { s = s + " " + self.body.some.build_text(); }
+            return s;
+        }
+    }
+}
+
+class SpawnAsyncExpression {
+    expression: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<SpawnAsyncExpression>(this);
+            return "async " + self.expression.some.build_text();
+        }
+    }
+}
+
+class WaitExpression {
+    expression: mut Option<Expression> = new Option<Expression>.none();
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<WaitExpression>(this);
+            if (self.expression.is_some()) {
+                return "wait " + self.expression.some.build_text();
+            }
+            return "wait";
+        }
+    }
+}
+
+class VoidLiteralExpression {
+    value: mut string = "";
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            let self = cast<VoidLiteralExpression>(this);
+            return self.value;
+        }
+    }
+}
+
+enum Expression {
+    constant: ConstantExpression;
+    identifier: IdentifierExpression;
+    string_literal: StringLiteralExpression;
+    bool_literal: BoolLiteralExpression;
+    parenthesized: ParenthesizedExpression;
+    binary: BinaryExpression;
+    unary: UnaryExpression;
+    member_access: MemberAccessExpression;
+    function_call: FunctionCallExpression;
+    if_expr: IfExpression;
+    while_expr: WhileExpression;
+    code_block: CodeBlockExpression;
+    cast_expr: CastExpression;
+    new_expr: NewExpression;
+    lambda_expr: LambdaFunctionExpression;
+    spawn_async: SpawnAsyncExpression;
+    wait_expr: WaitExpression;
+    void_literal: VoidLiteralExpression;
+
+    fun build_text(this) -> string {
+        if (this is Expression.constant) { return this.constant.build_text(); }
+        if (this is Expression.identifier) { return this.identifier.build_text(); }
+        if (this is Expression.string_literal) { return this.string_literal.build_text(); }
+        if (this is Expression.bool_literal) { return this.bool_literal.build_text(); }
+        if (this is Expression.parenthesized) { return this.parenthesized.build_text(); }
+        if (this is Expression.binary) { return this.binary.build_text(); }
+        if (this is Expression.unary) { return this.unary.build_text(); }
+        if (this is Expression.member_access) { return this.member_access.build_text(); }
+        if (this is Expression.function_call) { return this.function_call.build_text(); }
+        if (this is Expression.if_expr) { return this.if_expr.build_text(); }
+        if (this is Expression.while_expr) { return this.while_expr.build_text(); }
+        if (this is Expression.code_block) { return this.code_block.build_text(); }
+        if (this is Expression.cast_expr) { return this.cast_expr.build_text(); }
+        if (this is Expression.new_expr) { return this.new_expr.build_text(); }
+        if (this is Expression.lambda_expr) { return this.lambda_expr.build_text(); }
+        if (this is Expression.spawn_async) { return this.spawn_async.build_text(); }
+        if (this is Expression.wait_expr) { return this.wait_expr.build_text(); }
+        if (this is Expression.void_literal) { return this.void_literal.build_text(); }
+        return "";
+    }
+}
+
+enum AssignmentOperator {
+    Assign;
+    PlusAssign;
+    MinusAssign;
+    StarAssign;
+    SlashAssign;
+    PercentAssign;
+    AmpersandAssign;
+    CaretAssign;
+    PipeAssign;
+}
+
+fun assignment_operator_to_string(op: AssignmentOperator) -> string {
+    if (op is AssignmentOperator.Assign) { return "="; }
+    if (op is AssignmentOperator.PlusAssign) { return "+="; }
+    if (op is AssignmentOperator.MinusAssign) { return "-="; }
+    if (op is AssignmentOperator.StarAssign) { return "*="; }
+    if (op is AssignmentOperator.SlashAssign) { return "/="; }
+    if (op is AssignmentOperator.PercentAssign) { return "%="; }
+    if (op is AssignmentOperator.AmpersandAssign) { return "&="; }
+    if (op is AssignmentOperator.CaretAssign) { return "^="; }
+    if (op is AssignmentOperator.PipeAssign) { return "|="; }
+    return "=";
+}
+
+interface IStatement {
+    fun build_text(this: IStatement) -> string;
+}
+
+class ExpressionStatement {
+    expression: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<ExpressionStatement>(this);
+            return self.expression.some.build_text() + ";";
+        }
+    }
+}
+
+class BlockExpressionStatement {
+    expression: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<BlockExpressionStatement>(this);
+            return self.expression.some.build_text();
+        }
+    }
+}
+
+class AssignmentStatement {
+    target: mut Option<Expression> = new Option<Expression>.none();
+    operator_value: mut AssignmentOperator = new AssignmentOperator.Assign();
+    value: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<AssignmentStatement>(this);
+            return self.target.some.build_text() + " " + assignment_operator_to_string(self.operator_value) + " " + self.value.some.build_text() + ";";
+        }
+    }
+}
+
+class IfStatement {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    then_statement: mut Option<Statement> = new Option<Statement>.none();
+    else_statement: mut Option<Statement> = new Option<Statement>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<IfStatement>(this);
+            let s: mut string = "if (" + self.condition.some.build_text() + ") " + self.then_statement.some.build_text();
+            if (self.else_statement.is_some()) {
+                s = s + " else " + self.else_statement.some.build_text();
+            }
+            return s;
+        }
+    }
+}
+
+class WhileStatement {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    body: mut Option<Statement> = new Option<Statement>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<WhileStatement>(this);
+            return "while (" + self.condition.some.build_text() + ") " + self.body.some.build_text();
+        }
+    }
+}
+
+class ForStatement {
+    variable_name: mut string = "";
+    variable_type: mut string = "";
+    is_mutable: mut bool = false;
+    iterable: mut Option<Expression> = new Option<Expression>.none();
+    body: mut Option<Statement> = new Option<Statement>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<ForStatement>(this);
+            let s: mut string = "for (let ";
+            if (self.is_mutable) { s = s + "mut "; }
+            s = s + self.variable_name;
+            if (string_length(self.variable_type) > 0) { s = s + ": " + self.variable_type; }
+            s = s + " in " + self.iterable.some.build_text() + ") " + self.body.some.build_text();
+            return s;
+        }
+    }
+}
+
+class ReturnStatement {
+    value: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<ReturnStatement>(this);
+            if (self.value.is_some()) {
+                return "return " + self.value.some.build_text() + ";";
+            }
+            return "return;";
+        }
+    }
+}
+
+class BreakStatement {
+    value: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<BreakStatement>(this);
+            if (self.value.is_some()) {
+                return "break " + self.value.some.build_text() + ";";
+            }
+            return "break;";
+        }
+    }
+}
+
+class ContinueStatement {
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            return "continue;";
+        }
+    }
+}
+
+class LetDeclarationStatement {
+    is_mutable: mut bool = false;
+    variable_name: mut string = "";
+    variable_type: mut string = "";
+    initializer: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<LetDeclarationStatement>(this);
+            let s: mut string = "let ";
+            if (self.is_mutable) { s = s + "mut "; }
+            s = s + self.variable_name;
+            if (string_length(self.variable_type) > 0) { s = s + ": " + self.variable_type; }
+            if (self.initializer.is_some()) { s = s + " = " + self.initializer.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+class EmitEventStatement {
+    event_expr: mut Option<Expression> = new Option<Expression>.none();
+    argument: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<EmitEventStatement>(this);
+            let s: mut string = "emit " + self.event_expr.some.build_text() + "(";
+            if (self.argument.is_some()) { s = s + self.argument.some.build_text(); }
+            return s + ");";
+        }
+    }
+}
+
+class YieldStatement {
+    value: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<YieldStatement>(this);
+            if (self.value.is_some()) {
+                return "yield " + self.value.some.build_text() + ";";
+            }
+            return "yield;";
+        }
+    }
+}
+
+class SignalStatement {
+    expression: mut Option<Expression> = new Option<Expression>.none();
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            let self = cast<SignalStatement>(this);
+            if (self.expression.is_some()) {
+                return "__signal " + self.expression.some.build_text();
+            }
+            return "__signal";
+        }
+    }
+}
+
+enum Statement {
+    expression: ExpressionStatement;
+    block_expr: BlockExpressionStatement;
+    assignment: AssignmentStatement;
+    if_stmt: IfStatement;
+    while_stmt: WhileStatement;
+    for_stmt: ForStatement;
+    return_stmt: ReturnStatement;
+    break_stmt: BreakStatement;
+    continue_stmt: ContinueStatement;
+    let_decl: LetDeclarationStatement;
+    emit_event: EmitEventStatement;
+    yield_stmt: YieldStatement;
+    signal_stmt: SignalStatement;
+
+    fun build_text(this) -> string {
+        if (this is Statement.expression) { return this.expression.build_text(); }
+        if (this is Statement.block_expr) { return this.block_expr.build_text(); }
+        if (this is Statement.assignment) { return this.assignment.build_text(); }
+        if (this is Statement.if_stmt) { return this.if_stmt.build_text(); }
+        if (this is Statement.while_stmt) { return this.while_stmt.build_text(); }
+        if (this is Statement.for_stmt) { return this.for_stmt.build_text(); }
+        if (this is Statement.return_stmt) { return this.return_stmt.build_text(); }
+        if (this is Statement.break_stmt) { return this.break_stmt.build_text(); }
+        if (this is Statement.continue_stmt) { return this.continue_stmt.build_text(); }
+        if (this is Statement.let_decl) { return this.let_decl.build_text(); }
+        if (this is Statement.emit_event) { return this.emit_event.build_text(); }
+        if (this is Statement.yield_stmt) { return this.yield_stmt.build_text(); }
+        if (this is Statement.signal_stmt) { return this.signal_stmt.build_text(); }
+        return "";
+    }
+}
+
+class TypeSpecifier {
+    name: mut string = "";
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    is_mutable: mut bool = false;
+    is_not_mutable: mut bool = false;
+    is_auto_mutability: mut bool = false;
+    is_iterable: mut bool = false;
+    is_function_type: mut bool = false;
+    is_async_function_type: mut bool = false;
+    function_params: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    qualified_parts: mut List<string> = new List<string>();
+    fun build_text(this) -> string {
+        let prefix: mut string = "";
+        if (this.is_mutable) { prefix = "mut "; }
+        if (this.is_not_mutable) { prefix = "!mut "; }
+        if (this.is_auto_mutability) { prefix = "auto "; }
+        if (this.is_function_type) {
+            let s: mut string = prefix + "fun<";
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.function_params.size())) {
+                if (i > 0) { s = s + ", "; }
+                s = s + this.function_params.at(cast<u64>(i)).some.build_text();
+                i = i + 1;
+            }
+            if (this.return_type.is_some()) {
+                if (cast<i64>(this.function_params.size()) > 0) { s = s + ", "; }
+                s = s + this.return_type.some.build_text();
+            }
+            s = s + ">";
+            if (this.is_iterable) { s = s + "[]"; }
+            return s;
+        }
+        if (this.is_async_function_type) {
+            let s: mut string = prefix + "async_fun<";
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.function_params.size())) {
+                if (i > 0) { s = s + ", "; }
+                s = s + this.function_params.at(cast<u64>(i)).some.build_text();
+                i = i + 1;
+            }
+            if (this.return_type.is_some()) {
+                if (cast<i64>(this.function_params.size()) > 0) { s = s + ", "; }
+                s = s + this.return_type.some.build_text();
+            }
+            s = s + ">";
+            if (this.is_iterable) { s = s + "[]"; }
+            return s;
+        }
+        let s: mut string = prefix + this.name;
+        if (cast<i64>(this.qualified_parts.size()) > 0) {
+            s = prefix;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.qualified_parts.size())) {
+                if (i > 0) { s = s + "."; }
+                s = s + this.qualified_parts.at(cast<u64>(i)).some;
+                i = i + 1;
+            }
+            if (string_length(this.name) > 0) {
+                s = s + "." + this.name;
+            }
+        }
+        if (cast<i64>(this.generic_args.size()) > 0) {
+            s = s + "<";
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.generic_args.size())) {
+                if (i > 0) { s = s + ", "; }
+                s = s + this.generic_args.at(cast<u64>(i)).some.build_text();
+                i = i + 1;
+            }
+            s = s + ">";
+        }
+        if (this.is_iterable) { s = s + "[]"; }
+        return s;
+    }
+}
+
+class Parameter {
+    name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    default_value: mut Option<Expression> = new Option<Expression>.none();
+    is_mutable: mut bool = false;
+    is_this: mut bool = false;
+    fun build_text(this) -> string {
+        if (this.is_this) {
+            if (this.is_mutable) { return "mut this"; }
+            return "this";
+        }
+        let s: mut string = this.name;
+        if (this.type_spec.is_some()) { s = s + ": " + this.type_spec.some.build_text(); }
+        if (this.default_value.is_some()) { s = s + " = " + this.default_value.some.build_text(); }
+        return s;
+    }
+}
+
+class TemplateParameter {
+    name: mut string = "";
+    type_constraint: mut string = "";
+    fun build_text(this) -> string {
+        if (string_length(this.type_constraint) > 0) {
+            return this.name + ": " + this.type_constraint;
+        }
+        return this.name;
+    }
+}
+
+class TemplateDeclaration {
+    parameters: mut List<TemplateParameter> = new List<TemplateParameter>();
+    fun build_text(this) -> string {
+        let mut sb = new StringBuilder();
+        sb.append("#template(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.parameters.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.parameters.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+class WhereClause {
+    name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    fun build_text(this) -> string {
+        if (this.type_spec.is_some()) {
+            return this.name + ": " + this.type_spec.some.build_text();
+        }
+        return this.name;
+    }
+}
+
+class WhereDefinition {
+    clauses: mut List<WhereClause> = new List<WhereClause>();
+    fun build_text(this) -> string {
+        let mut sb = new StringBuilder();
+        sb.append("where (");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.clauses.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.clauses.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+interface IDefinition {
+    fun build_text(this: IDefinition) -> string;
+}
+
+class FunctionDefinition {
+    name: mut string = "";
+    parameters: mut List<Parameter> = new List<Parameter>();
+    return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    body: mut Option<Expression> = new Option<Expression>.none();
+    is_extern: mut bool = false;
+    is_pure: mut bool = false;
+    is_not_pure: mut bool = false;
+    is_async: mut bool = false;
+    is_not_async: mut bool = false;
+    is_new: mut bool = false;
+    template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<FunctionDefinition>(this);
+            let mut sb = new StringBuilder();
+            if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
+            if (self.is_pure) { sb.append("pure "); }
+            if (self.is_not_pure) { sb.append("!pure "); }
+            if (self.is_extern) { sb.append("extern "); }
+            if (self.is_async) { sb.append("async "); }
+            if (self.is_not_async) { sb.append("!async "); }
+            sb.append("fun ");
+            sb.append(self.name);
+            sb.append("(");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.parameters.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(self.parameters.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(")");
+            if (self.return_type.is_some()) { sb.append(" -> "); sb.append(self.return_type.some.build_text()); }
+            if (self.body.is_some()) { sb.append(" "); sb.append(self.body.some.build_text()); }
+            else { sb.append(";"); }
+            return sb.to_string();
+        }
+    }
+}
+
+class ClassDefinition {
+    name: mut string = "";
+    members: mut List<Definition> = new List<Definition>();
+    template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<ClassDefinition>(this);
+            let mut sb = new StringBuilder();
+            if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
+            sb.append("class ");
+            sb.append(self.name);
+            sb.append("{");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.members.size())) {
+                sb.append(" ");
+                sb.append(self.members.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class EnumDefinition {
+    name: mut string = "";
+    members: mut List<Definition> = new List<Definition>();
+    template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<EnumDefinition>(this);
+            let mut sb = new StringBuilder();
+            if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
+            sb.append("enum ");
+            sb.append(self.name);
+            sb.append("{");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.members.size())) {
+                sb.append(" ");
+                sb.append(self.members.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class InterfaceDefinition {
+    name: mut string = "";
+    members: mut List<Definition> = new List<Definition>();
+    template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<InterfaceDefinition>(this);
+            let mut sb = new StringBuilder();
+            if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
+            sb.append("interface ");
+            sb.append(self.name);
+            sb.append("{");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.members.size())) {
+                sb.append(" ");
+                sb.append(self.members.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class InterfaceImplementation {
+    type_name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    functions: mut List<Definition> = new List<Definition>();
+    where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<InterfaceImplementation>(this);
+            let mut sb = new StringBuilder();
+            sb.append("impl ");
+            if (self.type_spec.is_some()) { sb.append(self.type_spec.some.build_text()); }
+            else { sb.append(self.type_name); }
+            if (self.where_def.is_some()) { sb.append(" "); sb.append(self.where_def.some.build_text()); }
+            if (cast<i64>(self.functions.size()) > 0) {
+                sb.append(" {");
+                let i: mut i64 = 0;
+                while (i < cast<i64>(self.functions.size())) {
+                    sb.append(" ");
+                    sb.append(self.functions.at(cast<u64>(i)).some.build_text());
+                    i = i + 1;
+                }
+                sb.append(" }");
+            } else {
+                sb.append(";");
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class InterfaceForImplementation {
+    type_name: mut string = "";
+    for_type_name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    functions: mut List<Definition> = new List<Definition>();
+    where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<InterfaceForImplementation>(this);
+            let mut sb = new StringBuilder();
+            sb.append("impl ");
+            if (self.type_spec.is_some()) { sb.append(self.type_spec.some.build_text()); }
+            else { sb.append(self.type_name); }
+            sb.append(" for ");
+            if (self.for_type_spec.is_some()) { sb.append(self.for_type_spec.some.build_text()); }
+            else { sb.append(self.for_type_name); }
+            if (self.where_def.is_some()) { sb.append(" "); sb.append(self.where_def.some.build_text()); }
+            if (cast<i64>(self.functions.size()) > 0) {
+                sb.append(" {");
+                let i: mut i64 = 0;
+                while (i < cast<i64>(self.functions.size())) {
+                    sb.append(" ");
+                    sb.append(self.functions.at(cast<u64>(i)).some.build_text());
+                    i = i + 1;
+                }
+                sb.append(" }");
+            } else {
+                sb.append(";");
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class EventDefinition {
+    name: mut string = "";
+    event_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<EventDefinition>(this);
+            let s: mut string = "event " + self.name;
+            if (self.event_type.is_some()) { s = s + ": " + self.event_type.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+class NamespaceDefinition {
+    name: mut string = "";
+    children: mut List<Definition> = new List<Definition>();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<NamespaceDefinition>(this);
+            let s: mut string = "namespace " + self.name + "{";
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.children.size())) {
+                s = s + " " + self.children.at(cast<u64>(i)).some.build_text();
+                i = i + 1;
+            }
+            s = s + " }";
+            return s;
+        }
+    }
+}
+
+class InitialRoutineDefinition {
+    body: mut Option<Expression> = new Option<Expression>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<InitialRoutineDefinition>(this);
+            if (self.body.is_some()) { return "initial " + self.body.some.build_text(); }
+            return "initial {}";
+        }
+    }
+}
+
+class OnRoutineDefinition {
+    event_name: mut string = "";
+    event_expr: mut Option<Expression> = new Option<Expression>.none();
+    parameter: mut Option<Parameter> = new Option<Parameter>.none();
+    body: mut Option<Expression> = new Option<Expression>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<OnRoutineDefinition>(this);
+            let mut sb = new StringBuilder();
+            sb.append("on ");
+            if (self.event_expr.is_some()) { sb.append(self.event_expr.some.build_text()); }
+            else { sb.append(self.event_name); }
+            if (self.parameter.is_some()) { sb.append("("); sb.append(self.parameter.some.build_text()); sb.append(")"); }
+            if (self.body.is_some()) { sb.append(" "); sb.append(self.body.some.build_text()); }
+            return sb.to_string();
+        }
+    }
+}
+
+class TypeReferenceDefinition {
+    name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<TypeReferenceDefinition>(this);
+            let s: mut string = "type " + self.name + " = ";
+            if (self.type_spec.is_some()) { s = s + self.type_spec.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+class EnumMemberDefinition {
+    name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<EnumMemberDefinition>(this);
+            let s: mut string = self.name;
+            if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+class ClassFieldDefinition {
+    name: mut string = "";
+    mutability: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    initializer: mut Option<Expression> = new Option<Expression>.none();
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<ClassFieldDefinition>(this);
+            let s: mut string = self.name;
+            if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
+            if (self.initializer.is_some()) { s = s + " = " + self.initializer.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+enum Definition {
+    function_def: FunctionDefinition;
+    class_def: ClassDefinition;
+    enum_def: EnumDefinition;
+    namespace_def: NamespaceDefinition;
+    initial_routine: InitialRoutineDefinition;
+    interface_def: InterfaceDefinition;
+    impl_def: InterfaceImplementation;
+    impl_for_def: InterfaceForImplementation;
+    event_def: EventDefinition;
+    on_routine_def: OnRoutineDefinition;
+    type_ref_def: TypeReferenceDefinition;
+    enum_member: EnumMemberDefinition;
+    class_field: ClassFieldDefinition;
+
+    fun build_text(this) -> string {
+        if (this is Definition.function_def) { return this.function_def.build_text(); }
+        if (this is Definition.class_def) { return this.class_def.build_text(); }
+        if (this is Definition.enum_def) { return this.enum_def.build_text(); }
+        if (this is Definition.namespace_def) { return this.namespace_def.build_text(); }
+        if (this is Definition.initial_routine) { return this.initial_routine.build_text(); }
+        if (this is Definition.interface_def) { return this.interface_def.build_text(); }
+        if (this is Definition.impl_def) { return this.impl_def.build_text(); }
+        if (this is Definition.impl_for_def) { return this.impl_for_def.build_text(); }
+        if (this is Definition.event_def) { return this.event_def.build_text(); }
+        if (this is Definition.on_routine_def) { return this.on_routine_def.build_text(); }
+        if (this is Definition.type_ref_def) { return this.type_ref_def.build_text(); }
+        if (this is Definition.enum_member) { return this.enum_member.build_text(); }
+        if (this is Definition.class_field) { return this.class_field.build_text(); }
+        return "";
+    }
+}
+
+class CompilationUnit {
+    definitions: mut List<Definition> = new List<Definition>();
+    fun build_text(this) -> string {
+        let mut sb = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.definitions.size())) {
+            if (i > 0) { sb.append(" "); }
+            sb.append(this.definitions.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+}
+}

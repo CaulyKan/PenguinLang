@@ -46,7 +46,7 @@ namespace BabyPenguin.SemanticNode
             IsExtern = syntaxNode.IsExtern;
             IsPure = syntaxNode.IsPure;
             IsAsync = syntaxNode.IsAsync;
-            IsDeclarationOnly = syntaxNode.CodeBlock == null && !IsExtern;
+            IsDeclarationOnly = syntaxNode.CodeBlockExpression == null && !IsExtern;
             ReturnTypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
@@ -84,7 +84,16 @@ namespace BabyPenguin.SemanticNode
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 
-        public SyntaxNode? CodeSyntaxNode => (SyntaxNode as FunctionDefinition)?.CodeBlock;
+        public SyntaxNode? CodeSyntaxNode
+        {
+            get
+            {
+                var funcDef = SyntaxNode as FunctionDefinition;
+                if (funcDef?.CodeBlockExpression != null)
+                    return funcDef.CodeBlockExpression;
+                return null;
+            }
+        }
 
         public ICodeContainer.CodeContainerStorage CodeContainerData { get; } = new();
 

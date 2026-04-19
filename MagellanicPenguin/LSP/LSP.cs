@@ -25,6 +25,9 @@ namespace MagellanicPenguin
         private Uri _workerSpaceRoot;
         private int _maxNumberOfProblems = 1000;
         private TextDocumentManager _documents;
+        private string? _currentProjectFile;
+        private PenguinProject? _currentProject;
+        private Dictionary<string, List<string>> _projectFileMap = new();
 
         public App(Stream input, Stream output)
             : base(input, output)
@@ -83,6 +86,32 @@ namespace MagellanicPenguin
             Logger.Instance.Log("Leave DidCloseTextDocument");
         }
 
+        /// <summary>
+        /// Searches for a .penguins project file starting from the given directory
+        /// </summary>
+        private string? FindProjectFile(string directoryPath)
+        {
+            var currentDir = new DirectoryInfo(directoryPath);
+
+            for (int i = 0; i < 10; i++)
+            {
+                var files = Directory.GetFiles(currentDir.FullName, "*.penguins");
+                if (files.Length > 0)
+                {
+                    return files[0];
+                }
+
+                if (currentDir.Parent == null)
+                {
+                    break;
+                }
+
+                currentDir = currentDir.Parent;
+            }
+
+            return null;
+        }
+
         protected override void DidChangeConfiguration(DidChangeConfigurationParams @params)
         {
             Logger.Instance.Log($"Enter DidChangeConfiguration(settings={@params?.settings?.languageServerExample?.maxNumberOfProblems})");
@@ -107,7 +136,61 @@ namespace MagellanicPenguin
             try
             {
                 var path = ConvertUriToPath(document.uri);
-                compiler.AddSource(document.text, path);
+                var documentDir = Path.GetDirectoryName(path) ?? ".";
+
+                // Check if we should use a project file for this document
+                var projectFile = FindProjectFile(documentDir);
+
+                if (projectFile != null)
+                {
+                    // Load project and compile all files in the project
+                    Logger.Instance.Log($"Using project file: {projectFile}");
+
+                    // Reload project if changed
+                    var projectDir = Path.GetDirectoryName(projectFile) ?? ".";
+                    if (_currentProjectFile != projectFile)
+                    {
+                        _currentProjectFile = projectFile;
+                        _currentProject = PenguinProject.Load(projectFile);
+                        _projectFileMap.Clear();
+
+                        // Build file map for this project
+                        var projectSourceFiles = _currentProject.ResolveSourceFiles(projectDir);
+                        foreach (var sourceFile in projectSourceFiles)
+                        {
+                            var normalizedPath = Path.GetFullPath(sourceFile).ToLower();
+                            if (!_projectFileMap.ContainsKey(normalizedPath))
+                            {
+                                _projectFileMap[normalizedPath] = new List<string>();
+                            }
+                        }
+                    }
+
+                    // Add all project files to compiler
+                    var sourceFiles = _currentProject.ResolveSourceFiles(projectDir);
+
+                    foreach (var sourceFile in sourceFiles)
+                    {
+                        var normalizedSourcePath = Path.GetFullPath(sourceFile).ToLower();
+                        var normalizedDocPath = Path.GetFullPath(path).ToLower();
+
+                        // For the current document, use the editor content; for others, read from file
+                        if (normalizedSourcePath == normalizedDocPath)
+                        {
+                            compiler.AddSource(document.text, path);
+                        }
+                        else if (File.Exists(sourceFile))
+                        {
+                            compiler.AddFile(sourceFile);
+                        }
+                    }
+                }
+                else
+                {
+                    // No project file, compile single document
+                    compiler.AddSource(document.text, path);
+                }
+
                 result.Model = compiler.Compile(Path.GetFileName(path) != "Builtin.penguin");
             }
             catch (BabyPenguinException e)
@@ -148,8 +231,7 @@ namespace MagellanicPenguin
 
         private static string ConvertUriToPath(Uri uri)
         {
-            var temp = uri.LocalPath.Replace("/", "\\");
-            if (temp.StartsWith("\\")) temp = temp.Substring(1);
+            var temp = uri.LocalPath.Replace('/', Path.DirectorySeparatorChar);
             return temp;
         }
 
@@ -339,7 +421,11 @@ namespace MagellanicPenguin
             var compilationResult = _documents.GetCompilationResult(document.uri);
             if (compilationResult?.Model == null)
             {
-                return Result<DocumentSymbolResult, ResponseError>.Success(new DocumentSymbolResult(new DocumentSymbol[] { }));
+                return Result<DocumentSymbolResult, ResponseError>.Error(new ResponseError
+                {
+                    code = ErrorCodes.InvalidParams,
+                    message = "Compilation not avaiable"
+                });
             }
 
             var symbols = new List<DocumentSymbol>();

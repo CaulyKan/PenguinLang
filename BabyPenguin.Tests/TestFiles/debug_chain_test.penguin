@@ -1,0 +1,20 @@
+// Debug file for tracing a.b.c parsing
+// This file is meant to be debugged with DAP
+
+initial {
+    let source: string = "a.b.c";
+    println("Input: " + source);
+
+    // Tokenize
+    let lexer = new parser.Lexer(source);
+    let tokens = lexer.tokenize();
+    println("Tokens: " + cast<string>(tokens.size()));
+
+    // Parse
+    let p = new parser.Parser(tokens);
+    let ast_result = p.parse_expression();
+
+    // Print AST as S-expression
+    println("AST:");
+    println(ast_result.to_sexp());
+}

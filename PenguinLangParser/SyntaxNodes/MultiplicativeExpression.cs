@@ -13,10 +13,10 @@ namespace PenguinLangParser.SyntaxNodes
 
         public bool IsSimple => SubExpressions.Count == 1 && SubExpressions[0].IsSimple;
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.multiplicativeExpression(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
@@ -26,8 +26,8 @@ namespace PenguinLangParser.SyntaxNodes
 
             if (ctx is MultiplicativeExpressionContext context)
             {
-                SubExpressions = context.children.OfType<CastExpressionContext>()
-                   .Select(x => Build<CastExpression>(walker, x).GetEffectiveExpression())
+                SubExpressions = context.children.OfType<UnaryExpressionContext>()
+                   .Select(x => Build<UnaryExpression>(walker, x).GetEffectiveExpression())
                    .ToList();
                 Operators = context.multiplicativeOperator().Select(x => x.GetText() switch
                     {

@@ -80,7 +80,7 @@ initial {
 }
 
 on foo(i : i32) {
-	print(i as string);
+	print(cast<string>(i));
 }
 ```
 
@@ -95,7 +95,7 @@ initial {
 
 initial {
 	let x : i32 = wait foo;
-	println(x as string);
+	println(cast<string>(x));
 }
 ```
 

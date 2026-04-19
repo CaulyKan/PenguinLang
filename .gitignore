@@ -2,6 +2,7 @@ bin
 obj
 .antlr
 node_modules
+dist
 MagellanicPenguin/vscode/server/*
 MagellanicPenguin/vscode/*.vsix
 MagellanicPenguin/vscode/out/*
@@ -10,3 +11,7 @@ report.txt
 Documentation/BasicIntroductionSlide/BasicIntroduction
 .aider*
 .trae
+*.lscache
+*_output/
+PenguinLangCodeGenerator/tmp/
+BabyPenguin/tmp/

@@ -133,7 +133,18 @@ namespace MagellanicPenguin
 
                 var writer = new StringWriter();
                 var compiler = new SemanticCompiler(new ErrorReporter(writer));
-                compiler.AddFile(fileName);
+
+                // Support both .penguins project files and individual .penguin files
+                if (fileName.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase))
+                {
+                    SendDebug($"Loading project file: {fileName}\n");
+                    compiler.AddProject(fileName);
+                }
+                else
+                {
+                    compiler.AddFile(fileName);
+                }
+
                 var model = compiler.Compile();
                 SendDebug(writer.ToString() + "\n");
                 vm = new BabyPenguinVM(model);
@@ -162,16 +173,16 @@ namespace MagellanicPenguin
 
                 VM.Initialize();
 
-                // // Insert all saved breakpoints
-                // foreach (var fileBreakpoints in currentBreakpoints)
-                // {
-                //     foreach (var (line, column) in fileBreakpoints.Value)
-                //     {
-                //         var location = new SourceLocation(fileBreakpoints.Key, "", line, line, column, column);
-                //         var success = VM.InsertBreakPoint(location);
-                //         SendDebug($"Breakpoint set {(success ? "successfully" : "unsuccessfully")} at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
-                //     }
-                // }
+                // Insert all saved breakpoints
+                foreach (var fileBreakpoints in currentBreakpoints)
+                {
+                    foreach (var (line, column) in fileBreakpoints.Value)
+                    {
+                        var location = new SourceLocation(fileBreakpoints.Key, "", line, line, column, column);
+                        var success = VM.InsertBreakPoint(location);
+                        SendDebug($"Breakpoint set {(success ? "successfully" : "unsuccessfully")} at {location.FileName}@{location.RowStart}:{location.ColStart}\n");
+                    }
+                }
 
                 runtimeControl = VM.StartFrame!.Run();
                 this.runEvent.Reset();

@@ -6,12 +6,12 @@ namespace BabyPenguin.Symbol
         string name,
         IType type,
         SourceLocation sourceLocation,
-        uint scopeDepth,
         string originName,
         bool isTemp,
         int? paramIndex,
         bool isClassMember,
-        Declaration? declaration) : ISymbol
+        Declaration? declaration,
+        uint declaringScopeId = 0) : ISymbol
     {
         public string FullName() => Parent.FullName() + "." + Name;
 
@@ -27,7 +27,11 @@ namespace BabyPenguin.Symbol
 
         public string OriginName { get; } = originName;
 
-        public uint ScopeDepth { get; } = scopeDepth;
+        /// <summary>
+        /// Unique ID of the scope where this variable was declared.
+        /// Used to distinguish sibling scopes at the same depth.
+        /// </summary>
+        public uint DeclaringScopeId { get; } = declaringScopeId;
 
         public bool IsTemp { get; } = isTemp;
 

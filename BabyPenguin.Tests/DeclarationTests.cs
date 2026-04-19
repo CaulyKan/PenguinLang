@@ -266,13 +266,13 @@ namespace BabyPenguin.Tests
             Assert.Equal("test1", symbols[1].OriginName);
             Assert.True(symbols[1].TypeInfo.IsStringType);
             Assert.True(symbols[1].IsLocal);
-            Assert.Equal(symbols[0].ScopeDepth, symbols[1].ScopeDepth);
+            Assert.Equal(((VariableSymbol)symbols[0]).DeclaringScopeId, ((VariableSymbol)symbols[1]).DeclaringScopeId);
 
             Assert.NotEqual("test1", symbols[2].Name);
             Assert.Equal("test1", symbols[2].OriginName);
             Assert.True(symbols[2].TypeInfo.IsStringType);
             Assert.True(symbols[2].IsLocal);
-            Assert.Equal(symbols[0].ScopeDepth + 1, symbols[2].ScopeDepth);
+            Assert.NotEqual(((VariableSymbol)symbols[0]).DeclaringScopeId, ((VariableSymbol)symbols[2]).DeclaringScopeId);
         }
 
         [Fact]

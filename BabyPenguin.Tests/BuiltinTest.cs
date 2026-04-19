@@ -65,14 +65,14 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : Option<u32> = new Option<u32>.some(10);
-                    println(a.is_some() as string);
-                    println(a.is_none() as string);
-                    println(a.value_or(9) as string);
+                    println(cast<string>(a.is_some()));
+                    println(cast<string>(a.is_none()));
+                    println(cast<string>(a.value_or(9)));
 
                     let b : Option<u32> = new Option<u32>.none();
-                    println(b.is_some() as string);
-                    println(b.is_none() as string);
-                    println(b.value_or(9) as string);
+                    println(cast<string>(b.is_some()));
+                    println(cast<string>(b.is_none()));
+                    println(cast<string>(b.value_or(9)));
                 }
             ");
             var model = compiler.Compile();
@@ -93,7 +93,7 @@ namespace BabyPenguin.Tests
                         if (n.is_none())
                             break;
                         else 
-                            print(n.some as string);
+                            print(cast<string>(n.some));
                     }
                 }
             ");
@@ -114,8 +114,8 @@ namespace BabyPenguin.Tests
                         let n : Option<i64> = rg.next();
                         if (n.is_none())
                             break;
-                        else 
-                            print(n.some as string);
+                        else
+                            print(cast<string>(n.some));
                     }
                 }
             ");
@@ -143,10 +143,10 @@ namespace BabyPenguin.Tests
                     let b : mut Foo = a.copy();
                     b.x = 3;
                     b.y = 4;
-                    print(a.x as string);
-                    print(a.y as string);
-                    print(b.x as string);
-                    print(b.y as string);
+                    print(cast<string>(a.x));
+                    print(cast<string>(a.y));
+                    print(cast<string>(b.x));
+                    print(cast<string>(b.y));
                 }
             ");
             var model = compiler.Compile();
@@ -164,8 +164,8 @@ namespace BabyPenguin.Tests
                     let a : mut u8 = 1;
                     let b : mut u8 = a.copy();
                     b = 2;
-                    print(a as string);
-                    print(b as string);
+                    print(cast<string>(a));
+                    print(cast<string>(b));
                 }
             ");
             var model = compiler.Compile();
@@ -181,15 +181,15 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : Result<u32,string> = new Result<u32,string>.ok(10);
-                    println(a.is_ok() as string);
-                    println(a.is_error() as string);
-                    println(a.value_or(9) as string);
+                    println(cast<string>(a.is_ok()));
+                    println(cast<string>(a.is_error()));
+                    println(cast<string>(a.value_or(9)));
 
                     let b : Result<u32,string> = new Result<u32,string>.error(""err"");
                     println(b.error);
-                    println(b.is_ok() as string);
-                    println(b.is_error() as string);
-                    println(b.value_or(9) as string);
+                    println(cast<string>(b.is_ok()));
+                    println(cast<string>(b.is_error()));
+                    println(cast<string>(b.value_or(9)));
                 }
             ");
             var model = compiler.Compile();
@@ -205,20 +205,20 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let a : mut AtomicI64 = new AtomicI64(1);
-                    println(a.load() as string);
+                    println(cast<string>(a.load()));
                     a.store(2);
-                    println(a.load() as string);
+                    println(cast<string>(a.load()));
                     let res1: i64 = a.compare_exchange(2, 3);
-                    println(res1 as string);
-                    println(a.load() as string);
+                    println(cast<string>(res1));
+                    println(cast<string>(a.load()));
                     let res2: i64 = a.compare_exchange(8888, 4);
-                    println(res2 as string);
-                    println(a.load() as string);
+                    println(cast<string>(res2));
+                    println(cast<string>(a.load()));
                     let res3 : i64 = a.fetch_add(1);
-                    println(res3 as string);
+                    println(cast<string>(res3));
                     let res4 : i64 = a.swap(5);
-                    println(res4 as string);
-                    println(a.load() as string);
+                    println(cast<string>(res4));
+                    println(cast<string>(a.load()));
                 }
             ");
             var model = compiler.Compile();
@@ -237,23 +237,55 @@ namespace BabyPenguin.Tests
                     a.push(1);
                     a.push(2);
                     a.push(3);
-                    println(a.size() as string);
+                    println(cast<string>(a.size()));
                     let res1 : Option<i64> = a.at(0);
-                    println(res1.some as string);
+                    println(cast<string>(res1.some));
                     let res2 : Option<i64> = a.at(2);
-                    println(res2.some as string);
+                    println(cast<string>(res2.some));
                     a.pop();
-                    println(a.size() as string);
+                    println(cast<string>(a.size()));
                     let res3 : Option<i64> = a.at(1);
-                    println(res3.some as string);
+                    println(cast<string>(res3.some));
                     let res4 : Option<i64> = a.at(2);
-                    println(res4.is_none() as string);
+                    println(cast<string>(res4.is_none()));
                 }
             ");
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
             vm.Run();
             Assert.Equal("3" + EOL + "1" + EOL + "3" + EOL + "2" + EOL + "2" + EOL + "true" + EOL, vm.CollectOutput());
+        }
+
+        [Fact]
+        public void ListTest2()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                fun test(a: mut List<string>) {
+                    for (let i : i64 in range(0, 2)) {
+                        let s = cast<string>(i);
+                        a.push(s);
+                    }
+                }
+                initial {
+                    let a : mut List<string> = new List<string>();
+                    test(a);
+                    println(cast<string>(a.size()));
+                    let i: mut i64 = 0;
+                    while (i < cast<i64>(a.size())) {{
+                        let op = a.at(cast<u64>(i));
+                        if (op.is_some()) {{
+                            print(op.some);
+                        }
+                        }
+                        i = i + 1;
+                    }}
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("2" + EOL + "01", vm.CollectOutput());
         }
 
         [Fact]
@@ -267,7 +299,7 @@ namespace BabyPenguin.Tests
                     a.push(2);
                     a.push(3);
                     for (let x : i64 in a.iter()) {
-                        print(x as string);
+                        print(cast<string>(x));
                     }
                 }
             ");
@@ -286,21 +318,21 @@ namespace BabyPenguin.Tests
                     let a : mut Queue<i64> = new Queue<i64>();
                     a.enqueue(1);
                     a.enqueue(2);
-                    println(a.size() as string);
+                    println(cast<string>(a.size()));
                     let res1 : Option<i64> = a.peek();
-                    println(res1.some as string);
+                    println(cast<string>(res1.some));
                     a.enqueue(3);
                     let res2 : Option<i64> = a.peek();
-                    println(res2.some as string);
+                    println(cast<string>(res2.some));
                     a.dequeue();
-                    println(a.size() as string);
+                    println(cast<string>(a.size()));
                     let res3 : Option<i64> = a.peek();
-                    println(res3.some as string);
+                    println(cast<string>(res3.some));
                     a.dequeue();
                     let res4 : Option<i64> = a.dequeue();
-                    println(res4.some as string);
+                    println(cast<string>(res4.some));
                     let res5 : Option<i64> = a.peek();
-                    println(res5.is_none() as string);
+                    println(cast<string>(res5.is_none()));
                 }
             ");
             var model = compiler.Compile();
@@ -316,11 +348,11 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 initial {
                     let routine : mut _DefaultRoutine<void> = new _DefaultRoutine<void>(__builtin.hello_world, false);
-                    println(routine.start() as string);
-                    println(routine.routine_state() as string);
-                    
+                    println(cast<string>(routine.start()));
+                    println(cast<string>(routine.routine_state()));
+
                     let state1 : FutureState<void>  = routine.poll();
-                    println(state1 as string);
+                    println(cast<string>(state1));
                 }
             ");
             var model = compiler.Compile();
@@ -382,10 +414,10 @@ namespace BabyPenguin.Tests
             var script = @"
                 initial {
                     let myargs : List<string> = args();
-                    println(myargs.size() as string);
-                    println(myargs.at(0) as string);
-                    println(myargs.at(1) as string);
-                    println(myargs.at(2) as string);
+                    println(cast<string>(myargs.size()));
+                    println(cast<string>(myargs.at(0)));
+                    println(cast<string>(myargs.at(1)));
+                    println(cast<string>(myargs.at(2)));
                 }
             ";
             var (code, output) = RunScript(script, new[] { "arg1", "arg2" });

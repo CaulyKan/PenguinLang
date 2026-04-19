@@ -7,35 +7,32 @@ primaryExpression:
 	| voidLiteral
 	| identifierWithGeneric
 	| lambdaFunctionExpression
-	| '(' expression ')';
+	| '(' expression ')'
+	| codeBlockExpression
+	| ifExpression
+	| whileExpression
+	| 'cast' '<' typeSpecifier '>' '(' expression ')';
+
+// if as expression - returns the value of the executed branch
+ifExpression:
+	'if' '(' expression ')' codeBlockExpression (
+		'else' (codeBlockExpression | ifExpression)
+	)?;
+
+// while as expression - value comes from break statements
+whileExpression: 'while' '(' expression ')' codeBlockExpression;
+
+codeBlockExpression: '{' codeBlockItem* expression? '}';
 
 identifierWithGeneric: identifier genericArguments?;
 
 postfixExpression:
 	primaryExpression
-	//	| slicingExpression
-	| newExpression
-	| spawnExpression
-	| waitExpression
-	| functionCallExpression
-	| memberAccessExpression;
-
-//slicingExpression: primaryExpression '[' expression ']';
-
-spawnExpression: 'async' expression;
-
-waitExpression: 'wait' expression?;
-
-newExpression:
-	'new' typeSpecifier '(' expression? (',' expression)* ')';
-
-functionCallExpression:
-	(memberAccessExpression | primaryExpression) '(' expression? (
-		',' expression
-	)* ')';
-
-memberAccessExpression:
-	primaryExpression ('.' identifierWithGeneric)+;
+	| postfixExpression '.' identifierWithGeneric
+	| postfixExpression '(' expression? (',' expression)* ')'
+	| 'new' typeSpecifier '(' expression? (',' expression)* ')'
+	| 'async' expression
+	| 'wait' expression?;
 
 unaryExpression:
 	postfixExpression
@@ -43,12 +40,8 @@ unaryExpression:
 
 unaryOperator: '&' | '*' | '+' | '-' | '~' | '!';
 
-castExpression:
-	unaryExpression 'as' typeSpecifier
-	| unaryExpression;
-
 multiplicativeExpression:
-	castExpression (multiplicativeOperator castExpression)*;
+	unaryExpression (multiplicativeOperator unaryExpression)*;
 
 multiplicativeOperator: '*' | '/' | '%';
 
@@ -59,15 +52,8 @@ additiveExpression:
 
 additiveOperator: '+' | '-';
 
-shiftExpression:
-	additiveExpression (shiftOperator additiveExpression)*;
-
-shiftOperator: '<<' | rightShift;
-rightShift:
-	first = '>' second = '>' {$first.index + 1 == $second.index}?; // Nothing between the tokens?
-
 relationalExpression:
-	shiftExpression (relationalOperator shiftExpression)*;
+	additiveExpression (relationalOperator additiveExpression)*;
 
 relationalOperator: '<' | '>' | '<=' | '>=';
 
@@ -91,9 +77,6 @@ logicalAndExpression:
 logicalOrExpression:
 	logicalAndExpression ('||' logicalAndExpression)*;
 
-conditionalExpression:
-	logicalOrExpression '?' expression ':' conditionalExpression;
-
 expression: logicalOrExpression;
 
 assignmentOperator:
@@ -103,13 +86,9 @@ assignmentOperator:
 	| '%='
 	| '+='
 	| '-='
-	| '<<='
-	| '>>='
 	| '&='
 	| '^='
 	| '|=';
-
-constantExpression: conditionalExpression;
 
 typeReferenceDeclaration: 'type' identifier '=' typeSpecifier;
 
@@ -225,15 +204,13 @@ nestedParenthesesBlock: (
 
 //typeName: specifierQualifierList identifier?;
 
-codeBlock: '{' codeBlockItem* '}';
-
 codeBlockItem:
 	statement
 	| (letKeyword declaration ';')
 	| (typeReferenceDeclaration ';');
 
 statement:
-	codeBlock
+	codeBlockExpression
 	| expressionStatement
 	| ifStatement
 	| whileStatement
@@ -246,10 +223,8 @@ statement:
 	| emitEventStatement
 	| ';';
 
-identifierOrMemberAccess: identifier | memberAccessExpression;
-
 assignmentStatement:
-	identifierOrMemberAccess assignmentOperator expression ';';
+	postfixExpression assignmentOperator expression ';';
 
 expressionStatement: expression ';';
 
@@ -262,9 +237,7 @@ whileStatement: 'while' '(' expression ')' statement;
 forStatement:
 	'for' '(' letKeyword declaration 'in' expression ')' statement;
 
-jumpStatement: jumpKeyword ';';
-
-jumpKeyword: 'continue' | 'break';
+jumpStatement: 'continue' ';' | 'break' expression? ';';
 
 returnStatement: returnKeyword expression? ';';
 
@@ -309,19 +282,19 @@ functionSpecifier:
 lambdaFunctionExpression:
 	('fun' | 'async_fun') ('(' parameterList ')')? (
 		'->' typeSpecifier
-	)? codeBlock;
+	)? codeBlockExpression;
 
 functionDefinition:
 	functionSpecifier* 'fun' (identifier | 'new') (
 		'(' parameterList ')'
-	)? ('->' typeSpecifier)? (codeBlock | ';');
+	)? ('->' typeSpecifier)? (codeBlockExpression | ';');
 
 eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
 
-initialRoutine: 'initial' identifier? codeBlock;
+initialRoutine: 'initial' identifier? codeBlockExpression;
 
 onRoutine:
-	'on' expression ('(' declarationWithoutInitializer? ')')? codeBlock;
+	'on' expression ('(' declarationWithoutInitializer? ')')? codeBlockExpression;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';

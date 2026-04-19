@@ -16,7 +16,7 @@ namespace PenguinLangParser.SyntaxNodes
         public Declaration? Parameter { get; set; }
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; set; }
+        public CodeBlockExpression? CodeBlockExpression { get; set; }
 
         public string Name => $"on_{counter++}";
 
@@ -35,7 +35,7 @@ namespace PenguinLangParser.SyntaxNodes
                 {
                     Parameter = Build<Declaration>(walker, context.declarationWithoutInitializer());
                 }
-                CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
+                CodeBlockExpression = Build<CodeBlockExpression>(walker, context.codeBlockExpression());
 
                 walker.PopScope();
             }
@@ -56,14 +56,14 @@ namespace PenguinLangParser.SyntaxNodes
                 sb.Append(")");
             }
             sb.Append(" ");
-            sb.Append(CodeBlock!.BuildText());
+            sb.Append(CodeBlockExpression!.BuildText());
             return sb.ToString();
         }
 
-        public override void FromString(string text, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string text, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(text, "anonymous", p => p.onRoutine(), reporter);
-            var walker = new SyntaxWalker("anonymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("anonymous", reporter);
             Build(walker, syntaxNode);
         }
 

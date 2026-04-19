@@ -9,7 +9,7 @@ namespace PenguinLangParser.SyntaxNodes
 
             if (ctx is AssignmentStatementContext context)
             {
-                LeftHandSide = Build<IdentifierOrMemberAccess>(walker, context.identifierOrMemberAccess());
+                LeftHandSide = Build<PostfixExpression>(walker, context.postfixExpression());
                 RightHandSide = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                 AssignmentOperator = context.assignmentOperator().GetText() switch
                 {
@@ -22,23 +22,21 @@ namespace PenguinLangParser.SyntaxNodes
                     "&=" => AssignmentOperatorEnum.BitwiseAndAssign,
                     "|=" => AssignmentOperatorEnum.BitwiseOrAssign,
                     "^=" => AssignmentOperatorEnum.BitwiseXorAssign,
-                    "<<=" => AssignmentOperatorEnum.LeftShiftAssign,
-                    ">>=" => AssignmentOperatorEnum.RightShiftAssign,
                     _ => throw new System.NotImplementedException($"Invalid assignment operator: {context.assignmentOperator().GetText()}"),
                 };
             }
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.assignmentStatement(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         [ChildrenNode]
-        public IdentifierOrMemberAccess? LeftHandSide { get; private set; }
+        public PostfixExpression? LeftHandSide { get; private set; }
 
         [ChildrenNode]
         public ISyntaxExpression? RightHandSide { get; private set; }
@@ -63,8 +61,6 @@ namespace PenguinLangParser.SyntaxNodes
                 AssignmentOperatorEnum.BitwiseAndAssign => "&=",
                 AssignmentOperatorEnum.BitwiseOrAssign => "|=",
                 AssignmentOperatorEnum.BitwiseXorAssign => "^=",
-                AssignmentOperatorEnum.LeftShiftAssign => "<<=",
-                AssignmentOperatorEnum.RightShiftAssign => ">>=",
                 _ => throw new NotImplementedException($"Invalid assignment operator: {AssignmentOperator}")
             });
             parts.Add(RightHandSide!.BuildText());

@@ -39,16 +39,16 @@ namespace BabyPenguin.Tests
 
                 initial {
                     let a : i32 = wait test_event;
-                    print(a as string);
+                    print(cast<string>(a));
                     let b : i32 = wait test_event;
-                    print(b as string);
+                    print(cast<string>(b));
                     let c : i32 = wait test_event;
-                    print(c as string);
+                    print(cast<string>(c));
                 }
                 
                 initial {
                     for (let i : i64 in range(0, 3)) {
-                        emit test_event(i as i32);
+                        emit test_event(cast<i32>(i));
                         wait;
                     }
                 }
@@ -68,11 +68,11 @@ namespace BabyPenguin.Tests
 
                 initial {
                     let a : i32 = wait test_event;
-                    print(a as string);
+                    print(cast<string>(a));
                     let b : i32 = wait test_event;
-                    print(b as string);
+                    print(cast<string>(b));
                     let c : i32 = wait test_event;
-                    print(c as string);
+                    print(cast<string>(c));
                 }
                 
                 initial {
@@ -100,7 +100,7 @@ namespace BabyPenguin.Tests
                         let a : Option<i32> = eq.do_wait_any();
                         if (a.is_some()) {
                             let b : i32 = a.some;
-                            print(b as string);
+                            print(cast<string>(b));
                             if (b == 2) exit(0);
                         }
                     }
@@ -108,7 +108,7 @@ namespace BabyPenguin.Tests
                 
                 initial {
                     for (let i : i64 in range(0, 3)) {
-                        emit test_event(i as i32);
+                        emit test_event(cast<i32>(i));
                     }
                 }
             ");
@@ -127,13 +127,13 @@ namespace BabyPenguin.Tests
 
                 let eq : _AsyncEventReceiver<i32> = new _AsyncEventReceiver<i32>(test_event, on_test_event);
                 fun on_test_event(b : i32) {
-                    print(b as string);
+                    print(cast<string>(b));
                     if (b == 2) exit(0);
                 }
                 
                 initial {
                     for (let i : i64 in range(0, 3)) {
-                        emit test_event(i as i32);
+                        emit test_event(cast<i32>(i));
                     }
                 }
             ");
@@ -151,13 +151,13 @@ namespace BabyPenguin.Tests
                 event test_event : i32;
 
                 on test_event (b: i32) {
-                    print(b as string);
+                    print(cast<string>(b));
                     if (b == 2) exit(0);
                 }
                 
                 initial {
                     for (let i : i64 in range(0, 3)) {
-                        emit test_event(i as i32);
+                        emit test_event(cast<i32>(i));
                     }
                 }
             ");
@@ -176,19 +176,19 @@ namespace BabyPenguin.Tests
                     event test_event : i32;
 
                     on this.test_event (b: i32) {
-                        print(b as string);
+                        print(cast<string>(b));
                     }
                     
                     fun foo(this: Foo) {
-                        emit this.test_event(1 as i32);
-                        emit this.test_event(2 as i32);
+                        emit this.test_event(cast<i32>(1));
+                        emit this.test_event(cast<i32>(2));
                     }
                 }
 
                 let f : Foo = new Foo();
 
                 on f.test_event (b: i32) {
-                    print(b as string);
+                    print(cast<string>(b));
                 }
 
                 initial {

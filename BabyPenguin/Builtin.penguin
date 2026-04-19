@@ -7,6 +7,9 @@ namespace __builtin {
     extern fun file_read_text(file: string) -> mut string;
     extern fun file_write_text(file: string, text: string);
 
+    extern fun lshift(value: i64, shift: i64) -> i64;
+    extern fun rshift(value: i64, shift: i64) -> i64;
+
     let __args : mut List<string> = new List<string>();
     extern fun __args_init(args : mut List<string>);
     fun args() -> List<string> {
@@ -86,6 +89,15 @@ namespace __builtin {
         extern fun to_string(this) -> mut string;
     }
 
+    // String helper functions
+    extern fun string_length(s: string) -> i64;
+    extern fun string_find(s: string, sub: string) -> i64;
+    extern fun string_find_from(s: string, sub: string, start: i64) -> i64;
+    extern fun string_substring(s: string, start: i64, length: i64) -> string;
+    extern fun string_char_at(s: string, index: i64) -> string;
+    extern fun string_char_code(s: string) -> i64;
+    extern fun string_to_int(s: string) -> i64;
+
     #template(T: type, E: type)
     enum Result {
         ok: T;
@@ -133,7 +145,7 @@ namespace __builtin {
 
         impl IIterator<i64> {
             fun next(this: mut IIterator<i64>) -> Option<i64> {
-                let self : mut Self = this as mut Self;
+                let self : mut Self = cast<mut Self>(this);
                 if (self.current < self.end) {
                     let res : mut Option<i64> = new Option<i64>.some(self.current);
                     self.current += 1;
@@ -146,7 +158,7 @@ namespace __builtin {
     }
 
     fun range(start: i64, end: i64) -> mut IIterator<i64> {
-        return new RangeIterator(start, end) as mut IIterator<i64>;
+        return cast<mut IIterator<i64>>(new RangeIterator(start, end));
     }
 
     class AtomicI64 {
@@ -177,7 +189,7 @@ namespace __builtin {
 
         impl IIterable<T> {
             fun iter(this: mut IIterable<T>) -> mut IIterator<T> {
-                return new ListIterator<T>(this as mut Self) as mut IIterator<T>;
+                return cast<mut IIterator<T>>(new ListIterator<T>(cast<mut Self>(this)));
             }
         }
     }
@@ -194,7 +206,7 @@ namespace __builtin {
 
         impl IIterator<T> {
             fun next(this: mut IIterator<T>) -> Option<T> {
-                let self : mut ListIterator<T> = this as mut ListIterator<T>;
+                let self : mut ListIterator<T> = cast<mut ListIterator<T>>(this);
                 let res : Option<T> = self.list.at(self.current);
                 self.current += 1;
                 return res;
@@ -382,7 +394,7 @@ namespace __builtin {
                     let state : RoutineState = job.routine_state();
                     if (!result) {
                         // job is in invalid state, skip it for now
-                        println("Scheduler: job in '" + (state as string) + "' state, failed to run");
+                        println("Scheduler: job in '" + cast<string>(state) + "' state, failed to run");
                     }
                     else {
                         if (state is RoutineState.pending) {
@@ -427,27 +439,26 @@ namespace __builtin {
         fun new(mut this, target: async_fun<T>, scheduleNow: bool) {
             this.context = new RoutineContext<T>(target);
             if (scheduleNow) {
-                _main_scheduler.pending_jobs.enqueue(this as IFutureBase);
+                _main_scheduler.pending_jobs.enqueue(cast<IFutureBase>(this));
             }
         }
 
         impl IFutureBase {
             fun routine_state(this: IFutureBase) -> RoutineState {
-                let self: Self = this as Self;
+                let self: Self = cast<Self>(this);
                 return RoutineState.from_atomic(self.state);
             }
 
             fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 return RoutineState.switch(self.state, from, to);
             }
 
             fun start(this: mut IFutureBase) -> bool {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 let res : bool = RoutineState.switch(self.state, new RoutineState.pending(), new RoutineState.running());
                 if (!res) 
                     return false;
-                __signal 0;
                 let return_state : i64 = self.context.call();
 
                 // Blocked = 0, YieldNotFinished = 2, Finished = 3, YieldFinished = 4
@@ -459,7 +470,7 @@ namespace __builtin {
 
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
-                let self: Self = this as Self;
+                let self: Self = cast<Self>(this);
                 let state_val: i64 = self.state.load();
                 
                 if (state_val == 2) {
@@ -477,7 +488,7 @@ namespace __builtin {
         impl IGenerator<T>;
         impl IIterator<T> {
             fun next(this: mut IIterator<T>) -> Option<T> {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 return self.do_wait_any();
             }
         }
@@ -538,13 +549,13 @@ namespace __builtin {
 
         fun new(mut this, ev: mut Event<T>, f: mut async_fun<void, T>) {
             ev.add_receiver(this);
-            (this as  IEventReceiver<T>).ev = ev;
+            (cast<IEventReceiver<T>>(this)).ev = ev;
             this.f = f;
         }
 
         impl IEventReceiver<T> {
             fun notify(this: mut IEventReceiver<T>, ev: T) {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 self.f(ev);
             }
         }
@@ -556,20 +567,20 @@ namespace __builtin {
 
         fun new(mut this, ev: mut Event<T>) {
             ev.add_receiver(this);
-            (this as IEventReceiver<T>).ev = ev;
+            (cast<IEventReceiver<T>>(this)).ev = ev;
         }
 
-        impl IEventReceiver<T> { 
+        impl IEventReceiver<T> {
             fun notify(this: mut IEventReceiver<T>, ev: T) {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 self.event_queue.enqueue(ev);
             }
         }
 
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
-                let self: Self = this as Self;
-                
+                let self: Self = cast<Self>(this);
+
                 let v : Option<T> = self.event_queue.dequeue();
                 if (v.is_some()) {
                      return new FutureState<T>.ready(v.some);
@@ -587,20 +598,20 @@ namespace __builtin {
 
         fun new(mut this, ev: mut Event<T>) {
             ev.add_receiver(this);
-            (this as IEventReceiver<T>).ev = ev;
+            (cast<IEventReceiver<T>>(this)).ev = ev;
         }
 
-        impl IEventReceiver<T> { 
+        impl IEventReceiver<T> {
             fun notify(this: mut IEventReceiver<T>, v: T) {
-                let self: mut Self = this as mut Self;
+                let self: mut Self = cast<mut Self>(this);
                 self.value = new Option<T>.some(v);
             }
         }
 
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
-                let self: Self = this as Self;
-                
+                let self: Self = cast<Self>(this);
+
                 if (self.value.is_some()) {
                      return new FutureState<T>.ready_finished(self.value.some);
                 }

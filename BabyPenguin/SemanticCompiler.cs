@@ -42,5 +42,24 @@ namespace BabyPenguin
 
             return model;
         }
+
+        /// <summary>
+        /// Adds all source files from a .penguins project file
+        /// </summary>
+        /// <param name="projectFilePath">Path to the .penguins file</param>
+        /// <returns>This compiler instance for method chaining</returns>
+        public SemanticCompiler AddProject(string projectFilePath)
+        {
+            var project = PenguinProject.Load(projectFilePath);
+            var projectDirectory = Path.GetDirectoryName(projectFilePath) ?? ".";
+            var sourceFiles = project.ResolveSourceFiles(projectDirectory);
+
+            foreach (var sourceFile in sourceFiles)
+            {
+                Sources.Add(new SourceInput(sourceFile, null));
+            }
+
+            return this;
+        }
     }
 }

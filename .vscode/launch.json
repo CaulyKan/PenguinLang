@@ -23,9 +23,29 @@
             "linux": {
                 "preLaunchTask": "dotnet build linux"
             },
-            "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net8.0/BabyPenguin.dll",
+            "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net10.0/BabyPenguin.dll",
             "args": [
                 "${workspaceFolder}/Examples/test.penguin",
+                "-r",
+                "report.txt"
+            ],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "dotnet debug emperorpenguin",
+            "type": "coreclr",
+            "request": "launch",
+            "windows": {
+                "preLaunchTask": "dotnet build win"
+            },
+            "linux": {
+                "preLaunchTask": "dotnet build linux"
+            },
+            "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net10.0/BabyPenguin.dll",
+            "args": [
+                "${workspaceFolder}/EmperorPenguin/EmperorPenguin.penguins",
                 "-r",
                 "report.txt"
             ],
@@ -68,7 +88,7 @@
             "name": "PenguinLang Debug",
             "type": "penguinlang",
             "request": "launch",
-            "program": "${file}",
-        }
+            "program": "${workspaceFolder}/EmperorPenguin/EmperorPenguin.penguins"
+        },
     ]
 }

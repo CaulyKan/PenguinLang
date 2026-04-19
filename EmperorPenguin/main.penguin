@@ -1,0 +1,15 @@
+initial {
+    let args: List<string> = __builtin.args();
+    if (args.size() == 0) {
+        __builtin.eprintln("Usage: EmperorPenguin <file>");
+        __builtin.exit(1);
+    }
+    let file: string = args.at(0).some;
+    let source: string = __builtin.file_read_text(file);
+    let lexer: parser.Lexer = new parser.Lexer(source);
+    let tokens: List<parser.Token> = lexer.tokenize();
+    let p: parser.Parser = new parser.Parser(tokens);
+    let unit: ast.CompilationUnit = p.parse_compilationUnit();
+    __builtin.println(unit.build_text());
+}
+

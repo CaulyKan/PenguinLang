@@ -38,7 +38,7 @@ namespace BabyPenguin.SemanticNode
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 
-        public SyntaxNode? CodeSyntaxNode => (SyntaxNode as OnRoutineDefinition)?.CodeBlock;
+        public SyntaxNode? CodeSyntaxNode => (SyntaxNode as OnRoutineDefinition)?.CodeBlockExpression;
 
         public IType ReturnTypeInfo { get; set; }
 

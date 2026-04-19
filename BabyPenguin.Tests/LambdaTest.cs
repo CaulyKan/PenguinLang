@@ -45,7 +45,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let y : async_fun<i32> = x;
                     let z : i32 = y();
-                    print(z as string);
+                    print(cast<string>(z));
                 }
             ");
             var model = compiler.Compile();
@@ -70,7 +70,7 @@ namespace BabyPenguin.Tests
                         initial {
                             let x : Temp = new Temp();
                             let func : fun<i32, i32> = x.call;
-                            print(func(2) as string);
+                            print(cast<string>(func(2)));
                         }
                     }
             ");
@@ -95,7 +95,7 @@ namespace BabyPenguin.Tests
                         initial {
                             let x : Temp = new Temp();
                             let func : fun<i32, i32> = x.call;
-                            print(func(2) as string);
+                            print(cast<string>(func(2)));
                         }
                     }
             ");
@@ -122,7 +122,7 @@ namespace BabyPenguin.Tests
                         initial {
                             let x : Temp = new Temp();
                             let func : async_fun<i32> = x.call;
-                            print(func() as string);
+                            print(cast<string>(func()));
                         }
                     }
             ");
@@ -146,7 +146,7 @@ namespace BabyPenguin.Tests
                             }
                             initial {
                                 let x : Temp = new Temp();
-                                print(x.call(1,2) as string);
+                                print(cast<string>(x.call(1,2)));
                             }
                         }
                     ");
@@ -179,7 +179,7 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                         initial {
                             let x : fun<i32, i32, i32> = fun (a : i32, b: i32) -> i32 { return a + b; };
-                            print(x(1, 2) as string);
+                            print(cast<string>(x(1, 2)));
                         }
                     ");
             var model = compiler.Compile();
@@ -238,7 +238,7 @@ namespace BabyPenguin.Tests
                     initial {
                         let a : i32 = 1;
                         let x : fun<i32> = (new Temp(a)).call;
-                        print(x() as string);
+                        print(cast<string>(x()));
                     }
                 }
             ");
@@ -256,7 +256,7 @@ namespace BabyPenguin.Tests
                 initial {
                     let a : i32 = 1;
                     let x : fun<i32> = fun -> i32 { return a + 1; };
-                    print(x() as string);
+                    print(cast<string>(x()));
                 }
             ");
             var model = compiler.Compile();
@@ -273,8 +273,8 @@ namespace BabyPenguin.Tests
                         initial {
                             let a : mut i32 = 1;
                             let x : fun<i32> = fun -> i32 { a=a+1; return a; };
-                            print(x() as string);
-                            print(a as string);
+                            print(cast<string>(x()));
+                            print(cast<string>(a));
                         }
                     ");
             var model = compiler.Compile();
@@ -291,8 +291,8 @@ namespace BabyPenguin.Tests
                         initial {
                             let a : mut Box<mut i32> = new Box<mut i32>(1);
                             let x : fun<i32> = fun -> i32 { a.value = a.value + 1; return a.value; };
-                            print(x() as string);
-                            print(a.value as string);
+                            print(cast<string>(x()));
+                            print(cast<string>(a.value));
                         }
                     ");
             var model = compiler.Compile();

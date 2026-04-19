@@ -187,7 +187,7 @@ namespace BabyPenguin.VirtualMachine
                                 case TypeEnum.Void:
                                     break;
                                 case TypeEnum.String:
-                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = cmd.LiteralValue[1..^1];
+                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.StringValue = UnescapeString(cmd.LiteralValue[1..^1]);
                                     break;
                                 case TypeEnum.Char:
                                     resultVar.As<BasicRuntimeSymbol>().BasicValue.CharValue = cmd.LiteralValue[0];
@@ -571,16 +571,6 @@ namespace BabyPenguin.VirtualMachine
                                         throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
                                     resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! <= rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
                                     break;
-                                case BinaryOperatorEnum.LeftShift:
-                                    if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
-                                        throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! << rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
-                                    break;
-                                case BinaryOperatorEnum.RightShift:
-                                    if (IType.ImplictlyCastResult(leftVar.TypeInfo, rightVar.TypeInfo)?.CanImplicitlyCastTo(resultVar.TypeInfo) != true)
-                                        throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {resultVar.TypeInfo}");
-                                    resultVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue = leftVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue! >> rightVar.As<BasicRuntimeSymbol>().BasicValue.DynamicValue!;
-                                    break;
                             }
                             DebugPrint(cmd, op1: leftVar.ToDebugString(), op2: rightVar.ToDebugString(), result: resultVar.ToDebugString());
                             break;
@@ -626,8 +616,19 @@ namespace BabyPenguin.VirtualMachine
                         }
                     case NewInstanceInstruction cmd:
                         {
-                            // do nothing
                             IRuntimeSymbol resultVar = resolveVariable(cmd.Target);
+                            // Re-create the runtime value so each 'new' gets a fresh object.
+                            // Without this, reusing 'let x = new Foo()' in a loop would mutate the same object.
+                            if (resultVar is ClassRuntimeSymbol clsSym)
+                            {
+                                // Clone the existing ReferenceValue to preserve vtable setup.
+                                clsSym.AssignFrom(clsSym.ReferenceValue.Clone());
+                            }
+                            else if (resultVar is EnumRuntimeSymbol enumSym)
+                            {
+                                // Clone the existing EnumValue to get a fresh enum instance.
+                                enumSym.AssignFrom(enumSym.EnumValue.Clone());
+                            }
                             DebugPrint(cmd, result: resultVar.ToDebugString());
                             break;
                         }
@@ -731,7 +732,7 @@ namespace BabyPenguin.VirtualMachine
                             if (rightVar.TypeInfo.TypeNode!.FullName() != members[cmd.Member.Name].TypeInfo.TypeNode!.FullName())
                                 throw new BabyPenguinRuntimeException($"Cannot assign type {rightVar.TypeInfo} to type {members[cmd.Member.Name].TypeInfo}");
 
-                            members[cmd.Member.Name] = rightVar.Value;
+                            members[cmd.Member.Name] = rightVar.Value is BasicRuntimeValue bv ? bv.Clone() : rightVar.Value;
                             DebugPrint(cmd, op1: cmd.Member.Name, op2: rightVar.ToDebugString(), result: owner.ToDebugString());
                         }
                         break;
@@ -795,6 +796,96 @@ namespace BabyPenguin.VirtualMachine
             if (result == null && InstructionPointer >= CodeContainer.Instructions.Count)
                 throw new BabyPenguinRuntimeException($"Function/Routine '{CodeContainer.FullName()}' does not return a value");
 
+        }
+
+        private static string UnescapeString(string input)
+        {
+            var result = new System.Text.StringBuilder(input.Length);
+            for (int i = 0; i < input.Length; i++)
+            {
+                if (input[i] == '\\' && i + 1 < input.Length)
+                {
+                    var nextChar = input[i + 1];
+                    switch (nextChar)
+                    {
+                        case 'n':
+                            result.Append('\n');
+                            i++;
+                            break;
+                        case 't':
+                            result.Append('\t');
+                            i++;
+                            break;
+                        case 'r':
+                            result.Append('\r');
+                            i++;
+                            break;
+                        case '\\':
+                            result.Append('\\');
+                            i++;
+                            break;
+                        case '"':
+                            result.Append('"');
+                            i++;
+                            break;
+                        case '0':
+                            result.Append('\0');
+                            i++;
+                            break;
+                        case 'x':
+                            // Hexadecimal escape \xHH
+                            if (i + 3 <= input.Length)
+                            {
+                                var hexStr = input.Substring(i + 2, 2);
+                                if (byte.TryParse(hexStr, System.Globalization.NumberStyles.HexNumber, null, out var hexValue))
+                                {
+                                    result.Append((char)hexValue);
+                                    i += 3;
+                                }
+                                else
+                                {
+                                    result.Append(input[i]);
+                                }
+                            }
+                            else
+                            {
+                                result.Append(input[i]);
+                            }
+                            break;
+                        default:
+                            // Check for octal escape \ooo
+                            if (nextChar >= '0' && nextChar <= '7')
+                            {
+                                int octalValue = 0;
+                                int j = i + 1;
+                                while (j < input.Length && j - i <= 3 && input[j] >= '0' && input[j] <= '7')
+                                {
+                                    octalValue = octalValue * 8 + (input[j] - '0');
+                                    j++;
+                                }
+                                if (j > i + 1)
+                                {
+                                    result.Append((char)octalValue);
+                                    i = j - 1;
+                                }
+                                else
+                                {
+                                    result.Append(input[i]);
+                                }
+                            }
+                            else
+                            {
+                                result.Append(input[i]);
+                            }
+                            break;
+                    }
+                }
+                else
+                {
+                    result.Append(input[i]);
+                }
+            }
+            return result.ToString();
         }
     }
 }

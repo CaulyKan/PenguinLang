@@ -16,7 +16,7 @@ namespace BabyPenguin.Tests
                         }
                         test = new Test.b(2);
                         if (test is Test.b) {
-                            print(test.b as string);
+                            print(cast<string>(test.b));
                         } else if (test is Test.a) {
                             print(""not possible"");
                         }
@@ -47,7 +47,7 @@ namespace BabyPenguin.Tests
                         }
                         test = new Test<u8>.b(2);
                         if (test is Test<u8>.b) {
-                            print(test.b as string);
+                            print(cast<string>(test.b));
                         } else if (test is Test<u8>.a) {
                             print(""not possible"");
                         }
@@ -79,9 +79,9 @@ namespace BabyPenguin.Tests
                         }
                         test = new Test<mut Foo>.b(new Foo());
                         if (test is Test<mut Foo>.b) {
-                            print(test.b.x as string);
+                            print(cast<string>(test.b.x));
                             test.b.x = 1;
-                            print(test.b.x as string);
+                            print(cast<string>(test.b.x));
                         } else if (test is Test<mut Foo>.a) {
                             print(""not possible"");
                         }

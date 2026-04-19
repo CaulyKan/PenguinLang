@@ -10,7 +10,7 @@ namespace PenguinLangParser.SyntaxNodes
             {
                 walker.PushScope(SyntaxScopeType.InitialRoutine, this);
 
-                CodeBlock = Build<CodeBlock>(walker, context.codeBlock());
+                CodeBlockExpression = Build<CodeBlockExpression>(walker, context.codeBlockExpression());
                 Name = context.identifier() == null ? $"initial_{counter++}" : context.identifier().GetText();
 
                 walker.PopScope();
@@ -18,17 +18,17 @@ namespace PenguinLangParser.SyntaxNodes
             else throw new NotImplementedException();
         }
 
-        public override void FromString(string source, uint scopeDepth, ErrorReporter reporter)
+        public override void FromString(string source, ErrorReporter reporter)
         {
             var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.initialRoutine(), reporter);
-            var walker = new SyntaxWalker("annoymous", reporter, scopeDepth);
+            var walker = new SyntaxWalker("annoymous", reporter);
             Build(walker, syntaxNode);
         }
 
         static UInt64 counter = 0;
 
         [ChildrenNode]
-        public CodeBlock? CodeBlock { get; set; } = null;
+        public CodeBlockExpression? CodeBlockExpression { get; set; } = null;
 
         [SexpValue]
         public string Name { get; set; } = "";
@@ -47,7 +47,7 @@ namespace PenguinLangParser.SyntaxNodes
 
         public override string BuildText()
         {
-            return $"initial {Name} {CodeBlock!.BuildText()}";
+            return $"initial {Name} {CodeBlockExpression!.BuildText()}";
         }
     }
 }

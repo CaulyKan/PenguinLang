@@ -440,6 +440,93 @@ initial {
 
 [comment]: # (!!!)
 
+### Meta Programming
+
+Penguin-lang provides compile-time meta-programming through **Meta Functions** (`#fun`) and **Compile-Time Evaluation** (`const if`, `const for`).
+
+```
+#fun fib(n: u32) -> u32 {
+    if (n <= 1) return n;
+    return fib(n-1) + fib(n-2);  // recursive, no # prefix needed
+}
+
+initial {
+    let x = #fib(10);  // x = 55, computed at compile time
+}
+```
+
+[comment]: # (|||)
+
+`const if` enables conditional code generation at compile time:
+
+```
+#template(T: type)
+fun default_value() -> T {
+    const if (T == i32) {
+        return 0;
+    } else if (T == f32) {
+        return 0.0;
+    } else {
+        return T.default();
+    }
+}
+```
+
+<div style="font-size: 0.8em;">
+
+- All `else if` / `else` branches automatically inherit `const` property
+- Condition must be evaluable at compile time
+
+</div>
+
+[comment]: # (|||)
+
+`const for` enables loop unrolling at compile time:
+
+```
+#template(N: u32)
+fun sum() -> u32 {
+    let result: u32 = 0;
+    const for (i in 0..N) {
+        result = result + i;
+    }
+    return result;
+}
+```
+
+<div style="font-size: 0.8em;">
+
+- Loop is fully unrolled during compilation
+- Zero runtime overhead
+
+</div>
+
+[comment]: # (|||)
+
+`#template` is syntactic sugar for a meta function that returns a type:
+
+```
+// These are equivalent:
+
+#template(T: type)
+class Box<T> { value: T; }
+
+// ...is equivalent to:
+
+#fun Box(T: type) -> type {
+    return class { value: T; };
+}
+```
+
+<div style="font-size: 0.8em;">
+
+- **BabyPenguin**: Supports `const if/for`, `#template`
+- **EmperorPenguin**: Full `#fun` support, type reflection
+
+</div>
+
+[comment]: # (!!!)
+
 ## Thank you!
 
 [https://github.com/CaulyKan/PenguinLang](https://github.com/CaulyKan/PenguinLang) 

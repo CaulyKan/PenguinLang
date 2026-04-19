@@ -26,9 +26,9 @@ namespace BabyPenguin.Tests
                 
                     initial {
                         let f : Foo = new Foo();
-                        let f2 : IFoo<u8> = f as IFoo<u8>;
-                        print(f2.foo() as string);
-                        print(f2.bar() as string);
+                        let f2 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.bar()));
                     }
                 }
             ");
@@ -56,7 +56,7 @@ namespace BabyPenguin.Tests
                         a: u8 = 9;
                         impl IFoo<u8> {
                             fun foo(this: IFoo<u8>) -> u8 {
-                                let f : Foo = this as Foo;
+                                let f : Foo = cast<Foo>(this);
                                 return f.a;
                             }
                         }
@@ -64,9 +64,9 @@ namespace BabyPenguin.Tests
                 
                     initial {
                         let f : Foo = new Foo();
-                        let f2 : IFoo<u8> = f as IFoo<u8>;
-                        print(f2.foo() as string);
-                        print(f2.bar() as string);
+                        let f2 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.bar()));
                     }
                 }
             ");
@@ -109,18 +109,18 @@ namespace BabyPenguin.Tests
                 
                     initial {
                         let f : Foo = new Foo();
-                        let f2 : IFoo<u8> = f as IFoo<u8>;
-                        let f3 : IBar<u8> = f2 as IBar<u8>;
-                        let f4 : IBar<u8> = f as IBar<u8>;
-                        let f5 : IFoo<u8> = f3 as IFoo<u8>;
-                        let f6 : Foo = f4 as Foo;
-                        print(f2.foo() as string);
-                        print(f2.foo2() as string);
-                        print(f3.bar() as string);
-                        print(f4.bar() as string);
-                        print(f5.foo() as string);
-                        print(f5.foo2() as string);
-                        print(f6.a as string);
+                        let f2 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        let f3 : IBar<u8> = cast<IBar<u8>>(f2);
+                        let f4 : IBar<u8> = cast<IBar<u8>>(f);
+                        let f5 : IFoo<u8> = cast<IFoo<u8>>(f3);
+                        let f6 : Foo = cast<Foo>(f4);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.foo2()));
+                        print(cast<string>(f3.bar()));
+                        print(cast<string>(f4.bar()));
+                        print(cast<string>(f5.foo()));
+                        print(cast<string>(f5.foo2()));
+                        print(cast<string>(f6.a));
                     }
                 }
             ");
@@ -171,13 +171,13 @@ namespace BabyPenguin.Tests
                 
                     initial {
                         let f : Foo = new Foo();
-                        let f2 : IFoo<u8> = f as IFoo<u8>;
-                        let f3 : IBar<u8> = f2 as IBar<u8>;
-                        let f4 : IFoo<u8> = f as IFoo<u8>;
-                        print(f2.foo() as string);
-                        print(f2.foo2() as string);
-                        print(f4.foo() as string);
-                        print(f4.foo2() as string);
+                        let f2 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        let f3 : IBar<u8> = cast<IBar<u8>>(f2);
+                        let f4 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.foo2()));
+                        print(cast<string>(f4.foo()));
+                        print(cast<string>(f4.foo2()));
                     }
                 }
             ");
@@ -230,13 +230,13 @@ namespace BabyPenguin.Tests
                 
                     initial {
                         let f : Foo = new Foo();
-                        let f2 : IFoo<u8> = f as IFoo<u8>;
-                        let f3 : IBar<u8> = f2 as IBar<u8>;
-                        let f4 : IFoo<u8> = f3 as IFoo<u8>;
-                        print(f2.foo() as string);
-                        print(f2.foo2() as string);
-                        print(f4.foo() as string);
-                        print(f4.foo2() as string);
+                        let f2 : IFoo<u8> = cast<IFoo<u8>>(f);
+                        let f3 : IBar<u8> = cast<IBar<u8>>(f2);
+                        let f4 : IFoo<u8> = cast<IFoo<u8>>(f3);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.foo2()));
+                        print(cast<string>(f4.foo()));
+                        print(cast<string>(f4.foo2()));
                     }
                 }
             ");
@@ -290,12 +290,12 @@ namespace BabyPenguin.Tests
                     initial {
                         let f : Foo = new Foo();
                         let f2 : IFoo<u8> = f;
-                        let f3 : IBar<u8> = f2 as IBar<u8>;
+                        let f3 : IBar<u8> = cast<IBar<u8>>(f2);
                         let f4 : IFoo<u8> = f3;
-                        print(f2.foo() as string);
-                        print(f2.foo2() as string);
-                        print(f4.foo() as string);
-                        print(f4.foo2() as string);
+                        print(cast<string>(f2.foo()));
+                        print(cast<string>(f2.foo2()));
+                        print(cast<string>(f4.foo()));
+                        print(cast<string>(f4.foo2()));
                     }
                 }
             ");
@@ -316,10 +316,10 @@ namespace BabyPenguin.Tests
                             print(""1"");
                         }
                         fun foo2(this: Foo) {
-                            print(this.a as string);
+                            print(cast<string>(this.a));
                         }
                     }
-                    
+
                     class Foo {
                         impl IFoo;
                         a : u8 = 2;
@@ -350,14 +350,14 @@ namespace BabyPenguin.Tests
                     interface IFoo {
                         a : u8 = 1;
                         fun foo(this: IFoo) {
-                            print(this.a as string);
+                            print(cast<string>(this.a));
                         }
                     }
-                    
+
                     class Foo {
                         impl IFoo;
                     }
-                
+
                     initial {
                         let f : Foo = new Foo();
                         f.foo();
@@ -379,10 +379,10 @@ namespace BabyPenguin.Tests
                     interface IFoo {
                         a : u8 = 1;
                         fun foo(this: IFoo) {
-                            print(this.a as string);
+                            print(cast<string>(this.a));
                         }
                     }
-                    
+
                     class Foo {
                     }
 
@@ -406,15 +406,15 @@ namespace BabyPenguin.Tests
                     interface IFoo {
                         a : u8 = 1;
                         fun foo(this: IFoo) {
-                            print(this.a as string);
+                            print(cast<string>(this.a));
                         }
                     }
-                    
+
                     class Foo {
                         impl IFoo;
                         fun bar(this: Foo) {
-                            let f : IFoo = this as IFoo;
-                            print(f.a as string);
+                            let f : IFoo = cast<IFoo>(this);
+                            print(cast<string>(f.a));
                         }
                     }
                 
@@ -429,5 +429,186 @@ namespace BabyPenguin.Tests
             vm.Run();
             Assert.Equal("1", vm.CollectOutput());
         }
+
+        [Fact]
+        public void InterfaceStaticFunctionBasic()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo() {
+                            print(""IFoo.foo"");
+                        }
+                    }
+                    
+                    initial {
+                        IFoo.foo();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("IFoo.foo", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceStaticFunctionBasicWithNamespace()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo() {
+                            print(""IFoo.foo"");
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo {
+                            fun foo() {
+                                print(""Foo.foo"");
+                            }
+                        }
+                    }
+                }
+                
+                initial {
+                    ns.IFoo.foo();
+                    ns.Foo.foo();
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("IFoo.fooFoo.foo", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceStaticFunctionTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo() {
+                            print(""IFoo.foo"");
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo;
+                    }
+                
+                    initial {
+                        Foo.foo();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("IFoo.foo", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceStaticFunctionOverrideTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo() {
+                            print(""IFoo.foo"");
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo {
+                            fun foo() {
+                                print(""Foo.foo"");
+                            }
+                        }
+                    }
+                
+                    initial {
+                        Foo.foo();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("Foo.foo", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceStaticFunctionAsMemberCallOverrideTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IFoo {
+                        fun foo() {
+                            print(""IFoo.foo"");
+                        }
+                    }
+                    
+                    class Foo {
+                        impl IFoo {
+                            fun foo() {
+                                print(""Foo.foo"");
+                            }
+                        }
+                    }
+                
+                    initial {
+                        let f : IFoo = new Foo();
+                        f.foo();
+                    }
+                }
+            ");
+            var model = compiler.Compile();
+            var vm = new BabyPenguinVM(model);
+            vm.Run();
+            Assert.Equal("Foo.foo", vm.CollectOutput());
+        }
+
+        [Fact]
+        public void InterfaceStaticFunctionAmbiguousTest()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                namespace ns {
+                    interface IB {
+                        fun foo() {
+                            print(""IB.foo"");
+                        }
+                    }
+
+                    interface IC {
+                        fun foo() {
+                            print(""IC.foo"");
+                        }
+                    }
+
+                    class Foo {
+                        impl IB;
+                        impl IC;
+                    }
+
+                    initial {
+                        Foo.foo();
+                    }
+                }
+            ");
+            var ex = Assert.Throws<BabyPenguinException>(() => compiler.Compile());
+            Assert.Contains("Ambiguous", ex.Message);
+            Assert.Contains("IB.foo", ex.Message);
+            Assert.Contains("IC.foo", ex.Message);
+        }
+
+
     }
 }

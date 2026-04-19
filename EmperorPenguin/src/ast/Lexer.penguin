@@ -1,0 +1,962 @@
+namespace parser {
+    class Lexer {
+        source: string = "";
+        pos: mut i64 = 0;
+        line: mut i64 = 1;
+        col: mut i64 = 1;
+
+        fun new(mut this, source: string) {
+            this.source = source;
+        }
+
+        fun tokenize(this) -> List<Token> {
+            let tokens = new List<Token>();
+            while (!this.is_at_end()) {
+                let ch: string = this.current_char();
+                // Skip whitespace
+                if (ch == " " || ch == "\t" || ch == "\r" || ch == "\n") {
+                    if (ch == "\n") {
+                        this.line = this.line + 1;
+                        this.col = 1;
+                    } else {
+                        this.col = this.col + 1;
+                    }
+                    this.advance_char();
+                    continue;
+                }
+
+                // Line comment
+                if (this.match_string("//")) {
+                    while (!this.is_at_end() && this.current_char() != "\n") {
+                        this.advance_char();
+                    }
+                    continue;
+                }
+
+                // Block comment
+                if (this.match_string("/*")) {
+                    this.advance_chars(2);
+                    while (!this.is_at_end()) {
+                        if (this.match_string("*/")) {
+                            this.advance_chars(2);
+                            break;
+                        }
+                        if (this.current_char() == "\n") {
+                            this.line = this.line + 1;
+                            this.col = 1;
+                        }
+                        this.advance_char();
+                    }
+                    continue;
+                }
+
+                if (this.match_keyword("__yield_not_finished_return")) {
+                    tokens.push(new Token(new TokenType.InternalYield_not_finished_return(), "__yield_not_finished_return", this.line, this.col));
+                    this.col = this.col + 27;
+                    this.advance_chars(27);
+                    continue;
+                }
+                if (this.match_keyword("__yield_finished_return")) {
+                    tokens.push(new Token(new TokenType.InternalYield_finished_return(), "__yield_finished_return", this.line, this.col));
+                    this.col = this.col + 23;
+                    this.advance_chars(23);
+                    continue;
+                }
+                if (this.match_keyword("__blocked_return")) {
+                    tokens.push(new Token(new TokenType.InternalBlocked_return(), "__blocked_return", this.line, this.col));
+                    this.col = this.col + 16;
+                    this.advance_chars(16);
+                    continue;
+                }
+                if (this.match_keyword("async_fun")) {
+                    tokens.push(new Token(new TokenType.Async_fun(), "async_fun", this.line, this.col));
+                    this.col = this.col + 9;
+                    this.advance_chars(9);
+                    continue;
+                }
+                if (this.match_keyword("interface")) {
+                    tokens.push(new Token(new TokenType.Interface(), "interface", this.line, this.col));
+                    this.col = this.col + 9;
+                    this.advance_chars(9);
+                    continue;
+                }
+                if (this.match_keyword("namespace")) {
+                    tokens.push(new Token(new TokenType.Namespace(), "namespace", this.line, this.col));
+                    this.col = this.col + 9;
+                    this.advance_chars(9);
+                    continue;
+                }
+                if (this.match_keyword("template")) {
+                    tokens.push(new Token(new TokenType.TemplateKw(), "template", this.line, this.col));
+                    this.col = this.col + 8;
+                    this.advance_chars(8);
+                    continue;
+                }
+                if (this.match_keyword("continue")) {
+                    tokens.push(new Token(new TokenType.Continue(), "continue", this.line, this.col));
+                    this.col = this.col + 8;
+                    this.advance_chars(8);
+                    continue;
+                }
+                if (this.match_keyword("__signal")) {
+                    tokens.push(new Token(new TokenType.InternalSignal(), "__signal", this.line, this.col));
+                    this.col = this.col + 8;
+                    this.advance_chars(8);
+                    continue;
+                }
+                if (this.match_keyword("initial")) {
+                    tokens.push(new Token(new TokenType.Initial(), "initial", this.line, this.col));
+                    this.col = this.col + 7;
+                    this.advance_chars(7);
+                    continue;
+                }
+                if (this.match_keyword("extern")) {
+                    tokens.push(new Token(new TokenType.Extern(), "extern", this.line, this.col));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_keyword("double")) {
+                    tokens.push(new Token(new TokenType.Double(), "double", this.line, this.col));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_keyword("string")) {
+                    tokens.push(new Token(new TokenType.StringKw(), "string", this.line, this.col));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_keyword("return")) {
+                    tokens.push(new Token(new TokenType.Return(), "return", this.line, this.col));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_string("!async")) {
+                    tokens.push(new Token(new TokenType.NotAsync(), "!async", this.line, this.col));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_keyword("while")) {
+                    tokens.push(new Token(new TokenType.While(), "while", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("async")) {
+                    tokens.push(new Token(new TokenType.Async(), "async", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("float")) {
+                    tokens.push(new Token(new TokenType.Float(), "float", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("where")) {
+                    tokens.push(new Token(new TokenType.Where(), "where", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("class")) {
+                    tokens.push(new Token(new TokenType.Class(), "class", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("break")) {
+                    tokens.push(new Token(new TokenType.Break(), "break", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("yield")) {
+                    tokens.push(new Token(new TokenType.Yield(), "yield", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_string("!pure")) {
+                    tokens.push(new Token(new TokenType.NotPure(), "!pure", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("event")) {
+                    tokens.push(new Token(new TokenType.EventKw(), "event", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("false")) {
+                    tokens.push(new Token(new TokenType.False(), "false", this.line, this.col));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("cast")) {
+                    tokens.push(new Token(new TokenType.Cast(), "cast", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("else")) {
+                    tokens.push(new Token(new TokenType.Else(), "else", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("wait")) {
+                    tokens.push(new Token(new TokenType.Wait(), "wait", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("type")) {
+                    tokens.push(new Token(new TokenType.TypeKw(), "type", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_string("!mut")) {
+                    tokens.push(new Token(new TokenType.NotMut(), "!mut", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("auto")) {
+                    tokens.push(new Token(new TokenType.AutoKw(), "auto", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("void")) {
+                    tokens.push(new Token(new TokenType.Void(), "void", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("bool")) {
+                    tokens.push(new Token(new TokenType.Bool(), "bool", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("char")) {
+                    tokens.push(new Token(new TokenType.Char(), "char", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("Self")) {
+                    tokens.push(new Token(new TokenType.SelfKw(), "Self", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("impl")) {
+                    tokens.push(new Token(new TokenType.Impl(), "impl", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("enum")) {
+                    tokens.push(new Token(new TokenType.Enum(), "enum", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("emit")) {
+                    tokens.push(new Token(new TokenType.Emit(), "emit", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("this")) {
+                    tokens.push(new Token(new TokenType.ThisKw(), "this", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("pure")) {
+                    tokens.push(new Token(new TokenType.Pure(), "pure", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("true")) {
+                    tokens.push(new Token(new TokenType.True(), "true", this.line, this.col));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("new")) {
+                    tokens.push(new Token(new TokenType.New(), "new", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_keyword("let")) {
+                    tokens.push(new Token(new TokenType.Let(), "let", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_keyword("mut")) {
+                    tokens.push(new Token(new TokenType.Mut(), "mut", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("u16")) {
+                    tokens.push(new Token(new TokenType.U16(), "u16", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("u32")) {
+                    tokens.push(new Token(new TokenType.U32(), "u32", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("u64")) {
+                    tokens.push(new Token(new TokenType.U64(), "u64", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("i16")) {
+                    tokens.push(new Token(new TokenType.I16(), "i16", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("i32")) {
+                    tokens.push(new Token(new TokenType.I32(), "i32", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("i64")) {
+                    tokens.push(new Token(new TokenType.I64(), "i64", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_keyword("fun")) {
+                    tokens.push(new Token(new TokenType.Fun(), "fun", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_string("...")) {
+                    tokens.push(new Token(new TokenType.Ellipsis(), "...", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_keyword("for")) {
+                    tokens.push(new Token(new TokenType.For(), "for", this.line, this.col));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
+                if (this.match_keyword("if")) {
+                    tokens.push(new Token(new TokenType.If(), "if", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("<=")) {
+                    tokens.push(new Token(new TokenType.LessEqual(), "<=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string(">=")) {
+                    tokens.push(new Token(new TokenType.GreaterEqual(), ">=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("==")) {
+                    tokens.push(new Token(new TokenType.EqualEqual(), "==", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("!=")) {
+                    tokens.push(new Token(new TokenType.BangEqual(), "!=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_keyword("is")) {
+                    tokens.push(new Token(new TokenType.Is(), "is", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("&&")) {
+                    tokens.push(new Token(new TokenType.AmpersandAmpersand(), "&&", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("||")) {
+                    tokens.push(new Token(new TokenType.PipePipe(), "||", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("*=")) {
+                    tokens.push(new Token(new TokenType.StarAssign(), "*=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("/=")) {
+                    tokens.push(new Token(new TokenType.SlashAssign(), "/=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("%=")) {
+                    tokens.push(new Token(new TokenType.PercentAssign(), "%=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("+=")) {
+                    tokens.push(new Token(new TokenType.PlusAssign(), "+=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("-=")) {
+                    tokens.push(new Token(new TokenType.MinusAssign(), "-=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("&=")) {
+                    tokens.push(new Token(new TokenType.AmpersandAssign(), "&=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("^=")) {
+                    tokens.push(new Token(new TokenType.CaretAssign(), "^=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("|=")) {
+                    tokens.push(new Token(new TokenType.PipeAssign(), "|=", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_keyword("u8") && (this.pos + 2 >= string_length(this.source) || (string_substring(this.source, this.pos + 2, 1) != "\"" && string_substring(this.source, this.pos + 2, 1) != "'"))) {
+                    tokens.push(new Token(new TokenType.U8(), "u8", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("i8")) {
+                    tokens.push(new Token(new TokenType.I8(), "i8", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_keyword("in")) {
+                    tokens.push(new Token(new TokenType.In(), "in", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_string("->")) {
+                    tokens.push(new Token(new TokenType.Arrow(), "->", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (this.match_keyword("on")) {
+                    tokens.push(new Token(new TokenType.On(), "on", this.line, this.col));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
+                if (ch == "(") {
+                    tokens.push(new Token(new TokenType.LParen(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ")") {
+                    tokens.push(new Token(new TokenType.RParen(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "<") {
+                    tokens.push(new Token(new TokenType.Less(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ">") {
+                    tokens.push(new Token(new TokenType.Greater(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "{") {
+                    tokens.push(new Token(new TokenType.LBrace(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "}") {
+                    tokens.push(new Token(new TokenType.RBrace(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ".") {
+                    tokens.push(new Token(new TokenType.Dot(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ",") {
+                    tokens.push(new Token(new TokenType.Comma(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "&") {
+                    tokens.push(new Token(new TokenType.Ampersand(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "*") {
+                    tokens.push(new Token(new TokenType.Star(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "+") {
+                    tokens.push(new Token(new TokenType.Plus(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "-") {
+                    tokens.push(new Token(new TokenType.Minus(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "~") {
+                    tokens.push(new Token(new TokenType.Tilde(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "!") {
+                    tokens.push(new Token(new TokenType.Bang(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "/") {
+                    tokens.push(new Token(new TokenType.Slash(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "%") {
+                    tokens.push(new Token(new TokenType.Percent(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "^") {
+                    tokens.push(new Token(new TokenType.Caret(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "|") {
+                    tokens.push(new Token(new TokenType.Pipe(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "=") {
+                    tokens.push(new Token(new TokenType.Assign(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ":") {
+                    tokens.push(new Token(new TokenType.Colon(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == "#") {
+                    tokens.push(new Token(new TokenType.Hash(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+                if (ch == ";") {
+                    tokens.push(new Token(new TokenType.Semicolon(), ch, this.line, this.col));
+                    this.col = this.col + 1;
+                    this.advance_char();
+                    continue;
+                }
+
+                // Check for encoding prefix (u8/u/U/L) for string/char constants
+                if (ch == "u" || ch == "U" || ch == "L") {
+                    // u8"..." string prefix
+                    if (ch == "u" && this.pos + 2 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "8" && string_substring(this.source, this.pos + 2, 1) == "\"") {
+                        let start_col: i64 = this.col;
+                        let text: string = this.read_string_literal_with_prefix();
+                        tokens.push(new Token(new TokenType.Stringliteral(), text, this.line, start_col));
+                        this.col = this.col + string_length(text);
+                        continue;
+                    }
+                    // u"/U"/L" string prefix
+                    if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "\"") {
+                        let start_col: i64 = this.col;
+                        let text: string = this.read_string_literal_with_prefix();
+                        tokens.push(new Token(new TokenType.Stringliteral(), text, this.line, start_col));
+                        this.col = this.col + string_length(text);
+                        continue;
+                    }
+                    // L'/u'/U' char constant prefix
+                    if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "'") {
+                        let start_col: i64 = this.col;
+                        let text: string = this.read_char_constant();
+                        tokens.push(new Token(new TokenType.Constant(), text, this.line, start_col));
+                        this.col = this.col + string_length(text);
+                        continue;
+                    }
+                }
+                // String literal
+                if (ch == "\"") {
+                    let start_col: i64 = this.col;
+                    let text: string = this.read_string_literal();
+                    tokens.push(new Token(new TokenType.Stringliteral(), text, this.line, start_col));
+                    this.col = this.col + string_length(text);
+                    continue;
+                }
+
+                // Character constant
+                if (ch == "'") {
+                    let start_col: i64 = this.col;
+                    let text: string = this.read_char_constant();
+                    tokens.push(new Token(new TokenType.Constant(), text, this.line, start_col));
+                    this.col = this.col + string_length(text);
+                    continue;
+                }
+                // Constant (integer, float, or character)
+                let code: i64 = string_char_code(ch);
+                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                    let start_col: i64 = this.col;
+                    let text: string = this.read_constant();
+                    tokens.push(new Token(new TokenType.Constant(), text, this.line, start_col));
+                    this.col = this.col + string_length(text);
+                    continue;
+                }
+
+                // Identifier fallback (non-keyword alphabetic identifier)
+                {
+                    let code: i64 = string_char_code(ch);
+                    if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_") {
+                        let start_col: i64 = this.col;
+                        let text: string = this.read_while_identifier_start();
+                        tokens.push(new Token(new TokenType.Identifier(), text, this.line, start_col));
+                        this.col = this.col + string_length(text);
+                        continue;
+                    }
+                }
+
+                // Unknown character - skip
+                this.advance_char();
+            }
+            tokens.push(new Token(new TokenType.EOF(), "", this.line, this.col));
+            return tokens;
+        }
+
+        fun current_char(this) -> string {
+            if (this.pos >= string_length(this.source)) { return ""; }
+            return string_substring(this.source, this.pos, 1);
+        }
+
+        fun advance_char(this) {
+            this.pos = this.pos + 1;
+        }
+
+        fun advance_chars(this, n: i64) {
+            this.pos = this.pos + n;
+        }
+
+        fun is_at_end(this) -> bool {
+            return this.pos >= string_length(this.source);
+        }
+
+        fun match_string(this, s: string) -> bool {
+            if (this.pos + string_length(s) > string_length(this.source)) { return false; }
+            return string_substring(this.source, this.pos, string_length(s)) == s;
+        }
+
+        fun read_while_digit(this) -> string {
+            let start: i64 = this.pos;
+            while (this.pos < string_length(this.source)) {
+                let ch: string = string_substring(this.source, this.pos, 1);
+                let code: i64 = string_char_code(ch);
+                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                    this.pos = this.pos + 1;
+                } else {
+                    break;
+                }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+        fun read_while_identifier_start(this) -> string {
+            let start: i64 = this.pos;
+            // Read first char: [a-zA-Z_]
+            if (this.pos < string_length(this.source)) {
+                let ch: string = string_substring(this.source, this.pos, 1);
+                let code: i64 = string_char_code(ch);
+                if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_") {
+                    this.pos = this.pos + 1;
+                } else {
+                    return "";
+                }
+            }
+            // Read remaining: [a-zA-Z0-9_]*
+            while (this.pos < string_length(this.source)) {
+                let ch: string = string_substring(this.source, this.pos, 1);
+                let code: i64 = string_char_code(ch);
+                if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_" || (code >= string_char_code("0") && code <= string_char_code("9"))) {
+                    this.pos = this.pos + 1;
+                } else {
+                    break;
+                }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+        fun read_while_float(this) -> string {
+            let start: i64 = this.pos;
+            // Read integer part
+            while (this.pos < string_length(this.source)) {
+                let ch: string = string_substring(this.source, this.pos, 1);
+                let code: i64 = string_char_code(ch);
+                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                    this.pos = this.pos + 1;
+                } else {
+                    break;
+                }
+            }
+            // Read dot and fractional part
+            if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+                this.pos = this.pos + 1;
+                while (this.pos < string_length(this.source)) {
+                    let ch: string = string_substring(this.source, this.pos, 1);
+                    let code: i64 = string_char_code(ch);
+                    if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                        this.pos = this.pos + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+        fun match_keyword(this, keyword: string) -> bool {
+            if (!this.match_string(keyword)) { return false; }
+            let next_pos: i64 = this.pos + string_length(keyword);
+            if (next_pos >= string_length(this.source)) { return true; }
+            let next_ch: string = string_substring(this.source, next_pos, 1);
+            let code: i64 = string_char_code(next_ch);
+            if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || next_ch == "_" || (code >= string_char_code("0") && code <= string_char_code("9"))) {
+                return false;
+            }
+            return true;
+        }
+
+        fun read_string_literal(this) -> string {
+            let start: i64 = this.pos;
+            this.advance_char(); // skip opening quote
+            while (this.pos < string_length(this.source)) {
+                let ch: string = string_substring(this.source, this.pos, 1);
+                if (ch == "\"") {
+                    this.pos = this.pos + 1; // include closing quote
+                    break;
+                }
+                if (ch == "\\" && this.pos + 1 < string_length(this.source)) {
+                    this.pos = this.pos + 2; // skip escape sequence
+                } else {
+                    this.pos = this.pos + 1;
+                }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+        fun read_constant(this) -> string {
+            let start: i64 = this.pos;
+            if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos, 1) == "0") {
+                let next: string = string_substring(this.source, this.pos + 1, 1);
+                if (next == "x" || next == "X") {
+                    this.pos = this.pos + 2;
+                    while (this.pos < string_length(this.source)) {
+                        let c: string = string_substring(this.source, this.pos, 1);
+                        let code: i64 = string_char_code(c);
+                        if ((code >= string_char_code("0") && code <= string_char_code("9")) || (code >= string_char_code("a") && code <= string_char_code("f")) || (code >= string_char_code("A") && code <= string_char_code("F"))) {
+                            this.pos = this.pos + 1;
+                        } else { break; }
+                    }
+                    if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+                        this.pos = this.pos + 1;
+                        while (this.pos < string_length(this.source)) {
+                            let c: string = string_substring(this.source, this.pos, 1);
+                            let code: i64 = string_char_code(c);
+                            if ((code >= string_char_code("0") && code <= string_char_code("9")) || (code >= string_char_code("a") && code <= string_char_code("f")) || (code >= string_char_code("A") && code <= string_char_code("F"))) {
+                                this.pos = this.pos + 1;
+                            } else { break; }
+                        }
+                    }
+                    if (this.pos < string_length(this.source)) {
+                        let c: string = string_substring(this.source, this.pos, 1);
+                        if (c == "p" || c == "P") {
+                            this.pos = this.pos + 1;
+                            if (this.pos < string_length(this.source)) { let s: string = string_substring(this.source, this.pos, 1); if (s == "+" || s == "-") { this.pos = this.pos + 1; } }
+                            while (this.pos < string_length(this.source)) {
+                                let d: string = string_substring(this.source, this.pos, 1);
+                                let code: i64 = string_char_code(d);
+                                if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                            }
+                        }
+                    }
+                    this.skip_constant_suffix();
+                    return string_substring(this.source, start, this.pos - start);
+                }
+                if (next == "b" || next == "B") {
+                    this.pos = this.pos + 2;
+                    while (this.pos < string_length(this.source)) {
+                        let c: string = string_substring(this.source, this.pos, 1);
+                        if (c == "0" || c == "1") { this.pos = this.pos + 1; } else { break; }
+                    }
+                    this.skip_constant_suffix();
+                    return string_substring(this.source, start, this.pos - start);
+                }
+            }
+            while (this.pos < string_length(this.source)) {
+                let c: string = string_substring(this.source, this.pos, 1);
+                let code: i64 = string_char_code(c);
+                if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+            }
+            if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+                this.pos = this.pos + 1;
+                while (this.pos < string_length(this.source)) {
+                    let c: string = string_substring(this.source, this.pos, 1);
+                    let code: i64 = string_char_code(c);
+                    if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                }
+            }
+            if (this.pos < string_length(this.source)) {
+                let c: string = string_substring(this.source, this.pos, 1);
+                if (c == "e" || c == "E") {
+                    this.pos = this.pos + 1;
+                    if (this.pos < string_length(this.source)) { let s: string = string_substring(this.source, this.pos, 1); if (s == "+" || s == "-") { this.pos = this.pos + 1; } }
+                    while (this.pos < string_length(this.source)) {
+                        let d: string = string_substring(this.source, this.pos, 1);
+                        let code: i64 = string_char_code(d);
+                        if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                    }
+                }
+            }
+            this.skip_constant_suffix();
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+        fun skip_constant_suffix(this) {
+            if (this.pos >= string_length(this.source)) { return; }
+            let c: string = string_substring(this.source, this.pos, 1);
+            if (c == "f" || c == "F") { this.pos = this.pos + 1; return; }
+            if (c == "u" || c == "U") {
+                this.pos = this.pos + 1;
+                if (this.pos < string_length(this.source)) {
+                    let c2: string = string_substring(this.source, this.pos, 1);
+                    if (c2 == "l" || c2 == "L") {
+                        this.pos = this.pos + 1;
+                        if (this.pos < string_length(this.source)) { let c3: string = string_substring(this.source, this.pos, 1); if (c3 == "l" || c3 == "L") { this.pos = this.pos + 1; } }
+                    }
+                }
+                return;
+            }
+            if (c == "l" || c == "L") {
+                this.pos = this.pos + 1;
+                if (this.pos < string_length(this.source)) {
+                    let c2: string = string_substring(this.source, this.pos, 1);
+                    if (c2 == "l" || c2 == "L") {
+                        this.pos = this.pos + 1;
+                        if (this.pos < string_length(this.source)) { let c3: string = string_substring(this.source, this.pos, 1); if (c3 == "u" || c3 == "U") { this.pos = this.pos + 1; } }
+                        return;
+                    }
+                    if (c2 == "u" || c2 == "U") { this.pos = this.pos + 1; }
+                }
+                return;
+            }
+        }
+
+
+        fun read_char_constant(this) -> string {
+            let start: i64 = this.pos;
+            let ch: string = this.current_char();
+            if (ch == "L" || ch == "u" || ch == "U") { this.pos = this.pos + 1; }
+            this.pos = this.pos + 1;
+            while (this.pos < string_length(this.source)) {
+                let c: string = string_substring(this.source, this.pos, 1);
+                if (c == "'") { this.pos = this.pos + 1; break; }
+                if (c == "\\" && this.pos + 1 < string_length(this.source)) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+
+        fun read_string_literal_with_prefix(this) -> string {
+            let start: i64 = this.pos;
+            let ch: string = this.current_char();
+            if (ch == "u" && this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "8") {
+                this.pos = this.pos + 2;
+            } else {
+                this.pos = this.pos + 1;
+            }
+            this.pos = this.pos + 1; // skip opening quote
+            while (this.pos < string_length(this.source)) {
+                let c: string = string_substring(this.source, this.pos, 1);
+                if (c == "\"") { this.pos = this.pos + 1; break; }
+                if (c == "\\" && this.pos + 1 < string_length(this.source)) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
+            }
+            return string_substring(this.source, start, this.pos - start);
+        }
+
+    }
+}

@@ -12,7 +12,7 @@ initial {
 	println("before wait");
 	let a : i32 = wait task;
 	println("wait done");
-    print(a as string);
+    print(cast<string>(a));
 }
 ```
 This will output:
@@ -105,7 +105,7 @@ initial {
 }
 
 on A(x) {
-	print(x as string);
+	print(cast<string>(x));
 }
 ```
 The output order is uncertain, because the runtime is free to parallelize event handlers if there is no dependency.
@@ -113,7 +113,7 @@ The output order is uncertain, because the runtime is free to parallelize event 
 To ensure the order of event handlers, you can use `!pure` keyword to mark the event handler as 'pure', which means it has no side effect and is not a 'pure function'. 
 ```
 on !pure A(x) {
-	print(x as string);   // guaranteed to receive events in order
+	print(cast<string>(x));   // guaranteed to receive events in order
 }
 ```
 
@@ -121,7 +121,7 @@ However, the compiler can automatically detect if a function is pure or not, suc
 ```
 on A(x) {
 	global_var = x;
-	print(x as string);   // guaranteed to receive events in order
+	print(cast<string>(x));   // guaranteed to receive events in order
 }
 ```
 
@@ -130,7 +130,7 @@ Another way is to use initial and wait syntax, the order of events are guarantee
 initial {
 	while (true) {
 		let x : i32 = wait A;  // guaranteed to be receive events in order
-		print(x as string);
+		print(cast<string>(x));
 	}
 }
 ```

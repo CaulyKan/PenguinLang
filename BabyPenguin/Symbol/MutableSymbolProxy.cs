@@ -9,8 +9,6 @@ namespace BabyPenguin.Symbol
 
         public string OriginName => Symbol.Name;
 
-        public uint ScopeDepth => Symbol.ScopeDepth;
-
         public ISymbolContainer Parent => Symbol.Parent;
 
         public IType TypeInfo => Symbol.TypeInfo;
