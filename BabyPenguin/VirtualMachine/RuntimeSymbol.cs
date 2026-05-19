@@ -26,11 +26,11 @@ namespace BabyPenguin.VirtualMachine
 
         string ToDebugString() => $"[ {ConsoleColor.YELLOW}{Symbol?.FullName()}{ConsoleColor.CYAN}({TypeInfo})={ValueToString}{ConsoleColor.NORMAL} ]";
 
-        static IRuntimeSymbol FromSymbol(SemanticModel model, ISymbol symbol)
+        static IRuntimeSymbol FromSymbol(SemanticModel model, ISymbol symbol, RuntimeGlobal? global = null)
         {
             if (symbol.TypeInfo.IsEnumType)
             {
-                return new EnumRuntimeSymbol(model, symbol);
+                return new EnumRuntimeSymbol(model, symbol, global);
             }
             else if (symbol is FunctionSymbol)
             {
@@ -42,7 +42,7 @@ namespace BabyPenguin.VirtualMachine
             }
             else if (symbol.TypeInfo.IsClassType)
             {
-                var result = new ClassRuntimeSymbol(model, symbol);
+                var result = new ClassRuntimeSymbol(model, symbol, global);
                 var fields = result.ReferenceValue.Fields;
                 var cls = symbol.TypeInfo.TypeNode as IClassNode
                     ?? throw new BabyPenguinRuntimeException($"Cannot create class {symbol.TypeInfo.FullName()} because it is not a class");
@@ -51,7 +51,7 @@ namespace BabyPenguin.VirtualMachine
                     var intf = vtable.Interface;
                     foreach (var s in intf.Symbols.Where(i => i.IsVariable))
                     {
-                        var v = FromSymbol(model, s);
+                        var v = FromSymbol(model, s, global);
                         fields[s.Name] = v.Value;
                     }
                 }
@@ -180,15 +180,15 @@ namespace BabyPenguin.VirtualMachine
 
     public class ClassRuntimeSymbol : IRuntimeSymbol
     {
-        public ClassRuntimeSymbol(SemanticModel model, ISymbol symbol)
+        public ClassRuntimeSymbol(SemanticModel model, ISymbol symbol, RuntimeGlobal? global = null)
         {
             Model = model;
             Symbol = symbol;
             var symbolContainer = TypeInfo.TypeNode as ISymbolContainer
                 ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
             var symbols = symbolContainer.Symbols;
-            var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
-            ReferenceValue = new ReferenceRuntimeValue(TypeInfo, fields);
+            var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s, global).Value);
+            ReferenceValue = new ReferenceRuntimeValue(TypeInfo, fields, global);
         }
 
         public SemanticModel Model { get; }
@@ -321,7 +321,7 @@ namespace BabyPenguin.VirtualMachine
 
         public IRuntimeValue Value => EnumValue;
 
-        public EnumRuntimeSymbol(SemanticModel model, ISymbol symbol)
+        public EnumRuntimeSymbol(SemanticModel model, ISymbol symbol, RuntimeGlobal? global = null)
         {
             Model = model;
             Symbol = symbol;
@@ -329,8 +329,8 @@ namespace BabyPenguin.VirtualMachine
             var symbolContainer = TypeInfo.TypeNode as ISymbolContainer
                 ?? throw new BabyPenguinRuntimeException($"Cannot create enum {TypeInfo.FullName()} because it is not a symbol container");
             var symbols = symbolContainer.Symbols;
-            var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s).Value);
-            EnumValue = new EnumRuntimeValue(TypeInfo, new ReferenceRuntimeValue(TypeInfo, fields), null);
+            var fields = symbols.Where(s => !s.IsEnum).ToDictionary(s => s.Name, s => IRuntimeSymbol.FromSymbol(Model, s, global).Value);
+            EnumValue = new EnumRuntimeValue(TypeInfo, new ReferenceRuntimeValue(TypeInfo, fields, global), null);
         }
 
         public void AssignFrom(IRuntimeSymbol other)

@@ -1,0 +1,121 @@
+namespace bound {
+
+class BoundExpressionStatement {
+    expression: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, expression: Option<BoundExpression>) {
+        this.expression = expression;
+    }
+}
+
+class BoundAssignmentStatement {
+    target: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    target_symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
+    operator_value: !mut ast.AssignmentOperator = new ast.AssignmentOperator.Assign();
+    value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    value_type: !mut BoundType = new BoundType();
+
+    fun new(mut this, target: Option<BoundExpression>, target_symbol: Option<BoundSymbol>, operator_value: ast.AssignmentOperator, value: Option<BoundExpression>, value_type: BoundType) {
+        this.target = target;
+        this.target_symbol = target_symbol;
+        this.operator_value = operator_value;
+        this.value = value;
+        this.value_type = value_type;
+    }
+}
+
+class BoundIfStatement {
+    condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    then_statement: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
+    else_statement: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
+
+    fun new(mut this, condition: Option<BoundExpression>, then_statement: Option<BoundStatement>, else_statement: Option<BoundStatement>) {
+        this.condition = condition;
+        this.then_statement = then_statement;
+        this.else_statement = else_statement;
+    }
+}
+
+class BoundWhileStatement {
+    condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    body: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
+
+    fun new(mut this, condition: Option<BoundExpression>, body: Option<BoundStatement>) {
+        this.condition = condition;
+        this.body = body;
+    }
+}
+
+class BoundForStatement {
+    loop_variable: !mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    iterable: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    body: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
+    scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, loop_variable: Option<BoundVariableSymbol>, iterable: Option<BoundExpression>, body: Option<BoundStatement>, scope: Option<BoundScope>) {
+        this.loop_variable = loop_variable;
+        this.iterable = iterable;
+        this.body = body;
+        this.scope = scope;
+    }
+}
+
+class BoundReturnStatement {
+    value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    return_type: !mut BoundType = new BoundType();
+
+    fun new(mut this, value: Option<BoundExpression>, return_type: BoundType) {
+        this.value = value;
+        this.return_type = return_type;
+    }
+}
+
+class BoundBreakStatement {
+    value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, value: Option<BoundExpression>) {
+        this.value = value;
+    }
+}
+
+class BoundContinueStatement {
+}
+
+class BoundLetDeclarationStatement {
+    variable_symbol: !mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    initializer: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    bound_type: !mut BoundType = new BoundType();
+    scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, variable_symbol: Option<BoundVariableSymbol>, initializer: Option<BoundExpression>, bound_type: BoundType, scope: Option<BoundScope>) {
+        this.variable_symbol = variable_symbol;
+        this.initializer = initializer;
+        this.bound_type = bound_type;
+        this.scope = scope;
+    }
+}
+
+class BoundBlockStatement {
+    statements: !mut List<BoundStatement> = new List<BoundStatement>();
+    scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, statements: List<BoundStatement>, scope: Option<BoundScope>) {
+        this.statements = statements;
+        this.scope = scope;
+    }
+}
+
+enum BoundStatement {
+    expression: BoundExpressionStatement;
+    assignment: BoundAssignmentStatement;
+    if_stmt: BoundIfStatement;
+    while_stmt: BoundWhileStatement;
+    for_stmt: BoundForStatement;
+    return_stmt: BoundReturnStatement;
+    break_stmt: BoundBreakStatement;
+    continue_stmt: BoundContinueStatement;
+    let_decl: BoundLetDeclarationStatement;
+    block: BoundBlockStatement;
+}
+
+}

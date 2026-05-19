@@ -56,6 +56,11 @@ interface IExpression {
 
 class ConstantExpression {
     value: mut string = "";
+
+    fun new(mut this, value: string) {
+        this.value = value;
+    }
+
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<ConstantExpression>(this);
@@ -66,7 +71,13 @@ class ConstantExpression {
 
 class IdentifierExpression {
     name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>(); 
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<IdentifierExpression>(this);
@@ -90,6 +101,11 @@ class IdentifierExpression {
 
 class StringLiteralExpression {
     value: mut string = "";
+
+    fun new(mut this, value: string) {
+        this.value = value;
+    }
+
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<StringLiteralExpression>(this);
@@ -158,6 +174,7 @@ class UnaryExpression {
 class MemberAccessExpression {
     base_expr: mut Option<Expression> = new Option<Expression>.none();
     member_name: mut string = "";
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<MemberAccessExpression>(this);
@@ -251,6 +268,7 @@ class CastExpression {
 
 class NewExpression {
     type_name: mut string = "";
+    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
     arguments: mut List<Expression> = new List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
@@ -258,6 +276,16 @@ class NewExpression {
             let mut sb = new StringBuilder();
             sb.append("new ");
             sb.append(self.type_name);
+            if (cast<i64>(self.generic_args.size()) > 0) {
+                sb.append("<");
+                let i: mut i64 = 0;
+                while (i < cast<i64>(self.generic_args.size())) {
+                    if (i > 0) { sb.append(", "); }
+                    sb.append(self.generic_args.at(cast<u64>(i)).some.build_text());
+                    i = i + 1;
+                }
+                sb.append(">");
+            }
             sb.append("(");
             let i: mut i64 = 0;
             while (i < cast<i64>(self.arguments.size())) {
@@ -685,6 +713,12 @@ class Parameter {
     default_value: mut Option<Expression> = new Option<Expression>.none();
     is_mutable: mut bool = false;
     is_this: mut bool = false;
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     fun build_text(this) -> string {
         if (this.is_this) {
             if (this.is_mutable) { return "mut this"; }
@@ -758,6 +792,12 @@ interface IDefinition {
 class FunctionDefinition {
     name: mut string = "";
     parameters: mut List<Parameter> = new List<Parameter>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     body: mut Option<Expression> = new Option<Expression>.none();
     is_extern: mut bool = false;
@@ -798,6 +838,12 @@ class FunctionDefinition {
 class ClassDefinition {
     name: mut string = "";
     members: mut List<Definition> = new List<Definition>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -822,6 +868,12 @@ class ClassDefinition {
 class EnumDefinition {
     name: mut string = "";
     members: mut List<Definition> = new List<Definition>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -846,6 +898,12 @@ class EnumDefinition {
 class InterfaceDefinition {
     name: mut string = "";
     members: mut List<Definition> = new List<Definition>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -872,6 +930,12 @@ class InterfaceImplementation {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut List<Definition> = new List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+
+    fun new(mut this, type_name: string) {
+        this.type_name = type_name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<InterfaceImplementation>(this);
@@ -904,6 +968,13 @@ class InterfaceForImplementation {
     for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut List<Definition> = new List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+
+    fun new(mut this, type_name: string, for_type_name: string) {
+        this.type_name = type_name;
+        this.for_type_name = for_type_name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<InterfaceForImplementation>(this);
@@ -935,6 +1006,12 @@ class InterfaceForImplementation {
 class EventDefinition {
     name: mut string = "";
     event_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<EventDefinition>(this);
@@ -948,6 +1025,12 @@ class EventDefinition {
 class NamespaceDefinition {
     name: mut string = "";
     children: mut List<Definition> = new List<Definition>();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<NamespaceDefinition>(this);
@@ -996,6 +1079,11 @@ class OnRoutineDefinition {
 class TypeReferenceDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<TypeReferenceDefinition>(this);
@@ -1009,6 +1097,12 @@ class TypeReferenceDefinition {
 class EnumMemberDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<EnumMemberDefinition>(this);
@@ -1024,10 +1118,39 @@ class ClassFieldDefinition {
     mutability: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     initializer: mut Option<Expression> = new Option<Expression>.none();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<ClassFieldDefinition>(this);
             let s: mut string = self.name;
+            if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
+            if (self.initializer.is_some()) { s = s + " = " + self.initializer.some.build_text(); }
+            return s + ";";
+        }
+    }
+}
+
+class GlobalVariableDefinition {
+    name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    initializer: mut Option<Expression> = new Option<Expression>.none();
+    is_mutable: mut bool = false;
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<GlobalVariableDefinition>(this);
+            let s: mut string = "let ";
+            if (self.is_mutable) { s = s + "mut "; }
+            s = s + self.name;
             if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
             if (self.initializer.is_some()) { s = s + " = " + self.initializer.some.build_text(); }
             return s + ";";
@@ -1049,6 +1172,7 @@ enum Definition {
     type_ref_def: TypeReferenceDefinition;
     enum_member: EnumMemberDefinition;
     class_field: ClassFieldDefinition;
+    global_var: GlobalVariableDefinition;
 
     fun build_text(this) -> string {
         if (this is Definition.function_def) { return this.function_def.build_text(); }
@@ -1064,6 +1188,7 @@ enum Definition {
         if (this is Definition.type_ref_def) { return this.type_ref_def.build_text(); }
         if (this is Definition.enum_member) { return this.enum_member.build_text(); }
         if (this is Definition.class_field) { return this.class_field.build_text(); }
+        if (this is Definition.global_var) { return this.global_var.build_text(); }
         return "";
     }
 }

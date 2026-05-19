@@ -1,0 +1,213 @@
+namespace bound {
+
+enum Mutability {
+    Mutable;
+    Immutable;
+    Auto;
+}
+
+enum PrimitiveType {
+    I8;
+    I16;
+    I32;
+    I64;
+    U8;
+    U16;
+    U32;
+    U64;
+    F32;
+    F64;
+    BoolType;
+    CharType;
+    StringType;
+    VoidType;
+}
+
+enum TypeKind {
+    PrimitiveKind;
+    ClassKind;
+    EnumKind;
+    InterfaceKind;
+    FunctionKind;
+    TypeReferenceKind;
+    ErrorKind;
+}
+
+fun primitive_type_to_string(p: PrimitiveType) -> string {
+    if (p is PrimitiveType.I8) { return "i8"; }
+    if (p is PrimitiveType.I16) { return "i16"; }
+    if (p is PrimitiveType.I32) { return "i32"; }
+    if (p is PrimitiveType.I64) { return "i64"; }
+    if (p is PrimitiveType.U8) { return "u8"; }
+    if (p is PrimitiveType.U16) { return "u16"; }
+    if (p is PrimitiveType.U32) { return "u32"; }
+    if (p is PrimitiveType.U64) { return "u64"; }
+    if (p is PrimitiveType.F32) { return "f32"; }
+    if (p is PrimitiveType.F64) { return "f64"; }
+    if (p is PrimitiveType.BoolType) { return "bool"; }
+    if (p is PrimitiveType.CharType) { return "char"; }
+    if (p is PrimitiveType.StringType) { return "string"; }
+    if (p is PrimitiveType.VoidType) { return "void"; }
+    return "?";
+}
+
+fun mutability_to_string(m: Mutability) -> string {
+    if (m is Mutability.Mutable) { return "mut "; }
+    if (m is Mutability.Auto) { return "auto "; }
+    return "";
+}
+
+class BoundType {
+    kind: TypeKind = new TypeKind.PrimitiveKind();
+    primitive: PrimitiveType = new PrimitiveType.VoidType();
+    type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
+    generic_args: mut List<BoundType> = new List<BoundType>();
+    mutability: Mutability = new Mutability.Immutable();
+    is_async_function: bool = false;
+
+    fun display_name(this) -> string {
+        if (this.kind is TypeKind.PrimitiveKind) {
+            return primitive_type_to_string(this.primitive);
+        }
+        if (this.kind is TypeKind.ErrorKind) {
+            return "<error>";
+        }
+        if (this.kind is TypeKind.FunctionKind) {
+            let prefix: mut string = "fun<";
+            if (this.is_async_function) { prefix = "async_fun<"; }
+            let sb : mut StringBuilder = new StringBuilder();
+            sb.append(prefix);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.generic_args.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(this.generic_args.at(cast<u64>(i)).some.display_name());
+                i = i + 1;
+            }
+            sb.append(">");
+            return sb.to_string();
+        }
+        if (this.kind is TypeKind.TypeReferenceKind) {
+            if (cast<i64>(this.generic_args.size()) > 0) {
+                return this.generic_args.at(cast<u64>(0)).some.display_name();
+            }
+            return "?";
+        }
+        let prefix: string = mutability_to_string(this.mutability);
+        let base_name: mut string = "?";
+        if (this.type_definition.is_some()) {
+            base_name = this.type_definition.some.get_name();
+        }
+        if (cast<i64>(this.generic_args.size()) > 0) {
+            let mut sb = new StringBuilder();
+            sb.append(prefix);
+            sb.append(base_name);
+            sb.append("<");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.generic_args.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(this.generic_args.at(cast<u64>(i)).some.display_name());
+                i = i + 1;
+            }
+            sb.append(">");
+            return sb.to_string();
+        }
+        return prefix + base_name;
+    }
+
+    fun with_mutability(this, m: mut Mutability) -> mut BoundType {
+        let result: mut BoundType = new BoundType();
+        result.kind = this.kind;
+        result.primitive = this.primitive;
+        result.type_definition = this.type_definition;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.generic_args.size())) {
+            result.generic_args.push(this.generic_args.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        result.mutability = m;
+        result.is_async_function = this.is_async_function;
+        return result;
+    }
+
+    fun with_generic_args(this, args: List<BoundType>) -> mut BoundType {
+        let result: mut BoundType = new BoundType();
+        result.kind = this.kind;
+        result.primitive = this.primitive;
+        result.type_definition = this.type_definition;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            result.generic_args.push(args.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        result.mutability = this.mutability;
+        result.is_async_function = this.is_async_function;
+        return result;
+    }
+
+    fun is_same_type(this, other: BoundType) -> bool {
+        if (cast<string>(this.kind) != cast<string>(other.kind)) { return false; }
+        if (this.kind is TypeKind.PrimitiveKind) {
+            return cast<string>(this.primitive) == cast<string>(other.primitive);
+        }
+        if (cast<i64>(this.generic_args.size()) != cast<i64>(other.generic_args.size())) {
+            return false;
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.generic_args.size())) {
+            if (!this.generic_args.at(cast<u64>(i)).some.is_same_type(other.generic_args.at(cast<u64>(i)).some)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        if (this.is_async_function != other.is_async_function) { return false; }
+        if (this.type_definition.is_some() && other.type_definition.is_some()) {
+            return this.type_definition.some.get_name() == other.type_definition.some.get_name();
+        }
+        return true;
+    }
+
+    fun is_value_type(this) -> bool {
+        if (this.kind is TypeKind.PrimitiveKind) {
+            if (this.primitive is PrimitiveType.StringType) { return false; }
+            return true;
+        }
+        if (this.kind is TypeKind.EnumKind) { return true; }
+        if (this.kind is TypeKind.ClassKind) {
+            if (this.type_definition.is_some()) {
+                let def: BoundDefinition = this.type_definition.some;
+                if (def is BoundDefinition.class_def) {
+                    let cls: BoundClassDefinition = def.class_def;
+                    if (cls.is_value_class.is_some()) {
+                        return cls.is_value_class.some;
+                    }
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fun is_reference_type(this) -> bool {
+        if (this.kind is TypeKind.PrimitiveKind) {
+            if (this.primitive is PrimitiveType.StringType) { return true; }
+            return false;
+        }
+        if (this.kind is TypeKind.EnumKind) { return false; }
+        if (this.kind is TypeKind.ClassKind) {
+            if (this.type_definition.is_some()) {
+                let def: BoundDefinition = this.type_definition.some;
+                if (def is BoundDefinition.class_def) {
+                    let cls: BoundClassDefinition = def.class_def;
+                    if (cls.is_value_class.is_some()) {
+                        return !cls.is_value_class.some;
+                    }
+                }
+            }
+            return true;
+        }
+        if (this.kind is TypeKind.InterfaceKind) { return true; }
+        return false;
+    }
+}
+
+}

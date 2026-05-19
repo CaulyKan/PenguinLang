@@ -13,5 +13,5 @@ Documentation/BasicIntroductionSlide/BasicIntroduction
 .trae
 *.lscache
 *_output/
-PenguinLangCodeGenerator/tmp/
-BabyPenguin/tmp/
+tmp
+*.o

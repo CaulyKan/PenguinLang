@@ -1,0 +1,230 @@
+namespace bound {
+
+class NamedTypeEntry {
+    name: string = "";
+    bound_type: BoundType = new BoundType();
+
+    fun new(mut this, name: string, bound_type: mut BoundType) {
+        this.name = name;
+        this.bound_type = bound_type;
+    }
+}
+
+class BoundTypeRegistry {
+    bool_type: BoundType;
+    i8_type: BoundType;
+    i16_type: BoundType;
+    i32_type: BoundType;
+    i64_type: BoundType;
+    u8_type: BoundType;
+    u16_type: BoundType;
+    u32_type: BoundType;
+    u64_type: BoundType;
+    f32_type: BoundType;
+    f64_type: BoundType;
+    char_type: BoundType;
+    string_type: BoundType;
+    void_type: BoundType;
+    registered_types: mut List<NamedTypeEntry> = new List<NamedTypeEntry>();
+
+    fun new(mut this) {
+        this.bool_type = this.make_primitive(new PrimitiveType.BoolType());
+        this.i8_type = this.make_primitive(new PrimitiveType.I8());
+        this.i16_type = this.make_primitive(new PrimitiveType.I16());
+        this.i32_type = this.make_primitive(new PrimitiveType.I32());
+        this.i64_type = this.make_primitive(new PrimitiveType.I64());
+        this.u8_type = this.make_primitive(new PrimitiveType.U8());
+        this.u16_type = this.make_primitive(new PrimitiveType.U16());
+        this.u32_type = this.make_primitive(new PrimitiveType.U32());
+        this.u64_type = this.make_primitive(new PrimitiveType.U64());
+        this.f32_type = this.make_primitive(new PrimitiveType.F32());
+        this.f64_type = this.make_primitive(new PrimitiveType.F64());
+        this.char_type = this.make_primitive(new PrimitiveType.CharType());
+        this.string_type = this.make_primitive(new PrimitiveType.StringType());
+        this.void_type = this.make_primitive(new PrimitiveType.VoidType());
+    }
+
+    fun make_primitive(this, p: mut PrimitiveType) -> mut BoundType {
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.PrimitiveKind();
+        t.primitive = p;
+        t.mutability = new Mutability.Immutable();
+        return t;
+    }
+
+    fun resolve_type(this, name: string) -> Option<BoundType> {
+        let prim: Option<BoundType> = this.try_primitive(name);
+        if (prim.is_some()) { return prim; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.registered_types.size())) {
+            let entry: NamedTypeEntry = this.registered_types.at(cast<u64>(i)).some;
+            if (entry.name == name) {
+                return new Option<BoundType>.some(entry.bound_type);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundType>.none();
+    }
+
+    fun try_primitive(this, name: string) -> Option<BoundType> {
+        if (name == "bool") { return new Option<BoundType>.some(this.bool_type); }
+        if (name == "i8") { return new Option<BoundType>.some(this.i8_type); }
+        if (name == "i16") { return new Option<BoundType>.some(this.i16_type); }
+        if (name == "i32") { return new Option<BoundType>.some(this.i32_type); }
+        if (name == "i64") { return new Option<BoundType>.some(this.i64_type); }
+        if (name == "u8") { return new Option<BoundType>.some(this.u8_type); }
+        if (name == "u16") { return new Option<BoundType>.some(this.u16_type); }
+        if (name == "u32") { return new Option<BoundType>.some(this.u32_type); }
+        if (name == "u64") { return new Option<BoundType>.some(this.u64_type); }
+        if (name == "f32") { return new Option<BoundType>.some(this.f32_type); }
+        if (name == "f64") { return new Option<BoundType>.some(this.f64_type); }
+        if (name == "char") { return new Option<BoundType>.some(this.char_type); }
+        if (name == "string") { return new Option<BoundType>.some(this.string_type); }
+        if (name == "void") { return new Option<BoundType>.some(this.void_type); }
+        return new Option<BoundType>.none();
+    }
+
+    fun register_type(mut this, name: string, t: mut BoundType) {
+        this.registered_types.push(new NamedTypeEntry(name, t));
+    }
+
+    fun is_numeric(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            if (t.primitive is PrimitiveType.BoolType) { return false; }
+            if (t.primitive is PrimitiveType.CharType) { return false; }
+            if (t.primitive is PrimitiveType.StringType) { return false; }
+            if (t.primitive is PrimitiveType.VoidType) { return false; }
+            return true;
+        }
+        return false;
+    }
+
+    fun is_integer(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            if (t.primitive is PrimitiveType.I8) { return true; }
+            if (t.primitive is PrimitiveType.I16) { return true; }
+            if (t.primitive is PrimitiveType.I32) { return true; }
+            if (t.primitive is PrimitiveType.I64) { return true; }
+            if (t.primitive is PrimitiveType.U8) { return true; }
+            if (t.primitive is PrimitiveType.U16) { return true; }
+            if (t.primitive is PrimitiveType.U32) { return true; }
+            if (t.primitive is PrimitiveType.U64) { return true; }
+        }
+        return false;
+    }
+
+    fun is_bool(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            return t.primitive is PrimitiveType.BoolType;
+        }
+        return false;
+    }
+
+    fun is_void(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            return t.primitive is PrimitiveType.VoidType;
+        }
+        return false;
+    }
+
+    fun is_string(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            return t.primitive is PrimitiveType.StringType;
+        }
+        return false;
+    }
+
+    fun can_implicitly_cast(this, from: BoundType, to: BoundType) -> bool {
+        if (from.is_same_type(to)) { return true; }
+        if (from.kind is TypeKind.PrimitiveKind && to.kind is TypeKind.PrimitiveKind) {
+            return this.can_widen_primitive(from.primitive, to.primitive);
+        }
+        return false;
+    }
+
+    fun can_widen_primitive(this, from: PrimitiveType, to: PrimitiveType) -> bool {
+        if (from is PrimitiveType.BoolType && to is PrimitiveType.StringType) { return true; }
+        if (from is PrimitiveType.I8) {
+            if (to is PrimitiveType.I16) { return true; }
+            if (to is PrimitiveType.I32) { return true; }
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.F32) { return true; }
+            if (to is PrimitiveType.F64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.I16) {
+            if (to is PrimitiveType.I32) { return true; }
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.F32) { return true; }
+            if (to is PrimitiveType.F64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.I32) {
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.F32) { return true; }
+            if (to is PrimitiveType.F64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.I64) {
+            if (to is PrimitiveType.F32) { return true; }
+            if (to is PrimitiveType.F64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.U8) {
+            if (to is PrimitiveType.U16) { return true; }
+            if (to is PrimitiveType.U32) { return true; }
+            if (to is PrimitiveType.U64) { return true; }
+            if (to is PrimitiveType.I16) { return true; }
+            if (to is PrimitiveType.I32) { return true; }
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.U16) {
+            if (to is PrimitiveType.U32) { return true; }
+            if (to is PrimitiveType.U64) { return true; }
+            if (to is PrimitiveType.I32) { return true; }
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.U32) {
+            if (to is PrimitiveType.U64) { return true; }
+            if (to is PrimitiveType.I64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.U64) {
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.F32) {
+            if (to is PrimitiveType.F64) { return true; }
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.F64) {
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        if (from is PrimitiveType.CharType) {
+            if (to is PrimitiveType.StringType) { return true; }
+        }
+        return false;
+    }
+
+    fun make_function_type(this, ret: BoundType, params: List<BoundType>, is_async: bool) -> mut BoundType {
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.FunctionKind();
+        t.generic_args.push(ret);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(params.size())) {
+            t.generic_args.push(params.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        t.is_async_function = is_async;
+        return t;
+    }
+
+    fun make_error_type(this) -> mut BoundType {
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.ErrorKind();
+        return t;
+    }
+}
+
+}

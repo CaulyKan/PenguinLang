@@ -1,0 +1,18 @@
+namespace bound {
+
+class EmperorPenguinCompiler {
+    errors: mut List<SemanticError> = new List<SemanticError>();
+
+    fun compile(mut this, source: string) -> BoundCompilationUnit {
+        let lexer = new parser.Lexer(source);
+        let tokens = lexer.tokenize();
+        let p = new parser.Parser(tokens);
+        let unit: ast.CompilationUnit = p.parse_compilationUnit();
+        let mut model = new bound.SemanticModel();
+        let result = model.bind(unit, "test.penguin");
+        this.errors = model.errors;
+        return result;
+    }
+}
+
+}

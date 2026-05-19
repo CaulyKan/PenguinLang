@@ -6,6 +6,6 @@ initial {
     hello(world1);
   }
 }
-fun hello(let name : string) -> void {
+fun hello(name : string) -> void {
   println("Hello, " + name);
 }

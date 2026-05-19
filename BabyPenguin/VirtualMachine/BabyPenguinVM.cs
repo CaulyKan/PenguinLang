@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using CommandLine;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 
@@ -11,7 +12,7 @@ namespace BabyPenguin.VirtualMachine
 
             foreach (var symbol in model.Symbols.Where(s => !s.IsEnum && !s.IsLocal && !s.IsClassMember))
             {
-                Global.GlobalVariables.Add(symbol.FullName(), IRuntimeSymbol.FromSymbol(model, symbol));
+                Global.GlobalVariables.Add(symbol.FullName(), IRuntimeSymbol.FromSymbol(model, symbol, Global));
             }
 
             ExternFunctions.Build(this);
@@ -89,6 +90,13 @@ namespace BabyPenguin.VirtualMachine
     public class RuntimeGlobal
     {
         public enum StepModeEnum { StepIn, StepOver, StepOut, Run }
+
+        public ConcurrentDictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
+
+        private ulong _refIdCounter = 0;
+        public ulong NextRefId() => Interlocked.Increment(ref _refIdCounter);
+
+        public void ClearAllObjects() => AllObjects.Clear();
 
         public int ExitCode { get; set; } = 0;
 

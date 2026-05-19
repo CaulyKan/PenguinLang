@@ -1,0 +1,1233 @@
+namespace ir {
+
+class SymbolRegEntry {
+    symbol_full_name: !mut string = "";
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    fun new(mut this, name: string, value: IRValue) {
+        this.symbol_full_name = name;
+        this.value = value;
+    }
+}
+
+class LoopLabels {
+    header: !mut IRLabel = new IRLabel("");
+    exit: !mut IRLabel = new IRLabel("");
+    fun new(mut this, header: IRLabel, exit: IRLabel) {
+        this.header = header;
+        this.exit = exit;
+    }
+}
+
+class IRGenerator {
+    builder: mut IRBuilder = new IRBuilder(new IRFunction("", ""));
+    symbol_regs: mut List<SymbolRegEntry> = new List<SymbolRegEntry>();
+    loop_stack: mut List<LoopLabels> = new List<LoopLabels>();
+    source_file: mut string = "";
+    current_module: mut IRModule = new IRModule();
+
+    fun new(mut this) {}
+
+    fun make_loc(this, line: i64, col: i64) -> IRSourceLocation {
+        return new IRSourceLocation(this.source_file, line, col);
+    }
+
+    // Extract source location from a bound symbol (if available)
+    fun sym_loc(this, sym: Option<bound.BoundSymbol>) -> IRSourceLocation {
+        if (sym.is_some()) {
+            let s: bound.BoundSymbol = sym.some;
+            if (s is bound.BoundSymbol.variable) {
+                return this.make_loc(s.variable.source_line, s.variable.source_col);
+            }
+            if (s is bound.BoundSymbol.function_sym) {
+                return this.make_loc(s.function_sym.source_line, s.function_sym.source_col);
+            }
+            if (s is bound.BoundSymbol.type_sym) {
+                return this.make_loc(s.type_sym.source_line, s.type_sym.source_col);
+            }
+            if (s is bound.BoundSymbol.enum_member) {
+                return this.make_loc(s.enum_member.source_line, s.enum_member.source_col);
+            }
+        }
+        return this.make_loc(0, 0);
+    }
+
+    fun sym_loc_func(this, sym: Option<bound.BoundFunctionSymbol>) -> IRSourceLocation {
+        if (sym.is_some()) {
+            return this.make_loc(sym.some.source_line, sym.some.source_col);
+        }
+        return this.make_loc(0, 0);
+    }
+
+    fun generate(mut this, unit: bound.BoundCompilationUnit) -> IRModule {
+        let module: mut IRModule = new IRModule();
+        module.source_file = unit.source_file;
+        this.source_file = unit.source_file;
+        this.current_module = module;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(unit.definitions.size())) {
+            this.lower_definition(unit.definitions.at(cast<u64>(i)).some, module);
+            i = i + 1;
+        }
+        return module;
+    }
+
+    fun lower_definition(mut this, def: bound.BoundDefinition, module: mut IRModule) {
+        if (def is bound.BoundDefinition.function_def) {
+            this.lower_function_def(def.function_def, module);
+        }
+        if (def is bound.BoundDefinition.namespace_def) {
+            this.lower_namespace(def.namespace_def, module);
+        }
+        if (def is bound.BoundDefinition.initial_routine) {
+            this.lower_initial_routine(def.initial_routine, module);
+        }
+        if (def is bound.BoundDefinition.class_def) {
+            this.lower_class_def(def.class_def, module);
+        }
+        if (def is bound.BoundDefinition.interface_def) {
+            this.lower_interface_def(def.interface_def, module);
+        }
+        if (def is bound.BoundDefinition.enum_def) {
+            this.lower_enum_def(def.enum_def, module);
+        }
+        if (def is bound.BoundDefinition.global_var_def) {
+            this.lower_global_var_def(def.global_var_def, module);
+        }
+        // impl_def, impl_for_def, type_ref_def, class_field
+        // do not generate IR code
+    }
+
+    fun lower_namespace(mut this, def: bound.BoundNamespaceDefinition, module: mut IRModule) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(def.children.size())) {
+            this.lower_definition(def.children.at(cast<u64>(i)).some, module);
+            i = i + 1;
+        }
+    }
+
+    fun lower_function_def(mut this, def: bound.BoundFunctionDefinition, module: mut IRModule) {
+        if (def.is_generic_template) { return; }
+        let ret_type: string = this.bound_type_to_ir_type(def.return_type);
+        let func_loc: IRSourceLocation = this.sym_loc_func(def.symbol);
+        this.builder = new IRBuilder(new IRFunction(def.full_name, ret_type));
+        this.builder.func.display_name = def.name;
+        this.builder.func.source_file = func_loc.file_path;
+        this.builder.func.source_line = func_loc.line;
+        this.builder.func.source_col = func_loc.column;
+        this.builder.func.is_extern = def.is_extern;
+        this.reset_locals();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(def.parameters.size())) {
+            let p: bound.BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
+            let p_loc: IRSourceLocation = this.sym_loc_func(def.symbol);
+            let _: IRValue = this.builder.func.alloc_param(p.name, this.bound_type_to_ir_type(p.bound_type), p_loc.line, p_loc.column);
+            let param_full_name: string = def.full_name + ".<body>." + p.name;
+            let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, this.bound_type_to_ir_type(p.bound_type), p_loc);
+            this.set_symbol_reg_by_name(param_full_name, arg_reg);
+            if (p.name == "this") {
+                this.set_symbol_reg_by_name("_this", arg_reg);
+            }
+            pi = pi + 1;
+        }
+        if (def.body.is_some()) {
+            let _: IRValue = this.lower_expression(def.body.some);
+        }
+        if (!this.builder.func.has_terminator()) {
+            this.builder.emit_ret_void(func_loc);
+        }
+        let func_ref: mut IRFunction = this.builder.func;
+        module.add_function(func_ref);
+    }
+
+    fun lower_class_def(mut this, def: bound.BoundClassDefinition, module: mut IRModule) {
+        if (def.is_generic_template) { return; }
+        if (def.constructor.is_some()) {
+            this.lower_function_def(def.constructor.some, module);
+        }
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(def.methods.size())) {
+            let method_def: bound.BoundDefinition = def.methods.at(cast<u64>(mi)).some;
+            if (method_def is bound.BoundDefinition.function_def) {
+                if (!method_def.function_def.is_new) {
+                    this.lower_function_def(method_def.function_def, module);
+                }
+            }
+            mi = mi + 1;
+        }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(def.interface_impls.size())) {
+            let impl_def: bound.BoundDefinition = def.interface_impls.at(cast<u64>(ii)).some;
+            if (impl_def is bound.BoundDefinition.impl_def) {
+                let iface_impl: bound.BoundInterfaceImplementation = impl_def.impl_def;
+                let imi: mut i64 = 0;
+                while (imi < cast<i64>(iface_impl.methods.size())) {
+                    let method_def: bound.BoundDefinition = iface_impl.methods.at(cast<u64>(imi)).some;
+                    if (method_def is bound.BoundDefinition.function_def) {
+                        this.lower_function_def(method_def.function_def, module);
+                    }
+                    imi = imi + 1;
+                }
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun lower_enum_def(mut this, def: bound.BoundEnumDefinition, module: mut IRModule) {
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(def.interface_impls.size())) {
+            let impl_def: bound.BoundDefinition = def.interface_impls.at(cast<u64>(ii)).some;
+            if (impl_def is bound.BoundDefinition.impl_def) {
+                let iface_impl: bound.BoundInterfaceImplementation = impl_def.impl_def;
+                let imi: mut i64 = 0;
+                while (imi < cast<i64>(iface_impl.methods.size())) {
+                    let method_def: bound.BoundDefinition = iface_impl.methods.at(cast<u64>(imi)).some;
+                    if (method_def is bound.BoundDefinition.function_def) {
+                        this.lower_function_def(method_def.function_def, module);
+                    }
+                    imi = imi + 1;
+                }
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun lower_interface_def(mut this, def: bound.BoundInterfaceDefinition, module: mut IRModule) {
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(def.methods.size())) {
+            let method_def: bound.BoundDefinition = def.methods.at(cast<u64>(mi)).some;
+            if (method_def is bound.BoundDefinition.function_def) {
+                if (method_def.function_def.body.is_some()) {
+                    this.lower_function_def(method_def.function_def, module);
+                }
+            }
+            mi = mi + 1;
+        }
+    }
+
+    fun lower_initial_routine(mut this, def: bound.BoundInitialRoutineDefinition, module: mut IRModule) {
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        this.builder = new IRBuilder(new IRFunction(def.full_name, "void"));
+        this.builder.func.display_name = "initial";
+        this.reset_locals();
+        if (def.body.is_some()) {
+            let _ = this.lower_expression(def.body.some);
+        }
+        if (!this.builder.func.has_terminator()) {
+            this.builder.emit_ret_void(loc);
+        }
+        module.add_function(this.builder.func);
+        module.entry_functions.push(this.builder.func);
+    }
+
+    fun lower_global_var_def(mut this, def: bound.BoundGlobalVariableDefinition, module: mut IRModule) {
+        let ir_type: string = this.bound_type_to_ir_type(def.bound_type);
+        let global_name: string = this.clean_function_name(def.full_name);
+
+        // Determine the initializer value
+        let init_value: mut string = "0";
+        if (ir_type == "ref<string>") {
+            init_value = "null";
+        }
+        if (def.initializer.is_some()) {
+            let init_expr: bound.BoundExpression = def.initializer.some;
+            if (init_expr is bound.BoundExpression.literal) {
+                init_value = init_expr.literal.value;
+            }
+        }
+
+        let gv: IRGlobalVariable = new IRGlobalVariable(global_name, ir_type, init_value);
+        module.add_global_variable(gv);
+
+        // If the initializer is non-trivial (not a literal), emit init code
+        if (def.initializer.is_some()) {
+            let init_expr: bound.BoundExpression = def.initializer.some;
+            if (!(init_expr is bound.BoundExpression.literal)) {
+                // Non-trivial initializers are handled during initial routine lowering
+                // by registering the global variable symbol so identifier lookups work
+            }
+        }
+
+        // Register the global in the symbol map so identifier lookups find it
+        if (def.variable_symbol.is_some()) {
+            let global_ref: IRValue = new IRValue.global_ref(new IRGlobalRef(global_name, ir_type));
+            this.set_symbol_reg(new bound.BoundSymbol.variable(def.variable_symbol.some), global_ref);
+        }
+    }
+
+    fun lower_expression(mut this, expr: bound.BoundExpression) -> IRValue {
+        if (expr is bound.BoundExpression.literal) {
+            return this.lower_literal(expr.literal);
+        }
+        if (expr is bound.BoundExpression.identifier) {
+            return this.lower_identifier(expr.identifier);
+        }
+        if (expr is bound.BoundExpression.binary) {
+            return this.lower_binary(expr.binary);
+        }
+        if (expr is bound.BoundExpression.unary) {
+            return this.lower_unary(expr.unary);
+        }
+        if (expr is bound.BoundExpression.function_call) {
+            return this.lower_function_call(expr.function_call);
+        }
+        if (expr is bound.BoundExpression.code_block) {
+            return this.lower_code_block(expr.code_block);
+        }
+        if (expr is bound.BoundExpression.cast_expr) {
+            return this.lower_cast(expr.cast_expr);
+        }
+        if (expr is bound.BoundExpression.if_expr) {
+            return this.lower_if_expr(expr.if_expr);
+        }
+        if (expr is bound.BoundExpression.while_expr) {
+            return this.lower_while_expr(expr.while_expr);
+        }
+        if (expr is bound.BoundExpression.member_access) {
+            return this.lower_member_access(expr.member_access);
+        }
+        if (expr is bound.BoundExpression.new_expr) {
+            return this.lower_new(expr.new_expr);
+        }
+        if (expr is bound.BoundExpression.enum_variant) {
+            return this.lower_enum_variant(expr.enum_variant);
+        }
+        println("[IR Warning] Unhandled expression type in lower_expression");
+        return this.builder.void_value();
+    }
+
+    fun lower_literal(mut this, expr: bound.BoundLiteralExpression) -> IRValue {
+        let ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        return this.builder.emit_const(expr.value, ir_type, loc);
+    }
+
+    fun lower_identifier(mut this, expr: bound.BoundIdentifierExpression) -> IRValue {
+        if (expr.symbol.is_some()) {
+            let reg: Option<IRValue> = this.get_symbol_reg(expr.symbol.some);
+            if (reg.is_some()) {
+                let val: IRValue = reg.some;
+                // If this is a global reference, emit a load
+                if (val is IRValue.global_ref) {
+                    let ir_type: string = val.global_ref.ir_type;
+                    let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+                    return this.builder.emit_global_load(val.global_ref.name, ir_type, loc);
+                }
+                return val;
+            }
+            // Check if this is a global variable symbol
+            let sym: bound.BoundSymbol = expr.symbol.some;
+            if (sym is bound.BoundSymbol.variable) {
+                if (sym.variable.variable_kind is bound.VariableSymbolKind.Global) {
+                    let global_name: string = this.clean_function_name(sym.variable.full_name);
+                    let ir_type: string = this.bound_type_to_ir_type(sym.variable.bound_type);
+                    let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+                    return this.builder.emit_global_load(global_name, ir_type, loc);
+                }
+            }
+            println("[IR Warning] Symbol register not found for: " + expr.symbol.some.get_full_name());
+        } else {
+            println("[IR Warning] Identifier expression has no symbol");
+        }
+        let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+        return this.builder.emit_const("unknown", "void", loc);
+    }
+
+    fun lower_binary(mut this, expr: bound.BoundBinaryExpression) -> IRValue {
+        let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        if (cast<i64>(expr.operands.size()) == 0) {
+            return this.builder.emit_const("0", ir_type, loc);
+        }
+        if (cast<i64>(expr.operands.size()) == 1) {
+            return this.lower_expression(expr.operands.at(cast<u64>(0)).some);
+        }
+
+        // Lower first operand early to derive type if bound type is void
+        let first: IRValue = this.lower_expression(expr.operands.at(cast<u64>(0)).some);
+        if (ir_type == "void" || ir_type == "unknown") {
+            let first_type: string = first.get_ir_type();
+            if (first_type != "void" && first_type != "unknown") {
+                ir_type = first_type;
+            }
+        }
+
+        // Special handling for `is` expression (pattern matching / type check)
+        if (cast<i64>(expr.operators.size()) > 0) {
+            let first_op: ast.BinaryOperator = expr.operators.at(cast<u64>(0)).some;
+            if (first_op is ast.BinaryOperator.Is) {
+                let left: IRValue = this.lower_expression(expr.operands.at(cast<u64>(0)).some);
+                let right: bound.BoundExpression = expr.operands.at(cast<u64>(1)).some;
+                // Enum variant check: x is EnumType.Variant
+                if (right is bound.BoundExpression.member_access) {
+                    let ma: bound.BoundMemberAccessExpression = right.member_access;
+                    if (ma.member_symbol.is_some()) {
+                        let sym: bound.BoundSymbol = ma.member_symbol.some;
+                        if (sym is bound.BoundSymbol.enum_member) {
+                            let idx_const: IRValue = this.builder.emit_const(cast<string>(sym.enum_member.enum_value), "i64", loc);
+                            return this.builder.emit_isenum(left, idx_const, loc);
+                        }
+                    }
+                }
+                // Interface/class type check: x is InterfaceType or x is ClassName
+                if (right is bound.BoundExpression.identifier) {
+                    let id_expr: bound.BoundIdentifierExpression = right.identifier;
+                    if (id_expr.symbol.is_some()) {
+                        let sym: bound.BoundSymbol = id_expr.symbol.some;
+                        if (sym is bound.BoundSymbol.type_sym) {
+                            let type_id: string = sym.type_sym.full_name;
+                            return this.builder.emit_isinstance(left, type_id, loc);
+                        }
+                    }
+                }
+                // Fallback: emit false constant
+                return this.builder.emit_const_bool(false, loc);
+            }
+        }
+
+        return this.lower_binary_chain(expr, ir_type, 1, first);
+    }
+
+    fun lower_binary_chain(mut this, expr: bound.BoundBinaryExpression, ir_type: string, idx: i64, accum: IRValue) -> IRValue {
+        if (idx >= cast<i64>(expr.operands.size())) {
+            return accum;
+        }
+        let right: IRValue = this.lower_expression(expr.operands.at(cast<u64>(idx)).some);
+        let op_idx: i64 = idx - 1;
+        if (op_idx >= cast<i64>(expr.operators.size())) {
+            return accum;
+        }
+        let op: ast.BinaryOperator = expr.operators.at(cast<u64>(op_idx)).some;
+        let ir_op: string = this.binary_op_to_ir(op);
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        return this.lower_binary_chain(expr, ir_type, idx + 1, this.builder.emit_binop(ir_op, accum, right, ir_type, loc));
+    }
+
+    fun lower_unary(mut this, expr: bound.BoundUnaryExpression) -> IRValue {
+        let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        if (expr.operand.is_some()) {
+            let operand: IRValue = this.lower_expression(expr.operand.some);
+            if (ir_type == "void" || ir_type == "unknown") {
+                let op_type: string = operand.get_ir_type();
+                if (op_type != "void" && op_type != "unknown") {
+                    ir_type = op_type;
+                }
+            }
+            let op: string = this.unary_op_to_ir(expr.operator_value);
+            return this.builder.emit_unaryop(op, operand, ir_type, loc);
+        }
+        println("[IR Warning] Unary expression has no operand");
+        return this.builder.emit_const("0", ir_type, loc);
+    }
+
+    fun lower_function_call(mut this, expr: bound.BoundFunctionCallExpression) -> IRValue {
+        let args: mut List<IRValue> = new List<IRValue>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(expr.arguments.size())) {
+            args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
+            ai = ai + 1;
+        }
+        // Track if this is a method call on a generic type for name mangling
+        let has_generic_receiver: mut bool = false;
+        let generic_args_list: mut List<bound.BoundType> = new List<bound.BoundType>();
+        let template_class_name: mut string = "";
+        if (expr.callee.is_some()) {
+            let callee_expr: bound.BoundExpression = expr.callee.some;
+            if (callee_expr is bound.BoundExpression.member_access) {
+                let ma: bound.BoundMemberAccessExpression = callee_expr.member_access;
+                if (ma.base_expr.is_some() && expr.callee_symbol.is_some()) {
+                    let sym: bound.BoundSymbol = expr.callee_symbol.some;
+                    if (sym is bound.BoundSymbol.function_sym) {
+                        // For direct dispatch (boxing optimization), use the original value
+                        // expression without boxing
+                        let dd_val: IRValue = this.lower_direct_dispatch_this(ma, expr);
+                        let new_args: mut List<IRValue> = new List<IRValue>();
+                        if (dd_val.get_ir_type() == "void") {
+                            new_args.push(this.lower_expression(ma.base_expr.some));
+                        } else {
+                            new_args.push(dd_val);
+                        }
+                        let ai2: mut i64 = 0;
+                        while (ai2 < cast<i64>(args.size())) {
+                            new_args.push(args.at(cast<u64>(ai2)).some);
+                            ai2 = ai2 + 1;
+                        }
+                        args = new_args;
+                        // Check if receiver type has generic args
+                        let receiver_type: bound.BoundType = ma.base_expr.some.get_bound_type();
+                        if (cast<i64>(receiver_type.generic_args.size()) > 0 && receiver_type.type_definition.is_some()) {
+                            let recv_def: bound.BoundDefinition = receiver_type.type_definition.some;
+                            if (recv_def is bound.BoundDefinition.class_def) {
+                                if (recv_def.class_def.is_generic_template) {
+                                    has_generic_receiver = true;
+                                    generic_args_list = receiver_type.generic_args;
+                                    template_class_name = recv_def.class_def.name;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let ret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let loc: IRSourceLocation = this.sym_loc(expr.callee_symbol);
+        if (expr.callee_symbol.is_some()) {
+            let sym: bound.BoundSymbol = expr.callee_symbol.some;
+            let func_name: mut string = this.clean_function_name(sym.get_full_name());
+            if (has_generic_receiver) {
+                let mangled_class: string = this.mangle_generic_name(template_class_name, generic_args_list);
+                func_name = this.replace_in_func_name(func_name, template_class_name, mangled_class);
+            }
+            if (expr.is_generic_function_call) {
+                let mangled_func: string = this.mangle_generic_name(sym.get_name(), expr.generic_args);
+                func_name = this.replace_in_func_name(func_name, sym.get_name(), mangled_func);
+            }
+            if (expr.is_virtual) {
+                let interface_id: string = this.resolve_interface_id(expr);
+                let slot: i64 = this.resolve_vtable_slot(expr);
+                let obj: IRValue = args.at(cast<u64>(0)).some;
+                let result: Option<IRValue> = this.builder.emit_call_virt(obj, interface_id, slot, args, ret_type, loc);
+                if (result.is_some()) { return result.some; }
+                return this.builder.void_value();
+            }
+            if (sym is bound.BoundSymbol.function_sym) {
+                if (sym.function_sym.is_extern) {
+                    this.ensure_extern_decl(func_name, args, ret_type);
+                }
+            }
+            let result: Option<IRValue> = this.builder.emit_call(func_name, args, ret_type, loc);
+            if (result.is_some()) { return result.some; }
+            return this.builder.void_value();
+        }
+        println("[IR Warning] Function call has no callee symbol");
+        return this.builder.void_value();
+    }
+
+    // For boxing optimization: when direct_dispatch=true, lower the inner expression
+    // of the cast (skipping the box). Returns empty IRValue if not applicable.
+    fun lower_direct_dispatch_this(mut this, ma: bound.BoundMemberAccessExpression, call_expr: bound.BoundFunctionCallExpression) -> IRValue {
+        if (!call_expr.direct_dispatch) {
+            return this.builder.void_value();
+        }
+        if (ma.base_expr.is_some()) {
+            let base: bound.BoundExpression = ma.base_expr.some;
+            if (base is bound.BoundExpression.cast_expr) {
+                let cast_e: bound.BoundCastExpression = base.cast_expr;
+                if (cast_e.needs_boxing) {
+                    if (cast_e.inner.is_some()) {
+                        return this.lower_expression(cast_e.inner.some);
+                    }
+                }
+            }
+        }
+        return this.builder.void_value();
+    }
+
+    fun replace_in_func_name(this, func_name: string, old_class: string, new_class: string) -> string {
+        if (func_name == old_class) {
+            return new_class;
+        }
+        let dot_pos: i64 = string_find(func_name, "." + old_class + ".");
+        if (dot_pos >= 0) {
+            let before: string = string_substring(func_name, 0, dot_pos);
+            let after_start: i64 = dot_pos + string_length(old_class) + 2;
+            let after_len: i64 = string_length(func_name) - after_start;
+            let after: string = string_substring(func_name, after_start, after_len);
+            return before + "." + new_class + "." + after;
+        }
+        let dot_pos2: i64 = string_find(func_name, "." + old_class);
+        if (dot_pos2 >= 0) {
+            let before2: string = string_substring(func_name, 0, dot_pos2);
+            return before2 + "." + new_class;
+        }
+        if (string_find(func_name, old_class + ".") == 0) {
+            let after_start: i64 = string_length(old_class) + 1;
+            let after_len: i64 = string_length(func_name) - after_start;
+            let after: string = string_substring(func_name, after_start, after_len);
+            return new_class + "." + after;
+        }
+        return func_name;
+    }
+
+    fun ensure_extern_decl(mut this, func_name: string, args: List<IRValue>, ret_type: string) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.current_module.functions.size())) {
+            let existing: IRFunction = this.current_module.functions.at(cast<u64>(fi)).some;
+            if (existing.name == func_name) {
+                return;
+            }
+            fi = fi + 1;
+        }
+        let ext_func: mut IRFunction = new IRFunction(func_name, ret_type);
+        ext_func.is_extern = true;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(pi)).some;
+            let p: mut IRParameter = new IRParameter("p" + cast<string>(pi), arg.get_ir_type(), pi);
+            ext_func.parameters.push(p);
+            pi = pi + 1;
+        }
+        this.current_module.add_function(ext_func);
+    }
+
+    // Try to resolve the vtable slot index for a virtual call.
+    // For virtual calls (interface scope): find the method index among the interface's
+    // non-constructor methods, which matches the vtable slot ordering.
+    // For concrete calls (class scope): walk to find class vtable.
+    fun resolve_vtable_slot(this, expr: bound.BoundFunctionCallExpression) -> i64 {
+        if (expr.callee_symbol.is_some()) {
+            let sym: bound.BoundSymbol = expr.callee_symbol.some;
+            let scope: Option<bound.BoundScope> = sym.get_enclosing_scope();
+            if (scope.is_some()) {
+                // Virtual call: callee is in interface scope
+                if (scope.some.kind is bound.ScopeKind.InterfaceScope) {
+                    let callee_name: string = sym.get_name();
+                    // Look up the interface definition from the scope's parent
+                    if (scope.some.parent.is_some()) {
+                        let type_sym: Option<bound.BoundSymbol> = scope.some.parent.some.lookup_symbol_local(scope.some.name);
+                        if (type_sym.is_some()) {
+                            if (type_sym.some is bound.BoundSymbol.type_sym) {
+                                let ts: bound.BoundTypeSymbol = type_sym.some.type_sym;
+                                if (ts.type_definition.is_some()) {
+                                    let td: bound.BoundDefinition = ts.type_definition.some;
+                                    if (td is bound.BoundDefinition.interface_def) {
+                                        let iface: bound.BoundInterfaceDefinition = td.interface_def;
+                                        // Count non-constructor methods to find slot index
+                                        let func_idx: mut i64 = 0;
+                                        let mi: mut i64 = 0;
+                                        while (mi < cast<i64>(iface.methods.size())) {
+                                            let md: bound.BoundDefinition = iface.methods.at(cast<u64>(mi)).some;
+                                            if (md is bound.BoundDefinition.function_def) {
+                                                if (md.function_def.name == callee_name) {
+                                                    return func_idx;
+                                                }
+                                                if (md.function_def.name != "new") {
+                                                    func_idx = func_idx + 1;
+                                                }
+                                            }
+                                            mi = mi + 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                // Concrete call: find in class vtable
+                let class_def: Option<bound.BoundClassDefinition> = this.find_class_def_from_scope(scope.some);
+                if (class_def.is_some()) {
+                    let vtables: List<bound.BoundVTable> = class_def.some.vtables;
+                    let callee_name: string = sym.get_full_name();
+                    let vi: mut i64 = 0;
+                    while (vi < cast<i64>(vtables.size())) {
+                        let vtable: bound.BoundVTable = vtables.at(cast<u64>(vi)).some;
+                        let si: mut i64 = 0;
+                        while (si < cast<i64>(vtable.slots.size())) {
+                            let slot: bound.BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                            if (slot.implementation_method.is_some()) {
+                                if (slot.implementation_method.some.full_name == callee_name) {
+                                    return si;
+                                }
+                            }
+                            si = si + 1;
+                        }
+                        vi = vi + 1;
+                    }
+                    println("[IR Warning] Could not find vtable slot for: " + callee_name);
+                }
+            }
+        }
+        return 0;
+    }
+
+    // Walk up the scope chain to find a ClassScope, then look up the type symbol
+    // in the parent scope to get the BoundClassDefinition with vtables.
+    fun find_class_def_from_scope(this, scope: bound.BoundScope) -> Option<bound.BoundClassDefinition> {
+        if (scope.kind is bound.ScopeKind.ClassScope) {
+            if (scope.parent.is_some()) {
+                let type_sym: Option<bound.BoundSymbol> = scope.parent.some.lookup_symbol_local(scope.name);
+                if (type_sym.is_some()) {
+                    if (type_sym.some is bound.BoundSymbol.type_sym) {
+                        let ts: bound.BoundTypeSymbol = type_sym.some.type_sym;
+                        if (ts.type_definition.is_some()) {
+                            if (ts.type_definition.some is bound.BoundDefinition.class_def) {
+                                return new Option<bound.BoundClassDefinition>.some(ts.type_definition.some.class_def);
+                            }
+                        }
+                    }
+                }
+            }
+            return new Option<bound.BoundClassDefinition>.none();
+        }
+        if (scope.parent.is_some()) {
+            return this.find_class_def_from_scope(scope.parent.some);
+        }
+        return new Option<bound.BoundClassDefinition>.none();
+    }
+
+    // Resolve the interface ID for a virtual call.
+    // Looks at the callee symbol's scope to find which interface it belongs to,
+    // then returns the interface type's display name.
+    fun resolve_interface_id(this, expr: bound.BoundFunctionCallExpression) -> string {
+        if (expr.callee_symbol.is_some()) {
+            let sym: bound.BoundSymbol = expr.callee_symbol.some;
+            let scope: Option<bound.BoundScope> = sym.get_enclosing_scope();
+            if (scope.is_some()) {
+                if (scope.some.kind is bound.ScopeKind.InterfaceScope) {
+                    return scope.some.name;
+                }
+            }
+        }
+        return "";
+    }
+
+    fun lower_code_block(mut this, expr: bound.BoundCodeBlockExpression) -> IRValue {
+        let si: mut i64 = 0;
+        while (si < cast<i64>(expr.statements.size())) {
+            this.lower_statement(expr.statements.at(cast<u64>(si)).some);
+            if (this.builder.func.has_terminator()) {
+                return this.builder.void_value();
+            }
+            si = si + 1;
+        }
+        if (expr.trailing_expr.is_some()) {
+            return this.lower_expression(expr.trailing_expr.some);
+        }
+        return this.builder.void_value();
+    }
+
+    fun lower_cast(mut this, expr: bound.BoundCastExpression) -> IRValue {
+        let inner: IRValue = this.lower_expression(expr.inner.some);
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+
+        // Boxing: value type → interface
+        if (expr.needs_boxing) {
+            return this.builder.emit_box(inner, expr.source_type_name, loc);
+        }
+
+        // Unboxing: interface → value type
+        if (expr.needs_unboxing) {
+            let target_type: bound.BoundType = expr.get_bound_type();
+            let ir_type: string = this.bound_type_to_ir_type(target_type);
+            return this.builder.emit_unbox(inner, expr.source_type_name, ir_type, loc);
+        }
+
+        // Standard cast
+        let ir_from_type: string = inner.get_ir_type();
+        let from_type: mut string = this.bound_type_to_ir_type(expr.inner.some.get_bound_type());
+        if (ir_from_type != "unknown" && ir_from_type != "void") {
+            from_type = ir_from_type;
+        }
+        let to_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        return this.builder.emit_cast(inner, from_type, to_type, loc);
+    }
+
+    fun lower_if_expr(mut this, expr: bound.BoundIfExpression) -> IRValue {
+        let ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let is_void: bool = ir_type == "void";
+        let merge_lbl: IRLabel = this.builder.func.alloc_label("merge");
+        let result: IRValue = this.builder.func.alloc_temp(ir_type);
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        if (expr.condition.is_some()) {
+            let cond: IRValue = this.lower_expression(expr.condition.some);
+            if (expr.else_block.is_some()) {
+                let then_lbl: IRLabel = this.builder.func.alloc_label("then");
+                let else_lbl: IRLabel = this.builder.func.alloc_label("else");
+                this.builder.emit_br_cond(cond, then_lbl, else_lbl, loc);
+                this.builder.emit_label(then_lbl);
+                if (expr.then_block.is_some()) {
+                    let then_val: IRValue = this.lower_expression(expr.then_block.some);
+                    if (!is_void) {
+                        this.builder.emit_assign(result, then_val, loc);
+                    }
+                }
+                if (!this.builder.func.has_terminator()) {
+                    this.builder.emit_br(merge_lbl, loc);
+                }
+                this.builder.emit_label(else_lbl);
+                let else_val: IRValue = this.lower_expression(expr.else_block.some);
+                if (!is_void) {
+                    this.builder.emit_assign(result, else_val, loc);
+                }
+            } else {
+                let then_lbl: IRLabel = this.builder.func.alloc_label("then");
+                this.builder.emit_br_cond(cond, then_lbl, merge_lbl, loc);
+                this.builder.emit_label(then_lbl);
+                if (expr.then_block.is_some()) {
+                    let then_val: IRValue = this.lower_expression(expr.then_block.some);
+                    if (!is_void) {
+                        this.builder.emit_assign(result, then_val, loc);
+                    }
+                }
+            }
+        }
+        this.builder.emit_label(merge_lbl);
+        if (!is_void) {
+            return result;
+        }
+        return this.builder.void_value();
+    }
+
+    fun lower_while_expr(mut this, expr: bound.BoundWhileExpression) -> IRValue {
+        let header_lbl: IRLabel = this.builder.func.alloc_label("while");
+        let body_lbl: IRLabel = this.builder.func.alloc_label("while_body");
+        let exit_lbl: IRLabel = this.builder.func.alloc_label("while_exit");
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        this.loop_stack.push(new LoopLabels(header_lbl, exit_lbl));
+        this.builder.emit_label(header_lbl);
+        if (expr.condition.is_some()) {
+            let cond: IRValue = this.lower_expression(expr.condition.some);
+            this.builder.emit_br_cond(cond, body_lbl, exit_lbl, loc);
+        }
+        this.builder.emit_label(body_lbl);
+        if (expr.body.is_some()) {
+            let _ = this.lower_expression(expr.body.some);
+        }
+        if (!this.builder.func.has_terminator()) {
+            this.builder.emit_br(header_lbl, loc);
+        }
+        this.builder.emit_label(exit_lbl);
+        if (cast<i64>(this.loop_stack.size()) > 0) {
+            this.loop_stack.pop();
+        }
+        return this.builder.void_value();
+    }
+
+    fun lower_member_access(mut this, expr: bound.BoundMemberAccessExpression) -> IRValue {
+        let loc: IRSourceLocation = this.sym_loc(expr.member_symbol);
+
+        // Handle namespace-qualified global variable access (e.g., Foo.msg)
+        if (expr.member_symbol.is_some()) {
+            let sym: bound.BoundSymbol = expr.member_symbol.some;
+            if (sym is bound.BoundSymbol.variable) {
+                if (sym.variable.variable_kind is bound.VariableSymbolKind.Global) {
+                    // Look up the global_ref from symbol_regs (registered by lower_global_var_def)
+                    let reg: Option<IRValue> = this.get_symbol_reg(sym);
+                    if (reg.is_some()) {
+                        if (reg.some is IRValue.global_ref) {
+                            let ir_type: string = reg.some.global_ref.ir_type;
+                            let global_name: string = reg.some.global_ref.name;
+                            return this.builder.emit_global_load(global_name, ir_type, loc);
+                        }
+                    }
+                    // Fallback: use the symbol's bound_type
+                    let global_name: string = this.clean_function_name(sym.variable.full_name);
+                    let ir_type: string = this.bound_type_to_ir_type(sym.variable.bound_type);
+                    return this.builder.emit_global_load(global_name, ir_type, loc);
+                }
+            }
+        }
+
+        if (expr.base_expr.is_some()) {
+            let obj: IRValue = this.lower_expression(expr.base_expr.some);
+
+            // Check if this is enum payload access (e.g., a.some where a is Option<i64>)
+            if (expr.member_symbol.is_some()) {
+                let sym: bound.BoundSymbol = expr.member_symbol.some;
+                if (sym is bound.BoundSymbol.enum_member) {
+                    let payload_type: string = this.bound_type_to_ir_type(sym.enum_member.member_type);
+                    return this.builder.emit_rdenum(obj, expr.member_name, payload_type, loc);
+                }
+            }
+
+            // Regular member access (class fields)
+            let base_type: string = this.bound_type_to_ir_type(expr.bound_type);
+            if (base_type == "void") {
+                println("[IR Warning] Member access resolved to void type, using i64 as fallback for: " + expr.member_name);
+                return this.builder.emit_rdmbr(obj, expr.member_name, "i64", loc);
+            }
+            return this.builder.emit_rdmbr(obj, expr.member_name, base_type, loc);
+        }
+        println("[IR Warning] Member access has no base expression for: " + expr.member_name);
+        return this.builder.emit_const("error", "void", loc);
+    }
+
+    fun lower_new(mut this, expr: bound.BoundNewExpression) -> IRValue {
+        let args: mut List<IRValue> = new List<IRValue>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(expr.arguments.size())) {
+            args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
+            ai = ai + 1;
+        }
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        if (expr.type_symbol.is_some()) {
+            let type_name: mut string = expr.type_symbol.some.full_name;
+            if (cast<i64>(expr.bound_type.generic_args.size()) > 0) {
+                let base_name: string = expr.type_symbol.some.name;
+                let mangled: string = this.mangle_generic_name(base_name, expr.bound_type.generic_args);
+                let scope_dot: i64 = string_find(type_name, "." + base_name);
+                if (scope_dot >= 0) {
+                    let prefix: string = string_substring(type_name, 0, scope_dot);
+                    type_name = prefix + "." + mangled;
+                } else {
+                    type_name = mangled;
+                }
+            }
+            return this.builder.emit_new(type_name, args, loc);
+        }
+        println("[IR Warning] new expression has no type symbol, using Object as fallback");
+        return this.builder.emit_new("Object", args, loc);
+    }
+
+    fun mangle_generic_name(this, base_name: string, generic_args: List<bound.BoundType>) -> string {
+        let sb: mut StringBuilder = new StringBuilder();
+        sb.append(base_name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(generic_args.size())) {
+            sb.append("__");
+            let arg_name: string = generic_args.at(cast<u64>(i)).some.display_name();
+            let sanitized: mut StringBuilder = new StringBuilder();
+            let j: mut i64 = 0;
+            while (j < string_length(arg_name)) {
+                let ch: string = string_char_at(arg_name, j);
+                if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
+                    sanitized.append("_");
+                } else {
+                    sanitized.append(ch);
+                }
+                j = j + 1;
+            }
+            sb.append(sanitized.to_string());
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    // Wrap a BoundStatement as a void BoundExpression (code block)
+    fun wrap_stmt_as_expr(this, stmt: bound.BoundStatement) -> bound.BoundExpression {
+        let void_type: bound.BoundType = new bound.BoundType();
+        let stmts: mut List<bound.BoundStatement> = new List<bound.BoundStatement>();
+        stmts.push(stmt);
+        let cb: bound.BoundCodeBlockExpression = new bound.BoundCodeBlockExpression(void_type, stmts, new Option<bound.BoundExpression>.none(), new Option<bound.BoundScope>.none());
+        return new bound.BoundExpression.code_block(cb);
+    }
+
+    // Convert Option<BoundStatement> to Option<BoundExpression> by wrapping as code block
+    fun wrap_stmt_option(this, stmt_opt: Option<bound.BoundStatement>) -> Option<bound.BoundExpression> {
+        if (stmt_opt.is_some()) {
+            return new Option<bound.BoundExpression>.some(this.wrap_stmt_as_expr(stmt_opt.some));
+        }
+        return new Option<bound.BoundExpression>.none();
+    }
+
+    fun lower_enum_variant(mut this, expr: bound.BoundEnumVariantExpression) -> IRValue {
+        let payload: mut Option<IRValue> = new Option<IRValue>.none();
+        if (expr.payload.is_some()) {
+            payload = new Option<IRValue>.some(this.lower_expression(expr.payload.some));
+        }
+        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let enum_ir_type: string = "enum<" + expr.enum_type.display_name() + ">";
+        return this.builder.emit_new_enum(enum_ir_type, expr.variant_idx, expr.variant_name, payload, loc);
+    }
+
+    fun lower_statement(mut this, stmt: bound.BoundStatement) {
+        if (stmt is bound.BoundStatement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                let _ = this.lower_expression(stmt.expression.expression.some);
+            }
+        }
+        if (stmt is bound.BoundStatement.return_stmt) {
+            let loc: IRSourceLocation = this.make_loc(0, 0);
+            if (stmt.return_stmt.value.is_some()) {
+                let val: IRValue = this.lower_expression(stmt.return_stmt.value.some);
+                this.builder.emit_ret(val, loc);
+            } else {
+                this.builder.emit_ret_void(loc);
+            }
+        }
+        if (stmt is bound.BoundStatement.let_decl) {
+            this.lower_let_decl(stmt.let_decl);
+        }
+        if (stmt is bound.BoundStatement.assignment) {
+            this.lower_assignment(stmt.assignment);
+        }
+        if (stmt is bound.BoundStatement.if_stmt) {
+            this.lower_if_stmt(stmt.if_stmt);
+        }
+        if (stmt is bound.BoundStatement.while_stmt) {
+            this.lower_while_stmt(stmt.while_stmt);
+        }
+        if (stmt is bound.BoundStatement.for_stmt) {
+            println("[IR Error] for loops are not yet supported in IR generation (requires standard library support)");
+        }
+        if (stmt is bound.BoundStatement.block) {
+            this.lower_block(stmt.block);
+        }
+        if (stmt is bound.BoundStatement.break_stmt) {
+            this.lower_break(stmt.break_stmt);
+        }
+        if (stmt is bound.BoundStatement.continue_stmt) {
+            this.lower_continue(stmt.continue_stmt);
+        }
+    }
+
+    fun lower_let_decl(mut this, stmt: bound.BoundLetDeclarationStatement) {
+        if (stmt.variable_symbol.is_some()) {
+            let sym: bound.BoundVariableSymbol = stmt.variable_symbol.some;
+            let ir_type: string = this.bound_type_to_ir_type(sym.bound_type);
+            let loc: IRSourceLocation = this.make_loc(sym.source_line, sym.source_col);
+            let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, ir_type, loc.line, loc.column);
+            this.set_symbol_reg(new bound.BoundSymbol.variable(sym), reg);
+            if (stmt.initializer.is_some()) {
+                let init_expr: bound.BoundExpression = stmt.initializer.some;
+                if (init_expr is bound.BoundExpression.literal) {
+                    let lit: bound.BoundLiteralExpression = init_expr.literal;
+                    this.builder.emit_const_direct(reg, lit.value, loc);
+                } else {
+                    let init_val: IRValue = this.lower_expression(init_expr);
+                    this.builder.emit_assign(reg, init_val, loc);
+                }
+            }
+        }
+    }
+
+    fun lower_assignment(mut this, stmt: bound.BoundAssignmentStatement) {
+        if (stmt.value.is_some()) {
+            let val: IRValue = this.lower_expression(stmt.value.some);
+            let loc: IRSourceLocation = this.make_loc(0, 0);
+
+            // Check if target is member access (p.x = value or a.some = value)
+            if (stmt.target.is_some() && stmt.target.some is bound.BoundExpression.member_access) {
+                let member_expr: bound.BoundMemberAccessExpression = stmt.target.some.member_access;
+
+                // Check if this is enum payload assignment (a.some = 2)
+                if (member_expr.member_symbol.is_some()) {
+                    let sym: bound.BoundSymbol = member_expr.member_symbol.some;
+                    if (sym is bound.BoundSymbol.variable) {
+                        if (sym.variable.variable_kind is bound.VariableSymbolKind.Global) {
+                            // Namespace-qualified global variable assignment (e.g., Foo.msg = value)
+                            let global_name: string = this.clean_function_name(sym.variable.full_name);
+                            this.builder.emit_global_store(global_name, val, loc);
+                            return;
+                        }
+                    }
+                    if (sym is bound.BoundSymbol.enum_member) {
+                        if (member_expr.base_expr.is_some()) {
+                            let obj: IRValue = this.lower_expression(member_expr.base_expr.some);
+                            let enum_type: string = this.bound_type_to_ir_type(member_expr.base_expr.some.get_bound_type());
+                            let variant_idx: i64 = sym.enum_member.enum_value;
+                            let variant_name: string = sym.enum_member.name;
+                            let new_enum: IRValue = this.builder.emit_new_enum(enum_type, variant_idx, variant_name, new Option<IRValue>.some(val), loc);
+
+                            if (stmt.target_symbol.is_some()) {
+                                let reg: Option<IRValue> = this.get_symbol_reg(stmt.target_symbol.some);
+                                if (reg.is_some()) {
+                                    this.builder.emit_assign(reg.some, new_enum, loc);
+                                } else {
+                                    println("[IR Warning] Enum payload assignment: target symbol register not found");
+                                }
+                            } else {
+                                println("[IR Warning] Enum payload assignment: no target symbol");
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                // Regular member access (class fields)
+                if (member_expr.base_expr.is_some()) {
+                    let obj: IRValue = this.lower_expression(member_expr.base_expr.some);
+                    this.builder.emit_wrmbr(obj, member_expr.member_name, val, loc);
+                    return;
+                }
+            }
+
+            // Regular variable assignment
+            if (stmt.target_symbol.is_some()) {
+                let reg: Option<IRValue> = this.get_symbol_reg(stmt.target_symbol.some);
+                if (reg.is_some()) {
+                    // If target is a global reference, emit global store
+                    if (reg.some is IRValue.global_ref) {
+                        this.builder.emit_global_store(reg.some.global_ref.name, val, loc);
+                    } else {
+                        this.builder.emit_assign(reg.some, val, loc);
+                    }
+                } else {
+                    // Check if this is a global variable symbol
+                    let sym: bound.BoundSymbol = stmt.target_symbol.some;
+                    if (sym is bound.BoundSymbol.variable) {
+                        if (sym.variable.variable_kind is bound.VariableSymbolKind.Global) {
+                            let global_name: string = this.clean_function_name(sym.variable.full_name);
+                            this.builder.emit_global_store(global_name, val, loc);
+                        } else {
+                            println("[IR Warning] Variable assignment: register not found for: " + stmt.target_symbol.some.get_full_name());
+                        }
+                    } else {
+                        println("[IR Warning] Variable assignment: register not found for: " + stmt.target_symbol.some.get_full_name());
+                    }
+                }
+            }
+        }
+    }
+
+    fun lower_if_stmt(mut this, stmt: bound.BoundIfStatement) {
+        let void_type: bound.BoundType = new bound.BoundType();
+        let then_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.then_statement);
+        let else_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.else_statement);
+        let if_expr: bound.BoundIfExpression = new bound.BoundIfExpression(void_type, stmt.condition, then_expr, else_expr);
+        let _: IRValue = this.lower_if_expr(if_expr);
+    }
+
+    fun lower_while_stmt(mut this, stmt: bound.BoundWhileStatement) {
+        let void_type: bound.BoundType = new bound.BoundType();
+        let body_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.body);
+        let while_expr: bound.BoundWhileExpression = new bound.BoundWhileExpression(void_type, stmt.condition, body_expr);
+        let _: IRValue = this.lower_while_expr(while_expr);
+    }
+
+    fun lower_block(mut this, stmt: bound.BoundBlockStatement) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(stmt.statements.size())) {
+            this.lower_statement(stmt.statements.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+    }
+
+    fun lower_break(mut this, stmt: bound.BoundBreakStatement) {
+        if (cast<i64>(this.loop_stack.size()) > 0) {
+            let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
+            let loc: IRSourceLocation = this.make_loc(0, 0);
+            this.builder.emit_br(labels.exit, loc);
+        }
+    }
+
+    fun lower_continue(mut this, stmt: bound.BoundContinueStatement) {
+        if (cast<i64>(this.loop_stack.size()) > 0) {
+            let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
+            let loc: IRSourceLocation = this.make_loc(0, 0);
+            this.builder.emit_br(labels.header, loc);
+        }
+    }
+
+    fun bound_type_to_ir_type(this, bt: bound.BoundType) -> string {
+        if (bt.kind is bound.TypeKind.PrimitiveKind) {
+            if (bt.primitive is bound.PrimitiveType.BoolType) { return "bool"; }
+            if (bt.primitive is bound.PrimitiveType.I8) { return "i8"; }
+            if (bt.primitive is bound.PrimitiveType.I16) { return "i16"; }
+            if (bt.primitive is bound.PrimitiveType.I32) { return "i32"; }
+            if (bt.primitive is bound.PrimitiveType.I64) { return "i64"; }
+            if (bt.primitive is bound.PrimitiveType.U8) { return "u8"; }
+            if (bt.primitive is bound.PrimitiveType.U16) { return "u16"; }
+            if (bt.primitive is bound.PrimitiveType.U32) { return "u32"; }
+            if (bt.primitive is bound.PrimitiveType.U64) { return "u64"; }
+            if (bt.primitive is bound.PrimitiveType.F32) { return "f32"; }
+            if (bt.primitive is bound.PrimitiveType.F64) { return "f64"; }
+            if (bt.primitive is bound.PrimitiveType.CharType) { return "char"; }
+            if (bt.primitive is bound.PrimitiveType.StringType) { return "ref<string>"; }
+            if (bt.primitive is bound.PrimitiveType.VoidType) { return "void"; }
+        }
+        if (bt.kind is bound.TypeKind.ClassKind) {
+            if (bt.type_definition.is_some()) {
+                let base_name: string = bt.type_definition.some.get_name();
+                if (cast<i64>(bt.generic_args.size()) > 0) {
+                    return "ref<" + this.mangle_generic_name(base_name, bt.generic_args) + ">";
+                }
+                return "ref<" + base_name + ">";
+            }
+            return "ref<unknown>";
+        }
+        if (bt.kind is bound.TypeKind.EnumKind) {
+            if (bt.type_definition.is_some()) {
+                return "enum<" + bt.type_definition.some.get_name() + ">";
+            }
+            return "enum<unknown>";
+        }
+        if (bt.kind is bound.TypeKind.InterfaceKind) {
+            if (bt.type_definition.is_some()) {
+                return "ref<" + bt.type_definition.some.get_name() + ">";
+            }
+            return "ref<unknown>";
+        }
+        if (bt.kind is bound.TypeKind.FunctionKind) { return "funptr"; }
+        return "void";
+    }
+
+    fun binary_op_to_ir(this, op: ast.BinaryOperator) -> string {
+        if (op is ast.BinaryOperator.Add) { return "add"; }
+        if (op is ast.BinaryOperator.Subtract) { return "sub"; }
+        if (op is ast.BinaryOperator.Multiply) { return "mul"; }
+        if (op is ast.BinaryOperator.Divide) { return "div"; }
+        if (op is ast.BinaryOperator.Modulo) { return "mod"; }
+        if (op is ast.BinaryOperator.Equal) { return "eq"; }
+        if (op is ast.BinaryOperator.NotEqual) { return "ne"; }
+        if (op is ast.BinaryOperator.LessThan) { return "slt"; }
+        if (op is ast.BinaryOperator.GreaterThan) { return "sgt"; }
+        if (op is ast.BinaryOperator.LessThanOrEqual) { return "sle"; }
+        if (op is ast.BinaryOperator.GreaterThanOrEqual) { return "sge"; }
+        if (op is ast.BinaryOperator.BitwiseAnd) { return "and"; }
+        if (op is ast.BinaryOperator.BitwiseOr) { return "or"; }
+        if (op is ast.BinaryOperator.BitwiseXor) { return "xor"; }
+        // Is is handled separately in lower_binary via emit_isenum
+        println("[IR Warning] Unhandled binary operator, using 'unknown'");
+        return "unknown";
+    }
+
+    fun unary_op_to_ir(this, op: ast.UnaryOperator) -> string {
+        if (op is ast.UnaryOperator.Negate) { return "neg"; }
+        if (op is ast.UnaryOperator.Not) { return "not"; }
+        if (op is ast.UnaryOperator.BitwiseNot) { return "bitnot"; }
+        println("[IR Warning] Unhandled unary operator, using 'unknown'");
+        return "unknown";
+    }
+
+    fun get_symbol_reg(this, symbol: bound.BoundSymbol) -> Option<IRValue> {
+        let name: string = symbol.get_full_name();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbol_regs.size())) {
+            let entry: SymbolRegEntry = this.symbol_regs.at(cast<u64>(i)).some;
+            if (entry.symbol_full_name == name) {
+                return new Option<IRValue>.some(entry.value);
+            }
+            i = i + 1;
+        }
+        return new Option<IRValue>.none();
+    }
+
+    fun set_symbol_reg(mut this, symbol: bound.BoundSymbol, value: IRValue) {
+        this.symbol_regs.push(new SymbolRegEntry(symbol.get_full_name(), value));
+    }
+
+    fun set_symbol_reg_by_name(mut this, name: string, value: IRValue) {
+        this.symbol_regs.push(new SymbolRegEntry(name, value));
+    }
+
+    fun clean_function_name(this, full_name: string) -> string {
+        let prefix: string = "<global>.";
+        let prefix_len: i64 = string_length(prefix);
+        let full_len: i64 = string_length(full_name);
+        if (full_len > prefix_len) {
+            let i: mut i64 = 0;
+            let matches: mut bool = true;
+            while (i < prefix_len) {
+                let ch: string = string_char_at(full_name, i);
+                let pref_ch: string = string_char_at(prefix, i);
+                if (ch != pref_ch) {
+                    matches = false;
+                }
+                i = i + 1;
+            }
+            if (matches) {
+                return string_substring(full_name, prefix_len, full_len - prefix_len);
+            }
+        }
+        return full_name;
+    }
+
+    fun reset_locals(mut this) {
+        // Preserve global variable symbol registrations across function boundaries
+        let saved_globals: mut List<SymbolRegEntry> = new List<SymbolRegEntry>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbol_regs.size())) {
+            let entry: SymbolRegEntry = this.symbol_regs.at(cast<u64>(i)).some;
+            if (entry.value is IRValue.global_ref) {
+                saved_globals.push(entry);
+            }
+            i = i + 1;
+        }
+        this.symbol_regs = saved_globals;
+        this.loop_stack = new List<LoopLabels>();
+    }
+}
+
+}

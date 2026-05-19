@@ -1,0 +1,2257 @@
+namespace llvm {
+
+class FieldLayout {
+    field_name: string = "";
+    llvm_type: string = "";
+    byte_offset: i64 = 0;
+    field_index: i64 = 0;
+
+    fun new(mut this, field_name: string, llvm_type: string, byte_offset: i64, field_index: i64) {
+        this.field_name = field_name;
+        this.llvm_type = llvm_type;
+        this.byte_offset = byte_offset;
+        this.field_index = field_index;
+    }
+}
+
+class InterfaceVTable {
+    interface_name: string = "";
+    method_ptrs: mut List<string> = new List<string>();
+
+    fun new(mut this, interface_name: string) {
+        this.interface_name = interface_name;
+    }
+}
+
+class ClassLayout {
+    type_name: string = "";
+    is_value_type: bool = true;
+    llvm_struct_type: string = "";
+    fields: mut List<FieldLayout> = new List<FieldLayout>();
+    sizeof_object: mut i64 = 0;
+    has_metadata: bool = false;
+    interface_vtables: mut List<InterfaceVTable> = new List<InterfaceVTable>();
+
+    fun new(mut this, type_name: string, is_value_type: bool, has_metadata: bool) {
+        this.type_name = type_name;
+        this.is_value_type = is_value_type;
+        this.has_metadata = has_metadata;
+        this.llvm_struct_type = "%class." + type_name;
+    }
+
+    fun total_vtable_entries(this) -> i64 {
+        let count: mut i64 = 0;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.interface_vtables.size())) {
+            count = count + cast<i64>(this.interface_vtables.at(cast<u64>(i)).some.method_ptrs.size());
+            i = i + 1;
+        }
+        return count;
+    }
+}
+
+class EnumVariantLayout {
+    name: string = "";
+    index: i64 = 0;
+    payload_llvm_type: string = "";
+
+    fun new(mut this, name: string, index: i64, payload_llvm_type: string) {
+        this.name = name;
+        this.index = index;
+        this.payload_llvm_type = payload_llvm_type;
+    }
+}
+
+class EnumLayout {
+    type_name: string = "";
+    llvm_struct_type: string = "";
+    variants: mut List<EnumVariantLayout> = new List<EnumVariantLayout>();
+    payload_llvm_type: string = "";
+    has_payload: bool = false;
+    interface_vtables: mut List<InterfaceVTable> = new List<InterfaceVTable>();
+
+    fun new(mut this, type_name: string) {
+        this.type_name = type_name;
+        this.llvm_struct_type = "%enum." + type_name;
+    }
+}
+
+class StringLitEntry {
+    id: mut i64 = 0;
+    value: mut string = "";
+    fun new(mut this, id: i64, value: string) {
+        this.id = id;
+        this.value = value;
+    }
+    fun global_name(this) -> string {
+        return "@str_" + cast<string>(this.id);
+    }
+}
+
+class RegMapping {
+    ir_name: mut string = "";
+    llvm_value: mut string = "";
+    fun new(mut this, ir_name: string, llvm_value: string) {
+        this.ir_name = ir_name;
+        this.llvm_value = llvm_value;
+    }
+}
+
+class TypeIdConstant {
+    global_name: mut string = "";
+    display_name: mut string = "";
+    len: mut i64 = 0;
+    fun new(mut this, global_name: string, display_name: string, len: i64) {
+        this.global_name = global_name;
+        this.display_name = display_name;
+        this.len = len;
+    }
+}
+
+class FuncParamTypes {
+    func_name: string = "";
+    param_types: mut List<string> = new List<string>();
+
+    fun new(mut this, func_name: string) {
+        this.func_name = func_name;
+    }
+}
+
+class LLVMEmitter {
+    string_lits: mut List<StringLitEntry> = new List<StringLitEntry>();
+    next_str_id: mut i64 = 0;
+    reg_map: mut List<RegMapping> = new List<RegMapping>();
+    reg_type_map: mut List<RegMapping> = new List<RegMapping>();
+    mutable_regs: mut List<string> = new List<string>();
+    alloca_map: mut List<RegMapping> = new List<RegMapping>();
+    sb: mut StringBuilder = new StringBuilder();
+    cond_counter: mut i64 = 0;
+    current_ret_type: mut string = "void";
+    class_layouts: mut List<ClassLayout> = new List<ClassLayout>();
+    enum_layouts: mut List<EnumLayout> = new List<EnumLayout>();
+    tmp_counter: mut i64 = 0;
+    has_iref_class: mut bool = false;
+    needs_int_to_string: mut bool = false;
+    needs_string_concat: mut bool = false;
+    needs_bool_to_string: mut bool = false;
+    needs_vtable_lookup: mut bool = false;
+    needs_isinstance: mut bool = false;
+    needs_check_class: mut bool = false;
+    has_boxing: mut bool = false;
+    has_main: mut bool = false;
+    icmp_results: mut List<string> = new List<string>();
+    type_id_constants: mut List<TypeIdConstant> = new List<TypeIdConstant>();
+    emitted_interface_ids: mut List<string> = new List<string>();
+    current_unit: Option<bound.BoundCompilationUnit> = new Option<bound.BoundCompilationUnit>.none();
+    func_param_types: mut List<FuncParamTypes> = new List<FuncParamTypes>();
+
+    fun new(mut this) {}
+
+    fun lower(mut this, module: ir.IRModule, unit: bound.BoundCompilationUnit) -> string {
+        this.string_lits = new List<StringLitEntry>();
+        this.next_str_id = 0;
+        this.class_layouts = new List<ClassLayout>();
+        this.enum_layouts = new List<EnumLayout>();
+        this.tmp_counter = 0;
+        this.has_iref_class = false;
+        this.needs_int_to_string = false;
+        this.needs_string_concat = false;
+        this.needs_bool_to_string = false;
+        this.needs_vtable_lookup = false;
+        this.needs_isinstance = false;
+        this.needs_check_class = false;
+        this.has_boxing = false;
+        this.has_main = false;
+        this.type_id_constants = new List<TypeIdConstant>();
+        this.emitted_interface_ids = new List<string>();
+        this.func_param_types = new List<FuncParamTypes>();
+        this.current_unit = new Option<bound.BoundCompilationUnit>.some(unit);
+        this.collect_strings(module);
+        this.build_layout_tables(unit);
+        // Emit functions first to determine which runtime declarations are needed
+        let func_sb: mut StringBuilder = new mut StringBuilder();
+        let saved_sb: mut StringBuilder = this.sb;
+        this.sb = func_sb;
+        this.emit_functions(module);
+        this.emit_main(module);
+        this.sb = saved_sb;
+        // Now build the full output: types + globals + declarations + functions
+        this.emit_type_definitions();
+        this.emit_global_strings();
+        this.emit_global_variables(module);
+        this.emit_extern_declarations_to(this.sb, module);
+        this.emit_extern_declarations_runtime_to(this.sb);
+        this.sb.append("\n");
+        this.sb.append(func_sb.to_string());
+        return this.sb.to_string();
+    }
+
+    // --- Pass 1: collect string literals ---
+
+    fun collect_strings(mut this, module: ir.IRModule) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (!func.is_extern) {
+                this.collect_strings_in_func(func);
+            }
+            fi = fi + 1;
+        }
+        // Collect strings from global variable initializers
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(module.global_variables.size())) {
+            let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+            if (this.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
+                let val: string = this.strip_string_quotes(gv.initializer_value);
+                if (!this.find_string_lit(val).is_some()) {
+                    let id: i64 = this.next_str_id;
+                    this.next_str_id = this.next_str_id + 1;
+                    this.string_lits.push(new StringLitEntry(id, val));
+                }
+            }
+            gi = gi + 1;
+        }
+    }
+
+    fun collect_strings_in_func(mut this, func: ir.IRFunction) {
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is ir.IRInstruction.const_inst) {
+                let ir_type: string = inst.const_inst.result.get_ir_type();
+                if (this.is_string_type(ir_type)) {
+                    let raw_val: string = inst.const_inst.value;
+                    let val: string = this.strip_string_quotes(raw_val);
+                    if (!this.find_string_lit(val).is_some()) {
+                        let id: i64 = this.next_str_id;
+                        this.next_str_id = this.next_str_id + 1;
+                        this.string_lits.push(new StringLitEntry(id, val));
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun find_string_lit(this, value: string) -> Option<StringLitEntry> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.string_lits.size())) {
+            let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
+            if (entry.value == value) {
+                return new Option<StringLitEntry>.some(entry);
+            }
+            i = i + 1;
+        }
+        return new Option<StringLitEntry>.none();
+    }
+
+    // --- Pass 2: emit LLVM IR ---
+
+    fun emit_global_strings(mut this) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.string_lits.size())) {
+            let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
+            let byte_len: i64 = cast<i64>(string_length(entry.value)) + 1;
+            this.sb.append(entry.global_name() + " = private unnamed_addr constant [" + cast<string>(byte_len) + " x i8] c\"" + this.escape_llvm_string(entry.value) + "\\00\"\n");
+            i = i + 1;
+        }
+        // Emit type ID string constants for ISINSTANCE
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(this.type_id_constants.size())) {
+            let tc: TypeIdConstant = this.type_id_constants.at(cast<u64>(ti)).some;
+            this.sb.append(tc.global_name + " = private unnamed_addr constant [" + cast<string>(tc.len) + " x i8] c\"" + this.escape_llvm_string(tc.display_name) + "\\00\"\n");
+            ti = ti + 1;
+        }
+    }
+
+    fun emit_global_variables(mut this, module: ir.IRModule) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(module.global_variables.size())) {
+            let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(i)).some;
+            let llvm_type: string = this.ir_type_to_llvm(gv.ir_type);
+            let global_name: string = "@" + this.sanitize_name(gv.name);
+            if (gv.initializer_value == "null") {
+                this.sb.append(global_name + " = global " + llvm_type + " null\n");
+            } else if (this.is_int_type(gv.ir_type)) {
+                this.sb.append(global_name + " = global " + llvm_type + " " + gv.initializer_value + "\n");
+            } else if (this.is_bool_type(gv.ir_type)) {
+                let val: mut string = "0";
+                if (gv.initializer_value == "true") { val = "1"; }
+                this.sb.append(global_name + " = global " + llvm_type + " " + val + "\n");
+            } else {
+                this.sb.append(global_name + " = global " + llvm_type + " zeroinitializer\n");
+            }
+            i = i + 1;
+        }
+    }
+
+    fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: ir.IRModule) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (func.is_extern) {
+                target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(func.parameters.size())) {
+                    if (pi > 0) { target.append(", "); }
+                    let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+                    target.append(this.ir_type_to_llvm(p.ir_type));
+                    pi = pi + 1;
+                }
+                target.append(")\n");
+            }
+            fi = fi + 1;
+        }
+    }
+
+    fun emit_extern_declarations_runtime_to(mut this, target: mut StringBuilder) {
+        let has_layouts: bool = cast<i64>(this.class_layouts.size()) > 0 || cast<i64>(this.enum_layouts.size()) > 0;
+        let needs_its: bool = this.needs_int_to_string;
+        let needs_sc: bool = this.needs_string_concat;
+        if (this.has_iref_class || this.has_boxing) {
+            target.append("declare ptr @_emperor_alloc_impl(i32)\n");
+        }
+        if (this.has_boxing) {
+            target.append("declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n");
+        }
+        if (has_layouts || needs_its) {
+            target.append("declare ptr @_emperor_int_to_string(i32)\n");
+            target.append("declare ptr @_emperor_i64_to_string(i64)\n");
+        }
+        if (has_layouts || needs_sc) {
+            target.append("declare ptr @_emperor_string_concat(ptr, ptr)\n");
+        }
+        if (this.needs_bool_to_string) {
+            target.append("declare ptr @_emperor_bool_to_string(i8)\n");
+        }
+        if (this.needs_vtable_lookup) {
+            target.append("declare ptr @_emperor_vtable_lookup(ptr, ptr, i32)\n");
+        }
+        if (this.needs_isinstance) {
+            target.append("declare i32 @_emperor_isinstance(ptr, ptr)\n");
+        }
+        if (this.needs_check_class) {
+            target.append("declare i32 @_emperor_check_class(ptr, ptr)\n");
+        }
+        if (this.has_main) {
+            target.append("declare void @_emperor_gc_init()\n");
+            target.append("declare void @_emperor_gc_add_root(ptr)\n");
+        }
+    }
+
+    fun emit_functions(mut this, module: ir.IRModule) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (!func.is_extern) {
+                this.emit_function(func);
+            }
+            fi = fi + 1;
+        }
+    }
+
+    fun emit_function(mut this, func: ir.IRFunction) {
+        this.reg_map = new List<RegMapping>();
+        this.reg_type_map = new List<RegMapping>();
+        this.icmp_results = new List<string>();
+        this.cond_counter = 0;
+        this.current_ret_type = func.return_type;
+        // Store parameter types for call argument coercion
+        let fpt: mut FuncParamTypes = new FuncParamTypes(func.name);
+        let ppi: mut i64 = 0;
+        while (ppi < cast<i64>(func.parameters.size())) {
+            let pp: ir.IRParameter = func.parameters.at(cast<u64>(ppi)).some;
+            fpt.param_types.push(this.ir_type_to_llvm(pp.ir_type));
+            ppi = ppi + 1;
+        }
+        this.func_param_types.push(fpt);
+        // Map parameters: ARG instruction creates %tN → %paramname mapping
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+            this.reg_map.push(new RegMapping("%" + p.name, "%" + p.name));
+            let param_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+            if (param_llvm_type != "") {
+                this.register_llvm_type("%" + p.name, param_llvm_type);
+            }
+            pi = pi + 1;
+        }
+
+        // Pre-scan for mutable registers (reassigned multiple times)
+        this.scan_mutable_regs(func);
+
+        this.sb.append("define " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
+        pi = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            if (pi > 0) { this.sb.append(", "); }
+            let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+            this.sb.append(this.ir_type_to_llvm(p.ir_type) + " %" + p.name);
+            pi = pi + 1;
+        }
+        this.sb.append(") {\n");
+        this.sb.append("entry:\n");
+
+        // Emit allocas for mutable registers at function entry
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(this.mutable_regs.size())) {
+            let name: string = this.mutable_regs.at(cast<u64>(ai)).some;
+            let alloca_name: string = this.get_alloca_name(name);
+            let llvm_type: string = this.get_llvm_type(name);
+            this.sb.append("  " + alloca_name + " = alloca " + llvm_type + "\n");
+            ai = ai + 1;
+        }
+        let block_terminated: mut bool = false;
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is ir.IRInstruction.label_inst) {
+                if (!block_terminated) {
+                    this.sb.append("  br label %" + inst.label_inst.label.name + "\n");
+                }
+                block_terminated = false;
+            }
+            this.emit_instruction(inst);
+            if (inst is ir.IRInstruction.br || inst is ir.IRInstruction.br_cond || inst is ir.IRInstruction.ret || inst is ir.IRInstruction.ret_void) {
+                block_terminated = true;
+            }
+            ii = ii + 1;
+        }
+        this.sb.append("}\n\n");
+    }
+
+    fun emit_main(mut this, module: ir.IRModule) {
+        if (cast<i64>(module.entry_functions.size()) > 0) {
+            this.has_main = true;
+            this.sb.append("define i32 @main() {\n");
+            this.sb.append("entry:\n");
+            // Initialize GC
+            this.sb.append("  call void @_emperor_gc_init()\n");
+            // Register global reference-type variables as GC roots
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(module.global_variables.size())) {
+                let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+                if (this.is_string_type(gv.ir_type) || this.is_ref_type(gv.ir_type)) {
+                    let global_name: string = "@" + this.sanitize_name(gv.name);
+                    this.sb.append("  call void @_emperor_gc_add_root(ptr " + global_name + ")\n");
+                }
+                gi = gi + 1;
+            }
+            // Initialize global variables with non-trivial initializers
+            gi = 0;
+            while (gi < cast<i64>(module.global_variables.size())) {
+                let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+                if (this.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
+                    let val: string = this.strip_string_quotes(gv.initializer_value);
+                    let entry: Option<StringLitEntry> = this.find_string_lit(val);
+                    if (entry.is_some()) {
+                        let global_name: string = "@" + this.sanitize_name(gv.name);
+                        this.sb.append("  store ptr " + entry.some.global_name() + ", ptr " + global_name + "\n");
+                    }
+                }
+                gi = gi + 1;
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(module.entry_functions.size())) {
+                let entry: ir.IRFunction = module.entry_functions.at(cast<u64>(i)).some;
+                this.sb.append("  call void " + this.llvm_func_name(entry.name) + "()\n");
+                i = i + 1;
+            }
+            this.sb.append("  ret i32 0\n");
+            this.sb.append("}\n");
+        }
+    }
+
+    // --- Layout building ---
+
+    fun build_layout_tables(mut this, unit: bound.BoundCompilationUnit) {
+        let di: mut i64 = 0;
+        while (di < cast<i64>(unit.definitions.size())) {
+            let def: bound.BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
+            this.build_layout_for_def(def);
+            di = di + 1;
+        }
+    }
+
+    fun build_layout_for_def(mut this, def: bound.BoundDefinition) {
+        if (def is bound.BoundDefinition.class_def) {
+            if (!def.class_def.is_generic_template) {
+                this.build_class_layout(def.class_def);
+            }
+        }
+        if (def is bound.BoundDefinition.enum_def) {
+            this.build_enum_layout(def.enum_def);
+        }
+        if (def is bound.BoundDefinition.namespace_def) {
+            let ns: bound.BoundNamespaceDefinition = def.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                let child: bound.BoundDefinition = ns.children.at(cast<u64>(i)).some;
+                this.build_layout_for_def(child);
+                i = i + 1;
+            }
+        }
+    }
+
+    fun build_class_layout(mut this, cls: bound.BoundClassDefinition) {
+        let is_value: mut bool = true;
+        if (cls.is_value_class.is_some()) {
+            is_value = cls.is_value_class.some;
+
+        }
+        // Both ICopy and IRef classes have metadata pointers
+        let has_metadata: bool = true;
+        if (!is_value) {
+            this.has_iref_class = true;
+        }
+        let layout: mut ClassLayout = new ClassLayout(this.strip_global_prefix(cls.full_name), is_value, has_metadata);
+
+        let offset: mut i64 = 0;
+        if (has_metadata) {
+            offset = 8;
+        }
+        let field_idx: mut i64 = 1;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(cls.fields.size())) {
+            let fdef: bound.BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fdef is bound.BoundDefinition.class_field) {
+                let cf: bound.BoundClassFieldDefinition = fdef.class_field;
+                let field_llvm_type: string = this.bound_type_to_llvm_type(cf.bound_type);
+                let field_size: i64 = this.llvm_type_size(field_llvm_type);
+                let field_align: i64 = this.llvm_type_align(field_llvm_type);
+                let aligned_offset: i64 = this.align_up(offset, field_align);
+                layout.fields.push(new FieldLayout(cf.name, field_llvm_type, aligned_offset, field_idx));
+                offset = aligned_offset + field_size;
+                field_idx = field_idx + 1;
+            }
+            fi = fi + 1;
+        }
+        layout.sizeof_object = this.align_up(offset, 8);
+
+        // Collect vtable info from class's implemented interfaces
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(cls.vtables.size())) {
+            let vtable: bound.BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+            let iface_name: string = vtable.interface_type.display_name();
+            let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
+            let si: mut i64 = 0;
+            while (si < cast<i64>(vtable.slots.size())) {
+                let slot: bound.BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                if (slot.implementation_method.is_some()) {
+                    let func_name: string = this.llvm_func_name(slot.implementation_method.some.full_name);
+                    iface_vtable.method_ptrs.push(func_name);
+                }
+                si = si + 1;
+            }
+            layout.interface_vtables.push(iface_vtable);
+            vi = vi + 1;
+        }
+
+        this.class_layouts.push(layout);
+    }
+
+    fun build_enum_layout(mut this, enum_def: bound.BoundEnumDefinition) {
+        let layout: mut EnumLayout = new EnumLayout(this.strip_global_prefix(enum_def.full_name));
+        let has_payload: mut bool = false;
+        let payload_type: mut string = "i64";
+        let enum_name: string = enum_def.name;
+
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(enum_def.members.size())) {
+            let member: bound.BoundEnumMemberDefinition = enum_def.members.at(cast<u64>(mi)).some;
+            let mt: bound.BoundType = member.member_type;
+            let is_void: bool = mt.kind is bound.TypeKind.PrimitiveKind
+                && mt.primitive is bound.PrimitiveType.VoidType;
+            let is_self_enum: bool = mt.kind is bound.TypeKind.EnumKind
+                && mt.display_name() == enum_name;
+            if (is_void || is_self_enum) {
+                let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, "");
+                layout.variants.push(variant);
+            } else {
+                let member_llvm_type: string = this.bound_type_to_llvm_type(mt);
+                let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, member_llvm_type);
+                layout.variants.push(variant);
+                has_payload = true;
+                if (this.llvm_type_size(member_llvm_type) > this.llvm_type_size(payload_type)) {
+                    payload_type = member_llvm_type;
+                }
+            }
+            mi = mi + 1;
+        }
+
+        layout.has_payload = has_payload;
+        layout.payload_llvm_type = payload_type;
+
+        // Collect vtable info from enum's implemented interfaces
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(enum_def.vtables.size())) {
+            let vtable: bound.BoundVTable = enum_def.vtables.at(cast<u64>(vi)).some;
+            let iface_name: string = vtable.interface_type.display_name();
+            let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
+            let si: mut i64 = 0;
+            while (si < cast<i64>(vtable.slots.size())) {
+                let slot: bound.BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                if (slot.implementation_method.is_some()) {
+                    let func_name: string = this.llvm_func_name(slot.implementation_method.some.full_name);
+                    iface_vtable.method_ptrs.push(func_name);
+                }
+                si = si + 1;
+            }
+            layout.interface_vtables.push(iface_vtable);
+            vi = vi + 1;
+        }
+
+        this.enum_layouts.push(layout);
+    }
+
+    fun find_class_layout(this, type_name: string) -> Option<ClassLayout> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.class_layouts.size())) {
+            let layout: ClassLayout = this.class_layouts.at(cast<u64>(i)).some;
+            if (layout.type_name == type_name) {
+                return new Option<ClassLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Suffix match: simple name "Point" matches "__ns.Point"
+        let tn_len: i64 = string_length(type_name);
+        i = 0;
+        while (i < cast<i64>(this.class_layouts.size())) {
+            let layout: ClassLayout = this.class_layouts.at(cast<u64>(i)).some;
+            let ln: i64 = string_length(layout.type_name);
+            if (ln > tn_len) {
+                let suffix: string = string_substring(layout.type_name, ln - tn_len, tn_len);
+                let sep: string = string_substring(layout.type_name, ln - tn_len - 1, 1);
+                if (suffix == type_name && sep == ".") {
+                    return new Option<ClassLayout>.some(layout);
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<ClassLayout>.none();
+    }
+
+    fun find_enum_layout(this, type_name: string) -> Option<EnumLayout> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.enum_layouts.size())) {
+            let layout: EnumLayout = this.enum_layouts.at(cast<u64>(i)).some;
+            if (layout.type_name == type_name) {
+                return new Option<EnumLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Suffix match: simple name "Color" matches "__ns.Color"
+        let tn_len: i64 = string_length(type_name);
+        i = 0;
+        while (i < cast<i64>(this.enum_layouts.size())) {
+            let layout: EnumLayout = this.enum_layouts.at(cast<u64>(i)).some;
+            let ln: i64 = string_length(layout.type_name);
+            if (ln > tn_len) {
+                let suffix: string = string_substring(layout.type_name, ln - tn_len, tn_len);
+                let sep: string = string_substring(layout.type_name, ln - tn_len - 1, 1);
+                if (suffix == type_name && sep == ".") {
+                    return new Option<EnumLayout>.some(layout);
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<EnumLayout>.none();
+    }
+
+    fun extract_type_name(this, ir_type: string) -> string {
+        // Parse "ref<X>" or "enum<X>" → "X"
+        if (this.string_starts_with(ir_type, "ref<")) {
+            return string_substring(ir_type, 4, string_length(ir_type) - 5);
+        }
+        if (this.string_starts_with(ir_type, "enum<")) {
+            return string_substring(ir_type, 5, string_length(ir_type) - 6);
+        }
+        return ir_type;
+    }
+
+    fun next_tmp(mut this) -> string {
+        let name: string = "%tmp_" + cast<string>(this.tmp_counter);
+        this.tmp_counter = this.tmp_counter + 1;
+        return name;
+    }
+
+    // --- Type definitions ---
+
+    fun emit_type_definitions(mut this) {
+        // Emit ICopy class struct types (with metadata ptr at field 0)
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.class_layouts.size())) {
+            let layout: ClassLayout = this.class_layouts.at(cast<u64>(ci)).some;
+            if (layout.is_value_type) {
+                this.sb.append(layout.llvm_struct_type + " = type { ptr");
+                let fi: mut i64 = 0;
+                while (fi < cast<i64>(layout.fields.size())) {
+                    this.sb.append(", " + layout.fields.at(cast<u64>(fi)).some.llvm_type);
+                    fi = fi + 1;
+                }
+                this.sb.append(" }\n");
+            }
+            ci = ci + 1;
+        }
+
+        // Emit enum struct types: { ptr metadata, i32 variant, payload? }
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(this.enum_layouts.size())) {
+            let layout: EnumLayout = this.enum_layouts.at(cast<u64>(ei)).some;
+            this.sb.append(layout.llvm_struct_type + " = type { ptr, i32");
+            if (layout.has_payload) {
+                this.sb.append(", " + layout.payload_llvm_type);
+            }
+            this.sb.append(" }\n");
+            ei = ei + 1;
+        }
+
+        // Emit metadata globals for all classes (both ICopy and IRef)
+        ci = 0;
+        while (ci < cast<i64>(this.class_layouts.size())) {
+            let layout: ClassLayout = this.class_layouts.at(cast<u64>(ci)).some;
+            if (cast<i64>(layout.interface_vtables.size()) > 0) {
+                // Full metadata with vtable and interface_map
+                this.emit_full_class_metadata(layout);
+            } else {
+                // Full metadata format (no interfaces, but consistent struct layout for C runtime)
+                let name: string = layout.type_name;
+                let name_len: i64 = string_length(name);
+                let field_count: i64 = cast<i64>(layout.fields.size());
+                this.emit_field_arrays(name, layout.fields);
+                this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+                this.sb.append("  ptr @." + name + "_name,\n");
+                this.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
+                this.sb.append("  i32 " + cast<string>(field_count) + ",\n");
+                this.sb.append("  ptr @" + name + "_field_offsets,\n");
+                this.sb.append("  ptr @" + name + "_field_is_ptr,\n");
+                this.sb.append("  ptr null,\n");
+                this.sb.append("  i32 0,\n");
+                this.sb.append("  ptr null,\n");
+                this.sb.append("  ptr null\n");
+                this.sb.append("}\n");
+                this.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+            }
+            ci = ci + 1;
+        }
+
+        // Emit metadata globals for enums — always use full metadata format
+        ei = 0;
+        while (ei < cast<i64>(this.enum_layouts.size())) {
+            let layout: EnumLayout = this.enum_layouts.at(cast<u64>(ei)).some;
+            this.emit_full_enum_metadata(layout);
+            ei = ei + 1;
+        }
+
+        if (cast<i64>(this.class_layouts.size()) > 0 || cast<i64>(this.enum_layouts.size()) > 0) {
+            this.sb.append("\n");
+        }
+    }
+
+    fun emit_full_class_metadata(mut this, layout: ClassLayout) {
+        let name: string = layout.type_name;
+
+        // Emit interface ID string constants (deduplicated)
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            if (!this.list_contains(this.emitted_interface_ids, iface_name)) {
+                this.emitted_interface_ids.push(iface_name);
+                let len: i64 = string_length(iface_name);
+                this.sb.append("@." + iface_name + "_interface_id = private unnamed_addr constant [" + cast<string>(len + 1) + " x i8] c\"" + iface_name + "\\00\"\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit per-interface vtable arrays
+        ii = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            let method_count: i64 = cast<i64>(ivt.method_ptrs.size());
+            if (method_count > 0) {
+                this.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [" + cast<string>(method_count) + " x ptr] [");
+                let mi: mut i64 = 0;
+                while (mi < method_count) {
+                    if (mi > 0) { this.sb.append(", "); }
+                    this.sb.append("ptr " + ivt.method_ptrs.at(cast<u64>(mi)).some);
+                    mi = mi + 1;
+                }
+                this.sb.append("]\n");
+            } else {
+                this.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [0 x ptr] zeroinitializer\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit interface map (one entry per interface, pointing to its own vtable)
+        let iface_count: i64 = cast<i64>(layout.interface_vtables.size());
+        this.sb.append("@" + name + "_interface_map = private constant [" + cast<string>(iface_count) + " x { ptr, ptr }] [");
+        ii = 0;
+        while (ii < iface_count) {
+            if (ii > 0) { this.sb.append(", "); }
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            this.sb.append("{ ptr, ptr } { ptr @." + iface_name + "_interface_id, ptr @" + name + "_" + iface_name + "_vtable }");
+            ii = ii + 1;
+        }
+        this.sb.append("]\n");
+
+        // Emit field arrays for GC traversal
+        this.emit_field_arrays(name, layout.fields);
+
+        // Emit full ClassMetadata
+        // struct: { ptr name, i32 instance_size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr destructor }
+        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        this.sb.append("  ptr @." + name + "_name,\n");
+        this.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
+        this.sb.append("  i32 " + cast<string>(layout.fields.size()) + ",\n");
+        this.sb.append("  ptr @" + name + "_field_offsets,\n");
+        this.sb.append("  ptr @" + name + "_field_is_ptr,\n");
+        this.sb.append("  ptr null,\n");
+        this.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
+        this.sb.append("  ptr @" + name + "_interface_map,\n");
+        this.sb.append("  ptr null\n");
+        this.sb.append("}\n");
+
+        // Emit name string constant
+        let name_len: i64 = string_length(name);
+        this.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+    }
+
+    fun emit_field_arrays(mut this, name: string, fields: List<FieldLayout>) {
+        let field_count: i64 = cast<i64>(fields.size());
+        if (field_count == 0) {
+            this.sb.append("@" + name + "_field_offsets = private constant [0 x i32] zeroinitializer\n");
+            this.sb.append("@" + name + "_field_is_ptr = private constant [0 x i32] zeroinitializer\n");
+            return;
+        }
+        // Emit field_offsets array
+        this.sb.append("@" + name + "_field_offsets = private constant [" + cast<string>(field_count) + " x i32] [");
+        let fi: mut i64 = 0;
+        while (fi < field_count) {
+            if (fi > 0) { this.sb.append(", "); }
+            let f: FieldLayout = fields.at(cast<u64>(fi)).some;
+            this.sb.append("i32 " + cast<string>(f.byte_offset));
+            fi = fi + 1;
+        }
+        this.sb.append("]\n");
+        // Emit field_is_ptr array
+        this.sb.append("@" + name + "_field_is_ptr = private constant [" + cast<string>(field_count) + " x i32] [");
+        fi = 0;
+        while (fi < field_count) {
+            if (fi > 0) { this.sb.append(", "); }
+            let f: FieldLayout = fields.at(cast<u64>(fi)).some;
+            let is_ptr: mut string = "0";
+            if (f.llvm_type == "ptr") { is_ptr = "1"; }
+            this.sb.append("i32 " + is_ptr);
+            fi = fi + 1;
+        }
+        this.sb.append("]\n");
+    }
+
+    fun emit_full_enum_metadata(mut this, layout: EnumLayout) {
+        let name: string = layout.type_name;
+
+        // Emit interface ID string constants (deduplicated)
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            if (!this.list_contains(this.emitted_interface_ids, iface_name)) {
+                this.emitted_interface_ids.push(iface_name);
+                let len: i64 = string_length(iface_name);
+                this.sb.append("@." + iface_name + "_interface_id = private unnamed_addr constant [" + cast<string>(len + 1) + " x i8] c\"" + iface_name + "\\00\"\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit per-interface vtable arrays
+        ii = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            let method_count: i64 = cast<i64>(ivt.method_ptrs.size());
+            if (method_count > 0) {
+                this.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [" + cast<string>(method_count) + " x ptr] [");
+                let mi: mut i64 = 0;
+                while (mi < method_count) {
+                    if (mi > 0) { this.sb.append(", "); }
+                    this.sb.append("ptr " + ivt.method_ptrs.at(cast<u64>(mi)).some);
+                    mi = mi + 1;
+                }
+                this.sb.append("]\n");
+            } else {
+                this.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [0 x ptr] zeroinitializer\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit interface map
+        let iface_count: i64 = cast<i64>(layout.interface_vtables.size());
+        this.sb.append("@" + name + "_interface_map = private constant [" + cast<string>(iface_count) + " x { ptr, ptr }] [");
+        ii = 0;
+        while (ii < iface_count) {
+            if (ii > 0) { this.sb.append(", "); }
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            this.sb.append("{ ptr, ptr } { ptr @." + iface_name + "_interface_id, ptr @" + name + "_" + iface_name + "_vtable }");
+            ii = ii + 1;
+        }
+        this.sb.append("]\n");
+
+        // Emit full metadata matching PenguinClassMetadata layout:
+        // { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr destructor }
+        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        this.sb.append("  ptr @." + name + "_name,\n");
+        this.sb.append("  i32 0,\n");
+        this.sb.append("  i32 0,\n");
+        this.sb.append("  ptr null,\n");
+        this.sb.append("  ptr null,\n");
+        this.sb.append("  ptr null,\n");
+        this.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
+        this.sb.append("  ptr @" + name + "_interface_map,\n");
+        this.sb.append("  ptr null\n");
+        this.sb.append("}\n");
+
+        // Emit name string constant
+        let name_len: i64 = string_length(name);
+        this.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+    }
+
+    // --- BoundType to LLVM type ---
+
+    fun bound_type_to_llvm_type(this, bt: bound.BoundType) -> string {
+        if (bt.kind is bound.TypeKind.PrimitiveKind) {
+            return this.primitive_to_llvm(bt.primitive);
+        }
+        if (bt.kind is bound.TypeKind.ClassKind) {
+            return this.class_type_to_llvm(bt);
+        }
+        if (bt.kind is bound.TypeKind.EnumKind) {
+            let name: string = this.resolve_type_layout_name(bt);
+            let found: Option<EnumLayout> = this.find_enum_layout(name);
+            if (found.is_some()) {
+                return found.some.llvm_struct_type;
+            }
+            return "i64";
+        }
+        if (bt.kind is bound.TypeKind.InterfaceKind) {
+            return "ptr";
+        }
+        return "ptr";
+    }
+
+    fun resolve_type_layout_name(this, bt: bound.BoundType) -> string {
+        if (bt.type_definition.is_some()) {
+            let def: bound.BoundDefinition = bt.type_definition.some;
+            if (def is bound.BoundDefinition.class_def) {
+                return this.strip_global_prefix(def.class_def.full_name);
+            }
+            if (def is bound.BoundDefinition.enum_def) {
+                return this.strip_global_prefix(def.enum_def.full_name);
+            }
+        }
+        return bt.display_name();
+    }
+
+    fun class_type_to_llvm(this, bt: bound.BoundType) -> string {
+        let name: string = this.resolve_type_layout_name(bt);
+        let found: Option<ClassLayout> = this.find_class_layout(name);
+        if (found.is_some()) {
+            if (found.some.is_value_type) {
+                return found.some.llvm_struct_type;
+            } else {
+                return "ptr";
+            }
+        }
+        return "ptr";
+    }
+
+    fun primitive_to_llvm(this, p: bound.PrimitiveType) -> string {
+        if (p is bound.PrimitiveType.I8) { return "i8"; }
+        if (p is bound.PrimitiveType.I16) { return "i16"; }
+        if (p is bound.PrimitiveType.I32) { return "i32"; }
+        if (p is bound.PrimitiveType.I64) { return "i64"; }
+        if (p is bound.PrimitiveType.U8) { return "i8"; }
+        if (p is bound.PrimitiveType.U16) { return "i16"; }
+        if (p is bound.PrimitiveType.U32) { return "i32"; }
+        if (p is bound.PrimitiveType.U64) { return "i64"; }
+        if (p is bound.PrimitiveType.F32) { return "float"; }
+        if (p is bound.PrimitiveType.F64) { return "double"; }
+        if (p is bound.PrimitiveType.BoolType) { return "i8"; }
+        if (p is bound.PrimitiveType.CharType) { return "i32"; }
+        if (p is bound.PrimitiveType.StringType) { return "ptr"; }
+        if (p is bound.PrimitiveType.VoidType) { return "void"; }
+        return "ptr";
+    }
+
+    // --- Type size/align helpers ---
+
+    fun llvm_type_size(this, llvm_type: string) -> i64 {
+        if (llvm_type == "i8") { return 1; }
+        if (llvm_type == "i16") { return 2; }
+        if (llvm_type == "i32") { return 4; }
+        if (llvm_type == "i64") { return 8; }
+        if (llvm_type == "float") { return 4; }
+        if (llvm_type == "double") { return 8; }
+        if (llvm_type == "ptr") { return 8; }
+        return 8;
+    }
+
+    fun llvm_type_align(this, llvm_type: string) -> i64 {
+        if (llvm_type == "i8") { return 1; }
+        if (llvm_type == "i16") { return 2; }
+        if (llvm_type == "i32") { return 4; }
+        if (llvm_type == "i64") { return 8; }
+        if (llvm_type == "float") { return 4; }
+        if (llvm_type == "double") { return 8; }
+        if (llvm_type == "ptr") { return 8; }
+        return 8;
+    }
+
+    fun align_up(this, offset: i64, alignment: i64) -> i64 {
+        if (alignment <= 1) { return offset; }
+        let remainder: i64 = offset % alignment;
+        if (remainder == 0) { return offset; }
+        return offset + alignment - remainder;
+    }
+
+    fun find_class_field_layout(this, type_name: string, field_name: string) -> Option<FieldLayout> {
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_none()) { return new Option<FieldLayout>.none(); }
+        let layout: ClassLayout = found.some;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(layout.fields.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
+            if (f.field_name == field_name) {
+                return new Option<FieldLayout>.some(f);
+            }
+            fi = fi + 1;
+        }
+        return new Option<FieldLayout>.none();
+    }
+
+    // --- Instruction lowering ---
+
+    fun emit_instruction(mut this, inst: ir.IRInstruction) {
+        if (inst is ir.IRInstruction.const_inst) { this.emit_const(inst.const_inst); return; }
+        if (inst is ir.IRInstruction.arg) { this.emit_arg(inst.arg); return; }
+        if (inst is ir.IRInstruction.assign) { this.emit_assign(inst.assign); return; }
+        if (inst is ir.IRInstruction.cast_inst) { this.emit_cast(inst.cast_inst); return; }
+        if (inst is ir.IRInstruction.binop) { this.emit_binop(inst.binop); return; }
+        if (inst is ir.IRInstruction.unaryop) { this.emit_unaryop(inst.unaryop); return; }
+        if (inst is ir.IRInstruction.rdmbr) { this.emit_rdmbr(inst.rdmbr); return; }
+        if (inst is ir.IRInstruction.wrmbr) { this.emit_wrmbr(inst.wrmbr); return; }
+        if (inst is ir.IRInstruction.br) { this.emit_br(inst.br); return; }
+        if (inst is ir.IRInstruction.br_cond) { this.emit_br_cond(inst.br_cond); return; }
+        if (inst is ir.IRInstruction.ret) { this.emit_ret(inst.ret); return; }
+        if (inst is ir.IRInstruction.ret_void) { this.emit_ret_void(); return; }
+        if (inst is ir.IRInstruction.call) { this.emit_call(inst.call); return; }
+        if (inst is ir.IRInstruction.call_void) { this.emit_call_void(inst.call_void); return; }
+        if (inst is ir.IRInstruction.call_virt) { this.emit_call_virt(inst.call_virt); return; }
+        if (inst is ir.IRInstruction.new_inst) { this.emit_new(inst.new_inst); return; }
+        if (inst is ir.IRInstruction.new_enum) { this.emit_new_enum(inst.new_enum); return; }
+        if (inst is ir.IRInstruction.isenum) { this.emit_isenum(inst.isenum); return; }
+        if (inst is ir.IRInstruction.rdenum) { this.emit_rdenum(inst.rdenum); return; }
+        if (inst is ir.IRInstruction.isinstance) { this.emit_isinstance(inst.isinstance); return; }
+        if (inst is ir.IRInstruction.box) { this.emit_box(inst.box); return; }
+        if (inst is ir.IRInstruction.unbox) { this.emit_unbox(inst.unbox); return; }
+        if (inst is ir.IRInstruction.label_inst) { this.emit_label(inst.label_inst); return; }
+        if (inst is ir.IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
+        if (inst is ir.IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
+    }
+
+    fun emit_const(mut this, inst: ir.IRConst) {
+        let ir_type: string = inst.result.get_ir_type();
+        let result_name: string = inst.result.display();
+        if (this.is_string_type(ir_type)) {
+            let stripped: string = this.strip_string_quotes(inst.value);
+            let found: Option<StringLitEntry> = this.find_string_lit(stripped);
+            if (found.is_some()) {
+                if (this.is_mutable_reg(result_name)) {
+                    let alloca_name: string = this.get_alloca_name(result_name);
+                    this.sb.append("  store ptr " + found.some.global_name() + ", ptr " + alloca_name + "\n");
+                } else {
+                    this.reg_map.push(new RegMapping(result_name, found.some.global_name()));
+                }
+            }
+            return;
+        }
+        if (this.is_bool_type(ir_type)) {
+            let val: mut string = "0";
+            if (inst.value == "true") { val = "1"; }
+            if (this.is_mutable_reg(result_name)) {
+                let alloca_name: string = this.get_alloca_name(result_name);
+                this.sb.append("  store i8 " + val + ", ptr " + alloca_name + "\n");
+            } else {
+                this.sb.append("  " + result_name + " = add i8 0, " + val + "\n");
+            }
+            this.register_llvm_type(result_name, "i8");
+            return;
+        }
+        if (this.is_int_type(ir_type)) {
+            let llvm_type: string = this.ir_type_to_llvm(ir_type);
+            if (this.is_mutable_reg(result_name)) {
+                let alloca_name: string = this.get_alloca_name(result_name);
+                this.sb.append("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name + "\n");
+            } else {
+                this.sb.append("  " + result_name + " = add " + llvm_type + " 0, " + inst.value + "\n");
+            }
+            this.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        // fallback
+        let llvm_type: string = this.ir_type_to_llvm(ir_type);
+        if (this.is_mutable_reg(result_name)) {
+            let alloca_name: string = this.get_alloca_name(result_name);
+            this.sb.append("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name + "\n");
+        } else if (this.string_starts_with(llvm_type, "%enum.")) {
+            // Enum struct values cannot use add; map directly
+            this.reg_map.push(new RegMapping(result_name, inst.value));
+        } else {
+            this.sb.append("  " + result_name + " = add " + llvm_type + " 0, " + inst.value + "\n");
+        }
+        this.register_llvm_type(result_name, llvm_type);
+    }
+
+    fun emit_arg(mut this, inst: ir.IRArg) {
+        let result_name: string = inst.result.display();
+        let param_name: string = "%" + inst.param_name;
+        this.reg_map.push(new RegMapping(result_name, param_name));
+        let llvm_type: string = this.ir_type_to_llvm(inst.result.get_ir_type());
+        if (llvm_type != "") {
+            this.register_llvm_type(param_name, llvm_type);
+        }
+    }
+
+    fun emit_assign(mut this, inst: ir.IRAssign) {
+        let dest_name: string = inst.dest.display();
+        let src_resolved: string = this.resolve_value(inst.src);
+        let ir_type: string = inst.dest.get_ir_type();
+        let llvm_type: string = this.ir_type_to_llvm(ir_type);
+        if (this.is_mutable_reg(dest_name)) {
+            // Mutable: store to alloca slot
+            let alloca_name: string = this.get_alloca_name(dest_name);
+            let coerced: string = this.coerce_operand(src_resolved, llvm_type);
+            this.sb.append("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name + "\n");
+        } else if (llvm_type == "ptr" || this.string_starts_with(llvm_type, "%enum.")) {
+            // pointer or enum struct assignment: map dest to source directly
+            this.reg_map.push(new RegMapping(dest_name, src_resolved));
+        } else {
+            let coerced: string = this.coerce_operand(src_resolved, llvm_type);
+            this.sb.append("  " + dest_name + " = add " + llvm_type + " 0, " + coerced + "\n");
+        }
+        this.register_llvm_type(dest_name, llvm_type);
+    }
+
+    fun emit_cast(mut this, inst: ir.IRCast) {
+        let result_name: string = inst.result.display();
+        let operand_resolved: mut string = this.resolve_value(inst.operand);
+        let from_llvm: string = this.ir_type_to_llvm(inst.from_type);
+        let to_llvm: string = this.ir_type_to_llvm(inst.to_type);
+
+        // If operand is an icmp result (i1) and target is string, use bool_to_string
+        if (this.is_string_type(inst.to_type) && this.is_icmp_value(operand_resolved)) {
+            this.needs_bool_to_string = true;
+            this.sb.append("  " + result_name + " = call ptr @_emperor_bool_to_string(i1 " + operand_resolved + ")\n");
+            return;
+        }
+
+        // If operand is an icmp result (i1) but from_llvm expects wider type, zext first
+        if (this.is_icmp_value(operand_resolved) && from_llvm != "i1") {
+            let zext_tmp: string = this.next_tmp();
+            this.sb.append("  " + zext_tmp + " = zext i1 " + operand_resolved + " to " + from_llvm + "\n");
+            operand_resolved = zext_tmp;
+        }
+
+        // int → string: call runtime
+        if (this.is_string_type(inst.to_type) && this.is_int_type(inst.from_type)) {
+            this.needs_int_to_string = true;
+            if (inst.from_type == "i64") {
+                this.sb.append("  " + result_name + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + operand_resolved + ")\n");
+            } else {
+                this.sb.append("  " + result_name + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + operand_resolved + ")\n");
+            }
+            return;
+        }
+
+        // bool → string: call runtime
+        if (this.is_string_type(inst.to_type) && this.is_bool_type(inst.from_type)) {
+            this.needs_bool_to_string = true;
+            this.sb.append("  " + result_name + " = call ptr @_emperor_bool_to_string(i8 " + operand_resolved + ")\n");
+            return;
+        }
+
+        let cast_op: string = this.cast_op(from_llvm, to_llvm);
+        if (from_llvm == to_llvm) {
+            if (from_llvm == "ptr") {
+                this.sb.append("  " + result_name + " = getelementptr i8, ptr " + operand_resolved + ", i64 0\n");
+            } else {
+                this.sb.append("  " + result_name + " = add " + to_llvm + " 0, " + operand_resolved + "\n");
+            }
+            return;
+        }
+        this.sb.append("  " + result_name + " = " + cast_op + " " + from_llvm + " " + operand_resolved + " to " + to_llvm + "\n");
+    }
+
+    fun emit_binop(mut this, inst: ir.IRBinOp) {
+        let result_name: string = inst.result.display();
+        let left_resolved: string = this.resolve_value(inst.left);
+        let right_resolved: string = this.resolve_value(inst.right);
+        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
+
+        // String concatenation: BINOP add with ref<string> type
+        if (inst.op == "add" && this.is_string_type(inst.ir_type)) {
+            this.needs_string_concat = true;
+            this.sb.append("  " + result_name + " = call ptr @_emperor_string_concat(ptr " + left_resolved + ", ptr " + right_resolved + ")\n");
+            return;
+        }
+
+        // Coerce operands to expected LLVM type
+        let coerced_left: string = this.coerce_operand(left_resolved, llvm_type);
+        let coerced_right: string = this.coerce_operand(right_resolved, llvm_type);
+
+        let llvm_op: string = this.binop_to_llvm(inst.op, inst.ir_type);
+        this.sb.append("  " + result_name + " = " + llvm_op + " " + llvm_type + " " + coerced_left + ", " + coerced_right + "\n");
+        // Track icmp results (they return i1, not i8)
+        if (string_length(llvm_op) >= 4) {
+            let prefix: string = string_substring(llvm_op, 0, 4);
+            if (prefix == "icmp") {
+                this.icmp_results.push(result_name);
+                this.register_llvm_type(result_name, "i1");
+            } else {
+                this.register_llvm_type(result_name, llvm_type);
+            }
+        } else {
+            this.register_llvm_type(result_name, llvm_type);
+        }
+    }
+
+    fun emit_unaryop(mut this, inst: ir.IRUnaryOp) {
+        let result_name: string = inst.result.display();
+        let operand_resolved: string = this.resolve_value(inst.operand);
+        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
+        if (inst.op == "neg") {
+            this.sb.append("  " + result_name + " = sub " + llvm_type + " 0, " + operand_resolved + "\n");
+            return;
+        }
+        if (inst.op == "not") {
+            this.sb.append("  " + result_name + " = xor i8 " + operand_resolved + ", 1\n");
+            return;
+        }
+        if (inst.op == "bitnot") {
+            this.sb.append("  " + result_name + " = xor " + llvm_type + " " + operand_resolved + ", -1\n");
+            return;
+        }
+        this.sb.append("  ; unknown unaryop " + inst.op + "\n");
+    }
+
+    fun emit_rdmbr(mut this, inst: ir.IRRdmbr) {
+        let result_name: string = inst.result.display();
+        let obj_resolved: string = this.resolve_value(inst.obj);
+        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
+        let field_name: string = inst.field_name;
+
+        // Try to find class layout from obj IR type
+        let obj_ir_type: string = inst.obj.get_ir_type();
+        let type_name: string = this.extract_type_name(obj_ir_type);
+        let found_class: Option<ClassLayout> = this.find_class_layout(type_name);
+
+        if (found_class.is_some()) {
+            let layout: ClassLayout = found_class.some;
+            let found_field: Option<FieldLayout> = this.find_class_field_layout(type_name, field_name);
+
+            if (found_field.is_some()) {
+                let fl: FieldLayout = found_field.some;
+
+                if (!layout.is_value_type) {
+                    // IRef: obj is ptr, use byte-offset GEP
+                    let field_ptr: string = this.next_tmp();
+                    this.sb.append("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset) + "\n");
+                    this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                } else {
+                    // ICopy: obj is ptr to alloca, use struct field index GEP
+                    let field_ptr: string = this.next_tmp();
+                    this.sb.append("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index) + "\n");
+                    this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                }
+                return;
+            }
+        }
+
+        // Fallback: plain load
+        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + obj_resolved + "\n");
+    }
+
+    fun emit_wrmbr(mut this, inst: ir.IRWrmbr) {
+        let obj_resolved: string = this.resolve_value(inst.obj);
+        let value_resolved: string = this.resolve_value(inst.value);
+        let value_type: string = inst.value.get_ir_type();
+        let llvm_type: string = this.ir_type_to_llvm(value_type);
+        let field_name: string = inst.field_name;
+
+        // Try to find class layout from obj IR type
+        let obj_ir_type: string = inst.obj.get_ir_type();
+        let type_name: string = this.extract_type_name(obj_ir_type);
+        let found_class: Option<ClassLayout> = this.find_class_layout(type_name);
+
+        if (found_class.is_some()) {
+            let layout: ClassLayout = found_class.some;
+            let found_field: Option<FieldLayout> = this.find_class_field_layout(type_name, field_name);
+
+            if (found_field.is_some()) {
+                let fl: FieldLayout = found_field.some;
+                let store_type: string = fl.llvm_type;
+                let coerced_value: string = this.coerce_operand(value_resolved, store_type);
+
+                if (!layout.is_value_type) {
+                    // IRef: byte-offset GEP + store
+                    let field_ptr: string = this.next_tmp();
+                    this.sb.append("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset) + "\n");
+                    this.sb.append("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr + "\n");
+                } else {
+                    // ICopy: struct field index GEP + store
+                    let field_ptr: string = this.next_tmp();
+                    this.sb.append("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index) + "\n");
+                    this.sb.append("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr + "\n");
+                }
+                return;
+            }
+        }
+
+        // Fallback: plain store
+        this.sb.append("  store " + llvm_type + " " + value_resolved + ", ptr " + obj_resolved + "\n");
+    }
+
+    fun emit_br(mut this, inst: ir.IRBr) {
+        this.sb.append("  br label %" + inst.target.name + "\n");
+    }
+
+    fun emit_br_cond(mut this, inst: ir.IRBrCond) {
+        let cond_resolved: string = this.resolve_value(inst.cond);
+        let is_icmp_result: bool = this.is_icmp_value(cond_resolved);
+        if (is_icmp_result) {
+            this.sb.append("  br i1 " + cond_resolved + ", label %" + inst.true_label.name + ", label %" + inst.false_label.name + "\n");
+        } else {
+            let cond_i1: string = "%cond_" + cast<string>(this.cond_counter);
+            this.cond_counter = this.cond_counter + 1;
+            this.sb.append("  " + cond_i1 + " = trunc i8 " + cond_resolved + " to i1\n");
+            this.sb.append("  br i1 " + cond_i1 + ", label %" + inst.true_label.name + ", label %" + inst.false_label.name + "\n");
+        }
+    }
+
+    fun emit_ret(mut this, inst: ir.IRRet) {
+        let val_resolved: string = this.resolve_value(inst.value);
+        let llvm_type: string = this.ir_type_to_llvm(this.current_ret_type);
+        this.sb.append("  ret " + llvm_type + " " + val_resolved + "\n");
+    }
+
+    fun emit_ret_void(mut this) {
+        this.sb.append("  ret void\n");
+    }
+
+    fun emit_call(mut this, inst: ir.IRCall) {
+        let result_name: string = inst.result_value.display();
+        let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
+        let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+        let func_name: string = this.llvm_func_name(inst.func_name);
+        this.sb.append("  " + result_name + " = call " + ret_llvm + " " + func_name + "(" + args_str + ")\n");
+        if (ret_llvm != "void") {
+            this.register_llvm_type(result_name, ret_llvm);
+        }
+    }
+
+    fun emit_call_void(mut this, inst: ir.IRCallVoid) {
+        let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+        let func_name: string = this.llvm_func_name(inst.func_name);
+        this.sb.append("  call void " + func_name + "(" + args_str + ")\n");
+    }
+
+    fun emit_call_virt(mut this, inst: ir.IRCallVirt) {
+        this.needs_vtable_lookup = true;
+        let obj_resolved: string = this.resolve_value(inst.obj);
+        let ret_type: string = this.ir_type_to_llvm(inst.ret_type);
+
+        // For enum types, alloca+store to get a pointer
+        let obj_llvm_type: string = this.get_llvm_type(obj_resolved);
+        let obj_ptr: mut string = obj_resolved;
+        if (string_find(obj_llvm_type, "%enum.") >= 0) {
+            let alloca_name: string = this.next_tmp();
+            this.sb.append("  " + alloca_name + " = alloca " + obj_llvm_type + "\n");
+            this.sb.append("  store " + obj_llvm_type + " " + obj_resolved + ", ptr " + alloca_name + "\n");
+            obj_ptr = alloca_name;
+        }
+
+        // 1. Look up function pointer via C runtime helper
+        let func_ptr_name: string = this.next_tmp();
+        let iface_id_name: string = "@." + inst.interface_id + "_interface_id";
+        this.sb.append("  " + func_ptr_name + " = call ptr @_emperor_vtable_lookup(ptr " + obj_ptr + ", ptr " + iface_id_name + ", i32 " + cast<string>(inst.vtable_slot) + ")\n");
+
+        // 2. Build args string (prepend obj as first arg)
+        let args_sb: mut StringBuilder = new StringBuilder();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(inst.args.size())) {
+            if (ai > 0) { args_sb.append(", "); }
+            let arg: ir.IRValue = inst.args.at(cast<u64>(ai)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_type: string = this.ir_type_to_llvm(arg.get_ir_type());
+            args_sb.append(arg_type + " " + resolved);
+            ai = ai + 1;
+        }
+
+        // 3. Indirect call through function pointer
+        if (inst.ret_type != "void") {
+            let result_name: string = inst.result_value.display();
+            this.sb.append("  " + result_name + " = call " + ret_type + " " + func_ptr_name + "(" + args_sb.to_string() + ")\n");
+        } else {
+            this.sb.append("  call void " + func_ptr_name + "(" + args_sb.to_string() + ")\n");
+        }
+    }
+
+    fun emit_new(mut this, inst: ir.IRNew) {
+        let result_name: string = inst.result.display();
+        let type_name: string = this.strip_global_prefix(inst.type_name);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+
+        if (found.is_none()) {
+            this.sb.append("  ; NEW " + type_name + " (no layout)\n");
+            return;
+        }
+
+        let layout: ClassLayout = found.some;
+
+        if (!layout.is_value_type) {
+            // IRef: heap allocation
+            this.sb.append("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(layout.sizeof_object) + ")\n");
+            // Init metadata
+            this.sb.append("  store ptr @" + layout.type_name + "_metadata, ptr " + result_name + "\n");
+            // Call constructor
+            let ctor_name: string = this.llvm_func_name("<global>." + type_name + ".new");
+            let ctor_args: string = this.emit_args_with_first(inst.args, "ptr " + result_name);
+            this.sb.append("  call void " + ctor_name + "(" + ctor_args + ")\n");
+        } else {
+            // ICopy: stack allocation
+            this.sb.append("  " + result_name + " = alloca " + layout.llvm_struct_type + "\n");
+            // Init metadata
+            this.sb.append("  store ptr @" + layout.type_name + "_metadata, ptr " + result_name + "\n");
+            // Call constructor
+            let ctor_name: string = this.llvm_func_name("<global>." + type_name + ".new");
+            let ctor_args: string = this.emit_args_with_first(inst.args, "ptr " + result_name);
+            this.sb.append("  call void " + ctor_name + "(" + ctor_args + ")\n");
+        }
+    }
+
+    fun emit_args_with_first(mut this, args: List<ir.IRValue>, first_arg: string) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        sb2.append(first_arg);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            sb2.append(", ");
+            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            let llvm_type: string = this.ir_type_to_llvm(arg_type);
+            sb2.append(llvm_type + " " + resolved);
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    fun emit_new_enum(mut this, inst: ir.IRNewEnum) {
+        let result_name: string = inst.result.display();
+        let raw_type_name: string = inst.type_name;
+        let type_name: string = this.extract_type_name(raw_type_name);
+        let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+
+        if (found.is_none()) {
+            this.sb.append("  " + result_name + " = add i64 0, " + cast<string>(inst.variant_idx) + "\n");
+            return;
+        }
+
+        let layout: EnumLayout = found.some;
+        let tmp_name: string = this.next_tmp();
+
+        // alloca enum struct
+        this.sb.append("  " + tmp_name + " = alloca " + layout.llvm_struct_type + "\n");
+
+        // store metadata at field 0
+        let md_ptr: string = this.next_tmp();
+        this.sb.append("  " + md_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 0\n");
+        this.sb.append("  store ptr @" + layout.type_name + "_metadata, ptr " + md_ptr + "\n");
+
+        // store variant index at field 1
+        let var_ptr: string = this.next_tmp();
+        this.sb.append("  " + var_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 1\n");
+        this.sb.append("  store i32 " + cast<string>(inst.variant_idx) + ", ptr " + var_ptr + "\n");
+
+        // store payload at field 2 if present
+        if (inst.payload.is_some()) {
+            if (layout.has_payload) {
+                let pay_val: string = this.resolve_value(inst.payload.some);
+                let pay_type: string = layout.payload_llvm_type;
+                let pay_ptr: string = this.next_tmp();
+                this.sb.append("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2\n");
+                this.sb.append("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr + "\n");
+            }
+        }
+
+        // load complete struct value
+        this.sb.append("  " + result_name + " = load " + layout.llvm_struct_type + ", ptr " + tmp_name + "\n");
+        this.register_llvm_type(result_name, layout.llvm_struct_type);
+    }
+
+    fun emit_isenum(mut this, inst: ir.IRIsEnum) {
+        let result_name: string = inst.result.display();
+        let enum_resolved: string = this.resolve_value(inst.enum_value);
+        let idx_resolved: string = this.resolve_value(inst.variant_idx);
+        let enum_ir_type: string = inst.enum_value.get_ir_type();
+        let type_name: string = this.extract_type_name(enum_ir_type);
+        let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+
+        if (found.is_none()) {
+            this.sb.append("  " + result_name + " = icmp eq i32 " + enum_resolved + ", " + idx_resolved + "\n");
+            return;
+        }
+
+        let layout: EnumLayout = found.some;
+        let tmp_name: string = this.next_tmp();
+
+        // alloca + store enum struct
+        this.sb.append("  " + tmp_name + " = alloca " + layout.llvm_struct_type + "\n");
+        this.sb.append("  store " + layout.llvm_struct_type + " " + enum_resolved + ", ptr " + tmp_name + "\n");
+
+        // GEP field 1 (variant tag)
+        let var_ptr: string = this.next_tmp();
+        this.sb.append("  " + var_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 1\n");
+        let tag_name: string = this.next_tmp();
+        this.sb.append("  " + tag_name + " = load i32, ptr " + var_ptr + "\n");
+
+        // compare — variant idx may be i64, truncate to i32
+        let idx_i32: mut string = idx_resolved;
+        let idx_name: string = inst.variant_idx.display();
+        let idx_ir_type: string = inst.variant_idx.get_ir_type();
+        let idx_llvm_type: string = this.ir_type_to_llvm(idx_ir_type);
+        if (idx_llvm_type != "i32") {
+            let trunc_name: string = this.next_tmp();
+            this.sb.append("  " + trunc_name + " = trunc " + idx_llvm_type + " " + idx_resolved + " to i32\n");
+            idx_i32 = trunc_name;
+        }
+        let cmp_name: string = this.next_tmp();
+        this.sb.append("  " + cmp_name + " = icmp eq i32 " + tag_name + ", " + idx_i32 + "\n");
+        this.sb.append("  " + result_name + " = zext i1 " + cmp_name + " to i8\n");
+    }
+
+    fun emit_isinstance(mut this, inst: ir.IRIsInstance) {
+        this.needs_isinstance = true;
+        let result_name: string = inst.result.display();
+        let obj_resolved: string = this.resolve_value(inst.obj);
+        let type_id: string = inst.type_id;
+        // Determine if this is an interface check or class check
+        let is_interface: bool = this.is_interface_type_id(type_id);
+        let call_result: string = this.next_tmp();
+        let type_id_global: string = "@." + this.sanitize_type_id(type_id) + "_type_id";
+        this.ensure_type_id_constant(type_id);
+
+        // For enum types, the value is a struct not a pointer.
+        // Alloca, store, and pass the pointer to the runtime.
+        let obj_llvm_type: string = this.get_llvm_type(obj_resolved);
+        let obj_ptr: mut string = obj_resolved;
+        if (string_find(obj_llvm_type, "%enum.") >= 0) {
+            let alloca_name: string = this.next_tmp();
+            this.sb.append("  " + alloca_name + " = alloca " + obj_llvm_type + "\n");
+            this.sb.append("  store " + obj_llvm_type + " " + obj_resolved + ", ptr " + alloca_name + "\n");
+            obj_ptr = alloca_name;
+        }
+
+        if (is_interface) {
+            this.sb.append("  " + call_result + " = call i32 @_emperor_isinstance(ptr " + obj_ptr + ", ptr " + type_id_global + ")\n");
+        } else {
+            this.needs_check_class = true;
+            this.sb.append("  " + call_result + " = call i32 @_emperor_check_class(ptr " + obj_ptr + ", ptr " + type_id_global + ")\n");
+        }
+        let cmp_name: string = this.next_tmp();
+        this.sb.append("  " + cmp_name + " = icmp ne i32 " + call_result + ", 0\n");
+        this.icmp_results.push(cmp_name);
+        this.register_llvm_type(cmp_name, "i1");
+        this.sb.append("  " + result_name + " = zext i1 " + cmp_name + " to i8\n");
+        this.register_llvm_type(result_name, "i8");
+    }
+
+    fun emit_box(mut this, inst: ir.IRBox) {
+        this.has_boxing = true;
+        let result_name: string = inst.result.display();
+        let operand_resolved: string = this.resolve_value(inst.operand);
+        let type_name: string = inst.source_type_name;
+
+        // Try class layout first, then enum layout
+        let found_cls: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found_cls.is_some()) {
+            let layout: ClassLayout = found_cls.some;
+            this.sb.append("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(layout.sizeof_object) + ")\n");
+            this.sb.append("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + operand_resolved + ", i32 " + cast<string>(layout.sizeof_object) + ", i1 false)\n");
+            this.register_llvm_type(result_name, "ptr");
+            return;
+        }
+
+        let found_enum: Option<EnumLayout> = this.find_enum_layout(type_name);
+        if (found_enum.is_some()) {
+            let layout: EnumLayout = found_enum.some;
+            let enum_size: i64 = this.compute_enum_struct_size(layout);
+            let alloca_tmp: string = this.next_tmp();
+            this.sb.append("  " + alloca_tmp + " = alloca " + layout.llvm_struct_type + "\n");
+            this.sb.append("  store " + layout.llvm_struct_type + " " + operand_resolved + ", ptr " + alloca_tmp + "\n");
+            this.sb.append("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(enum_size) + ")\n");
+            this.sb.append("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + alloca_tmp + ", i32 " + cast<string>(enum_size) + ", i1 false)\n");
+            this.register_llvm_type(result_name, "ptr");
+            return;
+        }
+    }
+
+    fun emit_unbox(mut this, inst: ir.IRUnbox) {
+        this.has_boxing = true;
+        let result_name: string = inst.result.display();
+        let operand_resolved: string = this.resolve_value(inst.operand);
+        let type_name: string = inst.target_type_name;
+
+        // Try class layout first, then enum layout
+        let found_cls: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found_cls.is_some()) {
+            let layout: ClassLayout = found_cls.some;
+            this.sb.append("  " + result_name + " = alloca " + layout.llvm_struct_type + "\n");
+            this.sb.append("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + operand_resolved + ", i32 " + cast<string>(layout.sizeof_object) + ", i1 false)\n");
+            this.register_llvm_type(result_name, "ptr");
+            return;
+        }
+
+        let found_enum: Option<EnumLayout> = this.find_enum_layout(type_name);
+        if (found_enum.is_some()) {
+            let layout: EnumLayout = found_enum.some;
+            this.sb.append("  " + result_name + " = load " + layout.llvm_struct_type + ", ptr " + operand_resolved + "\n");
+            this.register_llvm_type(result_name, layout.llvm_struct_type);
+            return;
+        }
+    }
+
+    fun compute_enum_struct_size(mut this, layout: EnumLayout) -> i64 {
+        // ptr (8 bytes) + i32 variant tag (4 bytes) = 12, aligned to 8 = 16
+        // if has payload, add payload size + alignment
+        let base_size: mut i64 = 16;
+        if (layout.has_payload) {
+            let payload_size: i64 = this.llvm_type_size(layout.payload_llvm_type);
+            base_size = base_size + payload_size;
+            // align to 8
+            let remainder: i64 = base_size % 8;
+            if (remainder > 0) {
+                base_size = base_size + 8 - remainder;
+            }
+        }
+        return base_size;
+    }
+
+
+    fun is_interface_type_id(this, type_id: string) -> bool {
+        // Walk the bound compilation unit to check if type_id refers to an interface
+        if (this.current_unit.is_some()) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.current_unit.some.definitions.size())) {
+                if (this.def_is_interface_type(this.current_unit.some.definitions.at(cast<u64>(i)).some, type_id)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+        }
+        return false;
+    }
+
+    fun def_is_interface_type(this, def: bound.BoundDefinition, type_id: string) -> bool {
+        if (def is bound.BoundDefinition.interface_def) {
+            if (def.interface_def.type_symbol.is_some()) {
+                if (def.interface_def.type_symbol.some.full_name == type_id) {
+                    return true;
+                }
+            }
+        }
+        if (def is bound.BoundDefinition.namespace_def) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(def.namespace_def.children.size())) {
+                if (this.def_is_interface_type(def.namespace_def.children.at(cast<u64>(i)).some, type_id)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+        }
+        return false;
+    }
+
+    fun sanitize_type_id(this, type_id: string) -> string {
+        let result: mut string = "";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(string_length(type_id))) {
+            let ch: string = string_char_at(type_id, i);
+            if (ch == ".") {
+                result = result + "_";
+            } else if (ch == "<" || ch == ">" || ch == " ") {
+                result = result + "_";
+            } else {
+                result = result + ch;
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    fun ensure_type_id_constant(mut this, type_id: string) {
+        let sanitized: string = this.sanitize_type_id(type_id);
+        let global_name: string = "@." + sanitized + "_type_id";
+        // Check for duplicates
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.type_id_constants.size())) {
+            if (this.type_id_constants.at(cast<u64>(i)).some.global_name == global_name) {
+                return;
+            }
+            i = i + 1;
+        }
+        let display_name: string = this.type_id_display_name(type_id);
+        let len: i64 = cast<i64>(string_length(display_name)) + 1;
+        this.type_id_constants.push(new TypeIdConstant(global_name, display_name, len));
+    }
+
+    fun type_id_display_name(this, type_id: string) -> string {
+        let prefix: string = "<global>.";
+        if (this.string_starts_with(type_id, prefix)) {
+            return string_substring(type_id, string_length(prefix), cast<i64>(string_length(type_id)) - string_length(prefix));
+        }
+        return type_id;
+    }
+
+    fun emit_rdenum(mut this, inst: ir.IRRdenum) {
+        let result_name: string = inst.result.display();
+        let enum_resolved: string = this.resolve_value(inst.enum_value);
+        let llvm_type: string = this.ir_type_to_llvm(inst.payload_type);
+        let enum_ir_type: string = inst.enum_value.get_ir_type();
+        let type_name: string = this.extract_type_name(enum_ir_type);
+        let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+
+        if (found.is_none()) {
+            this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + enum_resolved + "\n");
+            return;
+        }
+
+        let layout: EnumLayout = found.some;
+        let tmp_name: string = this.next_tmp();
+
+        // alloca + store enum struct
+        this.sb.append("  " + tmp_name + " = alloca " + layout.llvm_struct_type + "\n");
+        this.sb.append("  store " + layout.llvm_struct_type + " " + enum_resolved + ", ptr " + tmp_name + "\n");
+
+        // GEP field 2 (payload)
+        let pay_ptr: string = this.next_tmp();
+        this.sb.append("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2\n");
+        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + pay_ptr + "\n");
+    }
+
+    fun emit_label(mut this, inst: ir.IRLabelInst) {
+        this.sb.append(inst.label.name + ":\n");
+    }
+
+    fun emit_global_load(mut this, inst: ir.IRGlobalLoad) {
+        let result_name: string = inst.result.display();
+        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
+        let global_name: string = "@" + this.sanitize_name(inst.global_name);
+        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + global_name + "\n");
+        this.register_llvm_type(result_name, llvm_type);
+    }
+
+    fun emit_global_store(mut this, inst: ir.IRGlobalStore) {
+        let value_resolved: string = this.resolve_value(inst.value);
+        let value_type: string = inst.value.get_ir_type();
+        let llvm_type: string = this.ir_type_to_llvm(value_type);
+        let coerced: string = this.coerce_operand(value_resolved, llvm_type);
+        let global_name: string = "@" + this.sanitize_name(inst.global_name);
+        this.sb.append("  store " + llvm_type + " " + coerced + ", ptr " + global_name + "\n");
+    }
+
+    // --- Argument list emission ---
+
+    fun find_func_param_types(this, func_name: string) -> Option<FuncParamTypes> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.func_param_types.size())) {
+            let fpt: FuncParamTypes = this.func_param_types.at(cast<u64>(i)).some;
+            if (fpt.func_name == func_name) {
+                return new Option<FuncParamTypes>.some(fpt);
+            }
+            i = i + 1;
+        }
+        return new Option<FuncParamTypes>.none();
+    }
+
+    fun coerce_arg(mut this, resolved: string, arg_llvm_type: string, param_llvm_type: string) -> string {
+        if (arg_llvm_type == param_llvm_type) { return resolved; }
+        // Integer truncation: i64 -> i32, i64 -> i16, etc.
+        if (arg_llvm_type == "i64" && param_llvm_type == "i32") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = trunc i64 " + resolved + " to i32\n");
+            return tmp;
+        }
+        if (arg_llvm_type == "i64" && param_llvm_type == "i16") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = trunc i64 " + resolved + " to i16\n");
+            return tmp;
+        }
+        if (arg_llvm_type == "i64" && param_llvm_type == "i8") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = trunc i64 " + resolved + " to i8\n");
+            return tmp;
+        }
+        // Integer extension: i32 -> i64, etc.
+        if (arg_llvm_type == "i32" && param_llvm_type == "i64") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = sext i32 " + resolved + " to i64\n");
+            return tmp;
+        }
+        if (arg_llvm_type == "i16" && param_llvm_type == "i64") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = sext i16 " + resolved + " to i64\n");
+            return tmp;
+        }
+        if (arg_llvm_type == "i8" && param_llvm_type == "i64") {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = sext i8 " + resolved + " to i64\n");
+            return tmp;
+        }
+        return resolved;
+    }
+
+    fun emit_args_coerced(mut this, func_name: string, args: List<ir.IRValue>) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(func_name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            if (i > 0) { sb2.append(", "); }
+            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_llvm_type: string = this.ir_type_to_llvm(arg.get_ir_type());
+            let param_llvm_type: mut string = arg_llvm_type;
+            if (fpt.is_some()) {
+                if (i < cast<i64>(fpt.some.param_types.size())) {
+                    param_llvm_type = fpt.some.param_types.at(cast<u64>(i)).some;
+                }
+            }
+            let final_resolved: string = this.coerce_arg(resolved, arg_llvm_type, param_llvm_type);
+            sb2.append(param_llvm_type + " " + final_resolved);
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    fun emit_args(mut this, args: List<ir.IRValue>) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            if (i > 0) { sb2.append(", "); }
+            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            let llvm_type: string = this.ir_type_to_llvm(arg_type);
+            sb2.append(llvm_type + " " + resolved);
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    // --- Value resolution ---
+
+    fun resolve_value(mut this, val: ir.IRValue) -> string {
+        let display: string = val.display();
+        // Mutable register: emit load from alloca
+        if (this.is_mutable_reg(display)) {
+            let alloca_name: string = this.get_alloca_name(display);
+            let llvm_type: string = this.get_llvm_type(display);
+            if (llvm_type != "") {
+                let loaded: string = this.next_tmp();
+                this.sb.append("  " + loaded + " = load " + llvm_type + ", ptr " + alloca_name + "\n");
+                this.register_llvm_type(loaded, llvm_type);
+                return loaded;
+            }
+        }
+        // Check register mapping (immutable registers and aliases)
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.reg_map.size())) {
+            let mapping: RegMapping = this.reg_map.at(cast<u64>(i)).some;
+            if (mapping.ir_name == display) {
+                return mapping.llvm_value;
+            }
+            i = i + 1;
+        }
+        return display;
+    }
+
+    // --- Type mapping ---
+
+    fun scan_mutable_regs(mut this, func: ir.IRFunction) {
+        // Collect all register names that appear as definition targets
+        let all_defs: mut List<string> = new List<string>();
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is ir.IRInstruction.const_inst) {
+                all_defs.push(inst.const_inst.result.display());
+            }
+            if (inst is ir.IRInstruction.assign) {
+                all_defs.push(inst.assign.dest.display());
+            }
+            ii = ii + 1;
+        }
+
+        // Find names that appear more than once (mutable)
+        this.mutable_regs = new List<string>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(all_defs.size())) {
+            let name: string = all_defs.at(cast<u64>(i)).some;
+            let count: mut i64 = 0;
+            let j: mut i64 = 0;
+            while (j < cast<i64>(all_defs.size())) {
+                if (all_defs.at(cast<u64>(j)).some == name) {
+                    count = count + 1;
+                }
+                j = j + 1;
+            }
+            if (count > 1 && !this.is_mutable_reg(name)) {
+                this.mutable_regs.push(name);
+            }
+            i = i + 1;
+        }
+
+        // Create alloca names and determine types from first definition
+        this.alloca_map = new List<RegMapping>();
+        let m: mut i64 = 0;
+        while (m < cast<i64>(this.mutable_regs.size())) {
+            let name: string = this.mutable_regs.at(cast<u64>(m)).some;
+            let alloca_name: string = name + ".addr";
+            this.alloca_map.push(new RegMapping(name, alloca_name));
+
+            // Find type from first definition
+            let found_type: mut bool = false;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(func.instructions.size()) && !found_type) {
+                let inst: ir.IRInstruction = func.instructions.at(cast<u64>(fi)).some;
+                if (!found_type && inst is ir.IRInstruction.const_inst) {
+                    if (inst.const_inst.result.display() == name) {
+                        let ir_type: string = inst.const_inst.result.get_ir_type();
+                        let llvm_type: string = this.ir_type_to_llvm(ir_type);
+                        this.register_llvm_type(name, llvm_type);
+                        found_type = true;
+                    }
+                }
+                if (!found_type && inst is ir.IRInstruction.assign) {
+                    if (inst.assign.dest.display() == name) {
+                        let ir_type: string = inst.assign.dest.get_ir_type();
+                        let llvm_type: string = this.ir_type_to_llvm(ir_type);
+                        this.register_llvm_type(name, llvm_type);
+                        found_type = true;
+                    }
+                }
+                fi = fi + 1;
+            }
+            m = m + 1;
+        }
+    }
+
+    fun is_mutable_reg(this, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.mutable_regs.size())) {
+            if (this.mutable_regs.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun get_alloca_name(this, name: string) -> string {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.alloca_map.size())) {
+            let entry: RegMapping = this.alloca_map.at(cast<u64>(i)).some;
+            if (entry.ir_name == name) { return entry.llvm_value; }
+            i = i + 1;
+        }
+        return name + ".addr";
+    }
+
+    fun ir_type_to_llvm(this, ir_type: string) -> string {
+        if (ir_type == "i8") { return "i8"; }
+        if (ir_type == "i16") { return "i16"; }
+        if (ir_type == "i32") { return "i32"; }
+        if (ir_type == "i64") { return "i64"; }
+        if (ir_type == "u8") { return "i8"; }
+        if (ir_type == "u16") { return "i16"; }
+        if (ir_type == "u32") { return "i32"; }
+        if (ir_type == "u64") { return "i64"; }
+        if (ir_type == "f32") { return "float"; }
+        if (ir_type == "f64") { return "double"; }
+        if (ir_type == "bool") { return "i8"; }
+        if (ir_type == "char") { return "i32"; }
+        if (ir_type == "void") { return "void"; }
+        if (ir_type == "ptr") { return "ptr"; }
+        if (ir_type == "funptr") { return "ptr"; }
+        // ref<...> → ptr
+        if (this.string_starts_with(ir_type, "ref<")) { return "ptr"; }
+        // enum<...> → struct type if layout available, else i64
+        if (this.string_starts_with(ir_type, "enum<")) {
+            let type_name: string = this.extract_type_name(ir_type);
+            let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+            if (found.is_some()) {
+                return found.some.llvm_struct_type;
+            }
+            return "i64";
+        }
+        return "ptr";
+    }
+
+    // --- Cast operation mapping ---
+
+    fun cast_op(this, from: string, to: string) -> string {
+        // Integer widening
+        if (from == "i8" && to == "i16") { return "zext"; }
+        if (from == "i8" && to == "i32") { return "zext"; }
+        if (from == "i8" && to == "i64") { return "zext"; }
+        if (from == "i16" && to == "i32") { return "zext"; }
+        if (from == "i16" && to == "i64") { return "zext"; }
+        if (from == "i32" && to == "i64") { return "zext"; }
+        // Integer truncation
+        if (from == "i64" && to == "i32") { return "trunc"; }
+        if (from == "i64" && to == "i16") { return "trunc"; }
+        if (from == "i64" && to == "i8") { return "trunc"; }
+        if (from == "i32" && to == "i16") { return "trunc"; }
+        if (from == "i32" && to == "i8") { return "trunc"; }
+        if (from == "i16" && to == "i8") { return "trunc"; }
+        // Bool → integer
+        if (from == "i8" && (to == "i16" || to == "i32" || to == "i64")) { return "zext"; }
+        // Integer → float
+        if (from == "i32" && to == "float") { return "sitofp"; }
+        if (from == "i64" && to == "float") { return "sitofp"; }
+        if (from == "i32" && to == "double") { return "sitofp"; }
+        if (from == "i64" && to == "double") { return "sitofp"; }
+        // Float → integer
+        if (from == "float" && to == "i32") { return "fptosi"; }
+        if (from == "float" && to == "i64") { return "fptosi"; }
+        if (from == "double" && to == "i32") { return "fptosi"; }
+        if (from == "double" && to == "i64") { return "fptosi"; }
+        // Float precision
+        if (from == "float" && to == "double") { return "fpext"; }
+        if (from == "double" && to == "float") { return "fptrunc"; }
+        return "bitcast";
+    }
+
+    // --- BINOP mapping ---
+
+    fun binop_to_llvm(this, op: string, ir_type: string) -> string {
+        let is_float: bool = ir_type == "f32" || ir_type == "f64";
+        if (op == "add") { if (is_float) { return "fadd"; } return "add"; }
+        if (op == "sub") { if (is_float) { return "fsub"; } return "sub"; }
+        if (op == "mul") { if (is_float) { return "fmul"; } return "mul"; }
+        if (op == "div") { if (is_float) { return "fdiv"; } return "sdiv"; }
+        if (op == "mod") { if (is_float) { return "frem"; } return "srem"; }
+        if (op == "eq") { if (is_float) { return "fcmp oeq"; } return "icmp eq"; }
+        if (op == "ne") { if (is_float) { return "fcmp une"; } return "icmp ne"; }
+        if (op == "slt") { if (is_float) { return "fcmp olt"; } return "icmp slt"; }
+        if (op == "sgt") { if (is_float) { return "fcmp ogt"; } return "icmp sgt"; }
+        if (op == "sle") { if (is_float) { return "fcmp ole"; } return "icmp sle"; }
+        if (op == "sge") { if (is_float) { return "fcmp oge"; } return "icmp sge"; }
+        if (op == "ult") { return "icmp ult"; }
+        if (op == "ugt") { return "icmp ugt"; }
+        if (op == "ule") { return "icmp ule"; }
+        if (op == "uge") { return "icmp uge"; }
+        if (op == "and") { return "and"; }
+        if (op == "or") { return "or"; }
+        if (op == "xor") { return "xor"; }
+        return "add";
+    }
+
+    // --- Function name ---
+
+    fun llvm_func_name(this, name: string) -> string {
+        let cleaned: string = this.strip_global_prefix(name);
+        let sanitized: string = this.sanitize_name(cleaned);
+        if (sanitized == "println") { return "@_emperor_println"; }
+        if (sanitized == "print") { return "@_emperor_print"; }
+        return "@" + sanitized;
+    }
+
+    fun strip_global_prefix(this, name: string) -> string {
+        let prefix: string = "<global>.";
+        let prefix_len: i64 = string_length(prefix);
+        let name_len: i64 = string_length(name);
+        if (name_len > prefix_len && this.string_starts_with(name, prefix)) {
+            return string_substring(name, prefix_len, name_len - prefix_len);
+        }
+        return name;
+    }
+
+    fun sanitize_name(this, name: string) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        let len: i64 = string_length(name);
+        let i: mut i64 = 0;
+        while (i < len) {
+            let ch: string = string_char_at(name, i);
+            if (ch == "<" || ch == ">" || ch == " " || ch == "," || ch == ".") {
+                sb2.append("_");
+            } else {
+                sb2.append(ch);
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    // --- Type helpers ---
+
+    fun register_llvm_type(mut this, reg_name: string, llvm_type: string) {
+        this.reg_type_map.push(new RegMapping(reg_name, llvm_type));
+    }
+
+    fun get_llvm_type(this, reg_name: string) -> string {
+        let i: mut i64 = cast<i64>(this.reg_type_map.size()) - 1;
+        while (i >= 0) {
+            let entry: RegMapping = this.reg_type_map.at(cast<u64>(i)).some;
+            if (entry.ir_name == reg_name) { return entry.llvm_value; }
+            i = i - 1;
+        }
+        return "";
+    }
+
+    fun coerce_operand(mut this, resolved: string, expected_llvm: string) -> string {
+        // Skip if expected type is ptr (opaque in LLVM)
+        if (expected_llvm == "ptr") { return resolved; }
+        // Look up actual type of register
+        let actual_type: string = this.get_llvm_type(resolved);
+        if (actual_type == "" || actual_type == expected_llvm) { return resolved; }
+        // Insert truncation or extension
+        let tmp: string = this.next_tmp();
+        if (this.is_wider_int(actual_type, expected_llvm)) {
+            this.sb.append("  " + tmp + " = trunc " + actual_type + " " + resolved + " to " + expected_llvm + "\n");
+        } else {
+            this.sb.append("  " + tmp + " = zext " + actual_type + " " + resolved + " to " + expected_llvm + "\n");
+        }
+        this.register_llvm_type(tmp, expected_llvm);
+        return tmp;
+    }
+
+    fun is_wider_int(this, a: string, b: string) -> bool {
+        let wa: i64 = this.int_width(a);
+        let wb: i64 = this.int_width(b);
+        return wa > wb;
+    }
+
+    fun int_width(this, t: string) -> i64 {
+        if (t == "i8") { return 8; }
+        if (t == "i16") { return 16; }
+        if (t == "i32") { return 32; }
+        if (t == "i64") { return 64; }
+        return 0;
+    }
+
+    fun is_icmp_value(this, resolved: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.icmp_results.size())) {
+            if (this.icmp_results.at(cast<u64>(i)).some == resolved) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun is_string_type(this, ir_type: string) -> bool {
+        if (string_length(ir_type) >= 5) {
+            let prefix: string = "ref<";
+            let i: mut i64 = 0;
+            while (i < 4) {
+                if (string_char_at(ir_type, i) != string_char_at(prefix, i)) { return false; }
+                i = i + 1;
+            }
+            // Check if content starts with "string"
+            let content: string = string_substring(ir_type, 4, string_length(ir_type) - 5);
+            if (content == "string") { return true; }
+        }
+        return false;
+    }
+
+    fun is_bool_type(this, ir_type: string) -> bool {
+        return ir_type == "bool";
+    }
+
+    fun is_ref_type(this, ir_type: string) -> bool {
+        if (string_length(ir_type) >= 5) {
+            let prefix: string = "ref<";
+            let i: mut i64 = 0;
+            while (i < 4) {
+                if (string_char_at(ir_type, i) != string_char_at(prefix, i)) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fun is_int_type(this, ir_type: string) -> bool {
+        if (ir_type == "i8") { return true; }
+        if (ir_type == "i16") { return true; }
+        if (ir_type == "i32") { return true; }
+        if (ir_type == "i64") { return true; }
+        if (ir_type == "u8") { return true; }
+        if (ir_type == "u16") { return true; }
+        if (ir_type == "u32") { return true; }
+        if (ir_type == "u64") { return true; }
+        return false;
+    }
+
+    fun list_contains(this, list: List<string>, value: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(list.size())) {
+            if (list.at(cast<u64>(i)).some == value) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun string_starts_with(this, s: string, prefix: string) -> bool {
+        let prefix_len: i64 = string_length(prefix);
+        if (string_length(s) < prefix_len) { return false; }
+        let i: mut i64 = 0;
+        while (i < prefix_len) {
+            if (string_char_at(s, i) != string_char_at(prefix, i)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fun strip_string_quotes(this, s: string) -> string {
+        let len: i64 = string_length(s);
+        if (len >= 2 && string_char_at(s, 0) == "\"" && string_char_at(s, len - 1) == "\"") {
+            return string_substring(s, 1, len - 2);
+        }
+        return s;
+    }
+
+    // --- String escaping for LLVM c"..." format ---
+
+    fun escape_llvm_string(this, s: string) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        let len: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < len) {
+            let ch: string = string_char_at(s, i);
+            if (ch == "\\") {
+                sb2.append("\\\\");
+            } else {
+                if (ch == "\"") {
+                    sb2.append("\\\"");
+                } else {
+                    sb2.append(ch);
+                }
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+}
+
+}

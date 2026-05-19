@@ -1,0 +1,247 @@
+namespace bound {
+
+class BoundVTableSlot {
+    interface_method: mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    implementation_method: mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+}
+
+class BoundVTable {
+    interface_type: BoundType = new BoundType();
+    slots: mut List<BoundVTableSlot> = new List<BoundVTableSlot>();
+}
+
+class BoundEnumMemberDefinition {
+    name: string = "";
+    member_symbol: Option<BoundEnumMemberSymbol> = new Option<BoundEnumMemberSymbol>.none();
+    member_type: BoundType = new BoundType();
+    value: i64 = 0;
+
+    fun new(mut this, name: string, value: i64, member_type: mut BoundType) {
+        this.name = name;
+        this.value = value;
+        this.member_type = member_type;
+    }
+}
+
+class BoundFunctionDefinition {
+    name: string = "";
+    full_name: string = "";
+    symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    parameters: mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    return_type: BoundType = new BoundType();
+    body: Option<BoundExpression> = new Option<BoundExpression>.none();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    is_extern: bool = false;
+    is_pure: bool = false;
+    is_static: bool = false;
+    is_new: bool = false;
+    generic_params: mut List<string> = new List<string>();
+    is_generic_template: bool = false;
+
+    fun new(mut this, name: string, full_name: string, is_extern: mut bool, is_pure: mut bool, is_new: mut bool, is_static: mut bool) {
+        this.name = name;
+        this.full_name = full_name;
+        this.is_extern = is_extern;
+        this.is_pure = is_pure;
+        this.is_new = is_new;
+        this.is_static = is_static;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundClassDefinition {
+    name: string = "";
+    full_name: string = "";
+    type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+    bound_type: BoundType = new BoundType();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    fields: mut List<BoundDefinition> = new List<BoundDefinition>();
+    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    constructors: mut List<BoundDefinition> = new List<BoundDefinition>();
+    interface_impls: mut List<BoundDefinition> = new List<BoundDefinition>();
+    vtables: mut List<BoundVTable> = new List<BoundVTable>();
+    generic_params: mut List<string> = new List<string>();
+    is_value_class: mut Option<bool> = new Option<bool>.none();
+    constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
+    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+    is_generic_template: bool = false;
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundEnumDefinition {
+    name: string = "";
+    full_name: string = "";
+    type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+    bound_type: BoundType = new BoundType();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    members: mut List<BoundEnumMemberDefinition> = new List<BoundEnumMemberDefinition>();
+    generic_params: mut List<string> = new List<string>();
+    value_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    interface_impls: mut List<BoundDefinition> = new List<BoundDefinition>();
+    vtables: mut List<BoundVTable> = new List<BoundVTable>();
+    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundInterfaceDefinition {
+    name: string = "";
+    full_name: string = "";
+    type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+    bound_type: BoundType = new BoundType();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    generic_params: mut List<string> = new List<string>();
+    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundInterfaceImplementation {
+    interface_type: BoundType = new BoundType();
+    implementing_type: BoundType = new BoundType();
+    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    vtable: Option<BoundVTable> = new Option<BoundVTable>.none();
+    fun get_name(this) -> string {
+        return "<impl>";
+    }
+}
+
+class BoundInterfaceForImplementation {
+    interface_type: BoundType = new BoundType();
+    for_type: BoundType = new BoundType();
+    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    vtable: Option<BoundVTable> = new Option<BoundVTable>.none();
+    fun get_name(this) -> string {
+        return "<impl_for>";
+    }
+}
+
+class BoundNamespaceDefinition {
+    name: string = "";
+    full_name: string = "";
+    children: mut List<BoundDefinition> = new List<BoundDefinition>();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundInitialRoutineDefinition {
+    body: Option<BoundExpression> = new Option<BoundExpression>.none();
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    full_name: string = "";
+
+    fun new(mut this, full_name: string) {
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return "<initial>";
+    }
+}
+
+class BoundTypeReferenceDefinition {
+    name: string = "";
+    alias_type: BoundType = new BoundType();
+    type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundClassFieldDefinition {
+    name: string = "";
+    bound_type: BoundType = new BoundType();
+    field_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    initializer: Option<BoundExpression> = new Option<BoundExpression>.none();
+    mutability: Mutability = new Mutability.Auto();
+    is_static: bool = false;
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundGlobalVariableDefinition {
+    name: string = "";
+    full_name: string = "";
+    variable_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    bound_type: BoundType = new BoundType();
+    initializer: Option<BoundExpression> = new Option<BoundExpression>.none();
+    is_mutable: bool = false;
+    scope: Option<BoundScope> = new Option<BoundScope>.none();
+    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+}
+
+enum BoundDefinition {
+    function_def: BoundFunctionDefinition;
+    class_def: BoundClassDefinition;
+    enum_def: BoundEnumDefinition;
+    interface_def: BoundInterfaceDefinition;
+    impl_def: BoundInterfaceImplementation;
+    impl_for_def: BoundInterfaceForImplementation;
+    namespace_def: BoundNamespaceDefinition;
+    initial_routine: BoundInitialRoutineDefinition;
+    type_ref_def: BoundTypeReferenceDefinition;
+    class_field: BoundClassFieldDefinition;
+    global_var_def: BoundGlobalVariableDefinition;
+
+    fun get_name(this) -> string {
+        if (this is BoundDefinition.function_def) { return this.function_def.get_name(); }
+        if (this is BoundDefinition.class_def) { return this.class_def.get_name(); }
+        if (this is BoundDefinition.enum_def) { return this.enum_def.get_name(); }
+        if (this is BoundDefinition.interface_def) { return this.interface_def.get_name(); }
+        if (this is BoundDefinition.impl_def) { return this.impl_def.get_name(); }
+        if (this is BoundDefinition.impl_for_def) { return this.impl_for_def.get_name(); }
+        if (this is BoundDefinition.namespace_def) { return this.namespace_def.get_name(); }
+        if (this is BoundDefinition.initial_routine) { return this.initial_routine.get_name(); }
+        if (this is BoundDefinition.type_ref_def) { return this.type_ref_def.get_name(); }
+        if (this is BoundDefinition.class_field) { return this.class_field.get_name(); }
+        if (this is BoundDefinition.global_var_def) { return this.global_var_def.name; }
+        return "";
+    }
+}
+
+}

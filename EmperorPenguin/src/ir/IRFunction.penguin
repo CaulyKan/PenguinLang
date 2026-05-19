@@ -1,0 +1,83 @@
+namespace ir {
+
+class IRParameter {
+    name: mut string = "";
+    ir_type: mut string = "";
+    index: mut i64 = 0;
+    source_line: mut i64 = 0;
+    source_col: mut i64 = 0;
+
+    fun new(mut this, name: string, ir_type: string, index: i64) {
+        this.name = name;
+        this.ir_type = ir_type;
+        this.index = index;
+    }
+}
+
+class IRFunction {
+    name: mut string = "";
+    display_name: mut string = "";
+    return_type: mut string = "";
+    parameters: mut List<IRParameter> = new List<IRParameter>();
+    instructions: mut List<IRInstruction> = new List<IRInstruction>();
+    next_temp: mut i64 = 0;
+    next_label: mut i64 = 0;
+    is_extern: mut bool = false;
+    source_file: mut string = "";
+    source_line: mut i64 = 0;
+    source_col: mut i64 = 0;
+
+    fun new(mut this, name: string, return_type: string) {
+        this.name = name;
+        this.return_type = return_type;
+    }
+
+    fun alloc_named_reg(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
+        return new IRValue.named_reg(new IRNamedRegister(name, ir_type, line, col));
+    }
+
+    fun alloc_temp(mut this, ir_type: string) -> IRValue {
+        let idx: i64 = this.next_temp;
+        this.next_temp = this.next_temp + 1;
+        return new IRValue.temp_reg(new IRTempRegister(idx, ir_type));
+    }
+
+    fun alloc_label(mut this, prefix: string) -> IRLabel {
+        let idx: i64 = this.next_label;
+        this.next_label = this.next_label + 1;
+        return new IRLabel(prefix + cast<string>(idx));
+    }
+
+    fun add_inst(mut this, inst: IRInstruction) {
+        this.instructions.push(inst);
+    }
+
+    fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
+        let idx: i64 = cast<i64>(this.parameters.size());
+        let param = new mut IRParameter(name, ir_type, idx);
+        param.source_line = line;
+        param.source_col = col;
+        this.parameters.push(param);
+        return this.alloc_named_reg(name, ir_type, line, col);
+    }
+
+    fun has_terminator(this) -> bool {
+        if (cast<i64>(this.instructions.size()) == 0) { return false; }
+        let last: IRInstruction = this.instructions.at(cast<u64>(cast<i64>(this.instructions.size()) - 1)).some;
+        return last.is_terminator();
+    }
+
+    fun ends_with_control_flow(this) -> bool {
+        if (cast<i64>(this.instructions.size()) == 0) { return false; }
+        let last: IRInstruction = this.instructions.at(cast<u64>(cast<i64>(this.instructions.size()) - 1)).some;
+        if (last.is_control_flow()) { return true; }
+        // Check second-to-last instruction in case a label was added after BR
+        if (cast<i64>(this.instructions.size()) >= 2) {
+            let second_last: IRInstruction = this.instructions.at(cast<u64>(cast<i64>(this.instructions.size()) - 2)).some;
+            if (second_last.is_control_flow()) { return true; }
+        }
+        return false;
+    }
+}
+
+}

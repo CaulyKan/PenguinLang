@@ -1,0 +1,490 @@
+namespace bound {
+
+fun indent(level: i64) -> string {
+    let result: mut string = "";
+    let i: mut i64 = 0;
+    while (i < level) {
+        result = result + "  ";
+        i = i + 1;
+    }
+    return result;
+}
+
+fun print_definition(def: BoundDefinition, level: i64) {
+    if (def is BoundDefinition.function_def) {
+        let f: BoundFunctionDefinition = def.function_def;
+        __builtin.println(indent(level) + "fun " + f.name + " -> " + f.return_type.display_name());
+        if (f.body.is_some()) {
+            print_expression(f.body.some, level + 1);
+        }
+    }
+    if (def is BoundDefinition.class_def) {
+        let c: BoundClassDefinition = def.class_def;
+        __builtin.println(indent(level) + "class " + c.name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(c.fields.size())) {
+            let fd: BoundDefinition = c.fields.at(cast<u64>(i)).some;
+            if (fd is BoundDefinition.class_field) {
+                __builtin.println(indent(level + 1) + "field " + fd.class_field.name + ": " + fd.class_field.bound_type.display_name());
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < cast<i64>(c.methods.size())) {
+            print_definition(c.methods.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.enum_def) {
+        let e: BoundEnumDefinition = def.enum_def;
+        __builtin.println(indent(level) + "enum " + e.name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(e.members.size())) {
+            let m: BoundEnumMemberDefinition = e.members.at(cast<u64>(i)).some;
+            __builtin.println(indent(level + 1) + m.name + " = " + cast<string>(m.value));
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.interface_def) {
+        let iface: BoundInterfaceDefinition = def.interface_def;
+        __builtin.println(indent(level) + "interface " + iface.name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iface.methods.size())) {
+            print_definition(iface.methods.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.impl_def) {
+        let impl_d: BoundInterfaceImplementation = def.impl_def;
+        __builtin.println(indent(level) + "impl " + impl_d.interface_type.display_name());
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impl_d.methods.size())) {
+            print_definition(impl_d.methods.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.impl_for_def) {
+        let impl_d: BoundInterfaceForImplementation = def.impl_for_def;
+        __builtin.println(indent(level) + "impl " + impl_d.interface_type.display_name() + " for " + impl_d.for_type.display_name());
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impl_d.methods.size())) {
+            print_definition(impl_d.methods.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.namespace_def) {
+        let ns: BoundNamespaceDefinition = def.namespace_def;
+        __builtin.println(indent(level) + "namespace " + ns.name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ns.children.size())) {
+            print_definition(ns.children.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.initial_routine) {
+        let init: BoundInitialRoutineDefinition = def.initial_routine;
+        __builtin.println(indent(level) + "initial");
+        if (init.body.is_some()) {
+            print_expression(init.body.some, level + 1);
+        }
+    }
+    if (def is BoundDefinition.type_ref_def) {
+        let tr: BoundTypeReferenceDefinition = def.type_ref_def;
+        __builtin.println(indent(level) + "type " + tr.name + " = " + tr.alias_type.display_name());
+    }
+    if (def is BoundDefinition.class_field) {
+        let cf: BoundClassFieldDefinition = def.class_field;
+        __builtin.println(indent(level) + "field " + cf.name + ": " + cf.bound_type.display_name());
+    }
+    if (def is BoundDefinition.global_var_def) {
+        let gv: BoundGlobalVariableDefinition = def.global_var_def;
+        let mut_str: mut string = "";
+        if (gv.is_mutable) { mut_str = "mut "; }
+        __builtin.println(indent(level) + "global let " + mut_str + gv.name + ": " + gv.bound_type.display_name());
+    }
+}
+
+fun print_expression(expr: BoundExpression, level: i64) {
+    if (expr is BoundExpression.literal) {
+        let lit: BoundLiteralExpression = expr.literal;
+        __builtin.println(indent(level) + "literal(" + lit.value + ": " + lit.get_bound_type().display_name() + ")");
+    }
+    if (expr is BoundExpression.identifier) {
+        let id: BoundIdentifierExpression = expr.identifier;
+        let name: mut string = "?";
+        if (id.symbol.is_some()) { name = id.symbol.some.get_name(); }
+        __builtin.println(indent(level) + "identifier(" + name + ": " + id.get_bound_type().display_name() + ")");
+    }
+    if (expr is BoundExpression.binary) {
+        let bin: BoundBinaryExpression = expr.binary;
+        __builtin.println(indent(level) + "binary(" + cast<string>(cast<i64>(bin.operands.size())) + " ops: " + bin.get_bound_type().display_name() + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bin.operands.size())) {
+            print_expression(bin.operands.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.unary) {
+        __builtin.println(indent(level) + "unary(" + expr.unary.get_bound_type().display_name() + ")");
+        if (expr.unary.operand.is_some()) {
+            print_expression(expr.unary.operand.some, level + 1);
+        }
+    }
+    if (expr is BoundExpression.member_access) {
+        let ma: BoundMemberAccessExpression = expr.member_access;
+        __builtin.println(indent(level) + "member_access(" + ma.member_name + ": " + ma.get_bound_type().display_name() + ")");
+        if (ma.base_expr.is_some()) {
+            print_expression(ma.base_expr.some, level + 1);
+        }
+    }
+    if (expr is BoundExpression.function_call) {
+        let fc: BoundFunctionCallExpression = expr.function_call;
+        let callee_name: mut string = "?";
+        if (fc.callee_symbol.is_some()) { callee_name = fc.callee_symbol.some.get_name(); }
+        __builtin.println(indent(level) + "call(" + callee_name + ": " + fc.get_bound_type().display_name() + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(fc.arguments.size())) {
+            print_expression(fc.arguments.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.if_expr) {
+        let if_e: BoundIfExpression = expr.if_expr;
+        __builtin.println(indent(level) + "if(" + if_e.get_bound_type().display_name() + ")");
+        if (if_e.condition.is_some()) { print_expression(if_e.condition.some, level + 1); }
+        if (if_e.then_block.is_some()) { print_expression(if_e.then_block.some, level + 1); }
+        if (if_e.else_block.is_some()) { print_expression(if_e.else_block.some, level + 1); }
+    }
+    if (expr is BoundExpression.while_expr) {
+        __builtin.println(indent(level) + "while");
+        if (expr.while_expr.condition.is_some()) { print_expression(expr.while_expr.condition.some, level + 1); }
+        if (expr.while_expr.body.is_some()) { print_expression(expr.while_expr.body.some, level + 1); }
+    }
+    if (expr is BoundExpression.code_block) {
+        let cb: BoundCodeBlockExpression = expr.code_block;
+        __builtin.println(indent(level) + "block(" + cast<string>(cast<i64>(cb.statements.size())) + " stmts: " + cb.get_bound_type().display_name() + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cb.statements.size())) {
+            print_statement(cb.statements.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+        if (cb.trailing_expr.is_some()) {
+            print_expression(cb.trailing_expr.some, level + 1);
+        }
+    }
+    if (expr is BoundExpression.cast_expr) {
+        __builtin.println(indent(level) + "cast(" + expr.cast_expr.get_bound_type().display_name() + ")");
+        if (expr.cast_expr.inner.is_some()) { print_expression(expr.cast_expr.inner.some, level + 1); }
+    }
+    if (expr is BoundExpression.new_expr) {
+        let ne: BoundNewExpression = expr.new_expr;
+        let type_name: mut string = "?";
+        if (ne.type_symbol.is_some()) { type_name = ne.type_symbol.some.name; }
+        __builtin.println(indent(level) + "new(" + type_name + ": " + ne.get_bound_type().display_name() + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ne.arguments.size())) {
+            print_expression(ne.arguments.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.lambda_expr) {
+        __builtin.println(indent(level) + "lambda(" + expr.lambda_expr.get_bound_type().display_name() + ")");
+        if (expr.lambda_expr.body.is_some()) { print_expression(expr.lambda_expr.body.some, level + 1); }
+    }
+}
+
+fun print_statement(stmt: BoundStatement, level: i64) {
+    if (stmt is BoundStatement.expression) {
+        __builtin.println(indent(level) + "expr_stmt");
+        if (stmt.expression.expression.is_some()) {
+            print_expression(stmt.expression.expression.some, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.return_stmt) {
+        __builtin.println(indent(level) + "return(" + stmt.return_stmt.return_type.display_name() + ")");
+        if (stmt.return_stmt.value.is_some()) {
+            print_expression(stmt.return_stmt.value.some, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.let_decl) {
+        let let_s: BoundLetDeclarationStatement = stmt.let_decl;
+        let var_name: mut string = "?";
+        if (let_s.variable_symbol.is_some()) { var_name = let_s.variable_symbol.some.name; }
+        __builtin.println(indent(level) + "let " + var_name + ": " + let_s.bound_type.display_name());
+        if (let_s.initializer.is_some()) {
+            print_expression(let_s.initializer.some, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.assignment) {
+        __builtin.println(indent(level) + "assign");
+        if (stmt.assignment.target.is_some()) { print_expression(stmt.assignment.target.some, level + 1); }
+        if (stmt.assignment.value.is_some()) { print_expression(stmt.assignment.value.some, level + 1); }
+    }
+    if (stmt is BoundStatement.if_stmt) {
+        __builtin.println(indent(level) + "if_stmt");
+        if (stmt.if_stmt.condition.is_some()) { print_expression(stmt.if_stmt.condition.some, level + 1); }
+        if (stmt.if_stmt.then_statement.is_some()) { print_statement(stmt.if_stmt.then_statement.some, level + 1); }
+        if (stmt.if_stmt.else_statement.is_some()) { print_statement(stmt.if_stmt.else_statement.some, level + 1); }
+    }
+    if (stmt is BoundStatement.while_stmt) {
+        __builtin.println(indent(level) + "while_stmt");
+        if (stmt.while_stmt.condition.is_some()) { print_expression(stmt.while_stmt.condition.some, level + 1); }
+        if (stmt.while_stmt.body.is_some()) { print_statement(stmt.while_stmt.body.some, level + 1); }
+    }
+    if (stmt is BoundStatement.block) {
+        __builtin.println(indent(level) + "block_stmt(" + cast<string>(cast<i64>(stmt.block.statements.size())) + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(stmt.block.statements.size())) {
+            print_statement(stmt.block.statements.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
+    if (stmt is BoundStatement.break_stmt) {
+        __builtin.println(indent(level) + "break");
+    }
+    if (stmt is BoundStatement.continue_stmt) {
+        __builtin.println(indent(level) + "continue");
+    }
+}
+
+fun print_definition_to(def: BoundDefinition, sb: mut StringBuilder, level: i64) {
+    if (def is BoundDefinition.function_def) {
+        let f: BoundFunctionDefinition = def.function_def;
+        sb.append(indent(level) + "fun " + f.name + " -> " + f.return_type.display_name() + "\n");
+        if (f.body.is_some()) {
+            print_expression_to(f.body.some, sb, level + 1);
+        }
+    }
+    if (def is BoundDefinition.class_def) {
+        let c: BoundClassDefinition = def.class_def;
+        sb.append(indent(level) + "class " + c.name + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(c.fields.size())) {
+            let fd: BoundDefinition = c.fields.at(cast<u64>(i)).some;
+            if (fd is BoundDefinition.class_field) {
+                sb.append(indent(level + 1) + "field " + fd.class_field.name + ": " + fd.class_field.bound_type.display_name() + "\n");
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < cast<i64>(c.methods.size())) {
+            print_definition_to(c.methods.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.enum_def) {
+        let e: BoundEnumDefinition = def.enum_def;
+        sb.append(indent(level) + "enum " + e.name + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(e.members.size())) {
+            let m: BoundEnumMemberDefinition = e.members.at(cast<u64>(i)).some;
+            sb.append(indent(level + 1) + m.name + " = " + cast<string>(m.value) + "\n");
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.interface_def) {
+        let iface: BoundInterfaceDefinition = def.interface_def;
+        sb.append(indent(level) + "interface " + iface.name + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iface.methods.size())) {
+            print_definition_to(iface.methods.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.impl_def) {
+        let impl_d: BoundInterfaceImplementation = def.impl_def;
+        sb.append(indent(level) + "impl " + impl_d.interface_type.display_name() + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impl_d.methods.size())) {
+            print_definition_to(impl_d.methods.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.impl_for_def) {
+        let impl_d: BoundInterfaceForImplementation = def.impl_for_def;
+        sb.append(indent(level) + "impl " + impl_d.interface_type.display_name() + " for " + impl_d.for_type.display_name() + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impl_d.methods.size())) {
+            print_definition_to(impl_d.methods.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.namespace_def) {
+        let ns: BoundNamespaceDefinition = def.namespace_def;
+        sb.append(indent(level) + "namespace " + ns.name + "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ns.children.size())) {
+            print_definition_to(ns.children.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (def is BoundDefinition.initial_routine) {
+        let init: BoundInitialRoutineDefinition = def.initial_routine;
+        sb.append(indent(level) + "initial\n");
+        if (init.body.is_some()) {
+            print_expression_to(init.body.some, sb, level + 1);
+        }
+    }
+    if (def is BoundDefinition.type_ref_def) {
+        let tr: BoundTypeReferenceDefinition = def.type_ref_def;
+        sb.append(indent(level) + "type " + tr.name + " = " + tr.alias_type.display_name() + "\n");
+    }
+    if (def is BoundDefinition.class_field) {
+        let cf: BoundClassFieldDefinition = def.class_field;
+        sb.append(indent(level) + "field " + cf.name + ": " + cf.bound_type.display_name() + "\n");
+    }
+    if (def is BoundDefinition.global_var_def) {
+        let gv: BoundGlobalVariableDefinition = def.global_var_def;
+        let mut_str: mut string = "";
+        if (gv.is_mutable) { mut_str = "mut "; }
+        sb.append(indent(level) + "global let " + mut_str + gv.name + ": " + gv.bound_type.display_name() + "\n");
+        if (gv.initializer.is_some()) {
+            print_expression_to(gv.initializer.some, sb, level + 1);
+        }
+    }
+}
+
+fun print_expression_to(expr: BoundExpression, sb: mut StringBuilder, level: i64) {
+    if (expr is BoundExpression.literal) {
+        let lit: BoundLiteralExpression = expr.literal;
+        sb.append(indent(level) + "literal(" + lit.value + ": " + lit.get_bound_type().display_name() + ")\n");
+    }
+    if (expr is BoundExpression.identifier) {
+        let id: BoundIdentifierExpression = expr.identifier;
+        let name: mut string = "?";
+        if (id.symbol.is_some()) { name = id.symbol.some.get_name(); }
+        sb.append(indent(level) + "identifier(" + name + ": " + id.get_bound_type().display_name() + ")\n");
+    }
+    if (expr is BoundExpression.binary) {
+        let bin: BoundBinaryExpression = expr.binary;
+        sb.append(indent(level) + "binary(" + cast<string>(cast<i64>(bin.operands.size())) + " ops: " + bin.get_bound_type().display_name() + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bin.operands.size())) {
+            print_expression_to(bin.operands.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.unary) {
+        sb.append(indent(level) + "unary(" + expr.unary.get_bound_type().display_name() + ")\n");
+        if (expr.unary.operand.is_some()) {
+            print_expression_to(expr.unary.operand.some, sb, level + 1);
+        }
+    }
+    if (expr is BoundExpression.member_access) {
+        let ma: BoundMemberAccessExpression = expr.member_access;
+        sb.append(indent(level) + "member_access(" + ma.member_name + ": " + ma.get_bound_type().display_name() + ")\n");
+        if (ma.base_expr.is_some()) {
+            print_expression_to(ma.base_expr.some, sb, level + 1);
+        }
+    }
+    if (expr is BoundExpression.function_call) {
+        let fc: BoundFunctionCallExpression = expr.function_call;
+        let callee_name: mut string = "?";
+        if (fc.callee_symbol.is_some()) { callee_name = fc.callee_symbol.some.get_name(); }
+        sb.append(indent(level) + "call(" + callee_name + ": " + fc.get_bound_type().display_name() + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(fc.arguments.size())) {
+            print_expression_to(fc.arguments.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.if_expr) {
+        let if_e: BoundIfExpression = expr.if_expr;
+        sb.append(indent(level) + "if(" + if_e.get_bound_type().display_name() + ")\n");
+        if (if_e.condition.is_some()) { print_expression_to(if_e.condition.some, sb, level + 1); }
+        if (if_e.then_block.is_some()) { print_expression_to(if_e.then_block.some, sb, level + 1); }
+        if (if_e.else_block.is_some()) { print_expression_to(if_e.else_block.some, sb, level + 1); }
+    }
+    if (expr is BoundExpression.while_expr) {
+        sb.append(indent(level) + "while\n");
+        if (expr.while_expr.condition.is_some()) { print_expression_to(expr.while_expr.condition.some, sb, level + 1); }
+        if (expr.while_expr.body.is_some()) { print_expression_to(expr.while_expr.body.some, sb, level + 1); }
+    }
+    if (expr is BoundExpression.code_block) {
+        let cb: BoundCodeBlockExpression = expr.code_block;
+        sb.append(indent(level) + "block(" + cast<string>(cast<i64>(cb.statements.size())) + " stmts: " + cb.get_bound_type().display_name() + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cb.statements.size())) {
+            print_statement_to(cb.statements.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+        if (cb.trailing_expr.is_some()) {
+            print_expression_to(cb.trailing_expr.some, sb, level + 1);
+        }
+    }
+    if (expr is BoundExpression.cast_expr) {
+        sb.append(indent(level) + "cast(" + expr.cast_expr.get_bound_type().display_name() + ")\n");
+        if (expr.cast_expr.inner.is_some()) { print_expression_to(expr.cast_expr.inner.some, sb, level + 1); }
+    }
+    if (expr is BoundExpression.new_expr) {
+        let ne: BoundNewExpression = expr.new_expr;
+        let type_name: mut string = "?";
+        if (ne.type_symbol.is_some()) { type_name = ne.type_symbol.some.name; }
+        sb.append(indent(level) + "new(" + type_name + ": " + ne.get_bound_type().display_name() + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ne.arguments.size())) {
+            print_expression_to(ne.arguments.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (expr is BoundExpression.lambda_expr) {
+        sb.append(indent(level) + "lambda(" + expr.lambda_expr.get_bound_type().display_name() + ")\n");
+        if (expr.lambda_expr.body.is_some()) { print_expression_to(expr.lambda_expr.body.some, sb, level + 1); }
+    }
+}
+
+fun print_statement_to(stmt: BoundStatement, sb: mut StringBuilder, level: i64) {
+    if (stmt is BoundStatement.expression) {
+        sb.append(indent(level) + "expr_stmt\n");
+        if (stmt.expression.expression.is_some()) {
+            print_expression_to(stmt.expression.expression.some, sb, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.return_stmt) {
+        sb.append(indent(level) + "return(" + stmt.return_stmt.return_type.display_name() + ")\n");
+        if (stmt.return_stmt.value.is_some()) {
+            print_expression_to(stmt.return_stmt.value.some, sb, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.let_decl) {
+        let let_s: BoundLetDeclarationStatement = stmt.let_decl;
+        let var_name: mut string = "?";
+        if (let_s.variable_symbol.is_some()) { var_name = let_s.variable_symbol.some.name; }
+        sb.append(indent(level) + "let " + var_name + ": " + let_s.bound_type.display_name() + "\n");
+        if (let_s.initializer.is_some()) {
+            print_expression_to(let_s.initializer.some, sb, level + 1);
+        }
+    }
+    if (stmt is BoundStatement.assignment) {
+        sb.append(indent(level) + "assign\n");
+        if (stmt.assignment.target.is_some()) { print_expression_to(stmt.assignment.target.some, sb, level + 1); }
+        if (stmt.assignment.value.is_some()) { print_expression_to(stmt.assignment.value.some, sb, level + 1); }
+    }
+    if (stmt is BoundStatement.if_stmt) {
+        sb.append(indent(level) + "if_stmt\n");
+        if (stmt.if_stmt.condition.is_some()) { print_expression_to(stmt.if_stmt.condition.some, sb, level + 1); }
+        if (stmt.if_stmt.then_statement.is_some()) { print_statement_to(stmt.if_stmt.then_statement.some, sb, level + 1); }
+        if (stmt.if_stmt.else_statement.is_some()) { print_statement_to(stmt.if_stmt.else_statement.some, sb, level + 1); }
+    }
+    if (stmt is BoundStatement.while_stmt) {
+        sb.append(indent(level) + "while_stmt\n");
+        if (stmt.while_stmt.condition.is_some()) { print_expression_to(stmt.while_stmt.condition.some, sb, level + 1); }
+        if (stmt.while_stmt.body.is_some()) { print_statement_to(stmt.while_stmt.body.some, sb, level + 1); }
+    }
+    if (stmt is BoundStatement.block) {
+        sb.append(indent(level) + "block_stmt(" + cast<string>(cast<i64>(stmt.block.statements.size())) + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(stmt.block.statements.size())) {
+            print_statement_to(stmt.block.statements.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
+    if (stmt is BoundStatement.break_stmt) {
+        sb.append(indent(level) + "break\n");
+    }
+    if (stmt is BoundStatement.continue_stmt) {
+        sb.append(indent(level) + "continue\n");
+    }
+}
+
+}

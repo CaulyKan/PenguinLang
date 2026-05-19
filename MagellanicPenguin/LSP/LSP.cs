@@ -1,3 +1,4 @@
+#nullable enable
 using System.Text;
 using BabyPenguin;
 using LanguageServer;
@@ -22,9 +23,9 @@ namespace MagellanicPenguin
 {
     public class App : ServiceConnection
     {
-        private Uri _workerSpaceRoot;
+        private Uri _workerSpaceRoot = null!;
         private int _maxNumberOfProblems = 1000;
-        private TextDocumentManager _documents;
+        private TextDocumentManager _documents = null!;
         private string? _currentProjectFile;
         private PenguinProject? _currentProject;
         private Dictionary<string, List<string>> _projectFileMap = new();
@@ -36,7 +37,7 @@ namespace MagellanicPenguin
             _documents.Changed += Documents_Changed;
         }
 
-        private void Documents_Changed(object sender, TextDocumentChangedEventArgs e)
+        private void Documents_Changed(object? sender, TextDocumentChangedEventArgs e)
         {
             Logger.Instance.Log($"Enter Documents_Changed({sender}, {e})");
             CompileDocument(e.Document);
@@ -167,7 +168,7 @@ namespace MagellanicPenguin
                     }
 
                     // Add all project files to compiler
-                    var sourceFiles = _currentProject.ResolveSourceFiles(projectDir);
+                    var sourceFiles = _currentProject!.ResolveSourceFiles(projectDir);
 
                     foreach (var sourceFile in sourceFiles)
                     {
@@ -197,7 +198,7 @@ namespace MagellanicPenguin
             {
                 diagnostics.Add(new Diagnostic
                 {
-                    range = ConvertSourceLocation(e.Location),
+                    range = ConvertSourceLocation(e.Location!),
                     message = e.Message,
                     severity = DiagnosticSeverity.Error
                 });
@@ -214,7 +215,7 @@ namespace MagellanicPenguin
 
             diagnostics.AddRange(errorReporter.Messages.Where(i => i.Level != DiagnosticLevel.Debug && i.Level != DiagnosticLevel.Info).Select(i => new Diagnostic
             {
-                range = ConvertSourceLocation(i.SourceLocation),
+                range = ConvertSourceLocation(i.SourceLocation!),
                 message = i.Message,
                 severity = i.Level == DiagnosticLevel.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning
             }));
@@ -479,7 +480,7 @@ namespace MagellanicPenguin
             }
 
             // Convert definition location to LSP Location
-            var definition = definitionLocation.IsLeft ? definitionLocation.Left.SourceLocation : definitionLocation.Right.TypeNode.SourceLocation;
+            var definition = definitionLocation.IsLeft ? definitionLocation.Left!.SourceLocation! : definitionLocation.Right!.TypeNode!.SourceLocation;
             var location = new Location
             {
                 uri = ConvertPathToUri(definition.FileName),
@@ -562,7 +563,7 @@ namespace MagellanicPenguin
 
         public CompilationResult GetCompilationResult(Uri uri)
         {
-            return _compilationResults.GetValueOrDefault(uri);
+            return _compilationResults.GetValueOrDefault(uri)!;
         }
 
         public void UpdateCompilationResult(Uri uri, CompilationResult result)
@@ -636,7 +637,7 @@ namespace MagellanicPenguin
             _all.RemoveAt(index);
         }
 
-        public event EventHandler<TextDocumentChangedEventArgs> Changed;
+        public event EventHandler<TextDocumentChangedEventArgs>? Changed;
 
         protected virtual void OnChanged(TextDocumentItem document)
         {
@@ -658,9 +659,9 @@ namespace MagellanicPenguin
 
     public class CompilationResult
     {
-        public string Source { get; set; }
-        public SemanticModel Model { get; set; }
-        public SemanticModel LastSuccessModel { get; set; }
+        public string Source { get; set; } = null!;
+        public SemanticModel Model { get; set; } = null!;
+        public SemanticModel LastSuccessModel { get; set; } = null!;
     }
 
     class Program
@@ -690,7 +691,7 @@ namespace MagellanicPenguin
         {
         }
 
-        private Proxy _proxy;
+        private Proxy? _proxy;
 
         public void Attach(Connection connection)
         {

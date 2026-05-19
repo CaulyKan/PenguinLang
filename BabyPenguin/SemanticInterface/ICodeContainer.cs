@@ -195,7 +195,7 @@ namespace BabyPenguin.SemanticInterface
                             while (currentExpr is MemberAccessExpression innerMa)
                             {
                                 memberChain.Add(innerMa.Member!);
-                                currentExpr = innerMa.BaseExpression;
+                                currentExpr = innerMa.BaseExpression!;
                             }
                             memberChain.Reverse();
 
@@ -294,7 +294,10 @@ namespace BabyPenguin.SemanticInterface
                                     var tempBeforeCalc = AddExpression((MemberAccessExpression)lhsEffective, false);
                                     var tempAfterCalc = AllocTempSymbol(ResolveBinaryOperationType(op, [tempBeforeCalc.TypeInfo, rightVar.TypeInfo], item.SourceLocation), item.SourceLocation);
                                     AddInstruction(new BinaryOperationInstruction(item.SourceLocation, op, tempBeforeCalc, rightVar, tempAfterCalc));
-                                    AddInstruction(new WriteMemberInstruction(item.SourceLocation, member!, tempAfterCalc, target));
+                                    if (target.TypeInfo.IsEnumType)
+                                        AddInstruction(new WriteEnumInstruction(item.SourceLocation, tempAfterCalc, target));
+                                    else
+                                        AddInstruction(new WriteMemberInstruction(item.SourceLocation, member!, tempAfterCalc, target));
                                 }
                                 break;
                             }
@@ -948,16 +951,16 @@ namespace BabyPenguin.SemanticInterface
                     }
                 case CodeBlockExpression exp:
                     {
-                        return ResolveExpressionType(exp.TrailingExpression);
+                        return ResolveExpressionType(exp.TrailingExpression!);
                     }
                 case IfExpression exp:
                     {
                         if (exp.HasElse)
                         {
-                            var mainType = ResolveExpressionType(exp.MainBranch!.TrailingExpression);
+                            var mainType = ResolveExpressionType(exp.MainBranch!.TrailingExpression!);
                             if (exp.ElseBranch != null)
                             {
-                                var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression);
+                                var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression!);
                                 if (mainType.FullName() != elseType.FullName())
                                     throw new BabyPenguinException($"If expression branches have different types: '{mainType}' and '{elseType}'", exp.SourceLocation);
                             }
@@ -1184,8 +1187,8 @@ namespace BabyPenguin.SemanticInterface
                     {
                         // OK
                     }
-                    else if (fromSymbol.TypeInfo is IVTableContainer vc &&
-                            vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName() == $"__builtin.ICopy<{to.TypeInfo.FullName()}>") is IInterfaceNode ICopy)
+                    else if (fromSymbol.TypeInfo.TypeNode is IVTableContainer vc &&
+                            vc.ImplementedInterfaces.FirstOrDefault(i => i.FullName() == $"__builtin.ICopy<{to.TypeInfo.WithMutability(Mutability.Immutable).FullName()}>") is IInterfaceNode ICopy)
                     {
                         var temp = AllocTempSymbol(to.TypeInfo, sourceLocation ?? SourceLocation.Empty());
                         var copyFunc = Model.ResolveSymbol(ICopy.FullName() + ".copy", s => s.IsFunction) ??
@@ -1202,7 +1205,10 @@ namespace BabyPenguin.SemanticInterface
 
             if (memberOwner != null)
             {
-                AddInstruction(new WriteMemberInstruction(sourceLocation ?? SourceLocation.Empty(), to, fromSymbol, memberOwner));
+                if (memberOwner.TypeInfo.IsEnumType)
+                    AddInstruction(new WriteEnumInstruction(sourceLocation ?? SourceLocation.Empty(), fromSymbol, memberOwner));
+                else
+                    AddInstruction(new WriteMemberInstruction(sourceLocation ?? SourceLocation.Empty(), to, fromSymbol, memberOwner));
             }
             else
             {
@@ -1746,7 +1752,7 @@ namespace BabyPenguin.SemanticInterface
                             AddCodeBlockItem(item);
                         }
                         // Evaluate trailing expression (always present)
-                        AddExpression(codeBlockExpression.TrailingExpression, isVariableInitialize, to);
+                        AddExpression(codeBlockExpression.TrailingExpression!, isVariableInitialize, to);
                     }
                     break;
                 case IfExpression ifExpression:
@@ -1766,7 +1772,7 @@ namespace BabyPenguin.SemanticInterface
                             {
                                 AddCodeBlockItem(item);
                             }
-                            AddExpression(ifExpression.MainBranch!.TrailingExpression, isVariableInitialize, to);
+                            AddExpression(ifExpression.MainBranch!.TrailingExpression!, isVariableInitialize, to);
 
                             AddInstruction(new GotoInstruction(ifExpression.Condition!.SourceLocation, endifLabel));
                             AddInstruction(new NopInstuction(ifExpression.SourceLocation.EndLocation).WithLabel(elseLabel));
@@ -1778,7 +1784,7 @@ namespace BabyPenguin.SemanticInterface
                                 {
                                     AddCodeBlockItem(item);
                                 }
-                                AddExpression(ifExpression.ElseBranch.TrailingExpression, isVariableInitialize, to);
+                                AddExpression(ifExpression.ElseBranch.TrailingExpression!, isVariableInitialize, to);
                             }
                             else if (ifExpression.ElseBranchExpression != null)
                             {
@@ -1798,7 +1804,7 @@ namespace BabyPenguin.SemanticInterface
                             {
                                 AddCodeBlockItem(item);
                             }
-                            AddExpression(ifExpression.MainBranch!.TrailingExpression, isVariableInitialize, to);
+                            AddExpression(ifExpression.MainBranch!.TrailingExpression!, isVariableInitialize, to);
 
                             AddInstruction(new NopInstuction(ifExpression.SourceLocation.EndLocation).WithLabel(endifLabel));
                         }

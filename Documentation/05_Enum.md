@@ -3,8 +3,8 @@ Penguin-lang supports Rust-style enums, which can contain values. One of the mos
 
 ```
 enum Option<T> {
-	some: T,
-	none,
+	some: T;
+	none;
 }
 
 let a : mut Option<i32> = new Option<i32>.none();
@@ -30,8 +30,8 @@ initial {
 Like classes, enums can have their own members:
 ```
 enum Option<T> {
-	some: T,
-	none,
+	some: T;
+	none;
 
 	// method
 	fun value_or(this, default: T) -> T {

@@ -1,0 +1,140 @@
+namespace bound {
+
+enum VariableSymbolKind { Local; Parameter; Field; StaticField; Temp; Global; }
+
+class BoundVariableSymbol {
+    name: string = "";
+    full_name: mut string = "";
+    bound_type: BoundType = new BoundType();
+    variable_kind: VariableSymbolKind = new VariableSymbolKind.Local();
+    is_mutable: bool = false;
+    parameter_index: i64 = -1;
+    declaring_scope_id: u64 = 0;
+    enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
+    source_line: i64 = 0;
+    source_col: i64 = 0;
+}
+
+class BoundFunctionSymbol {
+    name: string = "";
+    full_name: mut string = "";
+    bound_type: BoundType = new BoundType();
+    parameters: mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    return_type: BoundType = new BoundType();
+    is_extern: bool = false;
+    is_static: bool = false;
+    is_pure: bool = false;
+    is_new: bool = false;
+    is_async: bool = false;
+    enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
+    source_line: i64 = 0;
+    source_col: i64 = 0;
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+}
+
+class BoundTypeSymbol {
+    name: string = "";
+    full_name: mut string = "";
+    bound_type: BoundType = new BoundType();
+    type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
+    generic_params: mut List<string> = new List<string>();
+    enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
+    source_line: i64 = 0;
+    source_col: i64 = 0;
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+}
+
+class BoundEnumMemberSymbol {
+    name: string = "";
+    full_name: mut string = "";
+    bound_type: BoundType = new BoundType();
+    enum_value: i64 = 0;
+    member_type: BoundType = new BoundType();
+    enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
+    source_line: i64 = 0;
+    source_col: i64 = 0;
+
+    fun new(mut this, name: string, full_name: string, bound_type: mut BoundType, enum_value: i64, member_type: mut BoundType) {
+        this.name = name;
+        this.full_name = full_name;
+        this.bound_type = bound_type;
+        this.enum_value = enum_value;
+        this.member_type = member_type;
+    }
+}
+
+class BoundNamespaceSymbol {
+    name: string = "";
+    full_name: mut string = "";
+    namespace_scope: Option<BoundScope> = new Option<BoundScope>.none();
+    enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
+    source_line: i64 = 0;
+    source_col: i64 = 0;
+
+    fun new(mut this, name: string, full_name: string, namespace_scope: mut Option<BoundScope>) {
+        this.name = name;
+        this.full_name = full_name;
+        this.namespace_scope = namespace_scope;
+    }
+}
+
+enum BoundSymbol {
+    variable: BoundVariableSymbol;
+    function_sym: BoundFunctionSymbol;
+    type_sym: BoundTypeSymbol;
+    enum_member: BoundEnumMemberSymbol;
+    namespace_sym: BoundNamespaceSymbol;
+
+    fun get_name(this) -> string {
+        if (this is BoundSymbol.variable) { return this.variable.name; }
+        if (this is BoundSymbol.function_sym) { return this.function_sym.name; }
+        if (this is BoundSymbol.type_sym) { return this.type_sym.name; }
+        if (this is BoundSymbol.enum_member) { return this.enum_member.name; }
+        if (this is BoundSymbol.namespace_sym) { return this.namespace_sym.name; }
+        return "";
+    }
+
+    fun get_full_name(this) -> string {
+        if (this is BoundSymbol.variable) { return this.variable.full_name; }
+        if (this is BoundSymbol.function_sym) { return this.function_sym.full_name; }
+        if (this is BoundSymbol.type_sym) { return this.type_sym.full_name; }
+        if (this is BoundSymbol.enum_member) { return this.enum_member.full_name; }
+        if (this is BoundSymbol.namespace_sym) { return this.namespace_sym.full_name; }
+        return "";
+    }
+
+    fun get_enclosing_scope(this) -> Option<BoundScope> {
+        if (this is BoundSymbol.variable) { return this.variable.enclosing_scope; }
+        if (this is BoundSymbol.function_sym) { return this.function_sym.enclosing_scope; }
+        if (this is BoundSymbol.type_sym) { return this.type_sym.enclosing_scope; }
+        if (this is BoundSymbol.enum_member) { return this.enum_member.enclosing_scope; }
+        if (this is BoundSymbol.namespace_sym) { return this.namespace_sym.enclosing_scope; }
+        return new Option<BoundScope>.none();
+    }
+}
+
+class BoundFunctionParameter {
+    name: string = "";
+    bound_type: BoundType = new BoundType();
+    index: i64 = 0;
+    is_mutable: bool = false;
+    is_this: bool = false;
+    default_value: Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, name: string, index: i64, is_mutable: mut bool, is_this: mut bool) {
+        this.name = name;
+        this.index = index;
+        this.is_mutable = is_mutable;
+        this.is_this = is_this;
+    }
+}
+
+}

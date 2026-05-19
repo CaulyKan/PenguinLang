@@ -41,82 +41,7 @@ cd MagellanicPenguin\vscode && npm run package
 ## Important Tips
 * When writing penguinlang code, use skill penguin
 * Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
-
-## Architecture Overview
-
-### Compiler Pipeline (BabyPenguin)
-
-The compiler follows a multi-pass semantic analysis pattern:
-
-1. **Parsing** (PenguinLangParser): ANTLR4 grammar generates syntax tree
-2. **Semantic Analysis** (BabyPenguin/SemanticPass): Numbered passes (01-09) transform syntax tree:
-   - 01_SemanticScoping: Scope and symbol table construction
-   - 02_TypeElaborate: Type inference and checking
-   - 03_SymbolElaborate: Symbol resolution
-   - 04_Constructor: Constructor generation
-   - 05_InterfaceImplementation: Interface implementation checking
-   - 06_SyntaxRewriting: AST transformations
-   - 07_CodeGeneration: BabyPenguinIR generation
-   - 08_MainFunctionGeneration: Main routine setup
-   - 09_CheckReturnValue: Return value validation
-
-3. **Execution** (BabyPenguin/VirtualMachine): BabyPenguinVM executes generated IR
-
-### Key Directories
-
-- **BabyPenguin/SemanticNode**: Core AST nodes (ClassNode, Function, Namespace, etc.)
-- **BabyPenguin/SemanticInterface**: Core interfaces for containers (ISymbolContainer, ITypeContainer, etc.)
-- **BabyPenguin/Type**: Type system implementation
-- **BabyPenguin/Symbol**: Symbol table implementation
-- **BabyPenguin/VirtualMachine**: VM implementation (BabyPenguinVM, RuntimeFrame, RuntimeValue, etc.)
-- **PenguinLangParser/SyntaxNodes**: Syntax tree nodes from ANTLR
-- **PenguinLangParser/PenguinLang.g4**: Grammar file (modify and rebuild to update parser)
-
-### Testing Pattern
-
-Tests use xUnit with a `TestBase` class that provides output capture:
-
-```csharp
-public class MyTest(ITestOutputHelper helper) : TestBase(helper)
-{
-    [Fact]
-    public void TestName()
-    {
-        var compiler = new SemanticCompiler(new ErrorReporter(this));
-        compiler.AddSource(@"...");  // Penguin code
-        var model = compiler.Compile();
-        var vm = new BabyPenguinVM(model);
-        vm.Run();
-        Assert.Equal("expected output" + EOL, vm.CollectOutput());
-    }
-}
-```
-
-Test files in `BabyPenguin.Tests/` test specific language features. Test fixtures in `BabyPenguin.Tests/TestFiles/` are for integration tests.
-
-## Language Syntax Notes
-
-**Mutability modifiers**: `mut`, `!mut`, or auto-inferred
-**Function types**: `fun<Type1, Type2>` for function pointers
-**Async**: `async_fun` keyword, `async` expression for spawning, `wait` for yielding
-**Generic syntax**: `ClassName<Type1, Type2>`
-**Interfaces**: `impl IInterface for Type` for trait implementation
-**Built-in types**: Option<T>, Result<T,E>, List<T>, Queue<T>, AtomicI64, StringBuilder, etc.
-
-**Example syntax:**
-```penguin
-initial {
-    let mut x: i64 = 0;
-    let result: Option<i64> = some(42);
-}
-```
-
-## Working with the Parser
-
-When modifying `PenguinLangParser/PenguinLang.g4`:
-1. The grammar uses ANTLR4
-2. After changes, rebuild the solution - Antlr4BuildTasks will regenerate parser code
-3. Generated code is in the `.antlr` directory and compiled automatically
+* When writing unit tests, you must use try to compare if full test output is correct. The use of ambiguous assertions is **prohibited**, such as comparing only queue sizes, string contains, etc.
 
 ## Debugging with MCP DAP Tools
 
@@ -188,3 +113,74 @@ The language has explicit types with mutability modifiers. The type system is de
 - Type references (type alias)
 
 See `Documentation/03_DataTypes.md` for detailed type information.
+
+## EmperorPenguin Architecture
+
+EmperorPenguin is the self-hosting compiler (written in PenguinLang, compiled/run by BabyPenguin VM). It processes `.penguin` source files through a multi-pass pipeline:
+
+### Project Configuration
+
+`EmperorPenguin/EmperorPenguin.penguins` defines source roots:
+```
+sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "main.penguin"]
+```
+
+### Source Structure
+
+```
+EmperorPenguin/src/
+  ast/           -- AST nodes (AST.penguin, Parser.penguin, Lexer.penguin, Token.penguin)
+  bound/         -- Semantic analysis layer
+  ir/            -- IR generation 
+main.penguin     -- Entry point
+```
+
+### Bound Tree (Semantic Layer)
+
+The bound tree sits between AST and IR. Key files in `src/bound/`:
+
+| File | Contents |
+|------|----------|
+| `BoundType.penguin` | `Mutability`, `PrimitiveType`, `TypeKind`, `BoundType` class |
+| `BoundTypeRegistry.penguin` | Primitive type pre-building, type lookup, implicit cast rules |
+| `BoundSymbol.penguin` | `BoundVariableSymbol`, `BoundFunctionSymbol`, `BoundTypeSymbol`, `BoundEnumMemberSymbol`, `BoundNamespaceSymbol`, aggregated by `BoundSymbol` enum |
+| `BoundScope.penguin` | `ScopeKind`, `BoundScope` — hierarchical symbol lookup with namespace merging |
+| `BoundExpression.penguin` | 12 expression classes + `BoundExpression` enum |
+| `BoundStatement.penguin` | 10 statement classes + `BoundStatement` enum |
+| `BoundDefinition.penguin` | `BoundVTable`, 10 definition classes + `BoundDefinition` enum |
+| `BoundCompilationUnit.penguin` | `SemanticError`, `BoundCompilationUnit` |
+| `SemanticModel.penguin` | Multi-pass binding orchestrator |
+
+### Compiler Pipeline (SemanticModel)
+
+1. **Pass 1 — Build Scopes** (`pass_build_scopes`): AST → BoundDefinitions + BoundScope tree + symbol registration
+2. **Pass 2 — Resolve Types** (`pass_resolve_types`): Walks AST and bound trees in parallel; resolves `ast.TypeSpecifier` → `BoundType` for return types, parameters, fields
+3. Future passes: Bind Symbols, Constructors, Interface Impl, Bind Expressions, Validate Control Flow
+
+### Verification Commands
+
+```bash
+# Verify EmperorPenguin code compiles/runs through BabyPenguin VM
+dotnet run --project BabyPenguin -- EmperorPenguin/EmperorPenguin.penguins
+
+# Run EmperorPenguin tests
+dotnet test EmperorPenguin.Tests
+
+# Run all tests (both BabyPenguin and EmperorPenguin)
+dotnet test
+```
+
+### PenguinLang Mutability Patterns for Bound Objects
+
+When writing PenguinLang code that modifies nested objects:
+
+- **Constructors use `fun new(mut this, ...)`**: Always require `mut this`
+- **`let x: mut T = value`**: Creates immutable binding to mutable value — can call `mut this` methods and assign to `mut` fields
+- **`let mut x = value`**: Creates mutable binding with inferred type — cannot have type annotation
+- **Enum variant access returns immutable values**: Cannot chain `.symbol.some.bound_type = ...` through enum variants. Must extract to `let sym: mut BoundFunctionSymbol = ...` first
+- **Functions returning `mut T`**: Required when result is assigned to `mut` fields. Change return type from `T` to `mut T`
+- **`List<T>.push()` needs `mut` list**: Declare as `let params: mut List<T>` or `let mut params = new List<T>()`
+
+### Namespace Convention for Bound Types
+
+All bound types live in the `bound` namespace. In test code (outside the namespace), use full paths: `bound.BoundType`, `bound.BoundScope`, etc. Builtin types (`Option`, `List`, `StringBuilder`) don't need namespace prefix.

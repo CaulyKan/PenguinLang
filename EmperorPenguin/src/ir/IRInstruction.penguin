@@ -1,0 +1,600 @@
+namespace ir {
+
+// 1. CONST - constant assignment
+class IRConst {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    value: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, value: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.value = value;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.result.get_ir_type() + " = CONST " + this.value;
+    }
+}
+
+// 2. ARG - argument/parameter access
+class IRArg {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    param_name: !mut string = "";
+    param_index: !mut i64 = 0;
+    ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, param_name: string, param_index: i64, ir_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.param_name = param_name;
+        this.param_index = param_index;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = ARG " + this.param_name + " " + cast<string>(this.param_index);
+    }
+}
+
+// 3. ASSIGN - variable assignment
+class IRAssign {
+    dest: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    src: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, dest: IRValue, src: IRValue, loc: IRSourceLocation) {
+        this.dest = dest;
+        this.src = src;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.dest.display() + ":" + this.dest.get_ir_type() + " = ASSIGN " + this.src.display();
+    }
+}
+
+// 3. CAST - type conversion
+class IRCast {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    from_type: !mut string = "";
+    to_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, operand: IRValue, from_type: string, to_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.operand = operand;
+        this.from_type = from_type;
+        this.to_type = to_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.to_type + " = CAST " + this.operand.display() + " " + this.from_type + "->" + this.to_type;
+    }
+}
+
+// 4. BINOP - binary operations (arithmetic and logical)
+class IRBinOp {
+    op: !mut string = "";
+    left: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    right: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, op: string, left: IRValue, right: IRValue, result: IRValue, ir_type: string, loc: IRSourceLocation) {
+        this.op = op;
+        this.left = left;
+        this.right = right;
+        this.result = result;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = BINOP " + this.op + " " + this.left.display() + ", " + this.right.display();
+    }
+}
+
+// 5. UNARYOP - unary operations
+class IRUnaryOp {
+    op: !mut string = "";
+    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, op: string, operand: IRValue, result: IRValue, ir_type: string, loc: IRSourceLocation) {
+        this.op = op;
+        this.operand = operand;
+        this.result = result;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = UNARYOP " + this.op + " " + this.operand.display();
+    }
+}
+
+// 6. RDMBR - read member (replaces GEP + LOAD)
+class IRRdmbr {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    field_name: !mut string = "";
+    ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, obj: IRValue, field_name: string, ir_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.obj = obj;
+        this.field_name = field_name;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = RDMBR " + this.obj.display() + ", ." + this.field_name;
+    }
+}
+
+// 7. WRMBR - write member (replaces GEP + STORE)
+class IRWrmbr {
+    obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    field_name: !mut string = "";
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, obj: IRValue, field_name: string, value: IRValue, loc: IRSourceLocation) {
+        this.obj = obj;
+        this.field_name = field_name;
+        this.value = value;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "WRMBR " + this.obj.display() + ", ." + this.field_name + ", " + this.value.display();
+    }
+}
+
+// 8. BR - unconditional branch
+class IRBr {
+    target: !mut IRLabel = new IRLabel("");
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, target: IRLabel, loc: IRSourceLocation) {
+        this.target = target;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "BR " + this.target.name;
+    }
+}
+
+// 9. BR_COND - conditional branch
+class IRBrCond {
+    cond: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    true_label: !mut IRLabel = new IRLabel("");
+    false_label: !mut IRLabel = new IRLabel("");
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, cond: IRValue, true_label: IRLabel, false_label: IRLabel, loc: IRSourceLocation) {
+        this.cond = cond;
+        this.true_label = true_label;
+        this.false_label = false_label;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "BR_COND " + this.cond.display() + ", " + this.true_label.name + ", " + this.false_label.name;
+    }
+}
+
+// 10. RET - return with value
+class IRRet {
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, value: IRValue, loc: IRSourceLocation) {
+        this.value = value;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "RET " + this.value.display();
+    }
+}
+
+// 11. RET_VOID - return void
+class IRRetVoid {
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, loc: IRSourceLocation) {
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "RET_VOID";
+    }
+}
+
+// 12a. CALL - function call with result
+class IRCall {
+    func_name: !mut string = "";
+    args: !mut List<IRValue> = new List<IRValue>();
+    result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ret_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, func_name: string, args: mut List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
+        this.func_name = func_name;
+        this.args = args;
+        this.result_value = result;
+        this.ret_type = ret_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new mut StringBuilder();
+        // Only show result if ret_type is not void
+        if (this.ret_type != "void") {
+            sb.append(this.result_value.display());
+            sb.append(":" + this.ret_type + " = ");
+        }
+        sb.append("CALL @" + this.func_name + "(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.args.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.args.at(cast<u64>(i)).some.display());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+// 12b. CALL_VOID - void function call
+class IRCallVoid {
+    func_name: !mut string = "";
+    args: !mut List<IRValue> = new List<IRValue>();
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, func_name: string, args: mut List<IRValue>, loc: IRSourceLocation) {
+        this.func_name = func_name;
+        this.args = args;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new mut StringBuilder();
+        sb.append("CALL @" + this.func_name + "(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.args.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.args.at(cast<u64>(i)).some.display());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+// 13. CALL_VIRT - virtual call through interface_map
+class IRCallVirt {
+    obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    interface_id: !mut string = "";
+    vtable_slot: !mut i64 = 0;
+    args: mut List<IRValue> = new List<IRValue>();
+    result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ret_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, obj: IRValue, interface_id: string, vtable_slot: i64, args: mut List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
+        this.obj = obj;
+        this.interface_id = interface_id;
+        this.vtable_slot = vtable_slot;
+        this.args = args;
+        this.result_value = result;
+        this.ret_type = ret_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new mut StringBuilder();
+        if (this.ret_type != "void") {
+            sb.append(this.result_value.display());
+            sb.append(":" + this.ret_type + " = ");
+        }
+        sb.append("CALL_VIRT " + this.obj.display() + ", interface=" + this.interface_id + ", slot=" + cast<string>(this.vtable_slot) + "(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.args.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.args.at(cast<u64>(i)).some.display());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+// 14. NEW - object creation
+class IRNew {
+    type_name: !mut string = "";
+    args: mut List<IRValue> = new List<IRValue>();
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, type_name: string, args: mut List<IRValue>, result: IRValue, loc: IRSourceLocation) {
+        this.type_name = type_name;
+        this.args = args;
+        this.result = result;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new mut StringBuilder();
+        sb.append(this.result.display() + ":ptr = NEW " + this.type_name + "(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.args.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.args.at(cast<u64>(i)).some.display());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+}
+
+// 15. NEW_ENUM - enum creation
+class IRNewEnum {
+    type_name: !mut string = "";
+    variant_idx: !mut i64 = 0;
+    variant_name: !mut string = "";
+    payload: !mut Option<IRValue> = new Option<IRValue>.none();
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, type_name: string, variant_idx: i64, variant_name: string, payload: Option<IRValue>, result: IRValue, loc: IRSourceLocation) {
+        this.type_name = type_name;
+        this.variant_idx = variant_idx;
+        this.variant_name = variant_name;
+        this.payload = payload;
+        this.result = result;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new mut StringBuilder();
+        sb.append(this.result.display() + " = NEW_ENUM " + this.type_name + "." + this.variant_name);
+        if (this.payload.is_some()) {
+            sb.append("(" + this.payload.some.display() + ")");
+        }
+        return sb.to_string();
+    }
+}
+
+// 16. ISENUM - enum pattern matching (check if enum value is a specific variant)
+class IRIsEnum {
+    enum_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    variant_idx: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, enum_value: IRValue, variant_idx: IRValue, result: IRValue, loc: IRSourceLocation) {
+        this.enum_value = enum_value;
+        this.variant_idx = variant_idx;
+        this.result = result;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":bool = ISENUM " + this.enum_value.display() + ", " + this.variant_idx.display();
+    }
+}
+
+// 17. RDENUM - read enum payload (similar to RDMBR but for enum variants)
+class IRRdenum {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    enum_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    variant_name: !mut string = "";
+    payload_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, enum_value: IRValue, variant_name: string, payload_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.enum_value = enum_value;
+        this.variant_name = variant_name;
+        this.payload_type = payload_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.payload_type + " = RDENUM " + this.enum_value.display() + ", ." + this.variant_name;
+    }
+}
+
+// 18a. ISINSTANCE - interface/class type check (runtime metadata lookup)
+class IRIsInstance {
+    obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    type_id: !mut string = "";
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, obj: IRValue, type_id: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.obj = obj;
+        this.type_id = type_id;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":bool = ISINSTANCE " + this.obj.display() + ", " + this.type_id;
+    }
+}
+
+// 19. BOX - heap-allocate and copy a value type for interface use
+class IRBox {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    source_type_name: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, operand: IRValue, source_type_name: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.operand = operand;
+        this.source_type_name = source_type_name;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":ptr = BOX " + this.operand.display() + ", " + this.source_type_name;
+    }
+}
+
+// 20. UNBOX - load value type from heap pointer back to stack
+class IRUnbox {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    target_type_name: !mut string = "";
+    target_ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, operand: IRValue, target_type_name: string, target_ir_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.operand = operand;
+        this.target_type_name = target_type_name;
+        this.target_ir_type = target_ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.target_ir_type + " = UNBOX " + this.operand.display() + ", " + this.target_type_name;
+    }
+}
+
+// 21. LABEL - label
+class IRLabelInst {
+    label: !mut IRLabel = new IRLabel("");
+
+    fun new(mut this, label: IRLabel) {
+        this.label = label;
+    }
+
+    fun display(this) -> string {
+        return this.label.name + ":";
+    }
+}
+
+// 22. GLOBAL_LOAD - load value from a global variable
+class IRGlobalLoad {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    global_name: !mut string = "";
+    ir_type: !mut string = "";
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, global_name: string, ir_type: string, loc: IRSourceLocation) {
+        this.result = result;
+        this.global_name = global_name;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = GLOBAL_LOAD @" + this.global_name;
+    }
+}
+
+// 23. GLOBAL_STORE - store value to a global variable
+class IRGlobalStore {
+    global_name: !mut string = "";
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
+
+    fun new(mut this, global_name: string, value: IRValue, loc: IRSourceLocation) {
+        this.global_name = global_name;
+        this.value = value;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "GLOBAL_STORE @" + this.global_name + ", " + this.value.display();
+    }
+}
+
+// IRInstruction enum
+enum IRInstruction {
+    const_inst: IRConst;
+    arg: IRArg;
+    assign: IRAssign;
+    cast_inst: IRCast;
+    binop: IRBinOp;
+    unaryop: IRUnaryOp;
+    rdmbr: IRRdmbr;
+    wrmbr: IRWrmbr;
+    br: IRBr;
+    br_cond: IRBrCond;
+    ret: IRRet;
+    ret_void: IRRetVoid;
+    call: IRCall;
+    call_void: IRCallVoid;
+    call_virt: IRCallVirt;
+    new_inst: IRNew;
+    new_enum: IRNewEnum;
+    isenum: IRIsEnum;
+    rdenum: IRRdenum;
+    isinstance: IRIsInstance;
+    box: IRBox;
+    unbox: IRUnbox;
+    label_inst: IRLabelInst;
+    global_load: IRGlobalLoad;
+    global_store: IRGlobalStore;
+
+    fun display(this) -> string {
+        if (this is IRInstruction.const_inst) { return this.const_inst.display(); }
+        if (this is IRInstruction.arg) { return this.arg.display(); }
+        if (this is IRInstruction.assign) { return this.assign.display(); }
+        if (this is IRInstruction.cast_inst) { return this.cast_inst.display(); }
+        if (this is IRInstruction.binop) { return this.binop.display(); }
+        if (this is IRInstruction.unaryop) { return this.unaryop.display(); }
+        if (this is IRInstruction.rdmbr) { return this.rdmbr.display(); }
+        if (this is IRInstruction.wrmbr) { return this.wrmbr.display(); }
+        if (this is IRInstruction.br) { return this.br.display(); }
+        if (this is IRInstruction.br_cond) { return this.br_cond.display(); }
+        if (this is IRInstruction.ret) { return this.ret.display(); }
+        if (this is IRInstruction.ret_void) { return this.ret_void.display(); }
+        if (this is IRInstruction.call) { return this.call.display(); }
+        if (this is IRInstruction.call_void) { return this.call_void.display(); }
+        if (this is IRInstruction.call_virt) { return this.call_virt.display(); }
+        if (this is IRInstruction.new_inst) { return this.new_inst.display(); }
+        if (this is IRInstruction.new_enum) { return this.new_enum.display(); }
+        if (this is IRInstruction.isenum) { return this.isenum.display(); }
+        if (this is IRInstruction.rdenum) { return this.rdenum.display(); }
+        if (this is IRInstruction.isinstance) { return this.isinstance.display(); }
+        if (this is IRInstruction.box) { return this.box.display(); }
+        if (this is IRInstruction.unbox) { return this.unbox.display(); }
+        if (this is IRInstruction.label_inst) { return this.label_inst.display(); }
+        if (this is IRInstruction.global_load) { return this.global_load.display(); }
+        if (this is IRInstruction.global_store) { return this.global_store.display(); }
+        return "unknown_instruction";
+    }
+
+    fun is_terminator(this) -> bool {
+        if (this is IRInstruction.ret) { return true; }
+        if (this is IRInstruction.ret_void) { return true; }
+        return false;
+    }
+
+    fun is_control_flow(this) -> bool {
+        if (this is IRInstruction.br) { return true; }
+        if (this is IRInstruction.br_cond) { return true; }
+        if (this is IRInstruction.ret) { return true; }
+        if (this is IRInstruction.ret_void) { return true; }
+        return false;
+    }
+}
+
+}

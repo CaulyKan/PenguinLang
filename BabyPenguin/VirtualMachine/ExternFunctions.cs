@@ -24,7 +24,6 @@ namespace BabyPenguin.VirtualMachine
             AddArgs(vm);
             AddStringBuilder(vm);
             AddStringHelpers(vm);
-            AddSexpParser(vm);
             AddBitShift(vm);
             // AddMap(vm);
         }
@@ -72,6 +71,10 @@ namespace BabyPenguin.VirtualMachine
                 {
                     var v = args[0];
                     if (v is BasicRuntimeValue)
+                        result!.AssignFrom(v.Clone());
+                    else if (v is ReferenceRuntimeValue)
+                        result!.AssignFrom(v.Clone());
+                    else if (v is EnumRuntimeValue)
                         result!.AssignFrom(v.Clone());
                 });
             }
@@ -321,6 +324,53 @@ namespace BabyPenguin.VirtualMachine
                 var content = args[1].As<BasicRuntimeValue>().StringValue;
                 System.IO.File.WriteAllText(path, content);
             });
+
+            vm.Global.RegisterExternFunction("__builtin.mkdir", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                try
+                {
+                    System.IO.Directory.CreateDirectory(path);
+                    result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = true;
+                }
+                catch
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = false;
+                }
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.exec", (result, args) =>
+            {
+                var exe = args[0].As<BasicRuntimeValue>().StringValue;
+                var argsList = args[1].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                var list = argsList.ExternImplenmentationValue as List<IRuntimeValue>;
+                var processArgs = new List<string>();
+                if (list != null)
+                {
+                    foreach (var item in list)
+                    {
+                        processArgs.Add(item.As<BasicRuntimeValue>().StringValue);
+                    }
+                }
+                try
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = exe,
+                        Arguments = string.Join(" ", processArgs.Select(a => a.Contains(' ') ? $"\"{a}\"" : a)),
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = false,
+                        UseShellExecute = false
+                    };
+                    var process = System.Diagnostics.Process.Start(psi);
+                    process!.WaitForExit();
+                    result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = process.ExitCode;
+                }
+                catch
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = -1;
+                }
+            });
         }
         private static void AddArgs(BabyPenguinVM vm)
         {
@@ -479,267 +529,6 @@ namespace BabyPenguin.VirtualMachine
                 var shift = args[1].As<BasicRuntimeValue>().I64Value;
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = value >> (int)shift;
             });
-        }
-
-        private static void AddSexpParser(BabyPenguinVM vm)
-        {
-            // Register sexp.SexpParser.roundtrip(input: string) -> string
-            var sexpSexpParserType = vm.Model.ResolveTypeNode("sexp.SexpParser");
-            if (sexpSexpParserType != null)
-            {
-                vm.Global.RegisterExternFunction(sexpSexpParserType.FullName() + ".roundtrip", (result, args) =>
-                {
-                    var input = args[1].As<BasicRuntimeValue>().StringValue;
-                    var output = SexpParserUtils.Roundtrip(input);
-                    result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = output;
-                });
-            }
-        }
-    }
-
-    // S-expression parser utilities - uses JSON as intermediate format
-    internal static class SexpParserUtils
-    {
-        // Tokenize S-exp to JSON string
-        public static string TokenizeToJson(string input)
-        {
-            var tokens = SexpLexer.Tokenize(input);
-            return System.Text.Json.JsonSerializer.Serialize(tokens);
-        }
-
-        // Parse tokens JSON to node JSON
-        public static string ParseJson(string tokenJson)
-        {
-            var tokens = System.Text.Json.JsonSerializer.Deserialize<List<SexpToken>>(tokenJson);
-            var node = SexpParser.Parse(tokens);
-            return System.Text.Json.JsonSerializer.Serialize(node);
-        }
-
-        // Format node JSON to S-exp string
-        public static string FormatJson(string nodeJson)
-        {
-            var node = System.Text.Json.JsonSerializer.Deserialize<SexpNode>(nodeJson);
-            return FormatNode(node);
-        }
-
-        // Roundtrip: parse and format
-        public static string Roundtrip(string input)
-        {
-            var tokens = SexpLexer.Tokenize(input);
-            var node = SexpParser.Parse(tokens);
-            return FormatNode(node);
-        }
-
-        private static string FormatNode(SexpNode node, int indent = 0)
-        {
-            if (node == null) return "nil";
-
-            var sb = new System.Text.StringBuilder();
-            if (node.Type == "list")
-            {
-                sb.Append('(');
-
-                // Check if any child is a keyword attribute (multi-line format)
-                bool hasKeywords = node.Children.Any(c => c.Type == "keyword" || (c.Type == "list" && c.Children.Count > 0 && c.Children[0].Type == "keyword"));
-
-                if (hasKeywords)
-                {
-                    sb.Append('\n');
-                    for (int i = 0; i < node.Children.Count; i++)
-                    {
-                        for (int s = 0; s < indent + 2; s++) sb.Append(' ');
-                        sb.Append(FormatNode(node.Children[i], indent + 2));
-                        if (i < node.Children.Count - 1)
-                            sb.Append('\n');
-                    }
-                }
-                else
-                {
-                    for (int i = 0; i < node.Children.Count; i++)
-                    {
-                        if (i > 0) sb.Append(' ');
-                        sb.Append(FormatNode(node.Children[i], indent + 1));
-                    }
-                }
-                sb.Append(')');
-            }
-            else if (node.Type == "string")
-            {
-                sb.Append('"').Append(EscapeString(node.Value)).Append('"');
-            }
-            else
-            {
-                sb.Append(node.Value);
-            }
-            return sb.ToString();
-        }
-
-        private static string EscapeString(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return s;
-            return s.Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"")
-                    .Replace("\n", "\\n")
-                    .Replace("\r", "\\r")
-                    .Replace("\t", "\\t");
-        }
-    }
-
-    // S-expression token
-    internal class SexpToken
-    {
-        public string Type { get; set; } = "symbol";
-        public string Value { get; set; } = "";
-    }
-
-    // S-expression node
-    internal class SexpNode
-    {
-        public string Type { get; set; } = "nil";
-        public string Value { get; set; } = "";
-        public List<SexpNode> Children { get; set; } = new();
-    }
-
-    // S-expression lexer
-    internal class SexpLexer
-    {
-        public static List<SexpToken> Tokenize(string input)
-        {
-            var tokens = new List<SexpToken>();
-            int pos = 0;
-
-            while (pos < input.Length)
-            {
-                while (pos < input.Length && char.IsWhiteSpace(input[pos])) pos++;
-                if (pos >= input.Length) break;
-
-                char c = input[pos];
-
-                if (c == '(')
-                {
-                    tokens.Add(new SexpToken { Type = "lparen" });
-                    pos++;
-                }
-                else if (c == ')')
-                {
-                    tokens.Add(new SexpToken { Type = "rparen" });
-                    pos++;
-                }
-                else if (c == '"')
-                {
-                    tokens.Add(new SexpToken { Type = "string", Value = ReadString(input, ref pos) });
-                }
-                else
-                {
-                    var value = ReadSymbol(input, ref pos);
-                    if (value == "true")
-                        tokens.Add(new SexpToken { Type = "true", Value = "true" });
-                    else if (value == "false")
-                        tokens.Add(new SexpToken { Type = "false", Value = "false" });
-                    else if (value == "nil")
-                        tokens.Add(new SexpToken { Type = "nil", Value = "nil" });
-                    else if (value.StartsWith(":"))
-                        tokens.Add(new SexpToken { Type = "keyword", Value = value });
-                    else if (IsNumber(value))
-                        tokens.Add(new SexpToken { Type = "number", Value = value });
-                    else
-                        tokens.Add(new SexpToken { Type = "symbol", Value = value });
-                }
-            }
-
-            return tokens;
-        }
-
-        private static string ReadString(string input, ref int pos)
-        {
-            pos++;
-            var sb = new System.Text.StringBuilder();
-            while (pos < input.Length)
-            {
-                char c = input[pos++];
-                if (c == '"') break;
-                if (c == '\\' && pos < input.Length)
-                {
-                    char escaped = input[pos++];
-                    sb.Append(escaped switch
-                    {
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        '"' => '"',
-                        '\\' => '\\',
-                        _ => escaped
-                    });
-                }
-                else
-                {
-                    sb.Append(c);
-                }
-            }
-            return sb.ToString();
-        }
-
-        private static string ReadSymbol(string input, ref int pos)
-        {
-            int start = pos;
-            while (pos < input.Length && !char.IsWhiteSpace(input[pos]) && input[pos] != '(' && input[pos] != ')')
-            {
-                pos++;
-            }
-            return input.Substring(start, pos - start);
-        }
-
-        private static bool IsNumber(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return false;
-            foreach (char c in s)
-            {
-                if (!char.IsDigit(c) && c != '-' && c != '+') return false;
-            }
-            return true;
-        }
-    }
-
-    // S-expression parser
-    internal class SexpParser
-    {
-        private List<SexpToken> tokens = new();
-        private int pos;
-
-        public static SexpNode Parse(List<SexpToken> tokenList)
-        {
-            var parser = new SexpParser { tokens = tokenList, pos = 0 };
-            return parser.ParseNode();
-        }
-
-        private SexpNode ParseNode()
-        {
-            if (pos >= tokens.Count) return new SexpNode { Type = "nil" };
-
-            var token = tokens[pos];
-            if (token.Type == "lparen")
-            {
-                pos++;
-                var node = new SexpNode { Type = "list" };
-                while (pos < tokens.Count && tokens[pos].Type != "rparen")
-                {
-                    node.Children.Add(ParseNode());
-                }
-                if (pos < tokens.Count) pos++;
-                return node;
-            }
-
-            pos++;
-            return token.Type switch
-            {
-                "string" => new SexpNode { Type = "string", Value = token.Value },
-                "number" => new SexpNode { Type = "number", Value = token.Value },
-                "keyword" => new SexpNode { Type = "keyword", Value = token.Value },
-                "true" => new SexpNode { Type = "true", Value = "true" },
-                "false" => new SexpNode { Type = "false", Value = "false" },
-                "nil" => new SexpNode { Type = "nil", Value = "nil" },
-                _ => new SexpNode { Type = "symbol", Value = token.Value }
-            };
         }
     }
 

@@ -1,0 +1,101 @@
+namespace ir {
+
+class IRNamedRegister {
+    name: !mut string = "";
+    ir_type: !mut string = "";
+    source_line: !mut i64 = 0;
+    source_col: !mut i64 = 0;
+
+    fun new(mut this, name: string, ir_type: string, source_line: i64, source_col: i64) {
+        this.name = name;
+        this.ir_type = ir_type;
+        this.source_line = source_line;
+        this.source_col = source_col;
+    }
+
+    fun display(this) -> string {
+        return "%" + this.name;
+    }
+}
+
+class IRTempRegister {
+    index: !mut i64 = 0;
+    ir_type: !mut string = "";
+
+    fun new(mut this, index: i64, ir_type: string) {
+        this.index = index;
+        this.ir_type = ir_type;
+    }
+
+    fun display(this) -> string {
+        return "%t" + cast<string>(this.index);
+    }
+}
+
+class IRConstant {
+    value: !mut string = "";
+    ir_type: !mut string = "";
+
+    fun new(mut this, value: string, ir_type: string) {
+        this.value = value;
+        this.ir_type = ir_type;
+    }
+
+    fun display(this) -> string {
+        return this.value;
+    }
+}
+
+class IRLabel {
+    name: !mut string = "";
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+    fun display(this) -> string {
+        return this.name + ":";
+    }
+}
+
+class IRGlobalRef {
+    name: !mut string = "";
+    ir_type: !mut string = "";
+
+    fun new(mut this, name: string, ir_type: string) {
+        this.name = name;
+        this.ir_type = ir_type;
+    }
+
+    fun display(this) -> string {
+        return "@" + this.name;
+    }
+}
+
+enum IRValue {
+    named_reg: IRNamedRegister;
+    temp_reg: IRTempRegister;
+    constant: IRConstant;
+    label: IRLabel;
+    global_ref: IRGlobalRef;
+
+    fun get_ir_type(this) -> string {
+        if (this is IRValue.named_reg) { return this.named_reg.ir_type; }
+        if (this is IRValue.temp_reg) { return this.temp_reg.ir_type; }
+        if (this is IRValue.constant) { return this.constant.ir_type; }
+        if (this is IRValue.label) { return "label"; }
+        if (this is IRValue.global_ref) { return this.global_ref.ir_type; }
+        return "unknown";
+    }
+
+    fun display(this) -> string {
+        if (this is IRValue.named_reg) { return this.named_reg.display(); }
+        if (this is IRValue.temp_reg) { return this.temp_reg.display(); }
+        if (this is IRValue.constant) { return this.constant.display(); }
+        if (this is IRValue.label) { return this.label.display(); }
+        if (this is IRValue.global_ref) { return this.global_ref.display(); }
+        return "unknown";
+    }
+}
+
+}

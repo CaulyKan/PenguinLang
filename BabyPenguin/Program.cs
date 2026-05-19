@@ -16,6 +16,9 @@ namespace BabyPenguin
 
         [Option('c', "compile-only", Default = false, HelpText = "Only compile dont run")]
         public bool CompileOnly { get; set; }
+
+        [Option('q', "quiet", Default = false, HelpText = "Quiet mode: suppress debug trace, only show program output")]
+        public bool Quiet { get; set; }
     }
 
     public class Program
@@ -34,9 +37,17 @@ namespace BabyPenguin
             // {
             var compiler = new SemanticCompiler(new ErrorReporter(Console.Out, (DiagnosticLevel)options.Verbose));
 
+            // Find "--" separator: args before are files for BabyPenguin, args after are program args
+            int separatorIndex = Array.IndexOf(args, "--");
+            int fileCount = separatorIndex >= 0 ? separatorIndex : args.Length;
+            // Filter out option flags from the file count
+            var filesBeforeSeparator = args.Take(fileCount)
+                .Where(a => !a.StartsWith("-"))
+                .ToList();
+
             // Check if any input is a .penguins file
-            var projectFiles = options.Files.Where(f => f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
-            var regularFiles = options.Files.Where(f => !f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
+            var projectFiles = filesBeforeSeparator.Where(f => f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
+            var regularFiles = filesBeforeSeparator.Where(f => !f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
 
             // Handle project files
             foreach (var projectFile in projectFiles)
@@ -51,15 +62,15 @@ namespace BabyPenguin
             }
 
             // If no files specified, search for .penguins in current directory
-            if (!options.Files.Any())
+            if (!projectFiles.Any() && !regularFiles.Any())
             {
                 var currentDir = Directory.GetCurrentDirectory();
-                var projectFile = FindPenguinsProjectFile(currentDir);
+                var foundProjectFile = FindPenguinsProjectFile(currentDir);
 
-                if (projectFile != null)
+                if (foundProjectFile != null)
                 {
-                    Console.WriteLine($"Found project file: {projectFile}");
-                    compiler.AddProject(projectFile);
+                    Console.WriteLine($"Found project file: {foundProjectFile}");
+                    compiler.AddProject(foundProjectFile);
                 }
                 else
                 {
@@ -76,8 +87,16 @@ namespace BabyPenguin
             }
 
             var vm = new BabyPenguinVM(model);
-            vm.Global.CommandLineArgs = args.Skip(options.Files.Count()).ToArray();
-            vm.Global.EnableDebugPrint = true;
+            // Program args: everything after "--" separator, or empty if no separator
+            if (separatorIndex >= 0)
+            {
+                vm.Global.CommandLineArgs = args.Skip(separatorIndex + 1).ToArray();
+            }
+            else
+            {
+                vm.Global.CommandLineArgs = args.Skip(filesBeforeSeparator.Count).ToArray();
+            }
+            vm.Global.EnableDebugPrint = !options.Quiet;
 
             if (!options.CompileOnly)
             {
@@ -85,7 +104,12 @@ namespace BabyPenguin
                     Console.WriteLine("----------- Start Execution -----------");
                 var code = vm.Run();
 
-                if (vm.Global.EnableDebugPrint)
+                if (options.Quiet)
+                {
+                    // In quiet mode, write program output directly to stdout
+                    Console.Write(vm.CollectOutput());
+                }
+                else if (vm.Global.EnableDebugPrint)
                 {
                     Console.WriteLine("----------- Console Output -----------");
                     Console.WriteLine(vm.CollectOutput());

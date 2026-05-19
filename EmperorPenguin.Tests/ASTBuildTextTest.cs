@@ -9,11 +9,11 @@ public class ASTBuildTextTest
     [Fact]
     [BatchTest(@"
 initial {
-    let cond = new ast.ConstantExpression();
+    let cond = new ast.ConstantExpression("""");
     cond.value = ""true"";
-    let then_expr = new ast.ConstantExpression();
+    let then_expr = new ast.ConstantExpression("""");
     then_expr.value = ""1"";
-    let else_expr = new ast.ConstantExpression();
+    let else_expr = new ast.ConstantExpression("""");
     else_expr.value = ""2"";
     let if_expr = new ast.IfExpression();
     if_expr.condition = new Option<ast.Expression>.some(new ast.Expression.constant(cond));
@@ -28,7 +28,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let result = new ast.IdentifierExpression();
+    let result = new ast.IdentifierExpression("""");
     result.name = ""x"";
     println(result.build_text());
 }
@@ -42,7 +42,7 @@ initial {
     args0.name = ""i64"";
     let args1 = new ast.TypeSpecifier();
     args1.name = ""i32"";
-    let result = new ast.IdentifierExpression();
+    let result = new ast.IdentifierExpression("""");
     result.name = ""x"";
     result.generic_args.push(args0);
     result.generic_args.push(args1);
@@ -54,9 +54,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let cond = new ast.IdentifierExpression();
+    let cond = new ast.IdentifierExpression("""");
     cond.name = ""x"";
-    let body = new ast.ConstantExpression();
+    let body = new ast.ConstantExpression("""");
     body.value = ""42"";
     let w = new ast.WhileExpression();
     w.condition = new Option<ast.Expression>.some(new ast.Expression.identifier(cond));
@@ -70,13 +70,13 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let stmt_expr = new ast.ConstantExpression();
+    let stmt_expr = new ast.ConstantExpression("""");
     stmt_expr.value = ""1"";
     let es = new ast.ExpressionStatement();
     es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(stmt_expr));
     let block = new ast.CodeBlockExpression();
     block.statements.push(new ast.Statement.expression(es));
-    let trailing = new ast.ConstantExpression();
+    let trailing = new ast.ConstantExpression("""");
     trailing.value = ""2"";
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(trailing));
     let result = new ast.Expression.code_block(block);
@@ -88,7 +88,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let inner = new ast.IdentifierExpression();
+    let inner = new ast.IdentifierExpression("""");
     inner.name = ""x"";
     let cast_expr = new ast.CastExpression();
     cast_expr.type_name = ""i64"";
@@ -102,9 +102,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let arg1 = new ast.ConstantExpression();
+    let arg1 = new ast.ConstantExpression("""");
     arg1.value = ""1"";
-    let arg2 = new ast.ConstantExpression();
+    let arg2 = new ast.ConstantExpression("""");
     arg2.value = ""2"";
     let new_expr = new ast.NewExpression();
     new_expr.type_name = ""Foo"";
@@ -119,7 +119,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let expr = new ast.IdentifierExpression();
+    let expr = new ast.IdentifierExpression("""");
     expr.name = ""f(1)"";
     let stmt = new ast.ExpressionStatement();
     stmt.expression = new Option<ast.Expression>.some(new ast.Expression.identifier(expr));
@@ -132,9 +132,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let target = new ast.IdentifierExpression();
+    let target = new ast.IdentifierExpression("""");
     target.name = ""x"";
-    let value = new ast.ConstantExpression();
+    let value = new ast.ConstantExpression("""");
     value.value = ""42"";
     let stmt = new ast.AssignmentStatement();
     stmt.target = new Option<ast.Expression>.some(new ast.Expression.identifier(target));
@@ -149,9 +149,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let cond = new ast.IdentifierExpression();
+    let cond = new ast.IdentifierExpression("""");
     cond.name = ""x"";
-    let then_expr = new ast.ConstantExpression();
+    let then_expr = new ast.ConstantExpression("""");
     then_expr.value = ""1"";
     let es = new ast.ExpressionStatement();
     es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(then_expr));
@@ -167,7 +167,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let val = new ast.ConstantExpression();
+    let val = new ast.ConstantExpression("""");
     val.value = ""42"";
     let stmt = new ast.ReturnStatement();
     stmt.value = new Option<ast.Expression>.some(new ast.Expression.constant(val));
@@ -180,7 +180,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let init = new ast.ConstantExpression();
+    let init = new ast.ConstantExpression("""");
     init.value = ""0"";
     let stmt = new ast.LetDeclarationStatement();
     stmt.is_mutable = true;
@@ -198,16 +198,16 @@ initial {
 initial {
     let ret_type = new ast.TypeSpecifier();
     ret_type.name = ""i64"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""i64"";
     param.type_spec = new Option<ast.TypeSpecifier>.some(param_type);
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""get_answer"";
     fd.parameters.push(param);
     fd.return_type = new Option<ast.TypeSpecifier>.some(ret_type);
@@ -221,13 +221,13 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""1"";
     let init_body = new ast.CodeBlockExpression();
     init_body.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
     let init_def = new ast.InitialRoutineDefinition();
     init_def.body = new Option<ast.Expression>.some(new ast.Expression.code_block(init_body));
-    let ns = new ast.NamespaceDefinition();
+    let ns = new ast.NamespaceDefinition("""");
     ns.name = ""foo"";
     ns.children.push(new ast.Definition.initial_routine(init_def));
     let d = new ast.Definition.namespace_def(ns);
@@ -239,9 +239,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""hello"";
-    let cls = new ast.ClassDefinition();
+    let cls = new ast.ClassDefinition("""");
     cls.name = ""Foo"";
     cls.members.push(new ast.Definition.function_def(fd));
     let d = new ast.Definition.class_def(cls);
@@ -253,7 +253,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let init_body = new ast.ConstantExpression();
+    let init_body = new ast.ConstantExpression("""");
     init_body.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(init_body));
@@ -279,7 +279,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let val = new ast.ConstantExpression();
+    let val = new ast.ConstantExpression("""");
     val.value = ""42"";
     let stmt = new ast.BreakStatement();
     stmt.value = new Option<ast.Expression>.some(new ast.Expression.constant(val));
@@ -302,9 +302,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let iterable = new ast.IdentifierExpression();
+    let iterable = new ast.IdentifierExpression("""");
     iterable.name = ""items"";
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""0"";
     let body_es = new ast.ExpressionStatement();
     body_es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -323,13 +323,13 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let variant1 = new ast.FunctionDefinition();
+    let variant1 = new ast.FunctionDefinition("""");
     variant1.name = ""Red"";
-    let variant2 = new ast.FunctionDefinition();
+    let variant2 = new ast.FunctionDefinition("""");
     variant2.name = ""Green"";
-    let variant3 = new ast.FunctionDefinition();
+    let variant3 = new ast.FunctionDefinition("""");
     variant3.name = ""Blue"";
-    let ed = new ast.EnumDefinition();
+    let ed = new ast.EnumDefinition("""");
     ed.name = ""Color"";
     ed.members.push(new ast.Definition.function_def(variant1));
     ed.members.push(new ast.Definition.function_def(variant2));
@@ -343,9 +343,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let cond = new ast.IdentifierExpression();
+    let cond = new ast.IdentifierExpression("""");
     cond.name = ""x"";
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""1"";
     let body_es = new ast.ExpressionStatement();
     body_es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -361,13 +361,13 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let cond = new ast.IdentifierExpression();
+    let cond = new ast.IdentifierExpression("""");
     cond.name = ""x"";
-    let then_val = new ast.ConstantExpression();
+    let then_val = new ast.ConstantExpression("""");
     then_val.value = ""1"";
     let then_es = new ast.ExpressionStatement();
     then_es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(then_val));
-    let else_val = new ast.ConstantExpression();
+    let else_val = new ast.ConstantExpression("""");
     else_val.value = ""2"";
     let else_es = new ast.ExpressionStatement();
     else_es.expression = new Option<ast.Expression>.some(new ast.Expression.constant(else_val));
@@ -397,9 +397,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let target = new ast.IdentifierExpression();
+    let target = new ast.IdentifierExpression("""");
     target.name = ""x"";
-    let value = new ast.ConstantExpression();
+    let value = new ast.ConstantExpression("""");
     value.value = ""1"";
     let stmt = new ast.AssignmentStatement();
     stmt.target = new Option<ast.Expression>.some(new ast.Expression.identifier(target));
@@ -414,11 +414,11 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let default_val = new ast.ConstantExpression();
+    let default_val = new ast.ConstantExpression("""");
     default_val.value = ""0"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""i64"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
     param.type_spec = new Option<ast.TypeSpecifier>.some(param_type);
     param.default_value = new Option<ast.Expression>.some(new ast.Expression.constant(default_val));
@@ -443,7 +443,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -458,7 +458,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let inner = new ast.IdentifierExpression();
+    let inner = new ast.IdentifierExpression("""");
     inner.name = ""f(1)"";
     let spawn = new ast.SpawnAsyncExpression();
     spawn.expression = new Option<ast.Expression>.some(new ast.Expression.identifier(inner));
@@ -471,7 +471,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let inner = new ast.IdentifierExpression();
+    let inner = new ast.IdentifierExpression("""");
     inner.name = ""x"";
     let wait_node = new ast.WaitExpression();
     wait_node.expression = new Option<ast.Expression>.some(new ast.Expression.identifier(inner));
@@ -484,9 +484,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""print"";
-    let iface = new ast.InterfaceDefinition();
+    let iface = new ast.InterfaceDefinition("""");
     iface.name = ""IPrintable"";
     iface.members.push(new ast.Definition.function_def(fd));
     let d = new ast.Definition.interface_def(iface);
@@ -498,9 +498,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""hello"";
-    let impl_node = new ast.InterfaceImplementation();
+    let impl_node = new ast.InterfaceImplementation("""");
     impl_node.type_name = ""Foo"";
     impl_node.functions.push(new ast.Definition.function_def(fd));
     let d = new ast.Definition.impl_def(impl_node);
@@ -512,7 +512,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let impl_node = new ast.InterfaceForImplementation();
+    let impl_node = new ast.InterfaceForImplementation("""", """");
     impl_node.type_name = ""Foo"";
     impl_node.for_type_name = ""IBar"";
     let d = new ast.Definition.impl_for_def(impl_node);
@@ -524,7 +524,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let ev = new ast.EventDefinition();
+    let ev = new ast.EventDefinition("""");
     ev.name = ""Click"";
     let d = new ast.Definition.event_def(ev);
     println(d.build_text());
@@ -535,7 +535,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -551,9 +551,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let event_expr = new ast.IdentifierExpression();
+    let event_expr = new ast.IdentifierExpression("""");
     event_expr.name = ""click"";
-    let arg = new ast.ConstantExpression();
+    let arg = new ast.ConstantExpression("""");
     arg.value = ""42"";
     let emit_node = new ast.EmitEventStatement();
     emit_node.event_expr = new Option<ast.Expression>.some(new ast.Expression.identifier(event_expr));
@@ -578,7 +578,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let val = new ast.ConstantExpression();
+    let val = new ast.ConstantExpression("""");
     val.value = ""42"";
     let yield_node = new ast.YieldStatement();
     yield_node.value = new Option<ast.Expression>.some(new ast.Expression.constant(val));
@@ -601,7 +601,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let expr = new ast.IdentifierExpression();
+    let expr = new ast.IdentifierExpression("""");
     expr.name = ""e"";
     let signal_node = new ast.SignalStatement();
     signal_node.expression = new Option<ast.Expression>.some(new ast.Expression.identifier(expr));
@@ -616,7 +616,7 @@ initial {
 initial {
     let type_spec = new ast.TypeSpecifier();
     type_spec.name = ""i64"";
-    let type_ref = new ast.TypeReferenceDefinition();
+    let type_ref = new ast.TypeReferenceDefinition("""");
     type_ref.name = ""MyInt"";
     type_ref.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
     let d = new ast.Definition.type_ref_def(type_ref);
@@ -660,7 +660,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_pure = true;
     let d = new ast.Definition.function_def(fd);
@@ -672,7 +672,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_not_pure = true;
     let d = new ast.Definition.function_def(fd);
@@ -684,7 +684,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_async = true;
     let d = new ast.Definition.function_def(fd);
@@ -696,7 +696,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_not_async = true;
     let d = new ast.Definition.function_def(fd);
@@ -708,7 +708,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""external_func"";
     fd.is_extern = true;
     let d = new ast.Definition.function_def(fd);
@@ -725,12 +725,12 @@ initial {
     tp.type_constraint = ""type"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""identity"";
     fd.template_decl = new Option<ast.TemplateDeclaration>.some(decl);
     let ret_type = new ast.TypeSpecifier();
     ret_type.name = ""T"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""T"";
@@ -746,15 +746,15 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""new"";
     fd.is_new = true;
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""this"";
     param.is_this = true;
     param.is_mutable = true;
     fd.parameters.push(param);
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -772,7 +772,7 @@ initial {
     tp.name = ""T"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_pure = true;
     fd.is_async = true;
@@ -786,12 +786,12 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""i64"";
     param.type_spec = new Option<ast.TypeSpecifier>.some(param_type);
-    let body_id = new ast.IdentifierExpression();
+    let body_id = new ast.IdentifierExpression("""");
     body_id.name = ""x"";
     let lambda = new ast.LambdaFunctionExpression();
     lambda.is_async = true;
@@ -806,9 +806,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
-    let body_id = new ast.IdentifierExpression();
+    let body_id = new ast.IdentifierExpression("""");
     body_id.name = ""x"";
     let lambda = new ast.LambdaFunctionExpression();
     lambda.is_async = false;
@@ -949,7 +949,7 @@ initial {
     tp.name = ""T"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let cls = new ast.ClassDefinition();
+    let cls = new ast.ClassDefinition("""");
     cls.name = ""Container"";
     cls.template_decl = new Option<ast.TemplateDeclaration>.some(decl);
     let d = new ast.Definition.class_def(cls);
@@ -965,14 +965,14 @@ initial {
     tp.name = ""T"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let field = new ast.ClassFieldDefinition();
+    let field = new ast.ClassFieldDefinition("""");
     field.name = ""value"";
     let field_type = new ast.TypeSpecifier();
     field_type.name = ""T"";
     field.type_spec = new Option<ast.TypeSpecifier>.some(field_type);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""get_value"";
-    let cls = new ast.ClassDefinition();
+    let cls = new ast.ClassDefinition("""");
     cls.name = ""Container"";
     cls.template_decl = new Option<ast.TemplateDeclaration>.some(decl);
     cls.members.push(new ast.Definition.class_field(field));
@@ -990,16 +990,16 @@ initial {
     tp.name = ""T"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let member = new ast.EnumMemberDefinition();
+    let member = new ast.EnumMemberDefinition("""");
     member.name = ""Some"";
     let member_type = new ast.TypeSpecifier();
     member_type.name = ""T"";
     member.type_spec = new Option<ast.TypeSpecifier>.some(member_type);
-    let ed = new ast.EnumDefinition();
+    let ed = new ast.EnumDefinition("""");
     ed.name = ""Option"";
     ed.template_decl = new Option<ast.TemplateDeclaration>.some(decl);
     ed.members.push(new ast.Definition.enum_member(member));
-    let none_member = new ast.EnumMemberDefinition();
+    let none_member = new ast.EnumMemberDefinition("""");
     none_member.name = ""None"";
     ed.members.push(new ast.Definition.enum_member(none_member));
     let d = new ast.Definition.enum_def(ed);
@@ -1015,9 +1015,9 @@ initial {
     tp.name = ""T"";
     let decl = new ast.TemplateDeclaration();
     decl.parameters.push(tp);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compare"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""other"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""T"";
@@ -1026,7 +1026,7 @@ initial {
     let ret_type = new ast.TypeSpecifier();
     ret_type.name = ""i64"";
     fd.return_type = new Option<ast.TypeSpecifier>.some(ret_type);
-    let iface = new ast.InterfaceDefinition();
+    let iface = new ast.InterfaceDefinition("""");
     iface.name = ""Comparable"";
     iface.template_decl = new Option<ast.TemplateDeclaration>.some(decl);
     iface.members.push(new ast.Definition.function_def(fd));
@@ -1046,9 +1046,9 @@ initial {
     clause.type_spec = new Option<ast.TypeSpecifier>.some(clause_type);
     let where_def = new ast.WhereDefinition();
     where_def.clauses.push(clause);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""sort"";
-    let impl_node = new ast.InterfaceImplementation();
+    let impl_node = new ast.InterfaceImplementation("""");
     impl_node.type_name = ""Sorter"";
     impl_node.where_def = new Option<ast.WhereDefinition>.some(where_def);
     impl_node.functions.push(new ast.Definition.function_def(fd));
@@ -1068,9 +1068,9 @@ initial {
     clause.type_spec = new Option<ast.TypeSpecifier>.some(clause_type);
     let where_def = new ast.WhereDefinition();
     where_def.clauses.push(clause);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compare_to"";
-    let impl_node = new ast.InterfaceForImplementation();
+    let impl_node = new ast.InterfaceForImplementation("""", """");
     impl_node.type_name = ""Comparable"";
     impl_node.for_type_name = ""MyType"";
     impl_node.where_def = new Option<ast.WhereDefinition>.some(where_def);
@@ -1084,12 +1084,12 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let target = new ast.IdentifierExpression();
+    let target = new ast.IdentifierExpression("""");
     target.name = ""event"";
     let member = new ast.MemberAccessExpression();
     member.base_expr = new Option<ast.Expression>.some(new ast.Expression.identifier(target));
     member.member_name = ""click"";
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""42"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -1105,17 +1105,17 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let target = new ast.IdentifierExpression();
+    let target = new ast.IdentifierExpression("""");
     target.name = ""event"";
     let member = new ast.MemberAccessExpression();
     member.base_expr = new Option<ast.Expression>.some(new ast.Expression.identifier(target));
     member.member_name = ""click"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""e"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""Event"";
     param.type_spec = new Option<ast.TypeSpecifier>.some(param_type);
-    let body_expr = new ast.ConstantExpression();
+    let body_expr = new ast.ConstantExpression("""");
     body_expr.value = ""0"";
     let block = new ast.CodeBlockExpression();
     block.trailing_expr = new Option<ast.Expression>.some(new ast.Expression.constant(body_expr));
@@ -1134,7 +1134,7 @@ initial {
 initial {
     let type_spec = new ast.TypeSpecifier();
     type_spec.name = ""string"";
-    let member = new ast.EnumMemberDefinition();
+    let member = new ast.EnumMemberDefinition("""");
     member.name = ""Message"";
     member.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
     let d = new ast.Definition.enum_member(member);
@@ -1146,7 +1146,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let member = new ast.EnumMemberDefinition();
+    let member = new ast.EnumMemberDefinition("""");
     member.name = ""None"";
     let d = new ast.Definition.enum_member(member);
     println(d.build_text());
@@ -1159,9 +1159,9 @@ initial {
 initial {
     let type_spec = new ast.TypeSpecifier();
     type_spec.name = ""i64"";
-    let init_val = new ast.ConstantExpression();
+    let init_val = new ast.ConstantExpression("""");
     init_val.value = ""0"";
-    let field = new ast.ClassFieldDefinition();
+    let field = new ast.ClassFieldDefinition("""");
     field.name = ""count"";
     field.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
     field.initializer = new Option<ast.Expression>.some(new ast.Expression.constant(init_val));
@@ -1176,7 +1176,7 @@ initial {
 initial {
     let type_spec = new ast.TypeSpecifier();
     type_spec.name = ""string"";
-    let field = new ast.ClassFieldDefinition();
+    let field = new ast.ClassFieldDefinition("""");
     field.name = ""name"";
     field.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
     let d = new ast.Definition.class_field(field);
@@ -1193,7 +1193,7 @@ initial {
     type_spec.is_mutable = true;
     let init_val = new ast.BoolLiteralExpression();
     init_val.value = ""true"";
-    let field = new ast.ClassFieldDefinition();
+    let field = new ast.ClassFieldDefinition("""");
     field.name = ""flag"";
     field.mutability = ""mut"";
     field.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
@@ -1212,9 +1212,9 @@ initial {
     let arg = new ast.TypeSpecifier();
     arg.name = ""i64"";
     type_spec.generic_args.push(arg);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""get"";
-    let impl_node = new ast.InterfaceImplementation();
+    let impl_node = new ast.InterfaceImplementation("""");
     impl_node.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
     impl_node.functions.push(new ast.Definition.function_def(fd));
     let d = new ast.Definition.impl_def(impl_node);
@@ -1233,9 +1233,9 @@ initial {
     let arg = new ast.TypeSpecifier();
     arg.name = ""i64"";
     for_spec.generic_args.push(arg);
-    let fd = new ast.FunctionDefinition();
+    let fd = new ast.FunctionDefinition("""");
     fd.name = ""compare"";
-    let impl_node = new ast.InterfaceForImplementation();
+    let impl_node = new ast.InterfaceForImplementation("""", """");
     impl_node.type_spec = new Option<ast.TypeSpecifier>.some(iface_spec);
     impl_node.for_type_spec = new Option<ast.TypeSpecifier>.some(for_spec);
     impl_node.functions.push(new ast.Definition.function_def(fd));
@@ -1248,7 +1248,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.is_this = true;
     param.is_mutable = false;
     println(param.build_text());
@@ -1259,7 +1259,7 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.is_this = true;
     param.is_mutable = true;
     println(param.build_text());
@@ -1270,9 +1270,9 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let default_val = new ast.ConstantExpression();
+    let default_val = new ast.ConstantExpression("""");
     default_val.value = ""42"";
-    let param = new ast.Parameter();
+    let param = new ast.Parameter("""");
     param.name = ""x"";
     let param_type = new ast.TypeSpecifier();
     param_type.name = ""i64"";

@@ -1,15 +1,203 @@
+fun get_base_name(path: string) -> string {
+    let pos: mut i64 = string_find(path, "/");
+    while (pos >= 0) {
+        let next: i64 = string_find_from(path, "/", pos + 1);
+        if (next < 0) {
+            return string_substring(path, pos + 1, string_length(path) - pos - 1);
+        }
+        pos = next;
+    }
+    return path;
+}
+
+fun get_stem(path: string) -> string {
+    let base: string = get_base_name(path);
+    let dot: i64 = string_find(base, ".");
+    if (dot < 0) { return base; }
+    return string_substring(base, 0, dot);
+}
+
+fun scope_kind_name(kind: bound.ScopeKind) -> string {
+    if (kind is bound.ScopeKind.GlobalScope) { return "GlobalScope"; }
+    if (kind is bound.ScopeKind.NamespaceScope) { return "NamespaceScope"; }
+    if (kind is bound.ScopeKind.ClassScope) { return "ClassScope"; }
+    if (kind is bound.ScopeKind.EnumScope) { return "EnumScope"; }
+    if (kind is bound.ScopeKind.InterfaceScope) { return "InterfaceScope"; }
+    if (kind is bound.ScopeKind.FunctionScope) { return "FunctionScope"; }
+    if (kind is bound.ScopeKind.BlockScope) { return "BlockScope"; }
+    if (kind is bound.ScopeKind.InitialRoutineScope) { return "InitialRoutineScope"; }
+    if (kind is bound.ScopeKind.ImplScope) { return "ImplScope"; }
+    return "Unknown";
+}
+
+fun symbol_kind_name(sym: bound.BoundSymbol) -> string {
+    if (sym is bound.BoundSymbol.variable) { return "var"; }
+    if (sym is bound.BoundSymbol.function_sym) { return "func"; }
+    if (sym is bound.BoundSymbol.type_sym) { return "type"; }
+    if (sym is bound.BoundSymbol.enum_member) { return "enum_member"; }
+    if (sym is bound.BoundSymbol.namespace_sym) { return "namespace"; }
+    return "unknown";
+}
+
+fun symbol_type_name(sym: bound.BoundSymbol) -> string {
+    if (sym is bound.BoundSymbol.variable) { return sym.variable.bound_type.display_name(); }
+    if (sym is bound.BoundSymbol.function_sym) { return sym.function_sym.return_type.display_name(); }
+    if (sym is bound.BoundSymbol.type_sym) { return sym.type_sym.bound_type.display_name(); }
+    if (sym is bound.BoundSymbol.enum_member) { return sym.enum_member.member_type.display_name(); }
+    return "";
+}
+
+fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
+    let pad: mut string = "";
+    let pi: mut i64 = 0;
+    while (pi < level * 2) {
+        pad = pad + " ";
+        pi = pi + 1;
+    }
+    sb.append(pad + "[" + scope_kind_name(scope.kind) + "] " + scope.name);
+    if (string_length(scope.full_name) > 0) {
+        sb.append(" (" + scope.full_name + ")");
+    }
+    sb.append("\n");
+
+    let si: mut i64 = 0;
+    while (si < cast<i64>(scope.symbols.size())) {
+        let sym: bound.BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
+        let type_str: string = symbol_type_name(sym);
+        sb.append(pad + "  " + symbol_kind_name(sym) + " " + sym.get_name());
+        if (string_length(type_str) > 0) {
+            sb.append(": " + type_str);
+        }
+        sb.append("\n");
+        si = si + 1;
+    }
+
+    let ci: mut i64 = 0;
+    while (ci < cast<i64>(scope.children.size())) {
+        print_scope_to(sb, scope.children.at(cast<u64>(ci)).some, level + 1);
+        ci = ci + 1;
+    }
+}
+
 initial {
     let args: List<string> = __builtin.args();
     if (args.size() == 0) {
-        __builtin.eprintln("Usage: EmperorPenguin <file>");
+        __builtin.eprintln("Usage: EmperorPenguin <file1.penguin> [file2.penguin ...]");
         __builtin.exit(1);
     }
-    let file: string = args.at(0).some;
-    let source: string = __builtin.file_read_text(file);
-    let lexer: parser.Lexer = new parser.Lexer(source);
-    let tokens: List<parser.Token> = lexer.tokenize();
-    let p: parser.Parser = new parser.Parser(tokens);
-    let unit: ast.CompilationUnit = p.parse_compilationUnit();
-    __builtin.println(unit.build_text());
-}
 
+    let tmp_dir: string = "tmp";
+    __builtin.mkdir(tmp_dir);
+
+    let log: mut StringBuilder = new mut StringBuilder();
+    let ll_files: mut List<string> = new List<string>();
+
+    let fi: mut i64 = 0;
+    while (fi < cast<i64>(args.size())) {
+        let file: string = args.at(cast<u64>(fi)).some;
+        let source: string = __builtin.file_read_text(file);
+        let stem: string = get_stem(file);
+        let ll_path: string = tmp_dir + "/" + stem + ".ll";
+
+        log.append("========================================\n");
+        log.append("FILE: " + file + "\n");
+        log.append("========================================\n\n");
+
+        let lexer: parser.Lexer = new parser.Lexer(source);
+        let tokens: List<parser.Token> = lexer.tokenize();
+        let p: parser.Parser = new parser.Parser(tokens);
+        let unit: ast.CompilationUnit = p.parse_compilationUnit();
+
+        log.append("--- AST ---\n");
+        log.append(unit.build_text());
+        log.append("\n\n");
+
+        let mut compiler = new bound.EmperorPenguinCompiler();
+        let result = compiler.compile(source);
+
+        if (result.has_errors()) {
+            log.append("--- ERRORS ---\n");
+            let j: mut i64 = 0;
+            while (j < cast<i64>(result.errors.size())) {
+                let err: bound.SemanticError = result.errors.at(cast<u64>(j)).some;
+                log.append("error: " + err.message + " at line " + cast<string>(err.line) + "\n");
+                j = j + 1;
+            }
+            log.append("\n");
+            __builtin.eprintln("Errors in " + file + ", skipping LLVM generation.");
+        } else {
+            log.append("--- BOUND TREE ---\n");
+            let di: mut i64 = 0;
+            while (di < cast<i64>(result.definitions.size())) {
+                let def: bound.BoundDefinition = result.definitions.at(cast<u64>(di)).some;
+                bound.print_definition_to(def, log, 0);
+                di = di + 1;
+            }
+            log.append("\n");
+
+            log.append("--- SYMBOL TABLE ---\n");
+            print_scope_to(log, result.global_scope, 0);
+            log.append("\n");
+
+            let generator = new ir.IRGenerator();
+            let module = generator.generate(result);
+
+            let ir_printer = new ir.IRPrinter();
+            let ir_text: string = ir_printer.print_module(module);
+            log.append("--- IR ---\n");
+            log.append(ir_text);
+            log.append("\n\n");
+
+            let emitter = new llvm.LLVMEmitter();
+            let llvm_ir: string = emitter.lower(module, result);
+            __builtin.file_write_text(ll_path, llvm_ir);
+            ll_files.push(ll_path);
+
+            log.append("--- LLVM IR (" + ll_path + ") ---\n");
+            log.append(llvm_ir);
+            log.append("\n\n");
+        }
+        fi = fi + 1;
+    }
+
+    __builtin.file_write_text(tmp_dir + "/emperor.log", log.to_string());
+    __builtin.eprintln("Log written to " + tmp_dir + "/emperor.log");
+
+    if (cast<i64>(ll_files.size()) > 0) {
+        let exe_path: string = tmp_dir + "/out.exe";
+        let lib_path: string = tmp_dir + "/libcore_builtin.a";
+
+        let make_args: mut List<string> = new List<string>();
+        make_args.push("-C");
+        make_args.push("EmperorPenguin/std/c");
+        make_args.push("OUTPUT_DIR=../../../" + tmp_dir);
+        __builtin.eprintln("Running: make -C EmperorPenguin/std/c");
+        let make_exit: i64 = __builtin.exec("make", make_args);
+        if (make_exit != 0) {
+            __builtin.eprintln("make failed with exit code " + cast<string>(make_exit));
+            __builtin.exit(1);
+        }
+
+        let clang_args: mut List<string> = new List<string>();
+        let li: mut i64 = 0;
+        while (li < cast<i64>(ll_files.size())) {
+            clang_args.push(ll_files.at(cast<u64>(li)).some);
+            li = li + 1;
+        }
+        clang_args.push(lib_path);
+        clang_args.push("-o");
+        clang_args.push(exe_path);
+
+        __builtin.eprintln("Running: clang -> " + exe_path);
+        let exit_code: i64 = __builtin.exec("clang", clang_args);
+        if (exit_code == 0) {
+            __builtin.eprintln("Output: " + exe_path);
+        } else {
+            __builtin.eprintln("clang failed with exit code " + cast<string>(exit_code));
+            __builtin.exit(1);
+        }
+    } else {
+        __builtin.eprintln("No LLVM IR files generated.");
+        __builtin.exit(1);
+    }
+}

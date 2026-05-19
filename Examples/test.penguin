@@ -1,22 +1,16 @@
-class IdentifierExpression {
-    name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>(); 
-    impl IExpression {
-        fun build_text(this: IExpression) -> string {
-            let self = cast<IdentifierExpression>(this);
-            let mut sb = new StringBuilder();
-            sb.append(self.name);
-            if (self.generic_args.size() > 0) {
-                sb.append("<");
-                let i: mut u64 = 0;
-                while (i < self.generic_args.size()) {
-                    sb.append(self.generic_args.at(i).some.build_text());
-                    i=i+1;
-                    if (i != self.generic_args.size()) 
-                        sb.append(", ");
-                }
-                sb.append(">");
-            }
-        }
+class Foo {
+    x: i32;
+    y: i32;    
+    fun new(mut this, x: i32, y: i32) {
+        this.x = x;
+        this.y = y;
     }
+    fun to_str(this) -> string {
+        return "foo=" + cast<string>(this.x) + "," + cast<string>(this.y);
+    }
+}
+
+initial {
+    let f = new Foo(1,2);
+    println(f.to_str());
 }

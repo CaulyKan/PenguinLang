@@ -170,13 +170,13 @@ namespace BabyPenguin.SemanticPass
                 if (!eventReceiverSymbol.IsClassMember)
                 {
                     constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, eventReceiverSymbol));
-                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [eventReceiverSymbol, eventSymbol, onRoutine.FunctionSymbol], null));
+                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [eventReceiverSymbol, eventSymbol, onRoutine.FunctionSymbol!], null));
                 }
                 else
                 {
                     var tempSymbol = constructorBody.AllocTempSymbol(eventReceiverSymbol.TypeInfo, onRoutine.SourceLocation);
                     constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, tempSymbol));
-                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [tempSymbol, eventSymbol, onRoutine.FunctionSymbol], null));
+                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [tempSymbol, eventSymbol, onRoutine.FunctionSymbol!], null));
                     var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", onRoutine.SourceLocation);
                     constructorBody.AddInstruction(new WriteMemberInstruction(onRoutine.SourceLocation, eventReceiverSymbol, tempSymbol, thisSymbol));
                 }

@@ -24,13 +24,10 @@ namespace parser {
             let token: Token = this.stream.peek();
             if (token.token_type is TokenType.Constant) {
                 let tok: Token = this.stream.advance();
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                const_expr.value = tok.text;
-                return new ast.Expression.constant(const_expr);
+                return new ast.Expression.constant(new ast.ConstantExpression(tok.text));
             } else if (token.token_type is TokenType.Stringliteral) {
                 let tok: Token = this.stream.advance();
-                let str_expr: ast.StringLiteralExpression = new ast.StringLiteralExpression();
-                str_expr.value = tok.text;
+                let str_expr: ast.StringLiteralExpression = new ast.StringLiteralExpression(tok.text);
                 return new ast.Expression.string_literal(str_expr);
             } else if (token.token_type is TokenType.True || token.token_type is TokenType.False) {
                 return this.parse_boolLiteral();
@@ -66,8 +63,7 @@ namespace parser {
                 cast_node.inner = new Option<ast.Expression>.some(cast_inner);
                 return new ast.Expression.cast_expr(cast_node);
             } else {
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                return new ast.Expression.constant(const_expr);
+                return new ast.Expression.constant(new ast.ConstantExpression(""));
             }
         }
 
@@ -162,10 +158,85 @@ namespace parser {
 
         // identifierWithGeneric: identifier;
         // In expression context, '<' is always a comparison operator, never a generic bracket.
+        fun is_type_name_token(this, tt: TokenType) -> bool {
+            if (tt is TokenType.Identifier) { return true; }
+            if (tt is TokenType.I8) { return true; }
+            if (tt is TokenType.I16) { return true; }
+            if (tt is TokenType.I32) { return true; }
+            if (tt is TokenType.I64) { return true; }
+            if (tt is TokenType.U8) { return true; }
+            if (tt is TokenType.U16) { return true; }
+            if (tt is TokenType.U32) { return true; }
+            if (tt is TokenType.U64) { return true; }
+            if (tt is TokenType.Bool) { return true; }
+            if (tt is TokenType.StringKw) { return true; }
+            if (tt is TokenType.Void) { return true; }
+            if (tt is TokenType.Char) { return true; }
+            return false;
+        }
+
         fun parse_identifierWithGeneric(this) -> ast.Expression {
             let name_token: Token = this.stream.advance();
-            let id_expr: ast.IdentifierExpression = new ast.IdentifierExpression();
-            id_expr.name = name_token.text;
+            let id_expr: ast.IdentifierExpression = new ast.IdentifierExpression(name_token.text);
+
+            // Try to parse <Type, ...> generic args
+            if (this.stream.peek_type() is TokenType.Less) {
+                let saved_pos: i64 = this.stream.pos;
+                let generic_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                let parse_ok: mut bool = true;
+                this.stream.advance(); // consume <
+                if (this.stream.peek_type() is TokenType.Greater) {
+                    // Empty <> — just consume >
+                    this.stream.advance();
+                } else {
+                    if (this.is_type_name_token(this.stream.peek_type())) {
+                        let first: ast.TypeSpecifier = new ast.TypeSpecifier();
+                        let t1: Token = this.stream.advance();
+                        first.name = t1.text;
+                        if (this.stream.peek_type() is TokenType.Less) {
+                            this.parse_genericTypeArgs(first.generic_args);
+                        }
+                        generic_args.push(first);
+                        while (this.stream.peek_type() is TokenType.Comma) {
+                            this.stream.advance();
+                            let next_type: ast.TypeSpecifier = new ast.TypeSpecifier();
+                            if (!(this.is_type_name_token(this.stream.peek_type()))) {
+                                parse_ok = false;
+                                break;
+                            }
+                            let tn: Token = this.stream.advance();
+                            next_type.name = tn.text;
+                            if (this.stream.peek_type() is TokenType.Less) {
+                                this.parse_genericTypeArgs(next_type.generic_args);
+                            }
+                            generic_args.push(next_type);
+                        }
+                    } else {
+                        parse_ok = false;
+                    }
+                    if (parse_ok) {
+                        if (this.stream.peek_type() is TokenType.Greater) {
+                            this.stream.advance(); // consume >
+                        } else {
+                            parse_ok = false;
+                        }
+                    }
+                }
+                if (parse_ok) {
+                    // Check what follows — accept for certain tokens, backtrack for operators
+                    let next: Token = this.stream.peek();
+                    if (next.token_type is TokenType.LParen || next.token_type is TokenType.Dot ||
+                        next.token_type is TokenType.RParen || next.token_type is TokenType.Semicolon ||
+                        next.token_type is TokenType.Comma || next.token_type is TokenType.LBrace ||
+                        next.token_type is TokenType.Greater || next.token_type is TokenType.RBrace) {
+                        id_expr.generic_args = generic_args;
+                    } else {
+                        this.stream.pos = saved_pos;
+                    }
+                } else {
+                    this.stream.pos = saved_pos;
+                }
+            }
             return new ast.Expression.identifier(id_expr);
         }
 
@@ -175,6 +246,18 @@ namespace parser {
             if (this.stream.peek_type() is TokenType.New) {
             this.stream.expect(new TokenType.New());
             let type_token: Token = this.stream.advance();
+            let mut sb = new mut StringBuilder();
+            sb.append(type_token.text);
+            let generic_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+            if (this.stream.peek_type() is TokenType.Less) {
+                this.parse_genericTypeArgs(generic_args);
+            }
+            while (this.stream.peek_type() is TokenType.Dot) {
+                this.stream.expect(new TokenType.Dot());
+                sb.append(".");
+                let next_token: Token = this.stream.advance();
+                sb.append(next_token.text);
+            }
             this.stream.expect(new TokenType.LParen());
             let args: mut List<ast.Expression> = new List<ast.Expression>();
             if (!(this.stream.peek_type() is TokenType.RParen)) {
@@ -185,7 +268,8 @@ namespace parser {
             }
             this.stream.expect(new TokenType.RParen());
             let new_expr: ast.NewExpression = new ast.NewExpression();
-            new_expr.type_name = type_token.text;
+            new_expr.type_name = sb.to_string();
+            new_expr.generic_args = generic_args;
             new_expr.arguments = args;
             return new ast.Expression.new_expr(new_expr);
             }
@@ -216,6 +300,28 @@ namespace parser {
             let ma_expr: ast.MemberAccessExpression = new ast.MemberAccessExpression();
             ma_expr.base_expr = new Option<ast.Expression>.some(results.at(cast<u64>(results.size() - 1)).some);
             ma_expr.member_name = member_token.text;
+            // Try to parse generic args after member name (e.g., obj.method<T>(args))
+            if (this.stream.peek_type() is TokenType.Less) {
+                let saved_pos: i64 = this.stream.pos;
+                let temp_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                let parse_ok: mut bool = true;
+                this.stream.advance(); // consume '<'
+                let first: Token = this.stream.peek();
+                if (this.is_type_name_token(first.token_type)) {
+                    this.stream.pos = saved_pos;
+                    let ga: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                    this.parse_genericTypeArgs(ga);
+                    // Accept if followed by (, ), ;, ,, {, >, }, or EOF
+                    let after: Token = this.stream.peek();
+                    if (after.token_type is TokenType.LParen || after.token_type is TokenType.RParen || after.token_type is TokenType.Semicolon || after.token_type is TokenType.Comma || after.token_type is TokenType.LBrace || after.token_type is TokenType.RBrace || after.token_type is TokenType.EOF) {
+                        ma_expr.generic_args = ga;
+                    } else {
+                        this.stream.pos = saved_pos;
+                    }
+                } else {
+                    this.stream.pos = saved_pos;
+                }
+            }
             results.push(new ast.Expression.member_access(ma_expr));
                 } else if (next.token_type is TokenType.LParen) {
             this.stream.expect(new TokenType.LParen());
@@ -535,8 +641,7 @@ namespace parser {
             this.stream.expect(new TokenType.Assign());
             let ts = this.parse_typeSpecifier();
             this.stream.expect(new TokenType.Semicolon());
-            let node: ast.TypeReferenceDefinition = new ast.TypeReferenceDefinition();
-            node.name = name_token.text;
+            let node: ast.TypeReferenceDefinition = new ast.TypeReferenceDefinition(name_token.text);
             node.type_spec = new Option<ast.TypeSpecifier>.some(ts);
             return new ast.Definition.type_ref_def(node);
         }
@@ -547,8 +652,7 @@ namespace parser {
             let name_token: Token = this.stream.advance();
             this.stream.expect(new TokenType.Colon());
             this.parse_typeSpecifier();
-            let fd: ast.FunctionDefinition = new ast.FunctionDefinition();
-            fd.name = name_token.text;
+            let fd: ast.FunctionDefinition = new ast.FunctionDefinition(name_token.text);
             return new ast.Definition.function_def(fd);
         }
 
@@ -556,8 +660,7 @@ namespace parser {
         // Classification: Sequence
         fun parse_declaration(this) -> ast.Definition {
             let name_token: Token = this.stream.advance();
-            let fd: ast.FunctionDefinition = new ast.FunctionDefinition();
-            fd.name = name_token.text;
+            let fd: ast.FunctionDefinition = new ast.FunctionDefinition(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
                 fd.return_type = new Option<ast.TypeSpecifier>.some(ts);
@@ -573,8 +676,7 @@ namespace parser {
         // Classification: Sequence
         fun parse_classDeclaration(this) -> ast.Definition {
             let name_token: Token = this.stream.advance();
-            let node: ast.ClassFieldDefinition = new ast.ClassFieldDefinition();
-            node.name = name_token.text;
+            let node: ast.ClassFieldDefinition = new ast.ClassFieldDefinition(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
                 node.type_spec = new Option<ast.TypeSpecifier>.some(ts);
@@ -698,7 +800,7 @@ namespace parser {
             if (this.stream.peek_type() is TokenType.Less) {
                 this.parse_genericArguments();
             }
-            let node = new ast.ConstantExpression();
+            let node = new ast.ConstantExpression("");
             return new ast.Expression.constant(node);
         }
 
@@ -713,7 +815,7 @@ namespace parser {
                 this.parse_typeSpecifier();
             }
             this.stream.expect(new TokenType.Greater());
-            let node = new ast.ConstantExpression();
+            let node = new ast.ConstantExpression("");
             return new ast.Expression.constant(node);
         }
 
@@ -785,7 +887,7 @@ namespace parser {
         // interfaceDefinition: (templateDeclaration)? 'interface' identifier '{' ((declaration ';') | functionDefinition | interfaceImplementation | eventDefinition)* '}';
         // Classification: Sequence
         fun parse_interfaceDefinition(this) -> ast.Definition {
-            let node: ast.InterfaceDefinition = new ast.InterfaceDefinition();
+            let node: ast.InterfaceDefinition = new ast.InterfaceDefinition("");
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<ast.TemplateDeclaration>.some(tpl);
@@ -816,7 +918,7 @@ namespace parser {
                     // declaration ';'
                     this.parse_declaration();
                     this.stream.expect(new TokenType.Semicolon());
-                    let fd = new ast.FunctionDefinition();
+                    let fd = new ast.FunctionDefinition("");
                     node.members.push(new ast.Definition.function_def(fd));
                 }
             }
@@ -833,9 +935,7 @@ namespace parser {
                 // interfaceForImplementation: impl Type for Type { ... }
                 this.stream.expect(new TokenType.For());
                 let for_type_token: Token = this.stream.advance();
-                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation();
-                node.type_name = type_token.text;
-                node.for_type_name = for_type_token.text;
+                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_token.text, for_type_token.text);
                 if (this.stream.peek_type() is TokenType.Where) {
                     let wd = this.parse_whereDefinition();
                     node.where_def = new Option<ast.WhereDefinition>.some(wd);
@@ -853,8 +953,7 @@ namespace parser {
                 return new ast.Definition.impl_for_def(node);
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
-            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation();
-            node2.type_name = type_token.text;
+            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_token.text);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
                 node2.where_def = new Option<ast.WhereDefinition>.some(wd2);
@@ -881,9 +980,7 @@ namespace parser {
                 // interfaceForImplementation: impl Type for Type { ... }
                 this.stream.expect(new TokenType.For());
                 let for_type_token: Token = this.stream.advance();
-                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation();
-                node.type_name = type_token.text;
-                node.for_type_name = for_type_token.text;
+                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_token.text, for_type_token.text);
                 if (this.stream.peek_type() is TokenType.Where) {
                     let wd = this.parse_whereDefinition();
                     node.where_def = new Option<ast.WhereDefinition>.some(wd);
@@ -901,8 +998,7 @@ namespace parser {
                 return new ast.Definition.impl_for_def(node);
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
-            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation();
-            node2.type_name = type_token.text;
+            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_token.text);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
                 node2.where_def = new Option<ast.WhereDefinition>.some(wd2);
@@ -923,7 +1019,7 @@ namespace parser {
         // classDefinition: (templateDeclaration)? 'class' identifier '{' ((classDeclaration ';') | functionDefinition | interfaceImplementation | eventDefinition | onRoutine)* '}';
         // Classification: Sequence
         fun parse_classDefinition(this) -> ast.Definition {
-            let node = new ast.ClassDefinition();
+            let node = new ast.ClassDefinition("");
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<ast.TemplateDeclaration>.some(tpl);
@@ -963,7 +1059,7 @@ namespace parser {
         // enumDefinition: (templateDeclaration)? 'enum' identifier '{' (enumDeclaration | functionDefinition | interfaceImplementation | eventDefinition | onRoutine)* '}';
         // Classification: Sequence
         fun parse_enumDefinition(this) -> ast.Definition {
-            let node = new ast.EnumDefinition();
+            let node = new ast.EnumDefinition("");
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<ast.TemplateDeclaration>.some(tpl);
@@ -1004,8 +1100,7 @@ namespace parser {
         // Classification: Sequence
         fun parse_enumDeclaration(this) -> ast.Definition {
             let name_token: Token = this.stream.advance();
-            let node: ast.EnumMemberDefinition = new ast.EnumMemberDefinition();
-            node.name = name_token.text;
+            let node: ast.EnumMemberDefinition = new ast.EnumMemberDefinition(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
                 node.type_spec = new Option<ast.TypeSpecifier>.some(ts);
@@ -1332,6 +1427,7 @@ namespace parser {
                     if (after_tpl.token_type is TokenType.Class) { return this.parse_classDefinition(); }
                     if (after_tpl.token_type is TokenType.Enum) { return this.parse_enumDefinition(); }
                     if (after_tpl.token_type is TokenType.Interface) { return this.parse_interfaceDefinition(); }
+                    if (after_tpl.token_type is TokenType.Fun) { return this.parse_functionDefinition(); }
                 } else {
                     this.stream.pos = saved_pos;
                 }
@@ -1347,10 +1443,21 @@ namespace parser {
             }
             if (next.token_type is TokenType.Let) {
                 this.stream.advance();
-                if (this.stream.match(new TokenType.Mut())) { }
-                let decl = this.parse_declaration();
+                let is_mut: mut bool = false;
+                if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
+                let name_tok: Token = this.stream.advance();
+                let gvar: mut ast.GlobalVariableDefinition = new ast.GlobalVariableDefinition(name_tok.text);
+                gvar.is_mutable = is_mut;
+                if (this.stream.match(new TokenType.Colon())) {
+                    let ts: ast.TypeSpecifier = this.parse_typeSpecifier();
+                    gvar.type_spec = new Option<ast.TypeSpecifier>.some(ts);
+                }
+                if (this.stream.match(new TokenType.Assign())) {
+                    let expr: ast.Expression = this.parse_expression();
+                    gvar.initializer = new Option<ast.Expression>.some(expr);
+                }
                 this.stream.expect(new TokenType.Semicolon());
-                return decl;
+                return new ast.Definition.global_var(gvar);
             }
             if (next.token_type is TokenType.TypeKw) {
                 return this.parse_typeReferenceDeclaration();
@@ -1369,11 +1476,11 @@ namespace parser {
             }
             if (next.token_type is TokenType.Semicolon) {
                 this.stream.advance();
-                let fallback2 = new ast.FunctionDefinition();
+                let fallback2 = new ast.FunctionDefinition("");
                 return new ast.Definition.function_def(fallback2);
             }
             // fallback
-            let fallback3 = new ast.FunctionDefinition();
+            let fallback3 = new ast.FunctionDefinition("");
             return new ast.Definition.function_def(fallback3);
         }
 
@@ -1383,7 +1490,7 @@ namespace parser {
             let is_mut: mut bool = false;
             if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
             this.stream.expect(new TokenType.ThisKw());
-            let node: ast.Parameter = new ast.Parameter();
+            let node: ast.Parameter = new ast.Parameter("this");
             node.is_this = true;
             node.is_mutable = is_mut;
             return node;
@@ -1392,8 +1499,7 @@ namespace parser {
         // singleParameter: identifier (':' typeSpecifier)? ('=' expression)?;
         fun parse_singleParameter(this) -> ast.Parameter {
             let name_token: Token = this.stream.advance();
-            let node: ast.Parameter = new ast.Parameter();
-            node.name = name_token.text;
+            let node: ast.Parameter = new ast.Parameter(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
                 node.type_spec = new Option<ast.TypeSpecifier>.some(ts);
@@ -1445,7 +1551,7 @@ namespace parser {
         // functionDefinition: functionSpecifier* 'fun' (identifier | 'new') ('(' parameterList ')')? ('->' typeSpecifier)? (codeBlockExpression | ';');
         // Classification: Sequence
         fun parse_functionDefinition(this) -> ast.Definition {
-            let node = new ast.FunctionDefinition();
+            let node = new ast.FunctionDefinition("");
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<ast.TemplateDeclaration>.some(tpl);
@@ -1497,8 +1603,7 @@ namespace parser {
         fun parse_eventDefinition(this) -> ast.Definition {
             this.stream.expect(new TokenType.EventKw());
             let name_token: Token = this.stream.advance();
-            let node: ast.EventDefinition = new ast.EventDefinition();
-            node.name = name_token.text;
+            let node: ast.EventDefinition = new ast.EventDefinition(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let type_token: Token = this.stream.advance();
                 let ts: ast.TypeSpecifier = new ast.TypeSpecifier();
@@ -1529,11 +1634,9 @@ namespace parser {
             this.stream.expect(new TokenType.On());
             let node: ast.OnRoutineDefinition = new ast.OnRoutineDefinition();
             let event_token: Token = this.stream.advance();
-            let event_id: ast.IdentifierExpression = new ast.IdentifierExpression();
-            event_id.name = event_token.text;
+            let event_id: ast.IdentifierExpression = new ast.IdentifierExpression(event_token.text);
             if (this.stream.peek_type() is TokenType.Dot) {
-                let base_id: ast.IdentifierExpression = new ast.IdentifierExpression();
-                base_id.name = event_token.text;
+                let base_id: ast.IdentifierExpression = new ast.IdentifierExpression(event_token.text);
                 this.stream.expect(new TokenType.Dot());
                 let member_token: Token = this.stream.advance();
                 let ma: ast.MemberAccessExpression = new ast.MemberAccessExpression();
@@ -1562,8 +1665,7 @@ namespace parser {
             this.stream.expect(new TokenType.Namespace());
             let name_token: Token = this.stream.advance();
             this.stream.expect(new TokenType.LBrace());
-            let node = new ast.NamespaceDefinition();
-            node.name = name_token.text;
+            let node = new ast.NamespaceDefinition(name_token.text);
             let _loop_guard_pos: mut i64 = -1;
             while (!(this.stream.peek_type() is TokenType.RBrace)) {
                 if (this.stream.peek_type() is TokenType.Semicolon) {
@@ -1588,17 +1690,12 @@ namespace parser {
             let token: Token = this.stream.peek();
             if (token.token_type is TokenType.Identifier) {
                 let token: Token = this.stream.advance();
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                const_expr.value = token.text;
-                return new ast.Expression.constant(const_expr);
+                return new ast.Expression.constant(new ast.ConstantExpression(token.text));
             } else if (token.token_type is TokenType.ThisKw) {
                 let token: Token = this.stream.advance();
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                const_expr.value = token.text;
-                return new ast.Expression.constant(const_expr);
+                return new ast.Expression.constant(new ast.ConstantExpression(token.text));
             } else {
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                return new ast.Expression.constant(const_expr);
+                return new ast.Expression.constant(new ast.ConstantExpression(""));
             }
         }
 
@@ -1608,17 +1705,17 @@ namespace parser {
             let token: Token = this.stream.peek();
             if (token.token_type is TokenType.True) {
                 let token: Token = this.stream.advance();
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                const_expr.value = token.text;
-                return new ast.Expression.constant(const_expr);
+                let node: ast.BoolLiteralExpression = new ast.BoolLiteralExpression();
+                node.value = token.text;
+                return new ast.Expression.bool_literal(node);
             } else if (token.token_type is TokenType.False) {
                 let token: Token = this.stream.advance();
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                const_expr.value = token.text;
-                return new ast.Expression.constant(const_expr);
+                let node: ast.BoolLiteralExpression = new ast.BoolLiteralExpression();
+                node.value = token.text;
+                return new ast.Expression.bool_literal(node);
             } else {
-                let const_expr: ast.ConstantExpression = new ast.ConstantExpression();
-                return new ast.Expression.constant(const_expr);
+                let node: ast.BoolLiteralExpression = new ast.BoolLiteralExpression();
+                return new ast.Expression.bool_literal(node);
             }
         }
 
@@ -1626,9 +1723,9 @@ namespace parser {
         // Classification: Sequence
         fun parse_voidLiteral(this) -> ast.Expression {
             this.stream.expect(new TokenType.Void());
-            let node = new ast.ConstantExpression();
-            node.value = "<voidLiteral>";
-            return new ast.Expression.constant(node);
+            let node: ast.VoidLiteralExpression = new ast.VoidLiteralExpression();
+            node.value = "void";
+            return new ast.Expression.void_literal(node);
         }
 
         fun token_to_binary_operator(this, token: Token) -> ast.BinaryOperator {

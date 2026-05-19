@@ -1,0 +1,170 @@
+namespace bound {
+
+enum ScopeKind { GlobalScope; NamespaceScope; ClassScope; EnumScope; InterfaceScope; FunctionScope; BlockScope; InitialRoutineScope; ImplScope; }
+
+class BoundScope {
+    kind: ScopeKind = new ScopeKind.GlobalScope();
+    name: string = "";
+    full_name: string = "";
+    parent: Option<BoundScope> = new Option<BoundScope>.none();
+    children: mut List<BoundScope> = new List<BoundScope>();
+    symbols: mut List<BoundSymbol> = new List<BoundSymbol>();
+    imported_namespaces: mut List<string> = new List<string>();
+
+    fun new(mut this, kind: mut ScopeKind, name: string, full_name: string, parent: mut Option<BoundScope>) {
+        this.kind = kind;
+        this.name = name;
+        this.full_name = full_name;
+        this.parent = parent;
+    }
+
+    fun lookup_symbol(this, name: string) -> Option<BoundSymbol> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbols.size())) {
+            if (this.symbols.at(cast<u64>(i)).some.get_name() == name) {
+                return new Option<BoundSymbol>.some(this.symbols.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_symbol(name);
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_symbol_local(this, name: string) -> Option<BoundSymbol> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbols.size())) {
+            if (this.symbols.at(cast<u64>(i)).some.get_name() == name) {
+                return new Option<BoundSymbol>.some(this.symbols.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_type_in_scope(this, name: string) -> Option<BoundSymbol> {
+        let i: mut u64 = 0;
+        while (i < this.symbols.size()) {
+            let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
+            if (sym is BoundSymbol.type_sym && sym.get_name() == name) {
+                return new Option<BoundSymbol>.some(sym);
+            }
+            i = i + 1;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_type_in_scope(name);
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_namespace(this, name: string) -> Option<BoundScope> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.children.size())) {
+            let child: BoundScope = this.children.at(cast<u64>(i)).some;
+            if (child.name == name && child.kind is ScopeKind.NamespaceScope) {
+                return new Option<BoundScope>.some(child);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundScope>.none();
+    }
+
+    fun resolve_qualified(this, parts: List<string>) -> Option<BoundSymbol> {
+        if (cast<i64>(parts.size()) == 0) { return new Option<BoundSymbol>.none(); }
+        if (cast<i64>(parts.size()) == 1) {
+            return this.lookup_symbol(parts.at(cast<u64>(0)).some);
+        }
+        let first: string = parts.at(cast<u64>(0)).some;
+        let ns: Option<BoundScope> = this.lookup_namespace(first);
+        if (ns.is_some()) {
+            let rest: mut List<string> = new List<string>();
+            let i: mut i64 = 1;
+            while (i < cast<i64>(parts.size())) {
+                rest.push(parts.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            return ns.some.resolve_qualified(rest);
+        }
+        let type_sym: Option<BoundSymbol> = this.lookup_type_in_scope(first);
+        if (type_sym.is_some() && cast<i64>(parts.size()) == 1) {
+            return type_sym;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.resolve_qualified(parts);
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_with_imports(this, name: string) -> Option<BoundSymbol> {
+        let result: Option<BoundSymbol> = this.lookup_symbol(name);
+        if (result.is_some()) { return result; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.imported_namespaces.size())) {
+            let ns_name: string = this.imported_namespaces.at(cast<u64>(i)).some;
+            let parts: mut List<string> = new List<string>();
+            parts.push(ns_name);
+            let ns_sym: Option<BoundSymbol> = this.resolve_qualified(parts);
+            if (ns_sym.is_some() && ns_sym.some is BoundSymbol.namespace_sym) {
+                let ns_scope: Option<BoundScope> = ns_sym.some.namespace_sym.namespace_scope;
+                if (ns_scope.is_some()) {
+                    let found: Option<BoundSymbol> = ns_scope.some.lookup_symbol_local(name);
+                    if (found.is_some()) { return found; }
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun add_or_merge_namespace(mut this, name: string) -> BoundScope {
+        let existing: Option<BoundScope> = this.lookup_namespace(name);
+        if (existing.is_some()) { return existing.some; }
+        let ns: BoundScope = new BoundScope(new ScopeKind.NamespaceScope(), name, this.full_name + "." + name, new Option<BoundScope>.some(this));
+        this.children.push(ns);
+        return this.children.at(cast<u64>(cast<i64>(this.children.size()) - 1)).some;
+    }
+
+    fun add_symbol(mut this, symbol: BoundSymbol) {
+        if (symbol is BoundSymbol.variable) {
+            symbol.variable.enclosing_scope = new Option<BoundScope>.some(this);
+            symbol.variable.full_name = this.full_name + "." + symbol.variable.name;
+        }
+        if (symbol is BoundSymbol.function_sym) {
+            symbol.function_sym.enclosing_scope = new Option<BoundScope>.some(this);
+            symbol.function_sym.full_name = this.full_name + "." + symbol.function_sym.name;
+        }
+        if (symbol is BoundSymbol.type_sym) {
+            symbol.type_sym.enclosing_scope = new Option<BoundScope>.some(this);
+            symbol.type_sym.full_name = this.full_name + "." + symbol.type_sym.name;
+        }
+        if (symbol is BoundSymbol.enum_member) {
+            symbol.enum_member.enclosing_scope = new Option<BoundScope>.some(this);
+            symbol.enum_member.full_name = this.full_name + "." + symbol.enum_member.name;
+        }
+        if (symbol is BoundSymbol.namespace_sym) {
+            symbol.namespace_sym.enclosing_scope = new Option<BoundScope>.some(this);
+            symbol.namespace_sym.full_name = this.full_name + "." + symbol.namespace_sym.name;
+        }
+        this.symbols.push(symbol);
+    }
+
+    fun add_child(mut this, child: mut BoundScope) {
+        child.parent = new Option<BoundScope>.some(this);
+        child.full_name = this.full_name + "." + child.name;
+        this.children.push(child);
+    }
+
+    fun find_child_by_name(this, name: string) -> Option<BoundScope> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.children.size())) {
+            if (this.children.at(cast<u64>(i)).some.name == name) {
+                return new Option<BoundScope>.some(this.children.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundScope>.none();
+    }
+}
+
+}

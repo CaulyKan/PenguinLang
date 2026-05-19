@@ -1,0 +1,19 @@
+namespace ir {
+
+class IRSourceLocation {
+    file_path: string = "";
+    line: i64 = 0;
+    column: i64 = 0;
+
+    fun new(mut this, file_path: string, line: i64, column: i64) {
+        this.file_path = file_path;
+        this.line = line;
+        this.column = column;
+    }
+
+    fun to_string(this) -> string {
+        return this.file_path + ":" + cast<string>(this.line) + ":" + cast<string>(this.column);
+    }
+}
+
+}

@@ -1,0 +1,37 @@
+namespace bound {
+
+enum ErrorSeverity {
+    Error;
+    Warning;
+}
+
+class SemanticError {
+    message: string = "";
+    line: i64 = 0;
+    col: i64 = 0;
+    severity: ErrorSeverity = new ErrorSeverity.Error();
+
+    fun new(mut this, message: string, line: i64, col: i64) {
+        this.message = message;
+        this.line = line;
+        this.col = col;
+    }
+}
+
+class BoundCompilationUnit {
+    definitions: mut List<BoundDefinition> = new List<BoundDefinition>();
+    global_scope: BoundScope = new BoundScope(new ScopeKind.GlobalScope(), "", "", new Option<BoundScope>.none());
+    type_registry: BoundTypeRegistry = new BoundTypeRegistry();
+    errors: mut List<SemanticError> = new List<SemanticError>();
+    source_file: string = "";
+
+    fun add_error(mut this, message: string, line: i64, col: i64) {
+        this.errors.push(new SemanticError(message, line, col));
+    }
+
+    fun has_errors(this) -> bool {
+        return cast<i64>(this.errors.size()) > 0;
+    }
+}
+
+}

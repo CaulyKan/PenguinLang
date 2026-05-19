@@ -1,0 +1,18 @@
+interface ICopy {}
+interface IRef {}
+
+extern fun print(text : string);
+extern fun println(text : string);
+
+#template(T: type)
+class Box {
+    value: mut T;
+
+    fun new(mut this, v: T) {
+        this.value = v;
+    }
+
+    fun get(this) -> T {
+        return this.value;
+    }
+}

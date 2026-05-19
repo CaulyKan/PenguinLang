@@ -1,0 +1,46 @@
+namespace ir {
+
+class IRPrinter {
+
+    fun new(mut this) {}
+
+    fun print_module(this, module: IRModule) -> string {
+        let sb = new mut StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(module.functions.size())) {
+            let f: IRFunction = module.functions.at(cast<u64>(i)).some;
+            if (i > 0) { sb.append("\n"); }
+            sb.append(this.print_function(f));
+            sb.append("\n");
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    fun print_function(this, func: IRFunction) -> string {
+        let sb = new mut StringBuilder();
+        sb.append("function @" + func.name + "(");
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            if (pi > 0) { sb.append(", "); }
+            let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
+            sb.append("%" + p.name + ":" + p.ir_type);
+            pi = pi + 1;
+        }
+        sb.append(") -> " + func.return_type + " {");
+        if (func.source_line > 0) {
+            sb.append("  ; line " + cast<string>(func.source_line));
+        }
+        sb.append("\n");
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            sb.append("  " + inst.display() + "\n");
+            ii = ii + 1;
+        }
+        sb.append("}");
+        return sb.to_string();
+    }
+}
+
+}

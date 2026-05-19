@@ -304,7 +304,7 @@ namespace MagellanicPenguin
             {
                 List<Variable> variables = [];
 
-                if (ReferenceRuntimeValue.AllObjects.TryGetValue((ulong)arguments.VariablesReference, out var obj))
+                if (VM.Global.AllObjects.TryGetValue((ulong)arguments.VariablesReference, out var obj))
                 {
                     foreach (var kvp in obj.Fields)
                     {

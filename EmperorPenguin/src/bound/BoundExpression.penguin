@@ -1,0 +1,282 @@
+namespace bound {
+
+enum LiteralKind {
+    IntegerLiteral;
+    FloatLiteral;
+    StringLiteral;
+    BoolLiteral;
+    VoidLiteral;
+}
+
+class BoundLiteralExpression {
+    bound_type: !mut BoundType = new BoundType();
+    value: !mut string = "";
+    literal_kind: !mut LiteralKind = new LiteralKind.IntegerLiteral();
+
+    fun new(mut this, value: string, bound_type: BoundType, kind: LiteralKind) {
+        this.value = value;
+        this.bound_type = bound_type;
+        this.literal_kind = kind;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundIdentifierExpression {
+    bound_type: !mut BoundType = new BoundType();
+    symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
+
+    fun new(mut this, bound_type: BoundType, symbol: Option<BoundSymbol>) {
+        this.bound_type = bound_type;
+        this.symbol = symbol;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundBinaryExpression {
+    bound_type: !mut BoundType = new BoundType();
+    operators: !mut List<ast.BinaryOperator> = new List<ast.BinaryOperator>();
+    operands: !mut List<BoundExpression> = new List<BoundExpression>();
+
+    fun new(mut this, bound_type: BoundType, operators: List<ast.BinaryOperator>, operands: List<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.operators = operators;
+        this.operands = operands;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundUnaryExpression {
+    bound_type: !mut BoundType = new BoundType();
+    operator_value: !mut ast.UnaryOperator = new ast.UnaryOperator.Negate();
+    operand: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, bound_type: BoundType, operator_value: ast.UnaryOperator, operand: Option<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.operator_value = operator_value;
+        this.operand = operand;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundMemberAccessExpression {
+    bound_type: !mut BoundType = new BoundType();
+    base_expr: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    member_name: !mut string = "";
+    member_symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
+
+    fun new(mut this, bound_type: BoundType, base_expr: Option<BoundExpression>, member_name: string, member_symbol: Option<BoundSymbol>) {
+        this.bound_type = bound_type;
+        this.base_expr = base_expr;
+        this.member_name = member_name;
+        this.member_symbol = member_symbol;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundFunctionCallExpression {
+    bound_type: !mut BoundType = new BoundType();
+    callee: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    callee_symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
+    arguments: !mut List<BoundExpression> = new List<BoundExpression>();
+    is_virtual: !mut bool = false;
+    generic_args: mut List<BoundType> = new List<BoundType>();
+    is_generic_function_call: bool = false;
+    direct_dispatch: mut bool = false;
+
+    fun new(mut this, bound_type: BoundType, callee: Option<BoundExpression>, callee_symbol: Option<BoundSymbol>, arguments: List<BoundExpression>, is_virtual: bool, generic_args: mut List<BoundType>, is_generic_function_call: bool) {
+        this.bound_type = bound_type;
+        this.callee = callee;
+        this.callee_symbol = callee_symbol;
+        this.arguments = arguments;
+        this.is_virtual = is_virtual;
+        this.generic_args = generic_args;
+        this.is_generic_function_call = is_generic_function_call;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundIfExpression {
+    bound_type: !mut BoundType = new BoundType();
+    condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    then_block: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    else_block: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, bound_type: BoundType, condition: Option<BoundExpression>, then_block: Option<BoundExpression>, else_block: Option<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.condition = condition;
+        this.then_block = then_block;
+        this.else_block = else_block;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundWhileExpression {
+    bound_type: !mut BoundType = new BoundType();
+    condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    body: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, bound_type: BoundType, condition: Option<BoundExpression>, body: Option<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.condition = condition;
+        this.body = body;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundCodeBlockExpression {
+    bound_type: !mut BoundType = new BoundType();
+    statements: !mut List<BoundStatement> = new List<BoundStatement>();
+    trailing_expr: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, bound_type: BoundType, statements: List<BoundStatement>, trailing_expr: Option<BoundExpression>, scope: Option<BoundScope>) {
+        this.bound_type = bound_type;
+        this.statements = statements;
+        this.trailing_expr = trailing_expr;
+        this.scope = scope;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundCastExpression {
+    bound_type: !mut BoundType = new BoundType();
+    target_type: !mut BoundType = new BoundType();
+    inner: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    is_implicit: !mut bool = false;
+    needs_boxing: mut bool = false;
+    needs_unboxing: mut bool = false;
+    source_type_name: mut string = "";
+
+    fun new(mut this, bound_type: BoundType, target_type: BoundType, inner: Option<BoundExpression>, is_implicit: bool) {
+        this.bound_type = bound_type;
+        this.target_type = target_type;
+        this.inner = inner;
+        this.is_implicit = is_implicit;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundNewExpression {
+    bound_type: !mut BoundType = new BoundType();
+    type_symbol: !mut Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+    constructor_symbol: !mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    arguments: !mut List<BoundExpression> = new List<BoundExpression>();
+
+    fun new(mut this, bound_type: BoundType, type_symbol: Option<BoundTypeSymbol>, constructor_symbol: Option<BoundFunctionSymbol>, arguments: List<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.type_symbol = type_symbol;
+        this.constructor_symbol = constructor_symbol;
+        this.arguments = arguments;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundEnumVariantExpression {
+    bound_type: !mut BoundType = new BoundType();
+    enum_type: !mut BoundType = new BoundType();
+    variant_name: !mut string = "";
+    variant_idx: !mut i64 = 0;
+    variant_symbol: !mut Option<BoundEnumMemberSymbol> = new Option<BoundEnumMemberSymbol>.none();
+    payload: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, bound_type: BoundType, enum_type: BoundType, variant_name: string, variant_idx: i64, variant_symbol: Option<BoundEnumMemberSymbol>, payload: Option<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.enum_type = enum_type;
+        this.variant_name = variant_name;
+        this.variant_idx = variant_idx;
+        this.variant_symbol = variant_symbol;
+        this.payload = payload;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+class BoundLambdaExpression {
+    bound_type: !mut BoundType = new BoundType();
+    parameters: !mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    return_type: !mut BoundType = new BoundType();
+    body: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
+
+    fun new(mut this, bound_type: BoundType, parameters: List<BoundFunctionParameter>, return_type: BoundType, body: Option<BoundExpression>, scope: Option<BoundScope>) {
+        this.bound_type = bound_type;
+        this.parameters = parameters;
+        this.return_type = return_type;
+        this.body = body;
+        this.scope = scope;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
+enum BoundExpression {
+    literal: BoundLiteralExpression;
+    identifier: BoundIdentifierExpression;
+    binary: BoundBinaryExpression;
+    unary: BoundUnaryExpression;
+    member_access: BoundMemberAccessExpression;
+    function_call: BoundFunctionCallExpression;
+    if_expr: BoundIfExpression;
+    while_expr: BoundWhileExpression;
+    code_block: BoundCodeBlockExpression;
+    cast_expr: BoundCastExpression;
+    new_expr: BoundNewExpression;
+    enum_variant: BoundEnumVariantExpression;
+    lambda_expr: BoundLambdaExpression;
+
+    fun get_bound_type(this) -> BoundType {
+        if (this is BoundExpression.literal) { return this.literal.get_bound_type(); }
+        if (this is BoundExpression.identifier) { return this.identifier.get_bound_type(); }
+        if (this is BoundExpression.binary) { return this.binary.get_bound_type(); }
+        if (this is BoundExpression.unary) { return this.unary.get_bound_type(); }
+        if (this is BoundExpression.member_access) { return this.member_access.get_bound_type(); }
+        if (this is BoundExpression.function_call) { return this.function_call.get_bound_type(); }
+        if (this is BoundExpression.if_expr) { return this.if_expr.get_bound_type(); }
+        if (this is BoundExpression.while_expr) { return this.while_expr.get_bound_type(); }
+        if (this is BoundExpression.code_block) { return this.code_block.get_bound_type(); }
+        if (this is BoundExpression.cast_expr) { return this.cast_expr.get_bound_type(); }
+        if (this is BoundExpression.new_expr) { return this.new_expr.get_bound_type(); }
+        if (this is BoundExpression.enum_variant) { return this.enum_variant.get_bound_type(); }
+        if (this is BoundExpression.lambda_expr) { return this.lambda_expr.get_bound_type(); }
+        return new BoundType();
+    }
+}
+
+}

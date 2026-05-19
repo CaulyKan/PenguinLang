@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
@@ -26,6 +27,20 @@ public class BatchTokenizeTestAttribute(string source) : Attribute
     public string Source { get; } = source;
 }
 
+[AttributeUsage(AttributeTargets.Method)]
+public class BatchBoundTestAttribute(string code, string expected) : Attribute
+{
+    public string Code { get; } = code;
+    public string Expected { get; } = expected;
+}
+
+[AttributeUsage(AttributeTargets.Method)]
+public class BatchE2ETestAttribute(string code, string expected) : Attribute
+{
+    public string Code { get; } = code;
+    public string Expected { get; } = expected;
+}
+
 public class BatchResults
 {
     private readonly Dictionary<string, (string Result, string Expected)> _data = new();
@@ -36,6 +51,9 @@ public class BatchResults
     public void Assert([CallerMemberName] string name = "")
         => Xunit.Assert.Equal(_data[name].Expected, _data[name].Result);
 
+    public void AssertSemantic([CallerMemberName] string name = "")
+        => IRSemanticEqual.AssertSemanticallyEqual(_data[name].Expected, _data[name].Result);
+
     public string GetResult([CallerMemberName] string name = "")
         => _data[name].Result;
 }
@@ -45,6 +63,18 @@ public static class BatchCompiler
     public static string AstDir => Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
                       "EmperorPenguin", "src", "ast"));
+
+    public static string BoundDir => Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                      "EmperorPenguin", "src", "bound"));
+
+    public static string IRDir => Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                      "EmperorPenguin", "src", "ir"));
+
+    public static string LLVMDir => Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                      "EmperorPenguin", "src", "llvm"));
 
     public static BatchResults InitBatch<T>()
     {
@@ -70,6 +100,184 @@ public static class BatchCompiler
         return ToBatchResults(testData, results);
     }
 
+    public static BatchResults InitBoundBatch<T>()
+    {
+        var testData = CollectMethods<T, BatchBoundTestAttribute>(
+            (m, a) => (m.Name, a.Code, a.Expected));
+        var results = CompileAndRunBound(testData.Select(t => (t.Name, t.Code)).ToArray());
+        return ToBatchResults(testData, results);
+    }
+
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
+    public class BatchIRTestAttribute(string code, string expected) : Attribute
+    {
+        public string Code { get; } = code;
+        public string Expected { get; } = expected;
+    }
+
+    public static BatchResults InitIRBatch<T>()
+    {
+        var testData = typeof(T)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .SelectMany(m => m.GetCustomAttributes<BatchIRTestAttribute>()
+                .Select(a => (m.Name, a.Code, a.Expected)))
+            .ToList();
+        var results = CompileAndRunIR(testData.Select(t => (t.Name, t.Code)).ToArray());
+        return ToBatchResults(testData, results);
+    }
+
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
+    public class BatchLLVMTestAttribute(string code, string expected) : Attribute
+    {
+        public string Code { get; } = code;
+        public string Expected { get; } = expected;
+    }
+
+    public static BatchResults InitLLVMBatch<T>()
+    {
+        var testData = typeof(T)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .SelectMany(m => m.GetCustomAttributes<BatchLLVMTestAttribute>()
+                .Select(a => (m.Name, a.Code, a.Expected)))
+            .ToList();
+        var results = CompileAndRunLLVM(testData.Select(t => (t.Name, t.Code)).ToArray());
+        return ToBatchResults(testData, results);
+    }
+
+    public static string FindProjectRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "EmperorPenguin")))
+                return dir.FullName;
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Project root not found");
+    }
+
+    public static BatchResults InitE2EBatch<T>()
+    {
+        var testData = CollectMethods<T, BatchE2ETestAttribute>(
+            (m, a) => (m.Name, a.Code, a.Expected));
+        var results = CompileAndRunE2E(testData.Select(t => (t.Name, t.Code)).ToArray());
+        return ToBatchResults(testData, results);
+    }
+
+    public static Dictionary<string, string> CompileAndRunE2E(
+        (string Name, string Code)[] tests,
+        int timeoutSeconds = 300)
+    {
+        var projectRoot = FindProjectRoot();
+        var combinedCode = new StringBuilder();
+        foreach (var test in tests)
+        {
+            var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");
+            combinedCode.AppendLine($"namespace __test_{test.Name} {{");
+            combinedCode.AppendLine(taggedCode);
+            combinedCode.AppendLine("}");
+        }
+
+        var testId = Guid.NewGuid().ToString("N")[..8];
+        var srcFile = Path.Combine(projectRoot, $"tmp_batch_e2e_{testId}.penguin");
+        File.WriteAllText(srcFile, combinedCode.ToString());
+
+        var empTmp = Path.Combine(projectRoot, "tmp");
+        if (Directory.Exists(empTmp))
+            Directory.Delete(empTmp, true);
+        Directory.CreateDirectory(empTmp);
+
+        try
+        {
+            var compilePsi = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = $"run --project \"{Path.Combine(projectRoot, "BabyPenguin", "BabyPenguin.csproj")}\" -q -- \"{Path.Combine(projectRoot, "EmperorPenguin", "EmperorPenguin.penguins")}\" -- \"{srcFile}\"",
+                WorkingDirectory = projectRoot,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false
+            };
+            using var compileProc = Process.Start(compilePsi)!;
+            string compileStdout = compileProc.StandardOutput.ReadToEnd();
+            string compileStderr = compileProc.StandardError.ReadToEnd();
+            compileProc.WaitForExit(timeoutSeconds * 1000);
+            if (compileProc.ExitCode != 0)
+            {
+                var logPath = Path.Combine(empTmp, "emperor.log");
+                var logContent = File.Exists(logPath) ? File.ReadAllText(logPath) : "(no log)";
+                var sourceSnippet = combinedCode.ToString().Length > 2000
+                    ? combinedCode.ToString()[..2000] + "\n... (truncated)"
+                    : combinedCode.ToString();
+                throw new Exception(
+                    $"E2E batch compilation failed (exit={compileProc.ExitCode}):\n" +
+                    $"STDOUT: {compileStdout}\nSTDERR: {compileStderr}\n" +
+                    $"LOG:\n{logContent}\nSOURCE:\n{sourceSnippet}");
+            }
+
+            var exePath = Path.Combine(projectRoot, "tmp", "out.exe");
+            if (!File.Exists(exePath))
+                throw new Exception($"Expected executable at {exePath}");
+
+            var runPsi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                WorkingDirectory = projectRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            using var runProc = Process.Start(runPsi)!;
+            string stdout = runProc.StandardOutput.ReadToEnd();
+            runProc.WaitForExit(30000);
+
+            return ParseTaggedOutput(stdout);
+        }
+        finally
+        {
+            // Preserve source file for debugging on failure
+            try { Directory.Delete(Path.Combine(projectRoot, "tmp"), true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Parse tagged output where @@tag@@ marks the START of a section,
+    /// and all subsequent lines (until the next @@tag@@ or end) belong to that section.
+    /// </summary>
+    private static Dictionary<string, string> ParseTaggedOutputMultiline(string output)
+    {
+        var results = new Dictionary<string, string>();
+        string? currentTag = null;
+        var currentLines = new List<string>();
+
+        foreach (var line in output.Split('\n'))
+        {
+            var match = Regex.Match(line, @"^@@(.+?)@@(.*)$");
+            if (match.Success)
+            {
+                // Save previous tag's content
+                if (currentTag != null)
+                    results[currentTag] = string.Join("\n", currentLines).Trim();
+
+                currentTag = match.Groups[1].Value;
+                currentLines = new List<string>();
+                var rest = match.Groups[2].Value;
+                if (!string.IsNullOrEmpty(rest))
+                    currentLines.Add(rest);
+            }
+            else if (currentTag != null)
+            {
+                currentLines.Add(line);
+            }
+        }
+
+        // Save last tag's content
+        if (currentTag != null)
+            results[currentTag] = string.Join("\n", currentLines).Trim();
+
+        return results;
+    }
+
     private static List<(string Name, string Code, string Expected)> CollectMethods<T, TAttr>(
         Func<MethodInfo, TAttr, (string Name, string Code, string Expected)> selector)
         where TAttr : Attribute
@@ -89,6 +297,99 @@ public static class BatchCompiler
         foreach (var (name, _, expected) in testData)
             batch.Add(name, results.GetValueOrDefault(name, ""), expected);
         return batch;
+    }
+
+    public static Dictionary<string, string> CompileAndRunIR(
+        (string Name, string Code)[] tests,
+        int timeoutSeconds = 300)
+    {
+        var combinedCode = new StringBuilder();
+        foreach (var test in tests)
+        {
+            var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");
+            combinedCode.AppendLine($"namespace __test_{test.Name} {{");
+            combinedCode.AppendLine(taggedCode);
+            combinedCode.AppendLine("}");
+        }
+
+        var compiler = new SemanticCompiler(new ErrorReporter());
+        foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(BoundDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(IRDir, "*.penguin"))
+            compiler.AddFile(f);
+        compiler.AddSource(combinedCode.ToString());
+
+        var model = compiler.Compile();
+        var vm = new BabyPenguinVM(model);
+        var task = Task.Run(() => vm.Run());
+        if (!task.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
+            throw new TimeoutException("VM timed out in IR batch compilation");
+
+        return ParseTaggedOutput(vm.CollectOutput());
+    }
+
+    public static Dictionary<string, string> CompileAndRunLLVM(
+        (string Name, string Code)[] tests,
+        int timeoutSeconds = 300)
+    {
+        var combinedCode = new StringBuilder();
+        foreach (var test in tests)
+        {
+            var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");
+            combinedCode.AppendLine($"namespace __test_{test.Name} {{");
+            combinedCode.AppendLine(taggedCode);
+            combinedCode.AppendLine("}");
+        }
+
+        var compiler = new SemanticCompiler(new ErrorReporter());
+        foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(BoundDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(IRDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(LLVMDir, "*.penguin"))
+            compiler.AddFile(f);
+        compiler.AddSource(combinedCode.ToString());
+
+        var model = compiler.Compile();
+        var vm = new BabyPenguinVM(model);
+        var task = Task.Run(() => vm.Run());
+        if (!task.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
+            throw new TimeoutException("VM timed out in LLVM batch compilation");
+
+        return ParseTaggedOutputMultiline(vm.CollectOutput());
+    }
+
+    public static Dictionary<string, string> CompileAndRunBound(
+        (string Name, string Code)[] tests,
+        int timeoutSeconds = 300)
+    {
+        var combinedCode = new StringBuilder();
+        foreach (var test in tests)
+        {
+            var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");
+            combinedCode.AppendLine($"namespace __test_{test.Name} {{");
+            combinedCode.AppendLine(taggedCode);
+            combinedCode.AppendLine("}");
+        }
+
+        var compiler = new SemanticCompiler(new ErrorReporter());
+        foreach (var f in Directory.GetFiles(BoundDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
+            compiler.AddFile(f);
+        compiler.AddSource(combinedCode.ToString());
+
+        var model = compiler.Compile();
+        var vm = new BabyPenguinVM(model);
+        var task = Task.Run(() => vm.Run());
+        if (!task.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
+            throw new TimeoutException("VM timed out in bound batch compilation");
+
+        return ParseTaggedOutput(vm.CollectOutput());
     }
 
     private static string GenerateParseUserCode(string source, string parseMethod)
@@ -173,7 +474,7 @@ initial {{
         }
 
         foreach (var name in results.Keys.ToList())
-            results[name] = results[name].Trim();
+            results[name] = results[name].TrimEnd();
 
         return results;
     }

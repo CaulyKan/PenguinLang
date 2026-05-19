@@ -11,6 +11,7 @@ namespace BabyPenguin.VirtualMachine
         T As<T>() where T : class, IRuntimeValue => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
 
         IRuntimeValue Clone();
+        IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited);
     }
 
     public class NotInitializedRuntimeValue : IRuntimeValue
@@ -22,7 +23,9 @@ namespace BabyPenguin.VirtualMachine
 
         public IType TypeInfo { get; }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
             return new NotInitializedRuntimeValue(TypeInfo);
         }
@@ -142,7 +145,9 @@ namespace BabyPenguin.VirtualMachine
             CharValue = otherVar.CharValue;
         }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
             var result = new BasicRuntimeValue(TypeInfo);
             result.AssignFrom(this);
@@ -206,7 +211,9 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
             return new FunctionRuntimeValue(TypeInfo, FunctionSymbol, Owner);
         }
@@ -228,7 +235,9 @@ namespace BabyPenguin.VirtualMachine
             return Object == null ? "null" : RuntimeHelpers.GetHashCode(Object).ToString();
         }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
             return new ExternRuntimeValue(model) { Object = Object };
         }
@@ -236,10 +245,13 @@ namespace BabyPenguin.VirtualMachine
 
     public class ReferenceRuntimeValue : IRuntimeValue
     {
-        public ReferenceRuntimeValue(IType typeInfo, Dictionary<string, IRuntimeValue> fields)
+        private readonly RuntimeGlobal? _global;
+
+        public ReferenceRuntimeValue(IType typeInfo, Dictionary<string, IRuntimeValue> fields, RuntimeGlobal? global = null)
         {
-            RefId = Interlocked.Increment(ref counter);
-            AllObjects.TryAdd(RefId, this);
+            _global = global;
+            RefId = global?.NextRefId() ?? (ulong)Random.Shared.NextInt64();
+            _global?.AllObjects.TryAdd(RefId, this);
             TypeInfo = typeInfo;
             Fields = fields;
         }
@@ -249,10 +261,6 @@ namespace BabyPenguin.VirtualMachine
         public Dictionary<string, IRuntimeValue> Fields { get; } = [];
 
         public ulong RefId { get; }
-
-        public static ConcurrentDictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
-
-        private static ulong counter = 0;
 
         public object? ExternImplenmentationValue
         {
@@ -285,9 +293,16 @@ namespace BabyPenguin.VirtualMachine
             return RefId.ToString() + "@{" + string.Join(", ", fields) + "}";
         }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
-            var result = new ReferenceRuntimeValue(TypeInfo, Fields.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone()));
+            if (visited.TryGetValue(RefId, out var existing))
+                return existing;
+            var result = new ReferenceRuntimeValue(TypeInfo, [], _global);
+            visited[RefId] = result;
+            foreach (var kvp in Fields)
+                result.Fields[kvp.Key] = kvp.Value.Clone(visited);
             result.ExternImplenmentationValue = ExternImplenmentationValue;
             return result;
         }
@@ -332,9 +347,11 @@ namespace BabyPenguin.VirtualMachine
             FieldsValue = (otherVar.FieldsValue.Clone() as ReferenceRuntimeValue)!;
         }
 
-        public IRuntimeValue Clone()
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
         {
-            var result = new EnumRuntimeValue(TypeInfo, (FieldsValue.Clone() as ReferenceRuntimeValue)!, ContainingValue?.Clone());
+            var result = new EnumRuntimeValue(TypeInfo, (FieldsValue.Clone(visited) as ReferenceRuntimeValue)!, ContainingValue?.Clone(visited));
             return result;
         }
     }

@@ -6,6 +6,8 @@ namespace __builtin {
     extern fun eprintln(text : string);
     extern fun file_read_text(file: string) -> mut string;
     extern fun file_write_text(file: string, text: string);
+    extern fun mkdir(path: string) -> bool;
+    extern fun exec(exe: string, args: List<string>) -> i64;
 
     extern fun lshift(value: i64, shift: i64) -> i64;
     extern fun rshift(value: i64, shift: i64) -> i64;

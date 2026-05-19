@@ -19,13 +19,13 @@ namespace BabyPenguin.VirtualMachine
             {
                 if (local.IsParameter)
                 {
-                    var symbol = IRuntimeSymbol.FromSymbol(container.Model, local);
+                    var symbol = IRuntimeSymbol.FromSymbol(container.Model, local, runtimeGlobal);
                     symbol.AssignFrom(parameters[local.ParameterIndex]);
                     LocalVariables.Add(local.FullName(), symbol);
                 }
                 else
                 {
-                    LocalVariables.Add(local.FullName(), IRuntimeSymbol.FromSymbol(container.Model, local));
+                    LocalVariables.Add(local.FullName(), IRuntimeSymbol.FromSymbol(container.Model, local, runtimeGlobal));
                 }
             }
         }
@@ -670,7 +670,7 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 if (owner.As<InterfaceRuntimeSymbol>().VTable!.Slots.Find(slot => slot.InterfaceSymbol.Name == cmd.Member.Name) is VTableSlot vtableSlot)
                                 {
-                                    var funVar = IRuntimeSymbol.FromSymbol(owner.Model, vtableSlot.ImplementationSymbol);
+                                    var funVar = IRuntimeSymbol.FromSymbol(owner.Model, vtableSlot.ImplementationSymbol, Global);
                                     if (cmd.IsFatPointer)
                                     {
                                         (resultVar as FunctionRuntimeSymbol)!.FunctionValue = (funVar.Value as FunctionRuntimeValue)!;

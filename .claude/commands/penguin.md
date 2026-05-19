@@ -150,6 +150,14 @@ class MyClass {
 }
 ```
 
+## About mutability:
+- **PenguinLang mutability model**: Three field modes: `mut T` (always mutable), `T` (auto - follows instance), `!mut T` (always immutable)
+   - **Auto-mutability limitation**: BabyPenguin doesn't support auto-mutable `List<T>` fields in `mut this` methods — `push()` fails. All `List<T>` fields need explicit `mut`.
+   - **Immutable-to-mutable assignment**: `mut BoundType` fields can't accept `BoundType` (immutable) values. Same for `mut Option<T>`. This means local variables declared as `mut ComplexType` can't be assigned from functions returning immutable values.
+   - **Simple type copy semantics**: `string` can be assigned to auto-mutable fields without `mut` on the param. `bool` and enums require `mut` on constructor params for assignment to auto-mutable fields.
+   - **Early return pattern**: Instead of mutable local variables (`let x: mut T = default; if (cond) { x = value; }`), restructure with early returns to avoid mutable complex-type locals entirely.
+   - **Constructor pattern**: Expression/Statement classes use `!mut` fields + constructors (set once). Definition/Symbol/Scope classes use auto-mutable fields set through `mut` bindings.
+
 ### Constructor Rules
 
 - Constructor is always `fun new(mut this, ...)` - `mut this` is required
@@ -530,6 +538,78 @@ class PrimaryExpression {
 8. **All class fields need default values**: `field: i32 = 0;`
 9. **`some`/`none` are Option methods**: `opt.is_some()`, `opt.is_none()`, `opt.some`
 10. **Cast interface this to concrete type**: `let self: mut Self = cast<mut Self>(this);`
+11. **Enum variant names MUST NOT be keywords** (see below)
+
+## Keyword Collision Avoidance (CRITICAL)
+
+PenguinLang has many reserved keywords. When naming enum variants, you MUST avoid these words. The parser will reject any enum variant that matches a keyword.
+
+**Complete list of keywords to avoid as enum variant names:**
+`bool`, `break`, `cast`, `char`, `class`, `continue`, `double`, `else`, `enum`, `event`, `extern`, `float`, `for`, `fun`, `i8`-`i64`, `u8`-`u64`, `if`, `impl`, `in`, `initial`, `interface`, `is`, `let`, `mut`, `namespace`, `new`, `on`, `pure`, `return`, `self`, `string`, `this`, `true`, `false`, `type`, `void`, `wait`, `where`, `while`, `yield`
+
+**Strategy**: Use descriptive suffixes to disambiguate:
+
+```penguin
+// BAD - these are keywords, will cause parse errors:
+enum PrimitiveType {
+    Bool;     // 'bool' is a keyword!
+    String;   // 'string' is a keyword!
+    Void;     // 'void' is a keyword!
+    Char;     // 'char' is a keyword!
+    Float;    // 'float' is a keyword!
+}
+
+// GOOD - add "Kind" suffix or other disambiguation:
+enum PrimitiveType {
+    BoolKind;
+    StringKind;
+    VoidKind;
+    CharKind;
+    FloatKind;
+}
+
+// BAD - these enum variants are keywords:
+enum TypeKind {
+    Class;      // keyword!
+    Enum;       // keyword!
+    Interface;  // keyword!
+    Function;   // keyword!
+}
+
+// GOOD:
+enum TypeKind {
+    ClassKind;
+    EnumKind;
+    InterfaceKind;
+    FunctionKind;
+}
+
+// BAD - BoundSymbol variant names are keywords:
+enum BoundSymbol {
+    type;       // keyword!
+    function;   // keyword!
+    namespace;  // keyword!
+}
+
+// GOOD - use "_sym" suffix or other names:
+enum BoundSymbol {
+    type_sym;
+    function_sym;
+    namespace_sym;
+}
+```
+
+**Existing codebase convention** (see `EmperorPenguin/src/ast/Token.penguin`):
+- `StringKw` for the `string` keyword token
+- `Bool` for `bool` (acceptable as TokenType since it's PascalCase and context-dependent)
+- `SelfKw` for `self`
+- `ThisKw` for `this`
+- `EventKw` for `event`
+- `TemplateKw` for template
+- `AutoKw` for auto
+- `TypeKw` for type
+
+**Rule of thumb**: When in doubt, add a suffix like `Kind`, `Kw`, `Sym`, or `Def` to avoid keyword collision. Check `EmperorPenguin/src/ast/Token.penguin` for the full list of token types and their naming conventions.
 
 ## Best Practices
 

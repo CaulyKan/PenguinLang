@@ -1,0 +1,54 @@
+namespace ir {
+
+class IRGlobalVariable {
+    name: !mut string = "";
+    ir_type: !mut string = "";
+    initializer_value: !mut string = "";
+
+    fun new(mut this, name: string, ir_type: string, initializer_value: string) {
+        this.name = name;
+        this.ir_type = ir_type;
+        this.initializer_value = initializer_value;
+    }
+}
+
+class IRModule {
+    source_file: mut string = "";
+    functions: mut List<IRFunction> = new List<IRFunction>();
+    entry_functions: mut List<IRFunction> = new List<IRFunction>();
+    global_variables: mut List<IRGlobalVariable> = new List<IRGlobalVariable>();
+
+    fun add_function(mut this, func: mut IRFunction) {
+        this.functions.push(func);
+    }
+
+    fun add_global_variable(mut this, gv: IRGlobalVariable) {
+        this.global_variables.push(gv);
+    }
+
+    fun find_function(this, name: string) -> Option<IRFunction> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.functions.size())) {
+            let f: IRFunction = this.functions.at(cast<u64>(i)).some;
+            if (f.name == name) {
+                return new Option<IRFunction>.some(f);
+            }
+            i = i + 1;
+        }
+        return new Option<IRFunction>.none();
+    }
+
+    fun find_global_variable(this, name: string) -> Option<IRGlobalVariable> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.global_variables.size())) {
+            let gv: IRGlobalVariable = this.global_variables.at(cast<u64>(i)).some;
+            if (gv.name == name) {
+                return new Option<IRGlobalVariable>.some(gv);
+            }
+            i = i + 1;
+        }
+        return new Option<IRGlobalVariable>.none();
+    }
+}
+
+}

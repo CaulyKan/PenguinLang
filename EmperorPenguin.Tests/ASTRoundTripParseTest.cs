@@ -4,38 +4,7 @@ namespace EmperorPenguin.Tests;
 
 public class ASTRoundTripParseTest
 {
-    private static string ProjectPath => Path.GetFullPath(Path.Combine(
-        AppContext.BaseDirectory, "..", "..", "..", "..",
-        "EmperorPenguin", "EmperorPenguin.penguins"));
-
-    private static readonly Lazy<SemanticModel> CachedProjectModel = new(() =>
-    {
-        var reporter = new ErrorReporter(new StringWriter(), PenguinLangParser.DiagnosticLevel.Debug);
-        var compiler = new SemanticCompiler(reporter);
-        compiler.AddProject(ProjectPath);
-        return compiler.Compile();
-    });
-
     private static readonly BatchResults Batch = BatchCompiler.InitParseBatch<ASTRoundTripParseTest>();
-
-    private string ParseRoundTrip(string source)
-    {
-        var tempFile = Path.Combine(Path.GetTempPath(), $"emperor_test_{Guid.NewGuid():N}.penguin");
-        File.WriteAllText(tempFile, source);
-        try
-        {
-            var vm = new BabyPenguinVM(CachedProjectModel.Value);
-            vm.Global.CommandLineArgs = [tempFile];
-            var task = Task.Run(() => vm.Run());
-            if (!task.Wait(TimeSpan.FromSeconds(10)))
-                throw new TimeoutException("VM timed out in ParseRoundTrip");
-            return vm.CollectOutput().Trim();
-        }
-        finally
-        {
-            File.Delete(tempFile);
-        }
-    }
 
     private string ParseWithMethod(string source, string parseMethod)
     {
@@ -63,35 +32,29 @@ initial {{
         return vm.CollectOutput().Trim();
     }
 
-    // ==================== Skipped tests ====================
-
-    [Fact]
-    public void ParseRoundTrip_BinaryLessThan()
-        => Assert.Equal("x < 10", ParseWithMethod("x<10", "parse_expression"));
-
-    [Fact]
-    public void ParseRoundTrip_NestedWhileIf()
-        => Assert.Equal("while (x) { if (1) { 2 } }", ParseWithMethod("while (x) { if (1) { 2 } }", "parse_expression"));
-
-    [Fact]
-    public void ParseRoundTrip_NestedIfInCodeBlock()
-        => Assert.Equal("{ if (1) { 2 } 3 }", ParseWithMethod("{ if (1) { 2 } 3 }", "parse_expression"));
-
-    [Fact]
-    public void ParseRoundTrip_WhileWithBinaryCondition()
-        => Assert.Equal("while (x > 0 && x < 100) { x }", ParseWithMethod("while (x > 0 && x < 100) { x }", "parse_expression"));
-
-    [Fact]
-    public void ParseRoundTrip_IfElseNestedCodeBlocks()
-        => Assert.Equal("if (a) { if (b) { 1 } } else { 2 }", ParseWithMethod("if (a) { if (b) { 1 } } else { 2 }", "parse_expression"));
-
-    [Fact()]
-    public void ParseRoundTrip_CodeBlockWithIfAndWhile()
-        => Assert.Equal("{ if (1) { 2 } while (x) { 3 } 4 }", ParseWithMethod("{ if (1) { 2 } while (x) { 3 } 4 }", "parse_expression"));
-
-    [Fact]
-    public void ParseRoundTrip_ComplexBinaryAllLevels()
-        => Assert.Equal("a || b && c | d ^ e & f == g != h < i > j + k - l * m / n", ParseWithMethod("a||b&&c|d^e&f==g!=h<i>j+ k-l*m/n", "parse_expression"));
+    private string ParseRoundTrip(string source)
+    {
+        var escaped = source.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var userCode = @$"
+initial {{
+    let source: string = ""{escaped}"";
+    let lexer = new parser.Lexer(source);
+    let tokens = lexer.tokenize();
+    let p = new parser.Parser(tokens);
+    let result = p.parse_compilationUnit();
+    println(result.build_text());
+}}";
+        var compiler = new SemanticCompiler(new ErrorReporter());
+        foreach (var f in Directory.GetFiles(BatchCompiler.AstDir, "*.penguin"))
+            compiler.AddFile(f);
+        compiler.AddSource(userCode);
+        var model = compiler.Compile();
+        var vm = new BabyPenguinVM(model);
+        var task = Task.Run(() => vm.Run());
+        if (!task.Wait(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("VM timed out in ParseRoundTrip");
+        return vm.CollectOutput().Trim();
+    }
 
     // ==================== Expression round-trip tests ====================
 
@@ -150,6 +113,10 @@ initial {{
     [Fact]
     [BatchParseTest("x>10", "parse_expression", "x > 10")]
     public void ParseRoundTrip_BinaryGreaterThan() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("x<10", "parse_expression", "x < 10")]
+    public void ParseRoundTrip_BinaryLessThan() => Batch.Assert();
 
     [Fact]
     [BatchParseTest("x<=10", "parse_expression", "x <= 10")]
@@ -301,27 +268,69 @@ initial {{
     [BatchParseTest("{ while (x) { 1 } while (y) { 2 } }", "parse_expression", "{ while (x) { 1 } while (y) { 2 } }")]
     public void ParseRoundTrip_CodeBlockWithMultipleWhiles() => Batch.Assert();
 
+    // ==================== Complex expression tests ====================
+
+    [Fact]
+    [BatchParseTest("while (x) { if (1) { 2 } }", "parse_expression", "while (x) { if (1) { 2 } }")]
+    public void ParseRoundTrip_NestedWhileIf() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("{ if (1) { 2 } 3 }", "parse_expression", "{ if (1) { 2 } 3 }")]
+    public void ParseRoundTrip_NestedIfInCodeBlock() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("while (x > 0 && x < 100) { x }", "parse_expression", "while (x > 0 && x < 100) { x }")]
+    public void ParseRoundTrip_WhileWithBinaryCondition() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("if (a) { if (b) { 1 } } else { 2 }", "parse_expression", "if (a) { if (b) { 1 } } else { 2 }")]
+    public void ParseRoundTrip_IfElseNestedCodeBlocks() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("{ if (1) { 2 } while (x) { 3 } 4 }", "parse_expression", "{ if (1) { 2 } while (x) { 3 } 4 }")]
+    public void ParseRoundTrip_CodeBlockWithIfAndWhile() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("a||b&&c|d^e&f==g!=h<i>j+ k-l*m/n", "parse_expression", "a || b && c | d ^ e & f == g != h < i > j + k - l * m / n")]
+    public void ParseRoundTrip_ComplexBinaryAllLevels() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("-a+b.c(1)*3", "parse_expression", "-a + b.c(1) * 3")]
+    public void ParseRoundTrip_ComplexExpression() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("(1+2)*(3-4)", "parse_expression", "(1 + 2) * (3 - 4)")]
+    public void ParseRoundTrip_ParenthesizedWithBinary() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("cast<i64>(x)+1", "parse_expression", "cast<i64>(x) + 1")]
+    public void ParseRoundTrip_CastInsideBinary() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("-a.b", "parse_expression", "-a.b")]
+    public void ParseRoundTrip_UnaryWithMemberAccess() => Batch.Assert();
+
     // ==================== Type specifier tests ====================
 
     [Fact]
-    public void ParseType_ListGeneric()
-        => Assert.Equal("List<i64>", ParseWithMethod("List<i64>", "parse_typeSpecifier"));
+    [BatchParseTest("List<i64>", "parse_typeSpecifier", "List<i64>")]
+    public void ParseType_ListGeneric() => Batch.Assert();
 
     [Fact]
-    public void ParseType_MultipleGenericArgs()
-        => Assert.Equal("Map<i64, string>", ParseWithMethod("Map<i64, string>", "parse_typeSpecifier"));
+    [BatchParseTest("Map<i64, string>", "parse_typeSpecifier", "Map<i64, string>")]
+    public void ParseType_MultipleGenericArgs() => Batch.Assert();
 
     [Fact]
-    public void ParseType_NestedGeneric()
-        => Assert.Equal("List<List<i64>>", ParseWithMethod("List<List<i64>>", "parse_typeSpecifier"));
+    [BatchParseTest("List<List<i64>>", "parse_typeSpecifier", "List<List<i64>>")]
+    public void ParseType_NestedGeneric() => Batch.Assert();
 
     [Fact]
-    public void ParseType_Mutable()
-        => Assert.Equal("mut i64", ParseWithMethod("mut i64", "parse_typeSpecifier"));
+    [BatchParseTest("mut i64", "parse_typeSpecifier", "mut i64")]
+    public void ParseType_Mutable() => Batch.Assert();
 
     [Fact]
-    public void ParseType_Qualified()
-        => Assert.Equal("foo.bar.Baz", ParseWithMethod("foo.bar.Baz", "parse_typeSpecifier"));
+    [BatchParseTest("foo.bar.Baz", "parse_typeSpecifier", "foo.bar.Baz")]
+    public void ParseType_Qualified() => Batch.Assert();
 
     // ==================== Function parameter tests ====================
 
@@ -346,22 +355,6 @@ initial {{
     [Fact]
     [BatchParseTest("fun() -> string { \"hello\" }", "parse_lambdaFunctionExpression", "fun() -> string { \"hello\" }")]
     public void ParseLambda_WithStringReturnType() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("-a+b.c(1)*3", "parse_expression", "-a + b.c(1) * 3")]
-    public void ParseRoundTrip_ComplexExpression() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("(1+2)*(3-4)", "parse_expression", "(1 + 2) * (3 - 4)")]
-    public void ParseRoundTrip_ParenthesizedWithBinary() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("cast<i64>(x)+1", "parse_expression", "cast<i64>(x) + 1")]
-    public void ParseRoundTrip_CastInsideBinary() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("-a.b", "parse_expression", "-a.b")]
-    public void ParseRoundTrip_UnaryWithMemberAccess() => Batch.Assert();
 
     // ==================== Statement round-trip tests ====================
 
@@ -507,59 +500,46 @@ initial {{
     public void ParseStmt_EmitNoArg()
         => Assert.Contains("emit", ParseWithMethod("emit obj.click();", "parse_emitEventStatement"));
 
-    // ==================== ParseRoundTrip tests (cached model) ====================
+    // ==================== Full program round-trip tests (contains-based) ====================
 
     [Fact]
-    public void ParseRoundTrip_FullProgram()
-    {
-        Assert.Equal("namespace app{ fun main() { 42 } }",
-            ParseRoundTrip("namespace app { fun main() { 42 } }"));
-    }
+    [BatchParseTest("namespace app { fun main() { 42 } }", "parse_compilationUnit", "namespace app{ fun main() { 42 } }")]
+    public void ParseRoundTrip_FullProgram() => Batch.Assert();
 
     [Fact]
-    public void ParseRoundTrip_ClassWithImpl()
-    {
-        Assert.Equal("class Foo{ fun hello() { 1 } }",
-            ParseRoundTrip("class Foo { fun hello() { 1 } }"));
-    }
+    [BatchParseTest("class Foo { fun hello() { 1 } }", "parse_compilationUnit", "class Foo{ fun hello() { 1 } }")]
+    public void ParseRoundTrip_ClassWithImpl() => Batch.Assert();
 
     [Fact]
-    public void ParseRoundTrip_CompilationUnitWithInterface()
-    {
-        Assert.Equal("interface IFoo{ fun bar(); } initial { 42 }",
-            ParseRoundTrip("interface IFoo { fun bar(); } initial { 42 }"));
-    }
+    [BatchParseTest("interface IFoo { fun bar(); } initial { 42 }", "parse_compilationUnit", "interface IFoo{ fun bar(); } initial { 42 }")]
+    public void ParseRoundTrip_CompilationUnitWithInterface() => Batch.Assert();
 
     [Fact]
+    [BatchParseTest("namespace test { pure async fun compute() -> i64 { yield 42; } }", "parse_compilationUnit", "")]
     public void ParseRoundTrip_YieldStatement()
     {
-        var result = ParseRoundTrip("namespace test { pure async fun compute() -> i64 { yield 42; } }");
+        var result = Batch.GetResult();
         Assert.Contains("yield", result);
         Assert.Contains("pure async fun compute", result);
     }
 
     [Fact]
-    public void ParseRoundTrip_SignalStatement()
-    {
-        Assert.Contains("__signal", ParseRoundTrip("on event.click(e: Event) { __signal e; }"));
-    }
+    [BatchParseTest("on event.click(e: Event) { __signal e; }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_SignalStatement() => Assert.Contains("__signal", Batch.GetResult());
 
     [Fact]
-    public void ParseRoundTrip_FunctionWithSpecifiers()
-    {
-        Assert.Contains("pure async fun compute()", ParseRoundTrip("pure async fun compute() -> i64 { 42 }"));
-    }
+    [BatchParseTest("pure async fun compute() -> i64 { 42 }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_FunctionWithSpecifiers() => Assert.Contains("pure async fun compute()", Batch.GetResult());
 
     [Fact]
-    public void ParseRoundTrip_TemplateClass()
-    {
-        Assert.Contains("class Container", ParseRoundTrip("class Container { fun new(mut this) {} }"));
-    }
+    [BatchParseTest("class Container { fun new(mut this) {} }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_TemplateClass() => Assert.Contains("class Container", Batch.GetResult());
 
     [Fact]
+    [BatchParseTest("enum Result { Ok: i64; Err: string; }", "parse_compilationUnit", "")]
     public void ParseRoundTrip_EnumWithTypedMembers()
     {
-        var result = ParseRoundTrip("enum Result { Ok: i64; Err: string; }");
+        var result = Batch.GetResult();
         Assert.Contains("enum Result", result);
         Assert.Contains("Ok", result);
         Assert.Contains("Err", result);
@@ -567,33 +547,25 @@ initial {{
 
     [Fact]
     public void ParseRoundTrip_AsyncLambda()
-    {
-        Assert.Contains("async_fun", ParseRoundTrip("initial { async_fun() { 42 } }"));
-    }
+        => Assert.Contains("async_fun", ParseRoundTrip("initial { async_fun() { 42 } }"));
 
     [Fact]
-    public void ParseRoundTrip_ImplWithWhere()
-    {
-        Assert.Contains("impl Comparable for MyType",
-            ParseRoundTrip("impl Comparable for MyType where (T: Comparable) { fun compare() {} }"));
-    }
+    [BatchParseTest("impl Comparable for MyType where (T: Comparable) { fun compare() {} }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_ImplWithWhere() => Assert.Contains("impl Comparable for MyType", Batch.GetResult());
 
     [Fact]
-    public void ParseRoundTrip_OnDottedEvent()
-    {
-        Assert.Contains("on event.click", ParseRoundTrip("on event.click { 42 }"));
-    }
+    [BatchParseTest("on event.click { 42 }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_OnDottedEvent() => Assert.Contains("on event.click", Batch.GetResult());
 
     [Fact]
-    public void ParseRoundTrip_TypeReference()
-    {
-        Assert.Contains("type MyInt", ParseRoundTrip("type MyInt = i64; initial { 42 }"));
-    }
+    [BatchParseTest("type MyInt = i64; initial { 42 }", "parse_compilationUnit", "")]
+    public void ParseRoundTrip_TypeReference() => Assert.Contains("type MyInt", Batch.GetResult());
 
     [Fact]
+    [BatchParseTest("namespace app { class Foo { fun new(mut this) {} fun get() -> i64 { 42 } } }", "parse_compilationUnit", "")]
     public void ParseRoundTrip_FullProgramWithClass()
     {
-        var result = ParseRoundTrip("namespace app { class Foo { fun new(mut this) {} fun get() -> i64 { 42 } } }");
+        var result = Batch.GetResult();
         Assert.Contains("namespace app", result);
         Assert.Contains("class Foo", result);
         Assert.Contains("fun new", result);
@@ -601,82 +573,85 @@ initial {{
     }
 
     [Fact]
+    [BatchParseTest("namespace test { fun main() { let x: i64 = 42; } }", "parse_compilationUnit", "")]
     public void Gap_ParseNamespaceWithFunction()
     {
-        var result = ParseRoundTrip("namespace test { fun main() { let x: i64 = 42; } }");
+        var result = Batch.GetResult();
         Assert.Contains("namespace test", result);
         Assert.Contains("fun main", result);
     }
 
     [Fact]
+    [BatchParseTest("impl IFoo for Bar { fun baz() {} }", "parse_compilationUnit", "")]
     public void Gap_ParseImplFor()
     {
-        var result = ParseRoundTrip("impl IFoo for Bar { fun baz() {} }");
+        var result = Batch.GetResult();
         Assert.Contains("impl IFoo for Bar", result);
         Assert.Contains("fun baz", result);
     }
 
     [Fact]
+    [BatchParseTest("type MyInt = mut i64; initial { 42 }", "parse_compilationUnit", "")]
     public void Gap_ParseTypeReference()
     {
-        var result = ParseRoundTrip("type MyInt = mut i64; initial { 42 }");
+        var result = Batch.GetResult();
         Assert.Contains("type MyInt", result);
         Assert.Contains("mut i64", result);
     }
 
     [Fact]
+    [BatchParseTest("initial { for (let i in 0..10) { f(i); } }", "parse_compilationUnit", "")]
     public void Gap_ParseForStatement()
     {
-        var result = ParseRoundTrip("initial { for (let i in 0..10) { println(i); } }");
+        var result = Batch.GetResult();
         Assert.Contains("for", result);
         Assert.Contains("let i", result);
     }
 
     [Fact]
+    [BatchParseTest("#template(T: type) class Container { value: auto T; }", "parse_compilationUnit", "")]
     public void Gap_ParseTemplateDeclaration()
     {
-        var result = ParseRoundTrip("#template(T: type) class Container { value: auto T; }");
+        var result = Batch.GetResult();
         Assert.Contains("#template", result);
         Assert.Contains("class Container", result);
     }
 
     [Fact]
+    [BatchParseTest("interface IPrintable { fun print(); }", "parse_compilationUnit", "")]
     public void Gap_ParseInterfaceWithMembers()
     {
-        var result = ParseRoundTrip("interface IPrintable { fun print(); }");
+        var result = Batch.GetResult();
         Assert.Contains("interface IPrintable", result);
         Assert.Contains("fun print", result);
     }
 
     [Fact]
-    public void Gap_ParseComplexExpression()
-    {
-        Assert.Contains("1 + 2", ParseRoundTrip("initial { let x: i64 = (1 + 2) * 3 - 4 / 2; }"));
-    }
+    [BatchParseTest("initial { let x: i64 = (1 + 2) * 3 - 4 / 2; }", "parse_compilationUnit", "")]
+    public void Gap_ParseComplexExpression() => Assert.Contains("1 + 2", Batch.GetResult());
 
     // ==================== Full program parameter round-trip tests ====================
 
     [Fact]
+    [BatchParseTest("namespace app { fun add(x: i64, y: i64) -> i64 { x } }", "parse_compilationUnit", "")]
     public void ParseFullProgram_FunctionWithTypedParams()
     {
-        var result = ParseRoundTrip("namespace app { fun add(x: i64, y: i64) -> i64 { x } }");
+        var result = Batch.GetResult();
         Assert.Contains("fun add", result);
         Assert.Contains("x: i64", result);
         Assert.Contains("y: i64", result);
     }
 
     [Fact]
+    [BatchParseTest("class Foo { fun new(mut this) {} fun get() -> i64 { 42 } }", "parse_compilationUnit", "")]
     public void ParseFullProgram_FunctionWithThisParam()
     {
-        var result = ParseRoundTrip("class Foo { fun new(mut this) {} fun get() -> i64 { 42 } }");
+        var result = Batch.GetResult();
         Assert.Contains("fun new", result);
         Assert.Contains("mut this", result);
     }
 
     [Fact]
     public void ParseFullProgram_GenericTypeInLet()
-    {
-        var result = ParseRoundTrip("initial { let x: List<i64> = new List<i64>(); }");
-        Assert.Contains("List<i64>", result);
-    }
+        => Assert.Contains("List<i64>", ParseRoundTrip("initial { let x: List<i64> = new List<i64>(); }"));
 }
