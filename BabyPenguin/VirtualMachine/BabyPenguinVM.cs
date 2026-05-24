@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using CommandLine;
-using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -20,7 +18,7 @@ namespace BabyPenguin.VirtualMachine
 
         public SemanticModel Model { get; }
 
-        public RuntimeGlobal Global { get; } = new RuntimeGlobal();
+        public RuntimeGlobal Global { get; } = new();
 
         public RuntimeFrame? StartFrame { get; private set; }
 
@@ -28,9 +26,12 @@ namespace BabyPenguin.VirtualMachine
 
         public void Initialize()
         {
-            var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol;
-            if (mainFunc == null)
-                throw new BabyPenguinRuntimeException("__builtin._main function not found.");
+            // Generate register-based IR from the semantic model
+            var generator = new IRGenerator(Model);
+            Global.IRModule = generator.Generate();
+
+            var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol
+                ?? throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
             var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], null);
             StartFrame = frame;
@@ -40,48 +41,36 @@ namespace BabyPenguin.VirtualMachine
         {
             if (StartFrame == null)
                 Initialize();
-            foreach (var result in StartFrame!.Run())
+            try
             {
-                if (result.IsLeft)
+                foreach (var result in StartFrame!.Run())
                 {
-                    if (result.Left!.Reason == RuntimeBreakReason.Exited)
+                    if (result.IsLeft)
                     {
-                        return Global.ExitCode;
+                        if (result.Left!.Reason == RuntimeBreakReason.Exited)
+                        {
+                            return Global.ExitCode;
+                        }
                     }
                 }
+            }
+            catch (ProgramExitException)
+            {
+                return Global.ExitCode;
             }
             return 0;
         }
 
         public bool InsertBreakPoint(SourceLocation location)
         {
-            var result = false;
-            foreach (var container in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
-            {
-                if (container.SourceLocation.Contains(location))
-                {
-                    var instructionIndex = container.Instructions.FindIndex(i => i.SourceLocation >= location);
-                    var instruction = new SignalInstruction(location, null, 0);
-                    container.Instructions.Insert(instructionIndex, instruction);
-                    result = true;
-                }
-            }
-            return result;
+            // Store breakpoint in global for the new RuntimeFrame to check
+            Global.Breakpoints.Add(location);
+            return true;
         }
 
         public bool RemoveBreakPoint(SourceLocation location)
         {
-            var result = false;
-            foreach (var container in Model.FindAll(i => i is ICodeContainer && i.SourceLocation.Contains(location)).Cast<ICodeContainer>())
-            {
-                var instructionIndex = container.Instructions.FindIndex(i => i.SourceLocation >= location && i is SignalInstruction signalInstruction && signalInstruction.Code == 0);
-                if (instructionIndex >= 0)
-                {
-                    container.Instructions.RemoveAt(instructionIndex);
-                    result = true;
-                }
-            }
-            return result;
+            return Global.Breakpoints.Remove(location);
         }
     }
 
@@ -100,6 +89,8 @@ namespace BabyPenguin.VirtualMachine
 
         public int ExitCode { get; set; } = 0;
 
+        public bool HasExited { get; set; } = false;
+
         public string[] CommandLineArgs { get; set; } = Array.Empty<string>();
 
         public StepModeEnum StepMode { get; set; } = StepModeEnum.Run;
@@ -107,6 +98,10 @@ namespace BabyPenguin.VirtualMachine
         public Dictionary<string, IRuntimeSymbol> GlobalVariables { get; } = [];
 
         public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>> ExternFunctions { get; } = [];
+
+        public IRModule? IRModule { get; set; }
+
+        public HashSet<SourceLocation> Breakpoints { get; } = [];
 
         public void RegisterExternFunction(string name, Action<IRuntimeSymbol?, List<IRuntimeValue>> func)
         {
@@ -124,7 +119,7 @@ namespace BabyPenguin.VirtualMachine
 
         public bool EnableDebugPrint { get; set; } = false;
 
-        public StringBuilder Output { get; } = new StringBuilder();
+        public StringBuilder Output { get; } = new();
 
         public Action<string> PrintFunc { get; set; } = (s) => Console.Write(s);
 
@@ -143,6 +138,5 @@ namespace BabyPenguin.VirtualMachine
                 PrintFunc(s + Environment.NewLine);
             }
         }
-
     }
 }

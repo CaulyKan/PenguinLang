@@ -29,7 +29,9 @@ public abstract class EndToEndTestBase
     {
         var projectRoot = BatchCompiler.FindProjectRoot();
         var testId = Guid.NewGuid().ToString("N")[..8];
-        var srcFile = Path.Combine(projectRoot, $"tmp_e2e_{testId}.penguin");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"penguinlang_e2e_{testId}");
+        Directory.CreateDirectory(tempDir);
+        var srcFile = Path.Combine(tempDir, $"test_{testId}.penguin");
         File.WriteAllText(srcFile, source);
 
         var empTmp = Path.Combine(projectRoot, "tmp");
@@ -49,11 +51,18 @@ public abstract class EndToEndTestBase
                 UseShellExecute = false
             };
             using var compileProc = Process.Start(compilePsi)!;
-            string compileErrors = compileProc.StandardError.ReadToEnd();
-            compileProc.WaitForExit(120000);
-            Assert.True(compileProc.ExitCode == 0, $"Compilation failed (exit={compileProc.ExitCode}):\n{compileErrors}");
+            var stdoutTask = compileProc.StandardOutput.ReadToEndAsync();
+            var stderrTask = compileProc.StandardError.ReadToEndAsync();
+            if (!compileProc.WaitForExit(300000))
+            {
+                compileProc.Kill();
+                throw new Exception($"E2E compilation timed out after 300s");
+            }
+            string compileStdout = stdoutTask.Result;
+            string compileStderr = stderrTask.Result;
+            Assert.True(compileProc.ExitCode == 0, $"Compilation failed (exit={compileProc.ExitCode}):\n{compileStderr}\n{compileStdout}");
 
-            var exePath = Path.Combine(projectRoot, "tmp", "out.exe");
+            var exePath = Path.Combine(empTmp, "out.exe");
             Assert.True(File.Exists(exePath), $"Expected executable at {exePath}");
             var runPsi = new ProcessStartInfo
             {
@@ -64,15 +73,20 @@ public abstract class EndToEndTestBase
                 UseShellExecute = false
             };
             using var runProc = Process.Start(runPsi)!;
-            string stdout = runProc.StandardOutput.ReadToEnd();
-            runProc.WaitForExit(10000);
+            var runStdoutTask = runProc.StandardOutput.ReadToEndAsync();
+            if (!runProc.WaitForExit(60000))
+            {
+                runProc.Kill();
+                throw new Exception("E2E execution timed out after 60s");
+            }
+            string stdout = runStdoutTask.Result;
 
             return stdout;
         }
         finally
         {
-            try { File.Delete(srcFile); } catch { }
-            try { Directory.Delete(Path.Combine(projectRoot, "tmp"), true); } catch { }
+            try { Directory.Delete(tempDir, true); } catch { }
+            try { Directory.Delete(empTmp, true); } catch { }
         }
     }
 }

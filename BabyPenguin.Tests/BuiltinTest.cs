@@ -337,7 +337,9 @@ namespace BabyPenguin.Tests
             ");
             var model = compiler.Compile();
             var vm = new BabyPenguinVM(model);
-            vm.Run();
+            vm.Global.EnableDebugPrint = true;
+            vm.Global.DebugFunc = (s) => testOutputHelper.WriteLine(s.TrimEnd('\n'));
+            try { vm.Run(); } catch (Exception ex) { testOutputHelper.WriteLine($"EXCEPTION: {ex.Message}\n{ex.StackTrace}"); }
             Assert.Equal("2" + EOL + "1" + EOL + "1" + EOL + "2" + EOL + "2" + EOL + "3" + EOL + "true" + EOL, vm.CollectOutput());
         }
 

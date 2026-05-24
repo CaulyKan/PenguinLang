@@ -152,7 +152,7 @@ namespace parser {
         fun expect(this, expected: TokenType) -> Token {
             let token: Token = this.advance();
             if (cast<string>(token.token_type) != cast<string>(expected)) {
-                print("Expected " + cast<string>(expected) + " but got " + token.to_string());
+                print("Expected " + cast<string>(expected) + " but got " + token.to_string() + " at line " + cast<string>(token.line) + "\n");
             }
             return token;
         }

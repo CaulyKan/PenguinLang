@@ -156,17 +156,29 @@ public static class BatchCompiler
         throw new DirectoryNotFoundException("Project root not found");
     }
 
-    public static BatchResults InitE2EBatch<T>()
+    private static readonly Lock _e2eLock = new();
+
+    public static BatchResults InitE2EBatch<T>(int chunkSize = 10)
     {
         var testData = CollectMethods<T, BatchE2ETestAttribute>(
             (m, a) => (m.Name, a.Code, a.Expected));
-        var results = CompileAndRunE2E(testData.Select(t => (t.Name, t.Code)).ToArray());
-        return ToBatchResults(testData, results);
+        lock (_e2eLock)
+        {
+            var allResults = new Dictionary<string, string>();
+            for (int i = 0; i < testData.Count; i += chunkSize)
+            {
+                var chunk = testData.Skip(i).Take(chunkSize).Select(t => (t.Name, t.Code)).ToArray();
+                var chunkResults = CompileAndRunE2E(chunk);
+                foreach (var kv in chunkResults)
+                    allResults[kv.Key] = kv.Value;
+            }
+            return ToBatchResults(testData, allResults);
+        }
     }
 
     public static Dictionary<string, string> CompileAndRunE2E(
         (string Name, string Code)[] tests,
-        int timeoutSeconds = 300)
+        int timeoutSeconds = 900)
     {
         var projectRoot = FindProjectRoot();
         var combinedCode = new StringBuilder();
@@ -179,7 +191,9 @@ public static class BatchCompiler
         }
 
         var testId = Guid.NewGuid().ToString("N")[..8];
-        var srcFile = Path.Combine(projectRoot, $"tmp_batch_e2e_{testId}.penguin");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"penguinlang_e2e_{testId}");
+        Directory.CreateDirectory(tempDir);
+        var srcFile = Path.Combine(tempDir, $"batch_{testId}.penguin");
         File.WriteAllText(srcFile, combinedCode.ToString());
 
         var empTmp = Path.Combine(projectRoot, "tmp");
@@ -199,9 +213,15 @@ public static class BatchCompiler
                 UseShellExecute = false
             };
             using var compileProc = Process.Start(compilePsi)!;
-            string compileStdout = compileProc.StandardOutput.ReadToEnd();
-            string compileStderr = compileProc.StandardError.ReadToEnd();
-            compileProc.WaitForExit(timeoutSeconds * 1000);
+            var stdoutTask = compileProc.StandardOutput.ReadToEndAsync();
+            var stderrTask = compileProc.StandardError.ReadToEndAsync();
+            if (!compileProc.WaitForExit(timeoutSeconds * 1000))
+            {
+                compileProc.Kill();
+                throw new Exception($"E2E batch compilation timed out after {timeoutSeconds}s");
+            }
+            string compileStdout = stdoutTask.Result;
+            string compileStderr = stderrTask.Result;
             if (compileProc.ExitCode != 0)
             {
                 var logPath = Path.Combine(empTmp, "emperor.log");
@@ -215,7 +235,7 @@ public static class BatchCompiler
                     $"LOG:\n{logContent}\nSOURCE:\n{sourceSnippet}");
             }
 
-            var exePath = Path.Combine(projectRoot, "tmp", "out.exe");
+            var exePath = Path.Combine(empTmp, "out.exe");
             if (!File.Exists(exePath))
                 throw new Exception($"Expected executable at {exePath}");
 
@@ -228,15 +248,20 @@ public static class BatchCompiler
                 UseShellExecute = false
             };
             using var runProc = Process.Start(runPsi)!;
-            string stdout = runProc.StandardOutput.ReadToEnd();
-            runProc.WaitForExit(30000);
+            var runStdoutTask = runProc.StandardOutput.ReadToEndAsync();
+            if (!runProc.WaitForExit(60000))
+            {
+                runProc.Kill();
+                throw new Exception("E2E execution timed out after 60s");
+            }
+            string stdout = runStdoutTask.Result;
 
             return ParseTaggedOutput(stdout);
         }
         finally
         {
-            // Preserve source file for debugging on failure
-            try { Directory.Delete(Path.Combine(projectRoot, "tmp"), true); } catch { }
+            try { Directory.Delete(tempDir, true); } catch { }
+            try { Directory.Delete(empTmp, true); } catch { }
         }
     }
 

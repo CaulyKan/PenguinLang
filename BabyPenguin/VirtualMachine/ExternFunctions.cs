@@ -114,13 +114,15 @@ namespace BabyPenguin.VirtualMachine
             {
                 vm.Global.RegisterExternFunction(queue.FullName() + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var queueObj = args[0].As<ReferenceRuntimeValue>();
+                    var impl = queueObj.Fields["__impl"].As<ReferenceRuntimeValue>();
                     impl.ExternImplenmentationValue = new Queue<IRuntimeValue>();
                 });
 
                 vm.Global.RegisterExternFunction(queue.FullName() + ".enqueue", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var queueObj = args[0].As<ReferenceRuntimeValue>();
+                    var impl = queueObj.Fields["__impl"].As<ReferenceRuntimeValue>();
                     var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
                     q!.Enqueue(args[1]);
                 });
@@ -251,12 +253,15 @@ namespace BabyPenguin.VirtualMachine
                     if (res.IsLeft)
                         yield return res.Left!;
                     else
+                    {
                         frameResult = res.Right!;
+                        if (frameResult.ReturnStatus == ReturnStatus.Blocked)
+                            break;
+                    }
                 }
             }
             else
             {
-                // target is a async_fun<T>
                 var funcSymbol = target?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + target!.ToString());
                 List<IRuntimeValue> funcArguments = [];
                 if (target!.TypeInfo.GenericArguments.Count > 1 && target.Owner is not NotInitializedRuntimeValue)
@@ -275,7 +280,11 @@ namespace BabyPenguin.VirtualMachine
                     if (res.IsLeft)
                         yield return res.Left!;
                     else
+                    {
                         frameResult = res.Right!;
+                        if (frameResult.ReturnStatus == ReturnStatus.Blocked)
+                            break;
+                    }
                 }
             }
 
