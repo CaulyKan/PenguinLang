@@ -1,18 +1,136 @@
-interface ICopy {}
-interface IRef {}
+namespace __builtin {
+    extern fun exit(code : i32);
+    extern fun print(text : string);
+    extern fun println(text : string);
+    extern fun eprint(text : string);
+    extern fun eprintln(text : string);
+    extern fun _exec_cmd(cmd: string) -> i64;
 
-extern fun print(text : string);
-extern fun println(text : string);
+    extern fun lshift(value: i64, shift: i64) -> i64;
+    extern fun rshift(value: i64, shift: i64) -> i64;
 
-#template(T: type)
-class Box {
-    value: mut T;
+    extern fun __args_count() -> i64;
+    extern fun __args_get(index: i64) -> string;
 
-    fun new(mut this, v: T) {
-        this.value = v;
+    fun args() -> _utils.List<string> {
+        let count: i64 = __args_count();
+        let result: mut _utils.List<string> = new _utils.List<string>();
+        let i: mut i64 = 0;
+        while (i < count) {
+            result.push(__args_get(i));
+            i = i + 1;
+        }
+        return result;
     }
 
-    fun get(this) -> T {
-        return this.value;
+    fun panic(text : string) {
+        print("panic: ");
+        println(text);
+        exit(1);
+    }
+
+    #template(T: type)
+    class Box {
+        value: T;
+        fun new(mut this, value: T) {
+            this.value = value;
+        }
+    }
+
+    class __ExternImpl {}
+
+    #template(T: type)
+    enum Option {
+        some: T;
+        none;
+
+        fun is_some(this) -> bool {
+            return this is Option<T>.some;
+        }
+
+        fun is_none(this) -> bool {
+            return this is Option<T>.none;
+        }
+
+        fun value_or(this, default_val: T) -> T {
+            if (this is Option<T>.some) {
+                return this.some;
+            } else {
+                return default_val;
+            }
+        }
+    }
+
+    #template(T: type)
+    interface ICopy {
+        extern fun copy(this: T) -> T;
+    }
+
+    impl __builtin.ICopy<i64> for i64;
+    impl __builtin.ICopy<u64> for u64;
+    impl __builtin.ICopy<i32> for i32;
+    impl __builtin.ICopy<u32> for u32;
+    impl __builtin.ICopy<i16> for i16;
+    impl __builtin.ICopy<u16> for u16;
+    impl __builtin.ICopy<i8> for i8;
+    impl __builtin.ICopy<u8> for u8;
+    impl __builtin.ICopy<bool> for bool;
+    impl __builtin.ICopy<char> for char;
+    impl __builtin.ICopy<string> for string;
+    impl __builtin.ICopy<float> for float;
+    impl __builtin.ICopy<double> for double;
+
+    class StringBuilder {
+        __impl: __ExternImpl = new __ExternImpl();
+        extern fun new(mut this);
+        extern fun append(mut this, s: string);
+        extern fun to_string(this) -> mut string;
+    }
+
+    // String helper functions
+    extern fun string_length(s: string) -> i64;
+    extern fun string_find(s: string, sub: string) -> i64;
+    extern fun string_find_from(s: string, sub: string, start: i64) -> i64;
+    extern fun string_substring(s: string, start: i64, length: i64) -> string;
+    extern fun string_char_at(s: string, index: i64) -> string;
+    extern fun string_char_code(s: string) -> i64;
+    extern fun string_to_int(s: string) -> i64;
+
+    #template(T: type, E: type)
+    enum Result {
+        ok: T;
+        error: E;
+
+        fun is_ok(this) -> bool {
+            return this is Result<T, E>.ok;
+        }
+
+        fun is_error(this) -> bool {
+            return this is Result<T, E>.error;
+        }
+
+        fun value_or(this, default_val: T) -> T {
+            if (this is Result<T, E>.ok) {
+                return this.ok;
+            } else {
+                return default_val;
+            }
+        }
+    }
+
+    #template(T: type)
+    interface IIterator {
+        fun next(mut this) -> Option<T>;
+    }
+
+    #template(T: type)
+    interface IIterable {
+        fun iter(mut this) -> mut IIterator<T>;
+    }
+
+    #template(K: type, V: type)
+    class Pair {
+        first: K;
+        second: V;
     }
 }

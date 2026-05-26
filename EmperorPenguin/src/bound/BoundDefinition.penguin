@@ -7,7 +7,7 @@ class BoundVTableSlot {
 
 class BoundVTable {
     interface_type: BoundType = new BoundType();
-    slots: mut List<BoundVTableSlot> = new List<BoundVTableSlot>();
+    slots: mut _utils.List<BoundVTableSlot> = new _utils.List<BoundVTableSlot>();
 }
 
 class BoundEnumMemberDefinition {
@@ -27,7 +27,7 @@ class BoundFunctionDefinition {
     name: string = "";
     full_name: string = "";
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
-    parameters: mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    parameters: mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
     return_type: BoundType = new BoundType();
     body: Option<BoundExpression> = new Option<BoundExpression>.none();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
@@ -35,7 +35,7 @@ class BoundFunctionDefinition {
     is_pure: bool = false;
     is_static: bool = false;
     is_new: bool = false;
-    generic_params: mut List<string> = new List<string>();
+    generic_params: mut _utils.List<string> = new _utils.List<string>();
     is_generic_template: bool = false;
 
     fun new(mut this, name: string, full_name: string, is_extern: mut bool, is_pure: mut bool, is_new: mut bool, is_static: mut bool) {
@@ -58,12 +58,12 @@ class BoundClassDefinition {
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
     bound_type: BoundType = new BoundType();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
-    fields: mut List<BoundDefinition> = new List<BoundDefinition>();
-    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
-    constructors: mut List<BoundDefinition> = new List<BoundDefinition>();
-    interface_impls: mut List<BoundDefinition> = new List<BoundDefinition>();
-    vtables: mut List<BoundVTable> = new List<BoundVTable>();
-    generic_params: mut List<string> = new List<string>();
+    fields: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    constructors: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
+    generic_params: mut _utils.List<string> = new _utils.List<string>();
     is_value_class: mut Option<bool> = new Option<bool>.none();
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
     ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
@@ -85,11 +85,11 @@ class BoundEnumDefinition {
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
     bound_type: BoundType = new BoundType();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
-    members: mut List<BoundEnumMemberDefinition> = new List<BoundEnumMemberDefinition>();
-    generic_params: mut List<string> = new List<string>();
+    members: mut _utils.List<BoundEnumMemberDefinition> = new _utils.List<BoundEnumMemberDefinition>();
+    generic_params: mut _utils.List<string> = new _utils.List<string>();
     value_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
-    interface_impls: mut List<BoundDefinition> = new List<BoundDefinition>();
-    vtables: mut List<BoundVTable> = new List<BoundVTable>();
+    interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
 
     fun new(mut this, name: string, full_name: string) {
@@ -108,8 +108,8 @@ class BoundInterfaceDefinition {
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
     bound_type: BoundType = new BoundType();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
-    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
-    generic_params: mut List<string> = new List<string>();
+    methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    generic_params: mut _utils.List<string> = new _utils.List<string>();
     ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
 
     fun new(mut this, name: string, full_name: string) {
@@ -125,7 +125,7 @@ class BoundInterfaceDefinition {
 class BoundInterfaceImplementation {
     interface_type: BoundType = new BoundType();
     implementing_type: BoundType = new BoundType();
-    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtable: Option<BoundVTable> = new Option<BoundVTable>.none();
     fun get_name(this) -> string {
         return "<impl>";
@@ -135,7 +135,7 @@ class BoundInterfaceImplementation {
 class BoundInterfaceForImplementation {
     interface_type: BoundType = new BoundType();
     for_type: BoundType = new BoundType();
-    methods: mut List<BoundDefinition> = new List<BoundDefinition>();
+    methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtable: Option<BoundVTable> = new Option<BoundVTable>.none();
     fun get_name(this) -> string {
         return "<impl_for>";
@@ -145,7 +145,7 @@ class BoundInterfaceForImplementation {
 class BoundNamespaceDefinition {
     name: string = "";
     full_name: string = "";
-    children: mut List<BoundDefinition> = new List<BoundDefinition>();
+    children: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
 
     fun new(mut this, name: string, full_name: string) {

@@ -18,8 +18,8 @@ class IRFunction {
     name: mut string = "";
     display_name: mut string = "";
     return_type: mut string = "";
-    parameters: mut List<IRParameter> = new List<IRParameter>();
-    instructions: mut List<IRInstruction> = new List<IRInstruction>();
+    parameters: mut _utils.List<IRParameter> = new _utils.List<IRParameter>();
+    instructions: mut _utils.List<IRInstruction> = new _utils.List<IRInstruction>();
     next_temp: mut i64 = 0;
     next_label: mut i64 = 0;
     is_extern: mut bool = false;

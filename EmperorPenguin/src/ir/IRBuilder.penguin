@@ -107,7 +107,7 @@ class IRBuilder {
     }
 
     // CALL instruction
-    fun emit_call(mut this, func_name: string, args: mut List<IRValue>, ret_type: string, loc: IRSourceLocation) -> Option<IRValue> {
+    fun emit_call(mut this, func_name: string, args: mut _utils.List<IRValue>, ret_type: string, loc: IRSourceLocation) -> Option<IRValue> {
         if (ret_type != "void") {
             let result: IRValue = this.func.alloc_temp(ret_type);
             this.func.add_inst(new IRInstruction.call(new IRCall(func_name, args, result, ret_type, loc)));
@@ -118,7 +118,7 @@ class IRBuilder {
     }
 
     // CALL_VIRT instruction
-    fun emit_call_virt(mut this, obj: IRValue, interface_id: string, slot: i64, args: mut List<IRValue>, ret_type: string, loc: IRSourceLocation) -> Option<IRValue> {
+    fun emit_call_virt(mut this, obj: IRValue, interface_id: string, slot: i64, args: mut _utils.List<IRValue>, ret_type: string, loc: IRSourceLocation) -> Option<IRValue> {
         if (ret_type != "void") {
             let result: IRValue = this.func.alloc_temp(ret_type);
             this.func.add_inst(new IRInstruction.call_virt(new IRCallVirt(obj, interface_id, slot, args, result, ret_type, loc)));
@@ -130,7 +130,7 @@ class IRBuilder {
     }
 
     // NEW instruction
-    fun emit_new(mut this, type_name: string, args: mut List<IRValue>, loc: IRSourceLocation) -> IRValue {
+    fun emit_new(mut this, type_name: string, args: mut _utils.List<IRValue>, loc: IRSourceLocation) -> IRValue {
         let result: IRValue = this.func.alloc_temp("ptr");
         this.func.add_inst(new IRInstruction.new_inst(new IRNew(type_name, args, result, loc)));
         return result;

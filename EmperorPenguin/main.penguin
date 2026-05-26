@@ -80,22 +80,26 @@ fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
 }
 
 initial {
-    let args: List<string> = __builtin.args();
+    let args: _utils.List<string> = __builtin.args();
     if (args.size() == 0) {
         __builtin.eprintln("Usage: EmperorPenguin <file1.penguin> [file2.penguin ...]");
         __builtin.exit(1);
     }
 
-    let tmp_dir: string = "tmp";
-    __builtin.mkdir(tmp_dir);
+    let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
+    let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
+    let combined_stdlib: string = stdlib_source + "\n" + utils_source;
 
-    let log: mut StringBuilder = new mut StringBuilder();
-    let ll_files: mut List<string> = new List<string>();
+    let tmp_dir: string = "tmp";
+    _utils.mkdir(tmp_dir);
+
+    let log: mut __builtin.StringBuilder = new mut __builtin.StringBuilder();
+    let ll_files: mut _utils.List<string> = new _utils.List<string>();
 
     let fi: mut i64 = 0;
     while (fi < cast<i64>(args.size())) {
         let file: string = args.at(cast<u64>(fi)).some;
-        let source: string = __builtin.file_read_text(file);
+        let source: string = _utils.file_read_text(file);
         let stem: string = get_stem(file);
         let ll_path: string = tmp_dir + "/" + stem + ".ll";
 
@@ -104,7 +108,7 @@ initial {
         log.append("========================================\n\n");
 
         let lexer: parser.Lexer = new parser.Lexer(source);
-        let tokens: List<parser.Token> = lexer.tokenize();
+        let tokens: _utils.List<parser.Token> = lexer.tokenize();
         let p: parser.Parser = new parser.Parser(tokens);
         let unit: ast.CompilationUnit = p.parse_compilationUnit();
 
@@ -113,7 +117,7 @@ initial {
         log.append("\n\n");
 
         let mut compiler = new bound.EmperorPenguinCompiler();
-        let result = compiler.compile(source);
+        let result = compiler.compile(combined_stdlib + "\n" + source);
 
         if (result.has_errors()) {
             log.append("--- ERRORS ---\n");
@@ -150,7 +154,7 @@ initial {
 
             let emitter = new llvm.LLVMEmitter();
             let llvm_ir: string = emitter.lower(module, result);
-            __builtin.file_write_text(ll_path, llvm_ir);
+            _utils.file_write_text(ll_path, llvm_ir);
             ll_files.push(ll_path);
 
             log.append("--- LLVM IR (" + ll_path + ") ---\n");
@@ -160,25 +164,25 @@ initial {
         fi = fi + 1;
     }
 
-    __builtin.file_write_text(tmp_dir + "/emperor.log", log.to_string());
+    _utils.file_write_text(tmp_dir + "/emperor.log", log.to_string());
     __builtin.eprintln("Log written to " + tmp_dir + "/emperor.log");
 
     if (cast<i64>(ll_files.size()) > 0) {
         let exe_path: string = tmp_dir + "/out.exe";
         let lib_path: string = tmp_dir + "/libcore_builtin.a";
 
-        let make_args: mut List<string> = new List<string>();
+        let make_args: mut _utils.List<string> = new _utils.List<string>();
         make_args.push("-C");
         make_args.push("EmperorPenguin/std/c");
         make_args.push("OUTPUT_DIR=../../../" + tmp_dir);
         __builtin.eprintln("Running: make -C EmperorPenguin/std/c");
-        let make_exit: i64 = __builtin.exec("make", make_args);
+        let make_exit: i64 = _utils.exec("make", make_args);
         if (make_exit != 0) {
             __builtin.eprintln("make failed with exit code " + cast<string>(make_exit));
             __builtin.exit(1);
         }
 
-        let clang_args: mut List<string> = new List<string>();
+        let clang_args: mut _utils.List<string> = new _utils.List<string>();
         let li: mut i64 = 0;
         while (li < cast<i64>(ll_files.size())) {
             clang_args.push(ll_files.at(cast<u64>(li)).some);
@@ -189,7 +193,7 @@ initial {
         clang_args.push(exe_path);
 
         __builtin.eprintln("Running: clang -> " + exe_path);
-        let exit_code: i64 = __builtin.exec("clang", clang_args);
+        let exit_code: i64 = _utils.exec("clang", clang_args);
         if (exit_code == 0) {
             __builtin.eprintln("Output: " + exe_path);
         } else {

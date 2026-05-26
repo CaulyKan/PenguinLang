@@ -1,10 +1,11 @@
 namespace bound {
 
 class EmperorPenguinCompiler {
-    errors: mut List<SemanticError> = new List<SemanticError>();
+    errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
-        let lexer = new parser.Lexer(source);
+        let full_source: string = source;
+        let lexer = new parser.Lexer(full_source);
         let tokens = lexer.tokenize();
         let p = new parser.Parser(tokens);
         let unit: ast.CompilationUnit = p.parse_compilationUnit();

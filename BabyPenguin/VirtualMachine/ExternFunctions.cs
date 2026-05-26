@@ -110,133 +110,148 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddList(BabyPenguinVM vm)
         {
-            foreach (var queue in vm.Model.ResolveTypeNode("__builtin.Queue<?>")!.GenericInstances)
+            foreach (var listType in vm.Model.ResolveTypeNode("_utils.List<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(queue.FullName() + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(listType.FullName() + ".new", (result, args) =>
                 {
-                    var queueObj = args[0].As<ReferenceRuntimeValue>();
-                    var impl = queueObj.Fields["__impl"].As<ReferenceRuntimeValue>();
-                    impl.ExternImplenmentationValue = new Queue<IRuntimeValue>();
+                    var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    self.ExternImplenmentationValue = new List<IRuntimeValue>();
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName() + ".enqueue", (result, args) =>
+                vm.Global.RegisterExternFunction(listType.FullName() + ".at", (result, args) =>
                 {
-                    var queueObj = args[0].As<ReferenceRuntimeValue>();
-                    var impl = queueObj.Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
-                    q!.Enqueue(args[1]);
-                });
-
-                vm.Global.RegisterExternFunction(queue.FullName() + ".dequeue", (result, args) =>
-                {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
-                    if (q!.Count == 0)
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = list.ExternImplenmentationValue as List<IRuntimeValue>;
+                    var index = (int)args[1].As<BasicRuntimeValue>().U64Value;
+                    var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
+                    if (items != null && index >= 0 && index < items.Count)
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = null;
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
+                        var val = items[index];
+                        enumResult.ContainingValue = val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = q.Dequeue();
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
+                        enumResult.ContainingValue = null;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
                     }
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName() + ".peek", (result, args) =>
+                vm.Global.RegisterExternFunction(listType.FullName() + ".push", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
-                    if (q!.Count == 0)
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var val = args[1];
+                    items.Add(val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val);
+                });
+
+                vm.Global.RegisterExternFunction(listType.FullName() + ".pop", (result, args) =>
+                {
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
+                    if (items.Count > 0)
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = null;
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
+                        var last = items[^1];
+                        items.RemoveAt(items.Count - 1);
+                        enumResult.ContainingValue = last;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = q.Peek();
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
+                        enumResult.ContainingValue = null;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
                     }
                 });
 
-                vm.Global.RegisterExternFunction(queue.FullName() + ".size", (result, args) =>
+                vm.Global.RegisterExternFunction(listType.FullName() + ".remove", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var q = impl.ExternImplenmentationValue as Queue<IRuntimeValue>;
-                    result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)q!.Count;
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var index = (int)args[1].As<BasicRuntimeValue>().U64Value;
+                    if (index >= 0 && index < items.Count)
+                    {
+                        items.RemoveAt(index);
+                    }
+                });
+
+                vm.Global.RegisterExternFunction(listType.FullName() + ".size", (result, args) =>
+                {
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = list.ExternImplenmentationValue as List<IRuntimeValue>;
+                    result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)(items?.Count ?? 0);
+                });
+
+                vm.Global.RegisterExternFunction(listType.FullName() + ".set", (result, args) =>
+                {
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var index = (int)args[1].As<BasicRuntimeValue>().U64Value;
+                    var val = args[2];
+                    if (index >= 0 && index < items.Count)
+                    {
+                        items[index] = val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val;
+                    }
                 });
             }
 
-            foreach (var list in vm.Model.ResolveTypeNode("__builtin.List<?>")!.GenericInstances)
+            foreach (var queueType in vm.Model.ResolveTypeNode("_utils.Queue<?>")!.GenericInstances)
             {
-                vm.Global.RegisterExternFunction(list.FullName() + ".new", (result, args) =>
+                vm.Global.RegisterExternFunction(queueType.FullName() + ".new", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    impl.ExternImplenmentationValue = new List<IRuntimeValue>();
+                    var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    self.ExternImplenmentationValue = new List<IRuntimeValue>();
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName() + ".push", (result, args) =>
+                vm.Global.RegisterExternFunction(queueType.FullName() + ".enqueue", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
+                    var queue = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (queue.ExternImplenmentationValue as List<IRuntimeValue>)!;
                     var val = args[1];
-                    l!.Add(val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val);
+                    items.Add(val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val);
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName() + ".pop", (result, args) =>
+                vm.Global.RegisterExternFunction(queueType.FullName() + ".dequeue", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
-                    if (l!.Count == 0)
+                    var queue = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (queue.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
+                    if (items.Count > 0)
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = null;
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
+                        var first = items[0];
+                        items.RemoveAt(0);
+                        enumResult.ContainingValue = first;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = l.Last();
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
-                        l.RemoveAt(l.Count - 1);
+                        enumResult.ContainingValue = null;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
                     }
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName() + ".at", (result, args) =>
+                vm.Global.RegisterExternFunction(queueType.FullName() + ".peek", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var idx = args[1].As<BasicRuntimeValue>().U64Value;
-                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
-                    if ((ulong)l!.Count <= idx)
+                    var queue = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = queue.ExternImplenmentationValue as List<IRuntimeValue>;
+                    var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
+                    if (items != null && items.Count > 0)
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = null;
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
+                        enumResult.ContainingValue = items[0] is BasicRuntimeValue || items[0] is EnumRuntimeValue ? items[0].Clone() : items[0];
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
                     {
-                        result!.As<EnumRuntimeSymbol>().EnumValue.ContainingValue = l.ElementAt((int)idx);
-                        result.As<EnumRuntimeSymbol>().EnumValue.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
+                        enumResult.ContainingValue = null;
+                        enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 1;
                     }
                 });
 
-                vm.Global.RegisterExternFunction(list.FullName() + ".remove", (result, args) =>
+                vm.Global.RegisterExternFunction(queueType.FullName() + ".size", (result, args) =>
                 {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var idx = args[1].As<BasicRuntimeValue>().U64Value;
-                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
-                    if ((ulong)l!.Count <= idx)
-                    {
-                        // remove out of range
-                    }
-                    else
-                    {
-                        l.RemoveAt((int)idx);
-                    }
-                });
-
-                vm.Global.RegisterExternFunction(list.FullName() + ".size", (result, args) =>
-                {
-                    var impl = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                    var l = impl.ExternImplenmentationValue as List<IRuntimeValue>;
-                    result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)l!.Count;
+                    var queue = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = queue.ExternImplenmentationValue as List<IRuntimeValue>;
+                    result!.As<BasicRuntimeSymbol>().BasicValue.U64Value = (ulong)(items?.Count ?? 0);
                 });
             }
         }
@@ -320,21 +335,21 @@ namespace BabyPenguin.VirtualMachine
 
         private static void AddFile(BabyPenguinVM vm)
         {
-            vm.Global.RegisterExternFunction("__builtin.file_read_text", (result, args) =>
+            vm.Global.RegisterExternFunction("_utils.file_read_text", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;
                 var content = System.IO.File.ReadAllText(path);
                 result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = content;
             });
 
-            vm.Global.RegisterExternFunction("__builtin.file_write_text", (result, args) =>
+            vm.Global.RegisterExternFunction("_utils.file_write_text", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;
                 var content = args[1].As<BasicRuntimeValue>().StringValue;
                 System.IO.File.WriteAllText(path, content);
             });
 
-            vm.Global.RegisterExternFunction("__builtin.mkdir", (result, args) =>
+            vm.Global.RegisterExternFunction("_utils.mkdir", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;
                 try
@@ -348,25 +363,15 @@ namespace BabyPenguin.VirtualMachine
                 }
             });
 
-            vm.Global.RegisterExternFunction("__builtin.exec", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin._exec_cmd", (result, args) =>
             {
-                var exe = args[0].As<BasicRuntimeValue>().StringValue;
-                var argsList = args[1].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
-                var list = argsList.ExternImplenmentationValue as List<IRuntimeValue>;
-                var processArgs = new List<string>();
-                if (list != null)
-                {
-                    foreach (var item in list)
-                    {
-                        processArgs.Add(item.As<BasicRuntimeValue>().StringValue);
-                    }
-                }
+                var cmd = args[0].As<BasicRuntimeValue>().StringValue;
                 try
                 {
                     var psi = new System.Diagnostics.ProcessStartInfo
                     {
-                        FileName = exe,
-                        Arguments = string.Join(" ", processArgs.Select(a => a.Contains(' ') ? $"\"{a}\"" : a)),
+                        FileName = "/bin/sh",
+                        Arguments = "-c \"" + cmd.Replace("\"", "\\\"") + "\"",
                         RedirectStandardOutput = false,
                         RedirectStandardError = false,
                         UseShellExecute = false
@@ -383,18 +388,23 @@ namespace BabyPenguin.VirtualMachine
         }
         private static void AddArgs(BabyPenguinVM vm)
         {
-            vm.Global.RegisterExternFunction("__builtin.__args_init", (result, args) =>
+            vm.Global.RegisterExternFunction("__builtin.__args_count", (result, args) =>
             {
                 var commandLineArgs = vm.Global.CommandLineArgs;
-                var self = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>(); ;
-                var list = self.ExternImplenmentationValue as List<IRuntimeValue>;
-                var stringType = vm.Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = commandLineArgs.Length;
+            });
 
-                foreach (var arg in commandLineArgs)
+            vm.Global.RegisterExternFunction("__builtin.__args_get", (result, args) =>
+            {
+                var commandLineArgs = vm.Global.CommandLineArgs;
+                var index = (int)args[0].As<BasicRuntimeValue>().I64Value;
+                if (index >= 0 && index < commandLineArgs.Length)
                 {
-                    var basicStringValue = new BasicRuntimeValue(stringType);
-                    basicStringValue.StringValue = arg;
-                    list!.Add(basicStringValue);
+                    result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = commandLineArgs[index];
+                }
+                else
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = "";
                 }
             });
         }

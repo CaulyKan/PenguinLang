@@ -18,7 +18,7 @@ public class EnumVariantListTest : TestBase
         var compiler = new SemanticCompiler(new ErrorReporter(this));
         compiler.AddSource(@"
 class WithList {
-    items: mut List<i64> = new List<i64>();
+    items: mut _utils.List<i64> = new _utils.List<i64>();
     name: !mut string = """";
     fun new(mut this, name: string) {
         this.name = name;

@@ -14,9 +14,9 @@ class IRGlobalVariable {
 
 class IRModule {
     source_file: mut string = "";
-    functions: mut List<IRFunction> = new List<IRFunction>();
-    entry_functions: mut List<IRFunction> = new List<IRFunction>();
-    global_variables: mut List<IRGlobalVariable> = new List<IRGlobalVariable>();
+    functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+    entry_functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+    global_variables: mut _utils.List<IRGlobalVariable> = new _utils.List<IRGlobalVariable>();
 
     fun add_function(mut this, func: mut IRFunction) {
         this.functions.push(func);

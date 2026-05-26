@@ -1041,4 +1041,56 @@ entry:
     public void TestLLVMi32Type() => _batch.Value.AssertSemantic();
 
     #endregion
+
+    #region Class Return (sret RVO - no dangling stack pointer)
+
+    [Fact]
+    [BatchLLVMTest(@"
+initial {
+    let source = ""class Foo { x: i64; } fun make_foo() -> Foo { return new Foo(); }"";
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(source);
+    let generator = new ir.IRGenerator();
+    let module = generator.generate(result);
+    let emitter = new llvm.LLVMEmitter();
+    let llvm_ir: string = emitter.lower(module, result);
+    println(llvm_ir);
+}
+", @"%class.Foo = type { ptr, i64 }
+@Foo_field_offsets = private constant [1 x i32] [i32 8]
+@Foo_field_is_ptr = private constant [1 x i32] [i32 0]
+@Foo_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
+  ptr @.Foo_name,
+  i32 16,
+  i32 1,
+  ptr @Foo_field_offsets,
+  ptr @Foo_field_is_ptr,
+  ptr null,
+  i32 0,
+  ptr null,
+  ptr null
+}
+@.Foo_name = private unnamed_addr constant [4 x i8] c""Foo\00""
+
+declare ptr @_emperor_int_to_string(i32)
+declare ptr @_emperor_i64_to_string(i64)
+declare ptr @_emperor_string_concat(ptr, ptr)
+
+define void @Foo_new(ptr %this) {
+entry:
+  ret void
+}
+
+define void @make_foo(ptr sret(%class.Foo) %_sret_result) {
+entry:
+  %t0 = alloca %class.Foo
+  store ptr @Foo_metadata, ptr %t0
+  call void @Foo_new(ptr %t0)
+  %tmp_0 = load %class.Foo, ptr %t0
+  store %class.Foo %tmp_0, ptr %_sret_result
+  ret void
+}")]
+    public void TestLLVMClassReturn() => _batch.Value.AssertSemantic();
+
+    #endregion
 }

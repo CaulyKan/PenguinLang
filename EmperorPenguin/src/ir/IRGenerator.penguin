@@ -20,8 +20,8 @@ class LoopLabels {
 
 class IRGenerator {
     builder: mut IRBuilder = new IRBuilder(new IRFunction("", ""));
-    symbol_regs: mut List<SymbolRegEntry> = new List<SymbolRegEntry>();
-    loop_stack: mut List<LoopLabels> = new List<LoopLabels>();
+    symbol_regs: mut _utils.List<SymbolRegEntry> = new _utils.List<SymbolRegEntry>();
+    loop_stack: mut _utils.List<LoopLabels> = new _utils.List<LoopLabels>();
     source_file: mut string = "";
     current_module: mut IRModule = new IRModule();
 
@@ -421,7 +421,7 @@ class IRGenerator {
     }
 
     fun lower_function_call(mut this, expr: bound.BoundFunctionCallExpression) -> IRValue {
-        let args: mut List<IRValue> = new List<IRValue>();
+        let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
         let ai: mut i64 = 0;
         while (ai < cast<i64>(expr.arguments.size())) {
             args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
@@ -429,7 +429,7 @@ class IRGenerator {
         }
         // Track if this is a method call on a generic type for name mangling
         let has_generic_receiver: mut bool = false;
-        let generic_args_list: mut List<bound.BoundType> = new List<bound.BoundType>();
+        let generic_args_list: mut _utils.List<bound.BoundType> = new _utils.List<bound.BoundType>();
         let template_class_name: mut string = "";
         if (expr.callee.is_some()) {
             let callee_expr: bound.BoundExpression = expr.callee.some;
@@ -441,7 +441,7 @@ class IRGenerator {
                         // For direct dispatch (boxing optimization), use the original value
                         // expression without boxing
                         let dd_val: IRValue = this.lower_direct_dispatch_this(ma, expr);
-                        let new_args: mut List<IRValue> = new List<IRValue>();
+                        let new_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
                         if (dd_val.get_ir_type() == "void") {
                             new_args.push(this.lower_expression(ma.base_expr.some));
                         } else {
@@ -549,7 +549,7 @@ class IRGenerator {
         return func_name;
     }
 
-    fun ensure_extern_decl(mut this, func_name: string, args: List<IRValue>, ret_type: string) {
+    fun ensure_extern_decl(mut this, func_name: string, args: _utils.List<IRValue>, ret_type: string) {
         let fi: mut i64 = 0;
         while (fi < cast<i64>(this.current_module.functions.size())) {
             let existing: IRFunction = this.current_module.functions.at(cast<u64>(fi)).some;
@@ -617,7 +617,7 @@ class IRGenerator {
                 // Concrete call: find in class vtable
                 let class_def: Option<bound.BoundClassDefinition> = this.find_class_def_from_scope(scope.some);
                 if (class_def.is_some()) {
-                    let vtables: List<bound.BoundVTable> = class_def.some.vtables;
+                    let vtables: _utils.List<bound.BoundVTable> = class_def.some.vtables;
                     let callee_name: string = sym.get_full_name();
                     let vi: mut i64 = 0;
                     while (vi < cast<i64>(vtables.size())) {
@@ -844,7 +844,7 @@ class IRGenerator {
     }
 
     fun lower_new(mut this, expr: bound.BoundNewExpression) -> IRValue {
-        let args: mut List<IRValue> = new List<IRValue>();
+        let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
         let ai: mut i64 = 0;
         while (ai < cast<i64>(expr.arguments.size())) {
             args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
@@ -870,7 +870,7 @@ class IRGenerator {
         return this.builder.emit_new("Object", args, loc);
     }
 
-    fun mangle_generic_name(this, base_name: string, generic_args: List<bound.BoundType>) -> string {
+    fun mangle_generic_name(this, base_name: string, generic_args: _utils.List<bound.BoundType>) -> string {
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
@@ -897,7 +897,7 @@ class IRGenerator {
     // Wrap a BoundStatement as a void BoundExpression (code block)
     fun wrap_stmt_as_expr(this, stmt: bound.BoundStatement) -> bound.BoundExpression {
         let void_type: bound.BoundType = new bound.BoundType();
-        let stmts: mut List<bound.BoundStatement> = new List<bound.BoundStatement>();
+        let stmts: mut _utils.List<bound.BoundStatement> = new _utils.List<bound.BoundStatement>();
         stmts.push(stmt);
         let cb: bound.BoundCodeBlockExpression = new bound.BoundCodeBlockExpression(void_type, stmts, new Option<bound.BoundExpression>.none(), new Option<bound.BoundScope>.none());
         return new bound.BoundExpression.code_block(cb);
@@ -1216,7 +1216,7 @@ class IRGenerator {
 
     fun reset_locals(mut this) {
         // Preserve global variable symbol registrations across function boundaries
-        let saved_globals: mut List<SymbolRegEntry> = new List<SymbolRegEntry>();
+        let saved_globals: mut _utils.List<SymbolRegEntry> = new _utils.List<SymbolRegEntry>();
         let i: mut i64 = 0;
         while (i < cast<i64>(this.symbol_regs.size())) {
             let entry: SymbolRegEntry = this.symbol_regs.at(cast<u64>(i)).some;
@@ -1226,7 +1226,7 @@ class IRGenerator {
             i = i + 1;
         }
         this.symbol_regs = saved_globals;
-        this.loop_stack = new List<LoopLabels>();
+        this.loop_stack = new _utils.List<LoopLabels>();
     }
 }
 

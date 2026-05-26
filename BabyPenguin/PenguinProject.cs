@@ -35,7 +35,7 @@ public class PenguinProject
             var project = new PenguinProject();
 
             // Parse [project] section
-            if (tomlRoot.TryGetValue("project", out var projectValue) && projectValue is TomlTable projectTable)
+            if ((tomlRoot.TryGetValue("Project", out var projectValue) || tomlRoot.TryGetValue("project", out projectValue)) && projectValue is TomlTable projectTable)
             {
                 if (projectTable.TryGetValue("name", out var nameValue) && nameValue is TomlString nameString)
                 {

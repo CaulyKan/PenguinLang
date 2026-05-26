@@ -225,12 +225,12 @@ class IRRetVoid {
 // 12a. CALL - function call with result
 class IRCall {
     func_name: !mut string = "";
-    args: !mut List<IRValue> = new List<IRValue>();
+    args: !mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ret_type: !mut string = "";
     location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
 
-    fun new(mut this, func_name: string, args: mut List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
+    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
         this.func_name = func_name;
         this.args = args;
         this.result_value = result;
@@ -260,10 +260,10 @@ class IRCall {
 // 12b. CALL_VOID - void function call
 class IRCallVoid {
     func_name: !mut string = "";
-    args: !mut List<IRValue> = new List<IRValue>();
+    args: !mut _utils.List<IRValue> = new _utils.List<IRValue>();
     location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
 
-    fun new(mut this, func_name: string, args: mut List<IRValue>, loc: IRSourceLocation) {
+    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, loc: IRSourceLocation) {
         this.func_name = func_name;
         this.args = args;
         this.location = loc;
@@ -288,12 +288,12 @@ class IRCallVirt {
     obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     interface_id: !mut string = "";
     vtable_slot: !mut i64 = 0;
-    args: mut List<IRValue> = new List<IRValue>();
+    args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ret_type: !mut string = "";
     location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
 
-    fun new(mut this, obj: IRValue, interface_id: string, vtable_slot: i64, args: mut List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
+    fun new(mut this, obj: IRValue, interface_id: string, vtable_slot: i64, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: IRSourceLocation) {
         this.obj = obj;
         this.interface_id = interface_id;
         this.vtable_slot = vtable_slot;
@@ -324,11 +324,11 @@ class IRCallVirt {
 // 14. NEW - object creation
 class IRNew {
     type_name: !mut string = "";
-    args: mut List<IRValue> = new List<IRValue>();
+    args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     location: !mut IRSourceLocation = new IRSourceLocation("", 0, 0);
 
-    fun new(mut this, type_name: string, args: mut List<IRValue>, result: IRValue, loc: IRSourceLocation) {
+    fun new(mut this, type_name: string, args: mut _utils.List<IRValue>, result: IRValue, loc: IRSourceLocation) {
         this.type_name = type_name;
         this.args = args;
         this.result = result;

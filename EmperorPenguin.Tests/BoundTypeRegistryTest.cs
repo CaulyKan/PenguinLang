@@ -170,12 +170,12 @@ initial {
         var output = RunBoundCode(@"
 initial {
     let reg = new bound.BoundTypeRegistry();
-    let params = new List<bound.BoundType>();
+    let params = new _utils.List<bound.BoundType>();
     params.push(reg.i32_type);
     params.push(reg.i64_type);
     let ft = reg.make_function_type(reg.bool_type, params, false);
     println(ft.display_name());
-    let aft = reg.make_function_type(reg.void_type, new List<bound.BoundType>(), true);
+    let aft = reg.make_function_type(reg.void_type, new _utils.List<bound.BoundType>(), true);
     println(aft.display_name());
 }
 ");

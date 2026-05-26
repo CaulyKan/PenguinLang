@@ -1,3 +1,11 @@
+class Foo {
+    x: i64;
+    y: i64;
+    z: i64;
+}
+fun test() -> Foo {
+    return new Foo();
+}
 initial {
-    println("Hello, World!");
+    test();
 }

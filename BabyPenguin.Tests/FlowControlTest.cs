@@ -566,9 +566,9 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 class Node {
                     name: mut string = """";
-                    children: mut List<Node> = new List<Node>();
+                    children: mut _utils.List<Node> = new _utils.List<Node>();
                     flag: mut bool = false;
-                    extra: mut List<Node> = new List<Node>();
+                    extra: mut _utils.List<Node> = new _utils.List<Node>();
                     opt: mut Option<Node> = new Option<Node>.none();
 
                     fun describe(this) -> string {
@@ -619,12 +619,12 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 class Node {
                     name: mut string = """";
-                    children: mut List<Node> = new List<Node>();
+                    children: mut _utils.List<Node> = new _utils.List<Node>();
                     is_func: mut bool = false;
                     is_async_func: mut bool = false;
-                    func_params: mut List<Node> = new List<Node>();
+                    func_params: mut _utils.List<Node> = new _utils.List<Node>();
                     ret_type: mut Option<Node> = new Option<Node>.none();
-                    parts: mut List<string> = new List<string>();
+                    parts: mut _utils.List<string> = new _utils.List<string>();
 
                     fun build_text(this) -> string {
                         let prefix: mut string = """";

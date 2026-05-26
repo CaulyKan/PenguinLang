@@ -25,7 +25,7 @@ class BoundTypeRegistry {
     char_type: BoundType;
     string_type: BoundType;
     void_type: BoundType;
-    registered_types: mut List<NamedTypeEntry> = new List<NamedTypeEntry>();
+    registered_types: mut _utils.List<NamedTypeEntry> = new _utils.List<NamedTypeEntry>();
 
     fun new(mut this) {
         this.bool_type = this.make_primitive(new PrimitiveType.BoolType());
@@ -207,7 +207,7 @@ class BoundTypeRegistry {
         return false;
     }
 
-    fun make_function_type(this, ret: BoundType, params: List<BoundType>, is_async: bool) -> mut BoundType {
+    fun make_function_type(this, ret: BoundType, params: _utils.List<BoundType>, is_async: bool) -> mut BoundType {
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.FunctionKind();
         t.generic_args.push(ret);

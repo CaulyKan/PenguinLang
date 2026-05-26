@@ -19,10 +19,10 @@ class SemanticError {
 }
 
 class BoundCompilationUnit {
-    definitions: mut List<BoundDefinition> = new List<BoundDefinition>();
+    definitions: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     global_scope: BoundScope = new BoundScope(new ScopeKind.GlobalScope(), "", "", new Option<BoundScope>.none());
     type_registry: BoundTypeRegistry = new BoundTypeRegistry();
-    errors: mut List<SemanticError> = new List<SemanticError>();
+    errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     source_file: string = "";
 
     fun add_error(mut this, message: string, line: i64, col: i64) {

@@ -16,7 +16,7 @@ class FieldLayout {
 
 class InterfaceVTable {
     interface_name: string = "";
-    method_ptrs: mut List<string> = new List<string>();
+    method_ptrs: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, interface_name: string) {
         this.interface_name = interface_name;
@@ -27,10 +27,10 @@ class ClassLayout {
     type_name: string = "";
     is_value_type: bool = true;
     llvm_struct_type: string = "";
-    fields: mut List<FieldLayout> = new List<FieldLayout>();
+    fields: mut _utils.List<FieldLayout> = new _utils.List<FieldLayout>();
     sizeof_object: mut i64 = 0;
     has_metadata: bool = false;
-    interface_vtables: mut List<InterfaceVTable> = new List<InterfaceVTable>();
+    interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
 
     fun new(mut this, type_name: string, is_value_type: bool, has_metadata: bool) {
         this.type_name = type_name;
@@ -65,10 +65,10 @@ class EnumVariantLayout {
 class EnumLayout {
     type_name: string = "";
     llvm_struct_type: string = "";
-    variants: mut List<EnumVariantLayout> = new List<EnumVariantLayout>();
+    variants: mut _utils.List<EnumVariantLayout> = new _utils.List<EnumVariantLayout>();
     payload_llvm_type: string = "";
     has_payload: bool = false;
-    interface_vtables: mut List<InterfaceVTable> = new List<InterfaceVTable>();
+    interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
 
     fun new(mut this, type_name: string) {
         this.type_name = type_name;
@@ -110,7 +110,7 @@ class TypeIdConstant {
 
 class FuncParamTypes {
     func_name: string = "";
-    param_types: mut List<string> = new List<string>();
+    param_types: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, func_name: string) {
         this.func_name = func_name;
@@ -118,17 +118,17 @@ class FuncParamTypes {
 }
 
 class LLVMEmitter {
-    string_lits: mut List<StringLitEntry> = new List<StringLitEntry>();
+    string_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
     next_str_id: mut i64 = 0;
-    reg_map: mut List<RegMapping> = new List<RegMapping>();
-    reg_type_map: mut List<RegMapping> = new List<RegMapping>();
-    mutable_regs: mut List<string> = new List<string>();
-    alloca_map: mut List<RegMapping> = new List<RegMapping>();
+    reg_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    reg_type_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    mutable_regs: mut _utils.List<string> = new _utils.List<string>();
+    alloca_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
     sb: mut StringBuilder = new StringBuilder();
     cond_counter: mut i64 = 0;
     current_ret_type: mut string = "void";
-    class_layouts: mut List<ClassLayout> = new List<ClassLayout>();
-    enum_layouts: mut List<EnumLayout> = new List<EnumLayout>();
+    class_layouts: mut _utils.List<ClassLayout> = new _utils.List<ClassLayout>();
+    enum_layouts: mut _utils.List<EnumLayout> = new _utils.List<EnumLayout>();
     tmp_counter: mut i64 = 0;
     has_iref_class: mut bool = false;
     needs_int_to_string: mut bool = false;
@@ -139,19 +139,21 @@ class LLVMEmitter {
     needs_check_class: mut bool = false;
     has_boxing: mut bool = false;
     has_main: mut bool = false;
-    icmp_results: mut List<string> = new List<string>();
-    type_id_constants: mut List<TypeIdConstant> = new List<TypeIdConstant>();
-    emitted_interface_ids: mut List<string> = new List<string>();
+    icmp_results: mut _utils.List<string> = new _utils.List<string>();
+    type_id_constants: mut _utils.List<TypeIdConstant> = new _utils.List<TypeIdConstant>();
+    emitted_interface_ids: mut _utils.List<string> = new _utils.List<string>();
     current_unit: Option<bound.BoundCompilationUnit> = new Option<bound.BoundCompilationUnit>.none();
-    func_param_types: mut List<FuncParamTypes> = new List<FuncParamTypes>();
+    func_param_types: mut _utils.List<FuncParamTypes> = new _utils.List<FuncParamTypes>();
+    current_sret_llvm_type: mut string = "";
+    current_sret_param: mut string = "";
 
     fun new(mut this) {}
 
     fun lower(mut this, module: ir.IRModule, unit: bound.BoundCompilationUnit) -> string {
-        this.string_lits = new List<StringLitEntry>();
+        this.string_lits = new _utils.List<StringLitEntry>();
         this.next_str_id = 0;
-        this.class_layouts = new List<ClassLayout>();
-        this.enum_layouts = new List<EnumLayout>();
+        this.class_layouts = new _utils.List<ClassLayout>();
+        this.enum_layouts = new _utils.List<EnumLayout>();
         this.tmp_counter = 0;
         this.has_iref_class = false;
         this.needs_int_to_string = false;
@@ -162,9 +164,9 @@ class LLVMEmitter {
         this.needs_check_class = false;
         this.has_boxing = false;
         this.has_main = false;
-        this.type_id_constants = new List<TypeIdConstant>();
-        this.emitted_interface_ids = new List<string>();
-        this.func_param_types = new List<FuncParamTypes>();
+        this.type_id_constants = new _utils.List<TypeIdConstant>();
+        this.emitted_interface_ids = new _utils.List<string>();
+        this.func_param_types = new _utils.List<FuncParamTypes>();
         this.current_unit = new Option<bound.BoundCompilationUnit>.some(unit);
         this.collect_strings(module);
         this.build_layout_tables(unit);
@@ -336,6 +338,7 @@ class LLVMEmitter {
         if (this.has_main) {
             target.append("declare void @_emperor_gc_init()\n");
             target.append("declare void @_emperor_gc_add_root(ptr)\n");
+            target.append("declare void @_emperor_args_init(i32, ptr)\n");
         }
     }
 
@@ -351,11 +354,22 @@ class LLVMEmitter {
     }
 
     fun emit_function(mut this, func: ir.IRFunction) {
-        this.reg_map = new List<RegMapping>();
-        this.reg_type_map = new List<RegMapping>();
-        this.icmp_results = new List<string>();
+        this.reg_map = new _utils.List<RegMapping>();
+        this.reg_type_map = new _utils.List<RegMapping>();
+        this.icmp_results = new _utils.List<string>();
         this.cond_counter = 0;
         this.current_ret_type = func.return_type;
+
+        // Determine if this function returns a value-type class (needs sret)
+        let use_sret: bool = !func.is_extern && this.is_value_class_ref(func.return_type);
+        if (use_sret) {
+            this.current_sret_llvm_type = this.get_value_class_llvm_struct_type(func.return_type);
+            this.current_sret_param = "%_sret_result";
+        } else {
+            this.current_sret_llvm_type = "";
+            this.current_sret_param = "";
+        }
+
         // Store parameter types for call argument coercion
         let fpt: mut FuncParamTypes = new FuncParamTypes(func.name);
         let ppi: mut i64 = 0;
@@ -380,10 +394,15 @@ class LLVMEmitter {
         // Pre-scan for mutable registers (reassigned multiple times)
         this.scan_mutable_regs(func);
 
-        this.sb.append("define " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
+        // Emit function signature
+        if (use_sret) {
+            this.sb.append("define void " + this.llvm_func_name(func.name) + "(ptr sret(" + this.current_sret_llvm_type + ") " + this.current_sret_param);
+        } else {
+            this.sb.append("define " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
+        }
         pi = 0;
         while (pi < cast<i64>(func.parameters.size())) {
-            if (pi > 0) { this.sb.append(", "); }
+            if (pi > 0 || use_sret) { this.sb.append(", "); }
             let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
             this.sb.append(this.ir_type_to_llvm(p.ir_type) + " %" + p.name);
             pi = pi + 1;
@@ -422,8 +441,10 @@ class LLVMEmitter {
     fun emit_main(mut this, module: ir.IRModule) {
         if (cast<i64>(module.entry_functions.size()) > 0) {
             this.has_main = true;
-            this.sb.append("define i32 @main() {\n");
+            this.sb.append("define i32 @main(i32 %argc, ptr %argv) {\n");
             this.sb.append("entry:\n");
+            // Initialize args
+            this.sb.append("  call void @_emperor_args_init(i32 %argc, ptr %argv)\n");
             // Initialize GC
             this.sb.append("  call void @_emperor_gc_init()\n");
             // Register global reference-type variables as GC roots
@@ -668,6 +689,21 @@ class LLVMEmitter {
         return ir_type;
     }
 
+    fun is_value_class_ref(this, ir_type: string) -> bool {
+        if (!this.string_starts_with(ir_type, "ref<")) { return false; }
+        let type_name: string = this.extract_type_name(ir_type);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_some()) { return found.some.is_value_type; }
+        return false;
+    }
+
+    fun get_value_class_llvm_struct_type(this, ir_type: string) -> string {
+        let type_name: string = this.extract_type_name(ir_type);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_some()) { return found.some.llvm_struct_type; }
+        return "";
+    }
+
     fun next_tmp(mut this) -> string {
         let name: string = "%tmp_" + cast<string>(this.tmp_counter);
         this.tmp_counter = this.tmp_counter + 1;
@@ -819,7 +855,7 @@ class LLVMEmitter {
         this.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
     }
 
-    fun emit_field_arrays(mut this, name: string, fields: List<FieldLayout>) {
+    fun emit_field_arrays(mut this, name: string, fields: _utils.List<FieldLayout>) {
         let field_count: i64 = cast<i64>(fields.size());
         if (field_count == 0) {
             this.sb.append("@" + name + "_field_offsets = private constant [0 x i32] zeroinitializer\n");
@@ -1342,9 +1378,18 @@ class LLVMEmitter {
     }
 
     fun emit_ret(mut this, inst: ir.IRRet) {
-        let val_resolved: string = this.resolve_value(inst.value);
-        let llvm_type: string = this.ir_type_to_llvm(this.current_ret_type);
-        this.sb.append("  ret " + llvm_type + " " + val_resolved + "\n");
+        if (this.current_sret_llvm_type != "") {
+            // sret: load struct from the return value pointer, store to sret buffer, ret void
+            let val_resolved: string = this.resolve_value(inst.value);
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = load " + this.current_sret_llvm_type + ", ptr " + val_resolved + "\n");
+            this.sb.append("  store " + this.current_sret_llvm_type + " " + tmp + ", ptr " + this.current_sret_param + "\n");
+            this.sb.append("  ret void\n");
+        } else {
+            let val_resolved: string = this.resolve_value(inst.value);
+            let llvm_type: string = this.ir_type_to_llvm(this.current_ret_type);
+            this.sb.append("  ret " + llvm_type + " " + val_resolved + "\n");
+        }
     }
 
     fun emit_ret_void(mut this) {
@@ -1353,12 +1398,30 @@ class LLVMEmitter {
 
     fun emit_call(mut this, inst: ir.IRCall) {
         let result_name: string = inst.result_value.display();
-        let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
-        let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
         let func_name: string = this.llvm_func_name(inst.func_name);
-        this.sb.append("  " + result_name + " = call " + ret_llvm + " " + func_name + "(" + args_str + ")\n");
-        if (ret_llvm != "void") {
-            this.register_llvm_type(result_name, ret_llvm);
+
+        // Check if callee returns a value-type class (uses sret)
+        let callee_sret_type: mut string = "";
+        if (this.is_value_class_ref(inst.ret_type)) {
+            callee_sret_type = this.get_value_class_llvm_struct_type(inst.ret_type);
+        }
+
+        if (callee_sret_type != "") {
+            // Callee uses sret: alloca in caller, pass as first arg
+            let sret_tmp: string = this.next_tmp();
+            this.sb.append("  " + sret_tmp + " = alloca " + callee_sret_type + "\n");
+            let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+            this.sb.append("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")\n");
+            // Map result register to the sret alloca pointer
+            this.reg_map.push(new RegMapping(result_name, sret_tmp));
+            this.register_llvm_type(result_name, "ptr");
+        } else {
+            let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
+            let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+            this.sb.append("  " + result_name + " = call " + ret_llvm + " " + func_name + "(" + args_str + ")\n");
+            if (ret_llvm != "void") {
+                this.register_llvm_type(result_name, ret_llvm);
+            }
         }
     }
 
@@ -1442,7 +1505,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_args_with_first(mut this, args: List<ir.IRValue>, first_arg: string) -> string {
+    fun emit_args_with_first(mut this, args: _utils.List<ir.IRValue>, first_arg: string) -> string {
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(first_arg);
         let i: mut i64 = 0;
@@ -1823,7 +1886,7 @@ class LLVMEmitter {
         return resolved;
     }
 
-    fun emit_args_coerced(mut this, func_name: string, args: List<ir.IRValue>) -> string {
+    fun emit_args_coerced(mut this, func_name: string, args: _utils.List<ir.IRValue>) -> string {
         let sb2: mut StringBuilder = new StringBuilder();
         let fpt: Option<FuncParamTypes> = this.find_func_param_types(func_name);
         let i: mut i64 = 0;
@@ -1845,7 +1908,7 @@ class LLVMEmitter {
         return sb2.to_string();
     }
 
-    fun emit_args(mut this, args: List<ir.IRValue>) -> string {
+    fun emit_args(mut this, args: _utils.List<ir.IRValue>) -> string {
         let sb2: mut StringBuilder = new StringBuilder();
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
@@ -1891,7 +1954,7 @@ class LLVMEmitter {
 
     fun scan_mutable_regs(mut this, func: ir.IRFunction) {
         // Collect all register names that appear as definition targets
-        let all_defs: mut List<string> = new List<string>();
+        let all_defs: mut _utils.List<string> = new _utils.List<string>();
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
             let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
@@ -1905,7 +1968,7 @@ class LLVMEmitter {
         }
 
         // Find names that appear more than once (mutable)
-        this.mutable_regs = new List<string>();
+        this.mutable_regs = new _utils.List<string>();
         let i: mut i64 = 0;
         while (i < cast<i64>(all_defs.size())) {
             let name: string = all_defs.at(cast<u64>(i)).some;
@@ -1924,7 +1987,7 @@ class LLVMEmitter {
         }
 
         // Create alloca names and determine types from first definition
-        this.alloca_map = new List<RegMapping>();
+        this.alloca_map = new _utils.List<RegMapping>();
         let m: mut i64 = 0;
         while (m < cast<i64>(this.mutable_regs.size())) {
             let name: string = this.mutable_regs.at(cast<u64>(m)).some;
@@ -2072,8 +2135,32 @@ class LLVMEmitter {
     fun llvm_func_name(this, name: string) -> string {
         let cleaned: string = this.strip_global_prefix(name);
         let sanitized: string = this.sanitize_name(cleaned);
-        if (sanitized == "println") { return "@_emperor_println"; }
-        if (sanitized == "print") { return "@_emperor_print"; }
+        // Map __builtin.* functions to C runtime @_emperor_* functions
+        if (sanitized == "println" || sanitized == "__builtin_println") { return "@_emperor_println"; }
+        if (sanitized == "print" || sanitized == "__builtin_print") { return "@_emperor_print"; }
+        if (sanitized == "eprintln" || sanitized == "__builtin_eprintln") { return "@_emperor_eprintln"; }
+        if (sanitized == "eprint" || sanitized == "__builtin_eprint") { return "@_emperor_eprint"; }
+        if (sanitized == "exit" || sanitized == "__builtin_exit") { return "@_emperor_exit"; }
+        if (sanitized == "lshift" || sanitized == "__builtin_lshift") { return "@_emperor_lshift"; }
+        if (sanitized == "rshift" || sanitized == "__builtin_rshift") { return "@_emperor_rshift"; }
+        if (sanitized == "string_length" || sanitized == "__builtin_string_length") { return "@_emperor_string_length"; }
+        if (sanitized == "string_find" || sanitized == "__builtin_string_find") { return "@_emperor_string_find"; }
+        if (sanitized == "string_find_from" || sanitized == "__builtin_string_find_from") { return "@_emperor_string_find_from"; }
+        if (sanitized == "string_substring" || sanitized == "__builtin_string_substring") { return "@_emperor_string_substring"; }
+        if (sanitized == "string_char_at" || sanitized == "__builtin_string_char_at") { return "@_emperor_string_char_at"; }
+        if (sanitized == "string_char_code" || sanitized == "__builtin_string_char_code") { return "@_emperor_string_char_code"; }
+        if (sanitized == "string_to_int" || sanitized == "__builtin_string_to_int") { return "@_emperor_string_to_int"; }
+        if (sanitized == "__builtin___args_count") { return "@_emperor_args_count"; }
+        if (sanitized == "__builtin___args_get") { return "@_emperor_args_get"; }
+        if (sanitized == "__builtin___exec_cmd") { return "@_emperor_exec_cmd"; }
+        // Map _utils.* extern functions to C runtime
+        if (sanitized == "_utils_file_read_text") { return "@_emperor_file_read_text"; }
+        if (sanitized == "_utils_file_write_text") { return "@_emperor_file_write_text"; }
+        if (sanitized == "_utils_mkdir") { return "@_emperor_mkdir"; }
+        // StringBuilder methods
+        if (sanitized == "__builtin_StringBuilder_new") { return "@_emperor_stringbuilder_new"; }
+        if (sanitized == "__builtin_StringBuilder_append") { return "@_emperor_stringbuilder_append"; }
+        if (sanitized == "__builtin_StringBuilder_to_string") { return "@_emperor_stringbuilder_to_string"; }
         return "@" + sanitized;
     }
 
@@ -2203,7 +2290,7 @@ class LLVMEmitter {
         return false;
     }
 
-    fun list_contains(this, list: List<string>, value: string) -> bool {
+    fun list_contains(this, list: _utils.List<string>, value: string) -> bool {
         let i: mut i64 = 0;
         while (i < cast<i64>(list.size())) {
             if (list.at(cast<u64>(i)).some == value) { return true; }

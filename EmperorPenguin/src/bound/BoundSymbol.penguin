@@ -19,7 +19,7 @@ class BoundFunctionSymbol {
     name: string = "";
     full_name: mut string = "";
     bound_type: BoundType = new BoundType();
-    parameters: mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    parameters: mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
     return_type: BoundType = new BoundType();
     is_extern: bool = false;
     is_static: bool = false;
@@ -41,7 +41,7 @@ class BoundTypeSymbol {
     full_name: mut string = "";
     bound_type: BoundType = new BoundType();
     type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
-    generic_params: mut List<string> = new List<string>();
+    generic_params: mut _utils.List<string> = new _utils.List<string>();
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
     source_line: i64 = 0;
     source_col: i64 = 0;

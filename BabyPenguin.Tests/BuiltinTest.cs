@@ -233,7 +233,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : mut List<i64> = new List<i64>();
+                    let a : mut _utils.List<i64> = new _utils.List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
@@ -261,14 +261,14 @@ namespace BabyPenguin.Tests
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
-                fun test(a: mut List<string>) {
+                fun test(a: mut _utils.List<string>) {
                     for (let i : i64 in range(0, 2)) {
                         let s = cast<string>(i);
                         a.push(s);
                     }
                 }
                 initial {
-                    let a : mut List<string> = new List<string>();
+                    let a : mut _utils.List<string> = new _utils.List<string>();
                     test(a);
                     println(cast<string>(a.size()));
                     let i: mut i64 = 0;
@@ -294,7 +294,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : mut List<i64> = new List<i64>();
+                    let a : mut _utils.List<i64> = new _utils.List<i64>();
                     a.push(1);
                     a.push(2);
                     a.push(3);
@@ -315,7 +315,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : mut Queue<i64> = new Queue<i64>();
+                    let a : mut _utils.Queue<i64> = new _utils.Queue<i64>();
                     a.enqueue(1);
                     a.enqueue(2);
                     println(cast<string>(a.size()));
@@ -368,9 +368,9 @@ namespace BabyPenguin.Tests
         {
             var script = @"
                 initial {
-                    let content = file_read_text(""test.tmp"");
+                    let content = _utils.file_read_text(""test.tmp"");
                     println(content);
-                    file_write_text(""test.tmp"", ""hello file"");
+                    _utils.file_write_text(""test.tmp"", ""hello file"");
                 }
             ";
 
@@ -415,7 +415,7 @@ namespace BabyPenguin.Tests
         {
             var script = @"
                 initial {
-                    let myargs : List<string> = args();
+                    let myargs : _utils.List<string> = args();
                     println(cast<string>(myargs.size()));
                     println(cast<string>(myargs.at(0)));
                     println(cast<string>(myargs.at(1)));

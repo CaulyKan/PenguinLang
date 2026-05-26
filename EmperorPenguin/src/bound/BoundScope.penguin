@@ -7,9 +7,9 @@ class BoundScope {
     name: string = "";
     full_name: string = "";
     parent: Option<BoundScope> = new Option<BoundScope>.none();
-    children: mut List<BoundScope> = new List<BoundScope>();
-    symbols: mut List<BoundSymbol> = new List<BoundSymbol>();
-    imported_namespaces: mut List<string> = new List<string>();
+    children: mut _utils.List<BoundScope> = new _utils.List<BoundScope>();
+    symbols: mut _utils.List<BoundSymbol> = new _utils.List<BoundSymbol>();
+    imported_namespaces: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, kind: mut ScopeKind, name: string, full_name: string, parent: mut Option<BoundScope>) {
         this.kind = kind;
@@ -70,7 +70,7 @@ class BoundScope {
         return new Option<BoundScope>.none();
     }
 
-    fun resolve_qualified(this, parts: List<string>) -> Option<BoundSymbol> {
+    fun resolve_qualified(this, parts: _utils.List<string>) -> Option<BoundSymbol> {
         if (cast<i64>(parts.size()) == 0) { return new Option<BoundSymbol>.none(); }
         if (cast<i64>(parts.size()) == 1) {
             return this.lookup_symbol(parts.at(cast<u64>(0)).some);
@@ -78,7 +78,7 @@ class BoundScope {
         let first: string = parts.at(cast<u64>(0)).some;
         let ns: Option<BoundScope> = this.lookup_namespace(first);
         if (ns.is_some()) {
-            let rest: mut List<string> = new List<string>();
+            let rest: mut _utils.List<string> = new _utils.List<string>();
             let i: mut i64 = 1;
             while (i < cast<i64>(parts.size())) {
                 rest.push(parts.at(cast<u64>(i)).some);
@@ -102,7 +102,7 @@ class BoundScope {
         let i: mut i64 = 0;
         while (i < cast<i64>(this.imported_namespaces.size())) {
             let ns_name: string = this.imported_namespaces.at(cast<u64>(i)).some;
-            let parts: mut List<string> = new List<string>();
+            let parts: mut _utils.List<string> = new _utils.List<string>();
             parts.push(ns_name);
             let ns_sym: Option<BoundSymbol> = this.resolve_qualified(parts);
             if (ns_sym.is_some() && ns_sym.some is BoundSymbol.namespace_sym) {

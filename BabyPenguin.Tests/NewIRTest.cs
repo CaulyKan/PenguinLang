@@ -438,7 +438,7 @@ namespace BabyPenguin.Tests
             var compiler = new SemanticCompiler(new ErrorReporter(this));
             compiler.AddSource(@"
                 initial {
-                    let a : mut Queue<i64> = new Queue<i64>();
+                    let a : mut _utils.Queue<i64> = new _utils.Queue<i64>();
                     a.enqueue(1);
                     a.enqueue(2);
                     println(cast<string>(a.size()));
@@ -496,6 +496,131 @@ namespace BabyPenguin.Tests
             vm.Initialize();
             try { vm.Run(); } catch (Exception ex) { testOutputHelper.WriteLine($"EXCEPTION: {ex.Message}\n{ex.StackTrace}"); }
             testOutputHelper.WriteLine($"Output: {vm.CollectOutput()}");
+        }
+
+        [Fact]
+        public void Debug_EventListTest()
+        {
+            // Test if _utils.List works in a simple push+iterate pattern
+            var output = CompileAndRunNew(@"
+                initial {
+                    let lst : mut _utils.List<i64> = new _utils.List<i64>();
+                    lst.push(1);
+                    lst.push(2);
+                    lst.push(3);
+                    for (let x : i64 in lst.iter()) {
+                        println(cast<string>(x));
+                    }
+                }
+            ");
+            testOutputHelper.WriteLine($"Output: {output}");
+            Assert.Equal("1\n2\n3", output);
+        }
+
+        [Fact]
+        public void Debug_EventNewIRDump()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                event test_event;
+
+                initial {
+                    wait test_event;
+                    println(""2"");
+                }
+
+                initial {
+                    println(""1"");
+                    emit test_event();
+                }
+            ");
+            var model = compiler.Compile();
+
+            var generator = new IRGenerator(model);
+            var module = generator.Generate();
+
+            using var sw = new StreamWriter("/tmp/_event_new_ir_dump.txt");
+
+            // Dump ALL functions in the new IR module
+            foreach (var func in module.Functions.Values)
+            {
+                if (func.Instructions.Count > 0)
+                {
+                    sw.WriteLine($"\n=== {func.Name} ({func.Instructions.Count} instructions) ===");
+                    for (int i = 0; i < func.Instructions.Count; i++)
+                    {
+                        sw.WriteLine($"  {i}: {func.Instructions[i]}");
+                    }
+                }
+            }
+            sw.Flush();
+            testOutputHelper.WriteLine("New IR dump written to /tmp/_event_new_ir_dump.txt");
+            testOutputHelper.WriteLine($"Total functions: {module.Functions.Count}");
+        }
+
+        [Fact]
+        public void Debug_DumpEventTestIR()
+        {
+            var compiler = new SemanticCompiler(new ErrorReporter(this));
+            compiler.AddSource(@"
+                event test_event;
+                initial {
+                    wait test_event;
+                    println(""2"");
+                }
+                initial {
+                    println(""1"");
+                    emit test_event();
+                }
+            ");
+            var model = compiler.Compile();
+
+            using var sw = new StreamWriter("/tmp/_event_test_ir_dump.txt");
+
+            // Dump _main IR
+            var mainCC = model.FindAll(n => n is ICodeContainer cc && cc.FullName() == "__builtin._main")
+                .Cast<ICodeContainer>()
+                .First();
+            sw.WriteLine($"=== _main ({mainCC.Instructions.Count} instructions) ===");
+            for (int i = 0; i < mainCC.Instructions.Count; i++)
+            {
+                var inst = mainCC.Instructions[i];
+                var labels = inst.Labels.Count > 0 ? $"[{string.Join(",", inst.Labels)}] " : "";
+                sw.WriteLine($"  {i}: {labels}{Describe(inst)}");
+            }
+
+            // Dump Scheduler.entry IR
+            var schedulerEntryCC = model.FindAll(n => n is ICodeContainer cc && cc.FullName() == "__builtin.Scheduler.entry")
+                .Cast<ICodeContainer>()
+                .FirstOrDefault();
+            if (schedulerEntryCC != null)
+            {
+                sw.WriteLine($"\n=== Scheduler.entry ({schedulerEntryCC.Instructions.Count} instructions) ===");
+                for (int i = 0; i < schedulerEntryCC.Instructions.Count; i++)
+                {
+                    var inst = schedulerEntryCC.Instructions[i];
+                    var labels = inst.Labels.Count > 0 ? $"[{string.Join(",", inst.Labels)}] " : "";
+                    sw.WriteLine($"  {i}: {labels}{Describe(inst)}");
+                }
+            }
+
+            // Dump Event.notify IR
+            var eventNotifyCC = model.FindAll(n => n is ICodeContainer cc && cc.FullName().EndsWith(".notify") && cc.FullName().Contains("Event"))
+                .Cast<ICodeContainer>()
+                .FirstOrDefault();
+            if (eventNotifyCC != null)
+            {
+                sw.WriteLine($"\n=== {eventNotifyCC.FullName()} ({eventNotifyCC.Instructions.Count} instructions) ===");
+                for (int i = 0; i < eventNotifyCC.Instructions.Count; i++)
+                {
+                    var inst = eventNotifyCC.Instructions[i];
+                    var labels = inst.Labels.Count > 0 ? $"[{string.Join(",", inst.Labels)}] " : "";
+                    sw.WriteLine($"  {i}: {labels}{Describe(inst)}");
+                }
+            }
+
+            sw.Flush();
+            testOutputHelper.WriteLine("IR dump written to /tmp/_event_test_ir_dump.txt");
         }
     }
 }

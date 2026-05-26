@@ -2,9 +2,9 @@ namespace bound {
 
 class FunctionInstantiation {
     func_name: !mut string = "";
-    generic_args: mut List<BoundType> = new List<BoundType>();
+    generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
 
-    fun new(mut this, func_name: string, generic_args: mut List<BoundType>) {
+    fun new(mut this, func_name: string, generic_args: mut _utils.List<BoundType>) {
         this.func_name = func_name;
         this.generic_args = generic_args;
     }
@@ -12,10 +12,10 @@ class FunctionInstantiation {
 
 class SemanticModel {
     type_registry: mut BoundTypeRegistry;
-    errors: mut List<SemanticError> = new List<SemanticError>();
+    errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     global_scope: mut BoundScope;
     current_unit: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
-    ast_definitions: mut List<ast.Definition> = new List<ast.Definition>();
+    ast_definitions: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
 
     fun new(mut this) {
         this.type_registry = new BoundTypeRegistry();
@@ -50,7 +50,7 @@ class SemanticModel {
         return t;
     }
 
-    fun register_builtin_extern_fun(mut this, name: string, param_type_names: List<string>, ret_type_name: string) {
+    fun register_builtin_extern_fun(mut this, name: string, param_type_names: _utils.List<string>, ret_type_name: string) {
         let full_name: string = "<global>." + name;
         let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(name, full_name);
         sym.return_type = this.make_primitive_type(ret_type_name);
@@ -67,11 +67,11 @@ class SemanticModel {
     }
 
     fun register_builtin_functions(mut this) {
-        let string_params: mut List<string> = new List<string>();
+        let string_params: mut _utils.List<string> = new _utils.List<string>();
         string_params.push("string");
         this.register_builtin_extern_fun("print", string_params, "void");
         this.register_builtin_extern_fun("println", string_params, "void");
-        let no_params: mut List<string> = new List<string>();
+        let no_params: mut _utils.List<string> = new _utils.List<string>();
         this.register_builtin_extern_fun("_emperor_gc_collect", no_params, "void");
         this.register_builtin_extern_fun("_emperor_gc_info", no_params, "i64");
     }
@@ -156,7 +156,7 @@ class SemanticModel {
         return new Option<BoundDefinition>.none();
     }
 
-    fun extract_template_params(this, template_decl: Option<ast.TemplateDeclaration>, generic_params: mut List<string>) {
+    fun extract_template_params(this, template_decl: Option<ast.TemplateDeclaration>, generic_params: mut _utils.List<string>) {
         if (template_decl.is_some()) {
             let td: ast.TemplateDeclaration = template_decl.some;
             let j: mut i64 = 0;
@@ -532,36 +532,47 @@ class SemanticModel {
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
-            let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-            this.resolve_pair(ast_def, bound_def, result.global_scope);
+            let updated: BoundDefinition = this.resolve_pair(ast_def, result.definitions.at(cast<u64>(i)).some, result.global_scope);
+            result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
     }
 
-    fun resolve_pair(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, scope: BoundScope) {
+    fun resolve_pair(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, scope: BoundScope) -> BoundDefinition {
         if (bound_def is BoundDefinition.function_def && ast_def is ast.Definition.function_def) {
-            this.resolve_function_pair(ast_def.function_def, bound_def.function_def, scope);
+            let bf: mut BoundFunctionDefinition = bound_def.function_def;
+            this.resolve_function_pair(ast_def.function_def, bf, scope);
+            return new BoundDefinition.function_def(bf);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
-            this.resolve_class_pair(ast_def.class_def, bound_def.class_def, scope);
+            let bc: mut BoundClassDefinition = bound_def.class_def;
+            this.resolve_class_pair(ast_def.class_def, bc, scope);
+            return new BoundDefinition.class_def(bc);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is ast.Definition.enum_def) {
-            this.resolve_enum_types(bound_def.enum_def, scope, ast_def.enum_def);
+            let be: mut BoundEnumDefinition = bound_def.enum_def;
+            this.resolve_enum_types(be, scope, ast_def.enum_def);
+            return new BoundDefinition.enum_def(be);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is ast.Definition.interface_def) {
-            this.resolve_interface_pair(ast_def.interface_def, bound_def.interface_def, scope);
+            let bi: mut BoundInterfaceDefinition = bound_def.interface_def;
+            this.resolve_interface_pair(ast_def.interface_def, bi, scope);
+            return new BoundDefinition.interface_def(bi);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is ast.Definition.namespace_def) {
-            this.resolve_namespace_pair(ast_def.namespace_def, bound_def.namespace_def, scope);
+            let bn: mut BoundNamespaceDefinition = bound_def.namespace_def;
+            this.resolve_namespace_pair(ast_def.namespace_def, bn, scope);
+            return new BoundDefinition.namespace_def(bn);
         }
         if (bound_def is BoundDefinition.initial_routine) {
             let init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
             if (init.scope.is_some() && init.symbol.is_some()) {
                 let sym: mut BoundFunctionSymbol = init.symbol.some;
                 sym.bound_type = this.type_registry.make_function_type(
-                    this.type_registry.void_type, new List<BoundType>(), false);
+                    this.type_registry.void_type, new _utils.List<BoundType>(), false);
                 init.symbol = new Option<BoundFunctionSymbol>.some(sym);
             }
+            return new BoundDefinition.initial_routine(init);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is ast.Definition.global_var) {
             let gv: mut BoundGlobalVariableDefinition = bound_def.global_var_def;
@@ -573,6 +584,7 @@ class SemanticModel {
                     gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
                 }
             }
+            return new BoundDefinition.global_var_def(gv);
         }
         if (bound_def is BoundDefinition.type_ref_def && ast_def is ast.Definition.type_ref_def) {
             let tr: mut BoundTypeReferenceDefinition = bound_def.type_ref_def;
@@ -585,7 +597,9 @@ class SemanticModel {
                 tsym.bound_type = alias_t;
                 tr.type_symbol = new Option<BoundTypeSymbol>.some(tsym);
             }
+            return new BoundDefinition.type_ref_def(tr);
         }
+        return bound_def;
     }
 
     fun resolve_function_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope) {
@@ -596,7 +610,7 @@ class SemanticModel {
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
-        let func_type_params: mut List<BoundType> = new List<BoundType>();
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(ast_func.parameters.size())) {
             let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
@@ -622,7 +636,7 @@ class SemanticModel {
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
-        let func_type_params: mut List<BoundType> = new List<BoundType>();
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(ast_func.parameters.size())) {
             let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
@@ -663,7 +677,9 @@ class SemanticModel {
                         if (field.field_symbol.is_some()) {
                             let fsym: mut BoundVariableSymbol = field.field_symbol.some;
                             fsym.bound_type = field.bound_type;
+                            field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
                         }
+                        bound_cls.fields.set(cast<u64>(field_idx), new BoundDefinition.class_field(field));
                     }
                     field_idx = field_idx + 1;
                 }
@@ -673,7 +689,9 @@ class SemanticModel {
                 while (j < cast<i64>(bound_cls.methods.size())) {
                     let md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
                     if (md is BoundDefinition.function_def && md.function_def.name == ast_member.function_def.name) {
-                        this.resolve_class_method_pair(ast_member.function_def, md.function_def, class_scope, bound_cls);
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        this.resolve_class_method_pair(ast_member.function_def, mf, class_scope, bound_cls);
+                        bound_cls.methods.set(cast<u64>(j), new BoundDefinition.function_def(mf));
                     }
                     j = j + 1;
                 }
@@ -684,7 +702,7 @@ class SemanticModel {
                 while (k < cast<i64>(bound_cls.interface_impls.size())) {
                     let bd_impl: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(k)).some;
                     if (bd_impl is BoundDefinition.impl_def) {
-                        let bound_iface_impl: BoundInterfaceImplementation = bd_impl.impl_def;
+                        let bound_iface_impl: mut BoundInterfaceImplementation = bd_impl.impl_def;
                         let fi: mut i64 = 0;
                         while (fi < cast<i64>(ast_impl.functions.size())) {
                             let ast_func_def: ast.Definition = ast_impl.functions.at(cast<u64>(fi)).some;
@@ -693,13 +711,16 @@ class SemanticModel {
                                 while (mi < cast<i64>(bound_iface_impl.methods.size())) {
                                     let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
                                     if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
-                                        this.resolve_class_method_pair(ast_func_def.function_def, bound_method.function_def, class_scope, bound_cls);
+                                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                                        this.resolve_class_method_pair(ast_func_def.function_def, bm, class_scope, bound_cls);
+                                        bound_iface_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
                                     }
                                     mi = mi + 1;
                                 }
                             }
                             fi = fi + 1;
                         }
+                        bound_cls.interface_impls.set(cast<u64>(k), new BoundDefinition.impl_def(bound_iface_impl));
                     }
                     k = k + 1;
                 }
@@ -730,7 +751,7 @@ class SemanticModel {
                 while (k < cast<i64>(e.interface_impls.size())) {
                     let bd_impl: BoundDefinition = e.interface_impls.at(cast<u64>(k)).some;
                     if (bd_impl is BoundDefinition.impl_def) {
-                        let bound_iface_impl: BoundInterfaceImplementation = bd_impl.impl_def;
+                        let bound_iface_impl: mut BoundInterfaceImplementation = bd_impl.impl_def;
                         let fi: mut i64 = 0;
                         while (fi < cast<i64>(ast_impl.functions.size())) {
                             let ast_func_def: ast.Definition = ast_impl.functions.at(cast<u64>(fi)).some;
@@ -739,13 +760,16 @@ class SemanticModel {
                                 while (mi < cast<i64>(bound_iface_impl.methods.size())) {
                                     let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
                                     if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
-                                        this.resolve_enum_method_pair(ast_func_def.function_def, bound_method.function_def, enum_scope, e);
+                                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                                        this.resolve_enum_method_pair(ast_func_def.function_def, bm, enum_scope, e);
+                                        bound_iface_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
                                     }
                                     mi = mi + 1;
                                 }
                             }
                             fi = fi + 1;
                         }
+                        e.interface_impls.set(cast<u64>(k), new BoundDefinition.impl_def(bound_iface_impl));
                     }
                     k = k + 1;
                 }
@@ -762,7 +786,7 @@ class SemanticModel {
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
-        let func_type_params: mut List<BoundType> = new List<BoundType>();
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(ast_func.parameters.size())) {
             let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
@@ -792,7 +816,9 @@ class SemanticModel {
                 while (j < cast<i64>(bound_iface.methods.size())) {
                     let md: BoundDefinition = bound_iface.methods.at(cast<u64>(j)).some;
                     if (md is BoundDefinition.function_def && md.function_def.name == ast_member.function_def.name) {
-                        this.resolve_interface_method_pair(ast_member.function_def, md.function_def, iface_scope, bound_iface);
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        this.resolve_interface_method_pair(ast_member.function_def, mf, iface_scope, bound_iface);
+                        bound_iface.methods.set(cast<u64>(j), new BoundDefinition.function_def(mf));
                     }
                     j = j + 1;
                 }
@@ -809,7 +835,7 @@ class SemanticModel {
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
-        let func_type_params: mut List<BoundType> = new List<BoundType>();
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(ast_func.parameters.size())) {
             let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
@@ -829,7 +855,7 @@ class SemanticModel {
         bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
     }
 
-    fun resolve_namespace_pair(mut this, ast_ns: ast.NamespaceDefinition, bound_ns: BoundNamespaceDefinition, scope: BoundScope) {
+    fun resolve_namespace_pair(mut this, ast_ns: ast.NamespaceDefinition, bound_ns: mut BoundNamespaceDefinition, scope: BoundScope) {
         let ns_scope: BoundScope = bound_ns.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_ns.children.size())) {
@@ -837,35 +863,34 @@ class SemanticModel {
             let j: mut i64 = 0;
             while (j < cast<i64>(bound_ns.children.size())) {
                 let bound_child: BoundDefinition = bound_ns.children.at(cast<u64>(j)).some;
-                let names_match: bool = false;
                 if (ast_child is ast.Definition.function_def && bound_child is BoundDefinition.function_def) {
                     if (ast_child.function_def.name == bound_child.function_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 if (ast_child is ast.Definition.class_def && bound_child is BoundDefinition.class_def) {
                     if (ast_child.class_def.name == bound_child.class_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 if (ast_child is ast.Definition.enum_def && bound_child is BoundDefinition.enum_def) {
                     if (ast_child.enum_def.name == bound_child.enum_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 if (ast_child is ast.Definition.interface_def && bound_child is BoundDefinition.interface_def) {
                     if (ast_child.interface_def.name == bound_child.interface_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 if (ast_child is ast.Definition.namespace_def && bound_child is BoundDefinition.namespace_def) {
                     if (ast_child.namespace_def.name == bound_child.namespace_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 if (ast_child is ast.Definition.global_var && bound_child is BoundDefinition.global_var_def) {
                     if (ast_child.global_var.name == bound_child.global_var_def.name) {
-                        this.resolve_pair(ast_child, bound_child, ns_scope);
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
                 j = j + 1;
@@ -876,7 +901,7 @@ class SemanticModel {
 
     fun resolve_type_specifier(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> mut BoundType {
         if (type_spec.is_function_type || type_spec.is_async_function_type) {
-            let param_types: mut List<BoundType> = new List<BoundType>();
+            let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let i: mut i64 = 0;
             while (i < cast<i64>(type_spec.function_params.size())) {
                 param_types.push(this.resolve_type_specifier(
@@ -902,7 +927,7 @@ class SemanticModel {
             if (found.is_some() && found.some is BoundSymbol.type_sym) {
                 let resolved: mut BoundType = found.some.type_sym.bound_type;
                 if (cast<i64>(type_spec.generic_args.size()) > 0) {
-                    let args: mut List<BoundType> = new List<BoundType>();
+                    let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                     let k: mut i64 = 0;
                     while (k < cast<i64>(type_spec.generic_args.size())) {
                         args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
@@ -920,7 +945,7 @@ class SemanticModel {
         if (type_sym.is_some()) {
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             if (cast<i64>(type_spec.generic_args.size()) > 0) {
-                let args: mut List<BoundType> = new List<BoundType>();
+                let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                 let k: mut i64 = 0;
                 while (k < cast<i64>(type_spec.generic_args.size())) {
                     args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
@@ -936,7 +961,7 @@ class SemanticModel {
         return this.type_registry.make_error_type();
     }
 
-    fun mangle_generic_name(base_name: string, generic_args: List<BoundType>) -> string {
+    fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundType>) -> string {
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
@@ -973,12 +998,12 @@ class SemanticModel {
         let max_iterations: mut i64 = 10;
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
-            let instantiations: mut List<BoundType> = new List<BoundType>();
+            let instantiations: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             this.collect_generic_instantiations(result.definitions, instantiations);
             this.collect_generic_instantiations_from_ast(unit.definitions, result.global_scope, instantiations);
 
-            let specialized_defs: mut List<BoundDefinition> = new List<BoundDefinition>();
-            let specialized_asts: mut List<ast.Definition> = new List<ast.Definition>();
+            let specialized_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+            let specialized_asts: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
             let i: mut i64 = 0;
             while (i < cast<i64>(instantiations.size())) {
                 let inst: BoundType = instantiations.at(cast<u64>(i)).some;
@@ -1023,7 +1048,7 @@ class SemanticModel {
             }
 
             // Collect function instantiations from AST
-            let func_instantiations: mut List<FunctionInstantiation> = new List<FunctionInstantiation>();
+            let func_instantiations: mut _utils.List<FunctionInstantiation> = new _utils.List<FunctionInstantiation>();
             this.collect_function_instantiations_from_ast(unit.definitions, result.global_scope, func_instantiations);
 
             let fi: mut i64 = 0;
@@ -1113,7 +1138,7 @@ class SemanticModel {
         }
     }
 
-    fun find_ast_def_by_name(this, defs: List<ast.Definition>, name: string) -> Option<ast.Definition> {
+    fun find_ast_def_by_name(this, defs: _utils.List<ast.Definition>, name: string) -> Option<ast.Definition> {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
@@ -1127,7 +1152,7 @@ class SemanticModel {
                     return new Option<ast.Definition>.some(def);
                 }
                 // Also search class methods for generic method instantiation
-                let members: List<ast.Definition> = def.class_def.members;
+                let members: _utils.List<ast.Definition> = def.class_def.members;
                 let mi: mut i64 = 0;
                 while (mi < cast<i64>(members.size())) {
                     let member: ast.Definition = members.at(cast<u64>(mi)).some;
@@ -1157,7 +1182,7 @@ class SemanticModel {
         return this.find_ast_def_by_name(this.ast_definitions, name);
     }
 
-    fun mangle_generic_name_for_ir(base_name: string, generic_args: List<BoundType>) -> string {
+    fun mangle_generic_name_for_ir(base_name: string, generic_args: _utils.List<BoundType>) -> string {
         return mangle_generic_name(base_name, generic_args);
     }
 
@@ -1170,7 +1195,7 @@ class SemanticModel {
         return new_name;
     }
 
-    fun collect_generic_instantiations(this, defs: List<BoundDefinition>, instantiations: mut List<BoundType>) {
+    fun collect_generic_instantiations(this, defs: _utils.List<BoundDefinition>, instantiations: mut _utils.List<BoundType>) {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -1179,7 +1204,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_instantiations_from_def(this, def: BoundDefinition, instantiations: mut List<BoundType>) {
+    fun collect_instantiations_from_def(this, def: BoundDefinition, instantiations: mut _utils.List<BoundType>) {
         if (def is BoundDefinition.class_def) {
             let cls: BoundClassDefinition = def.class_def;
             // Skip template classes - their type params produce error types
@@ -1231,7 +1256,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_instantiations_from_scope(this, scope: BoundScope, instantiations: mut List<BoundType>) {
+    fun collect_instantiations_from_scope(this, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
         let si: mut i64 = 0;
         while (si < cast<i64>(scope.symbols.size())) {
             let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
@@ -1247,7 +1272,7 @@ class SemanticModel {
         }
     }
 
-    fun try_add_instantiation(this, bt: BoundType, instantiations: mut List<BoundType>) {
+    fun try_add_instantiation(this, bt: BoundType, instantiations: mut _utils.List<BoundType>) {
         if (cast<i64>(bt.generic_args.size()) > 0 && bt.type_definition.is_some()) {
             let already: mut bool = false;
             let j: mut i64 = 0;
@@ -1268,7 +1293,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_generic_instantiations_from_ast(this, defs: List<ast.Definition>, scope: BoundScope, instantiations: mut List<BoundType>) {
+    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<ast.Definition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
@@ -1280,7 +1305,7 @@ class SemanticModel {
             if (def is ast.Definition.class_def) {
                 // Skip template class bodies - their type params aren't resolvable here
                 if (def.class_def.template_decl.is_none()) {
-                    let members: List<ast.Definition> = def.class_def.members;
+                    let members: _utils.List<ast.Definition> = def.class_def.members;
                     let mi: mut i64 = 0;
                     while (mi < cast<i64>(members.size())) {
                         let member: ast.Definition = members.at(cast<u64>(mi)).some;
@@ -1300,7 +1325,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_from_ast_expr_safe(this, expr: ast.Expression, scope: BoundScope, instantiations: mut List<BoundType>) {
+    fun collect_from_ast_expr_safe(this, expr: ast.Expression, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
         if (expr is ast.Expression.new_expr) {
             let ne: ast.NewExpression = expr.new_expr;
             if (cast<i64>(ne.generic_args.size()) > 0) {
@@ -1354,14 +1379,14 @@ class SemanticModel {
         }
     }
 
-    fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: List<ast.TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+    fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<ast.TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
         let found: Option<BoundSymbol> = scope.lookup_type_in_scope(type_name);
         if (found.is_none()) { return new Option<BoundType>.none(); }
         if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundType>.none(); }
         let base_type: BoundType = found.some.type_sym.bound_type;
         if (base_type.type_definition.is_none()) { return new Option<BoundType>.none(); }
 
-        let args: mut List<BoundType> = new List<BoundType>();
+        let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let k: mut i64 = 0;
         while (k < cast<i64>(generic_args.size())) {
             let resolved_arg: BoundType = this.resolve_type_specifier(generic_args.at(cast<u64>(k)).some, scope);
@@ -1371,7 +1396,7 @@ class SemanticModel {
         return new Option<BoundType>.some(base_type.with_generic_args(args));
     }
 
-    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.class_def)) { return new Option<BoundDefinition>.none(); }
@@ -1440,7 +1465,7 @@ class SemanticModel {
         return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
     }
 
-    fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+    fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.enum_def)) { return new Option<BoundDefinition>.none(); }
@@ -1501,46 +1526,54 @@ class SemanticModel {
     fun pass_constructors(mut this, result: BoundCompilationUnit) {
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-            this.init_constructors_for_def(def, result.global_scope);
+            let updated: BoundDefinition = this.init_constructors_for_def(result.definitions.at(cast<u64>(i)).some, result.global_scope);
+            result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
         let j: mut i64 = 0;
         while (j < cast<i64>(result.definitions.size())) {
-            let def: BoundDefinition = result.definitions.at(cast<u64>(j)).some;
-            this.process_constructors_for_def(def);
+            let updated: BoundDefinition = this.process_constructors_for_def(result.definitions.at(cast<u64>(j)).some);
+            result.definitions.set(cast<u64>(j), updated);
             j = j + 1;
         }
     }
 
-    fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) {
+    fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         if (def is BoundDefinition.class_def) {
-            this.init_class_constructor(def.class_def, global_scope);
+            let cls: mut BoundClassDefinition = def.class_def;
+            this.init_class_constructor(cls, global_scope);
+            return new BoundDefinition.class_def(cls);
         }
         if (def is BoundDefinition.interface_def) {
-            this.init_interface_constructor(def.interface_def, global_scope);
+            let iface: mut BoundInterfaceDefinition = def.interface_def;
+            this.init_interface_constructor(iface, global_scope);
+            return new BoundDefinition.interface_def(iface);
         }
         if (def is BoundDefinition.namespace_def) {
-            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
             let k: mut i64 = 0;
             while (k < cast<i64>(ns.children.size())) {
-                let child: BoundDefinition = ns.children.at(cast<u64>(k)).some;
-                this.init_constructors_for_def(child, global_scope);
+                let updated: BoundDefinition = this.init_constructors_for_def(ns.children.at(cast<u64>(k)).some, global_scope);
+                ns.children.set(cast<u64>(k), updated);
                 k = k + 1;
             }
+            return new BoundDefinition.namespace_def(ns);
         }
+        return def;
     }
 
-    fun process_constructors_for_def(mut this, def: BoundDefinition) {
+    fun process_constructors_for_def(mut this, def: BoundDefinition) -> BoundDefinition {
         if (def is BoundDefinition.namespace_def) {
-            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
             let k: mut i64 = 0;
             while (k < cast<i64>(ns.children.size())) {
-                let child: BoundDefinition = ns.children.at(cast<u64>(k)).some;
-                this.process_constructors_for_def(child);
+                let updated: BoundDefinition = this.process_constructors_for_def(ns.children.at(cast<u64>(k)).some);
+                ns.children.set(cast<u64>(k), updated);
                 k = k + 1;
             }
+            return new BoundDefinition.namespace_def(ns);
         }
+        return def;
     }
 
     fun init_class_constructor(mut this, cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
@@ -1571,7 +1604,7 @@ class SemanticModel {
             ctor.scope = new Option<BoundScope>.some(ctor_scope);
             let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("new", ctor_full_name);
             sym.is_new = true;
-            let param_types: mut List<BoundType> = new List<BoundType>();
+            let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             param_types.push(this_param.bound_type);
             sym.bound_type = this.type_registry.make_function_type(this.type_registry.void_type, param_types, false);
             sym.return_type = this.type_registry.void_type;
@@ -1609,7 +1642,7 @@ class SemanticModel {
             ctor.return_type = this.type_registry.void_type;
             let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("new", ctor_full_name);
             sym.is_new = true;
-            let param_types: mut List<BoundType> = new List<BoundType>();
+            let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             param_types.push(this_param.bound_type);
             sym.bound_type = this.type_registry.make_function_type(this.type_registry.void_type, param_types, false);
             sym.return_type = this.type_registry.void_type;
@@ -1625,32 +1658,36 @@ class SemanticModel {
         let ast_count: i64 = cast<i64>(unit.definitions.size());
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
             if (i < ast_count) {
                 let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
-                this.build_vtables_for_def(ast_def, bound_def, result.global_scope);
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_def(ast_def, bound_def, result.global_scope));
             } else {
-                this.build_vtables_for_specialized_def(bound_def, result.global_scope);
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_specialized_def(bound_def, result.global_scope));
             }
             i = i + 1;
         }
     }
 
-    fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) {
+    fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         if (bound_def is BoundDefinition.class_def) {
-            let cls: BoundClassDefinition = bound_def.class_def;
+            let cls: mut BoundClassDefinition = bound_def.class_def;
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, this.extract_template_name(cls.name));
             if (ast_def.is_some() && ast_def.some is ast.Definition.class_def) {
                 this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
             }
+            return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.enum_def) {
-            let e: BoundEnumDefinition = bound_def.enum_def;
+            let e: mut BoundEnumDefinition = bound_def.enum_def;
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, this.extract_template_name(e.name));
             if (ast_def.is_some() && ast_def.some is ast.Definition.enum_def) {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
+            return new BoundDefinition.enum_def(e);
         }
+        return bound_def;
     }
 
     fun extract_template_name(this, mangled_name: string) -> string {
@@ -1661,52 +1698,82 @@ class SemanticModel {
         return mangled_name;
     }
 
-    fun build_vtables_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) {
+    fun build_vtables_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
-            this.build_class_vtables(ast_def.class_def, bound_def.class_def, global_scope);
+            let cls: mut BoundClassDefinition = bound_def.class_def;
+            this.build_class_vtables(ast_def.class_def, cls, global_scope);
+            return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is ast.Definition.interface_def) {
-            this.build_interface_vtables(ast_def.interface_def, bound_def.interface_def, global_scope);
+            let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            this.build_interface_vtables(ast_def.interface_def, iface, global_scope);
+            return new BoundDefinition.interface_def(iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is ast.Definition.enum_def) {
-            this.build_enum_vtables(ast_def.enum_def, bound_def.enum_def, global_scope);
-        }
-        if (bound_def is BoundDefinition.namespace_def && ast_def is ast.Definition.namespace_def) {
-            let ast_ns: ast.NamespaceDefinition = ast_def.namespace_def;
-            let bound_ns: BoundNamespaceDefinition = bound_def.namespace_def;
-            let j: mut i64 = 0;
-            while (j < cast<i64>(ast_ns.children.size())) {
-                let ast_child: ast.Definition = ast_ns.children.at(cast<u64>(j)).some;
-                let k: mut i64 = 0;
-                while (k < cast<i64>(bound_ns.children.size())) {
-                    let bound_child: BoundDefinition = bound_ns.children.at(cast<u64>(k)).some;
-                    if (ast_child is ast.Definition.class_def && bound_child is BoundDefinition.class_def) {
-                        if (ast_child.class_def.name == bound_child.class_def.name) {
-                            this.build_class_vtables(ast_child.class_def, bound_child.class_def, global_scope);
-                        }
-                    }
-                    if (ast_child is ast.Definition.interface_def && bound_child is BoundDefinition.interface_def) {
-                        if (ast_child.interface_def.name == bound_child.interface_def.name) {
-                            this.build_interface_vtables(ast_child.interface_def, bound_child.interface_def, global_scope);
-                        }
-                    }
-                    if (ast_child is ast.Definition.enum_def && bound_child is BoundDefinition.enum_def) {
-                        if (ast_child.enum_def.name == bound_child.enum_def.name) {
-                            this.build_enum_vtables(ast_child.enum_def, bound_child.enum_def, global_scope);
-                        }
-                    }
-                    if (ast_child is ast.Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
-                        let ns_scope: mut BoundScope = bound_ns.scope.some;
-                        this.process_impl_for(ast_child.impl_for_def, bound_child.impl_for_def, global_scope, ns_scope);
-                    }
-                    k = k + 1;
-                }
-                j = j + 1;
-            }
+            let e: mut BoundEnumDefinition = bound_def.enum_def;
+            this.build_enum_vtables(ast_def.enum_def, e, global_scope);
+            return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.impl_for_def && ast_def is ast.Definition.impl_for_def) {
-            this.process_impl_for(ast_def.impl_for_def, bound_def.impl_for_def, global_scope, global_scope);
+            let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            this.process_impl_for(ast_def.impl_for_def, impl_for, global_scope, global_scope);
+            return new BoundDefinition.impl_for_def(impl_for);
         }
+        if (bound_def is BoundDefinition.namespace_def && ast_def is ast.Definition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = bound_def.namespace_def;
+            let ns_scope: mut BoundScope = ns.scope.some;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let bound_child: BoundDefinition = ns.children.at(cast<u64>(k)).some;
+                let ast_child: Option<ast.Definition> = this.find_matching_ast_child(ast_def.namespace_def, bound_child);
+                if (ast_child.is_some()) {
+                    ns.children.set(cast<u64>(k), this.build_vtables_for_def(ast_child.some, bound_child, ns_scope));
+                }
+                k = k + 1;
+            }
+            return new BoundDefinition.namespace_def(ns);
+        }
+        return bound_def;
+    }
+
+    fun find_matching_ast_child(this, ast_ns: ast.NamespaceDefinition, bound_child: BoundDefinition) -> Option<ast.Definition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_ns.children.size())) {
+            let ast_child: ast.Definition = ast_ns.children.at(cast<u64>(i)).some;
+            if (ast_child is ast.Definition.function_def && bound_child is BoundDefinition.function_def) {
+                if (ast_child.function_def.name == bound_child.function_def.name) {
+                    return new Option<ast.Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is ast.Definition.class_def && bound_child is BoundDefinition.class_def) {
+                if (ast_child.class_def.name == bound_child.class_def.name) {
+                    return new Option<ast.Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is ast.Definition.interface_def && bound_child is BoundDefinition.interface_def) {
+                if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                    return new Option<ast.Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is ast.Definition.enum_def && bound_child is BoundDefinition.enum_def) {
+                if (ast_child.enum_def.name == bound_child.enum_def.name) {
+                    return new Option<ast.Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is ast.Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                return new Option<ast.Definition>.some(ast_child);
+            }
+            if (ast_child is ast.Definition.initial_routine && bound_child is BoundDefinition.initial_routine) {
+                return new Option<ast.Definition>.some(ast_child);
+            }
+            if (ast_child is ast.Definition.global_var && bound_child is BoundDefinition.global_var_def) {
+                if (ast_child.global_var.name == bound_child.global_var_def.name) {
+                    return new Option<ast.Definition>.some(ast_child);
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<ast.Definition>.none();
     }
 
     fun build_class_vtables(mut this, ast_cls: ast.ClassDefinition, bound_cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
@@ -1850,27 +1917,32 @@ class SemanticModel {
     fun pass_classify_value_types(mut this, result: BoundCompilationUnit) {
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-            this.classify_def(def, new List<string>());
+            let updated: BoundDefinition = this.classify_def(result.definitions.at(cast<u64>(i)).some, new _utils.List<string>());
+            result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
     }
 
-    fun classify_def(mut this, def: BoundDefinition, visiting: mut List<string>) {
+    fun classify_def(mut this, def: BoundDefinition, visiting: mut _utils.List<string>) -> BoundDefinition {
         if (def is BoundDefinition.class_def) {
-            this.classify_class(def.class_def, visiting);
+            let cls: mut BoundClassDefinition = def.class_def;
+            this.classify_class(cls, visiting);
+            return new BoundDefinition.class_def(cls);
         }
         if (def is BoundDefinition.namespace_def) {
-            let ns: BoundNamespaceDefinition = def.namespace_def;
-            let i: mut i64 = 0;
-            while (i < cast<i64>(ns.children.size())) {
-                this.classify_def(ns.children.at(cast<u64>(i)).some, visiting);
-                i = i + 1;
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let updated: BoundDefinition = this.classify_def(ns.children.at(cast<u64>(k)).some, visiting);
+                ns.children.set(cast<u64>(k), updated);
+                k = k + 1;
             }
+            return new BoundDefinition.namespace_def(ns);
         }
+        return def;
     }
 
-    fun classify_class(mut this, cls: mut BoundClassDefinition, visiting: mut List<string>) -> bool {
+    fun classify_class(mut this, cls: mut BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
         if (cls.is_value_class.is_some()) {
             return cls.is_value_class.some;
         }
@@ -1916,7 +1988,7 @@ class SemanticModel {
         return false;
     }
 
-    fun is_in_visiting(this, full_name: string, visiting: List<string>) -> bool {
+    fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
         let ci: mut i64 = 0;
         while (ci < cast<i64>(visiting.size())) {
             if (visiting.at(cast<u64>(ci)).some == full_name) {
@@ -1951,7 +2023,7 @@ class SemanticModel {
         return false;
     }
 
-    fun all_fields_value_type(mut this, cls: BoundClassDefinition, visiting: mut List<string>) -> bool {
+    fun all_fields_value_type(mut this, cls: BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
         let fi: mut i64 = 0;
         while (fi < cast<i64>(cls.fields.size())) {
             let field_def: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
@@ -1966,7 +2038,7 @@ class SemanticModel {
         return true;
     }
 
-    fun is_type_value_like(mut this, bt: BoundType, visiting: mut List<string>) -> bool {
+    fun is_type_value_like(mut this, bt: BoundType, visiting: mut _utils.List<string>) -> bool {
         if (bt.kind is TypeKind.PrimitiveKind) {
             if (bt.primitive is PrimitiveType.StringType) { return false; }
             return true;
@@ -2003,46 +2075,51 @@ class SemanticModel {
         let ast_count: i64 = cast<i64>(unit.definitions.size());
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
             if (i < ast_count) {
                 let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
-                this.bind_body_for_def(ast_def, bound_def, result);
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                result.definitions.set(cast<u64>(i), this.bind_body_for_def(ast_def, bound_def, result));
             } else {
-                this.bind_body_for_specialized_def(bound_def, result);
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                result.definitions.set(cast<u64>(i), this.bind_body_for_specialized_def(bound_def, result));
             }
             i = i + 1;
         }
         this.current_unit = new Option<BoundCompilationUnit>.none();
     }
 
-    fun bind_body_for_specialized_def(mut this, bound_def: BoundDefinition, result: BoundCompilationUnit) {
+    fun bind_body_for_specialized_def(mut this, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
             let template_name: string = this.extract_template_name(bound_cls.name);
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, template_name);
             if (ast_def.is_some() && ast_def.some is ast.Definition.class_def) {
-                this.bind_body_for_def(ast_def.some, bound_def, result);
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            return bound_def;
         }
         if (bound_def is BoundDefinition.enum_def) {
             let bound_enum: BoundEnumDefinition = bound_def.enum_def;
             let template_name: string = this.extract_template_name(bound_enum.name);
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, template_name);
             if (ast_def.is_some() && ast_def.some is ast.Definition.enum_def) {
-                this.bind_body_for_def(ast_def.some, bound_def, result);
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            return bound_def;
         }
         if (bound_def is BoundDefinition.function_def) {
             let bound_func: BoundFunctionDefinition = bound_def.function_def;
             let template_name: string = this.extract_template_name(bound_func.name);
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, template_name);
             if (ast_def.is_some() && ast_def.some is ast.Definition.function_def) {
-                this.bind_body_for_def(ast_def.some, bound_def, result);
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            return bound_def;
         }
+        return bound_def;
     }
 
-    fun bind_body_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) {
+    fun bind_body_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
         if (bound_def is BoundDefinition.function_def && ast_def is ast.Definition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let ast_func: ast.FunctionDefinition = ast_def.function_def;
@@ -2051,6 +2128,7 @@ class SemanticModel {
                 let bound_body: mut Option<BoundExpression> = this.bind_expression(ast_func.body.some, func_scope);
                 bound_func.body = bound_body;
             }
+            return new BoundDefinition.function_def(bound_func);
         }
         if (bound_def is BoundDefinition.initial_routine && ast_def is ast.Definition.initial_routine) {
             let bound_init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
@@ -2060,10 +2138,11 @@ class SemanticModel {
                 let bound_init_body: mut Option<BoundExpression> = this.bind_expression(ast_init.body.some, init_scope);
                 bound_init.body = bound_init_body;
             }
+            return new BoundDefinition.initial_routine(bound_init);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
             let ast_cls: ast.ClassDefinition = ast_def.class_def;
-            let bound_cls: BoundClassDefinition = bound_def.class_def;
+            let bound_cls: mut BoundClassDefinition = bound_def.class_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ast_cls.members.size())) {
                 let ast_member: ast.Definition = ast_cls.members.at(cast<u64>(i)).some;
@@ -2072,7 +2151,7 @@ class SemanticModel {
                     while (j < cast<i64>(bound_cls.methods.size())) {
                         let bound_md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            this.bind_body_for_def(ast_member, bound_md, result);
+                            bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
                         }
                         j = j + 1;
                     }
@@ -2083,7 +2162,7 @@ class SemanticModel {
                     while (j < cast<i64>(bound_cls.interface_impls.size())) {
                         let bound_impl_def: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(j)).some;
                         if (bound_impl_def is BoundDefinition.impl_def) {
-                            let bound_iface_impl: BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
                             let fi: mut i64 = 0;
                             while (fi < cast<i64>(ast_impl_member.functions.size())) {
                                 let ast_func_def: ast.Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
@@ -2092,23 +2171,25 @@ class SemanticModel {
                                     while (mi < cast<i64>(bound_iface_impl.methods.size())) {
                                         let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
                                         if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
-                                            this.bind_body_for_def(ast_func_def, bound_method, result);
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
                                         }
                                         mi = mi + 1;
                                     }
                                 }
                                 fi = fi + 1;
                             }
+                            bound_cls.interface_impls.set(cast<u64>(j), new BoundDefinition.impl_def(bound_iface_impl));
                         }
                         j = j + 1;
                     }
                 }
                 i = i + 1;
             }
+            return new BoundDefinition.class_def(bound_cls);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is ast.Definition.namespace_def) {
             let ast_ns: ast.NamespaceDefinition = ast_def.namespace_def;
-            let bound_ns: BoundNamespaceDefinition = bound_def.namespace_def;
+            let bound_ns: mut BoundNamespaceDefinition = bound_def.namespace_def;
             let k: mut i64 = 0;
             while (k < cast<i64>(ast_ns.children.size())) {
                 let ast_child: ast.Definition = ast_ns.children.at(cast<u64>(k)).some;
@@ -2117,41 +2198,42 @@ class SemanticModel {
                     let bound_child: BoundDefinition = bound_ns.children.at(cast<u64>(m)).some;
                     if (ast_child is ast.Definition.function_def && bound_child is BoundDefinition.function_def) {
                         if (ast_child.function_def.name == bound_child.function_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     if (ast_child is ast.Definition.class_def && bound_child is BoundDefinition.class_def) {
                         if (ast_child.class_def.name == bound_child.class_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     if (ast_child is ast.Definition.interface_def && bound_child is BoundDefinition.interface_def) {
                         if (ast_child.interface_def.name == bound_child.interface_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     if (ast_child is ast.Definition.initial_routine && bound_child is BoundDefinition.initial_routine) {
-                        this.bind_body_for_def(ast_child, bound_child, result);
+                        bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                     }
                     if (ast_child is ast.Definition.enum_def && bound_child is BoundDefinition.enum_def) {
                         if (ast_child.enum_def.name == bound_child.enum_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     if (ast_child is ast.Definition.namespace_def && bound_child is BoundDefinition.namespace_def) {
                         if (ast_child.namespace_def.name == bound_child.namespace_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     if (ast_child is ast.Definition.global_var && bound_child is BoundDefinition.global_var_def) {
                         if (ast_child.global_var.name == bound_child.global_var_def.name) {
-                            this.bind_body_for_def(ast_child, bound_child, result);
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
                     m = m + 1;
                 }
                 k = k + 1;
             }
+            return new BoundDefinition.namespace_def(bound_ns);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is ast.Definition.interface_def) {
             let ast_iface: ast.InterfaceDefinition = ast_def.interface_def;
@@ -2164,17 +2246,18 @@ class SemanticModel {
                     while (j < cast<i64>(bound_iface.methods.size())) {
                         let bound_md: BoundDefinition = bound_iface.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            this.bind_body_for_def(ast_member, bound_md, result);
+                            bound_iface.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
                         }
                         j = j + 1;
                     }
                 }
                 i = i + 1;
             }
+            return new BoundDefinition.interface_def(bound_iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is ast.Definition.enum_def) {
             let ast_enum: ast.EnumDefinition = ast_def.enum_def;
-            let bound_enum: BoundEnumDefinition = bound_def.enum_def;
+            let bound_enum: mut BoundEnumDefinition = bound_def.enum_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ast_enum.members.size())) {
                 let ast_member: ast.Definition = ast_enum.members.at(cast<u64>(i)).some;
@@ -2184,7 +2267,7 @@ class SemanticModel {
                     while (j < cast<i64>(bound_enum.interface_impls.size())) {
                         let bound_impl_def: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(j)).some;
                         if (bound_impl_def is BoundDefinition.impl_def) {
-                            let bound_iface_impl: BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
                             let fi: mut i64 = 0;
                             while (fi < cast<i64>(ast_impl_member.functions.size())) {
                                 let ast_func_def: ast.Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
@@ -2193,19 +2276,21 @@ class SemanticModel {
                                     while (mi < cast<i64>(bound_iface_impl.methods.size())) {
                                         let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
                                         if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
-                                            this.bind_body_for_def(ast_func_def, bound_method, result);
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
                                         }
                                         mi = mi + 1;
                                     }
                                 }
                                 fi = fi + 1;
                             }
+                            bound_enum.interface_impls.set(cast<u64>(j), new BoundDefinition.impl_def(bound_iface_impl));
                         }
                         j = j + 1;
                     }
                 }
                 i = i + 1;
             }
+            return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is ast.Definition.global_var) {
             let gv: mut BoundGlobalVariableDefinition = bound_def.global_var_def;
@@ -2225,7 +2310,9 @@ class SemanticModel {
                     }
                 }
             }
+            return new BoundDefinition.global_var_def(gv);
         }
+        return bound_def;
     }
 
     fun bind_expression(mut this, expr: ast.Expression, scope: mut BoundScope) -> Option<BoundExpression> {
@@ -2330,7 +2417,7 @@ class SemanticModel {
     }
 
     fun bind_binary(mut this, expr: ast.BinaryExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        let operands: mut List<BoundExpression> = new List<BoundExpression>();
+        let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.operands.size())) {
             let bound_op: Option<BoundExpression> = this.bind_expression(expr.operands.at(cast<u64>(i)).some, scope);
@@ -2339,7 +2426,7 @@ class SemanticModel {
             }
             i = i + 1;
         }
-        let operators: mut List<ast.BinaryOperator> = new List<ast.BinaryOperator>();
+        let operators: mut _utils.List<ast.BinaryOperator> = new _utils.List<ast.BinaryOperator>();
         let j: mut i64 = 0;
         while (j < cast<i64>(expr.operators.size())) {
             operators.push(expr.operators.at(cast<u64>(j)).some);
@@ -2556,7 +2643,7 @@ class SemanticModel {
         return true;
     }
 
-    fun search_function_return_type_in_defs(this, target_full_name: string, defs: mut List<BoundDefinition>) -> BoundType {
+    fun search_function_return_type_in_defs(this, target_full_name: string, defs: mut _utils.List<BoundDefinition>) -> BoundType {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -2587,8 +2674,8 @@ class SemanticModel {
     }
 
     fun bind_function_call(mut this, expr: ast.FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        let args: mut List<BoundExpression> = this.bind_arguments(expr.arguments, scope);
-        let mut empty_generic_args = new List<BoundType>();
+        let args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments, scope);
+        let mut empty_generic_args = new _utils.List<BoundType>();
         if (expr.callee.is_some()) {
             let callee: Option<BoundExpression> = this.bind_expression(expr.callee.some, scope);
             if (callee.is_some()) {
@@ -2598,7 +2685,7 @@ class SemanticModel {
                         let sym: BoundSymbol = id_expr.symbol.some;
                         if (sym is BoundSymbol.function_sym) {
                             // Resolve generic args from AST callee
-                            let resolved_generic_args: mut List<BoundType> = new List<BoundType>();
+                            let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_call: mut bool = false;
                             if (expr.callee.is_some()) {
                                 let ast_callee: ast.Expression = expr.callee.some;
@@ -2636,7 +2723,7 @@ class SemanticModel {
                         let sym: BoundSymbol = ma_expr.member_symbol.some;
                         if (sym is BoundSymbol.function_sym) {
                             // Resolve generic args from AST callee (member access with <T>)
-                            let resolved_generic_args: mut List<BoundType> = new List<BoundType>();
+                            let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_method_call: mut bool = false;
                             if (expr.callee.is_some()) {
                                 let ast_callee: ast.Expression = expr.callee.some;
@@ -2853,8 +2940,8 @@ class SemanticModel {
         return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
     }
 
-    fun bind_arguments(mut this, args: List<ast.Expression>, scope: mut BoundScope) -> mut List<BoundExpression> {
-        let result: mut List<BoundExpression> = new List<BoundExpression>();
+    fun bind_arguments(mut this, args: _utils.List<ast.Expression>, scope: mut BoundScope) -> mut _utils.List<BoundExpression> {
+        let result: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
             let bound_arg: Option<BoundExpression> = this.bind_expression(args.at(cast<u64>(i)).some, scope);
@@ -2902,7 +2989,7 @@ class SemanticModel {
 
     fun bind_code_block(mut this, expr: ast.CodeBlockExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         let block_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<block>", scope.full_name + ".<block>", new Option<BoundScope>.some(scope));
-        let stmts: mut List<BoundStatement> = new List<BoundStatement>();
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.statements.size())) {
             let stmt: ast.Statement = expr.statements.at(cast<u64>(i)).some;
@@ -3014,7 +3101,7 @@ class SemanticModel {
 
     fun resolve_new_generic_args(this, expr: ast.NewExpression, scope: BoundScope, bt: BoundType) -> mut BoundType {
         if (cast<i64>(expr.generic_args.size()) > 0) {
-            let args: mut List<BoundType> = new List<BoundType>();
+            let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let k: mut i64 = 0;
             while (k < cast<i64>(expr.generic_args.size())) {
                 args.push(this.resolve_type_specifier(expr.generic_args.at(cast<u64>(k)).some, scope));
@@ -3065,7 +3152,7 @@ class SemanticModel {
         if (type_sym.is_some()) {
             if (type_sym.some is BoundSymbol.type_sym) {
                 let bt: mut BoundType = this.resolve_new_generic_args(expr, scope, type_sym.some.type_sym.bound_type);
-                let args: mut List<BoundExpression> = new List<BoundExpression>();
+                let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
                 let i: mut i64 = 0;
                 while (i < cast<i64>(expr.arguments.size())) {
                     let bound_arg: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(i)).some, scope);
@@ -3078,7 +3165,7 @@ class SemanticModel {
                 return new Option<BoundExpression>.some(new BoundExpression.new_expr(result));
             }
         }
-        let args: mut List<BoundExpression> = new List<BoundExpression>();
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.arguments.size())) {
             let bound_arg: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(i)).some, scope);
@@ -3107,7 +3194,7 @@ class SemanticModel {
                 if (bound_expr.is_some()) {
                     if (bound_expr.some is BoundExpression.code_block) {
                         let cb: BoundCodeBlockExpression = bound_expr.some.code_block;
-                        let block_stmts: mut List<BoundStatement> = new List<BoundStatement>();
+                        let block_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
                         let i: mut i64 = 0;
                         while (i < cast<i64>(cb.statements.size())) {
                             block_stmts.push(cb.statements.at(cast<u64>(i)).some);
@@ -3449,7 +3536,7 @@ class SemanticModel {
         return this.is_literal_true(opt);
     }
 
-    fun collect_function_instantiations_from_ast(this, defs: List<ast.Definition>, scope: BoundScope, func_instantiations: mut List<FunctionInstantiation>) {
+    fun collect_function_instantiations_from_ast(this, defs: _utils.List<ast.Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
@@ -3468,7 +3555,7 @@ class SemanticModel {
             }
             if (def is ast.Definition.class_def) {
                 if (def.class_def.template_decl.is_none()) {
-                    let members: List<ast.Definition> = def.class_def.members;
+                    let members: _utils.List<ast.Definition> = def.class_def.members;
                     let mi: mut i64 = 0;
                     while (mi < cast<i64>(members.size())) {
                         let member: ast.Definition = members.at(cast<u64>(mi)).some;
@@ -3485,7 +3572,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_func_inst_from_expr(this, expr: ast.Expression, scope: BoundScope, func_instantiations: mut List<FunctionInstantiation>) {
+    fun collect_func_inst_from_expr(this, expr: ast.Expression, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
         if (expr is ast.Expression.function_call) {
             let fc: ast.FunctionCallExpression = expr.function_call;
             if (fc.callee.is_some()) {
@@ -3493,7 +3580,7 @@ class SemanticModel {
                 if (ast_callee is ast.Expression.identifier) {
                     if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
                         let func_name: string = ast_callee.identifier.name;
-                        let resolved_args: mut List<BoundType> = new List<BoundType>();
+                        let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                         let gi: mut i64 = 0;
                         while (gi < cast<i64>(ast_callee.identifier.generic_args.size())) {
                             resolved_args.push(this.resolve_type_specifier(ast_callee.identifier.generic_args.at(cast<u64>(gi)).some, scope));
@@ -3506,7 +3593,7 @@ class SemanticModel {
                 if (ast_callee is ast.Expression.member_access) {
                     if (cast<i64>(ast_callee.member_access.generic_args.size()) > 0) {
                         let func_name: string = ast_callee.member_access.member_name;
-                        let resolved_args: mut List<BoundType> = new List<BoundType>();
+                        let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                         let gi: mut i64 = 0;
                         while (gi < cast<i64>(ast_callee.member_access.generic_args.size())) {
                             resolved_args.push(this.resolve_type_specifier(ast_callee.member_access.generic_args.at(cast<u64>(gi)).some, scope));
@@ -3585,7 +3672,7 @@ class SemanticModel {
         }
     }
 
-    fun find_bound_function_def(this, defs: List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
+    fun find_bound_function_def(this, defs: _utils.List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -3607,7 +3694,7 @@ class SemanticModel {
         return new Option<BoundDefinition>.none();
     }
 
-    fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: List<BoundType>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
+    fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundType>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, tmpl.name);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.function_def)) { return new Option<BoundDefinition>.none(); }
@@ -3667,7 +3754,7 @@ class SemanticModel {
 
     // Find the specialized class scope for a method, if its parent class has been specialized.
     // This is needed so that class type params (e.g., T=i32) are visible in method specializations.
-    fun find_specialized_class_scope(this, defs: List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+    fun find_specialized_class_scope(this, defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
         let orig_name: string = this.extract_template_name(method_name);
         // Find the template class that owns this method
         let i: mut i64 = 0;
@@ -3696,7 +3783,7 @@ class SemanticModel {
         return new Option<BoundScope>.none();
     }
 
-    fun find_class_specialization_scope(this, defs: List<BoundDefinition>, template_name: string) -> Option<BoundScope> {
+    fun find_class_specialization_scope(this, defs: _utils.List<BoundDefinition>, template_name: string) -> Option<BoundScope> {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -3714,7 +3801,7 @@ class SemanticModel {
         return new Option<BoundScope>.none();
     }
 
-    fun find_method_class_scope(this, existing_defs: List<BoundDefinition>, new_defs: List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+    fun find_method_class_scope(this, existing_defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
         let orig_name: string = this.extract_template_name(method_name);
         // Search existing defs
         let result: Option<BoundScope> = this.find_specialized_class_scope(existing_defs, method_name);
@@ -3754,7 +3841,7 @@ class SemanticModel {
 
     // Find the parent class for a method by extracting the class name from the function's full_name
     // e.g. full_name="<global>.Foo__i32.foo__i64" -> parent class is "Foo__i32"
-    fun find_parent_class_for_method(this, defs: List<BoundDefinition>, new_defs: List<BoundDefinition>, func_full_name: string) -> Option<BoundClassDefinition> {
+    fun find_parent_class_for_method(this, defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, func_full_name: string) -> Option<BoundClassDefinition> {
         // Extract class name from full_name: strip <global>. prefix and last .method part
         let prefix: string = "<global>.";
         let prefix_len: i64 = string_length(prefix);
@@ -3828,7 +3915,7 @@ class SemanticModel {
                 // Also update the function type on the symbol
                 if (func.symbol.is_some()) {
                     let sym: mut BoundFunctionSymbol = func.symbol.some;
-                    let param_types: mut List<BoundType> = new List<BoundType>();
+                    let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                     let pj: mut i64 = 0;
                     while (pj < cast<i64>(func.parameters.size())) {
                         param_types.push(func.parameters.at(cast<u64>(pj)).some.bound_type);

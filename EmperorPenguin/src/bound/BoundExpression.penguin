@@ -40,10 +40,10 @@ class BoundIdentifierExpression {
 
 class BoundBinaryExpression {
     bound_type: !mut BoundType = new BoundType();
-    operators: !mut List<ast.BinaryOperator> = new List<ast.BinaryOperator>();
-    operands: !mut List<BoundExpression> = new List<BoundExpression>();
+    operators: !mut _utils.List<ast.BinaryOperator> = new _utils.List<ast.BinaryOperator>();
+    operands: !mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
 
-    fun new(mut this, bound_type: BoundType, operators: List<ast.BinaryOperator>, operands: List<BoundExpression>) {
+    fun new(mut this, bound_type: BoundType, operators: _utils.List<ast.BinaryOperator>, operands: _utils.List<BoundExpression>) {
         this.bound_type = bound_type;
         this.operators = operators;
         this.operands = operands;
@@ -92,13 +92,13 @@ class BoundFunctionCallExpression {
     bound_type: !mut BoundType = new BoundType();
     callee: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     callee_symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
-    arguments: !mut List<BoundExpression> = new List<BoundExpression>();
+    arguments: !mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
     is_virtual: !mut bool = false;
-    generic_args: mut List<BoundType> = new List<BoundType>();
+    generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
     is_generic_function_call: bool = false;
     direct_dispatch: mut bool = false;
 
-    fun new(mut this, bound_type: BoundType, callee: Option<BoundExpression>, callee_symbol: Option<BoundSymbol>, arguments: List<BoundExpression>, is_virtual: bool, generic_args: mut List<BoundType>, is_generic_function_call: bool) {
+    fun new(mut this, bound_type: BoundType, callee: Option<BoundExpression>, callee_symbol: Option<BoundSymbol>, arguments: _utils.List<BoundExpression>, is_virtual: bool, generic_args: mut _utils.List<BoundType>, is_generic_function_call: bool) {
         this.bound_type = bound_type;
         this.callee = callee;
         this.callee_symbol = callee_symbol;
@@ -149,11 +149,11 @@ class BoundWhileExpression {
 
 class BoundCodeBlockExpression {
     bound_type: !mut BoundType = new BoundType();
-    statements: !mut List<BoundStatement> = new List<BoundStatement>();
+    statements: !mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
     trailing_expr: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
 
-    fun new(mut this, bound_type: BoundType, statements: List<BoundStatement>, trailing_expr: Option<BoundExpression>, scope: Option<BoundScope>) {
+    fun new(mut this, bound_type: BoundType, statements: _utils.List<BoundStatement>, trailing_expr: Option<BoundExpression>, scope: Option<BoundScope>) {
         this.bound_type = bound_type;
         this.statements = statements;
         this.trailing_expr = trailing_expr;
@@ -190,9 +190,9 @@ class BoundNewExpression {
     bound_type: !mut BoundType = new BoundType();
     type_symbol: !mut Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
     constructor_symbol: !mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
-    arguments: !mut List<BoundExpression> = new List<BoundExpression>();
+    arguments: !mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
 
-    fun new(mut this, bound_type: BoundType, type_symbol: Option<BoundTypeSymbol>, constructor_symbol: Option<BoundFunctionSymbol>, arguments: List<BoundExpression>) {
+    fun new(mut this, bound_type: BoundType, type_symbol: Option<BoundTypeSymbol>, constructor_symbol: Option<BoundFunctionSymbol>, arguments: _utils.List<BoundExpression>) {
         this.bound_type = bound_type;
         this.type_symbol = type_symbol;
         this.constructor_symbol = constructor_symbol;
@@ -228,12 +228,12 @@ class BoundEnumVariantExpression {
 
 class BoundLambdaExpression {
     bound_type: !mut BoundType = new BoundType();
-    parameters: !mut List<BoundFunctionParameter> = new List<BoundFunctionParameter>();
+    parameters: !mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
     return_type: !mut BoundType = new BoundType();
     body: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
 
-    fun new(mut this, bound_type: BoundType, parameters: List<BoundFunctionParameter>, return_type: BoundType, body: Option<BoundExpression>, scope: Option<BoundScope>) {
+    fun new(mut this, bound_type: BoundType, parameters: _utils.List<BoundFunctionParameter>, return_type: BoundType, body: Option<BoundExpression>, scope: Option<BoundScope>) {
         this.bound_type = bound_type;
         this.parameters = parameters;
         this.return_type = return_type;

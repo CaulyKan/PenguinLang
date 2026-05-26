@@ -4,21 +4,23 @@ namespace __builtin {
     extern fun println(text : string);
     extern fun eprint(text : string);
     extern fun eprintln(text : string);
-    extern fun file_read_text(file: string) -> mut string;
-    extern fun file_write_text(file: string, text: string);
-    extern fun mkdir(path: string) -> bool;
-    extern fun exec(exe: string, args: List<string>) -> i64;
+    extern fun _exec_cmd(cmd: string) -> i64;
 
     extern fun lshift(value: i64, shift: i64) -> i64;
     extern fun rshift(value: i64, shift: i64) -> i64;
 
-    let __args : mut List<string> = new List<string>();
-    extern fun __args_init(args : mut List<string>);
-    fun args() -> List<string> {
-        if (__args.size() == 0) {
-            __args_init(__args);
+    extern fun __args_count() -> i64;
+    extern fun __args_get(index: i64) -> string;
+
+    fun args() -> _utils.List<string> {
+        let count: i64 = __args_count();
+        let result: mut _utils.List<string> = new _utils.List<string>();
+        let i: mut i64 = 0;
+        while (i < count) {
+            result.push(__args_get(i));
+            i = i + 1;
         }
-        return __args;
+        return result;
     }
 
     fun hello_world() {
@@ -179,57 +181,10 @@ namespace __builtin {
         extern fun fetch_add(mut this, value: i64) -> i64;
     }
 
-    #template(T: type)
-    class List {
-        __impl: __ExternImpl = new __ExternImpl();
-        extern fun new(mut this);
-        extern fun at(this, index: u64) -> Option<T>;
-        extern fun remove(mut this, index: u64);
-        extern fun push(mut this, value: T);
-        extern fun pop(mut this) -> Option<T>;
-        extern fun size(this) -> u64;
-
-        impl IIterable<T> {
-            fun iter(this: mut IIterable<T>) -> mut IIterator<T> {
-                return cast<mut IIterator<T>>(new ListIterator<T>(cast<mut Self>(this)));
-            }
-        }
-    }
-
-    #template(T: type)
-    class ListIterator {
-        list : !mut List<T>;
-        current: mut u64;
-
-        fun new(mut this, list: List<T>) {
-            this.list = list;
-            this.current = 0;
-        }
-
-        impl IIterator<T> {
-            fun next(this: mut IIterator<T>) -> Option<T> {
-                let self : mut ListIterator<T> = cast<mut ListIterator<T>>(this);
-                let res : Option<T> = self.list.at(self.current);
-                self.current += 1;
-                return res;
-            }
-        }
-    }
-
-    #template(T: type)
-    class Queue {
-        __impl:  __ExternImpl = new __ExternImpl();
-        extern fun new(mut this);
-        extern fun enqueue(mut this, value: T);
-        extern fun dequeue(mut this) -> Option<T>;
-        extern fun peek(this) -> Option<T>;
-        extern fun size(this) -> u64;
-    }
-
     #template(K: type, V: type)
     class Pair {
         first: K;
-        second: V;    
+        second: V;
     }
    
     // class Map<K, V> {
@@ -385,7 +340,7 @@ namespace __builtin {
     }
 
     class Scheduler {
-        pending_jobs : mut Queue<IFutureBase> = new Queue<IFutureBase>();
+        pending_jobs : mut _utils.Queue<IFutureBase> = new _utils.Queue<IFutureBase>();
 
         fun entry(mut this) {
             while (true) {
@@ -498,7 +453,7 @@ namespace __builtin {
 
     #template(T: type)
     class Event {
-        receivers : mut List<IEventReceiver<T>> = new List<IEventReceiver<T>>();
+        receivers : mut _utils.List<IEventReceiver<T>> = new _utils.List<IEventReceiver<T>>();
 
         impl IObjectID;
 
@@ -565,7 +520,7 @@ namespace __builtin {
 
     #template(T: type)
     class _QueuedEventReceiver {
-        event_queue : mut Queue<T> = new Queue<T>();
+        event_queue : mut _utils.Queue<T> = new _utils.Queue<T>();
 
         fun new(mut this, ev: mut Event<T>) {
             ev.add_receiver(this);

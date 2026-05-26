@@ -1,0 +1,64 @@
+namespace _utils {
+    extern fun file_read_text(file: string) -> mut string;
+    extern fun file_write_text(file: string, text: string);
+    extern fun mkdir(path: string) -> bool;
+
+    #template(T: type)
+    class List {
+        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
+        extern fun new(mut this);
+        extern fun at(this, index: u64) -> __builtin.Option<T>;
+        extern fun remove(mut this, index: u64);
+        extern fun push(mut this, value: T);
+        extern fun pop(mut this) -> __builtin.Option<T>;
+        extern fun size(this) -> u64;
+        extern fun set(mut this, index: u64, value: T);
+
+        impl __builtin.IIterable<T> {
+            fun iter(this: mut __builtin.IIterable<T>) -> mut __builtin.IIterator<T> {
+                return cast<mut __builtin.IIterator<T>>(new _utils.ListIterator<T>(cast<mut _utils.List<T>>(this)));
+            }
+        }
+    }
+
+    #template(T: type)
+    class ListIterator {
+        list: mut _utils.List<T>;
+        current: mut u64;
+
+        fun new(mut this, list: mut _utils.List<T>) {
+            this.list = list;
+            this.current = 0;
+        }
+
+        impl __builtin.IIterator<T> {
+            fun next(this: mut __builtin.IIterator<T>) -> __builtin.Option<T> {
+                let self: mut _utils.ListIterator<T> = cast<mut _utils.ListIterator<T>>(this);
+                let res: __builtin.Option<T> = self.list.at(self.current);
+                self.current += 1;
+                return res;
+            }
+        }
+    }
+
+    #template(T: type)
+    class Queue {
+        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
+        extern fun new(mut this);
+        extern fun enqueue(mut this, value: T);
+        extern fun dequeue(mut this) -> __builtin.Option<T>;
+        extern fun peek(this) -> __builtin.Option<T>;
+        extern fun size(this) -> u64;
+    }
+
+    fun exec(exe: string, args: List<string>) -> i64 {
+        let cmd: mut string = exe;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: string = args.at(cast<u64>(i)).some;
+            cmd = cmd + " " + arg;
+            i = i + 1;
+        }
+        return __builtin._exec_cmd(cmd);
+    }
+}

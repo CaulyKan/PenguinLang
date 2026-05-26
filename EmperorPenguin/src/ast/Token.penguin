@@ -125,10 +125,10 @@ namespace parser {
 
 
     class TokenStream {
-        tokens: List<Token> = new List<Token>();
+        tokens: _utils.List<Token> = new _utils.List<Token>();
         pos: mut i64 = 0;
 
-        fun new(mut this, tokens: mut List<Token>) {
+        fun new(mut this, tokens: mut _utils.List<Token>) {
             this.tokens = tokens;
         }
 

@@ -1141,7 +1141,7 @@ namespace BabyPenguin.VirtualMachine
             var fields = new Dictionary<string, IRuntimeValue>();
             if (type.TypeNode is IClassNode cls)
             {
-                foreach (var field in cls.Symbols.Where(s => !s.IsFunction && !s.IsStatic))
+                foreach (var field in cls.Symbols.Where(s => (!s.IsFunction || s.IsVariable) && !s.IsStatic))
                 {
                     var fieldType = field.TypeInfo;
                     if (fieldType.IsSimpleValueType || fieldType.IsStringType)
@@ -1157,7 +1157,7 @@ namespace BabyPenguin.VirtualMachine
                 }
 
                 // Add method references for virtual dispatch
-                foreach (var method in cls.Symbols.Where(s => s.IsFunction && !s.IsStatic))
+                foreach (var method in cls.Symbols.Where(s => s.IsFunction && !s.IsVariable && !s.IsStatic))
                 {
                     // Find the actual function symbol by resolving the full method name
                     var methodSym = Model.ResolveSymbol(method.FullName());

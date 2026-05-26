@@ -9,8 +9,8 @@ namespace parser {
             this.source = source;
         }
 
-        fun tokenize(this) -> List<Token> {
-            let tokens = new List<Token>();
+        fun tokenize(this) -> _utils.List<Token> {
+            let tokens = new _utils.List<Token>();
             while (!this.is_at_end()) {
                 let ch: string = this.current_char();
                 // Skip whitespace

@@ -96,10 +96,10 @@ class BoundLetDeclarationStatement {
 }
 
 class BoundBlockStatement {
-    statements: !mut List<BoundStatement> = new List<BoundStatement>();
+    statements: !mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
 
-    fun new(mut this, statements: List<BoundStatement>, scope: Option<BoundScope>) {
+    fun new(mut this, statements: _utils.List<BoundStatement>, scope: Option<BoundScope>) {
         this.statements = statements;
         this.scope = scope;
     }

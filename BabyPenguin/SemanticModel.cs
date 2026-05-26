@@ -29,6 +29,14 @@ namespace BabyPenguin
                     (Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/Builtin.penguin"));
                 var builtinCode = File.ReadAllText(builtinFile);
                 this.AddSource(builtinCode, builtinFile);
+
+                var utilsFile = Path.GetFullPath(Environment.GetEnvironmentVariable("PENGUINLANG_UTILS") ??
+                    (Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/Utils.penguin"));
+                if (File.Exists(utilsFile))
+                {
+                    var utilsCode = File.ReadAllText(utilsFile);
+                    this.AddSource(utilsCode, utilsFile);
+                }
             }
 
             int i = 1;

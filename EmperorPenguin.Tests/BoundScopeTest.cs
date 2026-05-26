@@ -99,14 +99,14 @@ initial {
     let ns: mut bound.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
     let mut type_sym = new bound.BoundTypeSymbol(""Bar"", ""Bar"");
     ns.add_symbol(new bound.BoundSymbol.type_sym(type_sym));
-    let parts: mut List<string> = new List<string>();
+    let parts: mut _utils.List<string> = new _utils.List<string>();
     parts.push(""Foo"");
     parts.push(""Bar"");
     let found = global_scope.resolve_qualified(parts);
     if (found.is_some()) {
         println(""resolved="" + found.some.get_name());
     }
-    let bad_parts: mut List<string> = new List<string>();
+    let bad_parts: mut _utils.List<string> = new _utils.List<string>();
     bad_parts.push(""Unknown"");
     let missing = global_scope.resolve_qualified(bad_parts);
     if (missing.is_none()) {

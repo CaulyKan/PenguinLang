@@ -61,7 +61,7 @@ class BoundType {
     kind: TypeKind = new TypeKind.PrimitiveKind();
     primitive: PrimitiveType = new PrimitiveType.VoidType();
     type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
-    generic_args: mut List<BoundType> = new List<BoundType>();
+    generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
     mutability: Mutability = new Mutability.Immutable();
     is_async_function: bool = false;
 
@@ -129,7 +129,7 @@ class BoundType {
         return result;
     }
 
-    fun with_generic_args(this, args: List<BoundType>) -> mut BoundType {
+    fun with_generic_args(this, args: _utils.List<BoundType>) -> mut BoundType {
         let result: mut BoundType = new BoundType();
         result.kind = this.kind;
         result.primitive = this.primitive;

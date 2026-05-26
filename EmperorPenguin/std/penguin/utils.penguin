@@ -1,0 +1,37 @@
+namespace _utils {
+    extern fun file_read_text(file: string) -> mut string;
+    extern fun file_write_text(file: string, text: string);
+    extern fun mkdir(path: string) -> bool;
+
+    #template(T: type)
+    class List {
+        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
+        extern fun new(mut this);
+        extern fun at(this, index: u64) -> __builtin.Option<T>;
+        extern fun remove(mut this, index: u64);
+        extern fun push(mut this, value: T);
+        extern fun pop(mut this) -> __builtin.Option<T>;
+        extern fun size(this) -> u64;
+    }
+
+    #template(T: type)
+    class Queue {
+        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
+        extern fun new(mut this);
+        extern fun enqueue(mut this, value: T);
+        extern fun dequeue(mut this) -> __builtin.Option<T>;
+        extern fun peek(this) -> __builtin.Option<T>;
+        extern fun size(this) -> u64;
+    }
+
+    fun exec(exe: string, args: List<string>) -> i64 {
+        let cmd: mut string = exe;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: string = args.at(cast<u64>(i)).some;
+            cmd = cmd + " " + arg;
+            i = i + 1;
+        }
+        return __builtin._exec_cmd(cmd);
+    }
+}

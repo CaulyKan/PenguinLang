@@ -1,9 +1,9 @@
 namespace parser {
     class Parser {
-        stream: mut TokenStream = new TokenStream(new List<Token>());
-        errors: mut List<string> = new List<string>();
+        stream: mut TokenStream = new TokenStream(new _utils.List<Token>());
+        errors: mut _utils.List<string> = new _utils.List<string>();
 
-        fun new(mut this, tokens: mut List<Token>) {
+        fun new(mut this, tokens: mut _utils.List<Token>) {
             this.stream = new TokenStream(tokens);
         }
 
@@ -182,7 +182,7 @@ namespace parser {
             // Try to parse <Type, ...> generic args
             if (this.stream.peek_type() is TokenType.Less) {
                 let saved_pos: i64 = this.stream.pos;
-                let generic_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                let generic_args: mut _utils.List<ast.TypeSpecifier> = new _utils.List<ast.TypeSpecifier>();
                 let parse_ok: mut bool = true;
                 this.stream.advance(); // consume <
                 if (this.stream.peek_type() is TokenType.Greater) {
@@ -248,7 +248,7 @@ namespace parser {
             let type_token: Token = this.stream.advance();
             let mut sb = new mut StringBuilder();
             sb.append(type_token.text);
-            let generic_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+            let generic_args: mut _utils.List<ast.TypeSpecifier> = new _utils.List<ast.TypeSpecifier>();
             if (this.stream.peek_type() is TokenType.Less) {
                 this.parse_genericTypeArgs(generic_args);
             }
@@ -259,7 +259,7 @@ namespace parser {
                 sb.append(next_token.text);
             }
             this.stream.expect(new TokenType.LParen());
-            let args: mut List<ast.Expression> = new List<ast.Expression>();
+            let args: mut _utils.List<ast.Expression> = new _utils.List<ast.Expression>();
             if (!(this.stream.peek_type() is TokenType.RParen)) {
                 args.push(this.parse_expression());
                 while (this.stream.match(new TokenType.Comma())) {
@@ -290,7 +290,7 @@ namespace parser {
             wait_expr.expression = wait_inner;
             return new ast.Expression.wait_expr(wait_expr);
             }
-            let results = new List<ast.Expression>();
+            let results = new _utils.List<ast.Expression>();
             results.push(this.parse_primaryExpression());
             while (true) {
                 let next = this.stream.peek();
@@ -303,13 +303,13 @@ namespace parser {
             // Try to parse generic args after member name (e.g., obj.method<T>(args))
             if (this.stream.peek_type() is TokenType.Less) {
                 let saved_pos: i64 = this.stream.pos;
-                let temp_args: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                let temp_args: mut _utils.List<ast.TypeSpecifier> = new _utils.List<ast.TypeSpecifier>();
                 let parse_ok: mut bool = true;
                 this.stream.advance(); // consume '<'
                 let first: Token = this.stream.peek();
                 if (this.is_type_name_token(first.token_type)) {
                     this.stream.pos = saved_pos;
-                    let ga: mut List<ast.TypeSpecifier> = new List<ast.TypeSpecifier>();
+                    let ga: mut _utils.List<ast.TypeSpecifier> = new _utils.List<ast.TypeSpecifier>();
                     this.parse_genericTypeArgs(ga);
                     // Accept if followed by (, ), ;, ,, {, >, }, or EOF
                     let after: Token = this.stream.peek();
@@ -325,7 +325,7 @@ namespace parser {
             results.push(new ast.Expression.member_access(ma_expr));
                 } else if (next.token_type is TokenType.LParen) {
             this.stream.expect(new TokenType.LParen());
-            let args = new List<ast.Expression>();
+            let args = new _utils.List<ast.Expression>();
             if (!(this.stream.peek_type() is TokenType.RParen)) {
                 args.push(this.parse_expression());
                 while (this.stream.match(new TokenType.Comma())) {
@@ -365,8 +365,8 @@ namespace parser {
         // Classification: Binary
         fun parse_multiplicativeExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_unaryExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -395,8 +395,8 @@ namespace parser {
         // Classification: Binary
         fun parse_additiveExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_multiplicativeExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -425,8 +425,8 @@ namespace parser {
         // Classification: Binary
         fun parse_relationalExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_additiveExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -455,8 +455,8 @@ namespace parser {
         // Classification: Binary
         fun parse_equalityExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_relationalExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -485,8 +485,8 @@ namespace parser {
         // Classification: Binary
         fun parse_bitwiseAndExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_equalityExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -514,8 +514,8 @@ namespace parser {
         // Classification: Binary
         fun parse_bitwiseXorExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_bitwiseAndExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -543,8 +543,8 @@ namespace parser {
         // Classification: Binary
         fun parse_bitwiseOrExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_bitwiseXorExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -572,8 +572,8 @@ namespace parser {
         // Classification: Binary
         fun parse_logicalAndExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_bitwiseOrExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -601,8 +601,8 @@ namespace parser {
         // Classification: Binary
         fun parse_logicalOrExpression(this) -> ast.Expression {
             let first: ast.Expression = this.parse_logicalAndExpression();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -734,7 +734,7 @@ namespace parser {
             }
             return node;
         }
-        fun parse_genericTypeArgs(this, list: mut List<ast.TypeSpecifier>) {
+        fun parse_genericTypeArgs(this, list: mut _utils.List<ast.TypeSpecifier>) {
             this.stream.expect(new TokenType.Less());
             if (!(this.stream.peek_type() is TokenType.Greater)) {
                 let first: ast.TypeSpecifier = new ast.TypeSpecifier();
@@ -768,8 +768,8 @@ namespace parser {
         // Classification: Binary
         fun parse_identifierWithDots(this) -> ast.Expression {
             let first: ast.Expression = this.parse_identifier();
-            let operators = new List<ast.BinaryOperator>();
-            let operands = new List<ast.Expression>();
+            let operators = new _utils.List<ast.BinaryOperator>();
+            let operands = new _utils.List<ast.Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -1513,7 +1513,7 @@ namespace parser {
 
         // parameterList: (thisParameter | singleParameter)? (',' singleParameter)* ','?;
         // Classification: Sequence
-        fun parse_parameterList(this, params: mut List<ast.Parameter>) {
+        fun parse_parameterList(this, params: mut _utils.List<ast.Parameter>) {
             if (!(this.stream.peek_type() is TokenType.RParen)) {
                 let first = this.stream.peek();
                 if (first.token_type is TokenType.ThisKw || first.token_type is TokenType.Mut) {

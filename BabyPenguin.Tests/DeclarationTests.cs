@@ -14,7 +14,7 @@ namespace BabyPenguin.Tests
                 let test5 : float = 3.14159;
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
             Assert.Equal(5, ns.Symbols.Where(i => !i.IsTemp && i.Name != "new").Count());
             Assert.True(ns.Symbols.ElementAt(0).TypeInfo.IsStringType);
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
@@ -84,7 +84,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            Assert.Equal(2, model.Namespaces.Count);
+            Assert.Equal(3, model.Namespaces.Count);
             var ns = model.Namespaces.Find(x => x.Name == "Test")!;
             Assert.Equal(2, ns!.Symbols.Where(i => i.Name != "new").Count());
         }
@@ -101,9 +101,9 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            Assert.Equal(3, model.Namespaces.Count);
+            Assert.Equal(4, model.Namespaces.Count);
 
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils" && x.Name != "Test")!;
             Assert.Single(ns.Classes);
             Assert.Equal("TestClass", ns.Classes.ElementAt(0).Name);
 
@@ -123,7 +123,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils" && x.Name != "Test")!;
             Assert.Single(ns.Symbols, i => i.Name != "new");
             Assert.Single(ns.Functions, i => i.Name != "new");
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
@@ -153,7 +153,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "Test")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils" && x.Name != "Test")!;
 
             Assert.Single(ns.InitialRoutines);
             Assert.Equal("foo", ns.InitialRoutines.ElementAt(0).Name);
@@ -176,7 +176,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Single(ns.InitialRoutines);
             var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
@@ -208,7 +208,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Single(ns.Functions, i => i.Name != "new");
             var symbols = ns.Functions.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
@@ -252,7 +252,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Single(ns.InitialRoutines);
             var symbols = ns.InitialRoutines.ElementAt(0).Symbols.Where(x => !x.IsTemp).ToList();
@@ -286,7 +286,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Equal(2, ns.Symbols.Where(i => i.Name != "new").Count());
             Assert.Equal("test1", ns.Symbols.ElementAt(0).Name);
@@ -336,7 +336,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Single(ns.Classes);
             var symbols = ns.Classes.ElementAt(0).Symbols.Where(x => !x.IsTemp && x is not FunctionSymbol).ToList();
@@ -365,7 +365,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             var cls = ns.Classes.ElementAt(0);
             Assert.Equal(3, cls.Functions.Count);
@@ -395,7 +395,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
 
             Assert.Single(ns.Enums);
             Assert.Equal("Test", ns.Enums.ElementAt(0).Name);
@@ -1156,7 +1156,7 @@ namespace BabyPenguin.Tests
                 let x = 10;
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
             var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
             Assert.Equal("!mut u8", symbol.TypeInfo.FullName());
@@ -1170,7 +1170,7 @@ namespace BabyPenguin.Tests
                 let mut x = 10;
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
             var symbol = ns.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
             Assert.Equal("mut u8", symbol.TypeInfo.FullName());
@@ -1224,7 +1224,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
             var func = ns.Functions.First(f => f.Name == "test");
             var symbol = func.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
@@ -1241,7 +1241,7 @@ namespace BabyPenguin.Tests
                 }
             ");
             var model = compiler.Compile();
-            var ns = model.Namespaces.Find(x => x.Name != "__builtin")!;
+            var ns = model.Namespaces.Find(x => x.Name != "__builtin" && x.Name != "_utils")!;
             var func = ns.InitialRoutines.First();
             var symbol = func.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);

@@ -71,7 +71,7 @@ class ConstantExpression {
 
 class IdentifierExpression {
     name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -135,8 +135,8 @@ class ParenthesizedExpression {
 }
 
 class BinaryExpression {
-    operators: mut List<BinaryOperator> = new List<BinaryOperator>();
-    operands: mut List<Expression> = new List<Expression>();
+    operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+    operands: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<BinaryExpression>(this);
@@ -174,7 +174,7 @@ class UnaryExpression {
 class MemberAccessExpression {
     base_expr: mut Option<Expression> = new Option<Expression>.none();
     member_name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<MemberAccessExpression>(this);
@@ -185,7 +185,7 @@ class MemberAccessExpression {
 
 class FunctionCallExpression {
     callee: mut Option<Expression> = new Option<Expression>.none();
-    arguments: mut List<Expression> = new List<Expression>();
+    arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<FunctionCallExpression>(this);
@@ -232,7 +232,7 @@ class WhileExpression {
 }
 
 class CodeBlockExpression {
-    statements: mut List<Statement> = new List<Statement>();
+    statements: mut _utils.List<Statement> = new _utils.List<Statement>();
     trailing_expr: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
@@ -268,8 +268,8 @@ class CastExpression {
 
 class NewExpression {
     type_name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
-    arguments: mut List<Expression> = new List<Expression>();
+    generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+    arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             let self = cast<NewExpression>(this);
@@ -300,7 +300,7 @@ class NewExpression {
 }
 
 class LambdaFunctionExpression {
-    parameters: mut List<Parameter> = new List<Parameter>();
+    parameters: mut _utils.List<Parameter> = new _utils.List<Parameter>();
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     body: mut Option<Expression> = new Option<Expression>.none();
     is_async: mut bool = false;
@@ -632,16 +632,16 @@ enum Statement {
 
 class TypeSpecifier {
     name: mut string = "";
-    generic_args: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     is_mutable: mut bool = false;
     is_not_mutable: mut bool = false;
     is_auto_mutability: mut bool = false;
     is_iterable: mut bool = false;
     is_function_type: mut bool = false;
     is_async_function_type: mut bool = false;
-    function_params: mut List<TypeSpecifier> = new List<TypeSpecifier>();
+    function_params: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
-    qualified_parts: mut List<string> = new List<string>();
+    qualified_parts: mut _utils.List<string> = new _utils.List<string>();
     fun build_text(this) -> string {
         let prefix: mut string = "";
         if (this.is_mutable) { prefix = "mut "; }
@@ -743,7 +743,7 @@ class TemplateParameter {
 }
 
 class TemplateDeclaration {
-    parameters: mut List<TemplateParameter> = new List<TemplateParameter>();
+    parameters: mut _utils.List<TemplateParameter> = new _utils.List<TemplateParameter>();
     fun build_text(this) -> string {
         let mut sb = new StringBuilder();
         sb.append("#template(");
@@ -770,7 +770,7 @@ class WhereClause {
 }
 
 class WhereDefinition {
-    clauses: mut List<WhereClause> = new List<WhereClause>();
+    clauses: mut _utils.List<WhereClause> = new _utils.List<WhereClause>();
     fun build_text(this) -> string {
         let mut sb = new StringBuilder();
         sb.append("where (");
@@ -791,7 +791,7 @@ interface IDefinition {
 
 class FunctionDefinition {
     name: mut string = "";
-    parameters: mut List<Parameter> = new List<Parameter>();
+    parameters: mut _utils.List<Parameter> = new _utils.List<Parameter>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -837,7 +837,7 @@ class FunctionDefinition {
 
 class ClassDefinition {
     name: mut string = "";
-    members: mut List<Definition> = new List<Definition>();
+    members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -867,7 +867,7 @@ class ClassDefinition {
 
 class EnumDefinition {
     name: mut string = "";
-    members: mut List<Definition> = new List<Definition>();
+    members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -897,7 +897,7 @@ class EnumDefinition {
 
 class InterfaceDefinition {
     name: mut string = "";
-    members: mut List<Definition> = new List<Definition>();
+    members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -928,7 +928,7 @@ class InterfaceDefinition {
 class InterfaceImplementation {
     type_name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
-    functions: mut List<Definition> = new List<Definition>();
+    functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
 
     fun new(mut this, type_name: string) {
@@ -966,7 +966,7 @@ class InterfaceForImplementation {
     for_type_name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
-    functions: mut List<Definition> = new List<Definition>();
+    functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
 
     fun new(mut this, type_name: string, for_type_name: string) {
@@ -1024,7 +1024,7 @@ class EventDefinition {
 
 class NamespaceDefinition {
     name: mut string = "";
-    children: mut List<Definition> = new List<Definition>();
+    children: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -1194,7 +1194,7 @@ enum Definition {
 }
 
 class CompilationUnit {
-    definitions: mut List<Definition> = new List<Definition>();
+    definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
     fun build_text(this) -> string {
         let mut sb = new StringBuilder();
         let i: mut i64 = 0;
