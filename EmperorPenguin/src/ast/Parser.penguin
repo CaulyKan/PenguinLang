@@ -245,6 +245,9 @@ namespace parser {
         fun parse_postfixExpression(this) -> ast.Expression {
             if (this.stream.peek_type() is TokenType.New) {
             this.stream.expect(new TokenType.New());
+            if (this.stream.peek_type() is TokenType.Mut) {
+                this.stream.advance();
+            }
             let type_token: Token = this.stream.advance();
             let mut sb = new mut StringBuilder();
             sb.append(type_token.text);
@@ -257,6 +260,9 @@ namespace parser {
                 sb.append(".");
                 let next_token: Token = this.stream.advance();
                 sb.append(next_token.text);
+                if (this.stream.peek_type() is TokenType.Less) {
+                    this.parse_genericTypeArgs(generic_args);
+                }
             }
             this.stream.expect(new TokenType.LParen());
             let args: mut _utils.List<ast.Expression> = new _utils.List<ast.Expression>();
@@ -737,29 +743,40 @@ namespace parser {
         fun parse_genericTypeArgs(this, list: mut _utils.List<ast.TypeSpecifier>) {
             this.stream.expect(new TokenType.Less());
             if (!(this.stream.peek_type() is TokenType.Greater)) {
-                let first: ast.TypeSpecifier = new ast.TypeSpecifier();
-                let t1: Token = this.stream.advance();
-                first.name = t1.text;
-                if (this.stream.peek_type() is TokenType.Less) {
-                    this.parse_genericTypeArgs(first.generic_args);
-                }
+                let first: ast.TypeSpecifier = this.parse_typeSpecifierInGeneric();
                 list.push(first);
                 while (this.stream.peek_type() is TokenType.Comma) {
                     this.stream.advance();
-                    let next_type: ast.TypeSpecifier = new ast.TypeSpecifier();
+                    if (this.stream.peek_type() is TokenType.Greater) { break; }
                     if (this.stream.peek_type() is TokenType.Ellipsis) {
                         this.stream.advance();
                         break;
                     }
-                    let tn: Token = this.stream.advance();
-                    next_type.name = tn.text;
-                    if (this.stream.peek_type() is TokenType.Less) {
-                        this.parse_genericTypeArgs(next_type.generic_args);
-                    }
+                    let next_type: ast.TypeSpecifier = this.parse_typeSpecifierInGeneric();
                     list.push(next_type);
                 }
             }
             this.stream.expect(new TokenType.Greater());
+        }
+
+        fun parse_typeSpecifierInGeneric(this) -> ast.TypeSpecifier {
+            let ts: ast.TypeSpecifier = new ast.TypeSpecifier();
+            if (this.stream.peek_type() is TokenType.Mut) {
+                this.stream.advance();
+                ts.is_mutable = true;
+            }
+            let t: Token = this.stream.advance();
+            ts.name = t.text;
+            while (this.stream.peek_type() is TokenType.Dot) {
+                ts.qualified_parts.push(ts.name);
+                this.stream.expect(new TokenType.Dot());
+                let part: Token = this.stream.advance();
+                ts.name = part.text;
+            }
+            if (this.stream.peek_type() is TokenType.Less) {
+                this.parse_genericTypeArgs(ts.generic_args);
+            }
+            return ts;
         }
 
 
@@ -930,12 +947,14 @@ namespace parser {
         // Classification: Sequence
         fun parse_interfaceImplementation(this) -> ast.Definition {
             this.stream.expect(new TokenType.Impl());
-            let type_token: Token = this.stream.advance();
+            let type_spec: ast.TypeSpecifier = this.parse_typeSpecifier();
             if (this.stream.peek_type() is TokenType.For) {
                 // interfaceForImplementation: impl Type for Type { ... }
                 this.stream.expect(new TokenType.For());
-                let for_type_token: Token = this.stream.advance();
-                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_token.text, for_type_token.text);
+                let for_type_spec: ast.TypeSpecifier = this.parse_typeSpecifier();
+                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_spec.name, for_type_spec.name);
+                node.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
+                node.for_type_spec = new Option<ast.TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.Where) {
                     let wd = this.parse_whereDefinition();
                     node.where_def = new Option<ast.WhereDefinition>.some(wd);
@@ -953,7 +972,8 @@ namespace parser {
                 return new ast.Definition.impl_for_def(node);
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
-            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_token.text);
+            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_spec.name);
+            node2.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
                 node2.where_def = new Option<ast.WhereDefinition>.some(wd2);
@@ -975,12 +995,14 @@ namespace parser {
         // Classification: Sequence
         fun parse_interfaceForImplementation(this) -> ast.Definition {
             this.stream.expect(new TokenType.Impl());
-            let type_token: Token = this.stream.advance();
+            let type_spec: ast.TypeSpecifier = this.parse_typeSpecifier();
             if (this.stream.peek_type() is TokenType.For) {
                 // interfaceForImplementation: impl Type for Type { ... }
                 this.stream.expect(new TokenType.For());
-                let for_type_token: Token = this.stream.advance();
-                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_token.text, for_type_token.text);
+                let for_type_spec: ast.TypeSpecifier = this.parse_typeSpecifier();
+                let node: ast.InterfaceForImplementation = new ast.InterfaceForImplementation(type_spec.name, for_type_spec.name);
+                node.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
+                node.for_type_spec = new Option<ast.TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.Where) {
                     let wd = this.parse_whereDefinition();
                     node.where_def = new Option<ast.WhereDefinition>.some(wd);
@@ -998,7 +1020,8 @@ namespace parser {
                 return new ast.Definition.impl_for_def(node);
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
-            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_token.text);
+            let node2: ast.InterfaceImplementation = new ast.InterfaceImplementation(type_spec.name);
+            node2.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
                 node2.where_def = new Option<ast.WhereDefinition>.some(wd2);
@@ -1493,6 +1516,10 @@ namespace parser {
             let node: ast.Parameter = new ast.Parameter("this");
             node.is_this = true;
             node.is_mutable = is_mut;
+            if (this.stream.match(new TokenType.Colon())) {
+                let ts = this.parse_typeSpecifier();
+                node.type_spec = new Option<ast.TypeSpecifier>.some(ts);
+            }
             return node;
         }
 

@@ -267,7 +267,7 @@ else2:
   %t5 = add i64 0, 0
   ret i64 %t5
 merge0:
-  ret void
+  unreachable
 }")]
     public void TestLLVMIfElse() => _batch.Value.AssertSemantic();
 
@@ -534,7 +534,7 @@ else2:
   %t5 = add i64 0, 0
   ret i64 %t5
 merge0:
-  ret void
+  unreachable
 }")]
     public void TestLLVMEnumBranching() => _batch.Value.AssertSemantic();
 
@@ -1091,6 +1091,30 @@ entry:
   ret void
 }")]
     public void TestLLVMClassReturn() => _batch.Value.AssertSemantic();
+
+    #endregion
+
+    #region Generic Enum Option<string>
+
+    [Fact]
+    [BatchLLVMTest(@"
+initial {
+    let stdlib = ""namespace __builtin { #template(T: type) enum Option { some: T; none; } }"";
+    let user = ""fun create(s: string) -> __builtin.Option<string> { return new __builtin.Option<string>.some(s); } fun empty() -> __builtin.Option<string> { return new __builtin.Option<string>.none(); } fun make_i64(v: i64) -> __builtin.Option<i64> { return new __builtin.Option<i64>.some(v); }"";
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(stdlib + ""\n"" + user);
+    let generator = new ir.IRGenerator();
+    let module = generator.generate(result);
+    let emitter = new llvm.LLVMEmitter();
+    let llvm_ir: string = emitter.lower(module, result);
+    println(llvm_ir);
+}
+", @"ANY_OUTPUT")]
+    public void TestLLVMGenericEnumOption()
+    {
+        var result = _batch.Value.GetResult();
+        System.IO.File.WriteAllText("/tmp/ep_enum_llvm_output.txt", result ?? "(null)");
+    }
 
     #endregion
 }

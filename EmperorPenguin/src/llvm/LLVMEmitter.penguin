@@ -288,19 +288,32 @@ class LLVMEmitter {
     }
 
     fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: ir.IRModule) {
+        let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
             let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
             if (func.is_extern) {
-                target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
-                let pi: mut i64 = 0;
-                while (pi < cast<i64>(func.parameters.size())) {
-                    if (pi > 0) { target.append(", "); }
-                    let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
-                    target.append(this.ir_type_to_llvm(p.ir_type));
-                    pi = pi + 1;
+                let llvm_name: string = this.llvm_func_name(func.name);
+                let already: mut bool = false;
+                let ei: mut i64 = 0;
+                while (ei < cast<i64>(emitted.size())) {
+                    if (emitted.at(cast<u64>(ei)).some == llvm_name) {
+                        already = true;
+                    }
+                    ei = ei + 1;
                 }
-                target.append(")\n");
+                if (!already) {
+                    emitted.push(llvm_name);
+                    target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + llvm_name + "(");
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(func.parameters.size())) {
+                        if (pi > 0) { target.append(", "); }
+                        let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+                        target.append(this.ir_type_to_llvm(p.ir_type));
+                        pi = pi + 1;
+                    }
+                    target.append(")\n");
+                }
             }
             fi = fi + 1;
         }
@@ -423,13 +436,16 @@ class LLVMEmitter {
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
             let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            if (inst is ir.IRInstruction.label_inst) {
-                if (!block_terminated) {
+            let is_label: bool = inst is ir.IRInstruction.label_inst;
+            if (is_label) {
+                if (block_terminated == false) {
                     this.sb.append("  br label %" + inst.label_inst.label.name + "\n");
                 }
                 block_terminated = false;
             }
-            this.emit_instruction(inst);
+            if (block_terminated == false) {
+                this.emit_instruction(inst);
+            }
             if (inst is ir.IRInstruction.br || inst is ir.IRInstruction.br_cond || inst is ir.IRInstruction.ret || inst is ir.IRInstruction.ret_void) {
                 block_terminated = true;
             }
@@ -485,29 +501,49 @@ class LLVMEmitter {
     // --- Layout building ---
 
     fun build_layout_tables(mut this, unit: bound.BoundCompilationUnit) {
+        // Pass 1: build all enum layouts first (classes may reference them)
         let di: mut i64 = 0;
         while (di < cast<i64>(unit.definitions.size())) {
             let def: bound.BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
-            this.build_layout_for_def(def);
+            this.build_enum_layouts_for_def(def);
+            di = di + 1;
+        }
+        // Pass 2: build class layouts (can now reference enum layouts)
+        di = 0;
+        while (di < cast<i64>(unit.definitions.size())) {
+            let def: bound.BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
+            this.build_class_layouts_for_def(def);
             di = di + 1;
         }
     }
 
-    fun build_layout_for_def(mut this, def: bound.BoundDefinition) {
-        if (def is bound.BoundDefinition.class_def) {
-            if (!def.class_def.is_generic_template) {
-                this.build_class_layout(def.class_def);
-            }
-        }
+    fun build_enum_layouts_for_def(mut this, def: bound.BoundDefinition) {
         if (def is bound.BoundDefinition.enum_def) {
-            this.build_enum_layout(def.enum_def);
+            if (cast<i64>(def.enum_def.generic_params.size()) == 0) {
+                this.build_enum_layout(def.enum_def);
+            }
         }
         if (def is bound.BoundDefinition.namespace_def) {
             let ns: bound.BoundNamespaceDefinition = def.namespace_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ns.children.size())) {
-                let child: bound.BoundDefinition = ns.children.at(cast<u64>(i)).some;
-                this.build_layout_for_def(child);
+                this.build_enum_layouts_for_def(ns.children.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+        }
+    }
+
+    fun build_class_layouts_for_def(mut this, def: bound.BoundDefinition) {
+        if (def is bound.BoundDefinition.class_def) {
+            if (!def.class_def.is_generic_template) {
+                this.build_class_layout(def.class_def);
+            }
+        }
+        if (def is bound.BoundDefinition.namespace_def) {
+            let ns: bound.BoundNamespaceDefinition = def.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                this.build_class_layouts_for_def(ns.children.at(cast<u64>(i)).some);
                 i = i + 1;
             }
         }
@@ -573,7 +609,7 @@ class LLVMEmitter {
     fun build_enum_layout(mut this, enum_def: bound.BoundEnumDefinition) {
         let layout: mut EnumLayout = new EnumLayout(this.strip_global_prefix(enum_def.full_name));
         let has_payload: mut bool = false;
-        let payload_type: mut string = "i64";
+        let payload_type: mut string = "";
         let enum_name: string = enum_def.name;
 
         let mi: mut i64 = 0;
@@ -592,7 +628,7 @@ class LLVMEmitter {
                 let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, member_llvm_type);
                 layout.variants.push(variant);
                 has_payload = true;
-                if (this.llvm_type_size(member_llvm_type) > this.llvm_type_size(payload_type)) {
+                if (payload_type == "" || this.llvm_type_size(member_llvm_type) > this.llvm_type_size(payload_type)) {
                     payload_type = member_llvm_type;
                 }
             }
@@ -648,6 +684,26 @@ class LLVMEmitter {
             }
             i = i + 1;
         }
+        // Reverse suffix match: "_utils.List__string" matches layout "List__string"
+        let dot_pos: mut i64 = -1;
+        let si: mut i64 = 0;
+        while (si < string_length(type_name)) {
+            if (string_substring(type_name, si, 1) == ".") {
+                dot_pos = si;
+            }
+            si = si + 1;
+        }
+        if (dot_pos >= 0) {
+            let short_name: string = string_substring(type_name, dot_pos + 1, string_length(type_name) - dot_pos - 1);
+            i = 0;
+            while (i < cast<i64>(this.class_layouts.size())) {
+                let layout: ClassLayout = this.class_layouts.at(cast<u64>(i)).some;
+                if (layout.type_name == short_name) {
+                    return new Option<ClassLayout>.some(layout);
+                }
+                i = i + 1;
+            }
+        }
         return new Option<ClassLayout>.none();
     }
 
@@ -674,6 +730,26 @@ class LLVMEmitter {
                 }
             }
             i = i + 1;
+        }
+        // Reverse suffix match: "_utils.Option__string" matches layout "Option__string"
+        let dot_pos: mut i64 = -1;
+        let si: mut i64 = 0;
+        while (si < string_length(type_name)) {
+            if (string_substring(type_name, si, 1) == ".") {
+                dot_pos = si;
+            }
+            si = si + 1;
+        }
+        if (dot_pos >= 0) {
+            let short_name: string = string_substring(type_name, dot_pos + 1, string_length(type_name) - dot_pos - 1);
+            i = 0;
+            while (i < cast<i64>(this.enum_layouts.size())) {
+                let layout: EnumLayout = this.enum_layouts.at(cast<u64>(i)).some;
+                if (layout.type_name == short_name) {
+                    return new Option<EnumLayout>.some(layout);
+                }
+                i = i + 1;
+            }
         }
         return new Option<EnumLayout>.none();
     }
@@ -982,13 +1058,46 @@ class LLVMEmitter {
         if (bt.type_definition.is_some()) {
             let def: bound.BoundDefinition = bt.type_definition.some;
             if (def is bound.BoundDefinition.class_def) {
-                return this.strip_global_prefix(def.class_def.full_name);
+                let cls: bound.BoundClassDefinition = def.class_def;
+                if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(cls.generic_params.size()) > 0) {
+                    return this.compute_mangled_name(cls.name, bt);
+                }
+                return this.strip_global_prefix(cls.full_name);
             }
             if (def is bound.BoundDefinition.enum_def) {
-                return this.strip_global_prefix(def.enum_def.full_name);
+                let e: bound.BoundEnumDefinition = def.enum_def;
+                if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(e.generic_params.size()) > 0) {
+                    return this.compute_mangled_name(e.name, bt);
+                }
+                return this.strip_global_prefix(e.full_name);
             }
         }
         return bt.display_name();
+    }
+
+    fun compute_mangled_name(this, base_name: string, bt: bound.BoundType) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        sb2.append(base_name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            sb2.append("__");
+            let arg: bound.BoundType = bt.generic_args.at(cast<u64>(i)).some;
+            let arg_name: string = arg.display_name();
+            let sanitized: mut StringBuilder = new StringBuilder();
+            let j: mut i64 = 0;
+            while (j < string_length(arg_name)) {
+                let ch: string = string_char_at(arg_name, j);
+                if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
+                    sanitized.append("_");
+                } else {
+                    sanitized.append(ch);
+                }
+                j = j + 1;
+            }
+            sb2.append(sanitized.to_string());
+            i = i + 1;
+        }
+        return sb2.to_string();
     }
 
     fun class_type_to_llvm(this, bt: bound.BoundType) -> string {
@@ -1219,6 +1328,15 @@ class LLVMEmitter {
             return;
         }
 
+        // enum → string: extract tag index, convert to string
+        if (this.is_string_type(inst.to_type) && this.is_enum_type(inst.from_type)) {
+            this.needs_int_to_string = true;
+            let tag_tmp: string = this.next_tmp();
+            this.sb.append("  " + tag_tmp + " = extractvalue " + from_llvm + " " + operand_resolved + ", 1\n");
+            this.sb.append("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + tag_tmp + ")\n");
+            return;
+        }
+
         let cast_op: string = this.cast_op(from_llvm, to_llvm);
         if (from_llvm == to_llvm) {
             if (from_llvm == "ptr") {
@@ -1393,7 +1511,11 @@ class LLVMEmitter {
     }
 
     fun emit_ret_void(mut this) {
-        this.sb.append("  ret void\n");
+        if (this.current_ret_type == "void") {
+            this.sb.append("  ret void\n");
+        } else {
+            this.sb.append("  unreachable\n");
+        }
     }
 
     fun emit_call(mut this, inst: ir.IRCall) {
@@ -2152,7 +2274,7 @@ class LLVMEmitter {
         if (sanitized == "string_to_int" || sanitized == "__builtin_string_to_int") { return "@_emperor_string_to_int"; }
         if (sanitized == "__builtin___args_count") { return "@_emperor_args_count"; }
         if (sanitized == "__builtin___args_get") { return "@_emperor_args_get"; }
-        if (sanitized == "__builtin___exec_cmd") { return "@_emperor_exec_cmd"; }
+        if (sanitized == "__builtin__exec_cmd") { return "@_emperor_exec_cmd"; }
         // Map _utils.* extern functions to C runtime
         if (sanitized == "_utils_file_read_text") { return "@_emperor_file_read_text"; }
         if (sanitized == "_utils_file_write_text") { return "@_emperor_file_write_text"; }
@@ -2265,6 +2387,19 @@ class LLVMEmitter {
         return ir_type == "bool";
     }
 
+    fun is_enum_type(this, ir_type: string) -> bool {
+        if (string_length(ir_type) >= 5) {
+            let prefix: string = "enum<";
+            let i: mut i64 = 0;
+            while (i < 5) {
+                if (string_char_at(ir_type, i) != string_char_at(prefix, i)) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+        return false;
+    }
+
     fun is_ref_type(this, ir_type: string) -> bool {
         if (string_length(ir_type) >= 5) {
             let prefix: string = "ref<";
@@ -2319,6 +2454,7 @@ class LLVMEmitter {
     }
 
     // --- String escaping for LLVM c"..." format ---
+    // LLVM c"..." uses \xx hex escapes only. No \\ or \" escapes exist.
 
     fun escape_llvm_string(this, s: string) -> string {
         let sb2: mut StringBuilder = new StringBuilder();
@@ -2327,12 +2463,24 @@ class LLVMEmitter {
         while (i < len) {
             let ch: string = string_char_at(s, i);
             if (ch == "\\") {
-                sb2.append("\\\\");
+                sb2.append("\\5C");
             } else {
                 if (ch == "\"") {
-                    sb2.append("\\\"");
+                    sb2.append("\\22");
                 } else {
-                    sb2.append(ch);
+                    if (ch == "\n") {
+                        sb2.append("\\0A");
+                    } else {
+                        if (ch == "\r") {
+                            sb2.append("\\0D");
+                        } else {
+                            if (ch == "\t") {
+                                sb2.append("\\09");
+                            } else {
+                                sb2.append(ch);
+                            }
+                        }
+                    }
                 }
             }
             i = i + 1;

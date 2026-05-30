@@ -100,11 +100,11 @@ public static class BatchCompiler
         return ToBatchResults(testData, results);
     }
 
-    public static BatchResults InitBoundBatch<T>()
+    public static BatchResults InitBoundBatch<T>(string? prefixSource = null)
     {
         var testData = CollectMethods<T, BatchBoundTestAttribute>(
             (m, a) => (m.Name, a.Code, a.Expected));
-        var results = CompileAndRunBound(testData.Select(t => (t.Name, t.Code)).ToArray());
+        var results = CompileAndRunBound(testData.Select(t => (t.Name, t.Code)).ToArray(), prefixSource: prefixSource);
         return ToBatchResults(testData, results);
     }
 
@@ -158,7 +158,7 @@ public static class BatchCompiler
 
     private static readonly Lock _e2eLock = new();
 
-    public static BatchResults InitE2EBatch<T>(int chunkSize = 10)
+    public static BatchResults InitE2EBatch<T>(int chunkSize = 10, string? prefixSource = null)
     {
         var testData = CollectMethods<T, BatchE2ETestAttribute>(
             (m, a) => (m.Name, a.Code, a.Expected));
@@ -168,7 +168,7 @@ public static class BatchCompiler
             for (int i = 0; i < testData.Count; i += chunkSize)
             {
                 var chunk = testData.Skip(i).Take(chunkSize).Select(t => (t.Name, t.Code)).ToArray();
-                var chunkResults = CompileAndRunE2E(chunk);
+                var chunkResults = CompileAndRunE2E(chunk, prefixSource: prefixSource);
                 foreach (var kv in chunkResults)
                     allResults[kv.Key] = kv.Value;
             }
@@ -178,10 +178,13 @@ public static class BatchCompiler
 
     public static Dictionary<string, string> CompileAndRunE2E(
         (string Name, string Code)[] tests,
-        int timeoutSeconds = 900)
+        int timeoutSeconds = 900,
+        string? prefixSource = null)
     {
         var projectRoot = FindProjectRoot();
         var combinedCode = new StringBuilder();
+        if (prefixSource != null)
+            combinedCode.AppendLine(prefixSource);
         foreach (var test in tests)
         {
             var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");
@@ -390,9 +393,12 @@ public static class BatchCompiler
 
     public static Dictionary<string, string> CompileAndRunBound(
         (string Name, string Code)[] tests,
-        int timeoutSeconds = 300)
+        int timeoutSeconds = 300,
+        string? prefixSource = null)
     {
         var combinedCode = new StringBuilder();
+        if (prefixSource != null)
+            combinedCode.AppendLine(prefixSource);
         foreach (var test in tests)
         {
             var taggedCode = test.Code.Replace("println(", $"println(\"@@{test.Name}@@\" + ");

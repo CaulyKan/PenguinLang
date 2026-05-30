@@ -4,24 +4,172 @@ namespace _utils {
     extern fun mkdir(path: string) -> bool;
 
     #template(T: type)
+    class _ListNode {
+        value: mut __builtin.Option<T> = new __builtin.Option<T>.none();
+        next: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+    }
+
+    #template(T: type)
     class List {
-        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
-        extern fun new(mut this);
-        extern fun at(this, index: u64) -> __builtin.Option<T>;
-        extern fun remove(mut this, index: u64);
-        extern fun push(mut this, value: T);
-        extern fun pop(mut this) -> __builtin.Option<T>;
-        extern fun size(this) -> u64;
+        head: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+        tail: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+        count: mut u64 = 0;
+
+        fun new(mut this) {}
+
+        fun push(mut this, value: T) {
+            let node: mut _ListNode<T> = new _ListNode<T>();
+            node.value = new __builtin.Option<T>.some(value);
+            if (this.count == 0) {
+                this.head = new __builtin.Option<_ListNode<T>>.some(node);
+                this.tail = new __builtin.Option<_ListNode<T>>.some(node);
+            } else {
+                let t: mut _ListNode<T> = this.tail.some;
+                t.next = new __builtin.Option<_ListNode<T>>.some(node);
+                this.tail = new __builtin.Option<_ListNode<T>>.some(node);
+            }
+            this.count = this.count + 1;
+        }
+
+        fun at(this, index: u64) -> __builtin.Option<T> {
+            if (index >= this.count) {
+                return new __builtin.Option<T>.none();
+            }
+            let current: mut __builtin.Option<_ListNode<T>> = this.head;
+            let i: mut u64 = 0;
+            while (i < index) {
+                current = current.some.next;
+                i = i + 1;
+            }
+            return current.some.value;
+        }
+
+        fun set(mut this, index: u64, value: T) {
+            if (index >= this.count) {
+                return;
+            }
+            let current: mut __builtin.Option<_ListNode<T>> = this.head;
+            let i: mut u64 = 0;
+            while (i < index) {
+                current = current.some.next;
+                i = i + 1;
+            }
+            let node: mut _ListNode<T> = current.some;
+            node.value = new __builtin.Option<T>.some(value);
+        }
+
+        fun pop(mut this) -> __builtin.Option<T> {
+            if (this.count == 0) {
+                return new __builtin.Option<T>.none();
+            }
+            let result: __builtin.Option<T> = this.tail.some.value;
+            if (this.count == 1) {
+                this.head = new __builtin.Option<_ListNode<T>>.none();
+                this.tail = new __builtin.Option<_ListNode<T>>.none();
+                this.count = 0;
+                return result;
+            }
+            let current: mut __builtin.Option<_ListNode<T>> = this.head;
+            let j: mut u64 = 0;
+            while (j < this.count - 2) {
+                current = current.some.next;
+                j = j + 1;
+            }
+            let new_tail: mut _ListNode<T> = current.some;
+            new_tail.next = new __builtin.Option<_ListNode<T>>.none();
+            this.tail = new __builtin.Option<_ListNode<T>>.some(new_tail);
+            this.count = this.count - 1;
+            return result;
+        }
+
+        fun remove(mut this, index: u64) {
+            if (index >= this.count) {
+                return;
+            }
+            if (this.count == 1) {
+                this.head = new __builtin.Option<_ListNode<T>>.none();
+                this.tail = new __builtin.Option<_ListNode<T>>.none();
+                this.count = 0;
+                return;
+            }
+            if (index == 0) {
+                this.head = this.head.some.next;
+                this.count = this.count - 1;
+                return;
+            }
+            let current: mut __builtin.Option<_ListNode<T>> = this.head;
+            let i: mut u64 = 0;
+            while (i < index - 1) {
+                current = current.some.next;
+                i = i + 1;
+            }
+            let prev: mut _ListNode<T> = current.some;
+            let target: mut __builtin.Option<_ListNode<T>> = prev.next;
+            if (target.is_some()) {
+                prev.next = target.some.next;
+                if (index == this.count - 1) {
+                    this.tail = new __builtin.Option<_ListNode<T>>.some(prev);
+                }
+            }
+            this.count = this.count - 1;
+        }
+
+        fun size(this) -> u64 {
+            return this.count;
+        }
+    }
+
+    #template(T: type)
+    class _QueueNode {
+        value: mut __builtin.Option<T> = new __builtin.Option<T>.none();
+        next: mut __builtin.Option<_QueueNode<T>> = new __builtin.Option<_QueueNode<T>>.none();
     }
 
     #template(T: type)
     class Queue {
-        __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
-        extern fun new(mut this);
-        extern fun enqueue(mut this, value: T);
-        extern fun dequeue(mut this) -> __builtin.Option<T>;
-        extern fun peek(this) -> __builtin.Option<T>;
-        extern fun size(this) -> u64;
+        front: mut __builtin.Option<_QueueNode<T>> = new __builtin.Option<_QueueNode<T>>.none();
+        rear: mut __builtin.Option<_QueueNode<T>> = new __builtin.Option<_QueueNode<T>>.none();
+        count: mut u64 = 0;
+
+        fun new(mut this) {}
+
+        fun enqueue(mut this, value: T) {
+            let node: mut _QueueNode<T> = new _QueueNode<T>();
+            node.value = new __builtin.Option<T>.some(value);
+            if (this.count == 0) {
+                this.front = new __builtin.Option<_QueueNode<T>>.some(node);
+                this.rear = new __builtin.Option<_QueueNode<T>>.some(node);
+            } else {
+                let r: mut _QueueNode<T> = this.rear.some;
+                r.next = new __builtin.Option<_QueueNode<T>>.some(node);
+                this.rear = new __builtin.Option<_QueueNode<T>>.some(node);
+            }
+            this.count = this.count + 1;
+        }
+
+        fun dequeue(mut this) -> __builtin.Option<T> {
+            if (this.count == 0) {
+                return new __builtin.Option<T>.none();
+            }
+            let result: __builtin.Option<T> = this.front.some.value;
+            this.front = this.front.some.next;
+            if (this.front.is_none()) {
+                this.rear = new __builtin.Option<_QueueNode<T>>.none();
+            }
+            this.count = this.count - 1;
+            return result;
+        }
+
+        fun peek(this) -> __builtin.Option<T> {
+            if (this.count == 0) {
+                return new __builtin.Option<T>.none();
+            }
+            return this.front.some.value;
+        }
+
+        fun size(this) -> u64 {
+            return this.count;
+        }
     }
 
     fun exec(exe: string, args: List<string>) -> i64 {

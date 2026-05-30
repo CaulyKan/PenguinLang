@@ -15,3 +15,4 @@ Documentation/BasicIntroductionSlide/BasicIntroduction
 *_output/
 tmp
 *.o
+tmp_bootstrap

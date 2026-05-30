@@ -884,4 +884,128 @@ initial {
 }
 ", "operand_count=3\noperator_count=2")]
     public void ChainedBinaryExpressionTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo() -> i64 { let x: i64 = 42; return x; }"");
+    let def = result.definitions.at(cast<u64>(0)).some;
+    if (def is bound.BoundDefinition.function_def) {
+        let func = def.function_def;
+        if (func.body.is_some()) {
+            let body = func.body.some;
+            if (body is bound.BoundExpression.code_block) {
+                let cb = body.code_block;
+                let stmt_count: i64 = cast<i64>(cb.statements.size());
+                println(""stmt_count="" + cast<string>(stmt_count));
+                if (stmt_count >= 2) {
+                    let s0 = cb.statements.at(cast<u64>(0)).some;
+                    let s1 = cb.statements.at(cast<u64>(1)).some;
+                    if (s0 is bound.BoundStatement.let_decl) {
+                        println(""s0_kind=let_decl"");
+                        println(""s0_name="" + s0.let_decl.variable_symbol.some.name);
+                        println(""s0_type="" + s0.let_decl.bound_type.display_name());
+                    }
+                    if (s1 is bound.BoundStatement.return_stmt) {
+                        println(""s1_kind=return_stmt"");
+                        if (s1.return_stmt.value.is_some()) {
+                            let ret_val = s1.return_stmt.value.some;
+                            println(""ret_type="" + ret_val.get_bound_type().display_name());
+                            if (ret_val is bound.BoundExpression.identifier) {
+                                println(""ret_name="" + ret_val.identifier.symbol.some.get_name());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+", "stmt_count=2\ns0_kind=let_decl\ns0_name=x\ns0_type=i64\ns1_kind=return_stmt\nret_type=i64\nret_name=x")]
+    public void LetAndReturnTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo(n: i64) -> i64 { let sum: mut i64 = 0; let i: mut i64 = 0; while (i < n) { sum = sum + i; i = i + 1; } return sum; }"");
+    let def = result.definitions.at(cast<u64>(0)).some;
+    if (def is bound.BoundDefinition.function_def) {
+        let func = def.function_def;
+        if (func.body.is_some()) {
+            let body = func.body.some;
+            if (body is bound.BoundExpression.code_block) {
+                let cb = body.code_block;
+                let stmt_count: i64 = cast<i64>(cb.statements.size());
+                println(""stmt_count="" + cast<string>(stmt_count));
+                if (stmt_count >= 4) {
+                    let s3 = cb.statements.at(cast<u64>(3)).some;
+                    if (s3 is bound.BoundStatement.return_stmt) {
+                        if (s3.return_stmt.value.is_some()) {
+                            let ret_val = s3.return_stmt.value.some;
+                            println(""ret_type="" + ret_val.get_bound_type().display_name());
+                            if (ret_val is bound.BoundExpression.identifier) {
+                                println(""ret_name="" + ret_val.identifier.symbol.some.get_name());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+", "stmt_count=4\nret_type=i64\nret_name=sum")]
+    public void LetWhileReturnTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo() -> i64 { let x: i64 = 42; let y: i64 = x; return y; }"");
+    let err_count: i64 = cast<i64>(result.errors.size());
+    println(""errors="" + cast<string>(err_count));
+    if (err_count == 0) {
+        let def = result.definitions.at(cast<u64>(0)).some;
+        if (def is bound.BoundDefinition.function_def) {
+            let func = def.function_def;
+            if (func.body.is_some()) {
+                let body = func.body.some;
+                if (body is bound.BoundExpression.code_block) {
+                    let cb = body.code_block;
+                    if (cast<i64>(cb.statements.size()) >= 3) {
+                        let s2 = cb.statements.at(cast<u64>(2)).some;
+                        if (s2 is bound.BoundStatement.return_stmt) {
+                            if (s2.return_stmt.value.is_some()) {
+                                println(""ret_type="" + s2.return_stmt.value.some.get_bound_type().display_name());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+", "errors=0\nret_type=i64")]
+    public void LetVariableChainTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let src: string = ""namespace myns { class Box { val: i64; } } fun make_box() -> myns.Box { let result: mut myns.Box = new myns.Box(); return result; }"";
+    let result = compiler.compile(src);
+    let err_count: i64 = cast<i64>(result.errors.size());
+    println(""errors="" + cast<string>(err_count));
+    if (err_count > 0) {
+        let ei: mut i64 = 0;
+        while (ei < err_count) {
+            let err = result.errors.at(cast<u64>(ei)).some;
+            println(""err_"" + cast<string>(ei) + ""="" + err.message);
+            ei = ei + 1;
+        }
+    }
+}
+", "errors=0")]
+    public void QualifiedTypeResolveTest() => _batch.Value.Assert();
 }

@@ -141,18 +141,24 @@ class IRGenerator {
 
     fun lower_class_def(mut this, def: bound.BoundClassDefinition, module: mut IRModule) {
         if (def.is_generic_template) { return; }
-        if (def.constructor.is_some()) {
-            this.lower_function_def(def.constructor.some, module);
-        }
+        let ctor_lowered: mut bool = false;
         let mi: mut i64 = 0;
         while (mi < cast<i64>(def.methods.size())) {
             let method_def: bound.BoundDefinition = def.methods.at(cast<u64>(mi)).some;
             if (method_def is bound.BoundDefinition.function_def) {
-                if (!method_def.function_def.is_new) {
+                if (method_def.function_def.is_new) {
+                    this.lower_function_def(method_def.function_def, module);
+                    ctor_lowered = true;
+                } else {
                     this.lower_function_def(method_def.function_def, module);
                 }
             }
             mi = mi + 1;
+        }
+        if (!ctor_lowered) {
+            if (def.constructor.is_some()) {
+                this.lower_function_def(def.constructor.some, module);
+            }
         }
         let ii: mut i64 = 0;
         while (ii < cast<i64>(def.interface_impls.size())) {
@@ -173,6 +179,18 @@ class IRGenerator {
     }
 
     fun lower_enum_def(mut this, def: bound.BoundEnumDefinition, module: mut IRModule) {
+        // Skip methods for generic template enums — only specialized versions get lowered
+        if (cast<i64>(def.generic_params.size()) > 0) { return; }
+        // Lower direct enum methods
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(def.methods.size())) {
+            let method_def: bound.BoundDefinition = def.methods.at(cast<u64>(mi)).some;
+            if (method_def is bound.BoundDefinition.function_def) {
+                this.lower_function_def(method_def.function_def, module);
+            }
+            mi = mi + 1;
+        }
+        // Lower interface impl methods
         let ii: mut i64 = 0;
         while (ii < cast<i64>(def.interface_impls.size())) {
             let impl_def: bound.BoundDefinition = def.interface_impls.at(cast<u64>(ii)).some;
@@ -442,10 +460,23 @@ class IRGenerator {
                         // expression without boxing
                         let dd_val: IRValue = this.lower_direct_dispatch_this(ma, expr);
                         let new_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
-                        if (dd_val.get_ir_type() == "void") {
-                            new_args.push(this.lower_expression(ma.base_expr.some));
-                        } else {
-                            new_args.push(dd_val);
+                        // Check if this is a namespace-qualified call (e.g., __builtin._exec_cmd)
+                        // In that case, don't prepend the base expression as 'this'
+                        let is_namespace_call: mut bool = false;
+                        if (ma.base_expr.some is bound.BoundExpression.identifier) {
+                            let base_id: bound.BoundIdentifierExpression = ma.base_expr.some.identifier;
+                            if (base_id.symbol.is_some()) {
+                                if (base_id.symbol.some is bound.BoundSymbol.namespace_sym) {
+                                    is_namespace_call = true;
+                                }
+                            }
+                        }
+                        if (!is_namespace_call) {
+                            if (dd_val.get_ir_type() == "void") {
+                                new_args.push(this.lower_expression(ma.base_expr.some));
+                            } else {
+                                new_args.push(dd_val);
+                            }
                         }
                         let ai2: mut i64 = 0;
                         while (ai2 < cast<i64>(args.size())) {
@@ -462,6 +493,13 @@ class IRGenerator {
                                     has_generic_receiver = true;
                                     generic_args_list = receiver_type.generic_args;
                                     template_class_name = recv_def.class_def.name;
+                                }
+                            }
+                            if (recv_def is bound.BoundDefinition.enum_def) {
+                                if (cast<i64>(recv_def.enum_def.generic_params.size()) > 0) {
+                                    has_generic_receiver = true;
+                                    generic_args_list = receiver_type.generic_args;
+                                    template_class_name = recv_def.enum_def.name;
                                 }
                             }
                         }
@@ -917,7 +955,14 @@ class IRGenerator {
             payload = new Option<IRValue>.some(this.lower_expression(expr.payload.some));
         }
         let loc: IRSourceLocation = this.make_loc(0, 0);
-        let enum_ir_type: string = "enum<" + expr.enum_type.display_name() + ">";
+        let enum_ir_type: mut string = this.bound_type_to_ir_type(expr.enum_type);
+        // Diagnostic: if type still uses template name (no __), try using type_definition name directly
+        if (string_find(enum_ir_type, "__") < 0 && expr.enum_type.type_definition.is_some()) {
+            let def_name: string = expr.enum_type.type_definition.some.get_name();
+            if (string_find(def_name, "__") >= 0) {
+                enum_ir_type = "enum<" + def_name + ">";
+            }
+        }
         return this.builder.emit_new_enum(enum_ir_type, expr.variant_idx, expr.variant_name, payload, loc);
     }
 
@@ -1129,7 +1174,11 @@ class IRGenerator {
         }
         if (bt.kind is bound.TypeKind.EnumKind) {
             if (bt.type_definition.is_some()) {
-                return "enum<" + bt.type_definition.some.get_name() + ">";
+                let base_name: string = bt.type_definition.some.get_name();
+                if (cast<i64>(bt.generic_args.size()) > 0) {
+                    return "enum<" + this.mangle_generic_name(base_name, bt.generic_args) + ">";
+                }
+                return "enum<" + base_name + ">";
             }
             return "enum<unknown>";
         }

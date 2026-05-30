@@ -15,6 +15,7 @@ class SemanticModel {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     global_scope: mut BoundScope;
     current_unit: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
+    _current_validating_func: mut string = "";
     ast_definitions: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
 
     fun new(mut this) {
@@ -257,6 +258,21 @@ class SemanticModel {
         result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
         result.bound_type = t;
         scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+        // Register generic type params in enum scope so payload types can resolve them
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(result.generic_params.size())) {
+                let param_name: string = result.generic_params.at(cast<u64>(gi)).some;
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                let pt: mut BoundType = new BoundType();
+                pt.kind = new TypeKind.ClassKind();
+                let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                param_sym.bound_type = pt;
+                enum_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                gi = gi + 1;
+            }
+        }
         let member_idx: mut i64 = 0;
         let i: mut i64 = 0;
         while (i < cast<i64>(def.members.size())) {
@@ -265,7 +281,7 @@ class SemanticModel {
                 // Resolve payload type from type_spec
                 let payload_type: mut BoundType = this.type_registry.void_type;
                 if (member.enum_member.type_spec.is_some()) {
-                    payload_type = this.resolve_type_specifier(member.enum_member.type_spec.some, scope);
+                    payload_type = this.resolve_type_specifier(member.enum_member.type_spec.some, enum_scope);
                 }
                 let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
                 let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
@@ -278,6 +294,12 @@ class SemanticModel {
                 let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, enum_scope);
                 if (bound_impl.is_some()) {
                     result.interface_impls.push(bound_impl.some);
+                }
+            }
+            if (member is ast.Definition.function_def) {
+                let bound_method: Option<BoundDefinition> = this.bind_function_def(member.function_def, enum_scope);
+                if (bound_method.is_some()) {
+                    result.methods.push(bound_method.some);
                 }
             }
             i = i + 1;
@@ -410,6 +432,34 @@ class SemanticModel {
         this.errors.push(new SemanticError(message, line, col));
     }
 
+    fun substitute_generic_args(this, bt: mut BoundType, concrete_type: BoundType, generic_def: BoundDefinition) -> mut BoundType {
+        if (cast<i64>(concrete_type.generic_args.size()) == 0) { return bt; }
+        let bt_name: string = bt.display_name();
+        if (generic_def is BoundDefinition.enum_def) {
+            let e: BoundEnumDefinition = generic_def.enum_def;
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(e.generic_params.size()) && pi < cast<i64>(concrete_type.generic_args.size())) {
+                if (bt_name == e.generic_params.at(cast<u64>(pi)).some) {
+                    let arg: mut BoundType = concrete_type.generic_args.at(cast<u64>(pi)).some;
+                    return arg;
+                }
+                pi = pi + 1;
+            }
+        }
+        if (generic_def is BoundDefinition.class_def) {
+            let c: BoundClassDefinition = generic_def.class_def;
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(c.generic_params.size()) && pi < cast<i64>(concrete_type.generic_args.size())) {
+                if (bt_name == c.generic_params.at(cast<u64>(pi)).some) {
+                    let arg: mut BoundType = concrete_type.generic_args.at(cast<u64>(pi)).some;
+                    return arg;
+                }
+                pi = pi + 1;
+            }
+        }
+        return bt;
+    }
+
     fun pass_bind_symbols(mut this, result: BoundCompilationUnit) {
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
@@ -435,6 +485,13 @@ class SemanticModel {
                     let sym: mut BoundEnumMemberSymbol = member.member_symbol.some;
                     sym.bound_type = e.bound_type;
                 }
+                i = i + 1;
+            }
+            // Bind symbols for direct enum methods
+            i = 0;
+            while (i < cast<i64>(e.methods.size())) {
+                let md: BoundDefinition = e.methods.at(cast<u64>(i)).some;
+                this.bind_symbols_for_def(md);
                 i = i + 1;
             }
             i = 0;
@@ -776,6 +833,26 @@ class SemanticModel {
             }
             ai = ai + 1;
         }
+        // Resolve direct enum method types
+        let di: mut i64 = 0;
+        while (di < cast<i64>(e.methods.size())) {
+            let md: BoundDefinition = e.methods.at(cast<u64>(di)).some;
+            if (md is BoundDefinition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ast_enum.members.size())) {
+                    let ast_member: ast.Definition = ast_enum.members.at(cast<u64>(mi)).some;
+                    if (ast_member is ast.Definition.function_def) {
+                        if (ast_member.function_def.name == md.function_def.name) {
+                            let bm: mut BoundFunctionDefinition = md.function_def;
+                            this.resolve_enum_method_pair(ast_member.function_def, bm, enum_scope, e);
+                            e.methods.set(cast<u64>(di), new BoundDefinition.function_def(bm));
+                        }
+                    }
+                    mi = mi + 1;
+                }
+            }
+            di = di + 1;
+        }
     }
 
     fun resolve_enum_method_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, e: mut BoundEnumDefinition) {
@@ -787,18 +864,27 @@ class SemanticModel {
         sym.return_type = ret;
         bound_func.return_type = ret;
         let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-        let pi: mut i64 = 0;
-        while (pi < cast<i64>(ast_func.parameters.size())) {
-            let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
-            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
-            if (p.type_spec.is_some()) {
-                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, scope);
-            } else if (p.is_this) {
-                bp.bound_type = e.bound_type;
+        // Skip parameter resolution if already done (e.g. during specialize_enum_def)
+        if (cast<i64>(bound_func.parameters.size()) == 0) {
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(ast_func.parameters.size())) {
+                let p: ast.Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+                let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+                if (p.type_spec.is_some()) {
+                    bp.bound_type = this.resolve_type_specifier(p.type_spec.some, scope);
+                } else if (p.is_this) {
+                    bp.bound_type = e.bound_type;
+                }
+                bound_func.parameters.push(bp);
+                func_type_params.push(bp.bound_type);
+                pi = pi + 1;
             }
-            bound_func.parameters.push(bp);
-            func_type_params.push(bp.bound_type);
-            pi = pi + 1;
+        } else {
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(bound_func.parameters.size())) {
+                func_type_params.push(bound_func.parameters.at(cast<u64>(pi)).some.bound_type);
+                pi = pi + 1;
+            }
         }
         let is_async: bool = ast_func.is_async;
         sym.bound_type = this.type_registry.make_function_type(ret, func_type_params, is_async);
@@ -899,6 +985,23 @@ class SemanticModel {
         }
     }
 
+    fun resolve_generic_args(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> mut _utils.List<BoundType> {
+        let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let k: mut i64 = 0;
+        while (k < cast<i64>(type_spec.generic_args.size())) {
+            args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
+            k = k + 1;
+        }
+        return args;
+    }
+
+    fun apply_mutability(this, bt: BoundType, is_mutable: bool) -> mut BoundType {
+        if (is_mutable) {
+            return bt.with_mutability(new Mutability.Mutable());
+        }
+        return bt;
+    }
+
     fun resolve_type_specifier(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> mut BoundType {
         if (type_spec.is_function_type || type_spec.is_async_function_type) {
             let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
@@ -916,49 +1019,48 @@ class SemanticModel {
         }
         let prim: Option<BoundType> = this.type_registry.resolve_type(type_spec.name);
         if (prim.is_some()) {
-            let result: mut BoundType = prim.some;
-            if (type_spec.is_mutable) {
-                return result.with_mutability(new Mutability.Mutable());
-            }
-            return result;
+            return this.apply_mutability(prim.some, type_spec.is_mutable);
         }
-        if (cast<i64>(type_spec.qualified_parts.size()) > 0) {
-            let found: Option<BoundSymbol> = scope.resolve_qualified(type_spec.qualified_parts);
-            if (found.is_some() && found.some is BoundSymbol.type_sym) {
-                let resolved: mut BoundType = found.some.type_sym.bound_type;
-                if (cast<i64>(type_spec.generic_args.size()) > 0) {
-                    let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-                    let k: mut i64 = 0;
-                    while (k < cast<i64>(type_spec.generic_args.size())) {
-                        args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
-                        k = k + 1;
-                    }
-                    resolved = resolved.with_generic_args(args);
-                }
-                if (type_spec.is_mutable) {
-                    return resolved.with_mutability(new Mutability.Mutable());
-                }
-                return resolved;
-            }
+        let qual_result: Option<BoundType> = this.try_resolve_qualified_type(type_spec, scope);
+        if (qual_result.is_some()) {
+            return this.apply_mutability(qual_result.some, type_spec.is_mutable);
         }
         let type_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(type_spec.name);
         if (type_sym.is_some()) {
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             if (cast<i64>(type_spec.generic_args.size()) > 0) {
-                let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-                let k: mut i64 = 0;
-                while (k < cast<i64>(type_spec.generic_args.size())) {
-                    args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
-                    k = k + 1;
-                }
-                result = result.with_generic_args(args);
+                result = result.with_generic_args(this.resolve_generic_args(type_spec, scope));
             }
-            if (type_spec.is_mutable) {
-                return result.with_mutability(new Mutability.Mutable());
-            }
-            return result;
+            return this.apply_mutability(result, type_spec.is_mutable);
         }
         return this.type_registry.make_error_type();
+    }
+
+    fun try_resolve_qualified_type(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> Option<BoundType> {
+        if (cast<i64>(type_spec.qualified_parts.size()) == 0) {
+            return new Option<BoundType>.none();
+        }
+        let full_parts: mut _utils.List<string> = new _utils.List<string>();
+        let qi: mut i64 = 0;
+        while (qi < cast<i64>(type_spec.qualified_parts.size())) {
+            full_parts.push(type_spec.qualified_parts.at(cast<u64>(qi)).some);
+            qi = qi + 1;
+        }
+        full_parts.push(type_spec.name);
+        let found: Option<BoundSymbol> = scope.resolve_qualified(full_parts);
+        if (found.is_none()) {
+            return new Option<BoundType>.none();
+        }
+        if (found.some is BoundSymbol.type_sym) {
+            // OK - continue to resolve
+        } else {
+            return new Option<BoundType>.none();
+        }
+        let resolved: mut BoundType = found.some.type_sym.bound_type;
+        if (cast<i64>(type_spec.generic_args.size()) > 0) {
+            resolved = resolved.with_generic_args(this.resolve_generic_args(type_spec, scope));
+        }
+        return new Option<BoundType>.some(resolved);
     }
 
     fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundType>) -> string {
@@ -1402,9 +1504,19 @@ class SemanticModel {
         if (!(ast_def.some is ast.Definition.class_def)) { return new Option<BoundDefinition>.none(); }
 
         let ast_class: ast.ClassDefinition = ast_def.some.class_def;
-        let full_name: string = global_scope.full_name + "." + mangled_name;
+        // Use the original template's scope parent (namespace scope) so that
+        // type resolution within the specialized class can find sibling types
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
         let result: mut BoundClassDefinition = new BoundClassDefinition(mangled_name, full_name);
-        let class_scope: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), mangled_name, full_name, new Option<BoundScope>.some(global_scope));
+        let class_scope: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), mangled_name, full_name, scope_parent);
 
         let pi: mut i64 = 0;
         while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
@@ -1450,7 +1562,11 @@ class SemanticModel {
             if (member is ast.Definition.function_def) {
                 let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, class_scope);
                 if (bound_member.is_some()) {
-                    result.methods.push(bound_member.some);
+                    if (bound_member.some is BoundDefinition.function_def) {
+                        result.methods.push(new BoundDefinition.function_def(bound_member.some.function_def));
+                    } else {
+                        result.methods.push(bound_member.some);
+                    }
                 }
             }
             if (member is ast.Definition.impl_def) {
@@ -1471,9 +1587,17 @@ class SemanticModel {
         if (!(ast_def.some is ast.Definition.enum_def)) { return new Option<BoundDefinition>.none(); }
 
         let ast_enum: ast.EnumDefinition = ast_def.some.enum_def;
-        let full_name: string = global_scope.full_name + "." + mangled_name;
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
         let result: mut BoundEnumDefinition = new BoundEnumDefinition(mangled_name, full_name);
-        let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), mangled_name, full_name, new Option<BoundScope>.some(global_scope));
+        let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), mangled_name, full_name, scope_parent);
 
         let pi: mut i64 = 0;
         while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
@@ -1515,6 +1639,17 @@ class SemanticModel {
                 let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, enum_scope);
                 if (bound_impl.is_some()) {
                     result.interface_impls.push(bound_impl.some);
+                }
+            }
+            if (member is ast.Definition.function_def) {
+                let bound_method: Option<BoundDefinition> = this.bind_function_def(member.function_def, enum_scope);
+                if (bound_method.is_some()) {
+                    let bm: mut BoundDefinition = bound_method.some;
+                    if (bm is BoundDefinition.function_def) {
+                        this.resolve_enum_method_pair(member.function_def, bm.function_def, enum_scope, result);
+                        bm = new BoundDefinition.function_def(bm.function_def);
+                    }
+                    result.methods.push(bm);
                 }
             }
             i = i + 1;
@@ -2141,6 +2276,8 @@ class SemanticModel {
             return new BoundDefinition.initial_routine(bound_init);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
+            let bound_cls: BoundClassDefinition = bound_def.class_def;
+            if (bound_cls.is_generic_template) { return bound_def; }
             let ast_cls: ast.ClassDefinition = ast_def.class_def;
             let bound_cls: mut BoundClassDefinition = bound_def.class_def;
             let i: mut i64 = 0;
@@ -2186,6 +2323,26 @@ class SemanticModel {
                 i = i + 1;
             }
             return new BoundDefinition.class_def(bound_cls);
+        }
+        if (bound_def is BoundDefinition.enum_def && ast_def is ast.Definition.enum_def) {
+            let bound_enum: mut BoundEnumDefinition = bound_def.enum_def;
+            let ast_enum: ast.EnumDefinition = ast_def.enum_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ast_enum.members.size())) {
+                let ast_member: ast.Definition = ast_enum.members.at(cast<u64>(i)).some;
+                if (ast_member is ast.Definition.function_def) {
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_enum.methods.size())) {
+                        let bound_md: BoundDefinition = bound_enum.methods.at(cast<u64>(j)).some;
+                        if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
+                            bound_enum.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
+                        }
+                        j = j + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is ast.Definition.namespace_def) {
             let ast_ns: ast.NamespaceDefinition = ast_def.namespace_def;
@@ -2556,6 +2713,7 @@ class SemanticModel {
                                 let bt: mut BoundType = this.resolve_symbol_type(sym);
                                 if (sym is BoundSymbol.enum_member) {
                                     bt = sym.enum_member.member_type;
+                                    bt = this.substitute_generic_args(bt, base_type, new BoundDefinition.enum_def(e));
                                 }
                                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
                                 return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
@@ -2749,13 +2907,38 @@ class SemanticModel {
                                     return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
                                 }
                             }
-                            let bt: mut BoundType = sym.function_sym.return_type;
+                            let bt: mut BoundType = this.find_function_return_type(sym.function_sym);
                             // Look up updated return type from class method definitions
                             if (ma_expr.base_expr.is_some()) {
                                 let base_type: BoundType = ma_expr.base_expr.some.get_bound_type();
                                 // For generic types, look up the specialized definition
                                 if (cast<i64>(base_type.generic_args.size()) > 0 && base_type.type_definition.is_some()) {
                                     let orig_def: BoundDefinition = base_type.type_definition.some;
+                                    if (orig_def is BoundDefinition.enum_def) {
+                                        let spec_name: string = this.mangle_generic_name(orig_def.enum_def.name, base_type.generic_args);
+                                        let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
+                                        if (spec_sym.is_some()) {
+                                            if (spec_sym.some is BoundSymbol.type_sym) {
+                                                let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
+                                                if (spec_type.type_definition.is_some()) {
+                                                    let spec_def: BoundDefinition = spec_type.type_definition.some;
+                                                    if (spec_def is BoundDefinition.enum_def) {
+                                                        let spec_enum: BoundEnumDefinition = spec_def.enum_def;
+                                                        let mi: mut i64 = 0;
+                                                        while (mi < cast<i64>(spec_enum.methods.size())) {
+                                                            let md: BoundDefinition = spec_enum.methods.at(cast<u64>(mi)).some;
+                                                            if (md is BoundDefinition.function_def) {
+                                                                if (md.function_def.name == sym.function_sym.name) {
+                                                                    bt = md.function_def.return_type;
+                                                                }
+                                                            }
+                                                            mi = mi + 1;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     if (orig_def is BoundDefinition.class_def) {
                                         let spec_name: string = this.mangle_generic_name(orig_def.class_def.name, base_type.generic_args);
                                         let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
@@ -2849,6 +3032,19 @@ class SemanticModel {
                                                 }
                                             }
                                             vi = vi + 1;
+                                        }
+                                    }
+                                    if (td is BoundDefinition.enum_def) {
+                                        let e: BoundEnumDefinition = td.enum_def;
+                                        let mi: mut i64 = 0;
+                                        while (mi < cast<i64>(e.methods.size())) {
+                                            let md: BoundDefinition = e.methods.at(cast<u64>(mi)).some;
+                                            if (md is BoundDefinition.function_def) {
+                                                if (md.function_def.name == sym.function_sym.name) {
+                                                    bt = md.function_def.return_type;
+                                                }
+                                            }
+                                            mi = mi + 1;
                                         }
                                     }
                                     if (td is BoundDefinition.enum_def) {
@@ -3112,14 +3308,49 @@ class SemanticModel {
         return bt;
     }
 
-    fun bind_new_expr(mut this, expr: ast.NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        // Check if this is an enum variant creation (e.g., "new Option<i32>.some(42)")
-        let dot_idx: i64 = string_find(expr.type_name, ".");
-        if (dot_idx >= 0) {
-            let enum_name: string = string_substring(expr.type_name, 0, cast<i64>(dot_idx));
-            let variant_name: string = string_substring(expr.type_name, cast<i64>(dot_idx) + 1, cast<i64>(string_length(expr.type_name)) - cast<i64>(dot_idx) - 1);
-            let enum_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(enum_name);
-            if (enum_sym.is_some() && enum_sym.some is BoundSymbol.type_sym) {
+    fun resolve_type_by_name(this, name: string, scope: mut BoundScope) -> Option<BoundSymbol> {
+        let dot_idx: i64 = string_find(name, ".");
+        if (dot_idx < 0) {
+            return scope.lookup_type_in_scope(name);
+        }
+        // Split dotted name into parts and use resolve_qualified which traverses parent scopes
+        let parts: mut _utils.List<string> = new _utils.List<string>();
+        let pos: mut i64 = 0;
+        let len: i64 = string_length(name);
+        while (pos < len) {
+            let next_dot: i64 = string_find_from(name, ".", pos);
+            if (next_dot < 0) {
+                parts.push(string_substring(name, pos, len - pos));
+                pos = len;
+            } else {
+                parts.push(string_substring(name, pos, next_dot - pos));
+                pos = next_dot + 1;
+            }
+        }
+        return scope.resolve_qualified(parts);
+    }
+
+    fun find_last_dot(mut this, s: string) -> i64 {
+        let len: i64 = string_length(s);
+        let last_dot: mut i64 = -1;
+        let si: mut i64 = 0;
+        while (si < len) {
+            let ch: string = string_char_at(s, si);
+            if (ch == ".") {
+                last_dot = si;
+            }
+            si = si + 1;
+        }
+        return last_dot;
+    }
+
+    fun try_bind_enum_variant(mut this, expr: ast.NewExpression, scope: mut BoundScope, last_dot: i64) -> Option<BoundExpression> {
+        let len: i64 = string_length(expr.type_name);
+        let enum_name: string = string_substring(expr.type_name, 0, last_dot);
+        let variant_name: string = string_substring(expr.type_name, last_dot + 1, len - last_dot - 1);
+        let enum_sym: Option<BoundSymbol> = this.resolve_type_by_name(enum_name, scope);
+        if (enum_sym.is_some()) {
+            if (enum_sym.some is BoundSymbol.type_sym) {
                 let bt: mut BoundType = this.resolve_new_generic_args(expr, scope, enum_sym.some.type_sym.bound_type);
                 if (bt.kind is TypeKind.EnumKind && bt.type_definition.is_some()) {
                     let def: BoundDefinition = bt.type_definition.some;
@@ -3146,12 +3377,16 @@ class SemanticModel {
                 }
             }
         }
+        return new Option<BoundExpression>.none();
+    }
 
-        // Regular class instantiation
-        let type_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(expr.type_name);
+    fun bind_new_expr(mut this, expr: ast.NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        // First, try to resolve the full type_name as a class/struct type
+        let type_sym: Option<BoundSymbol> = this.resolve_type_by_name(expr.type_name, scope);
         if (type_sym.is_some()) {
             if (type_sym.some is BoundSymbol.type_sym) {
                 let bt: mut BoundType = this.resolve_new_generic_args(expr, scope, type_sym.some.type_sym.bound_type);
+                // If this is an enum type, the full name was a type, not a variant — just instantiate
                 let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
                 let i: mut i64 = 0;
                 while (i < cast<i64>(expr.arguments.size())) {
@@ -3165,6 +3400,17 @@ class SemanticModel {
                 return new Option<BoundExpression>.some(new BoundExpression.new_expr(result));
             }
         }
+
+        // If not found as a type, try as an enum variant (e.g., "Option.some" → enum Option, variant some)
+        let last_dot: i64 = this.find_last_dot(expr.type_name);
+        if (last_dot >= 0) {
+            let enum_result: Option<BoundExpression> = this.try_bind_enum_variant(expr, scope, last_dot);
+            if (enum_result.is_some()) {
+                return enum_result;
+            }
+        }
+
+        // Fallback: create with unresolved type
         let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.arguments.size())) {
@@ -3315,6 +3561,7 @@ class SemanticModel {
             let func: BoundFunctionDefinition = def.function_def;
             if (func.body.is_some() && func.symbol.is_some()) {
                 let sym: BoundFunctionSymbol = func.symbol.some;
+                this._current_validating_func = func.name;
                 this.validate_expr_control_flow(func.body.some, sym.return_type, 0);
                 if (!this.type_registry.is_void(sym.return_type)) {
                     if (!this.expr_always_returns(func.body.some)) {
@@ -3421,7 +3668,7 @@ class SemanticModel {
                 this.validate_expr_control_flow(ret.value.some, ret_type, loop_depth);
                 let value_type: BoundType = ret.value.some.get_bound_type();
                 if (!this.type_registry.is_void(ret_type) && !this.type_registry.can_implicitly_cast(value_type, ret_type)) {
-                    this.report_error("Return type mismatch: expected " + ret_type.display_name() + " but got " + value_type.display_name(), 0, 0);
+                    this.report_error("Return type mismatch: expected " + ret_type.display_name() + " but got " + value_type.display_name() + " in " + this._current_validating_func, 0, 0);
                 }
             }
         }

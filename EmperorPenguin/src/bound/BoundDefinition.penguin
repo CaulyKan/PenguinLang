@@ -86,6 +86,7 @@ class BoundEnumDefinition {
     bound_type: BoundType = new BoundType();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
     members: mut _utils.List<BoundEnumMemberDefinition> = new _utils.List<BoundEnumMemberDefinition>();
+    methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     value_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
     interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();

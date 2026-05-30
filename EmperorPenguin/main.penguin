@@ -93,81 +93,50 @@ initial {
     let tmp_dir: string = "tmp";
     _utils.mkdir(tmp_dir);
 
-    let log: mut __builtin.StringBuilder = new mut __builtin.StringBuilder();
-    let ll_files: mut _utils.List<string> = new _utils.List<string>();
-
+    // Concatenate all source files into a single compilation unit
+    let all_sources: mut string = combined_stdlib;
     let fi: mut i64 = 0;
     while (fi < cast<i64>(args.size())) {
         let file: string = args.at(cast<u64>(fi)).some;
         let source: string = _utils.file_read_text(file);
-        let stem: string = get_stem(file);
-        let ll_path: string = tmp_dir + "/" + stem + ".ll";
-
-        log.append("========================================\n");
-        log.append("FILE: " + file + "\n");
-        log.append("========================================\n\n");
-
-        let lexer: parser.Lexer = new parser.Lexer(source);
-        let tokens: _utils.List<parser.Token> = lexer.tokenize();
-        let p: parser.Parser = new parser.Parser(tokens);
-        let unit: ast.CompilationUnit = p.parse_compilationUnit();
-
-        log.append("--- AST ---\n");
-        log.append(unit.build_text());
-        log.append("\n\n");
-
-        let mut compiler = new bound.EmperorPenguinCompiler();
-        let result = compiler.compile(combined_stdlib + "\n" + source);
-
-        if (result.has_errors()) {
-            log.append("--- ERRORS ---\n");
-            let j: mut i64 = 0;
-            while (j < cast<i64>(result.errors.size())) {
-                let err: bound.SemanticError = result.errors.at(cast<u64>(j)).some;
-                log.append("error: " + err.message + " at line " + cast<string>(err.line) + "\n");
-                j = j + 1;
-            }
-            log.append("\n");
-            __builtin.eprintln("Errors in " + file + ", skipping LLVM generation.");
-        } else {
-            log.append("--- BOUND TREE ---\n");
-            let di: mut i64 = 0;
-            while (di < cast<i64>(result.definitions.size())) {
-                let def: bound.BoundDefinition = result.definitions.at(cast<u64>(di)).some;
-                bound.print_definition_to(def, log, 0);
-                di = di + 1;
-            }
-            log.append("\n");
-
-            log.append("--- SYMBOL TABLE ---\n");
-            print_scope_to(log, result.global_scope, 0);
-            log.append("\n");
-
-            let generator = new ir.IRGenerator();
-            let module = generator.generate(result);
-
-            let ir_printer = new ir.IRPrinter();
-            let ir_text: string = ir_printer.print_module(module);
-            log.append("--- IR ---\n");
-            log.append(ir_text);
-            log.append("\n\n");
-
-            let emitter = new llvm.LLVMEmitter();
-            let llvm_ir: string = emitter.lower(module, result);
-            _utils.file_write_text(ll_path, llvm_ir);
-            ll_files.push(ll_path);
-
-            log.append("--- LLVM IR (" + ll_path + ") ---\n");
-            log.append(llvm_ir);
-            log.append("\n\n");
-        }
+        all_sources = all_sources + "\n" + source;
+        __builtin.eprintln("Added: " + file);
         fi = fi + 1;
     }
 
-    _utils.file_write_text(tmp_dir + "/emperor.log", log.to_string());
-    __builtin.eprintln("Log written to " + tmp_dir + "/emperor.log");
+    __builtin.eprintln("Compiling " + cast<string>(args.size()) + " files as single unit...");
 
-    if (cast<i64>(ll_files.size()) > 0) {
+    let lexer: parser.Lexer = new parser.Lexer(all_sources);
+    let tokens: _utils.List<parser.Token> = lexer.tokenize();
+    __builtin.eprintln("Lexing done: " + cast<string>(tokens.size()) + " tokens");
+
+    let p: parser.Parser = new parser.Parser(tokens);
+    let unit: ast.CompilationUnit = p.parse_compilationUnit();
+    __builtin.eprintln("Parsing done");
+
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(all_sources);
+
+    if (result.has_errors()) {
+        __builtin.eprintln("Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(result.errors.size())) {
+            let err: bound.SemanticError = result.errors.at(cast<u64>(ei)).some;
+            __builtin.eprintln("  error: " + err.message + " at line " + cast<string>(err.line));
+            ei = ei + 1;
+        }
+    } else {
+        let generator = new ir.IRGenerator();
+        let module = generator.generate(result);
+        __builtin.eprintln("IR generation done");
+
+        let emitter = new llvm.LLVMEmitter();
+        let llvm_ir: string = emitter.lower(module, result);
+        __builtin.eprintln("LLVM IR generation done");
+
+        let ll_path: string = tmp_dir + "/combined.ll";
+        _utils.file_write_text(ll_path, llvm_ir);
+
         let exe_path: string = tmp_dir + "/out.exe";
         let lib_path: string = tmp_dir + "/libcore_builtin.a";
 
@@ -183,11 +152,7 @@ initial {
         }
 
         let clang_args: mut _utils.List<string> = new _utils.List<string>();
-        let li: mut i64 = 0;
-        while (li < cast<i64>(ll_files.size())) {
-            clang_args.push(ll_files.at(cast<u64>(li)).some);
-            li = li + 1;
-        }
+        clang_args.push(ll_path);
         clang_args.push(lib_path);
         clang_args.push("-o");
         clang_args.push(exe_path);
@@ -200,8 +165,5 @@ initial {
             __builtin.eprintln("clang failed with exit code " + cast<string>(exit_code));
             __builtin.exit(1);
         }
-    } else {
-        __builtin.eprintln("No LLVM IR files generated.");
-        __builtin.exit(1);
     }
 }
