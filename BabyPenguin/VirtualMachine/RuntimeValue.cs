@@ -54,7 +54,11 @@ namespace BabyPenguin.VirtualMachine
         public string StringValue = "";
         public char CharValue;
 
-        public dynamic? DynamicValue
+        /// <summary>
+        /// Typed value getter/setter — returns object? to avoid dynamic/CallSite allocations.
+        /// Prefer the typed fields (I32Value, etc.) directly when the type is known at compile time.
+        /// </summary>
+        public object? DynamicValue
         {
             get
             {
@@ -79,51 +83,25 @@ namespace BabyPenguin.VirtualMachine
             }
             set
             {
+                // Use Convert to handle cross-type boxing (e.g., boxed byte → int field),
+                // but wrap in unchecked for truncation semantics (e.g., -3 → byte 253)
                 switch (TypeInfo.Type)
                 {
-                    case TypeEnum.Bool:
-                        BoolValue = (bool)value;
-                        break;
-                    case TypeEnum.U8:
-                        U8Value = (byte)value;
-                        break;
-                    case TypeEnum.U16:
-                        U16Value = (ushort)value;
-                        break;
-                    case TypeEnum.U32:
-                        U32Value = (uint)value;
-                        break;
-                    case TypeEnum.U64:
-                        U64Value = (ulong)value;
-                        break;
-                    case TypeEnum.I8:
-                        I8Value = (sbyte)value;
-                        break;
-                    case TypeEnum.I16:
-                        I16Value = (short)value;
-                        break;
-                    case TypeEnum.I32:
-                        I32Value = (int)value;
-                        break;
-                    case TypeEnum.I64:
-                        I64Value = (long)value;
-                        break;
-                    case TypeEnum.Float:
-                        FloatValue = (float)value;
-                        break;
-                    case TypeEnum.Double:
-                        DoubleValue = (double)value;
-                        break;
-                    case TypeEnum.String:
-                        StringValue = value as string ?? "";
-                        break;
-                    case TypeEnum.Char:
-                        CharValue = (char)value;
-                        break;
-                    case TypeEnum.Void:
-                        break;
-                    default:
-                        throw new BabyPenguinRuntimeException($"Cannot assign value of type {value?.GetType()} to type {TypeInfo}");
+                    case TypeEnum.Bool: BoolValue = Convert.ToBoolean(value); break;
+                    case TypeEnum.U8: U8Value = unchecked((byte)Convert.ToInt64(value)); break;
+                    case TypeEnum.U16: U16Value = unchecked((ushort)Convert.ToInt64(value)); break;
+                    case TypeEnum.U32: U32Value = unchecked((uint)Convert.ToInt64(value)); break;
+                    case TypeEnum.U64: U64Value = unchecked((ulong)Convert.ToInt64(value)); break;
+                    case TypeEnum.I8: I8Value = unchecked((sbyte)Convert.ToInt64(value)); break;
+                    case TypeEnum.I16: I16Value = unchecked((short)Convert.ToInt64(value)); break;
+                    case TypeEnum.I32: I32Value = unchecked((int)Convert.ToInt64(value)); break;
+                    case TypeEnum.I64: I64Value = Convert.ToInt64(value); break;
+                    case TypeEnum.Float: FloatValue = Convert.ToSingle(value); break;
+                    case TypeEnum.Double: DoubleValue = Convert.ToDouble(value); break;
+                    case TypeEnum.String: StringValue = value as string ?? ""; break;
+                    case TypeEnum.Char: CharValue = unchecked((char)Convert.ToInt64(value)); break;
+                    case TypeEnum.Void: break;
+                    default: throw new BabyPenguinRuntimeException($"Cannot assign value of type {value?.GetType()} to type {TypeInfo}");
                 }
             }
         }

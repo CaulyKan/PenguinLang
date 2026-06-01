@@ -546,4 +546,22 @@ public class EndToEndBasicTest : EndToEndTestBase
     public void GCInfoReflectsAllocations() => batch.Assert();
 
     #endregion
+
+    [BatchE2ETest("""
+        class Foo {
+            x: i64;
+            y: i64;
+            z: i64;
+        }
+        fun test() -> Foo {
+            return new Foo();
+        }
+        initial {
+            test();
+        }
+        """,
+    "")]
+    [Fact]
+    public void RvoTest() => batch.Assert();
+
 }

@@ -20,6 +20,42 @@ namespace BabyPenguin.SemanticNode
         public BasicTypeNode Fun { get; } = new BasicTypeNode(model, "fun", TypeEnum.Fun);
         public BasicTypeNode AsyncFun { get; } = new BasicTypeNode(model, "async_fun", TypeEnum.Fun) { IsAsyncFunction = true };
 
+        // Cached immutable IType instances to avoid repeated allocation
+        private IType? _immutableBool;
+        private IType? _immutableDouble;
+        private IType? _immutableFloat;
+        private IType? _immutableString;
+        private IType? _immutableVoid;
+        private IType? _immutableU8;
+        private IType? _immutableU16;
+        private IType? _immutableU32;
+        private IType? _immutableU64;
+        private IType? _immutableI8;
+        private IType? _immutableI16;
+        private IType? _immutableI32;
+        private IType? _immutableI64;
+        private IType? _immutableChar;
+
+        /// <summary>Get cached immutable IType by IR type name. Returns null for non-primitive types.</summary>
+        public IType? GetCachedImmutableType(string irType) => irType switch
+        {
+            "bool" => _immutableBool ??= Bool.ToType(Mutability.Immutable),
+            "f64" or "double" => _immutableDouble ??= Double.ToType(Mutability.Immutable),
+            "f32" or "float" => _immutableFloat ??= Float.ToType(Mutability.Immutable),
+            "string" or "ref<string>" => _immutableString ??= String.ToType(Mutability.Mutable),
+            "void" => _immutableVoid ??= Void.ToType(Mutability.Immutable),
+            "u8" => _immutableU8 ??= U8.ToType(Mutability.Immutable),
+            "u16" => _immutableU16 ??= U16.ToType(Mutability.Immutable),
+            "u32" => _immutableU32 ??= U32.ToType(Mutability.Immutable),
+            "u64" => _immutableU64 ??= U64.ToType(Mutability.Immutable),
+            "i8" => _immutableI8 ??= I8.ToType(Mutability.Immutable),
+            "i16" => _immutableI16 ??= I16.ToType(Mutability.Immutable),
+            "i32" => _immutableI32 ??= I32.ToType(Mutability.Immutable),
+            "i64" => _immutableI64 ??= I64.ToType(Mutability.Immutable),
+            "char" => _immutableChar ??= Char.ToType(Mutability.Immutable),
+            _ => null
+        };
+
         public Dictionary<string, BasicTypeNode> Nodes => new() {
             { "bool", Bool },
             { "double", Double },

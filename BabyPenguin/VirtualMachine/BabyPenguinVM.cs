@@ -30,11 +30,38 @@ namespace BabyPenguin.VirtualMachine
             var generator = new IRGenerator(Model);
             Global.IRModule = generator.Generate();
 
+            // Build CodeContainer index for O(1) lookup (eliminates 38% profile hotspot)
+            BuildCodeContainerIndex();
+
+            // Build sanitized extern function index for O(1) lookup
+            BuildSanitizedExternFunctionIndex();
+
             var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol
                 ?? throw new BabyPenguinRuntimeException("__builtin._main function not found.");
 
             var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], null);
             StartFrame = frame;
+        }
+
+        private static string SanitizeName(string name) => name.Replace(".", "_");
+
+        private void BuildCodeContainerIndex()
+        {
+            foreach (var node in Model.FindAll(n => n is SemanticInterface.ICodeContainer))
+            {
+                var cc = (SemanticInterface.ICodeContainer)node;
+                var sanitized = SanitizeName(cc.FullName());
+                Global.CodeContainerIndex[sanitized] = cc;
+            }
+        }
+
+        private void BuildSanitizedExternFunctionIndex()
+        {
+            foreach (var kvp in Global.ExternFunctions)
+            {
+                var sanitized = SanitizeName(kvp.Key);
+                Global.SanitizedExternFunctionIndex[sanitized] = kvp.Value;
+            }
         }
 
         public int Run()
@@ -98,6 +125,18 @@ namespace BabyPenguin.VirtualMachine
         public Dictionary<string, IRuntimeSymbol> GlobalVariables { get; } = [];
 
         public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>> ExternFunctions { get; } = [];
+
+        /// <summary>
+        /// Pre-built index: sanitized name → ICodeContainer for O(1) lookup.
+        /// Built once during VM initialization instead of traversing the entire semantic tree on every function call.
+        /// </summary>
+        public Dictionary<string, SemanticInterface.ICodeContainer> CodeContainerIndex { get; } = [];
+
+        /// <summary>
+        /// Pre-built index: sanitized name → extern function for O(1) lookup.
+        /// Eliminates the fallback linear scan in FindExternFunction.
+        /// </summary>
+        public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>> SanitizedExternFunctionIndex { get; } = [];
 
         public IRModule? IRModule { get; set; }
 
