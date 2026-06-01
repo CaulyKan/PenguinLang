@@ -20,13 +20,15 @@ namespace BabyPenguin.VirtualMachine
     {
         public string Name { get; }
         public string IrType { get; }
+        public int Index { get; }
         public int SourceLine { get; }
         public int SourceCol { get; }
 
-        public IRNamedRegister(string name, string irType, int sourceLine = 0, int sourceCol = 0)
+        public IRNamedRegister(string name, string irType, int index, int sourceLine = 0, int sourceCol = 0)
         {
             Name = name;
             IrType = irType;
+            Index = index;
             SourceLine = sourceLine;
             SourceCol = sourceCol;
         }

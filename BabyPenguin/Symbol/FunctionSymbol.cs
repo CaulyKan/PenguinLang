@@ -45,7 +45,8 @@ namespace BabyPenguin.Symbol
             IsMutable = isMutable;
         }
 
-        public string FullName() => Parent.FullName() + "." + Name;
+        private string? _fullName;
+        public string FullName() => _fullName ??= Parent.FullName() + "." + Name;
 
         public string Name { get; }
 
@@ -136,7 +137,8 @@ namespace BabyPenguin.Symbol
             IsMutable = isMutable;
         }
 
-        public string FullName() => Parent.FullName() + "." + Name;
+        private string? _fullName;
+        public string FullName() => _fullName ??= Parent.FullName() + "." + Name;
 
         public string Name { get; }
 

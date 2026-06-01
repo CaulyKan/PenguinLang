@@ -60,7 +60,8 @@ namespace BabyPenguin.SemanticNode
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public string FullName() => Parent!.FullName() + "." + Name;
+        private string? _fullName;
+        public string FullName() => _fullName ??= Parent!.FullName() + "." + Name;
 
         public List<FunctionParameter> Parameters { get; } = [];
 

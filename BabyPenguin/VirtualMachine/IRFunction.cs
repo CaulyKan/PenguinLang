@@ -28,7 +28,7 @@ namespace BabyPenguin.VirtualMachine
         public int SourceLine { get; set; }
         public int SourceCol { get; set; }
 
-        private int _nextTemp;
+        private int _nextRegister;
         private int _nextLabel;
 
         public IRFunction(string name, string returnType)
@@ -40,12 +40,17 @@ namespace BabyPenguin.VirtualMachine
 
         public IRValue AllocNamedReg(string name, string irType, int line = 0, int col = 0)
         {
-            return new IRNamedRegister(name, irType, line, col);
+            return new IRNamedRegister(name, irType, _nextRegister++, line, col);
         }
+
+        /// <summary>
+        /// Total register count — used to size the runtime register array.
+        /// </summary>
+        public int RegisterCount => _nextRegister;
 
         public IRValue AllocTemp(string irType)
         {
-            return new IRTempRegister(_nextTemp++, irType);
+            return new IRTempRegister(_nextRegister++, irType);
         }
 
         public IRLabelValue AllocLabel(string prefix)
@@ -87,6 +92,27 @@ namespace BabyPenguin.VirtualMachine
         private static bool IsControlFlow(IRInstruction inst)
         {
             return inst is IRBrInst or IRBrCondInst or IRRetInst or IRRetVoidInst;
+        }
+
+        /// <summary>
+        /// Lazily-built label map: label name → instruction index. Cached per function.
+        /// </summary>
+        private Dictionary<string, int>? _labelMap;
+        public Dictionary<string, int> LabelMap
+        {
+            get
+            {
+                if (_labelMap == null)
+                {
+                    _labelMap = new Dictionary<string, int>(4);
+                    for (int i = 0; i < Instructions.Count; i++)
+                    {
+                        if (Instructions[i] is IRLabelInst labelInst)
+                            _labelMap[labelInst.Label.Name] = i;
+                    }
+                }
+                return _labelMap;
+            }
         }
     }
 }

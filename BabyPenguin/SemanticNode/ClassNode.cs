@@ -52,6 +52,28 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
+        private string? _fullName;
+        public string FullName()
+        {
+            if (_fullName != null)
+                return _fullName;
+
+            var n = Namespace == null ? Name : $"{Namespace.Name}.{Name}";
+            if (GenericDefinitions.Count > 0)
+            {
+                if (GenericArguments.Count > 0)
+                {
+                    n += "<" + string.Join(",", GenericArguments.Select(t => t.FullName())) + ">";
+                }
+                else
+                {
+                    n += "<" + string.Join(",", GenericDefinitions.Select(t => "?")) + ">";
+                }
+            }
+            _fullName = n;
+            return n;
+        }
+
         public INamespace Namespace => Parent as Namespace ?? throw new BabyPenguinException("Class is not inserted into model yet.");
 
         public List<ISymbol> Symbols { get; } = [];

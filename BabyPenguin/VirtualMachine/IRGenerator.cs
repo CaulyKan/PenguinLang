@@ -79,11 +79,11 @@ namespace BabyPenguin.VirtualMachine
             var globalRegs = new Dictionary<string, string>(); // symbol.FullName() -> global name for GLOBAL_STORE
             var labelMap = new Dictionary<string, int>();
 
-            // Allocate registers for all symbols (parameters and locals)
+            // Allocate registers for all symbols (parameters and locals) via builder for proper index assignment
             foreach (var symbol in cc.Symbols)
             {
                 var irType = IRTypeClassifier.ToIrType(symbol.TypeInfo);
-                var reg = new IRNamedRegister(symbol.FullName(), irType, symbol.SourceLocation.RowStart, symbol.SourceLocation.ColStart);
+                var reg = builder.AllocNamedReg(symbol.FullName(), irType, symbol.SourceLocation.RowStart, symbol.SourceLocation.ColStart);
                 symbolRegs[symbol.FullName()] = reg;
 
                 if (symbol.IsParameter)

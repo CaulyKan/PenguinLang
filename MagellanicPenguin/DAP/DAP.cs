@@ -149,6 +149,7 @@ namespace MagellanicPenguin
                 SendDebug(writer.ToString() + "\n");
                 vm = new BabyPenguinVM(model);
                 vm.Global.EnableDebugPrint = true;
+                vm.Global.EnableVariableSync = true;
                 vm.Global.PrintFunc = SendOutput;
                 vm.Global.DebugFunc = SendDebug;
 

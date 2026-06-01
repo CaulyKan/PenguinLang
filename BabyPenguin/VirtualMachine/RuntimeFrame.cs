@@ -11,9 +11,8 @@ namespace BabyPenguin.VirtualMachine
     {
         // === IR execution state ===
         private readonly IRFunction _function;
-        private readonly Dictionary<string, IRuntimeValue> _namedRegisters = [];
-        private readonly Dictionary<int, IRuntimeValue> _tempRegisters = [];
-        private readonly Dictionary<string, int> _labelMap = [];
+        private readonly IRuntimeValue[] _registers;
+        private readonly Dictionary<string, int> _labelMap;
         private readonly List<IRuntimeValue> _arguments;
         private int _ip;
         private bool _hasReturned;
@@ -30,6 +29,9 @@ namespace BabyPenguin.VirtualMachine
         public RuntimeFrame? ChildFrame { get; set; }
         public Dictionary<string, IRuntimeSymbol> LocalVariables { get; } = [];
         public IRuntimeSymbol? LastReturnVar { get; private set; }
+
+        // Cache whether debug sync is needed (checked once per frame instead of per Store)
+        private readonly bool _needsDebugSync;
 
         public SourceLocation CurrentSourceLocation
         {
@@ -61,28 +63,36 @@ namespace BabyPenguin.VirtualMachine
             _function = Global.IRModule?.FindFunction(sanitizedName)
                 ?? throw new BabyPenguinRuntimeException($"No IR function found for {container.FullName()} (tried {sanitizedName})");
 
-            for (int i = 0; i < _function.Instructions.Count; i++)
-            {
-                if (_function.Instructions[i] is IRLabelInst labelInst)
-                    _labelMap[labelInst.Label.Name] = i;
-            }
+            // Pre-allocate register array sized to total register count (named + temp)
+            var regCount = _function.RegisterCount;
+            _registers = new IRuntimeValue[regCount];
+            // Use cached label map from IRFunction (avoids rebuilding per call)
+            _labelMap = _function.LabelMap;
 
-            foreach (var symbol in container.Symbols)
+            // Cache whether debug sync is needed (avoids checking per-Store)
+            // Only enable for DAP debugging sessions, not for CLI debug prints
+            _needsDebugSync = global.EnableVariableSync || global.Breakpoints.Count > 0;
+
+            // Only build LocalVariables for DAP debugging (expensive — creates IRuntimeSymbol per variable)
+            if (_needsDebugSync)
             {
-                if (symbol.IsParameter)
+                foreach (var symbol in container.Symbols)
                 {
-                    var sym = IRuntimeSymbol.FromSymbol(container.Model, symbol, Global);
-                    try
+                    if (symbol.IsParameter)
                     {
-                        if (symbol.ParameterIndex < parameters.Count)
-                            sym.AssignFrom(parameters[symbol.ParameterIndex]);
+                        var sym = IRuntimeSymbol.FromSymbol(container.Model, symbol, Global);
+                        try
+                        {
+                            if (symbol.ParameterIndex < parameters.Count)
+                                sym.AssignFrom(parameters[symbol.ParameterIndex]);
+                        }
+                        catch { /* skip parameter assignment on type mismatch */ }
+                        LocalVariables[symbol.FullName()] = sym;
                     }
-                    catch { /* skip parameter assignment on type mismatch */ }
-                    LocalVariables[symbol.FullName()] = sym;
-                }
-                else
-                {
-                    LocalVariables[symbol.FullName()] = IRuntimeSymbol.FromSymbol(container.Model, symbol, Global);
+                    else
+                    {
+                        LocalVariables[symbol.FullName()] = IRuntimeSymbol.FromSymbol(container.Model, symbol, Global);
+                    }
                 }
             }
         }
@@ -213,9 +223,10 @@ namespace BabyPenguin.VirtualMachine
                             if (Global.EnableDebugPrint && cond is NotInitializedRuntimeValue)
                             {
                                 Global.DebugFunc($"  [BR_COND WARN] {_function.Name} ip={_ip}: cond {bi.Cond.Display()} is NotInitialized\n");
-                                // Dump all named registers
-                                foreach (var kvp in _namedRegisters)
-                                    Global.DebugFunc($"    {kvp.Key} = {kvp.Value.GetType().Name}\n");
+                                // Dump all registers
+                                for (int ri = 0; ri < _registers.Length; ri++)
+                                    if (_registers[ri] != null)
+                                        Global.DebugFunc($"    [{ri}] = {_registers[ri].GetType().Name}\n");
                             }
                             var condBool = ToBool(cond);
                             if (condBool)
@@ -626,8 +637,12 @@ namespace BabyPenguin.VirtualMachine
         {
             return val switch
             {
-                IRNamedRegister nr => _namedRegisters.TryGetValue(nr.Name, out var v) ? v : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
-                IRTempRegister tr => _tempRegisters.TryGetValue(tr.Index, out var v) ? v : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
+                IRNamedRegister nr => nr.Index < _registers.Length && _registers[nr.Index] != null
+                    ? _registers[nr.Index]
+                    : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
+                IRTempRegister tr => tr.Index < _registers.Length && _registers[tr.Index] != null
+                    ? _registers[tr.Index]
+                    : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
                 IRConstant c => ResolveConstant(c),
                 IRGlobalRef g => Global.GlobalVariables.TryGetValue(g.Name, out var sym) ? sym.Value : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
                 _ => throw new BabyPenguinRuntimeException($"Cannot resolve IR value: {val.Display()}")
@@ -643,16 +658,12 @@ namespace BabyPenguin.VirtualMachine
                 if (funcSymbol != null)
                     return new FunctionRuntimeValue(funcSymbol.TypeInfo, funcSymbol);
 
-                // Try matching by sanitized code container names
-                foreach (var node in Model.FindAll(n => n is ICodeContainer))
+                // Try matching by sanitized code container names using O(1) index
+                if (Global.CodeContainerIndex.TryGetValue(c.Value, out var cc))
                 {
-                    var cc = (ICodeContainer)node;
-                    if (SanitizeName(cc.FullName()) == c.Value)
-                    {
-                        var sym = Model.ResolveSymbol(cc.FullName());
-                        if (sym != null)
-                            return new FunctionRuntimeValue(sym.TypeInfo, sym);
-                    }
+                    var sym = Model.ResolveSymbol(cc.FullName());
+                    if (sym != null)
+                        return new FunctionRuntimeValue(sym.TypeInfo, sym);
                 }
 
                 // Try matching by sanitized symbol full names (for VTable functions, etc.)
@@ -672,16 +683,16 @@ namespace BabyPenguin.VirtualMachine
             switch (target)
             {
                 case IRNamedRegister nr:
-                    _namedRegisters[nr.Name] = value;
-                    // Sync with LocalVariables for DAP variable inspection (best-effort)
-                    if (value is not NotInitializedRuntimeValue && LocalVariables.TryGetValue(nr.Name, out var sym))
+                    _registers[nr.Index] = value;
+                    // Sync with LocalVariables for DAP variable inspection (best-effort, debug mode only)
+                    if (_needsDebugSync && value is not NotInitializedRuntimeValue && LocalVariables.TryGetValue(nr.Name, out var sym))
                     {
                         try { if (value.TypeInfo.CanImplicitlyCastTo(sym.TypeInfo)) sym.AssignFrom(value); }
                         catch { /* skip sync on type mismatch */ }
                     }
                     break;
                 case IRTempRegister tr:
-                    _tempRegisters[tr.Index] = value;
+                    _registers[tr.Index] = value;
                     break;
             }
         }
@@ -726,16 +737,13 @@ namespace BabyPenguin.VirtualMachine
 
         private Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>? FindExternFunction(string funcName)
         {
-            // Try direct lookup
+            // Try direct lookup first
             if (Global.ExternFunctions.TryGetValue(funcName, out var func))
                 return func;
 
-            // Try matching by sanitizing dict keys
-            foreach (var kvp in Global.ExternFunctions)
-            {
-                if (SanitizeName(kvp.Key) == funcName)
-                    return kvp.Value;
-            }
+            // Try pre-built sanitized index for O(1) lookup
+            if (Global.SanitizedExternFunctionIndex.TryGetValue(funcName, out var sanitizedFunc))
+                return sanitizedFunc;
 
             return null;
         }
@@ -748,26 +756,15 @@ namespace BabyPenguin.VirtualMachine
 
         private IType IrTypeToType(string irType)
         {
+            var cached = Model.BasicTypeNodes.GetCachedImmutableType(irType);
+            if (cached != null) return cached;
+
             return irType switch
             {
-                "bool" => Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable),
-                "i8" => Model.BasicTypeNodes.I8.ToType(Mutability.Immutable),
-                "i16" => Model.BasicTypeNodes.I16.ToType(Mutability.Immutable),
-                "i32" => Model.BasicTypeNodes.I32.ToType(Mutability.Immutable),
-                "i64" => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable),
-                "u8" => Model.BasicTypeNodes.U8.ToType(Mutability.Immutable),
-                "u16" => Model.BasicTypeNodes.U16.ToType(Mutability.Immutable),
-                "u32" => Model.BasicTypeNodes.U32.ToType(Mutability.Immutable),
-                "u64" => Model.BasicTypeNodes.U64.ToType(Mutability.Immutable),
-                "f32" => Model.BasicTypeNodes.Float.ToType(Mutability.Immutable),
-                "f64" => Model.BasicTypeNodes.Double.ToType(Mutability.Immutable),
-                "char" => Model.BasicTypeNodes.Char.ToType(Mutability.Immutable),
-                "void" => Model.BasicTypeNodes.Void.ToType(Mutability.Immutable),
-                "string" or "ref<string>" => Model.BasicTypeNodes.String.ToType(Mutability.Mutable),
                 _ when irType.StartsWith("enum<") => ResolveComplexType(irType),
                 _ when irType.StartsWith("ref<") => ResolveComplexType(irType),
                 _ when irType.StartsWith("struct<") => ResolveComplexType(irType),
-                _ => Model.BasicTypeNodes.Void.ToType(Mutability.Immutable),
+                _ => Model.BasicTypeNodes.GetCachedImmutableType("void")!
             };
         }
 
@@ -797,11 +794,11 @@ namespace BabyPenguin.VirtualMachine
         private IRuntimeValue MakeValue(string literal, string irType)
         {
             if (irType == "bool")
-                return new BasicRuntimeValue(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable)) { BoolValue = literal == "true" };
+                return new BasicRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("bool")!) { BoolValue = literal == "true" };
 
             if (irType == "string" || irType == "ref<string>")
             {
-                var type = Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
+                var type = Model.BasicTypeNodes.GetCachedImmutableType("ref<string>")!;
                 var val = literal;
                 if (val.StartsWith("\"") && val.EndsWith("\""))
                     val = UnescapeString(val[1..^1]);
@@ -809,25 +806,12 @@ namespace BabyPenguin.VirtualMachine
             }
 
             if (irType == "char")
-                return new BasicRuntimeValue(Model.BasicTypeNodes.Char.ToType(Mutability.Immutable)) { CharValue = literal.Length > 0 ? literal[0] : '\0' };
+                return new BasicRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("char")!) { CharValue = literal.Length > 0 ? literal[0] : '\0' };
 
             if (irType == "void")
-                return new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
+                return new NotInitializedRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("void")!);
 
-            var numericType = irType switch
-            {
-                "i8" => Model.BasicTypeNodes.I8.ToType(Mutability.Immutable),
-                "i16" => Model.BasicTypeNodes.I16.ToType(Mutability.Immutable),
-                "i32" => Model.BasicTypeNodes.I32.ToType(Mutability.Immutable),
-                "i64" => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable),
-                "u8" => Model.BasicTypeNodes.U8.ToType(Mutability.Immutable),
-                "u16" => Model.BasicTypeNodes.U16.ToType(Mutability.Immutable),
-                "u32" => Model.BasicTypeNodes.U32.ToType(Mutability.Immutable),
-                "u64" => Model.BasicTypeNodes.U64.ToType(Mutability.Immutable),
-                "f32" => Model.BasicTypeNodes.Float.ToType(Mutability.Immutable),
-                "f64" => Model.BasicTypeNodes.Double.ToType(Mutability.Immutable),
-                _ => null
-            };
+            var numericType = Model.BasicTypeNodes.GetCachedImmutableType(irType);
 
             if (numericType != null)
             {
@@ -849,9 +833,9 @@ namespace BabyPenguin.VirtualMachine
             }
 
             if (long.TryParse(literal, out var intVal))
-                return new BasicRuntimeValue(Model.BasicTypeNodes.I64.ToType(Mutability.Immutable)) { I64Value = intVal };
+                return new BasicRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("i64")!) { I64Value = intVal };
 
-            return new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
+            return new NotInitializedRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("void")!);
         }
 
         private IRuntimeValue CastValue(IRuntimeValue operand, string fromType, string toType)
@@ -860,12 +844,13 @@ namespace BabyPenguin.VirtualMachine
 
             if (toType == "ref<string>" || toType == "string")
             {
-                var strType = Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
+                var strType = Model.BasicTypeNodes.GetCachedImmutableType("ref<string>") ?? Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
                 if (operand is BasicRuntimeValue bv)
                 {
                     if (fromType == "bool")
                         return new BasicRuntimeValue(strType) { StringValue = bv.BoolValue ? "true" : "false" };
-                    return new BasicRuntimeValue(strType) { StringValue = bv.DynamicValue?.ToString() ?? "" };
+                    // Static dispatch — no dynamic/CallSite allocation
+                    return new BasicRuntimeValue(strType) { StringValue = StaticToString(bv) };
                 }
                 if (operand is EnumRuntimeValue ev)
                 {
@@ -882,133 +867,467 @@ namespace BabyPenguin.VirtualMachine
 
             if (operand is not BasicRuntimeValue bv2) return operand;
 
-            var targetType = toType switch
-            {
-                "i8" => Model.BasicTypeNodes.I8.ToType(Mutability.Immutable),
-                "i16" => Model.BasicTypeNodes.I16.ToType(Mutability.Immutable),
-                "i32" => Model.BasicTypeNodes.I32.ToType(Mutability.Immutable),
-                "i64" => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable),
-                "u8" => Model.BasicTypeNodes.U8.ToType(Mutability.Immutable),
-                "u16" => Model.BasicTypeNodes.U16.ToType(Mutability.Immutable),
-                "u32" => Model.BasicTypeNodes.U32.ToType(Mutability.Immutable),
-                "u64" => Model.BasicTypeNodes.U64.ToType(Mutability.Immutable),
-                "f32" => Model.BasicTypeNodes.Float.ToType(Mutability.Immutable),
-                "f64" => Model.BasicTypeNodes.Double.ToType(Mutability.Immutable),
-                "bool" => Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable),
-                _ => null
-            };
+            var targetType = Model.BasicTypeNodes.GetCachedImmutableType(toType);
+            if (targetType == null) return operand;
 
-            if (targetType != null)
-            {
-                var castResult = new BasicRuntimeValue(targetType);
-                switch (toType)
-                {
-                    case "i8": castResult.I8Value = Convert.ToSByte(bv2.DynamicValue); break;
-                    case "i16": castResult.I16Value = Convert.ToInt16(bv2.DynamicValue); break;
-                    case "i32": castResult.I32Value = Convert.ToInt32(bv2.DynamicValue); break;
-                    case "i64": castResult.I64Value = Convert.ToInt64(bv2.DynamicValue); break;
-                    case "u8": castResult.U8Value = Convert.ToByte(bv2.DynamicValue); break;
-                    case "u16": castResult.U16Value = Convert.ToUInt16(bv2.DynamicValue); break;
-                    case "u32": castResult.U32Value = Convert.ToUInt32(bv2.DynamicValue); break;
-                    case "u64": castResult.U64Value = Convert.ToUInt64(bv2.DynamicValue); break;
-                    case "f32": castResult.FloatValue = Convert.ToSingle(bv2.DynamicValue); break;
-                    case "f64": castResult.DoubleValue = Convert.ToDouble(bv2.DynamicValue); break;
-                    case "bool": castResult.BoolValue = Convert.ToBoolean(bv2.DynamicValue); break;
-                }
-                return castResult;
-            }
-
-            // Interface/class casts - pass through
-            return operand;
+            // Direct field-to-field copy — no boxing via DynamicValue
+            var castResult = new BasicRuntimeValue(targetType);
+            CopyValueDirect(castResult, bv2);
+            return castResult;
         }
 
         private IRuntimeValue EvalBinOp(string op, IRuntimeValue left, IRuntimeValue right, string irType)
         {
-            if (left is BasicRuntimeValue lbv && right is BasicRuntimeValue rbv)
+            if (left is not BasicRuntimeValue lbv || right is not BasicRuntimeValue rbv)
+                throw new BabyPenguinRuntimeException("Cannot evaluate binary op on non-basic values");
+
+            // Determine result type from irType (matches original behavior)
+            var resultTypeInfo = GetResultTypeInfo(irType);
+            var result = new BasicRuntimeValue(resultTypeInfo);
+
+            // Fast path: string concatenation
+            if (irType == "ref<string>" && op == "add")
             {
-                var ld = lbv.DynamicValue;
-                var rd = rbv.DynamicValue;
-
-                var resultType = irType switch
-                {
-                    "bool" => Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable),
-                    "i8" => Model.BasicTypeNodes.I8.ToType(Mutability.Immutable),
-                    "i16" => Model.BasicTypeNodes.I16.ToType(Mutability.Immutable),
-                    "i32" => Model.BasicTypeNodes.I32.ToType(Mutability.Immutable),
-                    "i64" => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable),
-                    "u8" => Model.BasicTypeNodes.U8.ToType(Mutability.Immutable),
-                    "u16" => Model.BasicTypeNodes.U16.ToType(Mutability.Immutable),
-                    "u32" => Model.BasicTypeNodes.U32.ToType(Mutability.Immutable),
-                    "u64" => Model.BasicTypeNodes.U64.ToType(Mutability.Immutable),
-                    "f32" => Model.BasicTypeNodes.Float.ToType(Mutability.Immutable),
-                    "f64" => Model.BasicTypeNodes.Double.ToType(Mutability.Immutable),
-                    "ref<string>" => Model.BasicTypeNodes.String.ToType(Mutability.Immutable),
-                    _ => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable)
-                };
-
-                var result = new BasicRuntimeValue(resultType);
-
-                if (irType == "ref<string>" && op == "add")
-                {
-                    result.StringValue = (lbv.StringValue ?? "") + (rbv.StringValue ?? "");
-                    return result;
-                }
-
-                switch (op)
-                {
-                    case "add": result.DynamicValue = (dynamic)ld! + (dynamic)rd!; break;
-                    case "sub": result.DynamicValue = (dynamic)ld! - (dynamic)rd!; break;
-                    case "mul": result.DynamicValue = (dynamic)ld! * (dynamic)rd!; break;
-                    case "div": result.DynamicValue = (dynamic)ld! / (dynamic)rd!; break;
-                    case "mod": result.DynamicValue = (dynamic)ld! % (dynamic)rd!; break;
-                    case "band": result.DynamicValue = (dynamic)ld! & (dynamic)rd!; break;
-                    case "bor": result.DynamicValue = (dynamic)ld! | (dynamic)rd!; break;
-                    case "bxor": result.DynamicValue = (dynamic)ld! ^ (dynamic)rd!; break;
-                    case "land": result.DynamicValue = (bool)ld! && (bool)rd!; break;
-                    case "lor": result.DynamicValue = (bool)ld! || (bool)rd!; break;
-                    case "eq": result.DynamicValue = (dynamic)ld! == (dynamic)rd!; break;
-                    case "ne": result.DynamicValue = (dynamic)ld! != (dynamic)rd!; break;
-                    case "lt": result.DynamicValue = (dynamic)ld! < (dynamic)rd!; break;
-                    case "gt": result.DynamicValue = (dynamic)ld! > (dynamic)rd!; break;
-                    case "le": result.DynamicValue = (dynamic)ld! <= (dynamic)rd!; break;
-                    case "ge": result.DynamicValue = (dynamic)ld! >= (dynamic)rd!; break;
-                    default: throw new BabyPenguinRuntimeException($"Unknown binary op: {op}");
-                }
-
+                result.StringValue = (lbv.StringValue ?? "") + (rbv.StringValue ?? "");
                 return result;
             }
 
-            throw new BabyPenguinRuntimeException($"Cannot evaluate binary op on non-basic values");
+            // Direct field-to-field operations — no boxing via DynamicValue.
+            var lt = lbv.TypeInfo.Type;
+            switch (op)
+            {
+                case "add":   BinOpAdd(result, lt, lbv, rbv); break;
+                case "sub":   BinOpSub(result, lt, lbv, rbv); break;
+                case "mul":   BinOpMul(result, lt, lbv, rbv); break;
+                case "div":   BinOpDiv(result, lt, lbv, rbv); break;
+                case "mod":   BinOpMod(result, lt, lbv, rbv); break;
+                case "band":  BinOpBand(result, lt, lbv, rbv); break;
+                case "bor":   BinOpBor(result, lt, lbv, rbv); break;
+                case "bxor":  BinOpBxor(result, lt, lbv, rbv); break;
+                case "eq":    BinCmpEq(result, lt, lbv, rbv); break;
+                case "ne":    BinCmpNe(result, lt, lbv, rbv); break;
+                case "lt":    BinCmpLt(result, lt, lbv, rbv); break;
+                case "gt":    BinCmpGt(result, lt, lbv, rbv); break;
+                case "le":    BinCmpLe(result, lt, lbv, rbv); break;
+                case "ge":    BinCmpGe(result, lt, lbv, rbv); break;
+                case "land":  result.BoolValue = ToBoolFromAny(lbv) && ToBoolFromAny(rbv); break;
+                case "lor":   result.BoolValue = ToBoolFromAny(lbv) || ToBoolFromAny(rbv); break;
+                default: throw new BabyPenguinRuntimeException($"Unknown binary op: {op}");
+            }
+            return result;
         }
+
+        // Arithmetic helpers — direct field read/write, no boxing via DynamicValue/object?
+        // Arithmetic helpers -- direct field read/write, no boxing via DynamicValue/object?
+        // Left operand is read from its native field (fast path: same type as result).
+        // Right operand may differ in type (e.g. i64 + u8 literal), so read via ReadAsLong/ReadAsDouble.
+        private static void BinOpAdd(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue | (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value + ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value + ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value + ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value + ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value + ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value + ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value + ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value + (ulong)ReadAsLong(r))); break;
+                case TypeEnum.Float: res.FloatValue = l.FloatValue + (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.DoubleValue = l.DoubleValue + ReadAsDouble(r); break;
+                case TypeEnum.Char: res.CharValue = unchecked((char)(l.CharValue + ReadAsLong(r))); break;
+            }
+        }
+        private static void BinOpSub(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value - ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value - ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value - ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value - ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value - ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value - ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value - ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value - (ulong)ReadAsLong(r))); break;
+                case TypeEnum.Float: res.FloatValue = l.FloatValue - (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.DoubleValue = l.DoubleValue - ReadAsDouble(r); break;
+                case TypeEnum.Char: res.CharValue = unchecked((char)(l.CharValue - ReadAsLong(r))); break;
+            }
+        }
+        private static void BinOpMul(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value * ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value * ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value * ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value * ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value * ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value * ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value * ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value * (ulong)ReadAsLong(r))); break;
+                case TypeEnum.Float: res.FloatValue = l.FloatValue * (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.DoubleValue = l.DoubleValue * ReadAsDouble(r); break;
+            }
+        }
+        private static void BinOpDiv(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value / ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value / ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value / ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value / ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value / ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value / ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value / ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value / (ulong)ReadAsLong(r))); break;
+                case TypeEnum.Float: res.FloatValue = l.FloatValue / (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.DoubleValue = l.DoubleValue / ReadAsDouble(r); break;
+            }
+        }
+        private static void BinOpMod(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value % ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value % ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value % ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value % ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value % ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value % ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value % ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value % (ulong)ReadAsLong(r))); break;
+                case TypeEnum.Float: res.FloatValue = l.FloatValue % (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.DoubleValue = l.DoubleValue % ReadAsDouble(r); break;
+            }
+        }
+        private static void BinOpBand(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue & (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value & ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value & ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value & ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value & ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value & ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value & ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value & ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value & (ulong)ReadAsLong(r))); break;
+            }
+        }
+        private static void BinOpBor(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue | (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value | ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value | ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value | ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value | ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value | ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value | ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value | ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value | (ulong)ReadAsLong(r))); break;
+            }
+        }
+        private static void BinOpBxor(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue ^ (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.I8Value = unchecked((sbyte)(l.I8Value ^ ReadAsLong(r))); break;
+                case TypeEnum.I16: res.I16Value = unchecked((short)(l.I16Value ^ ReadAsLong(r))); break;
+                case TypeEnum.I32: res.I32Value = unchecked((int)(l.I32Value ^ ReadAsLong(r))); break;
+                case TypeEnum.I64: res.I64Value = l.I64Value ^ ReadAsLong(r); break;
+                case TypeEnum.U8: res.U8Value = unchecked((byte)(l.U8Value ^ ReadAsLong(r))); break;
+                case TypeEnum.U16: res.U16Value = unchecked((ushort)(l.U16Value ^ ReadAsLong(r))); break;
+                case TypeEnum.U32: res.U32Value = unchecked((uint)(l.U32Value ^ ReadAsLong(r))); break;
+                case TypeEnum.U64: res.U64Value = unchecked((ulong)(l.U64Value ^ (ulong)ReadAsLong(r))); break;
+            }
+        }
+        // Comparison helpers -- write result.BoolValue directly, no boxing
+        // Right operand read via ReadAsLong/ReadAsDouble to handle type mismatches
+        private static void BinCmpEq(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue == (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.BoolValue = l.I8Value == unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value == unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value == unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value == ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value == unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value == unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value == unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value == unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue == (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue == ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue == unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = l.StringValue == r.StringValue; break;
+                default: res.BoolValue = false; break;
+            }
+        }
+        private static void BinCmpNe(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.Bool: res.BoolValue = l.BoolValue != (ReadAsLong(r) != 0); break;
+                case TypeEnum.I8: res.BoolValue = l.I8Value != unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value != unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value != unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value != ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value != unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value != unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value != unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value != unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue != (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue != ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue != unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = l.StringValue != r.StringValue; break;
+                default: res.BoolValue = false; break;
+            }
+        }
+        private static void BinCmpLt(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.BoolValue = l.I8Value < unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value < unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value < unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value < ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value < unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value < unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value < unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value < unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue < (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue < ReadAsDouble(r); break;
+                default: res.BoolValue = false; break;
+            }
+        }
+        private static void BinCmpGt(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.BoolValue = l.I8Value > unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value > unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value > unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value > ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value > unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value > unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value > unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value > unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue > (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue > ReadAsDouble(r); break;
+                default: res.BoolValue = false; break;
+            }
+        }
+        private static void BinCmpLe(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.BoolValue = l.I8Value <= unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value <= unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value <= unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value <= ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value <= unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value <= unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value <= unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value <= unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue <= (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue <= ReadAsDouble(r); break;
+                default: res.BoolValue = false; break;
+            }
+        }
+        private static void BinCmpGe(BasicRuntimeValue res, TypeEnum t, BasicRuntimeValue l, BasicRuntimeValue r)
+        {
+            switch (t)
+            {
+                case TypeEnum.I8: res.BoolValue = l.I8Value >= unchecked((sbyte)ReadAsLong(r)); break;
+                case TypeEnum.I16: res.BoolValue = l.I16Value >= unchecked((short)ReadAsLong(r)); break;
+                case TypeEnum.I32: res.BoolValue = l.I32Value >= unchecked((int)ReadAsLong(r)); break;
+                case TypeEnum.I64: res.BoolValue = l.I64Value >= ReadAsLong(r); break;
+                case TypeEnum.U8: res.BoolValue = l.U8Value >= unchecked((byte)ReadAsLong(r)); break;
+                case TypeEnum.U16: res.BoolValue = l.U16Value >= unchecked((ushort)ReadAsLong(r)); break;
+                case TypeEnum.U32: res.BoolValue = l.U32Value >= unchecked((uint)ReadAsLong(r)); break;
+                case TypeEnum.U64: res.BoolValue = l.U64Value >= unchecked((ulong)ReadAsLong(r)); break;
+                case TypeEnum.Float: res.BoolValue = l.FloatValue >= (float)ReadAsDouble(r); break;
+                case TypeEnum.Double: res.BoolValue = l.DoubleValue >= ReadAsDouble(r); break;
+                default: res.BoolValue = false; break;
+            }
+        }
+
+        /// <summary>
+        /// Direct field-to-field copy for CastValue -- no boxing via DynamicValue.
+        /// </summary>
+        private static void CopyValueDirect(BasicRuntimeValue target, BasicRuntimeValue source)
+        {
+            var tt = target.TypeInfo.Type;
+            switch (tt)
+            {
+                case TypeEnum.Bool: target.BoolValue = source.TypeInfo.Type == TypeEnum.Bool ? source.BoolValue : ReadAsLong(source) != 0; break;
+                case TypeEnum.I8: target.I8Value = unchecked((sbyte)ReadAsLong(source)); break;
+                case TypeEnum.I16: target.I16Value = unchecked((short)ReadAsLong(source)); break;
+                case TypeEnum.I32: target.I32Value = unchecked((int)ReadAsLong(source)); break;
+                case TypeEnum.I64: target.I64Value = ReadAsLong(source); break;
+                case TypeEnum.U8: target.U8Value = unchecked((byte)ReadAsLong(source)); break;
+                case TypeEnum.U16: target.U16Value = unchecked((ushort)ReadAsLong(source)); break;
+                case TypeEnum.U32: target.U32Value = unchecked((uint)ReadAsLong(source)); break;
+                case TypeEnum.U64: target.U64Value = unchecked((ulong)ReadAsLong(source)); break;
+                case TypeEnum.Float: target.FloatValue = (float)ReadAsDouble(source); break;
+                case TypeEnum.Double: target.DoubleValue = ReadAsDouble(source); break;
+                case TypeEnum.Char: target.CharValue = unchecked((char)ReadAsLong(source)); break;
+                case TypeEnum.String: target.StringValue = source.StringValue; break;
+            }
+        }
+
+        /// Read any integer-typed BasicRuntimeValue as a long (widened, no boxing)
+        private static long ReadAsLong(BasicRuntimeValue v) => v.TypeInfo.Type switch
+        {
+            TypeEnum.Bool => v.BoolValue ? 1 : 0,
+            TypeEnum.I8 => v.I8Value,
+            TypeEnum.I16 => v.I16Value,
+            TypeEnum.I32 => v.I32Value,
+            TypeEnum.I64 => v.I64Value,
+            TypeEnum.U8 => v.U8Value,
+            TypeEnum.U16 => v.U16Value,
+            TypeEnum.U32 => v.U32Value,
+            TypeEnum.U64 => unchecked((long)v.U64Value),
+            TypeEnum.Char => v.CharValue,
+            _ => 0
+        };
+
+        /// Read any float/double-typed BasicRuntimeValue as double (widened, no boxing)
+        private static double ReadAsDouble(BasicRuntimeValue v) => v.TypeInfo.Type switch
+        {
+            TypeEnum.Float => v.FloatValue,
+            TypeEnum.Double => v.DoubleValue,
+            _ => ReadAsLong(v)
+        };
+
+        private IType GetResultTypeInfo(string irType) => irType switch
+        {
+            "bool" => Model.BasicTypeNodes.GetCachedImmutableType("bool")!,
+            "i8" => Model.BasicTypeNodes.GetCachedImmutableType("i8")!,
+            "i16" => Model.BasicTypeNodes.GetCachedImmutableType("i16")!,
+            "i32" => Model.BasicTypeNodes.GetCachedImmutableType("i32")!,
+            "i64" => Model.BasicTypeNodes.GetCachedImmutableType("i64")!,
+            "f32" => Model.BasicTypeNodes.GetCachedImmutableType("f32")!,
+            "f64" => Model.BasicTypeNodes.GetCachedImmutableType("f64")!,
+            "u8" => Model.BasicTypeNodes.GetCachedImmutableType("u8")!,
+            "u16" => Model.BasicTypeNodes.GetCachedImmutableType("u16")!,
+            "u32" => Model.BasicTypeNodes.GetCachedImmutableType("u32")!,
+            "u64" => Model.BasicTypeNodes.GetCachedImmutableType("u64")!,
+            "char" => Model.BasicTypeNodes.GetCachedImmutableType("char")!,
+            "ref<string>" or "string" => Model.BasicTypeNodes.GetCachedImmutableType("ref<string>")!,
+            _ => Model.BasicTypeNodes.GetCachedImmutableType("i64")!
+        };
+
+
+        /// Convert any BasicRuntimeValue to bool: 0 → false, non-zero → true (matches C# (bool)cast behavior on dynamic values)
+        private static bool ToBoolFromAny(BasicRuntimeValue bv) => bv.TypeInfo.Type switch
+        {
+            TypeEnum.Bool => bv.BoolValue,
+            TypeEnum.I8 => bv.I8Value != 0,
+            TypeEnum.I16 => bv.I16Value != 0,
+            TypeEnum.I32 => bv.I32Value != 0,
+            TypeEnum.I64 => bv.I64Value != 0,
+            TypeEnum.U8 => bv.U8Value != 0,
+            TypeEnum.U16 => bv.U16Value != 0,
+            TypeEnum.U32 => bv.U32Value != 0,
+            TypeEnum.U64 => bv.U64Value != 0,
+            TypeEnum.Float => bv.FloatValue != 0,
+            TypeEnum.Double => bv.DoubleValue != 0,
+            TypeEnum.Char => bv.CharValue != '\0',
+            _ => false
+        };
 
         private IRuntimeValue EvalUnaryOp(string op, IRuntimeValue operand, string irType)
         {
             if (operand is not BasicRuntimeValue bv)
-                throw new BabyPenguinRuntimeException($"Cannot apply unary op to non-basic value");
+                throw new BabyPenguinRuntimeException("Cannot apply unary op to non-basic value");
 
-            var resultType = irType switch
-            {
-                "bool" => Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable),
-                "i8" => Model.BasicTypeNodes.I8.ToType(Mutability.Immutable),
-                "i16" => Model.BasicTypeNodes.I16.ToType(Mutability.Immutable),
-                "i32" => Model.BasicTypeNodes.I32.ToType(Mutability.Immutable),
-                "i64" => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable),
-                "f32" => Model.BasicTypeNodes.Float.ToType(Mutability.Immutable),
-                "f64" => Model.BasicTypeNodes.Double.ToType(Mutability.Immutable),
-                _ => Model.BasicTypeNodes.I64.ToType(Mutability.Immutable)
-            };
+            // Determine result type from irType (matches original behavior)
+            var resultTypeInfo = GetResultTypeInfo(irType);
+            var result = new BasicRuntimeValue(resultTypeInfo);
+            var t = bv.TypeInfo.Type;
 
-            var result = new BasicRuntimeValue(resultType);
             switch (op)
             {
-                case "neg": result.DynamicValue = -(dynamic)bv.DynamicValue!; break;
-                case "bnot": result.DynamicValue = ~(dynamic)bv.DynamicValue!; break;
-                case "lnot": result.BoolValue = !bv.BoolValue; break;
-                case "plus": result.DynamicValue = bv.DynamicValue; break;
-                default: throw new BabyPenguinRuntimeException($"Unknown unary op: {op}");
+                case "neg":
+                    {
+                        // Negate operand and write to result field based on RESULT type (not operand type).
+                        // Operand may differ in type (e.g. U8 literal -> I64 result).
+                        var rt = result.TypeInfo.Type;
+                        switch (rt)
+                        {
+                            case TypeEnum.I8: result.I8Value = unchecked((sbyte)(-ReadAsLong(bv))); break;
+                            case TypeEnum.I16: result.I16Value = unchecked((short)(-ReadAsLong(bv))); break;
+                            case TypeEnum.I32: result.I32Value = unchecked((int)(-ReadAsLong(bv))); break;
+                            case TypeEnum.I64: result.I64Value = -ReadAsLong(bv); break;
+                            case TypeEnum.U8: result.U8Value = unchecked((byte)(-ReadAsLong(bv))); break;
+                            case TypeEnum.U16: result.U16Value = unchecked((ushort)(-ReadAsLong(bv))); break;
+                            case TypeEnum.U32: result.U32Value = unchecked((uint)(-(long)ReadAsLong(bv))); break;
+                            case TypeEnum.U64: result.U64Value = unchecked((ulong)(-(long)ReadAsLong(bv))); break;
+                            case TypeEnum.Float: result.FloatValue = -(float)ReadAsDouble(bv); break;
+                            case TypeEnum.Double: result.DoubleValue = -ReadAsDouble(bv); break;
+                        }
+                    }
+                    break;
+                case "bnot":
+                    {
+                        // Bitwise NOT — write based on RESULT type, read operand via ReadAsLong
+                        var rt = result.TypeInfo.Type;
+                        switch (rt)
+                        {
+                            case TypeEnum.I8: result.I8Value = unchecked((sbyte)(~ReadAsLong(bv))); break;
+                            case TypeEnum.I16: result.I16Value = unchecked((short)(~ReadAsLong(bv))); break;
+                            case TypeEnum.I32: result.I32Value = unchecked((int)(~ReadAsLong(bv))); break;
+                            case TypeEnum.I64: result.I64Value = ~ReadAsLong(bv); break;
+                            case TypeEnum.U8: result.U8Value = unchecked((byte)(~ReadAsLong(bv))); break;
+                            case TypeEnum.U16: result.U16Value = unchecked((ushort)(~ReadAsLong(bv))); break;
+                            case TypeEnum.U32: result.U32Value = unchecked((uint)(~ReadAsLong(bv))); break;
+                            case TypeEnum.U64: result.U64Value = unchecked((ulong)(~ReadAsLong(bv))); break;
+                        }
+                    }
+                    break;
+                case "lnot":
+                    result.BoolValue = !bv.BoolValue;
+                    break;
+                case "plus":
+                    // Direct field copy -- no boxing via DynamicValue
+                    CopyValueDirect(result, bv);
+                    break;
+                default:
+                    throw new BabyPenguinRuntimeException($"Unknown unary op: {op}");
             }
             return result;
         }
+
+        // Static helper methods — no allocations, no dynamic, no boxing
+
+        /// Convert any BasicRuntimeValue to string without dynamic/boxing
+        private static string StaticToString(BasicRuntimeValue bv) => bv.TypeInfo.Type switch
+        {
+            TypeEnum.Bool => bv.BoolValue.ToString(),
+            TypeEnum.U8 => bv.U8Value.ToString(),
+            TypeEnum.U16 => bv.U16Value.ToString(),
+            TypeEnum.U32 => bv.U32Value.ToString(),
+            TypeEnum.U64 => bv.U64Value.ToString(),
+            TypeEnum.I8 => bv.I8Value.ToString(),
+            TypeEnum.I16 => bv.I16Value.ToString(),
+            TypeEnum.I32 => bv.I32Value.ToString(),
+            TypeEnum.I64 => bv.I64Value.ToString(),
+            TypeEnum.Float => bv.FloatValue.ToString(),
+            TypeEnum.Double => bv.DoubleValue.ToString(),
+            TypeEnum.String => bv.StringValue ?? "",
+            TypeEnum.Char => bv.CharValue.ToString(),
+            _ => ""
+        };
+
 
         // === Object / Field operations ===
 
@@ -1218,13 +1537,9 @@ namespace BabyPenguin.VirtualMachine
 
         private ICodeContainer FindCodeContainer(string sanitizedFuncName)
         {
-            // Try to find by matching sanitized full names
-            foreach (var node in Model.FindAll(n => n is ICodeContainer))
-            {
-                var cc = (ICodeContainer)node;
-                if (SanitizeName(cc.FullName()) == sanitizedFuncName)
-                    return cc;
-            }
+            // O(1) lookup via pre-built index (eliminates full semantic tree traversal)
+            if (Global.CodeContainerIndex.TryGetValue(sanitizedFuncName, out var cc))
+                return cc;
             throw new BabyPenguinRuntimeException($"No code container found for function '{sanitizedFuncName}'");
         }
 

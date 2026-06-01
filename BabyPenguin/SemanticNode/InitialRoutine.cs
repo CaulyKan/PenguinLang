@@ -30,7 +30,8 @@ namespace BabyPenguin.SemanticNode
 
         public string Name { get; }
 
-        public string FullName() => Parent!.FullName() + "." + Name;
+        private string? _fullName;
+        public string FullName() => _fullName ??= Parent!.FullName() + "." + Name;
 
         public List<BabyPenguinIR> Instructions { get; } = [];
 

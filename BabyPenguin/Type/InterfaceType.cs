@@ -19,6 +19,20 @@ namespace BabyPenguin.Type
 
         public Mutability IsMutable { get; } = isMutable;
 
+        private string? _fullName;
+        public string FullName()
+        {
+            if (_fullName != null)
+                return _fullName;
+            string n = TypeNode.FullName();
+            if (IsMutable == Mutability.Mutable)
+                n = "mut " + n;
+            else if (IsMutable == Mutability.Immutable)
+                n = "!mut " + n;
+            _fullName = n;
+            return n;
+        }
+
         public bool CanImplicitlyCastToWithoutMutability(IType other)
         {
             if (Interface.FullName() == (other.TypeNode as IInterfaceNode)?.FullName())
