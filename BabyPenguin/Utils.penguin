@@ -5,6 +5,7 @@ namespace _utils {
 
     #template(T: type)
     class List {
+        impl IReferenceType;
         __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
         extern fun new(mut this);
         extern fun at(this, index: u64) -> __builtin.Option<T>;

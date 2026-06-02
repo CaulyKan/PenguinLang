@@ -168,8 +168,7 @@ class BoundType {
 
     fun is_value_type(this) -> bool {
         if (this.kind is TypeKind.PrimitiveKind) {
-            if (this.primitive is PrimitiveType.StringType) { return false; }
-            return true;
+            return true; // All primitives (including string) are value types
         }
         if (this.kind is TypeKind.EnumKind) { return true; }
         if (this.kind is TypeKind.ClassKind) {
@@ -189,8 +188,7 @@ class BoundType {
 
     fun is_reference_type(this) -> bool {
         if (this.kind is TypeKind.PrimitiveKind) {
-            if (this.primitive is PrimitiveType.StringType) { return true; }
-            return false;
+            return false; // All primitives (including string) are value types
         }
         if (this.kind is TypeKind.EnumKind) { return false; }
         if (this.kind is TypeKind.ClassKind) {

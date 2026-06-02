@@ -213,8 +213,8 @@ initial {
 ");
         Assert.Contains("i32_value=true", output);
         Assert.Contains("bool_value=true", output);
-        Assert.Contains("string_value=false", output);
-        Assert.Contains("string_ref=true", output);
+        Assert.Contains("string_value=true", output);
+        Assert.Contains("string_ref=false", output);
         Assert.Contains("i32_ref=false", output);
     }
 

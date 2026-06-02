@@ -273,7 +273,7 @@ public class EndToEndInterfaceTest : EndToEndTestBase
                 x: i32;
                 y: i32;
                 fun new(mut this, x: i32, y: i32) { this.x = x; this.y = y; }
-                impl ICopy {}
+                impl IValueType {}
                 impl IShow {
                     fun show(this) -> string {
                         return "(" + cast<string>(this.x) + "," + cast<string>(this.y) + ")";
@@ -298,7 +298,7 @@ public class EndToEndInterfaceTest : EndToEndTestBase
             class Val {
                 x: i32;
                 fun new(mut this, x: i32) { this.x = x; }
-                impl ICopy {}
+                impl IValueType {}
                 impl IShow {
                     fun show(this) -> string { return cast<string>(this.x); }
                 }
@@ -326,7 +326,7 @@ public class EndToEndInterfaceTest : EndToEndTestBase
             class Val {
                 x: i32;
                 fun new(mut this, x: i32) { this.x = x; }
-                impl ICopy {}
+                impl IValueType {}
                 impl IShow {
                     fun show(this) -> string { return cast<string>(this.x); }
                 }
@@ -351,7 +351,7 @@ public class EndToEndInterfaceTest : EndToEndTestBase
             class Multi {
                 val: i32;
                 fun new(mut this, val: i32) { this.val = val; }
-                impl ICopy {}
+                impl IValueType {}
                 impl IFoo {
                     fun foo(this) -> string { return "foo=" + cast<string>(this.val); }
                 }
