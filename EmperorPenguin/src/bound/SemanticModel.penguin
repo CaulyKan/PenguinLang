@@ -26,8 +26,9 @@ class SemanticModel {
     }
 
     fun register_builtin_interfaces(mut this) {
+        this.register_builtin_interface("IValueType");
+        this.register_builtin_interface("IReferenceType");
         this.register_builtin_interface("ICopy");
-        this.register_builtin_interface("IRef");
     }
 
     fun make_primitive_type(this, name: string) -> mut BoundType {
@@ -2090,9 +2091,9 @@ class SemanticModel {
             return false;
         }
 
-        if (this.class_has_icopy(cls)) {
-            if (this.class_has_iref(cls)) {
-                this.report_error("Class '" + cls.name + "' cannot implement both ICopy and IRef", 0, 0);
+        if (this.class_has_ivalue_type(cls)) {
+            if (this.class_has_ireference_type(cls)) {
+                this.report_error("Class '" + cls.name + "' cannot implement both IValueType and IReferenceType", 0, 0);
                 cls.is_value_class = new Option<bool>.some(false);
                 return false;
             }
@@ -2100,7 +2101,7 @@ class SemanticModel {
             return true;
         }
 
-        if (this.class_has_iref(cls)) {
+        if (this.class_has_ireference_type(cls)) {
             cls.is_value_class = new Option<bool>.some(false);
             return false;
         }
@@ -2118,7 +2119,7 @@ class SemanticModel {
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
             let name: string = vtable.interface_type.display_name();
-            if (name != "ICopy" && name != "IRef") {
+            if (name != "IValueType" && name != "IReferenceType" && name != "ICopy") {
                 return true;
             }
             vi = vi + 1;
@@ -2126,13 +2127,26 @@ class SemanticModel {
         return false;
     }
 
-    fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
-        let ci: mut i64 = 0;
-        while (ci < cast<i64>(visiting.size())) {
-            if (visiting.at(cast<u64>(ci)).some == full_name) {
+    fun class_has_ivalue_type(this, cls: BoundClassDefinition) -> bool {
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(cls.vtables.size())) {
+            let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+            if (vtable.interface_type.display_name() == "IValueType") {
                 return true;
             }
-            ci = ci + 1;
+            vi = vi + 1;
+        }
+        return false;
+    }
+
+    fun class_has_ireference_type(this, cls: BoundClassDefinition) -> bool {
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(cls.vtables.size())) {
+            let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+            if (vtable.interface_type.display_name() == "IReferenceType") {
+                return true;
+            }
+            vi = vi + 1;
         }
         return false;
     }
@@ -2149,14 +2163,13 @@ class SemanticModel {
         return false;
     }
 
-    fun class_has_iref(this, cls: BoundClassDefinition) -> bool {
-        let vi: mut i64 = 0;
-        while (vi < cast<i64>(cls.vtables.size())) {
-            let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
-            if (vtable.interface_type.display_name() == "IRef") {
+    fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(visiting.size())) {
+            if (visiting.at(cast<u64>(ci)).some == full_name) {
                 return true;
             }
-            vi = vi + 1;
+            ci = ci + 1;
         }
         return false;
     }
@@ -2178,8 +2191,7 @@ class SemanticModel {
 
     fun is_type_value_like(mut this, bt: BoundType, visiting: mut _utils.List<string>) -> bool {
         if (bt.kind is TypeKind.PrimitiveKind) {
-            if (bt.primitive is PrimitiveType.StringType) { return false; }
-            return true;
+            return true; // All primitives (including string) are value types
         }
         if (bt.kind is TypeKind.EnumKind) { return true; }
         if (bt.kind is TypeKind.ClassKind) {

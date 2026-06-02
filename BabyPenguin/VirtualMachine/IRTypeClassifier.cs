@@ -79,19 +79,16 @@ namespace BabyPenguin.VirtualMachine
         }
 
         /// <summary>
-        /// Checks if a class implements ICopy&lt;Self&gt;, making it a value type.
-        /// This matches EmperorPenguin's is_value_class check.
+        /// Checks if a class implements IValueType, making it a value type.
+        /// A class that does NOT implement IValueType is a reference type.
         /// </summary>
         public static bool IsValueClass(ITypeNode typeNode)
         {
             if (typeNode is not IClassNode classNode) return false;
 
-            var selfTypeName = typeNode.FullName();
-            var expectedICopyName = $"__builtin.ICopy<{selfTypeName}>";
-
             foreach (var intf in classNode.ImplementedInterfaces)
             {
-                if (intf.FullName() == expectedICopyName)
+                if (intf.FullName() == "__builtin.IValueType")
                     return true;
             }
 

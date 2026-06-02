@@ -36,12 +36,15 @@ namespace __builtin {
     #template(T: type)
     class Box {
         value: T;
+        impl IReferenceType;
         fun new(mut this, value: T) {
             this.value = value;
         }
     }
 
-    class __ExternImpl {}
+    class __ExternImpl {
+        impl IReferenceType;
+    }
 
     #template(T: type)
     enum Option {
@@ -71,6 +74,10 @@ namespace __builtin {
     interface ICopy {
         extern fun copy(this: T) -> T;
     }
+
+    interface IValueType {}
+
+    interface IReferenceType {}
         
     impl __builtin.ICopy<i64> for i64;
     impl __builtin.ICopy<u64> for u64;

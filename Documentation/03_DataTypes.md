@@ -24,10 +24,72 @@ Penguin-lang also support readonly string type. This means that string is not mu
 ## Reference Types and Value Types
 Penguin-lang supports both reference types and value types. A reference type is a type that holds a reference to an object, and can be passed to other functions as reference. A value type is a type that holds its own data, and can be copied when assigned to another variable.
 
-| Type            | Who                                                           | Managed By                     | Assignment       |
-| --------------- | ------------------------------------------------------------- | ------------------------------ | ---------------- |
+| Type            | Who                                                      | Managed By                     | Assignment       |
+| --------------- | -------------------------------------------------------- | ------------------------------ | ---------------- |
 | Value types     | i32, f64, string...<br /> classes that implement `IValueType` | Stack or Parent Data Structure | Always copied    |
-| Reference types | any other types                                               | GC                             | Shared reference |
+| Reference types | any other types (implements `IReferenceType`)            | GC                             | Shared reference |
+
+### `IValueType` and `IReferenceType`
+
+A class's value/reference type status is determined by whether it implements `IValueType` or `IReferenceType`. These are marker interfaces — they have no methods.
+
+```penguin
+class ValueClass {
+    x: i32;
+    y: i32;
+    impl IValueType;  // explicitly marked as value type
+}
+
+class RefClass {
+    data: string;
+    impl IReferenceType;  // explicitly marked as reference type
+}
+```
+
+### Auto-classification
+
+If a class does NOT explicitly implement `IValueType` or `IReferenceType`, the compiler automatically determines its type:
+
+- If **all** fields of the class are value types (primitives, enums, or classes implementing `IValueType`), the class auto-implements `IValueType`
+- Otherwise, the class auto-implements `IReferenceType`
+
+```penguin
+class Point {
+    x: i32;
+    y: i32;
+    // All fields are value types → auto IValueType (value type)
+}
+
+class Node {
+    data: i32;
+    next: Node;  // reference type field → auto IReferenceType (reference type)
+}
+```
+
+### `ICopy<T>` — Copy Mechanics
+
+`ICopy<T>` defines **how** a class is copied. It is **separate** from value/reference classification — both value types and reference types can implement `ICopy<T>`.
+
+```penguin
+#template(T: type)
+interface ICopy {
+    extern fun copy(this: T) -> T;
+}
+```
+
+For **value types** that do not manually implement `ICopy<T>`, the compiler automatically generates an `ICopy<T>` implementation that performs a memberwise copy (via `memcpy`-style struct copy).
+
+For **reference types**, `ICopy<T>` is not auto-generated. A reference type that implements `ICopy<T>` must provide its own deep-copy logic.
+
+### Summary of Auto-Generation Rules
+
+| Class explicitly implements | All fields are value types | Compiler adds |
+|---|---|---|
+| (nothing) | Yes | `IValueType` + `ICopy<Self>` |
+| (nothing) | No | `IReferenceType` |
+| `IValueType` | — | `ICopy<Self>` (if not manually provided) |
+| `IValueType` + manual `ICopy<Self>` | — | (nothing) |
+| `IReferenceType` | — | (nothing) |
 
 ## Mutability
 Penguin-lang features a strong, explicit, and fine-grained mutability system enforced at compile time. This design aims to prevent accidental mutations and promote safer, more predictable code.
@@ -107,20 +169,7 @@ Mutability can be applied to generic type parameters and members.
         c.data = 2; // OK
     }
     ```
-*   **Auto Mutability for Generic Members**: The `auto` keyword aligns mutability of a member with its container object, regardless of mutability of generic type `T`.
-    ```penguin
-    #template(T: type)
-    class Container {
-        data : auto T; // 'data' mutability is aligned with its container object, regardless of 'T'
-    }
-    initial {
-        let c : mut Container<i32> = new Container<i32>(1);
-        c.data = 2; // OK, because 'c' is mutable
 
-        let c2 : Container<mut i32> = new Container<mut i32>(1);
-        c2.data = 2; // Compile-time ERROR, because c2 is immutable
-    }
-    ```
 
 ### Assignment Compatibility
 Penguin-lang has strict rules for assigning values between variables of different mutability.
@@ -138,10 +187,10 @@ Penguin-lang has strict rules for assigning values between variables of differen
         let b : MyClass;
         b = a; // Compile-time ERROR: Cannot reassign immutable variable 'b'
         ```
-    *   **Immutable to Mutable**: Not allowed unless in initialization. A mutable variable cannot be assigned an immutable reference. This prevents "upgrading" an immutable reference to a mutable one, which could then be used to mutate an object intended to be immutable.
+    *   **Immutable to Mutable**: A mutable variable cannot be assigned an immutable reference. This prevents "upgrading" an immutable reference to a mutable one, which could then be used to mutate an object intended to be immutable.
         ```penguin
         let a : MyClass = new MyClass();
-        let b : mut MyClass = a; // OK
+        let b : mut MyClass;
         b = a; // Compile-time ERROR
         ```
 
