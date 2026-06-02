@@ -7,14 +7,12 @@ enum ErrorSeverity {
 
 class SemanticError {
     message: string = "";
-    line: i64 = 0;
-    col: i64 = 0;
+    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
     severity: ErrorSeverity = new ErrorSeverity.Error();
 
-    fun new(mut this, message: string, line: i64, col: i64) {
+    fun new(mut this, message: string, location: ast.SourceLocation) {
         this.message = message;
-        this.line = line;
-        this.col = col;
+        this.location = location;
     }
 }
 
@@ -23,10 +21,10 @@ class BoundCompilationUnit {
     global_scope: BoundScope = new BoundScope(new ScopeKind.GlobalScope(), "", "", new Option<BoundScope>.none());
     type_registry: BoundTypeRegistry = new BoundTypeRegistry();
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
-    source_file: string = "";
+    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
-    fun add_error(mut this, message: string, line: i64, col: i64) {
-        this.errors.push(new SemanticError(message, line, col));
+    fun add_error(mut this, message: string, location: ast.SourceLocation) {
+        this.errors.push(new SemanticError(message, location));
     }
 
     fun has_errors(this) -> bool {

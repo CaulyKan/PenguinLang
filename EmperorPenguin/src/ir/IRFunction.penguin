@@ -4,8 +4,7 @@ class IRParameter {
     name: mut string = "";
     ir_type: mut string = "";
     index: mut i64 = 0;
-    source_line: mut i64 = 0;
-    source_col: mut i64 = 0;
+    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, ir_type: string, index: i64) {
         this.name = name;
@@ -23,9 +22,7 @@ class IRFunction {
     next_temp: mut i64 = 0;
     next_label: mut i64 = 0;
     is_extern: mut bool = false;
-    source_file: mut string = "";
-    source_line: mut i64 = 0;
-    source_col: mut i64 = 0;
+    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, return_type: string) {
         this.name = name;
@@ -55,8 +52,7 @@ class IRFunction {
     fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
         let idx: i64 = cast<i64>(this.parameters.size());
         let param = new mut IRParameter(name, ir_type, idx);
-        param.source_line = line;
-        param.source_col = col;
+        param.location = new ast.SourceLocation(this.location.filename, line, col);
         this.parameters.push(param);
         return this.alloc_named_reg(name, ir_type, line, col);
     }

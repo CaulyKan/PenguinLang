@@ -1,0 +1,19 @@
+namespace ast {
+
+class SourceLocation {
+    filename: string = "";
+    line: i64 = 0;
+    col: i64 = 0;
+
+    fun new(mut this, filename: string, line: i64, col: i64) {
+        this.filename = filename;
+        this.line = line;
+        this.col = col;
+    }
+
+    fun to_string(this) -> string {
+        return this.filename + ":" + cast<string>(this.line) + ":" + cast<string>(this.col);
+    }
+}
+
+}

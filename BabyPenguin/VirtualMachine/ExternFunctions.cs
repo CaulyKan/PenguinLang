@@ -363,6 +363,31 @@ namespace BabyPenguin.VirtualMachine
                 }
             });
 
+            vm.Global.RegisterExternFunction("_utils.file_exists", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = System.IO.File.Exists(path);
+            });
+
+            vm.Global.RegisterExternFunction("_utils.dir_exists", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = System.IO.Directory.Exists(path);
+            });
+
+            vm.Global.RegisterExternFunction("_utils.dir_get_entries", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                string entries = "";
+                try
+                {
+                    entries = string.Join("\n", System.IO.Directory.GetFileSystemEntries(path)
+                        .Select(e => System.IO.Path.GetFileName(e)));
+                }
+                catch { }
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = entries;
+            });
+
             vm.Global.RegisterExternFunction("__builtin._exec_cmd", (result, args) =>
             {
                 var cmd = args[0].As<BasicRuntimeValue>().StringValue;

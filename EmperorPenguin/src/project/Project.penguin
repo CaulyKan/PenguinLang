@@ -1,0 +1,396 @@
+namespace project {
+
+// --- String helper functions ---
+
+fun string_ends_with(s: string, suffix: string) -> bool {
+    let slen: i64 = string_length(s);
+    let flen: i64 = string_length(suffix);
+    if (flen > slen) { return false; }
+    let tail: string = string_substring(s, slen - flen, flen);
+    return tail == suffix;
+}
+
+fun string_starts_with(s: string, prefix: string) -> bool {
+    let slen: i64 = string_length(s);
+    let plen: i64 = string_length(prefix);
+    if (plen > slen) { return false; }
+    let head: string = string_substring(s, 0, plen);
+    return head == prefix;
+}
+
+fun string_trim(s: string) -> string {
+    let len: i64 = string_length(s);
+    let start: mut i64 = 0;
+    let end: mut i64 = len;
+    while (start < len) {
+        let ch: string = string_char_at(s, start);
+        if (ch == " " || ch == "\t" || ch == "\r" || ch == "\n") {
+            start = start + 1;
+        } else {
+            break;
+        }
+    }
+    while (end > start) {
+        let ch: string = string_char_at(s, end - 1);
+        if (ch == " " || ch == "\t" || ch == "\r" || ch == "\n") {
+            end = end - 1;
+        } else {
+            break;
+        }
+    }
+    return string_substring(s, start, end - start);
+}
+
+fun split_string(s: string, delim: string) -> _utils.List<string> {
+    let result: mut _utils.List<string> = new _utils.List<string>();
+    let slen: i64 = string_length(s);
+    let dlen: i64 = string_length(delim);
+    if (dlen == 0) {
+        result.push(s);
+        return result;
+    }
+    let start: mut i64 = 0;
+    while (start <= slen) {
+        let pos: i64 = string_find_from(s, delim, start);
+        if (pos < 0) {
+            result.push(string_substring(s, start, slen - start));
+            break;
+        }
+        result.push(string_substring(s, start, pos - start));
+        start = pos + dlen;
+    }
+    return result;
+}
+
+fun split_lines(s: string) -> _utils.List<string> {
+    return split_string(s, "\n");
+}
+
+fun parse_string_array(s: string) -> _utils.List<string> {
+    let result: mut _utils.List<string> = new _utils.List<string>();
+    let len: i64 = string_length(s);
+    let i: mut i64 = 0;
+    // Find opening bracket
+    while (i < len) {
+        let ch: string = string_char_at(s, i);
+        if (ch == "[") {
+            i = i + 1;
+            break;
+        }
+        i = i + 1;
+    }
+    // Parse quoted strings
+    while (i < len) {
+        let ch: string = string_char_at(s, i);
+        if (ch == "\"") {
+            // Find closing quote
+            let start: i64 = i + 1;
+            let j: mut i64 = start;
+            while (j < len) {
+                let c2: string = string_char_at(s, j);
+                if (c2 == "\"") {
+                    break;
+                }
+                j = j + 1;
+            }
+            if (j < len) {
+                result.push(string_substring(s, start, j - start));
+                i = j + 1;
+            } else {
+                break;
+            }
+        } else if (ch == "]") {
+            break;
+        } else {
+            i = i + 1;
+        }
+    }
+    return result;
+}
+
+// --- Path helpers ---
+
+fun path_combine(dir: string, name: string) -> string {
+    let dlen: i64 = string_length(dir);
+    if (dlen == 0) { return name; }
+    let last: string = string_char_at(dir, dlen - 1);
+    if (last == "/" || last == "\\") {
+        return dir + name;
+    }
+    return dir + "/" + name;
+}
+
+fun get_parent_dir(path: string) -> string {
+    let len: i64 = string_length(path);
+    let last_slash: mut i64 = -1;
+    let pos: mut i64 = string_find(path, "/");
+    while (pos >= 0) {
+        last_slash = pos;
+        pos = string_find_from(path, "/", pos + 1);
+    }
+    // Also check backslash for Windows paths
+    let pos2: mut i64 = string_find(path, "\\");
+    while (pos2 >= 0) {
+        if (pos2 > last_slash) { last_slash = pos2; }
+        pos2 = string_find_from(path, "\\", pos2 + 1);
+    }
+    if (last_slash < 0) { return "."; }
+    return string_substring(path, 0, last_slash);
+}
+
+// --- Glob resolver ---
+
+fun glob_match(pattern: string, name: string) -> bool {
+    // Two-pointer algorithm for * wildcard
+    let plen: i64 = string_length(pattern);
+    let nlen: i64 = string_length(name);
+    let pi: mut i64 = 0;
+    let ni: mut i64 = 0;
+    let star_pi: mut i64 = -1;
+    let star_ni: mut i64 = -1;
+
+    while (ni < nlen) {
+        if (pi < plen) {
+            let pc: string = string_char_at(pattern, pi);
+            let nc: string = string_char_at(name, ni);
+            if (pc == "*") {
+                star_pi = pi;
+                star_ni = ni;
+                pi = pi + 1;
+            } else {
+                if (pc == nc) {
+                    pi = pi + 1;
+                    ni = ni + 1;
+                } else if (star_pi >= 0) {
+                    pi = star_pi + 1;
+                    star_ni = star_ni + 1;
+                    ni = star_ni;
+                } else {
+                    return false;
+                }
+            }
+        } else if (star_pi >= 0) {
+            pi = star_pi + 1;
+            star_ni = star_ni + 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+
+    // Consume trailing * in pattern
+    while (pi < plen) {
+        let pc: string = string_char_at(pattern, pi);
+        if (pc == "*") {
+            pi = pi + 1;
+        } else {
+            break;
+        }
+    }
+    return pi == plen;
+}
+
+fun is_whitespace(ch: string) -> bool {
+    return ch == " " || ch == "\t" || ch == "\r" || ch == "\n";
+}
+
+fun collect_penguin_files(dir: string, result: mut _utils.List<string>) {
+    if (!_utils.dir_exists(dir)) { return; }
+    let entries_str: string = _utils.dir_get_entries(dir);
+    let entries: _utils.List<string> = split_string(entries_str, "\n");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(entries.size())) {
+        let entry: string = entries.at(cast<u64>(i)).some;
+        if (string_length(entry) == 0) {
+            i = i + 1;
+            continue;
+        }
+        let full_path: string = path_combine(dir, entry);
+        if (_utils.dir_exists(full_path)) {
+            collect_penguin_files(full_path, result);
+        } else if (string_ends_with(entry, ".penguin")) {
+            if (_utils.file_exists(full_path)) {
+                result.push(full_path);
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fun expand_glob(current_dir: string, parts: _utils.List<string>, part_index: i64, result: mut _utils.List<string>) {
+    if (part_index >= cast<i64>(parts.size())) { return; }
+
+    let part: string = parts.at(cast<u64>(part_index)).some;
+    let is_last: bool = part_index == cast<i64>(parts.size()) - 1;
+
+    // Handle ** (recursive directory wildcard)
+    if (part == "**") {
+        if (is_last) {
+            // Collect all .penguin files recursively from current_dir
+            collect_penguin_files(current_dir, result);
+        } else {
+            // Continue matching next part in current dir
+            expand_glob(current_dir, parts, part_index + 1, result);
+        }
+        // Recurse into subdirectories
+        if (_utils.dir_exists(current_dir)) {
+            let entries_str: string = _utils.dir_get_entries(current_dir);
+            let entries: _utils.List<string> = split_string(entries_str, "\n");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(entries.size())) {
+                let entry: string = entries.at(cast<u64>(i)).some;
+                if (string_length(entry) == 0) {
+                    i = i + 1;
+                    continue;
+                }
+                let full_path: string = path_combine(current_dir, entry);
+                if (_utils.dir_exists(full_path)) {
+                    expand_glob(full_path, parts, part_index, result);
+                }
+                i = i + 1;
+            }
+        }
+        return;
+    }
+
+    // Handle * and ? wildcards
+    if (string_find(part, "*") >= 0 || string_find(part, "?") >= 0) {
+        if (!_utils.dir_exists(current_dir)) { return; }
+        let entries_str: string = _utils.dir_get_entries(current_dir);
+        let entries: _utils.List<string> = split_string(entries_str, "\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(entries.size())) {
+            let entry: string = entries.at(cast<u64>(i)).some;
+            if (string_length(entry) == 0) {
+                i = i + 1;
+                continue;
+            }
+            if (glob_match(part, entry)) {
+                let full_path: string = path_combine(current_dir, entry);
+                if (is_last) {
+                    if (_utils.file_exists(full_path) && string_ends_with(entry, ".penguin")) {
+                        result.push(full_path);
+                    }
+                } else {
+                    if (_utils.dir_exists(full_path)) {
+                        expand_glob(full_path, parts, part_index + 1, result);
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return;
+    }
+
+    // No wildcard - exact path
+    let next_path: string = path_combine(current_dir, part);
+    if (is_last) {
+        if (_utils.file_exists(next_path) && string_ends_with(part, ".penguin")) {
+            result.push(next_path);
+        }
+    } else {
+        if (_utils.dir_exists(next_path)) {
+            expand_glob(next_path, parts, part_index + 1, result);
+        }
+    }
+}
+
+fun resolve_pattern(base_dir: string, pattern: string, result: mut _utils.List<string>) {
+    let parts: _utils.List<string> = split_string(pattern, "/");
+    expand_glob(base_dir, parts, 0, result);
+}
+
+// --- PenguinProject class ---
+
+class PenguinProject {
+    name: string = "";
+    sources: mut _utils.List<string> = new _utils.List<string>();
+
+    fun new(mut this) {
+        this.sources = new _utils.List<string>();
+    }
+
+    fun load(path: string) -> mut PenguinProject {
+        let content: string = _utils.file_read_text(path);
+        let project: mut PenguinProject = new PenguinProject();
+        project.parse(content);
+        return project;
+    }
+
+    fun parse(mut this, content: string) {
+        let lines: _utils.List<string> = split_lines(content);
+        let in_project_section: mut bool = false;
+        let li: mut i64 = 0;
+        while (li < cast<i64>(lines.size())) {
+            let line: string = string_trim(lines.at(cast<u64>(li)).some);
+            li = li + 1;
+
+            // Skip empty lines and comments
+            if (string_length(line) == 0) { continue; }
+            if (string_char_at(line, 0) == "#") { continue; }
+
+            // Check for section header
+            if (string_char_at(line, 0) == "[") {
+                let close: i64 = string_find(line, "]");
+                if (close > 1) {
+                    let section: string = string_substring(line, 1, close - 1);
+                    let trimmed_section: string = string_trim(section);
+                    if (trimmed_section == "Project" || trimmed_section == "project") {
+                        in_project_section = true;
+                    } else {
+                        in_project_section = false;
+                    }
+                }
+                continue;
+            }
+
+            if (!in_project_section) { continue; }
+
+            // Parse key = value
+            let eq_pos: i64 = string_find(line, "=");
+            if (eq_pos < 0) { continue; }
+
+            let key: string = string_trim(string_substring(line, 0, eq_pos));
+            let value: string = string_trim(string_substring(line, eq_pos + 1, string_length(line) - eq_pos - 1));
+
+            if (key == "name") {
+                // Extract quoted string value
+                let q1: i64 = string_find(value, "\"");
+                let q2: i64 = string_find_from(value, "\"", q1 + 1);
+                if (q1 >= 0 && q2 > q1) {
+                    this.name = string_substring(value, q1 + 1, q2 - q1 - 1);
+                }
+            }
+
+            if (key == "sources") {
+                let parsed: _utils.List<string> = parse_string_array(value);
+                let si: mut i64 = 0;
+                while (si < cast<i64>(parsed.size())) {
+                    this.sources.push(parsed.at(cast<u64>(si)).some);
+                    si = si + 1;
+                }
+            }
+        }
+    }
+
+    fun resolve_sources(mut this, project_dir: string) -> mut _utils.List<string> {
+        let result: mut _utils.List<string> = new _utils.List<string>();
+
+        if (cast<i64>(this.sources.size()) > 0) {
+            // Resolve each source pattern
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.sources.size())) {
+                let pattern: string = this.sources.at(cast<u64>(i)).some;
+                resolve_pattern(project_dir, pattern, result);
+                i = i + 1;
+            }
+        } else {
+            // Default: collect all .penguin files recursively
+            collect_penguin_files(project_dir, result);
+        }
+
+        return result;
+    }
+}
+
+} // namespace project

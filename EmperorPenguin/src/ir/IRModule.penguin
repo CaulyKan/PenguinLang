@@ -13,7 +13,7 @@ class IRGlobalVariable {
 }
 
 class IRModule {
-    source_file: mut string = "";
+    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
     functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
     entry_functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
     global_variables: mut _utils.List<IRGlobalVariable> = new _utils.List<IRGlobalVariable>();

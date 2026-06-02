@@ -1,16 +1,38 @@
 namespace bound {
 
+class SourceInput {
+    filename: string = "";
+    source: string = "";
+
+    fun new(mut this, filename: string, source: string) {
+        this.filename = filename;
+        this.source = source;
+    }
+}
+
 class EmperorPenguinCompiler {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
 
-    fun compile(mut this, source: string) -> BoundCompilationUnit {
-        let full_source: string = source;
-        let lexer = new parser.Lexer(full_source);
-        let tokens = lexer.tokenize();
-        let p = new parser.Parser(tokens);
-        let unit: ast.CompilationUnit = p.parse_compilationUnit();
+    fun compile(mut this, inputs: _utils.List<SourceInput>) -> BoundCompilationUnit {
+        let combined_defs: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(inputs.size())) {
+            let input: SourceInput = inputs.at(cast<u64>(i)).some;
+            let lexer = new parser.Lexer(input.source, input.filename);
+            let tokens = lexer.tokenize();
+            let p = new parser.Parser(tokens);
+            let unit: ast.CompilationUnit = p.parse_compilationUnit();
+            let j: mut i64 = 0;
+            while (j < cast<i64>(unit.definitions.size())) {
+                combined_defs.push(unit.definitions.at(cast<u64>(j)).some);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        let combined_unit: ast.CompilationUnit = new ast.CompilationUnit();
+        combined_unit.definitions = combined_defs;
         let mut model = new bound.SemanticModel();
-        let result = model.bind(unit, "test.penguin");
+        let result = model.bind(combined_unit, new ast.SourceLocation("<project>", 0, 0));
         this.errors = model.errors;
         return result;
     }

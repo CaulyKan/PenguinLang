@@ -2330,6 +2330,9 @@ class LLVMEmitter {
         if (sanitized == "_utils_file_read_text") { return "@_emperor_file_read_text"; }
         if (sanitized == "_utils_file_write_text") { return "@_emperor_file_write_text"; }
         if (sanitized == "_utils_mkdir") { return "@_emperor_mkdir"; }
+        if (sanitized == "_utils_file_exists") { return "@_emperor_file_exists"; }
+        if (sanitized == "_utils_dir_exists") { return "@_emperor_dir_exists"; }
+        if (sanitized == "_utils_dir_get_entries") { return "@_emperor_dir_get_entries"; }
         // StringBuilder methods
         if (sanitized == "__builtin_StringBuilder_new") { return "@_emperor_stringbuilder_new"; }
         if (sanitized == "__builtin_StringBuilder_append") { return "@_emperor_stringbuilder_append"; }

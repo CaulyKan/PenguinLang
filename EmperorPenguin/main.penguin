@@ -82,7 +82,7 @@ fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
 initial {
     let args: _utils.List<string> = __builtin.args();
     if (args.size() == 0) {
-        __builtin.eprintln("Usage: EmperorPenguin <file1.penguin> [file2.penguin ...]");
+        __builtin.eprintln("Usage: EmperorPenguin <file.penguins | file1.penguin [file2.penguin ...]>");
         __builtin.exit(1);
     }
 
@@ -91,37 +91,49 @@ initial {
     let tmp_dir: string = "tmp";
     _utils.mkdir(tmp_dir);
 
-    // Concatenate all source files into a single compilation unit
-    // core_builtin is the stdlib
-    let all_sources: mut string = stdlib_source;
+    // Determine source files
+    let source_files: mut _utils.List<string> = new _utils.List<string>();
+    let first_arg: string = args.at(0).some;
+
+    if (project.string_ends_with(first_arg, ".penguins")) {
+        // .penguins mode: parse project file and resolve sources
+        let proj: mut project.PenguinProject = project.PenguinProject.load(first_arg);
+        let project_dir: string = project.get_parent_dir(first_arg);
+        let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
+        source_files = resolved;
+        __builtin.eprintln("Loaded project: " + proj.name + " (" + cast<string>(resolved.size()) + " sources)");
+    } else {
+        // Direct file mode: use args as-is
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            source_files.push(args.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+    }
+
+    // Build per-file SourceInput list (no concatenation)
+    let inputs: mut _utils.List<bound.SourceInput> = new _utils.List<bound.SourceInput>();
+    inputs.push(new bound.SourceInput("core_builtin.penguin", stdlib_source));
     let fi: mut i64 = 0;
-    while (fi < cast<i64>(args.size())) {
-        let file: string = args.at(cast<u64>(fi)).some;
+    while (fi < cast<i64>(source_files.size())) {
+        let file: string = source_files.at(cast<u64>(fi)).some;
         let source: string = _utils.file_read_text(file);
-        all_sources = all_sources + "\n" + source;
+        inputs.push(new bound.SourceInput(file, source));
         __builtin.eprintln("Added: " + file);
         fi = fi + 1;
     }
 
-    __builtin.eprintln("Compiling " + cast<string>(args.size()) + " files as single unit...");
-
-    let lexer: parser.Lexer = new parser.Lexer(all_sources);
-    let tokens: _utils.List<parser.Token> = lexer.tokenize();
-    __builtin.eprintln("Lexing done: " + cast<string>(tokens.size()) + " tokens");
-
-    let p: parser.Parser = new parser.Parser(tokens);
-    let unit: ast.CompilationUnit = p.parse_compilationUnit();
-    __builtin.eprintln("Parsing done");
+    __builtin.eprintln("Compiling " + cast<string>(source_files.size()) + " source files...");
 
     let mut compiler = new bound.EmperorPenguinCompiler();
-    let result = compiler.compile(all_sources);
+    let result = compiler.compile(inputs);
 
     if (result.has_errors()) {
         __builtin.eprintln("Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
             let err: bound.SemanticError = result.errors.at(cast<u64>(ei)).some;
-            __builtin.eprintln("  error: " + err.message + " at line " + cast<string>(err.line));
+            __builtin.eprintln("  " + err.location.to_string() + ": error: " + err.message);
             ei = ei + 1;
         }
     } else {

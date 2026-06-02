@@ -2,6 +2,9 @@ namespace _utils {
     extern fun file_read_text(file: string) -> mut string;
     extern fun file_write_text(file: string, text: string);
     extern fun mkdir(path: string) -> bool;
+    extern fun file_exists(path: string) -> bool;
+    extern fun dir_exists(path: string) -> bool;
+    extern fun dir_get_entries(path: string) -> string;
 
     #template(T: type)
     class List {

@@ -431,7 +431,7 @@ public static class BatchCompiler
         return @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source);
+    let lexer = new parser.Lexer(source, """");
     let tokens = lexer.tokenize();
     let p = new parser.Parser(tokens);
     let result = p.{parseMethod}();
@@ -447,7 +447,7 @@ initial {{
         return @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source);
+    let lexer = new parser.Lexer(source, """");
     let tokens = lexer.tokenize();
     let i: mut i64 = 0;
     while (i < cast<i64>(tokens.size())) {{
@@ -472,6 +472,7 @@ initial {{
         }
 
         var compiler = new SemanticCompiler(new ErrorReporter());
+        compiler.AddFile(Path.Combine(AstDir, "SourceLocation.penguin"));
         compiler.AddFile(Path.Combine(AstDir, "Token.penguin"));
         compiler.AddFile(Path.Combine(AstDir, "Lexer.penguin"));
         compiler.AddFile(Path.Combine(AstDir, "AST.penguin"));

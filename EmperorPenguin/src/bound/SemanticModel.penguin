@@ -92,9 +92,9 @@ class SemanticModel {
         this.global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
     }
 
-    fun bind(mut this, unit: ast.CompilationUnit, source_file: string) -> BoundCompilationUnit {
+    fun bind(mut this, unit: ast.CompilationUnit, location: ast.SourceLocation) -> BoundCompilationUnit {
         let result: mut BoundCompilationUnit = new BoundCompilationUnit();
-        result.source_file = source_file;
+        result.location = location;
         result.type_registry = this.type_registry;
         result.global_scope = this.global_scope;
         this.ast_definitions = unit.definitions;
@@ -428,8 +428,8 @@ class SemanticModel {
         return new Option<BoundDefinition>.some(new BoundDefinition.global_var_def(result));
     }
 
-    fun report_error(mut this, message: string, line: i64, col: i64) {
-        this.errors.push(new SemanticError(message, line, col));
+    fun report_error(mut this, message: string, location: ast.SourceLocation) {
+        this.errors.push(new SemanticError(message, location));
     }
 
     fun substitute_generic_args(this, bt: mut BoundType, concrete_type: BoundType, generic_def: BoundDefinition) -> mut BoundType {

@@ -27,41 +27,41 @@ class IRGenerator {
 
     fun new(mut this) {}
 
-    fun make_loc(this, line: i64, col: i64) -> IRSourceLocation {
-        return new IRSourceLocation(this.source_file, line, col);
+    fun make_loc(this, line: i64, col: i64) -> ast.SourceLocation {
+        return new ast.SourceLocation(this.source_file, line, col);
     }
 
     // Extract source location from a bound symbol (if available)
-    fun sym_loc(this, sym: Option<bound.BoundSymbol>) -> IRSourceLocation {
+    fun sym_loc(this, sym: Option<bound.BoundSymbol>) -> ast.SourceLocation {
         if (sym.is_some()) {
             let s: bound.BoundSymbol = sym.some;
             if (s is bound.BoundSymbol.variable) {
-                return this.make_loc(s.variable.source_line, s.variable.source_col);
+                return this.make_loc(s.variable.location.line, s.variable.location.col);
             }
             if (s is bound.BoundSymbol.function_sym) {
-                return this.make_loc(s.function_sym.source_line, s.function_sym.source_col);
+                return this.make_loc(s.function_sym.location.line, s.function_sym.location.col);
             }
             if (s is bound.BoundSymbol.type_sym) {
-                return this.make_loc(s.type_sym.source_line, s.type_sym.source_col);
+                return this.make_loc(s.type_sym.location.line, s.type_sym.location.col);
             }
             if (s is bound.BoundSymbol.enum_member) {
-                return this.make_loc(s.enum_member.source_line, s.enum_member.source_col);
+                return this.make_loc(s.enum_member.location.line, s.enum_member.location.col);
             }
         }
         return this.make_loc(0, 0);
     }
 
-    fun sym_loc_func(this, sym: Option<bound.BoundFunctionSymbol>) -> IRSourceLocation {
+    fun sym_loc_func(this, sym: Option<bound.BoundFunctionSymbol>) -> ast.SourceLocation {
         if (sym.is_some()) {
-            return this.make_loc(sym.some.source_line, sym.some.source_col);
+            return this.make_loc(sym.some.location.line, sym.some.location.col);
         }
         return this.make_loc(0, 0);
     }
 
     fun generate(mut this, unit: bound.BoundCompilationUnit) -> IRModule {
         let module: mut IRModule = new IRModule();
-        module.source_file = unit.source_file;
-        this.source_file = unit.source_file;
+        module.location = unit.location;
+        this.source_file = unit.location.filename;
         this.current_module = module;
         let i: mut i64 = 0;
         while (i < cast<i64>(unit.definitions.size())) {
@@ -108,18 +108,16 @@ class IRGenerator {
     fun lower_function_def(mut this, def: bound.BoundFunctionDefinition, module: mut IRModule) {
         if (def.is_generic_template) { return; }
         let ret_type: string = this.bound_type_to_ir_type(def.return_type);
-        let func_loc: IRSourceLocation = this.sym_loc_func(def.symbol);
+        let func_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
         this.builder = new IRBuilder(new IRFunction(def.full_name, ret_type));
         this.builder.func.display_name = def.name;
-        this.builder.func.source_file = func_loc.file_path;
-        this.builder.func.source_line = func_loc.line;
-        this.builder.func.source_col = func_loc.column;
+        this.builder.func.location = func_loc;
         this.builder.func.is_extern = def.is_extern;
         this.reset_locals();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(def.parameters.size())) {
             let p: bound.BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
-            let p_loc: IRSourceLocation = this.sym_loc_func(def.symbol);
+            let p_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
             let _: IRValue = this.builder.func.alloc_param(p.name, this.bound_type_to_ir_type(p.bound_type), p_loc.line, p_loc.column);
             let param_full_name: string = def.full_name + ".<body>." + p.name;
             let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, this.bound_type_to_ir_type(p.bound_type), p_loc);
@@ -223,7 +221,7 @@ class IRGenerator {
     }
 
     fun lower_initial_routine(mut this, def: bound.BoundInitialRoutineDefinition, module: mut IRModule) {
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         this.builder = new IRBuilder(new IRFunction(def.full_name, "void"));
         this.builder.func.display_name = "initial";
         this.reset_locals();
@@ -315,7 +313,7 @@ class IRGenerator {
 
     fun lower_literal(mut this, expr: bound.BoundLiteralExpression) -> IRValue {
         let ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         return this.builder.emit_const(expr.value, ir_type, loc);
     }
 
@@ -327,7 +325,7 @@ class IRGenerator {
                 // If this is a global reference, emit a load
                 if (val is IRValue.global_ref) {
                     let ir_type: string = val.global_ref.ir_type;
-                    let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+                    let loc: ast.SourceLocation = this.sym_loc(expr.symbol);
                     return this.builder.emit_global_load(val.global_ref.name, ir_type, loc);
                 }
                 return val;
@@ -338,7 +336,7 @@ class IRGenerator {
                 if (sym.variable.variable_kind is bound.VariableSymbolKind.Global) {
                     let global_name: string = this.clean_function_name(sym.variable.full_name);
                     let ir_type: string = this.bound_type_to_ir_type(sym.variable.bound_type);
-                    let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+                    let loc: ast.SourceLocation = this.sym_loc(expr.symbol);
                     return this.builder.emit_global_load(global_name, ir_type, loc);
                 }
             }
@@ -346,13 +344,13 @@ class IRGenerator {
         } else {
             println("[IR Warning] Identifier expression has no symbol");
         }
-        let loc: IRSourceLocation = this.sym_loc(expr.symbol);
+        let loc: ast.SourceLocation = this.sym_loc(expr.symbol);
         return this.builder.emit_const("unknown", "void", loc);
     }
 
     fun lower_binary(mut this, expr: bound.BoundBinaryExpression) -> IRValue {
         let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (cast<i64>(expr.operands.size()) == 0) {
             return this.builder.emit_const("0", ir_type, loc);
         }
@@ -416,13 +414,13 @@ class IRGenerator {
         }
         let op: ast.BinaryOperator = expr.operators.at(cast<u64>(op_idx)).some;
         let ir_op: string = this.binary_op_to_ir(op);
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         return this.lower_binary_chain(expr, ir_type, idx + 1, this.builder.emit_binop(ir_op, accum, right, ir_type, loc));
     }
 
     fun lower_unary(mut this, expr: bound.BoundUnaryExpression) -> IRValue {
         let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (expr.operand.is_some()) {
             let operand: IRValue = this.lower_expression(expr.operand.some);
             if (ir_type == "void" || ir_type == "unknown") {
@@ -508,7 +506,7 @@ class IRGenerator {
             }
         }
         let ret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
-        let loc: IRSourceLocation = this.sym_loc(expr.callee_symbol);
+        let loc: ast.SourceLocation = this.sym_loc(expr.callee_symbol);
         if (expr.callee_symbol.is_some()) {
             let sym: bound.BoundSymbol = expr.callee_symbol.some;
             let func_name: mut string = this.clean_function_name(sym.get_full_name());
@@ -737,7 +735,7 @@ class IRGenerator {
 
     fun lower_cast(mut this, expr: bound.BoundCastExpression) -> IRValue {
         let inner: IRValue = this.lower_expression(expr.inner.some);
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
 
         // Boxing: value type → interface
         if (expr.needs_boxing) {
@@ -766,7 +764,7 @@ class IRGenerator {
         let is_void: bool = ir_type == "void";
         let merge_lbl: IRLabel = this.builder.func.alloc_label("merge");
         let result: IRValue = this.builder.func.alloc_temp(ir_type);
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (expr.condition.is_some()) {
             let cond: IRValue = this.lower_expression(expr.condition.some);
             if (expr.else_block.is_some()) {
@@ -811,7 +809,7 @@ class IRGenerator {
         let header_lbl: IRLabel = this.builder.func.alloc_label("while");
         let body_lbl: IRLabel = this.builder.func.alloc_label("while_body");
         let exit_lbl: IRLabel = this.builder.func.alloc_label("while_exit");
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         this.loop_stack.push(new LoopLabels(header_lbl, exit_lbl));
         this.builder.emit_label(header_lbl);
         if (expr.condition.is_some()) {
@@ -833,7 +831,7 @@ class IRGenerator {
     }
 
     fun lower_member_access(mut this, expr: bound.BoundMemberAccessExpression) -> IRValue {
-        let loc: IRSourceLocation = this.sym_loc(expr.member_symbol);
+        let loc: ast.SourceLocation = this.sym_loc(expr.member_symbol);
 
         // Handle namespace-qualified global variable access (e.g., Foo.msg)
         if (expr.member_symbol.is_some()) {
@@ -888,7 +886,7 @@ class IRGenerator {
             args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
             ai = ai + 1;
         }
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (expr.type_symbol.is_some()) {
             let type_name: mut string = expr.type_symbol.some.full_name;
             if (cast<i64>(expr.bound_type.generic_args.size()) > 0) {
@@ -954,7 +952,7 @@ class IRGenerator {
         if (expr.payload.is_some()) {
             payload = new Option<IRValue>.some(this.lower_expression(expr.payload.some));
         }
-        let loc: IRSourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
         let enum_ir_type: mut string = this.bound_type_to_ir_type(expr.enum_type);
         // Diagnostic: if type still uses template name (no __), try using type_definition name directly
         if (string_find(enum_ir_type, "__") < 0 && expr.enum_type.type_definition.is_some()) {
@@ -973,7 +971,7 @@ class IRGenerator {
             }
         }
         if (stmt is bound.BoundStatement.return_stmt) {
-            let loc: IRSourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = this.make_loc(0, 0);
             if (stmt.return_stmt.value.is_some()) {
                 let val: IRValue = this.lower_expression(stmt.return_stmt.value.some);
                 this.builder.emit_ret(val, loc);
@@ -1011,7 +1009,7 @@ class IRGenerator {
         if (stmt.variable_symbol.is_some()) {
             let sym: bound.BoundVariableSymbol = stmt.variable_symbol.some;
             let ir_type: string = this.bound_type_to_ir_type(sym.bound_type);
-            let loc: IRSourceLocation = this.make_loc(sym.source_line, sym.source_col);
+            let loc: ast.SourceLocation = this.make_loc(sym.location.line, sym.location.col);
             let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, ir_type, loc.line, loc.column);
             this.set_symbol_reg(new bound.BoundSymbol.variable(sym), reg);
             if (stmt.initializer.is_some()) {
@@ -1030,7 +1028,7 @@ class IRGenerator {
     fun lower_assignment(mut this, stmt: bound.BoundAssignmentStatement) {
         if (stmt.value.is_some()) {
             let val: IRValue = this.lower_expression(stmt.value.some);
-            let loc: IRSourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = this.make_loc(0, 0);
 
             // Check if target is member access (p.x = value or a.some = value)
             if (stmt.target.is_some() && stmt.target.some is bound.BoundExpression.member_access) {
@@ -1132,7 +1130,7 @@ class IRGenerator {
     fun lower_break(mut this, stmt: bound.BoundBreakStatement) {
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
-            let loc: IRSourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = this.make_loc(0, 0);
             this.builder.emit_br(labels.exit, loc);
         }
     }
@@ -1140,7 +1138,7 @@ class IRGenerator {
     fun lower_continue(mut this, stmt: bound.BoundContinueStatement) {
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
-            let loc: IRSourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = this.make_loc(0, 0);
             this.builder.emit_br(labels.header, loc);
         }
     }

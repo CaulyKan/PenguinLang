@@ -5,6 +5,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#endif
 
 /* --- I/O --- */
 
@@ -244,6 +249,163 @@ char _emperor_mkdir(const char* path) {
     int ret = mkdir(path, 0755);
 #endif
     return (ret == 0) ? 1 : 0;
+}
+
+/* --- Filesystem queries --- */
+
+char _emperor_file_exists(const char* path) {
+    if (!path) return 0;
+#ifdef _WIN32
+    struct _stat st;
+    if (_stat(path, &st) != 0) return 0;
+    return (st.st_mode & _S_IFREG) ? 1 : 0;
+#else
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
+#endif
+}
+
+char _emperor_dir_exists(const char* path) {
+    if (!path) return 0;
+#ifdef _WIN32
+    struct _stat st;
+    if (_stat(path, &st) != 0) return 0;
+    return (st.st_mode & _S_IFDIR) ? 1 : 0;
+#else
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+#endif
+}
+
+char* _emperor_dir_get_entries(const char* path) {
+    if (!path) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+
+#ifdef _WIN32
+    /* Build search pattern: path + "\\*" */
+    int pathlen = (int)strlen(path);
+    char* pattern = (char*)malloc(pathlen + 3);
+    if (!pattern) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    memcpy(pattern, path, pathlen);
+    pattern[pathlen] = '\\';
+    pattern[pathlen + 1] = '*';
+    pattern[pathlen + 2] = '\0';
+
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(pattern, &findData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        free(pattern);
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+
+    /* First pass: calculate total length */
+    int total = 0;
+    int count = 0;
+    do {
+        const char* name = findData.cFileName;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue;
+        }
+        total += (int)strlen(name);
+        count++;
+    } while (FindNextFileA(hFind, &findData));
+    FindClose(hFind);
+
+    int bufsize = total + (count > 0 ? count - 1 : 0) + 1;
+    char* result = (char*)_emperor_gc_alloc(bufsize > 0 ? bufsize : 1, 1);
+    if (!result) {
+        free(pattern);
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    result[0] = '\0';
+
+    /* Second pass: build the string (reuse same pattern) */
+    hFind = FindFirstFileA(pattern, &findData);
+    free(pattern);
+    if (hFind == INVALID_HANDLE_VALUE) return result;
+
+    int pos = 0;
+    int first = 1;
+    do {
+        const char* name = findData.cFileName;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue;
+        }
+        if (!first) {
+            result[pos++] = '\n';
+        }
+        int nlen = (int)strlen(name);
+        memcpy(result + pos, name, nlen);
+        pos += nlen;
+        first = 0;
+    } while (FindNextFileA(hFind, &findData));
+    result[pos] = '\0';
+    FindClose(hFind);
+    return result;
+#else
+    DIR* d = opendir(path);
+    if (!d) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    /* First pass: calculate total length */
+    int total = 0;
+    struct dirent* ent;
+    int count = 0;
+    while ((ent = readdir(d)) != NULL) {
+        const char* name = ent->d_name;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue; /* skip "." and ".." */
+        }
+        total += (int)strlen(name);
+        count++;
+    }
+    closedir(d);
+
+    /* Allocate result buffer: total name chars + (count-1) newlines + null terminator */
+    int bufsize = total + (count > 0 ? count - 1 : 0) + 1;
+    char* result = (char*)_emperor_gc_alloc(bufsize > 0 ? bufsize : 1, 1);
+    if (!result) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    result[0] = '\0';
+
+    /* Second pass: build the string */
+    d = opendir(path);
+    if (!d) return result;
+    int pos = 0;
+    int first = 1;
+    while ((ent = readdir(d)) != NULL) {
+        const char* name = ent->d_name;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+            continue;
+        }
+        if (!first) {
+            result[pos++] = '\n';
+        }
+        int nlen = (int)strlen(name);
+        memcpy(result + pos, name, nlen);
+        pos += nlen;
+        first = 0;
+    }
+    result[pos] = '\0';
+    closedir(d);
+    return result;
+#endif
 }
 
 /* --- StringBuilder --- */

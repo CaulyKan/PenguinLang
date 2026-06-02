@@ -108,14 +108,12 @@ namespace parser {
     class Token {
         token_type: TokenType = new TokenType.EOF();
         text: string = "";
-        line: i64 = 0;
-        col: i64 = 0;
+        location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
-        fun new(mut this, token_type: mut TokenType, text: string, line: i64, col: i64) {
+        fun new(mut this, token_type: mut TokenType, text: string, location: ast.SourceLocation) {
             this.token_type = token_type;
             this.text = text;
-            this.line = line;
-            this.col = col;
+            this.location = location;
         }
 
         fun to_string(this) -> string {
@@ -134,7 +132,7 @@ namespace parser {
 
         fun peek(this) -> Token {
             if (this.pos >= cast<i64>(this.tokens.size())) {
-                return new Token(new TokenType.EOF(), "", 0, 0);
+                return new Token(new TokenType.EOF(), "", new ast.SourceLocation("", 0, 0));
             }
             return this.tokens.at(cast<u64>(this.pos)).some;
         }
@@ -152,7 +150,7 @@ namespace parser {
         fun expect(this, expected: TokenType) -> Token {
             let token: Token = this.advance();
             if (cast<string>(token.token_type) != cast<string>(expected)) {
-                print("Expected " + cast<string>(expected) + " but got " + token.to_string() + " at line " + cast<string>(token.line) + "\n");
+                print("Expected " + cast<string>(expected) + " but got " + token.to_string() + " at " + token.location.to_string() + "\n");
             }
             return token;
         }

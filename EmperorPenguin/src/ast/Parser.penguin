@@ -9,7 +9,7 @@ namespace parser {
 
         fun report_error(this, message: string) {
             let tok: Token = this.stream.peek();
-            let err: string = "Line " + cast<string>(tok.line) + ", Col " + cast<string>(tok.col) + ": " + message;
+            let err: string = tok.location.to_string() + ": " + message;
             this.errors.push(err);
             print(err);
         }
