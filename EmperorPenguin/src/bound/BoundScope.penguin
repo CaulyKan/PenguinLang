@@ -43,6 +43,18 @@ class BoundScope {
         return new Option<BoundSymbol>.none();
     }
 
+    fun lookup_type_in_scope_local(this, name: string) -> Option<BoundSymbol> {
+        let i: mut u64 = 0;
+        while (i < this.symbols.size()) {
+            let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
+            if (sym is BoundSymbol.type_sym && sym.get_name() == name) {
+                return new Option<BoundSymbol>.some(sym);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
     fun lookup_type_in_scope(this, name: string) -> Option<BoundSymbol> {
         let i: mut u64 = 0;
         while (i < this.symbols.size()) {
@@ -54,6 +66,16 @@ class BoundScope {
         }
         if (this.parent.is_some()) {
             return this.parent.some.lookup_type_in_scope(name);
+        }
+        // At global scope, also search child namespace scopes
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.children.size())) {
+            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
+            let result: Option<BoundSymbol> = child.lookup_type_in_scope_local(name);
+            if (result.is_some()) {
+                return result;
+            }
+            ci = ci + 1;
         }
         return new Option<BoundSymbol>.none();
     }

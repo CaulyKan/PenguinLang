@@ -87,14 +87,13 @@ initial {
     }
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
-    let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
-    let combined_stdlib: string = stdlib_source + "\n" + utils_source;
 
     let tmp_dir: string = "tmp";
     _utils.mkdir(tmp_dir);
 
     // Concatenate all source files into a single compilation unit
-    let all_sources: mut string = combined_stdlib;
+    // core_builtin is the stdlib
+    let all_sources: mut string = stdlib_source;
     let fi: mut i64 = 0;
     while (fi < cast<i64>(args.size())) {
         let file: string = args.at(cast<u64>(fi)).some;

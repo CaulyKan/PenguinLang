@@ -1215,17 +1215,19 @@ class SemanticModel {
                 let ast_def: ast.Definition = specialized_asts.at(cast<u64>(k)).some;
                 if (spec_def is BoundDefinition.function_def) {
                     if (spec_def.function_def.scope.is_some()) {
-                        this.resolve_pair(ast_def, spec_def, spec_def.function_def.scope.some);
+                        specialized_defs.set(cast<u64>(k), this.resolve_pair(ast_def, spec_def, spec_def.function_def.scope.some));
                     } else {
-                        this.resolve_pair(ast_def, spec_def, result.global_scope);
+                        specialized_defs.set(cast<u64>(k), this.resolve_pair(ast_def, spec_def, result.global_scope));
                     }
                     // Fix up 'this' parameter type for class method specializations
-                    let parent_cls: Option<BoundClassDefinition> = this.find_parent_class_for_method(result.definitions, specialized_defs, spec_def.function_def.full_name);
+                    let updated_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                    let parent_cls: Option<BoundClassDefinition> = this.find_parent_class_for_method(result.definitions, specialized_defs, updated_def.function_def.full_name);
                     if (parent_cls.is_some()) {
-                        this.fix_this_param_type(spec_def.function_def, parent_cls.some);
+                        this.fix_this_param_type(updated_def.function_def, parent_cls.some);
+                        specialized_defs.set(cast<u64>(k), updated_def);
                     }
                 } else {
-                    this.resolve_pair(ast_def, spec_def, result.global_scope);
+                    specialized_defs.set(cast<u64>(k), this.resolve_pair(ast_def, spec_def, result.global_scope));
                 }
                 k = k + 1;
             }
@@ -1241,8 +1243,9 @@ class SemanticModel {
     }
 
     fun find_ast_def_by_name(this, defs: _utils.List<ast.Definition>, name: string) -> Option<ast.Definition> {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
+        // Search in reverse order so user-defined types override stdlib types
+        let i: mut i64 = cast<i64>(defs.size()) - 1;
+        while (i >= 0) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
             if (def is ast.Definition.function_def) {
                 if (def.function_def.name == name) {
@@ -1255,15 +1258,15 @@ class SemanticModel {
                 }
                 // Also search class methods for generic method instantiation
                 let members: _utils.List<ast.Definition> = def.class_def.members;
-                let mi: mut i64 = 0;
-                while (mi < cast<i64>(members.size())) {
+                let mi: mut i64 = cast<i64>(members.size()) - 1;
+                while (mi >= 0) {
                     let member: ast.Definition = members.at(cast<u64>(mi)).some;
                     if (member is ast.Definition.function_def) {
                         if (member.function_def.name == name) {
                             return new Option<ast.Definition>.some(member);
                         }
                     }
-                    mi = mi + 1;
+                    mi = mi - 1;
                 }
             }
             if (def is ast.Definition.enum_def) {
@@ -1275,7 +1278,7 @@ class SemanticModel {
                 let found: Option<ast.Definition> = this.find_ast_def_by_name(def.namespace_def.children, name);
                 if (found.is_some()) { return found; }
             }
-            i = i + 1;
+            i = i - 1;
         }
         return new Option<ast.Definition>.none();
     }
@@ -2338,6 +2341,34 @@ class SemanticModel {
                             bound_enum.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
                         }
                         j = j + 1;
+                    }
+                }
+                // Also bind interface impl methods for enums
+                if (ast_member is ast.Definition.impl_def) {
+                    let ast_impl: ast.InterfaceImplementation = ast_member.impl_def;
+                    let ii: mut i64 = 0;
+                    while (ii < cast<i64>(bound_enum.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(ii)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl.functions.size())) {
+                                let ast_func_def: ast.Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is ast.Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_enum.interface_impls.set(cast<u64>(ii), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        ii = ii + 1;
                     }
                 }
                 i = i + 1;

@@ -1141,6 +1141,21 @@ class LLVMEmitter {
         if (llvm_type == "float") { return 4; }
         if (llvm_type == "double") { return 8; }
         if (llvm_type == "ptr") { return 8; }
+        // Check class layouts for value-type struct sizes
+        if (this.string_starts_with(llvm_type, "%class.")) {
+            let name: string = string_substring(llvm_type, 7, string_length(llvm_type) - 7);
+            let found: Option<ClassLayout> = this.find_class_layout(name);
+            if (found.is_some()) { return found.some.sizeof_object; }
+        }
+        if (this.string_starts_with(llvm_type, "%enum.")) {
+            let name: string = string_substring(llvm_type, 6, string_length(llvm_type) - 6);
+            let found_enum: Option<EnumLayout> = this.find_enum_layout(name);
+            if (found_enum.is_some()) {
+                // Enum struct = { ptr metadata, i32 tag, <max payload size> }
+                // Approximate: metadata ptr (8) + tag i32 (4) + payload (already part of struct)
+                return 16;
+            }
+        }
         return 8;
     }
 
@@ -1152,6 +1167,10 @@ class LLVMEmitter {
         if (llvm_type == "float") { return 4; }
         if (llvm_type == "double") { return 8; }
         if (llvm_type == "ptr") { return 8; }
+        // Struct types have 8-byte alignment
+        if (this.string_starts_with(llvm_type, "%class.") || this.string_starts_with(llvm_type, "%enum.")) {
+            return 8;
+        }
         return 8;
     }
 
@@ -1418,17 +1437,30 @@ class LLVMEmitter {
 
             if (found_field.is_some()) {
                 let fl: FieldLayout = found_field.some;
-
-                if (!layout.is_value_type) {
-                    // IRef: obj is ptr, use byte-offset GEP
-                    let field_ptr: string = this.next_tmp();
-                    this.sb.append("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset) + "\n");
-                    this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                // Use the field's actual LLVM type from the layout (may differ from ir_type for value-type class fields)
+                if (fl.llvm_type != "ptr" && llvm_type == "ptr") {
+                    // Value-type class field stored inline, but IR expects a ref (ptr).
+                    // Return the pointer to the inline field (GEP result) instead of loading the struct.
+                    if (!layout.is_value_type) {
+                        // IRef: byte-offset GEP, return the field pointer directly
+                        this.sb.append("  " + result_name + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset) + "\n");
+                    } else {
+                        // ICopy: struct field index GEP, return the field pointer directly
+                        this.sb.append("  " + result_name + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index) + "\n");
+                    }
+                    this.register_llvm_type(result_name, "ptr");
                 } else {
-                    // ICopy: obj is ptr to alloca, use struct field index GEP
-                    let field_ptr: string = this.next_tmp();
-                    this.sb.append("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index) + "\n");
-                    this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                    if (!layout.is_value_type) {
+                        // IRef: obj is ptr, use byte-offset GEP
+                        let field_ptr: string = this.next_tmp();
+                        this.sb.append("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset) + "\n");
+                        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                    } else {
+                        // ICopy: obj is ptr to alloca, use struct field index GEP
+                        let field_ptr: string = this.next_tmp();
+                        this.sb.append("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index) + "\n");
+                        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr + "\n");
+                    }
                 }
                 return;
             }
@@ -1533,7 +1565,11 @@ class LLVMEmitter {
             let sret_tmp: string = this.next_tmp();
             this.sb.append("  " + sret_tmp + " = alloca " + callee_sret_type + "\n");
             let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
-            this.sb.append("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")\n");
+            if (string_length(args_str) > 0) {
+                this.sb.append("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")\n");
+            } else {
+                this.sb.append("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")\n");
+            }
             // Map result register to the sret alloca pointer
             this.reg_map.push(new RegMapping(result_name, sret_tmp));
             this.register_llvm_type(result_name, "ptr");
@@ -1673,8 +1709,9 @@ class LLVMEmitter {
         // store payload at field 2 if present
         if (inst.payload.is_some()) {
             if (layout.has_payload) {
-                let pay_val: string = this.resolve_value(inst.payload.some);
+                let pay_val_raw: string = this.resolve_value(inst.payload.some);
                 let pay_type: string = layout.payload_llvm_type;
+                let pay_val: string = this.coerce_operand(pay_val_raw, pay_type);
                 let pay_ptr: string = this.next_tmp();
                 this.sb.append("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2\n");
                 this.sb.append("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr + "\n");
@@ -1924,6 +1961,14 @@ class LLVMEmitter {
         }
 
         let layout: EnumLayout = found.some;
+        // Use the layout's payload type for correct load (handles enum-as-payload correctly)
+        let payload_load_type: mut string = llvm_type;
+        if (layout.has_payload) {
+            let payload_len: i64 = string_length(layout.payload_llvm_type);
+            if (payload_len > 0) {
+                payload_load_type = layout.payload_llvm_type;
+            }
+        }
         let tmp_name: string = this.next_tmp();
 
         // alloca + store enum struct
@@ -1933,7 +1978,8 @@ class LLVMEmitter {
         // GEP field 2 (payload)
         let pay_ptr: string = this.next_tmp();
         this.sb.append("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2\n");
-        this.sb.append("  " + result_name + " = load " + llvm_type + ", ptr " + pay_ptr + "\n");
+        this.sb.append("  " + result_name + " = load " + payload_load_type + ", ptr " + pay_ptr + "\n");
+        this.register_llvm_type(result_name, payload_load_type);
     }
 
     fun emit_label(mut this, inst: ir.IRLabelInst) {
@@ -2016,7 +2062,12 @@ class LLVMEmitter {
             if (i > 0) { sb2.append(", "); }
             let arg: ir.IRValue = args.at(cast<u64>(i)).some;
             let resolved: string = this.resolve_value(arg);
-            let arg_llvm_type: string = this.ir_type_to_llvm(arg.get_ir_type());
+            // Prefer registered LLVM type over IR type (handles enum payload correctly)
+            let registered_type: string = this.get_llvm_type(resolved);
+            let arg_llvm_type: mut string = this.ir_type_to_llvm(arg.get_ir_type());
+            if (registered_type != "") {
+                arg_llvm_type = registered_type;
+            }
             let param_llvm_type: mut string = arg_llvm_type;
             if (fpt.is_some()) {
                 if (i < cast<i64>(fpt.some.param_types.size())) {
@@ -2334,6 +2385,13 @@ class LLVMEmitter {
         // Look up actual type of register
         let actual_type: string = this.get_llvm_type(resolved);
         if (actual_type == "" || actual_type == expected_llvm) { return resolved; }
+        // ptr -> struct: load the value type from the reference pointer
+        if (actual_type == "ptr" && (this.string_starts_with(expected_llvm, "%class.") || this.string_starts_with(expected_llvm, "%struct.") || this.string_starts_with(expected_llvm, "%enum."))) {
+            let tmp: string = this.next_tmp();
+            this.sb.append("  " + tmp + " = load " + expected_llvm + ", ptr " + resolved + "\n");
+            this.register_llvm_type(tmp, expected_llvm);
+            return tmp;
+        }
         // Insert truncation or extension
         let tmp: string = this.next_tmp();
         if (this.is_wider_int(actual_type, expected_llvm)) {
