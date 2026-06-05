@@ -23,6 +23,10 @@ class BoundCompilationUnit {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
+    fun new(mut this, location: ast.SourceLocation) {
+        this.location = location;
+    }
+
     fun add_error(mut this, message: string, location: ast.SourceLocation) {
         this.errors.push(new SemanticError(message, location));
     }

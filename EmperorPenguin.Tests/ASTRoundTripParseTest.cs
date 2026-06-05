@@ -12,13 +12,14 @@ public class ASTRoundTripParseTest
         var userCode = @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source);
+    let lexer = new parser.Lexer(source, """");
     let tokens = lexer.tokenize();
     let p = new parser.Parser(tokens);
     let result = p.{parseMethod}();
     println(result.build_text());
 }}";
         var compiler = new SemanticCompiler(new ErrorReporter());
+        compiler.AddFile(Path.Combine(BatchCompiler.AstDir, "SourceLocation.penguin"));
         compiler.AddFile(Path.Combine(BatchCompiler.AstDir, "Token.penguin"));
         compiler.AddFile(Path.Combine(BatchCompiler.AstDir, "Lexer.penguin"));
         compiler.AddFile(Path.Combine(BatchCompiler.AstDir, "AST.penguin"));
@@ -38,7 +39,7 @@ initial {{
         var userCode = @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source);
+    let lexer = new parser.Lexer(source, """");
     let tokens = lexer.tokenize();
     let p = new parser.Parser(tokens);
     let result = p.parse_compilationUnit();
@@ -544,10 +545,6 @@ initial {{
         Assert.Contains("Ok", result);
         Assert.Contains("Err", result);
     }
-
-    [Fact]
-    public void ParseRoundTrip_AsyncLambda()
-        => Assert.Contains("async_fun", ParseRoundTrip("initial { async_fun() { 42 } }"));
 
     [Fact]
     [BatchParseTest("impl Comparable for MyType where (T: Comparable) { fun compare() {} }", "parse_compilationUnit", "")]

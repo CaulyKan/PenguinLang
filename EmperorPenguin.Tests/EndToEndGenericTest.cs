@@ -3,7 +3,7 @@ namespace EmperorPenguin.Tests;
 /// <summary>
 /// End-to-end tests for generic type features.
 /// Generic tests use RunEndToEnd individually because generic class specialization
-/// may interact with the batch compilation namespace wrapping.
+/// does not work correctly with batch compilation namespace wrapping.
 /// </summary>
 [Collection("EndToEnd")]
 public class EndToEndGenericTest : EndToEndTestBase

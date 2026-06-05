@@ -18,6 +18,10 @@ class IRModule {
     entry_functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
     global_variables: mut _utils.List<IRGlobalVariable> = new _utils.List<IRGlobalVariable>();
 
+    fun new(mut this, location: ast.SourceLocation) {
+        this.location = location;
+    }
+
     fun add_function(mut this, func: mut IRFunction) {
         this.functions.push(func);
     }

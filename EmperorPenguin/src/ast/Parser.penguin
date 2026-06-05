@@ -1165,9 +1165,11 @@ namespace parser {
                 if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
                 let var_name: Token = this.stream.advance();
                 let var_type: mut string = "";
+                let type_spec_val: mut Option<ast.TypeSpecifier> = new Option<ast.TypeSpecifier>.none();
                 if (this.stream.match(new TokenType.Colon())) {
                     let ts = this.parse_typeSpecifier();
                     var_type = ts.build_text();
+                    type_spec_val = new Option<ast.TypeSpecifier>.some(ts);
                 }
                 let init_val: mut Option<ast.Expression> = new Option<ast.Expression>.none();
                 if (this.stream.match(new TokenType.Assign())) {
@@ -1178,6 +1180,7 @@ namespace parser {
                 let_stmt.is_mutable = is_mut;
                 let_stmt.variable_name = var_name.text;
                 let_stmt.variable_type = var_type;
+                let_stmt.type_spec = type_spec_val;
                 let_stmt.initializer = init_val;
                 return new ast.Statement.let_decl(let_stmt);
             }
@@ -1560,7 +1563,12 @@ namespace parser {
         // Classification: Sequence
         fun parse_lambdaFunctionExpression(this) -> ast.Expression {
             let node: ast.LambdaFunctionExpression = new ast.LambdaFunctionExpression();
-            this.stream.expect(new TokenType.Fun());
+            if (this.stream.peek_type() is TokenType.Async_fun) {
+                this.stream.advance();
+                node.is_async = true;
+            } else {
+                this.stream.expect(new TokenType.Fun());
+            }
             if (this.stream.peek_type() is TokenType.LParen) {
                 this.stream.expect(new TokenType.LParen());
                 this.parse_parameterList(node.parameters);

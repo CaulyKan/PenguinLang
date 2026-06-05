@@ -213,6 +213,7 @@ public class EndToEndBasicTest : EndToEndTestBase
     [Fact]
     public void NestedIf() => batch.Assert();
 
+    // Uses print() which doesn't get tagged by batch mode, must stay individual
     [Fact]
     public void WhileLoop()
     {

@@ -126,7 +126,7 @@ initial {
     __builtin.eprintln("Compiling " + cast<string>(source_files.size()) + " source files...");
 
     let mut compiler = new bound.EmperorPenguinCompiler();
-    let result = compiler.compile(inputs);
+    let result = compiler.compile_sources(inputs);
 
     if (result.has_errors()) {
         __builtin.eprintln("Compilation failed with " + cast<string>(result.errors.size()) + " errors:");

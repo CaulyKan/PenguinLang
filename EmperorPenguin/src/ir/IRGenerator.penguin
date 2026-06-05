@@ -19,11 +19,11 @@ class LoopLabels {
 }
 
 class IRGenerator {
-    builder: mut IRBuilder = new IRBuilder(new IRFunction("", ""));
+    builder: mut IRBuilder = new IRBuilder(new IRFunction("", "", new ast.SourceLocation("", 0, 0)));
     symbol_regs: mut _utils.List<SymbolRegEntry> = new _utils.List<SymbolRegEntry>();
     loop_stack: mut _utils.List<LoopLabels> = new _utils.List<LoopLabels>();
     source_file: mut string = "";
-    current_module: mut IRModule = new IRModule();
+    current_module: mut IRModule = new IRModule(new ast.SourceLocation("", 0, 0));
 
     fun new(mut this) {}
 
@@ -59,8 +59,7 @@ class IRGenerator {
     }
 
     fun generate(mut this, unit: bound.BoundCompilationUnit) -> IRModule {
-        let module: mut IRModule = new IRModule();
-        module.location = unit.location;
+        let module: mut IRModule = new IRModule(unit.location);
         this.source_file = unit.location.filename;
         this.current_module = module;
         let i: mut i64 = 0;
@@ -109,16 +108,15 @@ class IRGenerator {
         if (def.is_generic_template) { return; }
         let ret_type: string = this.bound_type_to_ir_type(def.return_type);
         let func_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
-        this.builder = new IRBuilder(new IRFunction(def.full_name, ret_type));
+        this.builder = new IRBuilder(new IRFunction(def.full_name, ret_type, func_loc));
         this.builder.func.display_name = def.name;
-        this.builder.func.location = func_loc;
         this.builder.func.is_extern = def.is_extern;
         this.reset_locals();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(def.parameters.size())) {
             let p: bound.BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
             let p_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
-            let _: IRValue = this.builder.func.alloc_param(p.name, this.bound_type_to_ir_type(p.bound_type), p_loc.line, p_loc.column);
+            let _: IRValue = this.builder.func.alloc_param(p.name, this.bound_type_to_ir_type(p.bound_type), p_loc.line, p_loc.col);
             let param_full_name: string = def.full_name + ".<body>." + p.name;
             let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, this.bound_type_to_ir_type(p.bound_type), p_loc);
             this.set_symbol_reg_by_name(param_full_name, arg_reg);
@@ -222,7 +220,7 @@ class IRGenerator {
 
     fun lower_initial_routine(mut this, def: bound.BoundInitialRoutineDefinition, module: mut IRModule) {
         let loc: ast.SourceLocation = this.make_loc(0, 0);
-        this.builder = new IRBuilder(new IRFunction(def.full_name, "void"));
+        this.builder = new IRBuilder(new IRFunction(def.full_name, "void", loc));
         this.builder.func.display_name = "initial";
         this.reset_locals();
         if (def.body.is_some()) {
@@ -594,12 +592,12 @@ class IRGenerator {
             }
             fi = fi + 1;
         }
-        let ext_func: mut IRFunction = new IRFunction(func_name, ret_type);
+        let ext_func: mut IRFunction = new IRFunction(func_name, ret_type, new ast.SourceLocation("", 0, 0));
         ext_func.is_extern = true;
         let pi: mut i64 = 0;
         while (pi < cast<i64>(args.size())) {
             let arg: IRValue = args.at(cast<u64>(pi)).some;
-            let p: mut IRParameter = new IRParameter("p" + cast<string>(pi), arg.get_ir_type(), pi);
+            let p: mut IRParameter = new IRParameter("p" + cast<string>(pi), arg.get_ir_type(), pi, new ast.SourceLocation("", 0, 0));
             ext_func.parameters.push(p);
             pi = pi + 1;
         }
@@ -1010,7 +1008,7 @@ class IRGenerator {
             let sym: bound.BoundVariableSymbol = stmt.variable_symbol.some;
             let ir_type: string = this.bound_type_to_ir_type(sym.bound_type);
             let loc: ast.SourceLocation = this.make_loc(sym.location.line, sym.location.col);
-            let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, ir_type, loc.line, loc.column);
+            let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, ir_type, loc.line, loc.col);
             this.set_symbol_reg(new bound.BoundSymbol.variable(sym), reg);
             if (stmt.initializer.is_some()) {
                 let init_expr: bound.BoundExpression = stmt.initializer.some;

@@ -1,7 +1,7 @@
 namespace ir {
 
 class IRBuilder {
-    func: mut IRFunction = new IRFunction("", "");
+    func: mut IRFunction = new IRFunction("", "", new ast.SourceLocation("", 0, 0));
 
     fun new(mut this, func: mut IRFunction) {
         this.func = func;

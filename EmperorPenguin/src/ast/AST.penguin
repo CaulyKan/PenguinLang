@@ -544,6 +544,7 @@ class LetDeclarationStatement {
     is_mutable: mut bool = false;
     variable_name: mut string = "";
     variable_type: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     initializer: mut Option<Expression> = new Option<Expression>.none();
     impl IStatement {
         fun build_text(this: IStatement) -> string {

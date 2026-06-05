@@ -94,8 +94,7 @@ class SemanticModel {
     }
 
     fun bind(mut this, unit: ast.CompilationUnit, location: ast.SourceLocation) -> BoundCompilationUnit {
-        let result: mut BoundCompilationUnit = new BoundCompilationUnit();
-        result.location = location;
+        let result: mut BoundCompilationUnit = new BoundCompilationUnit(location);
         result.type_registry = this.type_registry;
         result.global_scope = this.global_scope;
         this.ast_definitions = unit.definitions;
@@ -220,7 +219,25 @@ class SemanticModel {
                 fsym.name = ast_field.name;
                 fsym.full_name = field_full_name;
                 fsym.variable_kind = new VariableSymbolKind.Field();
-                fsym.is_mutable = true;
+                // Read mutability from AST type_spec
+                if (ast_field.type_spec.is_some()) {
+                    let ts: ast.TypeSpecifier = ast_field.type_spec.some;
+                    if (ts.is_not_mutable) {
+                        fsym.is_mutable = false;
+                        field.mutability = new Mutability.Immutable();
+                    } else if (ts.is_auto_mutability) {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Auto();
+                    } else {
+                        // Default: mutable (includes explicit 'mut' and no modifier)
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Mutable();
+                    }
+                } else {
+                    // No type spec: default mutable
+                    fsym.is_mutable = true;
+                    field.mutability = new Mutability.Mutable();
+                }
                 fsym.enclosing_scope = new Option<BoundScope>.some(class_scope);
                 field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
                 class_scope.add_symbol(new BoundSymbol.variable(fsym));
@@ -1553,10 +1570,23 @@ class SemanticModel {
                 fsym.name = ast_field.name;
                 fsym.full_name = field_full_name;
                 fsym.variable_kind = new VariableSymbolKind.Field();
-                fsym.is_mutable = true;
-                fsym.enclosing_scope = new Option<BoundScope>.some(class_scope);
+                // Read mutability from AST type_spec
                 if (ast_field.type_spec.is_some()) {
+                    let ts: ast.TypeSpecifier = ast_field.type_spec.some;
+                    if (ts.is_not_mutable) {
+                        fsym.is_mutable = false;
+                        field.mutability = new Mutability.Immutable();
+                    } else if (ts.is_auto_mutability) {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Auto();
+                    } else {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Mutable();
+                    }
                     field.bound_type = this.resolve_type_specifier(ast_field.type_spec.some, class_scope);
+                } else {
+                    fsym.is_mutable = true;
+                    field.mutability = new Mutability.Mutable();
                 }
                 fsym.bound_type = field.bound_type;
                 field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
@@ -2093,7 +2123,7 @@ class SemanticModel {
 
         if (this.class_has_ivalue_type(cls)) {
             if (this.class_has_ireference_type(cls)) {
-                this.report_error("Class '" + cls.name + "' cannot implement both IValueType and IReferenceType", 0, 0);
+                this.report_error("Class '" + cls.name + "' cannot implement both IValueType and IReferenceType", new ast.SourceLocation("", 0, 0));
                 cls.is_value_class = new Option<bool>.some(false);
                 return false;
             }
@@ -3579,9 +3609,15 @@ class SemanticModel {
                     return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
                 }
             }
+            // No initializer: resolve type from type_specifier if available
+            let decl_type: mut BoundType = new BoundType();
+            if (stmt.let_decl.type_spec.is_some()) {
+                decl_type = this.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
+            }
+            var_sym.bound_type = decl_type;
             let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                 new Option<BoundVariableSymbol>.some(var_sym),
-                new Option<BoundExpression>.none(), new BoundType(), new Option<BoundScope>.some(scope));
+                new Option<BoundExpression>.none(), decl_type, new Option<BoundScope>.some(scope));
             scope.add_symbol(new BoundSymbol.variable(var_sym));
             return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
         }
@@ -3608,7 +3644,7 @@ class SemanticModel {
                 this.validate_expr_control_flow(func.body.some, sym.return_type, 0);
                 if (!this.type_registry.is_void(sym.return_type)) {
                     if (!this.expr_always_returns(func.body.some)) {
-                        this.report_error("Non-void function '" + func.name + "' must return a value on all paths", 0, 0);
+                        this.report_error("Non-void function '" + func.name + "' must return a value on all paths", new ast.SourceLocation("", 0, 0));
                     }
                 }
             }
@@ -3711,7 +3747,7 @@ class SemanticModel {
                 this.validate_expr_control_flow(ret.value.some, ret_type, loop_depth);
                 let value_type: BoundType = ret.value.some.get_bound_type();
                 if (!this.type_registry.is_void(ret_type) && !this.type_registry.can_implicitly_cast(value_type, ret_type)) {
-                    this.report_error("Return type mismatch: expected " + ret_type.display_name() + " but got " + value_type.display_name() + " in " + this._current_validating_func, 0, 0);
+                    this.report_error("Return type mismatch: expected " + ret_type.display_name() + " but got " + value_type.display_name() + " in " + this._current_validating_func, new ast.SourceLocation("", 0, 0));
                 }
             }
         }
@@ -3741,12 +3777,12 @@ class SemanticModel {
         }
         if (stmt is BoundStatement.break_stmt) {
             if (loop_depth == 0) {
-                this.report_error("break statement not inside a loop", 0, 0);
+                this.report_error("break statement not inside a loop", new ast.SourceLocation("", 0, 0));
             }
         }
         if (stmt is BoundStatement.continue_stmt) {
             if (loop_depth == 0) {
-                this.report_error("continue statement not inside a loop", 0, 0);
+                this.report_error("continue statement not inside a loop", new ast.SourceLocation("", 0, 0));
             }
         }
         if (stmt is BoundStatement.assignment) {

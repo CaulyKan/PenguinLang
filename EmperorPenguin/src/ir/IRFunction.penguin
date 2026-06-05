@@ -6,10 +6,11 @@ class IRParameter {
     index: mut i64 = 0;
     location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
-    fun new(mut this, name: string, ir_type: string, index: i64) {
+    fun new(mut this, name: string, ir_type: string, index: i64, loc: ast.SourceLocation) {
         this.name = name;
         this.ir_type = ir_type;
         this.index = index;
+        this.location = loc;
     }
 }
 
@@ -24,9 +25,10 @@ class IRFunction {
     is_extern: mut bool = false;
     location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
-    fun new(mut this, name: string, return_type: string) {
+    fun new(mut this, name: string, return_type: string, loc: ast.SourceLocation) {
         this.name = name;
         this.return_type = return_type;
+        this.location = loc;
     }
 
     fun alloc_named_reg(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
@@ -51,8 +53,8 @@ class IRFunction {
 
     fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
         let idx: i64 = cast<i64>(this.parameters.size());
-        let param = new mut IRParameter(name, ir_type, idx);
-        param.location = new ast.SourceLocation(this.location.filename, line, col);
+        let param_loc: ast.SourceLocation = new ast.SourceLocation(this.location.filename, line, col);
+        let param = new mut IRParameter(name, ir_type, idx, param_loc);
         this.parameters.push(param);
         return this.alloc_named_reg(name, ir_type, line, col);
     }
