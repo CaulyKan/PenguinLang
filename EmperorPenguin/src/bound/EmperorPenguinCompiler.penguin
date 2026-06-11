@@ -12,6 +12,7 @@ class SourceInput {
 
 class EmperorPenguinCompiler {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
+    verbose: mut i64 = 0;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
@@ -21,9 +22,11 @@ class EmperorPenguinCompiler {
 
     fun compile_sources(mut this, inputs: _utils.List<SourceInput>) -> BoundCompilationUnit {
         let combined_defs: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
+        let total_defs: mut i64 = 0;
         let i: mut i64 = 0;
         while (i < cast<i64>(inputs.size())) {
             let input: SourceInput = inputs.at(cast<u64>(i)).some;
+            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
             let lexer = new parser.Lexer(input.source, input.filename);
             let tokens = lexer.tokenize();
             let p = new parser.Parser(tokens);
@@ -33,12 +36,16 @@ class EmperorPenguinCompiler {
                 combined_defs.push(unit.definitions.at(cast<u64>(j)).some);
                 j = j + 1;
             }
+            total_defs = total_defs + cast<i64>(unit.definitions.size());
             i = i + 1;
         }
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
         let combined_unit: ast.CompilationUnit = new ast.CompilationUnit();
         combined_unit.definitions = combined_defs;
+        let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new bound.SemanticModel();
-        let result = model.bind(combined_unit, new ast.SourceLocation("<project>", 0, 0));
+        model.verbose = this.verbose;
+        let result = model.bind(combined_unit, new ast.SourceLocation(main_filename, 0, 0));
         this.errors = model.errors;
         return result;
     }

@@ -14,7 +14,17 @@ namespace __builtin {
 
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
-    extern fun args() -> _utils.List<string>;
+
+    fun args() -> _utils.List<string> {
+        let result = new _utils.List<string>();
+        let count: i64 = __args_count();
+        let i: mut i64 = 0;
+        while (i < count) {
+            result.push(__args_get(i));
+            i = i + 1;
+        }
+        return result;
+    }
 
     fun panic(text : string) {
         print("panic: ");

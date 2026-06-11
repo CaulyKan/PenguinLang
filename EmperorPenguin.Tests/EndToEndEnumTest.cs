@@ -25,14 +25,14 @@ public class EndToEndEnumTest : EndToEndTestBase
     public void EnumSimple() => batch.Assert();
 
     [BatchE2ETest("""
-        enum Option { some: i32; none; }
-        fun get_or_default(o: Option, def: i32) -> i32 {
-            if (o is Option.some) { return o.some; }
+        enum OptVal { some: i32; none; }
+        fun get_or_default(o: OptVal, def: i32) -> i32 {
+            if (o is OptVal.some) { return o.some; }
             return def;
         }
         initial {
-            let a = new Option.some(42);
-            let b = new Option.none();
+            let a = new OptVal.some(42);
+            let b = new OptVal.none();
             println(cast<string>(get_or_default(a, 0)));
             println(cast<string>(get_or_default(b, -1)));
         }
@@ -42,10 +42,10 @@ public class EndToEndEnumTest : EndToEndTestBase
     public void EnumWithPayload() => batch.Assert();
 
     [BatchE2ETest("""
-        enum Result { ok: i32; err; }
+        enum ResVal { ok: i32; err; }
         initial {
-            let r: Result = new Result.ok(100);
-            if (r is Result.ok) {
+            let r: ResVal = new ResVal.ok(100);
+            if (r is ResVal.ok) {
                 println("ok:" + cast<string>(r.ok));
             } else {
                 println("err");

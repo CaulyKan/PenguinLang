@@ -86,7 +86,7 @@ namespace BabyPenguin.VirtualMachine
             {
                 var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
                 var other_value = args[1].As<BasicRuntimeValue>().I64Value;
-                var org = Interlocked.Exchange(ref atomic.I64Value, other_value);
+                var org = Interlocked.Exchange(ref atomic.I64ValueRef, other_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = org;
             });
 
@@ -95,7 +95,7 @@ namespace BabyPenguin.VirtualMachine
                 var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
                 var current_value = args[1].As<BasicRuntimeValue>().I64Value;
                 var new_value = args[2].As<BasicRuntimeValue>().I64Value;
-                var org = Interlocked.CompareExchange(ref atomic.I64Value, new_value, current_value);
+                var org = Interlocked.CompareExchange(ref atomic.I64ValueRef, new_value, current_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = org;
             });
 
@@ -103,7 +103,7 @@ namespace BabyPenguin.VirtualMachine
             {
                 var atomic = args[0].As<ReferenceRuntimeValue>().Fields["value"].As<BasicRuntimeValue>();
                 var add_value = (Int64)args[1].As<BasicRuntimeValue>().I64Value;
-                var res = Interlocked.Add(ref atomic.I64Value, add_value);
+                var res = Interlocked.Add(ref atomic.I64ValueRef, add_value);
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = res;
             });
         }

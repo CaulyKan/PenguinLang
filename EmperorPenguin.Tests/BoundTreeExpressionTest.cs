@@ -399,7 +399,7 @@ initial {
     [BatchBoundTest(@"
 initial {
     let mut compiler = new bound.EmperorPenguinCompiler();
-    let result = compiler.compile(""fun foo() { let mut x: i64 = 1; x = 2; }"");
+    let result = compiler.compile(""fun foo() { let mut x = 1; x = 2; }"");
     let def = result.definitions.at(cast<u64>(0)).some;
     if (def is bound.BoundDefinition.function_def) {
         let func = def.function_def;

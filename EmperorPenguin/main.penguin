@@ -82,18 +82,65 @@ fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
 initial {
     let args: _utils.List<string> = __builtin.args();
     if (args.size() == 0) {
-        __builtin.eprintln("Usage: EmperorPenguin <file.penguins | file1.penguin [file2.penguin ...]>");
+        __builtin.eprintln("Usage: EmperorPenguin [-v|-vv|-vvv] [-o output] <file.penguins | file1.penguin [file2.penguin ...]>");
+        __builtin.exit(1);
+    }
+
+    // Parse options
+    let output_name: mut string = "";
+    let verbose: mut i64 = 0;
+    let source_start: mut i64 = 0;
+    // Determine source files
+    let source_files: mut _utils.List<string> = new _utils.List<string>();
+
+    let i: mut i64 = 0;
+    while (i < cast<i64>(args.size())) {
+        let arg: string = args.at(cast<u64>(i)).some;
+        if (arg == "-vvv") {
+            verbose = 3;
+        } else if (arg == "-vv") {
+            verbose = 2;
+        } else if (arg == "-v") {
+            verbose = 1;
+        } else if (arg == "-o") {
+            i = i + 1;
+            if (i < cast<i64>(args.size())) {
+                output_name = args.at(cast<u64>(i)).some;
+            }
+        } else {
+            source_files.push(args.at(cast<u64>(i)).some);
+        }
+        i = i + 1;
+    }
+    if (source_files.size() == 0) {
+        __builtin.eprintln("Error: no source files specified");
         __builtin.exit(1);
     }
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
+    let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
 
-    let tmp_dir: string = "tmp";
+    let tmp_dir: mut string = "tmp";
+    let exe_path: mut string = tmp_dir + "/out.exe";
+    if (string_length(output_name) > 0) {
+        // Derive tmp_dir and exe_path from -o argument
+        let last_slash: mut i64 = -1;
+        let pos: mut i64 = string_find(output_name, "/");
+        while (pos >= 0) {
+            last_slash = pos;
+            pos = string_find_from(output_name, "/", pos + 1);
+        }
+        if (last_slash > 0) {
+            tmp_dir = string_substring(output_name, 0, last_slash);
+            exe_path = output_name;
+        } else {
+            tmp_dir = "tmp";
+            exe_path = tmp_dir + "/" + output_name;
+        }
+    }
     _utils.mkdir(tmp_dir);
 
-    // Determine source files
-    let source_files: mut _utils.List<string> = new _utils.List<string>();
-    let first_arg: string = args.at(0).some;
+    let first_arg: string = source_files.at(0).some;
 
     if (project.string_ends_with(first_arg, ".penguins")) {
         // .penguins mode: parse project file and resolve sources
@@ -101,35 +148,29 @@ initial {
         let project_dir: string = project.get_parent_dir(first_arg);
         let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
         source_files = resolved;
-        __builtin.eprintln("Loaded project: " + proj.name + " (" + cast<string>(resolved.size()) + " sources)");
-    } else {
-        // Direct file mode: use args as-is
-        let i: mut i64 = 0;
-        while (i < cast<i64>(args.size())) {
-            source_files.push(args.at(cast<u64>(i)).some);
-            i = i + 1;
-        }
-    }
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Loaded: " + proj.name + " (" + cast<string>(resolved.size()) + " sources)"); }
+    }   
 
-    // Build per-file SourceInput list (no concatenation)
     let inputs: mut _utils.List<bound.SourceInput> = new _utils.List<bound.SourceInput>();
     inputs.push(new bound.SourceInput("core_builtin.penguin", stdlib_source));
+    inputs.push(new bound.SourceInput("utils.penguin", utils_source));
     let fi: mut i64 = 0;
     while (fi < cast<i64>(source_files.size())) {
         let file: string = source_files.at(cast<u64>(fi)).some;
         let source: string = _utils.file_read_text(file);
         inputs.push(new bound.SourceInput(file, source));
-        __builtin.eprintln("Added: " + file);
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
         fi = fi + 1;
     }
 
-    __builtin.eprintln("Compiling " + cast<string>(source_files.size()) + " source files...");
+    if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(source_files.size()) + " source files..."); }
 
     let mut compiler = new bound.EmperorPenguinCompiler();
+    compiler.verbose = verbose;
     let result = compiler.compile_sources(inputs);
 
     if (result.has_errors()) {
-        __builtin.eprintln("Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
+        __builtin.eprintln("[EmperorPenguin] Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
             let err: bound.SemanticError = result.errors.at(cast<u64>(ei)).some;
@@ -138,27 +179,28 @@ initial {
         }
     } else {
         let generator = new ir.IRGenerator();
+        generator.verbose = verbose;
         let module = generator.generate(result);
-        __builtin.eprintln("IR generation done");
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] IR generation done"); }
 
         let emitter = new llvm.LLVMEmitter();
+        emitter.verbose = verbose;
         let llvm_ir: string = emitter.lower(module, result);
-        __builtin.eprintln("LLVM IR generation done");
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
 
         let ll_path: string = tmp_dir + "/combined.ll";
         _utils.file_write_text(ll_path, llvm_ir);
 
-        let exe_path: string = tmp_dir + "/out.exe";
         let lib_path: string = tmp_dir + "/libcore_builtin.a";
 
         let make_args: mut _utils.List<string> = new _utils.List<string>();
         make_args.push("-C");
         make_args.push("EmperorPenguin/std/c");
         make_args.push("OUTPUT_DIR=../../../" + tmp_dir);
-        __builtin.eprintln("Running: make -C EmperorPenguin/std/c");
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make -C EmperorPenguin/std/c"); }
         let make_exit: i64 = _utils.exec("make", make_args);
         if (make_exit != 0) {
-            __builtin.eprintln("make failed with exit code " + cast<string>(make_exit));
+            __builtin.eprintln("[EmperorPenguin Link] make failed with exit code " + cast<string>(make_exit));
             __builtin.exit(1);
         }
 
@@ -168,12 +210,12 @@ initial {
         clang_args.push("-o");
         clang_args.push(exe_path);
 
-        __builtin.eprintln("Running: clang -> " + exe_path);
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -> " + exe_path); }
         let exit_code: i64 = _utils.exec("clang", clang_args);
         if (exit_code == 0) {
-            __builtin.eprintln("Output: " + exe_path);
+            if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Output: " + exe_path); }
         } else {
-            __builtin.eprintln("clang failed with exit code " + cast<string>(exit_code));
+            __builtin.eprintln("[EmperorPenguin Link] clang failed with exit code " + cast<string>(exit_code));
             __builtin.exit(1);
         }
     }

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -70,13 +70,22 @@ namespace BabyPenguin.VirtualMachine
                 Initialize();
             try
             {
-                foreach (var result in StartFrame!.Run())
+                // Fast path: direct execution without yield/iterator overhead
+                if (Global.Breakpoints.Count == 0 && Global.StepMode == RuntimeGlobal.StepModeEnum.Run)
                 {
-                    if (result.IsLeft)
+                    StartFrame!.RunDirect();
+                }
+                else
+                {
+                    // Debug path: use yield-based execution for DAP support
+                    foreach (var result in StartFrame!.Run())
                     {
-                        if (result.Left!.Reason == RuntimeBreakReason.Exited)
+                        if (result.IsLeft)
                         {
-                            return Global.ExitCode;
+                            if (result.Left!.Reason == RuntimeBreakReason.Exited)
+                            {
+                                return Global.ExitCode;
+                            }
                         }
                     }
                 }
@@ -107,12 +116,210 @@ namespace BabyPenguin.VirtualMachine
     {
         public enum StepModeEnum { StepIn, StepOver, StepOut, Run }
 
-        public ConcurrentDictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
+        public Dictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
 
         private ulong _refIdCounter = 0;
-        public ulong NextRefId() => Interlocked.Increment(ref _refIdCounter);
+        public ulong NextRefId() => ++_refIdCounter;
 
         public void ClearAllObjects() => AllObjects.Clear();
+
+        // === Object Pool ===
+        // Pool of recycled ReferenceRuntimeValue objects to avoid repeated allocation.
+        // When BabyPenguin GC sweeps dead objects, they go into the pool.
+        // When NEW instruction creates objects, it takes from the pool first.
+        private readonly Stack<ReferenceRuntimeValue> _objectPool = new();
+        private int _objectPoolHits = 0;
+        private int _objectPoolMisses = 0;
+
+        /// <summary>
+        /// Take a recycled ReferenceRuntimeValue from the pool, or return null if pool is empty.
+        /// The caller must re-initialize the object's fields and type info.
+        /// </summary>
+        public ReferenceRuntimeValue? TryTakeFromPool()
+        {
+            if (_objectPool.TryPop(out var obj))
+            {
+                _objectPoolHits++;
+                return obj;
+            }
+            _objectPoolMisses++;
+            return null;
+        }
+
+        /// <summary>
+        /// Return a dead ReferenceRuntimeValue to the pool for reuse.
+        /// Clears its fields to release references to other objects.
+        /// </summary>
+        public void ReturnToPool(ReferenceRuntimeValue obj)
+        {
+            if (_objectPool.Count < 100_000) // Cap pool size
+            {
+                obj.Fields.Clear();
+                obj.ExternImplenmentationValue = null;
+                _objectPool.Push(obj);
+            }
+        }
+
+        public void ClearPool()
+        {
+            _objectPool.Clear();
+            _objectPoolHits = 0;
+            _objectPoolMisses = 0;
+        }
+
+        // === Garbage Collector ===
+        /// <summary>
+        /// GC runs when AllObjects.Count exceeds this threshold.
+        /// After each collection, the threshold is adjusted to 1.5× the live set (min 50k).
+        /// </summary>
+        public int GCThreshold { get; set; } = 50000;
+
+        /// <summary>
+        /// Global instruction counter — shared across all frames.
+        /// Ensures GC is checked based on total instructions, not per-frame.
+        /// </summary>
+        public long GlobalInstructionCount { get; set; } = 0;
+
+        /// <summary>
+        /// Number of instructions between GC checks in the execution loop.
+        /// Uses the global counter so GC triggers even during deep recursion.
+        /// </summary>
+        public int GCCheckInterval { get; set; } = 1000;
+
+        /// <summary>
+        /// Enable/disable GC. Disabled by default for small programs and debugging.
+        /// </summary>
+        public bool GCEnabled { get; set; } = false;
+
+        /// <summary>
+        /// If set, GC stats are written to this file path after each cycle.
+        /// </summary>
+        public string? GCStatsFile { get; set; } = null;
+
+        /// <summary>
+        /// Total number of objects collected across all GC cycles (for diagnostics).
+        /// </summary>
+        public long TotalCollected { get; private set; }
+
+        /// <summary>
+        /// Number of GC cycles performed (for diagnostics).
+        /// </summary>
+        public int GCCycles { get; private set; }
+
+        /// <summary>
+        /// Mark-sweep garbage collector. Traverses from roots (globals + frame chain),
+        /// marks all reachable ReferenceRuntimeValue objects, and sweeps unmarked ones.
+        /// </summary>
+        public void CollectGarbage(RuntimeFrame currentFrame)
+        {
+            var before = AllObjects.Count;
+
+            // --- Mark phase ---
+            var marked = new HashSet<ulong>();
+            var stack = new Stack<IRuntimeValue>();
+
+            // Root: global variables
+            foreach (var sym in GlobalVariables.Values)
+                if (sym.Value != null)
+                    stack.Push(sym.Value);
+
+            // Root: frame chain (current frame → parent → ... → root)
+            var frame = currentFrame;
+            while (frame != null)
+            {
+                foreach (var val in frame.GetAllValues())
+                    if (val != null)
+                        stack.Push(val);
+                frame = frame.ParentFrame;
+            }
+
+            // Traverse reachable graph
+            while (stack.Count > 0)
+            {
+                var val = stack.Pop();
+                switch (val)
+                {
+                    case ReferenceRuntimeValue refVal:
+                        if (marked.Add(refVal.RefId))
+                        {
+                            // Traverse all fields
+                            foreach (var fv in refVal.Fields.Values)
+                                if (fv != null)
+                                    stack.Push(fv);
+                            // Traverse extern containers (List<IRuntimeValue>, etc.)
+                            if (refVal.ExternImplenmentationValue is System.Collections.IEnumerable seq
+                                && refVal.ExternImplenmentationValue is not string
+                                && refVal.ExternImplenmentationValue is not StringBuilder)
+                            {
+                                foreach (var item in seq)
+                                    if (item is IRuntimeValue rv)
+                                        stack.Push(rv);
+                            }
+                        }
+                        break;
+                    case EnumRuntimeValue enumVal:
+                        if (enumVal.FieldsValue != null)
+                            stack.Push(enumVal.FieldsValue);
+                        if (enumVal.ContainingValue != null)
+                            stack.Push(enumVal.ContainingValue);
+                        break;
+                    case FunctionRuntimeValue funcVal:
+                        if (funcVal.Owner != null)
+                            stack.Push(funcVal.Owner);
+                        break;
+                }
+            }
+
+            // --- Sweep phase ---
+            var toRemove = new List<ulong>(AllObjects.Count - marked.Count);
+            foreach (var kvp in AllObjects)
+            {
+                if (!marked.Contains(kvp.Key))
+                {
+                    ReturnToPool(kvp.Value);
+                    toRemove.Add(kvp.Key);
+                }
+            }
+            foreach (var id in toRemove)
+                AllObjects.Remove(id);
+
+            // Adjust threshold: 1.5× live set, minimum 50k
+            var liveCount = AllObjects.Count;
+            GCThreshold = Math.Max(50000, (int)(liveCount * 1.5));
+
+            var collected = before - liveCount;
+            TotalCollected += collected;
+            GCCycles++;
+
+            if (EnableGcDebug)
+            {
+                if (EnableDebugPrint)
+                {
+                    DebugFunc($"[BabyPenguin GC] Cycle #{GCCycles}: {before} → {liveCount} objects (collected {collected}), new threshold={GCThreshold}\n");
+                }
+
+                if (GCStatsFile != null)
+                {
+                    try
+                    {
+                        System.IO.File.AppendAllText(GCStatsFile,
+                            $"[BabyPenguin GC] #{GCCycles}: {before} → {liveCount} (collected {collected}), threshold={GCThreshold}\n");
+                    }
+                    catch { }
+                }
+            }
+
+            // Force .NET GC compaction periodically to prevent heap fragmentation.
+            // The BabyPenguin GC frees .NET objects (strings, dicts) but the .NET GC
+            // may not compact the heap, causing RSS to grow despite stable live set.
+            // We compact LOH explicitly + do full Gen2 compaction.
+            if (GCCycles % 10 == 0)
+            {
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                    System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            }
+        }
 
         public int ExitCode { get; set; } = 0;
 
@@ -157,6 +364,8 @@ namespace BabyPenguin.VirtualMachine
         }
 
         public bool EnableDebugPrint { get; set; } = false;
+
+        public bool EnableGcDebug { get; set; } = false;
 
         /// <summary>
         /// Enable DAP variable synchronization (LocalVariables construction + per-Store sync).

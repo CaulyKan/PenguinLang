@@ -316,37 +316,37 @@ namespace parser {
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("u16")) {
+                if (this.match_keyword("u16")) {
                     tokens.push(new Token(new TokenType.U16(), "u16", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("u32")) {
+                if (this.match_keyword("u32")) {
                     tokens.push(new Token(new TokenType.U32(), "u32", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("u64")) {
+                if (this.match_keyword("u64")) {
                     tokens.push(new Token(new TokenType.U64(), "u64", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("i16")) {
+                if (this.match_keyword("i16")) {
                     tokens.push(new Token(new TokenType.I16(), "i16", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("i32")) {
+                if (this.match_keyword("i32")) {
                     tokens.push(new Token(new TokenType.I32(), "i32", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
-                if (this.match_string("i64")) {
+                if (this.match_keyword("i64")) {
                     tokens.push(new Token(new TokenType.I64(), "i64", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
@@ -472,7 +472,7 @@ namespace parser {
                     this.advance_chars(2);
                     continue;
                 }
-                if (this.match_string("i8")) {
+                if (this.match_keyword("i8")) {
                     tokens.push(new Token(new TokenType.I8(), "i8", new ast.SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);

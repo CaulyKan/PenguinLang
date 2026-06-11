@@ -11,7 +11,7 @@ class BoundVariableSymbol {
     parameter_index: i64 = -1;
     declaring_scope_id: u64 = 0;
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 }
 
 class BoundFunctionSymbol {
@@ -20,13 +20,14 @@ class BoundFunctionSymbol {
     bound_type: BoundType = new BoundType();
     parameters: mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
     return_type: BoundType = new BoundType();
+    resolved_return_type: Option<BoundType> = new Option<BoundType>.none();
     is_extern: bool = false;
     is_static: bool = false;
     is_pure: bool = false;
     is_new: bool = false;
     is_async: bool = false;
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -41,7 +42,7 @@ class BoundTypeSymbol {
     type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -56,7 +57,7 @@ class BoundEnumMemberSymbol {
     enum_value: i64 = 0;
     member_type: BoundType = new BoundType();
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, full_name: string, bound_type: mut BoundType, enum_value: i64, member_type: mut BoundType) {
         this.name = name;
@@ -72,7 +73,7 @@ class BoundNamespaceSymbol {
     full_name: mut string = "";
     namespace_scope: Option<BoundScope> = new Option<BoundScope>.none();
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, full_name: string, namespace_scope: mut Option<BoundScope>) {
         this.name = name;

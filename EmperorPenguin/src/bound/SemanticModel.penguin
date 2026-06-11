@@ -17,6 +17,7 @@ class SemanticModel {
     current_unit: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     _current_validating_func: mut string = "";
     ast_definitions: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
+    verbose: mut i64 = 0;
 
     fun new(mut this) {
         this.type_registry = new BoundTypeRegistry();
@@ -98,15 +99,25 @@ class SemanticModel {
         result.type_registry = this.type_registry;
         result.global_scope = this.global_scope;
         this.ast_definitions = unit.definitions;
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 1/9: Building scopes..."); }
         this.pass_build_scopes(unit, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 2/9: Resolving types..."); }
         this.pass_resolve_types(unit, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 3/9: Monomorphizing generics..."); }
         this.pass_monomorphize(unit, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9: Binding symbols..."); }
         this.pass_bind_symbols(result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9: Generating constructors..."); }
         this.pass_constructors(result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 6/9: Building interface vtables..."); }
         this.pass_interface_implementation(unit, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 7/9: Classifying value types..."); }
         this.pass_classify_value_types(result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9: Binding expressions..."); }
         this.pass_bind_expressions(unit, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
         this.pass_validate_control_flow(result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
         result.errors = this.errors;
         return result;
     }
@@ -182,6 +193,7 @@ class SemanticModel {
         sym.is_static = result.is_static;
         sym.is_pure = def.is_pure;
         sym.is_new = def.is_new;
+        sym.location = def.location;
         result.symbol = new Option<BoundFunctionSymbol>.some(sym);
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
@@ -201,6 +213,7 @@ class SemanticModel {
         result.scope = new Option<BoundScope>.some(class_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
         this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.ClassKind();
         t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
@@ -219,6 +232,7 @@ class SemanticModel {
                 fsym.name = ast_field.name;
                 fsym.full_name = field_full_name;
                 fsym.variable_kind = new VariableSymbolKind.Field();
+                fsym.location = ast_field.location;
                 // Read mutability from AST type_spec
                 if (ast_field.type_spec.is_some()) {
                     let ts: ast.TypeSpecifier = ast_field.type_spec.some;
@@ -269,6 +283,7 @@ class SemanticModel {
         result.scope = new Option<BoundScope>.some(enum_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
         this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.EnumKind();
         t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
@@ -334,6 +349,7 @@ class SemanticModel {
         result.scope = new Option<BoundScope>.some(iface_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
         this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.InterfaceKind();
         t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
@@ -382,6 +398,7 @@ class SemanticModel {
         let init_scope: mut BoundScope = new BoundScope(new ScopeKind.InitialRoutineScope(), "<initial>", full_name + ".<body>", new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(init_scope);
         let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("<initial>", full_name);
+        sym.location = def.location;
         result.symbol = new Option<BoundFunctionSymbol>.some(sym);
         scope.add_symbol(new BoundSymbol.function_sym(sym));
         return new Option<BoundDefinition>.some(new BoundDefinition.initial_routine(result));
@@ -607,7 +624,9 @@ class SemanticModel {
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
-            let updated: BoundDefinition = this.resolve_pair(ast_def, result.definitions.at(cast<u64>(i)).some, result.global_scope);
+            let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+            if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Resolving " + this.def_display_name(bound_def)); }
+            let updated: BoundDefinition = this.resolve_pair(ast_def, bound_def, result.global_scope);
             result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
@@ -1139,6 +1158,7 @@ class SemanticModel {
                                     let spec_result: Option<BoundDefinition> = this.specialize_class_def(
                                         cls, inst.generic_args, mangled, result.global_scope);
                                     if (spec_result.is_some()) {
+                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + mangled); }
                                         specialized_defs.push(spec_result.some);
                                         specialized_asts.push(ast_def.some);
                                     }
@@ -1156,6 +1176,7 @@ class SemanticModel {
                                     let spec_result: Option<BoundDefinition> = this.specialize_enum_def(
                                         e, inst.generic_args, mangled, result.global_scope);
                                     if (spec_result.is_some()) {
+                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + mangled); }
                                         specialized_defs.push(spec_result.some);
                                         specialized_asts.push(ast_def.some);
                                     }
@@ -1211,6 +1232,7 @@ class SemanticModel {
                                 let spec_result: Option<BoundDefinition> = this.specialize_function_def(
                                     tmpl_func, inst.generic_args, mangled, result.global_scope, method_class_scope);
                                 if (spec_result.is_some()) {
+                                    if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized function " + mangled); }
                                     specialized_defs.push(spec_result.some);
                                     specialized_asts.push(ast_def.some);
                                 }
@@ -1223,6 +1245,7 @@ class SemanticModel {
 
             if (cast<i64>(specialized_defs.size()) == 0) {
                 // No new specializations found, we're done
+                if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Completed in " + cast<string>(iteration) + " iterations, " + cast<string>(total_specialized) + " total specializations"); }
                 return;
             }
 
@@ -1256,6 +1279,7 @@ class SemanticModel {
                 j = j + 1;
             }
             total_specialized = total_specialized + cast<i64>(specialized_defs.size());
+            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Iteration " + cast<string>(iteration) + ": " + cast<string>(specialized_defs.size()) + " new specializations (total: " + cast<string>(total_specialized) + ")"); }
             iteration = iteration + 1;
         }
     }
@@ -2250,17 +2274,35 @@ class SemanticModel {
         return this.type_registry.make_error_type();
     }
 
+    fun def_display_name(this, def: BoundDefinition) -> string {
+        if (def is BoundDefinition.function_def) { return "function " + def.function_def.full_name; }
+        if (def is BoundDefinition.class_def) { return "class " + def.class_def.name; }
+        if (def is BoundDefinition.enum_def) { return "enum " + def.enum_def.name; }
+        if (def is BoundDefinition.interface_def) { return "interface " + def.interface_def.name; }
+        if (def is BoundDefinition.namespace_def) { return "namespace " + def.namespace_def.name; }
+        if (def is BoundDefinition.initial_routine) { return "initial"; }
+        if (def is BoundDefinition.impl_def) { return "impl"; }
+        if (def is BoundDefinition.impl_for_def) { return "impl for"; }
+        if (def is BoundDefinition.type_ref_def) { return "type " + def.type_ref_def.name; }
+        if (def is BoundDefinition.global_var_def) { return "global " + def.global_var_def.name; }
+        if (def is BoundDefinition.class_field) { return "field " + def.class_field.name; }
+        return "<unknown>";
+    }
+
     fun pass_bind_expressions(mut this, unit: ast.CompilationUnit, result: BoundCompilationUnit) {
         this.current_unit = new Option<BoundCompilationUnit>.some(result);
         let ast_count: i64 = cast<i64>(unit.definitions.size());
+        let total: i64 = cast<i64>(result.definitions.size());
         let i: mut i64 = 0;
-        while (i < cast<i64>(result.definitions.size())) {
+        while (i < total) {
             if (i < ast_count) {
                 let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding " + this.def_display_name(bound_def)); }
                 result.definitions.set(cast<u64>(i), this.bind_body_for_def(ast_def, bound_def, result));
             } else {
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding (specialized) " + this.def_display_name(bound_def)); }
                 result.definitions.set(cast<u64>(i), this.bind_body_for_specialized_def(bound_def, result));
             }
             i = i + 1;
@@ -2299,12 +2341,36 @@ class SemanticModel {
         return bound_def;
     }
 
+    fun ensure_params_in_scope(mut this, func: mut BoundFunctionDefinition) {
+        if (func.scope.is_none()) { return; }
+        let func_scope: mut BoundScope = func.scope.some;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            let param: BoundFunctionParameter = func.parameters.at(cast<u64>(pi)).some;
+            let existing: Option<BoundSymbol> = func_scope.lookup_symbol_local(param.name);
+            if (existing.is_none()) {
+                let param_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                param_sym.name = param.name;
+                param_sym.full_name = func.full_name + "." + param.name;
+                param_sym.bound_type = param.bound_type;
+                param_sym.variable_kind = new VariableSymbolKind.Parameter();
+                param_sym.is_mutable = param.is_mutable;
+                param_sym.parameter_index = param.index;
+                param_sym.enclosing_scope = new Option<BoundScope>.some(func_scope);
+                func_scope.add_symbol(new BoundSymbol.variable(param_sym));
+            }
+            pi = pi + 1;
+        }
+    }
+
     fun bind_body_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
         if (bound_def is BoundDefinition.function_def && ast_def is ast.Definition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let ast_func: ast.FunctionDefinition = ast_def.function_def;
+            if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding function " + bound_func.full_name); }
             if (bound_func.scope.is_some() && ast_func.body.is_some()) {
                 let func_scope: mut BoundScope = bound_func.scope.some;
+                this.ensure_params_in_scope(bound_func);
                 let bound_body: mut Option<BoundExpression> = this.bind_expression(ast_func.body.some, func_scope);
                 bound_func.body = bound_body;
             }
@@ -2313,6 +2379,7 @@ class SemanticModel {
         if (bound_def is BoundDefinition.initial_routine && ast_def is ast.Definition.initial_routine) {
             let bound_init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
             let ast_init: ast.InitialRoutineDefinition = ast_def.initial_routine;
+            if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding initial routine"); }
             if (bound_init.scope.is_some() && ast_init.body.is_some()) {
                 let init_scope: mut BoundScope = bound_init.scope.some;
                 let bound_init_body: mut Option<BoundExpression> = this.bind_expression(ast_init.body.some, init_scope);
@@ -2664,10 +2731,16 @@ class SemanticModel {
         }
         if (cast<i64>(operands.size()) > 0) {
             let bt: BoundType = operands.at(cast<u64>(0)).some.get_bound_type();
-            // `is` operator produces bool result
+            // Comparison and `is` operators produce bool result
             if (cast<i64>(operators.size()) > 0) {
                 let first_op: ast.BinaryOperator = operators.at(cast<u64>(0)).some;
-                if (first_op is ast.BinaryOperator.Is) {
+                if (first_op is ast.BinaryOperator.Is
+                    || first_op is ast.BinaryOperator.Equal
+                    || first_op is ast.BinaryOperator.NotEqual
+                    || first_op is ast.BinaryOperator.LessThan
+                    || first_op is ast.BinaryOperator.GreaterThan
+                    || first_op is ast.BinaryOperator.LessThanOrEqual
+                    || first_op is ast.BinaryOperator.GreaterThanOrEqual) {
                     let bool_type: BoundType = this.type_registry.resolve_type("bool").some;
                     let result: mut BoundBinaryExpression = new BoundBinaryExpression(bool_type, operators, operands);
                     return new Option<BoundExpression>.some(new BoundExpression.binary(result));
@@ -2853,14 +2926,19 @@ class SemanticModel {
     }
 
     fun find_function_return_type(this, sym: mut BoundFunctionSymbol) -> BoundType {
+        if (sym.resolved_return_type.is_some()) {
+            return sym.resolved_return_type.some;
+        }
         if (this.current_unit.is_some()) {
             let found: BoundType = this.search_function_return_type_in_defs(sym.full_name, this.current_unit.some.definitions);
             if (found.kind is TypeKind.PrimitiveKind) {
                 let pt: PrimitiveType = found.primitive;
                 if (!(pt is PrimitiveType.VoidType)) {
+                    sym.resolved_return_type = new Option<BoundType>.some(found);
                     return found;
                 }
             } else {
+                sym.resolved_return_type = new Option<BoundType>.some(found);
                 return found;
             }
         }
@@ -3502,9 +3580,11 @@ class SemanticModel {
             if (stmt.expression.expression.is_some()) {
                 let bound_expr: Option<BoundExpression> = this.bind_expression(stmt.expression.expression.some, scope);
                 let result: mut BoundExpressionStatement = new BoundExpressionStatement(bound_expr);
+                result.location = stmt.expression.location;
                 return new Option<BoundStatement>.some(new BoundStatement.expression(result));
             }
             let result: mut BoundExpressionStatement = new BoundExpressionStatement(new Option<BoundExpression>.none());
+            result.location = stmt.expression.location;
             return new Option<BoundStatement>.some(new BoundStatement.expression(result));
         }
         if (stmt is ast.Statement.block_expr) {
@@ -3536,22 +3616,27 @@ class SemanticModel {
                     if (target.some is bound.BoundExpression.identifier) {
                         if (target.some.identifier.symbol.is_some()) {
                             let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, stmt.assignment.operator_value, value, value_type);
+                            result.location = stmt.assignment.location;
                             return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
                         }
                     }
                     let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), stmt.assignment.operator_value, value, value_type);
+                    result.location = stmt.assignment.location;
                     return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
                 }
                 let value_type: BoundType = target.some.get_bound_type();
                 let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), stmt.assignment.operator_value, new Option<BoundExpression>.none(), value_type);
+                result.location = stmt.assignment.location;
                 return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
             }
             if (stmt.assignment.value.is_some()) {
                 let value: Option<BoundExpression> = this.bind_expression(stmt.assignment.value.some, scope);
                 let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(new Option<BoundExpression>.none(), new Option<BoundSymbol>.none(), stmt.assignment.operator_value, value, new BoundType());
+                result.location = stmt.assignment.location;
                 return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
             }
             let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(new Option<BoundExpression>.none(), new Option<BoundSymbol>.none(), stmt.assignment.operator_value, new Option<BoundExpression>.none(), new BoundType());
+            result.location = stmt.assignment.location;
             return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
         }
         if (stmt is ast.Statement.if_stmt) {
@@ -3559,12 +3644,14 @@ class SemanticModel {
             let then_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.then_statement, scope);
             let else_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.else_statement, scope);
             let result: mut BoundIfStatement = new BoundIfStatement(condition, then_stmt, else_stmt);
+            result.location = stmt.if_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.if_stmt(result));
         }
         if (stmt is ast.Statement.while_stmt) {
             let condition: Option<BoundExpression> = this.bind_optional_expr(stmt.while_stmt.condition, scope);
             let body: Option<BoundStatement> = this.bind_optional_stmt(stmt.while_stmt.body, scope);
             let result: mut BoundWhileStatement = new BoundWhileStatement(condition, body);
+            result.location = stmt.while_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));
         }
         if (stmt is ast.Statement.return_stmt) {
@@ -3573,23 +3660,28 @@ class SemanticModel {
                 if (value.is_some()) {
                     let ret_type: BoundType = value.some.get_bound_type();
                     let result: mut BoundReturnStatement = new BoundReturnStatement(value, ret_type);
+                    result.location = stmt.return_stmt.location;
                     return new Option<BoundStatement>.some(new BoundStatement.return_stmt(result));
                 }
             }
             let result: mut BoundReturnStatement = new BoundReturnStatement(new Option<BoundExpression>.none(), new BoundType());
+            result.location = stmt.return_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.return_stmt(result));
         }
         if (stmt is ast.Statement.break_stmt) {
             if (stmt.break_stmt.value.is_some()) {
                 let value: Option<BoundExpression> = this.bind_expression(stmt.break_stmt.value.some, scope);
                 let result: mut BoundBreakStatement = new BoundBreakStatement(value);
+                result.location = stmt.break_stmt.location;
                 return new Option<BoundStatement>.some(new BoundStatement.break_stmt(result));
             }
             let result: mut BoundBreakStatement = new BoundBreakStatement(new Option<BoundExpression>.none());
+            result.location = stmt.break_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.break_stmt(result));
         }
         if (stmt is ast.Statement.continue_stmt) {
             let result: mut BoundContinueStatement = new BoundContinueStatement();
+            result.location = stmt.continue_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.continue_stmt(result));
         }
         if (stmt is ast.Statement.let_decl) {
@@ -3597,6 +3689,7 @@ class SemanticModel {
             var_sym.name = stmt.let_decl.variable_name;
             var_sym.full_name = scope.full_name + "." + stmt.let_decl.variable_name;
             var_sym.is_mutable = stmt.let_decl.is_mutable;
+            var_sym.location = stmt.let_decl.location;
             if (stmt.let_decl.initializer.is_some()) {
                 let initializer: Option<BoundExpression> = this.bind_expression(stmt.let_decl.initializer.some, scope);
                 if (initializer.is_some()) {
@@ -3605,6 +3698,7 @@ class SemanticModel {
                     let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                         new Option<BoundVariableSymbol>.some(var_sym),
                         initializer, decl_type, new Option<BoundScope>.some(scope));
+                    result.location = stmt.let_decl.location;
                     scope.add_symbol(new BoundSymbol.variable(var_sym));
                     return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
                 }
@@ -3618,6 +3712,7 @@ class SemanticModel {
             let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                 new Option<BoundVariableSymbol>.some(var_sym),
                 new Option<BoundExpression>.none(), decl_type, new Option<BoundScope>.some(scope));
+            result.location = stmt.let_decl.location;
             scope.add_symbol(new BoundSymbol.variable(var_sym));
             return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
         }
@@ -3803,6 +3898,13 @@ class SemanticModel {
             let last_idx: i64 = cast<i64>(cb.statements.size()) - 1;
             let last: BoundStatement = cb.statements.at(cast<u64>(last_idx)).some;
             return this.stmt_always_returns(last);
+        }
+        // Handle if/else if/else chains where else_block is itself an if_expr
+        if (expr is BoundExpression.if_expr) {
+            let if_e: BoundIfExpression = expr.if_expr;
+            if (if_e.then_block.is_some() && if_e.else_block.is_some()) {
+                return this.expr_always_returns(if_e.then_block.some) && this.expr_always_returns(if_e.else_block.some);
+            }
         }
         return false;
     }

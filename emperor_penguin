@@ -1,3 +1,42 @@
 #!/bin/sh
 
-rm -rf tmp && dotnet run --project BabyPenguin/BabyPenguin.csproj -- -q EmperorPenguin/EmperorPenguin.penguins -- $@
+PASS=1
+BOOTSTRAPPING=0
+OTHERS=""
+
+for arg in "$@"; do
+  case "$arg" in
+    -1) PASS=1 ;;
+    -2) PASS=2 ;;
+    -3) PASS=3 ;;
+    -4) PASS=4 ;;
+    -b) BOOTSTRAPPING=1 ;;
+    *) OTHERS="$OTHERS $arg" ;;
+  esac
+done
+
+if [ $BOOTSTRAPPING -eq 1 ]; then
+    echo "Bootstrapping mode enabled. Running Pass 1 with bootstrapping ..."
+    rm -rf tmp && mkdir -p tmp
+    dotnet run --configuration Release --project BabyPenguin -- \
+        EmperorPenguin/EmperorPenguin.penguins -- \
+        EmperorPenguin/EmperorPenguin.penguins \
+        -vv -o "tmp/pass2"
+    exit $?
+fi
+
+if [ $PASS -eq 1 ]; then
+    echo "Running EmperorPenguin Pass 1 ..."
+    rm -rf tmp && mkdir -p tmp
+    dotnet run --configuration Release --project BabyPenguin/BabyPenguin.csproj -- -q EmperorPenguin/EmperorPenguin.penguins -- $OTHERS
+fi
+
+if [ $PASS -eq 2 ]; then
+    echo "Running EmperorPenguin Pass 2 ..."
+    if [ ! -f tmp/pass2 ]; then
+        echo "Pass 1 binary not found. Run './emperor_penguin -1' first." >&2
+        exit 1
+    fi
+    tmp/pass2 $OTHERS
+fi
+

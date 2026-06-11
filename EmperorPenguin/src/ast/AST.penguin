@@ -430,6 +430,7 @@ interface IStatement {
 
 class ExpressionStatement {
     expression: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<ExpressionStatement>(this);
@@ -440,6 +441,7 @@ class ExpressionStatement {
 
 class BlockExpressionStatement {
     expression: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<BlockExpressionStatement>(this);
@@ -452,6 +454,7 @@ class AssignmentStatement {
     target: mut Option<Expression> = new Option<Expression>.none();
     operator_value: mut AssignmentOperator = new AssignmentOperator.Assign();
     value: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<AssignmentStatement>(this);
@@ -464,6 +467,7 @@ class IfStatement {
     condition: mut Option<Expression> = new Option<Expression>.none();
     then_statement: mut Option<Statement> = new Option<Statement>.none();
     else_statement: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<IfStatement>(this);
@@ -479,6 +483,7 @@ class IfStatement {
 class WhileStatement {
     condition: mut Option<Expression> = new Option<Expression>.none();
     body: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<WhileStatement>(this);
@@ -493,6 +498,7 @@ class ForStatement {
     is_mutable: mut bool = false;
     iterable: mut Option<Expression> = new Option<Expression>.none();
     body: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<ForStatement>(this);
@@ -508,6 +514,7 @@ class ForStatement {
 
 class ReturnStatement {
     value: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<ReturnStatement>(this);
@@ -521,6 +528,7 @@ class ReturnStatement {
 
 class BreakStatement {
     value: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<BreakStatement>(this);
@@ -533,6 +541,7 @@ class BreakStatement {
 }
 
 class ContinueStatement {
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             return "continue;";
@@ -546,6 +555,7 @@ class LetDeclarationStatement {
     variable_type: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     initializer: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<LetDeclarationStatement>(this);
@@ -562,6 +572,7 @@ class LetDeclarationStatement {
 class EmitEventStatement {
     event_expr: mut Option<Expression> = new Option<Expression>.none();
     argument: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<EmitEventStatement>(this);
@@ -574,6 +585,7 @@ class EmitEventStatement {
 
 class YieldStatement {
     value: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<YieldStatement>(this);
@@ -587,6 +599,7 @@ class YieldStatement {
 
 class SignalStatement {
     expression: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             let self = cast<SignalStatement>(this);
@@ -808,6 +821,7 @@ class FunctionDefinition {
     is_not_async: mut bool = false;
     is_new: mut bool = false;
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<FunctionDefinition>(this);
@@ -846,6 +860,7 @@ class ClassDefinition {
 
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<ClassDefinition>(this);
@@ -876,6 +891,7 @@ class EnumDefinition {
 
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<EnumDefinition>(this);
@@ -906,6 +922,7 @@ class InterfaceDefinition {
 
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<InterfaceDefinition>(this);
@@ -1031,7 +1048,7 @@ class NamespaceDefinition {
         this.name = name;
     }
 
-
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<NamespaceDefinition>(this);
@@ -1049,6 +1066,7 @@ class NamespaceDefinition {
 
 class InitialRoutineDefinition {
     body: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<InitialRoutineDefinition>(this);
@@ -1124,7 +1142,7 @@ class ClassFieldDefinition {
         this.name = name;
     }
 
-
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<ClassFieldDefinition>(this);
@@ -1146,6 +1164,7 @@ class GlobalVariableDefinition {
         this.name = name;
     }
 
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             let self = cast<GlobalVariableDefinition>(this);

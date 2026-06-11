@@ -4,9 +4,9 @@ namespace EmperorPenguin.Tests;
 /// End-to-end tests for IValueType / IReferenceType / ICopy semantic rules.
 /// </summary>
 [Collection("EndToEnd")]
-public class ValueTypeSemanticTest
+public class EndToEndValueTypeTest
 {
-    private static readonly BatchResults batch = BatchCompiler.InitE2EBatch<ValueTypeSemanticTest>();
+    private static readonly BatchResults batch = BatchCompiler.InitE2EBatch<EndToEndValueTypeTest>();
 
     [BatchE2ETest("""
         class Point {
@@ -19,8 +19,7 @@ public class ValueTypeSemanticTest
         }
         initial {
             let p = new Point(3, 4);
-            let mut q: mut Point;
-            q = p;  // value types: imm→mut works (copy)
+            let q: mut Point = p;  // value types: imm→mut works (copy)
             println(cast<string>(q.x + q.y));
         }
         """,
@@ -38,8 +37,7 @@ public class ValueTypeSemanticTest
         }
         initial {
             let v = new Val("hello");
-            let mut w: mut Val;
-            w = v;  // IValueType → imm→mut works
+            let w: mut Val = v;  // IValueType → imm→mut works
             println(w.name);
         }
         """,
@@ -57,8 +55,7 @@ public class ValueTypeSemanticTest
         }
         initial {
             let a = new Ref(1);
-            let mut b: mut Ref;
-            b = a;
+            let b: mut Ref = a;
             println("error_expected");
         }
         """,

@@ -141,7 +141,7 @@ initial {
 }
 ", @"inst0=%t0:i64 = CONST 1
 inst1=%t1:i64 = CONST 2
-inst2=%t2:i64 = BINOP slt %t0, %t1
+inst2=%t2:bool = BINOP slt %t0, %t1
 inst3=RET %t2")]
     public void TestBinaryCompareLess() => _batch.Value.Assert();
 
@@ -163,7 +163,7 @@ initial {
 }
 ", @"inst0=%t0:i64 = CONST 1
 inst1=%t1:i64 = CONST 1
-inst2=%t2:i64 = BINOP eq %t0, %t1
+inst2=%t2:bool = BINOP eq %t0, %t1
 inst3=RET %t2")]
     public void TestBinaryCompareEqual() => _batch.Value.Assert();
 
@@ -284,7 +284,7 @@ initial {
 }
 ", @"inst0=%t0:i64 = ARG x 0
 inst1=%t2:i64 = CONST 0
-inst2=%t3:i64 = BINOP sgt %t0, %t2
+inst2=%t3:bool = BINOP sgt %t0, %t2
 inst3=BR_COND %t3, then1, else2
 inst4=then1:
 inst5=%t4:i64 = CONST 1
@@ -314,7 +314,7 @@ initial {
 }
 ", @"inst0=%t0:i64 = ARG x 0
 inst1=%t2:i64 = CONST 0
-inst2=%t3:i64 = BINOP sgt %t0, %t2
+inst2=%t3:bool = BINOP sgt %t0, %t2
 inst3=BR_COND %t3, then1, merge0
 inst4=then1:
 inst5=%t4:i64 = CONST 1
@@ -331,7 +331,7 @@ inst9=RET %t5")]
     [Fact]
     [BatchIRTest(@"
 initial {
-    let source = ""fun test() -> i64 { let mut sum: i64 = 0; let mut i: i64 = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
+    let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -348,7 +348,7 @@ initial {
 inst1=%i:i64 = CONST 0
 inst2=while0:
 inst3=%t0:i64 = CONST 3
-inst4=%t1:i64 = BINOP slt %i, %t0
+inst4=%t1:bool = BINOP slt %i, %t0
 inst5=BR_COND %t1, while_body1, while_exit2
 inst6=while_body1:
 inst7=%t2:i64 = BINOP add %sum, %i
@@ -415,7 +415,7 @@ inst2=RET_VOID")]
     [Fact]
     [BatchIRTest(@"
 initial {
-    let source = ""fun test() -> i64 { let mut x: i64 = 0; x = 42; return x; }"";
+    let source = ""fun test() -> i64 { let mut x = 0; x = 42; return x; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -464,7 +464,7 @@ initial {
     [Fact]
     [BatchIRTest(@"
 initial {
-    let source = ""fun test() -> i64 { let mut sum: i64 = 0; let mut i: i64 = 0; while (i < 10) { if (i == 5) { break; } sum = sum + i; i = i + 1; } return sum; }"";
+    let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 10) { if (i == 5) { break; } sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -481,11 +481,11 @@ initial {
 inst1=%i:i64 = CONST 0
 inst2=while0:
 inst3=%t0:i64 = CONST 10
-inst4=%t1:i64 = BINOP slt %i, %t0
+inst4=%t1:bool = BINOP slt %i, %t0
 inst5=BR_COND %t1, while_body1, while_exit2
 inst6=while_body1:
 inst7=%t3:i64 = CONST 5
-inst8=%t4:i64 = BINOP eq %i, %t3
+inst8=%t4:bool = BINOP eq %i, %t3
 inst9=BR_COND %t4, then4, merge3
 inst10=then4:
 inst11=BR while_exit2
@@ -503,7 +503,7 @@ inst20=RET %sum")]
     [Fact]
     [BatchIRTest(@"
 initial {
-    let source = ""fun test() -> i64 { let mut sum: i64 = 0; let mut i: i64 = 0; while (i < 10) { i = i + 1; if (i < 5) { continue; } sum = sum + i; } return sum; }"";
+    let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 10) { i = i + 1; if (i < 5) { continue; } sum = sum + i; } return sum; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -520,14 +520,14 @@ initial {
 inst1=%i:i64 = CONST 0
 inst2=while0:
 inst3=%t0:i64 = CONST 10
-inst4=%t1:i64 = BINOP slt %i, %t0
+inst4=%t1:bool = BINOP slt %i, %t0
 inst5=BR_COND %t1, while_body1, while_exit2
 inst6=while_body1:
 inst7=%t2:i64 = CONST 1
 inst8=%t3:i64 = BINOP add %i, %t2
 inst9=%i:i64 = ASSIGN %t3
 inst10=%t5:i64 = CONST 5
-inst11=%t6:i64 = BINOP slt %i, %t5
+inst11=%t6:bool = BINOP slt %i, %t5
 inst12=BR_COND %t6, then4, merge3
 inst13=then4:
 inst14=BR while0
@@ -662,7 +662,7 @@ initial {
     [Fact]
     [BatchIRTest(@"
 initial {
-    let source = ""fun test(n: i64) -> i64 { let mut result: i64 = 1; let mut i: i64 = 1; while (i <= n) { if (i % 2 == 0) { result = result * i; } else { result = result + i; } i = i + 1; } return result; }"";
+    let source = ""fun test(n: i64) -> i64 { let mut result = 1; let mut i = 1; while (i <= n) { if (i % 2 == 0) { result = result * i; } else { result = result + i; } i = i + 1; } return result; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -679,13 +679,13 @@ initial {
 inst1=%result:i64 = CONST 1
 inst2=%i:i64 = CONST 1
 inst3=while0:
-inst4=%t1:i64 = BINOP sle %i, %t0
+inst4=%t1:bool = BINOP sle %i, %t0
 inst5=BR_COND %t1, while_body1, while_exit2
 inst6=while_body1:
 inst7=%t3:i64 = CONST 2
 inst8=%t4:i64 = BINOP mod %i, %t3
 inst9=%t5:i64 = CONST 0
-inst10=%t6:i64 = BINOP eq %t4, %t5
+inst10=%t6:bool = BINOP eq %t4, %t5
 inst11=BR_COND %t6, then4, else5
 inst12=then4:
 inst13=%t7:i64 = BINOP mul %result, %i
@@ -959,7 +959,7 @@ inst2=RET_VOID")]
     [Fact]
     [BatchIRTest(@"
 	initial {
-	    let source = ""enum Option { some: i64; none; } fun test() { let mut x: Option = new Option.none(); x = new Option.some(5); }"";
+	    let source = ""enum Option { some: i64; none; } fun test() { let mut x = new Option.none(); x = new Option.some(5); }"";
 	    let mut compiler = new bound.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
 	    let generator = new ir.IRGenerator();
@@ -1171,7 +1171,7 @@ inst14=RET_VOID")]
 	", @"inst0=%t0:i64 = ARG n 0
 inst1=while0:
 inst2=%t1:i64 = CONST 0
-inst3=%t2:i64 = BINOP sgt %t0, %t1
+inst3=%t2:bool = BINOP sgt %t0, %t1
 inst4=BR_COND %t2, while_body1, while_exit2
 inst5=while_body1:
 inst6=%t3:i64 = CONST 1

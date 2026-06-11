@@ -18,20 +18,6 @@ class BoundScope {
         this.parent = parent;
     }
 
-    fun lookup_symbol(this, name: string) -> Option<BoundSymbol> {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.symbols.size())) {
-            if (this.symbols.at(cast<u64>(i)).some.get_name() == name) {
-                return new Option<BoundSymbol>.some(this.symbols.at(cast<u64>(i)).some);
-            }
-            i = i + 1;
-        }
-        if (this.parent.is_some()) {
-            return this.parent.some.lookup_symbol(name);
-        }
-        return new Option<BoundSymbol>.none();
-    }
-
     fun lookup_symbol_local(this, name: string) -> Option<BoundSymbol> {
         let i: mut i64 = 0;
         while (i < cast<i64>(this.symbols.size())) {
@@ -39,6 +25,27 @@ class BoundScope {
                 return new Option<BoundSymbol>.some(this.symbols.at(cast<u64>(i)).some);
             }
             i = i + 1;
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_symbol(this, name: string) -> Option<BoundSymbol> {
+        let local: Option<BoundSymbol> = this.lookup_symbol_local(name);
+        if (local.is_some()) {
+            return local;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_symbol(name);
+        }
+        // At global scope, also search child namespace scopes (for builtins etc.)
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.children.size())) {
+            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
+            let result: Option<BoundSymbol> = child.lookup_symbol_local(name);
+            if (result.is_some()) {
+                return result;
+            }
+            ci = ci + 1;
         }
         return new Option<BoundSymbol>.none();
     }

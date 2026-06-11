@@ -19,6 +19,10 @@ public static class IRSemanticEqual
         var normalizedExpected = NormalizeWhitespace(NormalizeTempVars(expected));
         var normalizedActual = NormalizeWhitespace(NormalizeTempVars(actual));
 
+        // Strip debug metadata (!dbg references on instructions/functions and metadata definitions)
+        normalizedExpected = StripDebugInfo(normalizedExpected);
+        normalizedActual = StripDebugInfo(normalizedActual);
+
         if (normalizedExpected != normalizedActual)
         {
             // Find first difference for better error message
@@ -44,6 +48,39 @@ public static class IRSemanticEqual
 
         // Use xUnit's Assert.Equal for the actual comparison so test runners show proper diff
         Xunit.Assert.Equal(normalizedExpected, normalizedActual);
+    }
+
+    /// <summary>
+    /// Strips LLVM debug info from IR text for comparison purposes.
+    /// Removes: !dbg references on instructions/functions, metadata definitions (!N = ...),
+    /// and module-level debug flags.
+    /// </summary>
+    private static string StripDebugInfo(string ir)
+    {
+        var lines = ir.Split('\n');
+        var result = new List<string>();
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            // Skip metadata definition lines (e.g., "!0 = !DIFile(...)" or "!llvm.dbg.cu = ...")
+            if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^!\d+\s*=") ||
+                trimmed.StartsWith("!llvm.dbg.cu") ||
+                trimmed.StartsWith("!llvm.module.flags"))
+            {
+                continue;
+            }
+
+            // Skip LLVM debug-record statements (#dbg_declare / #dbg_value)
+            if (trimmed.StartsWith("#dbg_declare") || trimmed.StartsWith("#dbg_value"))
+            {
+                continue;
+            }
+
+            // Remove !dbg !N (with optional preceding comma) from instructions and function definitions
+            var stripped = System.Text.RegularExpressions.Regex.Replace(trimmed, @",?\s*!dbg\s*!\d+", "");
+            result.Add(stripped);
+        }
+        return string.Join("\n", result);
     }
 
     /// <summary>

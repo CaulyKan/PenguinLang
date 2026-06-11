@@ -24,6 +24,7 @@ class IRGenerator {
     loop_stack: mut _utils.List<LoopLabels> = new _utils.List<LoopLabels>();
     source_file: mut string = "";
     current_module: mut IRModule = new IRModule(new ast.SourceLocation("", 0, 0));
+    verbose: mut i64 = 0;
 
     fun new(mut this) {}
 
@@ -62,11 +63,13 @@ class IRGenerator {
         let module: mut IRModule = new IRModule(unit.location);
         this.source_file = unit.location.filename;
         this.current_module = module;
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin IR] Generating IR for " + cast<string>(unit.definitions.size()) + " definitions..."); }
         let i: mut i64 = 0;
         while (i < cast<i64>(unit.definitions.size())) {
             this.lower_definition(unit.definitions.at(cast<u64>(i)).some, module);
             i = i + 1;
         }
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin IR] Generated " + cast<string>(module.functions.size()) + " functions"); }
         return module;
     }
 
@@ -106,6 +109,7 @@ class IRGenerator {
 
     fun lower_function_def(mut this, def: bound.BoundFunctionDefinition, module: mut IRModule) {
         if (def.is_generic_template) { return; }
+        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin IR]   Lowering function " + def.full_name); }
         let ret_type: string = this.bound_type_to_ir_type(def.return_type);
         let func_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
         this.builder = new IRBuilder(new IRFunction(def.full_name, ret_type, func_loc));
@@ -219,7 +223,7 @@ class IRGenerator {
     }
 
     fun lower_initial_routine(mut this, def: bound.BoundInitialRoutineDefinition, module: mut IRModule) {
-        let loc: ast.SourceLocation = this.make_loc(0, 0);
+        let loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
         this.builder = new IRBuilder(new IRFunction(def.full_name, "void", loc));
         this.builder.func.display_name = "initial";
         this.reset_locals();
@@ -463,6 +467,21 @@ class IRGenerator {
                             let base_id: bound.BoundIdentifierExpression = ma.base_expr.some.identifier;
                             if (base_id.symbol.is_some()) {
                                 if (base_id.symbol.some is bound.BoundSymbol.namespace_sym) {
+                                    is_namespace_call = true;
+                                }
+                                if (base_id.symbol.some is bound.BoundSymbol.type_sym) {
+                                    is_namespace_call = true;
+                                }
+                            }
+                        }
+                        // Also handle nested member access like project.PenguinProject.load
+                        if (ma.base_expr.some is bound.BoundExpression.member_access) {
+                            let inner_ma: bound.BoundMemberAccessExpression = ma.base_expr.some.member_access;
+                            if (inner_ma.member_symbol.is_some()) {
+                                if (inner_ma.member_symbol.some is bound.BoundSymbol.type_sym) {
+                                    is_namespace_call = true;
+                                }
+                                if (inner_ma.member_symbol.some is bound.BoundSymbol.namespace_sym) {
                                     is_namespace_call = true;
                                 }
                             }
@@ -969,7 +988,7 @@ class IRGenerator {
             }
         }
         if (stmt is bound.BoundStatement.return_stmt) {
-            let loc: ast.SourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = stmt.return_stmt.location;
             if (stmt.return_stmt.value.is_some()) {
                 let val: IRValue = this.lower_expression(stmt.return_stmt.value.some);
                 this.builder.emit_ret(val, loc);
@@ -1026,7 +1045,7 @@ class IRGenerator {
     fun lower_assignment(mut this, stmt: bound.BoundAssignmentStatement) {
         if (stmt.value.is_some()) {
             let val: IRValue = this.lower_expression(stmt.value.some);
-            let loc: ast.SourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = stmt.location;
 
             // Check if target is member access (p.x = value or a.some = value)
             if (stmt.target.is_some() && stmt.target.some is bound.BoundExpression.member_access) {
@@ -1128,7 +1147,7 @@ class IRGenerator {
     fun lower_break(mut this, stmt: bound.BoundBreakStatement) {
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
-            let loc: ast.SourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = stmt.location;
             this.builder.emit_br(labels.exit, loc);
         }
     }
@@ -1136,7 +1155,7 @@ class IRGenerator {
     fun lower_continue(mut this, stmt: bound.BoundContinueStatement) {
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
-            let loc: ast.SourceLocation = this.make_loc(0, 0);
+            let loc: ast.SourceLocation = stmt.location;
             this.builder.emit_br(labels.header, loc);
         }
     }
@@ -1203,6 +1222,8 @@ class IRGenerator {
         if (op is ast.BinaryOperator.BitwiseAnd) { return "and"; }
         if (op is ast.BinaryOperator.BitwiseOr) { return "or"; }
         if (op is ast.BinaryOperator.BitwiseXor) { return "xor"; }
+        if (op is ast.BinaryOperator.LogicalAnd) { return "and"; }
+        if (op is ast.BinaryOperator.LogicalOr) { return "or"; }
         // Is is handled separately in lower_binary via emit_isenum
         println("[IR Warning] Unhandled binary operator, using 'unknown'");
         return "unknown";

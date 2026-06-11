@@ -179,4 +179,36 @@ initial {
 }
 ", "has_errors=false")]
     public void ClassMethodWithReturnOkTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } else { return 30; } }"");
+    println(""has_errors="" + cast<string>(result.has_errors()));
+}
+", "has_errors=false")]
+    public void IfElseIfElseChainAlwaysReturnsTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } }"");
+    if (result.has_errors()) {
+        println(""has_error=true"");
+    }
+}
+", "has_error=true")]
+    public void IfElseIfWithoutElseMissingReturnTest() => _batch.Value.Assert();
+
+    [Fact]
+    [BatchBoundTest(@"
+initial {
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } else if (x == 3) { return 30; } else { return 40; } }"");
+    println(""has_errors="" + cast<string>(result.has_errors()));
+}
+", "has_errors=false")]
+    public void DeepIfElseIfElseChainAlwaysReturnsTest() => _batch.Value.Assert();
 }

@@ -11,9 +11,15 @@ class SourceLocation {
         this.col = col;
     }
 
+    fun copy(this) -> SourceLocation {
+        return new SourceLocation(this.filename, this.line, this.col);
+    }
+
     fun to_string(this) -> string {
         return this.filename + ":" + cast<string>(this.line) + ":" + cast<string>(this.col);
     }
 }
+
+impl __builtin.ICopy<ast.SourceLocation> for ast.SourceLocation;
 
 }

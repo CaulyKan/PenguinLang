@@ -131,7 +131,9 @@ class IRBuilder {
 
     // NEW instruction
     fun emit_new(mut this, type_name: string, args: mut _utils.List<IRValue>, loc: ast.SourceLocation) -> IRValue {
-        let result: IRValue = this.func.alloc_temp("ptr");
+        // Use <global>.type_name so consumers (e.g. emit_new_enum heap-copy check)
+        // can detect the actual class type of the result register.
+        let result: IRValue = this.func.alloc_temp("<global>." + type_name);
         this.func.add_inst(new IRInstruction.new_inst(new IRNew(type_name, args, result, loc)));
         return result;
     }

@@ -158,7 +158,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp slt i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryCompare() => _batch.Value.AssertSemantic();
 
@@ -278,7 +279,7 @@ merge0:
     [Fact]
     [BatchLLVMTest(@"
 initial {
-    let source = ""fun test() -> i64 { let mut sum: i64 = 0; let mut i: i64 = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
+    let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -418,8 +419,8 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 
 define %enum.Option @create() {
 entry:
-  %t0 = add i64 0, 42
   %tmp_0 = alloca %enum.Option
+  %t0 = add i64 0, 42
   %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 0
   store ptr @Option_metadata, ptr %tmp_1
   %tmp_2 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
@@ -468,8 +469,8 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 
 define i8 @is_some(%enum.Option %o) {
 entry:
-  %t1 = add i64 0, 0
   %tmp_0 = alloca %enum.Option
+  %t1 = add i64 0, 0
   store %enum.Option %o, ptr %tmp_0
   %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
   %tmp_2 = load i32, ptr %tmp_1
@@ -517,8 +518,8 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 
 define i64 @match_option(%enum.Option %o) {
 entry:
-  %t2 = add i64 0, 0
   %tmp_0 = alloca %enum.Option
+  %t2 = add i64 0, 0
   store %enum.Option %o, ptr %tmp_0
   %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
   %tmp_2 = load i32, ptr %tmp_1
@@ -656,7 +657,7 @@ entry:
     [Fact]
     [BatchLLVMTest(@"
 initial {
-    let source = ""fun test(n: i64) -> i64 { let mut sum: i64 = 0; let mut i: i64 = 0; while (i < n) { if (i > 0) { sum = sum + i; } i = i + 1; } return sum; }"";
+    let source = ""fun test(n: i64) -> i64 { let mut sum = 0; let mut i = 0; while (i < n) { if (i > 0) { sum = sum + i; } i = i + 1; } return sum; }"";
     let mut compiler = new bound.EmperorPenguinCompiler();
     let result = compiler.compile(source);
     let generator = new ir.IRGenerator();
@@ -770,7 +771,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp eq i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryEqual() => _batch.Value.AssertSemantic();
 
@@ -795,7 +797,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp ne i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryNotEqual() => _batch.Value.AssertSemantic();
 
@@ -820,7 +823,8 @@ entry:
   %t0 = add i64 0, 5
   %t1 = add i64 0, 3
   %t2 = icmp sgt i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryGreaterThan() => _batch.Value.AssertSemantic();
 
@@ -845,7 +849,8 @@ entry:
   %t0 = add i64 0, 3
   %t1 = add i64 0, 5
   %t2 = icmp sle i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryLessThanOrEqual() => _batch.Value.AssertSemantic();
 
@@ -870,7 +875,8 @@ entry:
   %t0 = add i64 0, 5
   %t1 = add i64 0, 3
   %t2 = icmp sge i64 %t0, %t1
-  ret i8 %t2
+  %t3 = zext i1 %t2 to i8
+  ret i8 %t3
 }")]
     public void TestLLVMBinaryGreaterThanOrEqual() => _batch.Value.AssertSemantic();
 
@@ -1075,6 +1081,7 @@ initial {
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
+declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)
 
 define void @Foo_new(ptr %this) {
 entry:
@@ -1084,12 +1091,14 @@ entry:
 define void @make_foo(ptr sret(%class.Foo) %_sret_result) {
 entry:
   %t0 = alloca %class.Foo
+  call void @llvm.memset.p0.i64(ptr %t0, i8 0, i64 16, i1 false)
   store ptr @Foo_metadata, ptr %t0
   call void @Foo_new(ptr %t0)
   %tmp_0 = load %class.Foo, ptr %t0
   store %class.Foo %tmp_0, ptr %_sret_result
   ret void
-}")]
+}")
+]
     public void TestLLVMClassReturn() => _batch.Value.AssertSemantic();
 
     #endregion
@@ -1114,6 +1123,35 @@ initial {
     {
         var result = _batch.Value.GetResult();
         System.IO.File.WriteAllText("/tmp/ep_enum_llvm_output.txt", result ?? "(null)");
+    }
+
+    #endregion
+
+    #region Debug Variables (DWARF)
+
+    [Fact]
+    [BatchLLVMTest(@"
+initial {
+    let source = ""fun compute(x: i64) -> i64 { let total: mut i64 = x; total = total + 1; return total; }"";
+    let mut compiler = new bound.EmperorPenguinCompiler();
+    let result = compiler.compile(source);
+    let generator = new ir.IRGenerator();
+    let module = generator.generate(result);
+    let emitter = new llvm.LLVMEmitter();
+    let llvm_ir: string = emitter.lower(module, result);
+    println(llvm_ir);
+}
+", @"ANY_OUTPUT")]
+    public void TestLLVMDebugVariables()
+    {
+        // Debug variable info must be present in the raw (un-stripped) LLVM IR:
+        // a local variable, a basic type, a dbg.declare (reassigned mutable local in an alloca),
+        // and a dbg.value (the i64 parameter).
+        var llvm = _batch.Value.GetResult() ?? "";
+        Xunit.Assert.Contains("DILocalVariable", llvm);
+        Xunit.Assert.Contains("DIBasicType", llvm);
+        Xunit.Assert.Contains("#dbg_declare", llvm);
+        Xunit.Assert.Contains("#dbg_value", llvm);
     }
 
     #endregion

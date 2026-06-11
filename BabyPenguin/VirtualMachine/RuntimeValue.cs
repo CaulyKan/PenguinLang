@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -31,6 +32,27 @@ namespace BabyPenguin.VirtualMachine
         }
     }
 
+    /// <summary>
+    /// Union-like storage for primitive value types. All numeric fields share the same 8 bytes,
+    /// reducing per-instance memory from ~80 bytes to ~32 bytes (header + TypeInfo ref + 8-byte union + string ref).
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 8)]
+    public struct BasicValueUnion
+    {
+        [FieldOffset(0)] public bool BoolValue;
+        [FieldOffset(0)] public byte U8Value;
+        [FieldOffset(0)] public sbyte I8Value;
+        [FieldOffset(0)] public char CharValue;
+        [FieldOffset(0)] public ushort U16Value;
+        [FieldOffset(0)] public short I16Value;
+        [FieldOffset(0)] public uint U32Value;
+        [FieldOffset(0)] public int I32Value;
+        [FieldOffset(0)] public float FloatValue;
+        [FieldOffset(0)] public ulong U64Value;
+        [FieldOffset(0)] public long I64Value;
+        [FieldOffset(0)] public double DoubleValue;
+    }
+
     public class BasicRuntimeValue : IRuntimeValue
     {
         public BasicRuntimeValue(IType typeInfo)
@@ -40,19 +62,28 @@ namespace BabyPenguin.VirtualMachine
 
         public IType TypeInfo { get; }
 
-        public bool BoolValue;
-        public byte U8Value;
-        public ushort U16Value;
-        public uint U32Value;
-        public ulong U64Value;
-        public sbyte I8Value;
-        public short I16Value;
-        public int I32Value;
-        public long I64Value;
-        public float FloatValue;
-        public double DoubleValue;
-        public string StringValue = "";
-        public char CharValue;
+        private BasicValueUnion _data;
+        private string _stringValue = "";
+
+        // Typed field accessors — backed by the union for numeric types, separate field for string
+        public bool BoolValue { get => _data.BoolValue; set => _data.BoolValue = value; }
+        public byte U8Value { get => _data.U8Value; set => _data.U8Value = value; }
+        public ushort U16Value { get => _data.U16Value; set => _data.U16Value = value; }
+        public uint U32Value { get => _data.U32Value; set => _data.U32Value = value; }
+        public ulong U64Value { get => _data.U64Value; set => _data.U64Value = value; }
+        public sbyte I8Value { get => _data.I8Value; set => _data.I8Value = value; }
+        public short I16Value { get => _data.I16Value; set => _data.I16Value = value; }
+        public int I32Value { get => _data.I32Value; set => _data.I32Value = value; }
+        public long I64Value { get => _data.I64Value; set => _data.I64Value = value; }
+        public float FloatValue { get => _data.FloatValue; set => _data.FloatValue = value; }
+        public double DoubleValue { get => _data.DoubleValue; set => _data.DoubleValue = value; }
+        public string StringValue { get => _stringValue; set => _stringValue = value ?? ""; }
+        public char CharValue { get => _data.CharValue; set => _data.CharValue = value; }
+
+        /// <summary>
+        /// Provides a ref to the I64Value field for Interlocked atomic operations.
+        /// </summary>
+        public ref long I64ValueRef => ref _data.I64Value;
 
         /// <summary>
         /// Typed value getter/setter — returns object? to avoid dynamic/CallSite allocations.
@@ -108,19 +139,8 @@ namespace BabyPenguin.VirtualMachine
 
         public void AssignFrom(BasicRuntimeValue otherVar)
         {
-            BoolValue = otherVar.BoolValue;
-            U8Value = otherVar.U8Value;
-            U16Value = otherVar.U16Value;
-            U32Value = otherVar.U32Value;
-            U64Value = otherVar.U64Value;
-            I8Value = otherVar.I8Value;
-            I16Value = otherVar.I16Value;
-            I32Value = otherVar.I32Value;
-            I64Value = otherVar.I64Value;
-            FloatValue = otherVar.FloatValue;
-            DoubleValue = otherVar.DoubleValue;
-            StringValue = otherVar.StringValue;
-            CharValue = otherVar.CharValue;
+            _data = otherVar._data;
+            _stringValue = otherVar._stringValue;
         }
 
         public IRuntimeValue Clone() => Clone([]);
@@ -223,22 +243,40 @@ namespace BabyPenguin.VirtualMachine
 
     public class ReferenceRuntimeValue : IRuntimeValue
     {
-        private readonly RuntimeGlobal? _global;
+        private RuntimeGlobal? _global;
 
         public ReferenceRuntimeValue(IType typeInfo, Dictionary<string, IRuntimeValue> fields, RuntimeGlobal? global = null)
         {
             _global = global;
             RefId = global?.NextRefId() ?? (ulong)Random.Shared.NextInt64();
-            _global?.AllObjects.TryAdd(RefId, this);
-            TypeInfo = typeInfo;
+            if (_global != null)
+                _global.AllObjects[RefId] = this;
+            _typeInfo = typeInfo;
             Fields = fields;
         }
 
-        public IType TypeInfo { get; }
+        /// <summary>
+        /// Reuse this object from the pool with a new type and fields.
+        /// Assigns a new RefId and re-registers in AllObjects.
+        /// </summary>
+        public void Reuse(IType typeInfo, Dictionary<string, IRuntimeValue> fields)
+        {
+            RefId = _global?.NextRefId() ?? (ulong)Random.Shared.NextInt64();
+            if (_global != null)
+                _global.AllObjects[RefId] = this;
+            _typeInfo = typeInfo;
+            Fields.Clear();
+            foreach (var kvp in fields)
+                Fields[kvp.Key] = kvp.Value;
+            ExternImplenmentationValue = null;
+        }
+
+        private IType _typeInfo;
+        public IType TypeInfo => _typeInfo;
 
         public Dictionary<string, IRuntimeValue> Fields { get; } = [];
 
-        public ulong RefId { get; }
+        public ulong RefId { get; private set; }
 
         public object? ExternImplenmentationValue
         {

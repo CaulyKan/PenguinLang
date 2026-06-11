@@ -97,6 +97,23 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
+        /// <summary>
+        /// Returns all IRuntimeValue references held by this frame (registers, arguments, pending results).
+        /// Used by the mark-sweep GC to find root references.
+        /// </summary>
+        public IEnumerable<IRuntimeValue> GetAllValues()
+        {
+            foreach (var reg in _registers)
+                if (reg != null)
+                    yield return reg;
+            foreach (var arg in _arguments)
+                yield return arg;
+            if (_pendingCallResult != null)
+                yield return _pendingCallResult;
+            if (_returnValue != null)
+                yield return _returnValue;
+        }
+
         public IEnumerable<Or<RuntimeBreak, RuntimeFrameResult>> Run()
         {
             // Resume child frame if present (for async/coroutine support)
@@ -133,8 +150,23 @@ namespace BabyPenguin.VirtualMachine
             }
 
             RuntimeFrameResult? result = null;
+            int gcCounter = 0;
             while (_ip < _function.Instructions.Count && !_hasReturned)
             {
+                // Periodic GC check — runs in every frame so GC actually triggers
+                // during deep call stacks. CollectGarbage walks ParentFrame chain
+                // to find all roots, so it's safe from any frame.
+                if (Global.GCEnabled)
+                {
+                    gcCounter++;
+                    if (gcCounter >= Global.GCCheckInterval)
+                    {
+                        gcCounter = 0;
+                        if (Global.AllObjects.Count > Global.GCThreshold)
+                            Global.CollectGarbage(this);
+                    }
+                }
+
                 // DAP step mode support
                 if (_ip > 0 && (Global.StepMode == RuntimeGlobal.StepModeEnum.StepIn || Global.StepMode == RuntimeGlobal.StepModeEnum.StepOver))
                 {
@@ -631,6 +663,317 @@ namespace BabyPenguin.VirtualMachine
             }
         }
 
+        /// <summary>
+        /// Fast-path execution: directly returns the result without using yield/iterator.
+        /// Avoids the massive overhead of iterator state machines for normal (non-debug, non-coroutine) execution.
+        /// Throws ProgramExitException on __builtin.exit() instead of yielding.
+        /// </summary>
+        public IRuntimeValue? RunDirect()
+        {
+            while (_ip < _function.Instructions.Count && !_hasReturned)
+            {
+                // Periodic GC check using global counter (works across recursive calls)
+                if (Global.GCEnabled)
+                {
+                    Global.GlobalInstructionCount++;
+                    if (Global.GlobalInstructionCount % Global.GCCheckInterval == 0)
+                    {
+                        if (Global.AllObjects.Count > Global.GCThreshold)
+                            Global.CollectGarbage(this);
+                    }
+                }
+
+                var inst = _function.Instructions[_ip];
+
+                switch (inst)
+                {
+                    case IRConstInst ci:
+                        {
+                            var val = MakeValue(ci.Value, ci.Result.GetIrType());
+                            Store(ci.Result, val);
+                        }
+                        break;
+
+                    case IRArgInst ai:
+                        {
+                            if (ai.ParamIndex < _arguments.Count)
+                                Store(ai.Result, MaybeCopy(_arguments[ai.ParamIndex], ai.IrType));
+                        }
+                        break;
+
+                    case IRAssignInst ai:
+                        {
+                            var src = Resolve(ai.Src);
+                            Store(ai.Dest, MaybeCopy(src, ai.Dest.GetIrType()));
+                        }
+                        break;
+
+                    case IRCastInst ci:
+                        {
+                            var operand = Resolve(ci.Operand);
+                            var castResult = CastValue(operand, ci.FromType, ci.ToType);
+                            Store(ci.Result, castResult);
+                        }
+                        break;
+
+                    case IRBinOpInst bi:
+                        {
+                            var left = Resolve(bi.Left);
+                            var right = Resolve(bi.Right);
+                            var binResult = EvalBinOp(bi.Op, left, right, bi.IrType);
+                            Store(bi.Result, binResult);
+                        }
+                        break;
+
+                    case IRUnaryOpInst ui:
+                        {
+                            var operand = Resolve(ui.Operand);
+                            var unaryResult = EvalUnaryOp(ui.Op, operand, ui.IrType);
+                            Store(ui.Result, unaryResult);
+                        }
+                        break;
+
+                    case IRRdmbrInst ri:
+                        {
+                            var obj = Resolve(ri.Obj);
+                            var fieldVal = ReadField(obj, ri.FieldName);
+                            if (fieldVal is FunctionRuntimeValue frv && frv.Owner is NotInitializedRuntimeValue)
+                                frv.Owner = obj;
+                            Store(ri.Result, MaybeCopy(fieldVal, ri.IrType));
+                        }
+                        break;
+
+                    case IRWrmbrInst wi:
+                        {
+                            var obj = Resolve(wi.Obj);
+                            var value = Resolve(wi.Value);
+                            WriteField(obj, wi.FieldName, value);
+                        }
+                        break;
+
+                    case IRBrInst bi:
+                        {
+                            _ip = _labelMap[bi.Target.Name];
+                            continue;
+                        }
+
+                    case IRBrCondInst bi:
+                        {
+                            var cond = Resolve(bi.Cond);
+                            var condBool = ToBool(cond);
+                            if (condBool)
+                            {
+                                _ip = _labelMap[bi.TrueLabel.Name];
+                                continue;
+                            }
+                            else
+                            {
+                                _ip = _labelMap[bi.FalseLabel.Name];
+                                continue;
+                            }
+                        }
+
+                    case IRRetInst ri:
+                        {
+                            _returnValue = Resolve(ri.Value);
+                            _hasReturned = true;
+                            return _returnValue;
+                        }
+
+                    case IRRetVoidInst:
+                        {
+                            _hasReturned = true;
+                            return null;
+                        }
+
+                    case IRCallInst ci:
+                        {
+                            var args = ci.Args.Select(Resolve).ToList();
+
+                            // Try extern function first
+                            var extResult = TryCallExternFunction(ci.FuncName, args, ci.RetType);
+                            if (extResult != null)
+                            {
+                                if (extResult.Value.Exited)
+                                    throw new ProgramExitException();
+                                Store(ci.ResultValue, extResult.Value.Value);
+                                if (extResult.Value.Value != null)
+                                    LastReturnVar = new SimpleRuntimeSymbol(extResult.Value.Value, Model);
+                            }
+                            else
+                            {
+                                // Module function - call directly (no yield)
+                                var callee = Global.IRModule?.FindFunction(ci.FuncName)
+                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                var calleeCC = FindCodeContainer(ci.FuncName);
+                                var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
+                                var retVal = childFrame.RunDirect();
+                                if (retVal != null)
+                                {
+                                    Store(ci.ResultValue, retVal);
+                                    LastReturnVar = new SimpleRuntimeSymbol(retVal, Model);
+                                }
+                            }
+                        }
+                        break;
+
+                    case IRCallVoidInst ci:
+                        {
+                            var args = ci.Args.Select(Resolve).ToList();
+
+                            var (found, exited) = TryCallExternFunctionVoid(ci.FuncName, args);
+                            if (exited)
+                                throw new ProgramExitException();
+                            if (!found)
+                            {
+                                var callee = Global.IRModule?.FindFunction(ci.FuncName)
+                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                var calleeCC = FindCodeContainer(ci.FuncName);
+                                var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
+                                childFrame.RunDirect();
+                            }
+                        }
+                        break;
+
+                    case IRNewInst ni:
+                        {
+                            var args = ni.Args.Select(Resolve).ToList();
+                            var typeNode = Model.ResolveTypeNode(ni.TypeName);
+                            var typeInfo = typeNode?.ToType(Mutability.Mutable)
+                                ?? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+
+                            IRuntimeValue newObj;
+                            if (typeNode is IEnumNode)
+                                newObj = CreateDefaultEnum(typeInfo);
+                            else
+                                newObj = CreateNewObject(typeInfo, args);
+                            Store(ni.Result, newObj);
+                        }
+                        break;
+
+                    case IRNewEnumInst nei:
+                        {
+                            var typeNode = Model.ResolveTypeNode(nei.TypeName);
+                            var typeInfo = typeNode?.ToType(Mutability.Mutable)
+                                ?? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+                            var payload = nei.Payload != null ? Resolve(nei.Payload) : null;
+                            var enumVal = CreateEnumValue(typeInfo, nei.VariantIdx, payload);
+                            Store(nei.Result, enumVal);
+                        }
+                        break;
+
+                    case IRIsEnumInst isi:
+                        {
+                            var enumVal = Resolve(isi.EnumValue);
+                            var variantIdx = Resolve(isi.VariantIdx);
+                            bool matches = CheckEnumVariant(enumVal, variantIdx);
+                            Store(isi.Result, new BasicRuntimeValue(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable)) { BoolValue = matches });
+                        }
+                        break;
+
+                    case IRRdenumInst ri:
+                        {
+                            var enumVal = Resolve(ri.EnumValue);
+                            var payload = ExtractEnumPayload(enumVal);
+                            Store(ri.Result, payload);
+                        }
+                        break;
+
+                    case IRGlobalLoadInst gi:
+                        {
+                            if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
+                                Store(gi.Result, MaybeCopy(globalSym.Value, gi.IrType));
+                            else
+                                Store(gi.Result, new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)));
+                        }
+                        break;
+
+                    case IRGlobalStoreInst gi:
+                        {
+                            var val = Resolve(gi.Value);
+                            if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
+                                globalSym.AssignFrom(val);
+                            else
+                                Global.GlobalVariables[gi.GlobalName] = new SimpleRuntimeSymbol(val, Model);
+                        }
+                        break;
+
+                    case IRLabelInst:
+                        break;
+
+                    case IRCallFuncPtrInst ci:
+                        {
+                            var funcPtrVal = Resolve(ci.FuncPtr);
+                            var callArgs = ci.Args.Select(Resolve).ToList();
+                            if (funcPtrVal is FunctionRuntimeValue frv)
+                            {
+                                var funcName = SanitizeName(frv.FunctionSymbol.FullName());
+                                var fullArgs = callArgs;
+                                if (frv.Owner is not NotInitializedRuntimeValue && !frv.IsStatic)
+                                    fullArgs = [frv.Owner, .. callArgs];
+                                var extResult = TryCallExternFunction(funcName, fullArgs, ci.RetType);
+                                if (extResult != null)
+                                {
+                                    Store(ci.ResultValue, extResult.Value.Value);
+                                    if (extResult.Value.Exited)
+                                        throw new ProgramExitException();
+                                    if (extResult.Value.Value != null)
+                                        LastReturnVar = new SimpleRuntimeSymbol(extResult.Value.Value, Model);
+                                    break;
+                                }
+                                var calleeCC = FindCodeContainer(funcName);
+                                if (calleeCC != null)
+                                {
+                                    var childFrame = new RuntimeFrame(calleeCC, Global, fullArgs, this);
+                                    var retVal = childFrame.RunDirect();
+                                    if (retVal != null)
+                                    {
+                                        Store(ci.ResultValue, retVal);
+                                        LastReturnVar = new SimpleRuntimeSymbol(retVal, Model);
+                                    }
+                                }
+                            }
+                        }
+                        break;
+
+                    case IRCallFuncPtrVoidInst ci:
+                        {
+                            var funcPtrVal = Resolve(ci.FuncPtr);
+                            var callArgs = ci.Args.Select(Resolve).ToList();
+                            if (funcPtrVal is FunctionRuntimeValue frv)
+                            {
+                                var funcName = SanitizeName(frv.FunctionSymbol.FullName());
+                                var fullArgs = callArgs;
+                                if (frv.Owner is not NotInitializedRuntimeValue && !frv.IsStatic)
+                                    fullArgs = [frv.Owner, .. callArgs];
+                                var (found, exited) = TryCallExternFunctionVoid(funcName, fullArgs);
+                                if (exited)
+                                    throw new ProgramExitException();
+                                if (found)
+                                    break;
+                                var calleeCC = FindCodeContainer(funcName);
+                                if (calleeCC != null)
+                                {
+                                    var childFrame = new RuntimeFrame(calleeCC, Global, fullArgs, this);
+                                    childFrame.RunDirect();
+                                }
+                            }
+                        }
+                        break;
+
+                    case IRIsInstanceInst:
+                    case IRBoxInst:
+                    case IRUnboxInst:
+                    case IRCallVirtInst:
+                        throw new NotImplementedException($"Instruction {inst.GetType().Name} not yet implemented");
+                }
+
+                _ip++;
+            }
+
+            return _returnValue;
+        }
+
         // === Resolve / Store ===
 
         private IRuntimeValue Resolve(IRValue val)
@@ -896,22 +1239,22 @@ namespace BabyPenguin.VirtualMachine
             var lt = lbv.TypeInfo.Type;
             switch (op)
             {
-                case "add":   BinOpAdd(result, lt, lbv, rbv); break;
-                case "sub":   BinOpSub(result, lt, lbv, rbv); break;
-                case "mul":   BinOpMul(result, lt, lbv, rbv); break;
-                case "div":   BinOpDiv(result, lt, lbv, rbv); break;
-                case "mod":   BinOpMod(result, lt, lbv, rbv); break;
-                case "band":  BinOpBand(result, lt, lbv, rbv); break;
-                case "bor":   BinOpBor(result, lt, lbv, rbv); break;
-                case "bxor":  BinOpBxor(result, lt, lbv, rbv); break;
-                case "eq":    BinCmpEq(result, lt, lbv, rbv); break;
-                case "ne":    BinCmpNe(result, lt, lbv, rbv); break;
-                case "lt":    BinCmpLt(result, lt, lbv, rbv); break;
-                case "gt":    BinCmpGt(result, lt, lbv, rbv); break;
-                case "le":    BinCmpLe(result, lt, lbv, rbv); break;
-                case "ge":    BinCmpGe(result, lt, lbv, rbv); break;
-                case "land":  result.BoolValue = ToBoolFromAny(lbv) && ToBoolFromAny(rbv); break;
-                case "lor":   result.BoolValue = ToBoolFromAny(lbv) || ToBoolFromAny(rbv); break;
+                case "add": BinOpAdd(result, lt, lbv, rbv); break;
+                case "sub": BinOpSub(result, lt, lbv, rbv); break;
+                case "mul": BinOpMul(result, lt, lbv, rbv); break;
+                case "div": BinOpDiv(result, lt, lbv, rbv); break;
+                case "mod": BinOpMod(result, lt, lbv, rbv); break;
+                case "band": BinOpBand(result, lt, lbv, rbv); break;
+                case "bor": BinOpBor(result, lt, lbv, rbv); break;
+                case "bxor": BinOpBxor(result, lt, lbv, rbv); break;
+                case "eq": BinCmpEq(result, lt, lbv, rbv); break;
+                case "ne": BinCmpNe(result, lt, lbv, rbv); break;
+                case "lt": BinCmpLt(result, lt, lbv, rbv); break;
+                case "gt": BinCmpGt(result, lt, lbv, rbv); break;
+                case "le": BinCmpLe(result, lt, lbv, rbv); break;
+                case "ge": BinCmpGe(result, lt, lbv, rbv); break;
+                case "land": result.BoolValue = ToBoolFromAny(lbv) && ToBoolFromAny(rbv); break;
+                case "lor": result.BoolValue = ToBoolFromAny(lbv) || ToBoolFromAny(rbv); break;
                 default: throw new BabyPenguinRuntimeException($"Unknown binary op: {op}");
             }
             return result;
@@ -1475,20 +1818,19 @@ namespace BabyPenguin.VirtualMachine
                         fields[field.Name] = new NotInitializedRuntimeValue(fieldType);
                 }
 
-                // Add method references for virtual dispatch
-                foreach (var method in cls.Symbols.Where(s => s.IsFunction && !s.IsVariable && !s.IsStatic))
-                {
-                    // Find the actual function symbol by resolving the full method name
-                    var methodSym = Model.ResolveSymbol(method.FullName());
-                    if (methodSym != null)
-                    {
-                        try
-                        {
-                            fields[method.Name] = new FunctionRuntimeValue(method.TypeInfo, methodSym);
-                        }
-                        catch { /* skip methods that can't be resolved */ }
-                    }
-                }
+                // NOTE: Method references are NOT pre-populated here.
+                // They are resolved on-demand via TryResolveMethod(), which creates
+                // FunctionRuntimeValue with the correct Owner set. This saves significant
+                // memory since each class instance would otherwise hold N method references
+                // that are rarely all used.
+            }
+
+            // Try to reuse a pooled object instead of allocating a new one
+            var pooled = Global.TryTakeFromPool();
+            if (pooled != null)
+            {
+                pooled.Reuse(type, fields);
+                return pooled;
             }
             return new ReferenceRuntimeValue(type, fields, Global);
         }
@@ -1502,7 +1844,7 @@ namespace BabyPenguin.VirtualMachine
         {
             if (type.TypeNode is IEnumNode)
             {
-                var fieldsRef = new ReferenceRuntimeValue(type, [], Global);
+                var fieldsRef = CreatePooledRef(type);
                 fieldsRef.Fields["_value"] = new BasicRuntimeValue(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable));
                 return new EnumRuntimeValue(type, fieldsRef, null);
             }
@@ -1511,9 +1853,23 @@ namespace BabyPenguin.VirtualMachine
 
         private IRuntimeValue CreateEnumValue(IType type, int variantIdx, IRuntimeValue? payload)
         {
-            var fieldsRef = new ReferenceRuntimeValue(type, [], Global);
+            var fieldsRef = CreatePooledRef(type);
             fieldsRef.Fields["_value"] = new BasicRuntimeValue(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable)) { I32Value = variantIdx };
             return new EnumRuntimeValue(type, fieldsRef, payload);
+        }
+
+        /// <summary>
+        /// Create a ReferenceRuntimeValue using the object pool if available.
+        /// </summary>
+        private ReferenceRuntimeValue CreatePooledRef(IType type)
+        {
+            var pooled = Global.TryTakeFromPool();
+            if (pooled != null)
+            {
+                pooled.Reuse(type, []);
+                return pooled;
+            }
+            return new ReferenceRuntimeValue(type, [], Global);
         }
 
         private bool CheckEnumVariant(IRuntimeValue enumVal, IRuntimeValue variantIdx)

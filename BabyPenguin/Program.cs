@@ -25,7 +25,11 @@ namespace BabyPenguin
     {
         public static int Main(string[] args)
         {
-            return Parser.Default.ParseArguments<Options>(args).MapResult(
+            // Split args at "--" separator: only parse BabyPenguin options from before "--"
+            int separatorIndex = Array.IndexOf(args, "--");
+            string[] parserArgs = separatorIndex >= 0 ? args.Take(separatorIndex).ToArray() : args;
+
+            return Parser.Default.ParseArguments<Options>(parserArgs).MapResult(
                 (options) => Run(options, args),
                 _ => -1
             );
@@ -97,6 +101,10 @@ namespace BabyPenguin
                 vm.Global.CommandLineArgs = args.Skip(filesBeforeSeparator.Count).ToArray();
             }
             vm.Global.EnableDebugPrint = !options.Quiet;
+            vm.Global.GCEnabled = true;
+            vm.Global.GCThreshold = 800_000; // 800K threshold — keep memory tight
+            vm.Global.GCCheckInterval = 5_000; // Check every 5K instructions (global counter)
+            vm.Global.GCStatsFile = "/tmp/babypenguin_gc_stats.log";
 
             if (!options.CompileOnly)
             {
