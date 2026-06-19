@@ -37,16 +37,20 @@ class IRGenerator {
         if (sym.is_some()) {
             let s: bound.BoundSymbol = sym.some;
             if (s is bound.BoundSymbol.variable) {
-                return this.make_loc(s.variable.location.line, s.variable.location.col);
+                let l: ast.SourceLocation = s.variable.location;
+                return new ast.SourceLocation(l.filename, l.line, l.col);
             }
             if (s is bound.BoundSymbol.function_sym) {
-                return this.make_loc(s.function_sym.location.line, s.function_sym.location.col);
+                let l: ast.SourceLocation = s.function_sym.location;
+                return new ast.SourceLocation(l.filename, l.line, l.col);
             }
             if (s is bound.BoundSymbol.type_sym) {
-                return this.make_loc(s.type_sym.location.line, s.type_sym.location.col);
+                let l: ast.SourceLocation = s.type_sym.location;
+                return new ast.SourceLocation(l.filename, l.line, l.col);
             }
             if (s is bound.BoundSymbol.enum_member) {
-                return this.make_loc(s.enum_member.location.line, s.enum_member.location.col);
+                let l: ast.SourceLocation = s.enum_member.location;
+                return new ast.SourceLocation(l.filename, l.line, l.col);
             }
         }
         return this.make_loc(0, 0);
@@ -54,7 +58,8 @@ class IRGenerator {
 
     fun sym_loc_func(this, sym: Option<bound.BoundFunctionSymbol>) -> ast.SourceLocation {
         if (sym.is_some()) {
-            return this.make_loc(sym.some.location.line, sym.some.location.col);
+            let l: ast.SourceLocation = sym.some.location;
+            return new ast.SourceLocation(l.filename, l.line, l.col);
         }
         return this.make_loc(0, 0);
     }
@@ -116,6 +121,7 @@ class IRGenerator {
         this.builder.func.display_name = def.name;
         this.builder.func.is_extern = def.is_extern;
         this.reset_locals();
+        let this_reg: mut Option<IRValue> = new Option<IRValue>.none();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(def.parameters.size())) {
             let p: bound.BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
@@ -126,8 +132,39 @@ class IRGenerator {
             this.set_symbol_reg_by_name(param_full_name, arg_reg);
             if (p.name == "this") {
                 this.set_symbol_reg_by_name("_this", arg_reg);
+                this_reg = new Option<IRValue>.some(arg_reg);
             }
             pi = pi + 1;
+        }
+        // Constructors: emit field default initializers (`this.field = <init>`)
+        // before the user body. The initializers were bound in the constructor
+        // scope during pass_bind_expressions and stored on each bound field.
+        if (def.is_new) {
+            if (this_reg.is_some()) {
+                let this_val: IRValue = this_reg.some;
+                if (cast<i64>(def.parameters.size()) > 0) {
+                    let this_param: bound.BoundFunctionParameter = def.parameters.at(cast<u64>(0)).some;
+                    if (this_param.bound_type.type_definition.is_some()) {
+                        let cls_def: bound.BoundDefinition = this_param.bound_type.type_definition.some;
+                        if (cls_def is bound.BoundDefinition.class_def) {
+                            let cls: bound.BoundClassDefinition = cls_def.class_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(cls.fields.size())) {
+                                let field_def: bound.BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                                if (field_def is bound.BoundDefinition.class_field) {
+                                    let field: bound.BoundClassFieldDefinition = field_def.class_field;
+                                    if (field.initializer.is_some()) {
+                                        let field_loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
+                                        let init_val: IRValue = this.lower_expression(field.initializer.some);
+                                        this.builder.emit_wrmbr(this_val, field.name, init_val, field_loc);
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (def.body.is_some()) {
             let _: IRValue = this.lower_expression(def.body.some);
@@ -879,7 +916,15 @@ class IRGenerator {
             if (expr.member_symbol.is_some()) {
                 let sym: bound.BoundSymbol = expr.member_symbol.some;
                 if (sym is bound.BoundSymbol.enum_member) {
-                    let payload_type: string = this.bound_type_to_ir_type(sym.enum_member.member_type);
+                    // Use the (already generic-substituted) bound type of the expression,
+                    // not the enum member symbol's member_type — the symbol keeps the
+                    // unsubstituted type parameter T, so using it directly would emit a
+                    // rdenum whose result is typed `ref<T>`, and any chained member access
+                    // on the extracted payload (e.g. `opt.some.field`) could no longer
+                    // resolve the concrete class layout. The binder substitutes T at
+                    // bind time (SemanticModel bind_member_access), storing the result
+                    // in expr.bound_type.
+                    let payload_type: string = this.bound_type_to_ir_type(expr.bound_type);
                     return this.builder.emit_rdenum(obj, expr.member_name, payload_type, loc);
                 }
             }

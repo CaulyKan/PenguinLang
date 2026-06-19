@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS = -I../include
+CFLAGS = -I../include -g
 AR = ar
 
 SRC = core_builtin.c gc.c penguinlang_interop.c

@@ -8,12 +8,12 @@
             "name": "(gdb) pass2",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/tmp/test",
+            "program": "${workspaceFolder}/tmp/pass2",
             "args": [
                 "-vv",
                 "${workspaceFolder}/Examples/hello_llvm.penguin"
             ],
-            "stopAtEntry": true,
+            "stopAtEntry": false,
             "cwd": "${workspaceFolder}/",
             "environment": [],
             "externalConsole": false,
@@ -28,6 +28,9 @@
                     "description": "将反汇编风格设置为 Intel",
                     "text": "-gdb-set disassembly-flavor intel",
                     "ignoreFailures": true
+                },
+                {
+                    "text": "b _initial_"
                 }
             ]
         },

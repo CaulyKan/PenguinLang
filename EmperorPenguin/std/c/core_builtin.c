@@ -83,6 +83,19 @@ char* _emperor_string_concat(const char* a, const char* b) {
     return result;
 }
 
+/* Content-based string equality. PenguinLang `==`/`!=` on strings must compare
+ * the character contents, not the char* pointers — every string literal is a
+ * distinct global and every substring/concat is a fresh GC allocation, so a
+ * pointer comparison (`icmp eq ptr`) is almost always false even for equal
+ * text (e.g. the lexer's `substring(source,pos,len) == "namespace"` keyword
+ * check, which otherwise never matches and leaves every keyword token as an
+ * Identifier). Returns 1 if the contents are equal, 0 otherwise. */
+int _emperor_string_equal(const char* a, const char* b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    return strcmp(a, b) == 0 ? 1 : 0;
+}
+
 char* _emperor_bool_to_string(char value) {
     char* result = (char*)_emperor_gc_alloc(6, 1);
     if (result) {
@@ -171,10 +184,20 @@ long long _emperor_string_to_int(const char* s) {
 static int g_argc = 0;
 static char** g_argv = NULL;
 
-/* Called from main() to store argc/argv */
+/* Called from main() to store argc/argv.
+ * Skips argv[0] (the program name) so that __builtin.args() returns only the
+ * user-supplied arguments — matching the BabyPenguin VM, where CommandLineArgs
+ * is set to the tokens after the "--" separator (Program.cs) and never includes
+ * a program name. Without this, a native EmperorPenguin binary would treat its
+ * own path (argv[0]) as the first source file and try to compile itself. */
 void _emperor_args_init(int argc, char** argv) {
-    g_argc = argc;
-    g_argv = argv;
+    if (argc > 0 && argv != NULL) {
+        g_argc = argc - 1;
+        g_argv = argv + 1;
+    } else {
+        g_argc = 0;
+        g_argv = NULL;
+    }
 }
 
 long long _emperor_args_count(void) {
@@ -410,21 +433,30 @@ char* _emperor_dir_get_entries(const char* path) {
 
 /* --- StringBuilder --- */
 
+/* Layout must match EmperorPenguin's StringBuilder class: a metadata ptr at
+ * offset 0 (every EmperorPenguin object has one), then data/len/cap. The
+ * PenguinLang class declares `data: string; len: i32; cap: i32;` so the
+ * emitter lays out [metadata, data, len, cap] identically. */
 typedef struct StringBuilder {
+    void* metadata;
     char* data;
     int len;
     int cap;
 } StringBuilder;
 
-void* _emperor_stringbuilder_new(void) {
-    StringBuilder* sb = (StringBuilder*)_emperor_gc_alloc(sizeof(StringBuilder), 0);
-    if (sb) {
-        sb->cap = 256;
-        sb->data = (char*)_emperor_gc_alloc(sb->cap, 1);
-        sb->len = 0;
-        if (sb->data) sb->data[0] = '\0';
-    }
-    return sb;
+/* Initializes the already-allocated object (`this`) in place. EmperorPenguin
+ * calls this as `call void @_emperor_stringbuilder_new(ptr %this)` — it does
+ * NOT use a return value (the PenguinLang `new` is `mut this`, void return) —
+ * so we must fill in the fields of the passed-in object, not allocate a new
+ * one (the old `void* ...(void)` factory form was ignored by the caller and
+ * left `this` uninitialized). */
+void _emperor_stringbuilder_new(void* vsb) {
+    if (!vsb) return;
+    StringBuilder* sb = (StringBuilder*)vsb;
+    sb->cap = 256;
+    sb->data = (char*)_emperor_gc_alloc(sb->cap, 1);
+    sb->len = 0;
+    if (sb->data) sb->data[0] = '\0';
 }
 
 void _emperor_stringbuilder_append(void* vsb, const char* s) {

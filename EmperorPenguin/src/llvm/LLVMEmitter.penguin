@@ -141,6 +141,7 @@ class LLVMEmitter {
     needs_int_to_string: mut bool = false;
     needs_string_concat: mut bool = false;
     needs_bool_to_string: mut bool = false;
+    needs_string_equal: mut bool = false;
     needs_vtable_lookup: mut bool = false;
     needs_isinstance: mut bool = false;
     needs_check_class: mut bool = false;
@@ -159,6 +160,7 @@ class LLVMEmitter {
     debug_enabled: mut bool = false;
     debug_id_counter: mut i64 = 0;
     debug_metadata: mut _utils.List<string> = new _utils.List<string>();
+    debug_file_cache: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();  // filename -> DIFile id
     current_compile_unit_id: mut string = "";
     current_file_id: mut string = "";
     current_subprogram_id: mut string = "";
@@ -196,6 +198,7 @@ class LLVMEmitter {
         this.debug_id_counter = 0;
         this.debug_metadata = new _utils.List<string>();
         this.debug_type_cache = new _utils.List<RegMapping>();
+        this.debug_file_cache = new _utils.List<RegMapping>();
         // Allocate all IDs upfront to avoid ordering issues
         let file_id: string = this.next_debug_id();       // 0
         let cu_id: string = this.next_debug_id();          // 1
@@ -205,6 +208,7 @@ class LLVMEmitter {
         let mf1: string = this.next_debug_id();            // 5
         // Emit metadata in dependency order
         this.current_file_id = file_id;
+        this.debug_file_cache.push(new RegMapping(filename, file_id));
         this.debug_metadata.push("!" + file_id + " = !DIFile(filename: \"" + filename + "\", directory: \"\")");
         this.current_compile_unit_id = cu_id;
         this.debug_metadata.push("!" + cu_id + " = distinct !DICompileUnit(language: DW_LANG_C, file: !" + file_id + ", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)");
@@ -219,6 +223,11 @@ class LLVMEmitter {
     // Begin debug info for a function
     fun debug_begin_function(mut this, func_name: string, loc: ast.SourceLocation) {
         if (!this.debug_enabled) { return; }
+        // Attribute the function (and the locals/types emitted while it is
+        // current) to its own source file, not whichever file was used to init
+        // the compile unit. Without this every function's DISubprogram pointed
+        // at main.penguin, so a debugger showed all parser code as main.penguin.
+        this.current_file_id = this.debug_get_file(loc.filename);
         let sp_id: string = this.next_debug_id();
         this.current_subprogram_id = sp_id;
         let line_str: string = cast<string>(loc.line);
@@ -229,6 +238,23 @@ class LLVMEmitter {
         this.current_scope_dbg = ", !dbg !" + scope_loc_id;
         this.current_scope_loc_id = scope_loc_id;
         this.current_loc_id = scope_loc_id;
+    }
+
+    // Get-or-create a !DIFile metadata node for `filename` (cached so each source
+    // file maps to a single DIFile id). Falls back to the compile-unit's file
+    // for an empty filename so functions without a location still resolve.
+    fun debug_get_file(mut this, filename: string) -> string {
+        if (string_length(filename) == 0) { return this.current_file_id; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.debug_file_cache.size())) {
+            let entry: RegMapping = this.debug_file_cache.at(cast<u64>(i)).some;
+            if (entry.ir_name == filename) { return entry.llvm_value; }
+            i = i + 1;
+        }
+        let file_id: string = this.next_debug_id();
+        this.debug_metadata.push("!" + file_id + " = !DIFile(filename: \"" + filename + "\", directory: \"\")");
+        this.debug_file_cache.push(new RegMapping(filename, file_id));
+        return file_id;
     }
 
     // Get debug location suffix for an instruction at the given source location
@@ -359,6 +385,7 @@ class LLVMEmitter {
         this.needs_int_to_string = false;
         this.needs_string_concat = false;
         this.needs_bool_to_string = false;
+        this.needs_string_equal = false;
         this.needs_vtable_lookup = false;
         this.needs_isinstance = false;
         this.needs_check_class = false;
@@ -552,6 +579,9 @@ class LLVMEmitter {
         }
         if (this.needs_bool_to_string) {
             target.append("declare ptr @_emperor_bool_to_string(i8)\n");
+        }
+        if (this.needs_string_equal) {
+            target.append("declare i32 @_emperor_string_equal(ptr, ptr)\n");
         }
         if (this.needs_vtable_lookup) {
             target.append("declare ptr @_emperor_vtable_lookup(ptr, ptr, i32)\n");
@@ -1756,7 +1786,7 @@ class LLVMEmitter {
 
     fun emit_instruction(mut this, inst: ir.IRInstruction) {
         // Set current debug location from instruction
-        let loc: ast.SourceLocation = this.get_inst_loc(inst);
+        let loc: ast.SourceLocation = get_inst_loc(inst);
         this.current_dbg = this.debug_loc(loc);
         // Skip debug for labels
         if (inst is ir.IRInstruction.label_inst) { this.current_dbg = ""; this.emit_label(inst.label_inst); return; }
@@ -1948,6 +1978,26 @@ class LLVMEmitter {
 
         // Comparison operators: use operand types for the comparison, result is i1
         if (this.is_comparison_binop(inst.op)) {
+            // Strings must be compared by content, not by char* pointer value
+            // (every literal is a distinct global and every substring/concat is a
+            // fresh GC allocation, so `icmp eq ptr` is almost always false for
+            // equal text — e.g. the lexer's keyword match). Route eq/ne on
+            // ref<string> through a runtime strcmp-based helper.
+            if (inst.op == "eq" || inst.op == "ne") {
+                if (this.is_string_type(inst.left.get_ir_type()) || this.is_string_type(inst.right.get_ir_type())) {
+                    this.needs_string_equal = true;
+                    let eq_tmp: string = this.next_tmp();
+                    this.emit_line("  " + eq_tmp + " = call i32 @_emperor_string_equal(ptr " + left_resolved + ", ptr " + right_resolved + ")");
+                    if (inst.op == "eq") {
+                        this.emit_line("  " + result_name + " = icmp ne i32 " + eq_tmp + ", 0");
+                    } else {
+                        this.emit_line("  " + result_name + " = icmp eq i32 " + eq_tmp + ", 0");
+                    }
+                    this.icmp_results.push(result_name);
+                    this.register_llvm_type(result_name, "i1");
+                    return;
+                }
+            }
             let operand_llvm_type: string = this.ir_type_to_llvm(inst.left.get_ir_type());
             let coerced_left: string = this.coerce_operand(left_resolved, operand_llvm_type);
             let coerced_right: string = this.coerce_operand(right_resolved, operand_llvm_type);
@@ -3313,10 +3363,45 @@ class LLVMEmitter {
 
     fun strip_string_quotes(this, s: string) -> string {
         let len: i64 = string_length(s);
+        let inner: mut string = s;
         if (len >= 2 && string_char_at(s, 0) == "\"" && string_char_at(s, len - 1) == "\"") {
-            return string_substring(s, 1, len - 2);
+            inner = string_substring(s, 1, len - 2);
         }
-        return s;
+        return this.unescape_string(inner);
+    }
+
+    // Decode C-style escape sequences in a string literal's inner text, matching
+    // the BabyPenguin reference VM's UnescapeString (RuntimeFrame.cs). This is
+    // essential for self-hosting: without it, `"\n"` keeps its two literal bytes
+    // (backslash + 'n'), so when EmperorPenguin compiles *itself* the Lexer's
+    // newline check `ch == "\n"` (ch is a real 0x0A) never matches, line tracking
+    // collapses to line 1, every string literal's "\n" prints as literal `\n`,
+    // and escape_llvm_string's `ch == "\n"` branch never fires. The cascade is
+    // sound because Pass 1 runs on the VM (which decodes these same literals), so
+    // it emits already-decoded `@str_N` globals and Pass 2 inherits real control
+    // characters in every `"\n"`/`"\t"`/... constant.
+    fun unescape_string(this, s: string) -> string {
+        let sb2: mut StringBuilder = new StringBuilder();
+        let len: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < len) {
+            let ch: string = string_char_at(s, i);
+            if (ch == "\\" && i + 1 < len) {
+                let next: string = string_char_at(s, i + 1);
+                if (next == "n") { sb2.append("\n"); i = i + 2; }
+                else if (next == "t") { sb2.append("\t"); i = i + 2; }
+                else if (next == "r") { sb2.append("\r"); i = i + 2; }
+                else if (next == "\\") { sb2.append("\\"); i = i + 2; }
+                else if (next == "\"") { sb2.append("\""); i = i + 2; }
+                else if (next == "'") { sb2.append("'"); i = i + 2; }
+                else if (next == "0") { sb2.append("\0"); i = i + 2; }
+                else { sb2.append(ch); i = i + 1; }
+            } else {
+                sb2.append(ch);
+                i = i + 1;
+            }
+        }
+        return sb2.to_string();
     }
 
     // --- String escaping for LLVM c"..." format ---

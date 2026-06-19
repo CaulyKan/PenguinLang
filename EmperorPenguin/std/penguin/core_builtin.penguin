@@ -83,8 +83,16 @@ namespace __builtin {
     impl __builtin.ICopy<float> for float;
     impl __builtin.ICopy<double> for double;
 
+    // StringBuilder is backed by the C struct in core_builtin.c. Its PenguinLang
+    // field layout MUST match that C struct (EmperorPenguin always prepends a
+    // metadata ptr at offset 0, so the C struct leads with `void* metadata`
+    // too). The extern `new` initializes these fields in place via `this`; if the
+    // layouts disagree, `_emperor_stringbuilder_append` would read the metadata
+    // pointer as `data` and overwrite global metadata -> heap corruption.
     class StringBuilder {
-        __impl: __ExternImpl = new __ExternImpl();
+        data: string;
+        len: i32;
+        cap: i32;
         extern fun new(mut this);
         extern fun append(mut this, s: string);
         extern fun to_string(this) -> mut string;

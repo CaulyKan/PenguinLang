@@ -61,7 +61,7 @@ void _emperor_file_write_text(const char* path, const char* text);
 char _emperor_mkdir(const char* path);
 
 /* StringBuilder */
-void* _emperor_stringbuilder_new(void);
+void _emperor_stringbuilder_new(void* sb);
 void _emperor_stringbuilder_append(void* sb, const char* s);
 char* _emperor_stringbuilder_to_string(void* sb);
 

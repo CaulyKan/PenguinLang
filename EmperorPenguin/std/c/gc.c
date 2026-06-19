@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <setjmp.h>
 
 /* ---- GC Header ---- */
 
@@ -16,6 +17,9 @@ typedef struct GCHeader {
 static GCHeader* _emperor_gc_allocation_list = NULL;
 static size_t _emperor_gc_total_allocated = 0;
 static size_t _emperor_gc_threshold = 256 * 1024; /* 256KB initial */
+/* DIAGNOSTIC: set to 1 to effectively disable GC (8TB threshold) so we can tell
+ * whether a crash is GC-induced (goes away when disabled) or a pure logic bug. */
+#define EMPEROR_GC_DISABLED 1
 
 /* ---- Platform-specific stack pointer ---- */
 
@@ -84,14 +88,26 @@ static void _emperor_gc_mark_object(void* obj) {
 
     if (header->is_string) return;
 
-    EmperorClassMetadata* meta = *(EmperorClassMetadata**)obj;
-    if (!meta || !meta->field_offsets || !meta->field_is_ptr) return;
-
-    int i;
-    for (i = 0; i < meta->field_count; i++) {
-        if (meta->field_is_ptr[i]) {
-            void* child = *(void**)((char*)obj + meta->field_offsets[i]);
-            _emperor_gc_mark_object(child);
+    /* Conservative scan of the whole object body. The class metadata at
+     * offset 0 is a global constant (never GC-tracked, so the is_tracked
+     * check naturally skips it). This is necessary because a field can be
+     * a struct that *contains* pointers without the field itself being a
+     * single pointer — e.g. `Option<T>` lays out as { ptr metadata, i32 tag,
+     * ptr payload }, and `ref<T>`/node-link fields are reached through those
+     * inner payload pointers. The precise `field_is_ptr` metadata only flags
+     * fields that are a bare pointer, so relying on it alone lets the GC miss
+     * pointers nested inside Option/struct fields and prematurely free live
+     * objects (use-after-free -> heap corruption). Scanning every word and
+     * marking any that resolve to a tracked allocation is conservative but
+     * sound: a stray integer that looks like a pointer at worst keeps a dead
+     * object alive, never frees a live one. */
+    void** ptr = (void**)obj;
+    size_t word_count = (size_t)header->size / sizeof(void*);
+    size_t i;
+    for (i = 0; i < word_count; i++) {
+        void* candidate = ptr[i];
+        if (_emperor_gc_is_tracked(candidate)) {
+            _emperor_gc_mark_object(candidate);
         }
     }
 }
@@ -122,6 +138,23 @@ static size_t _emperor_gc_sweep(void) {
 
 void _emperor_gc_collect(void) {
     if (!_emperor_gc_stack_bottom) return;
+
+    /* Spill ALL registers (especially callee-saved ones: rbx, rbp, r12-r15 on
+     * x86-64) onto the stack before scanning. A conservative GC that only walks
+     * the stack misses any live pointer that is sitting in a register at the
+     * moment of collection — those objects then get swept, their memory reused,
+     * and the program observes heap corruption (e.g. a SourceLocation.filename
+     * pointer that now reads as a numeric pointer value, or a BoundType* whose
+     * bits are ASCII from a reused string buffer). setjmp's jmp_buf is a local
+     * in this frame, so it lies within [stack_top, stack_bottom) and the scan
+     * below covers the spilled register words. This is the standard
+     * register-flush technique used by conservative collectors (e.g. Boehm GC).
+     * The volatile asm barrier stops the compiler from optimizing the setjmp
+     * away or reordering the stack-pointer read above it. */
+    jmp_buf _gc_register_buf;
+    setjmp(_gc_register_buf);
+    __asm__ volatile("" ::: "memory");
+
     void* stack_top = _emperor_gc_get_stack_pointer();
 
     int i;
@@ -145,7 +178,7 @@ void _emperor_gc_collect(void) {
 void _emperor_gc_init(void) {
     _emperor_gc_allocation_list = NULL;
     _emperor_gc_total_allocated = 0;
-    _emperor_gc_threshold = 256 * 1024;
+    _emperor_gc_threshold = EMPEROR_GC_DISABLED ? (8ULL << 40) : (256 * 1024);
     _emperor_gc_global_root_count = 0;
     _emperor_gc_stack_bottom = _emperor_gc_get_stack_pointer();
 }

@@ -568,6 +568,19 @@ class SemanticModel {
     }
 
     fun bind_function_symbols(mut this, func: BoundFunctionDefinition) {
+        // Mirror the resolved parameters onto the function symbol so callers
+        // (e.g. bind_function_call's method-vs-free check, IRGenerator) can tell
+        // whether this is a true method (first param `this`) without a separate
+        // lookup. The symbol's `parameters` field is otherwise only populated
+        // for externs.
+        if (func.symbol.is_some()) {
+            let sym: mut BoundFunctionSymbol = func.symbol.some;
+            let pi0: mut i64 = 0;
+            while (pi0 < cast<i64>(func.parameters.size())) {
+                sym.parameters.push(func.parameters.at(cast<u64>(pi0)).some);
+                pi0 = pi0 + 1;
+            }
+        }
         if (func.scope.is_none()) { return; }
         let func_scope: mut BoundScope = func.scope.some;
         let i: mut i64 = 0;
@@ -1151,7 +1164,7 @@ class SemanticModel {
                     if (template_def is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = template_def.class_def;
                         if (cast<i64>(cls.generic_params.size()) > 0) {
-                            let mangled: string = this.mangle_generic_name(cls.name, inst.generic_args);
+                            let mangled: string = mangle_generic_name(cls.name, inst.generic_args);
                             if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
                                 let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(unit.definitions, cls.name);
                                 if (ast_def.is_some()) {
@@ -1169,7 +1182,7 @@ class SemanticModel {
                     if (template_def is BoundDefinition.enum_def) {
                         let e: BoundEnumDefinition = template_def.enum_def;
                         if (cast<i64>(e.generic_params.size()) > 0) {
-                            let mangled: string = this.mangle_generic_name(e.name, inst.generic_args);
+                            let mangled: string = mangle_generic_name(e.name, inst.generic_args);
                             if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
                                 let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(unit.definitions, e.name);
                                 if (ast_def.is_some()) {
@@ -1195,7 +1208,7 @@ class SemanticModel {
             let fi: mut i64 = 0;
             while (fi < cast<i64>(func_instantiations.size())) {
                 let inst: FunctionInstantiation = func_instantiations.at(cast<u64>(fi)).some;
-                let mangled: string = this.mangle_generic_name(inst.func_name, inst.generic_args);
+                let mangled: string = mangle_generic_name(inst.func_name, inst.generic_args);
                 let already_exists: mut bool = false;
                 let check_i: mut i64 = 0;
                 while (check_i < cast<i64>(specialized_defs.size())) {
@@ -2247,7 +2260,29 @@ class SemanticModel {
         if (bt.kind is TypeKind.PrimitiveKind) {
             return true; // All primitives (including string) are value types
         }
-        if (bt.kind is TypeKind.EnumKind) { return true; }
+        if (bt.kind is TypeKind.EnumKind) {
+            // An enum (e.g. Option<T>) is value-like only if every payload
+            // (generic argument) type is itself value-like. This is what lets the
+            // `visiting` cycle check below detect recursive classes such as
+            //   class Node { next: Option<Node>; }
+            // When classifying Node, its `next` field has enum kind; recursing into
+            // the Node payload finds Node already in `visiting`, which forces Node
+            // (and therefore the field) to be non-value-like — i.e. a reference
+            // type. Without this recursion an enum short-circuits to "value-like",
+            // recursive classes get misclassified as value types, their instances
+            // are stack-allocated, and any address that escapes into the enum
+            // payload (a linked-list node stored in head/tail/next) is left
+            // dangling once the allocating function returns.
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(bt.generic_args.size())) {
+                let payload: BoundType = bt.generic_args.at(cast<u64>(ei)).some;
+                if (!this.is_type_value_like(payload, visiting)) {
+                    return false;
+                }
+                ei = ei + 1;
+            }
+            return true;
+        }
         if (bt.kind is TypeKind.ClassKind) {
             if (bt.type_definition.is_some()) {
                 let def: BoundDefinition = bt.type_definition.some;
@@ -2433,6 +2468,45 @@ class SemanticModel {
                     }
                 }
                 i = i + 1;
+            }
+            // Bind field default initializers (e.g. `errors: List<T> = new List<T>()`)
+            // in the constructor's scope and store them on the bound field. The IR
+            // generator emits them as `this.field = <init>` at the start of the
+            // constructor. Without this, field defaults are silently dropped and
+            // the field is left at its memset-zero state (null for reference-typed
+            // fields, empty for value-typed) — which crashes as soon as a method
+            // dereferences it.
+            if (bound_cls.constructor.is_some()) {
+                let ctor: BoundFunctionDefinition = bound_cls.constructor.some;
+                if (ctor.scope.is_some()) {
+                    let ctor_scope: mut BoundScope = ctor.scope.some;
+                    let fi: mut i64 = 0;
+                    while (fi < cast<i64>(bound_cls.fields.size())) {
+                        let field_def: BoundDefinition = bound_cls.fields.at(cast<u64>(fi)).some;
+                        if (field_def is BoundDefinition.class_field) {
+                            let bound_field: mut BoundClassFieldDefinition = field_def.class_field;
+                            let ast_init: mut Option<ast.Expression> = new Option<ast.Expression>.none();
+                            let ai: mut i64 = 0;
+                            while (ai < cast<i64>(ast_cls.members.size())) {
+                                let am: ast.Definition = ast_cls.members.at(cast<u64>(ai)).some;
+                                if (am is ast.Definition.class_field) {
+                                    if (am.class_field.name == bound_field.name) {
+                                        if (am.class_field.initializer.is_some()) {
+                                            ast_init = am.class_field.initializer;
+                                        }
+                                    }
+                                }
+                                ai = ai + 1;
+                            }
+                            if (ast_init.is_some()) {
+                                let bound_init: mut Option<BoundExpression> = this.bind_expression(ast_init.some, ctor_scope);
+                                bound_field.initializer = bound_init;
+                                bound_cls.fields.set(cast<u64>(fi), new BoundDefinition.class_field(bound_field));
+                            }
+                        }
+                        fi = fi + 1;
+                    }
+                }
             }
             return new BoundDefinition.class_def(bound_cls);
         }
@@ -2769,7 +2843,7 @@ class SemanticModel {
     fun resolve_field_type_from_class(this, base_type: BoundType, cls: BoundClassDefinition, field_name: string, scope: BoundScope) -> mut BoundType {
         // If base type has generic args, look up the field in the specialized class
         if (cast<i64>(base_type.generic_args.size()) > 0) {
-            let mangled: string = this.mangle_generic_name(cls.name, base_type.generic_args);
+            let mangled: string = mangle_generic_name(cls.name, base_type.generic_args);
             let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
             if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
                 let spec_bt: BoundType = spec_sym.some.type_sym.bound_type;
@@ -2982,6 +3056,17 @@ class SemanticModel {
         return this.type_registry.void_type;
     }
 
+    // A function is a "method" (instance member) iff its first parameter is
+    // `this`. Free functions / static helpers declared inside a class have no
+    // `this` parameter. function_sym.parameters is populated for every function
+    // in bind_function_symbols (and for externs at registration).
+    fun function_is_method(this, sym: BoundFunctionSymbol) -> bool {
+        if (cast<i64>(sym.parameters.size()) > 0) {
+            return sym.parameters.at(cast<u64>(0)).some.name == "this";
+        }
+        return false;
+    }
+
     fun bind_function_call(mut this, expr: ast.FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         let args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments, scope);
         let mut empty_generic_args = new _utils.List<BoundType>();
@@ -2993,6 +3078,13 @@ class SemanticModel {
                     if (id_expr.symbol.is_some()) {
                         let sym: BoundSymbol = id_expr.symbol.some;
                         if (sym is BoundSymbol.function_sym) {
+                            // Converse mismatch: a method (has `this`) called bare
+                            // (no receiver) would emit no `this` argument, so the
+                            // callee's first parameter reads garbage. Require an
+                            // explicit receiver: this.method(...) or obj.method(...).
+                            if (this.function_is_method(sym.function_sym)) {
+                                this.report_error("Method '" + sym.function_sym.name + "' has a 'this' parameter and must be called with a receiver (e.g. this." + sym.function_sym.name + "(...)), not bare", sym.function_sym.location);
+                            }
                             // Resolve generic args from AST callee
                             let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_call: mut bool = false;
@@ -3011,7 +3103,7 @@ class SemanticModel {
                             }
                             // For generic function calls, use specialized function's return type
                             if (is_generic_call) {
-                                let mangled: string = this.mangle_generic_name(sym.function_sym.name, resolved_generic_args);
+                                let mangled: string = mangle_generic_name(sym.function_sym.name, resolved_generic_args);
                                 let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
                                 if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
                                     let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
@@ -3031,6 +3123,37 @@ class SemanticModel {
                     if (ma_expr.member_symbol.is_some()) {
                         let sym: BoundSymbol = ma_expr.member_symbol.some;
                         if (sym is BoundSymbol.function_sym) {
+                            // A free function (no `this` parameter) reached via
+                            // `receiver.foo(...)` where `receiver` is a value (not a
+                            // namespace or type) is a calling-convention mismatch:
+                            // IR emission prepends the receiver, shifting every
+                            // argument by one (the VM happens to tolerate this, but
+                            // the native ABI does not — see the mangle_generic_name
+                            // bootstrap crash). Require such helpers to be called
+                            // bare: foo(...).
+                            if (!this.function_is_method(sym.function_sym)) {
+                                let base_is_ns_or_type: mut bool = false;
+                                if (ma_expr.base_expr.is_some()) {
+                                    let base_be: BoundExpression = ma_expr.base_expr.some;
+                                    if (base_be is BoundExpression.identifier) {
+                                        let base_id: BoundIdentifierExpression = base_be.identifier;
+                                        if (base_id.symbol.is_some()) {
+                                            if (base_id.symbol.some is BoundSymbol.namespace_sym) { base_is_ns_or_type = true; }
+                                            if (base_id.symbol.some is BoundSymbol.type_sym) { base_is_ns_or_type = true; }
+                                        }
+                                    }
+                                    if (base_be is BoundExpression.member_access) {
+                                        let inner_ma: BoundMemberAccessExpression = base_be.member_access;
+                                        if (inner_ma.member_symbol.is_some()) {
+                                            if (inner_ma.member_symbol.some is BoundSymbol.type_sym) { base_is_ns_or_type = true; }
+                                            if (inner_ma.member_symbol.some is BoundSymbol.namespace_sym) { base_is_ns_or_type = true; }
+                                        }
+                                    }
+                                }
+                                if (!base_is_ns_or_type) {
+                                    this.report_error("Function '" + sym.function_sym.name + "' has no 'this' parameter (it is a free function, not a method); call it bare as '" + sym.function_sym.name + "(...)', not via a receiver", sym.function_sym.location);
+                                }
+                            }
                             // Resolve generic args from AST callee (member access with <T>)
                             let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_method_call: mut bool = false;
@@ -3049,7 +3172,7 @@ class SemanticModel {
                             }
                             // For generic method calls, look up specialized method
                             if (is_generic_method_call) {
-                                let mangled: string = this.mangle_generic_name(sym.function_sym.name, resolved_generic_args);
+                                let mangled: string = mangle_generic_name(sym.function_sym.name, resolved_generic_args);
                                 let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
                                 if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
                                     let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
@@ -3066,7 +3189,7 @@ class SemanticModel {
                                 if (cast<i64>(base_type.generic_args.size()) > 0 && base_type.type_definition.is_some()) {
                                     let orig_def: BoundDefinition = base_type.type_definition.some;
                                     if (orig_def is BoundDefinition.enum_def) {
-                                        let spec_name: string = this.mangle_generic_name(orig_def.enum_def.name, base_type.generic_args);
+                                        let spec_name: string = mangle_generic_name(orig_def.enum_def.name, base_type.generic_args);
                                         let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
                                         if (spec_sym.is_some()) {
                                             if (spec_sym.some is BoundSymbol.type_sym) {
@@ -3091,7 +3214,7 @@ class SemanticModel {
                                         }
                                     }
                                     if (orig_def is BoundDefinition.class_def) {
-                                        let spec_name: string = this.mangle_generic_name(orig_def.class_def.name, base_type.generic_args);
+                                        let spec_name: string = mangle_generic_name(orig_def.class_def.name, base_type.generic_args);
                                         let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
                                         if (spec_sym.is_some()) {
                                             if (spec_sym.some is BoundSymbol.type_sym) {
