@@ -307,10 +307,12 @@ class PenguinProject {
     sources: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {
+
         this.sources = new _utils.List<string>();
     }
 
     fun load(path: string) -> mut PenguinProject {
+        _utils.trace_enter("Enter load");
         let content: string = _utils.file_read_text(path);
         let project: mut PenguinProject = new PenguinProject();
         project.parse(content);
@@ -318,6 +320,7 @@ class PenguinProject {
     }
 
     fun parse(mut this, content: string) {
+        _utils.trace_enter("Enter parse");
         let lines: _utils.List<string> = split_lines(content);
         let in_project_section: mut bool = false;
         let li: mut i64 = 0;
@@ -374,6 +377,7 @@ class PenguinProject {
     }
 
     fun resolve_sources(mut this, project_dir: string) -> mut _utils.List<string> {
+        _utils.trace_enter("Enter resolve_sources");
         let result: mut _utils.List<string> = new _utils.List<string>();
 
         if (cast<i64>(this.sources.size()) > 0) {

@@ -5,6 +5,7 @@ class IRPrinter {
     fun new(mut this) {}
 
     fun print_module(this, module: IRModule) -> string {
+        _utils.trace_enter("Enter print_module");
         let sb = new mut StringBuilder();
         let i: mut i64 = 0;
         while (i < cast<i64>(module.functions.size())) {
@@ -18,6 +19,7 @@ class IRPrinter {
     }
 
     fun print_function(this, func: IRFunction) -> string {
+        _utils.trace_enter("Enter print_function");
         let sb = new mut StringBuilder();
         sb.append("function @" + func.name + "(");
         let pi: mut i64 = 0;

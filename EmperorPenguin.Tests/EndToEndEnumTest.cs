@@ -89,4 +89,93 @@ public class EndToEndEnumTest : EndToEndTestBase
         "true\nfalse")]
     [Fact]
     public void EnumInFunction() => batch.Assert();
+
+    [BatchE2ETest("""
+        enum Color { red; green; blue; }
+        fun get_color() -> Color {
+            return new Color.red();
+        }
+        fun check_color(c: Color) -> string {
+            if (c is Color.red) { return "red"; }
+            return "other";
+        }
+        initial {
+            let c = get_color();
+            println(check_color(c));
+        }
+        """,
+        "red")]
+    [Fact]
+    public void SmallEnumReturn() => batch.Assert();
+
+    [BatchE2ETest("""
+        enum OptStr { some: string; none; }
+        fun make_some(s: string) -> OptStr {
+            return new OptStr.some(s);
+        }
+        initial {
+            let o = make_some("hello");
+            if (o is OptStr.some) {
+                println(o.some);
+            } else {
+                println("none");
+            }
+        }
+        """,
+        "hello")]
+    [Fact]
+    public void LargeEnumPtrPayloadReturn() => batch.Assert();
+
+    [BatchE2ETest("""
+        enum OptI64 { some: i64; none; }
+        fun make_some(v: i64) -> OptI64 {
+            return new OptI64.some(v);
+        }
+        initial {
+            let o = make_some(cast<i64>(42));
+            if (o is OptI64.some) {
+                println(cast<string>(o.some));
+            } else {
+                println("none");
+            }
+        }
+        """,
+        "42")]
+    [Fact]
+    public void LargeEnumI64PayloadReturn() => batch.Assert();
+
+    [BatchE2ETest("""
+        class Point {
+            x: i32;
+            y: i32;
+            fun new(mut this, x: i32, y: i32) {
+                this.x = x;
+                this.y = y;
+            }
+        }
+        fun make_point(x: i32, y: i32) -> Point {
+            return new Point(x, y);
+        }
+        initial {
+            let p = make_point(3, 4);
+            println(cast<string>(p.x + p.y));
+        }
+        """,
+        "7")]
+    [Fact]
+    public void ValueTypeClassReturn() => batch.Assert();
+
+    [BatchE2ETest("""
+        enum Color { red; green; blue; }
+        fun color_name(c: Color) -> string {
+            return cast<string>(c);
+        }
+        initial {
+            println(color_name(new Color.red()));
+            println(color_name(new Color.blue()));
+        }
+        """,
+        "0\n2")]
+    [Fact]
+    public void EnumCastToString() => batch.Assert();
 }

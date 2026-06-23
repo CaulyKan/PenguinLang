@@ -5,6 +5,7 @@ class FunctionInstantiation {
     generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
 
     fun new(mut this, func_name: string, generic_args: mut _utils.List<BoundType>) {
+
         this.func_name = func_name;
         this.generic_args = generic_args;
     }
@@ -20,6 +21,7 @@ class SemanticModel {
     verbose: mut i64 = 0;
 
     fun new(mut this) {
+
         this.type_registry = new BoundTypeRegistry();
         this.global_scope = new BoundScope(new ScopeKind.GlobalScope(), "<global>", "<global>", new Option<BoundScope>.none());
         this.register_builtin_interfaces();
@@ -27,12 +29,14 @@ class SemanticModel {
     }
 
     fun register_builtin_interfaces(mut this) {
+        _utils.trace_enter("Enter register_builtin_interfaces");
         this.register_builtin_interface("IValueType");
         this.register_builtin_interface("IReferenceType");
         this.register_builtin_interface("ICopy");
     }
 
     fun make_primitive_type(this, name: string) -> mut BoundType {
+        _utils.trace_enter("Enter make_primitive_type");
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.PrimitiveKind();
         if (name == "string") {
@@ -54,6 +58,7 @@ class SemanticModel {
     }
 
     fun register_builtin_extern_fun(mut this, name: string, param_type_names: _utils.List<string>, ret_type_name: string) {
+        _utils.trace_enter("Enter register_builtin_extern_fun");
         let full_name: string = "<global>." + name;
         let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(name, full_name);
         sym.return_type = this.make_primitive_type(ret_type_name);
@@ -70,6 +75,7 @@ class SemanticModel {
     }
 
     fun register_builtin_functions(mut this) {
+        _utils.trace_enter("Enter register_builtin_functions");
         let string_params: mut _utils.List<string> = new _utils.List<string>();
         string_params.push("string");
         this.register_builtin_extern_fun("print", string_params, "void");
@@ -80,6 +86,7 @@ class SemanticModel {
     }
 
     fun register_builtin_interface(mut this, name: string) {
+        _utils.trace_enter("Enter register_builtin_interface");
         let full_name: string = "<global>." + name;
         let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), name, full_name, new Option<BoundScope>.some(this.global_scope));
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(name, full_name);
@@ -95,6 +102,7 @@ class SemanticModel {
     }
 
     fun bind(mut this, unit: ast.CompilationUnit, location: ast.SourceLocation) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter bind");
         let result: mut BoundCompilationUnit = new BoundCompilationUnit(location);
         result.type_registry = this.type_registry;
         result.global_scope = this.global_scope;
@@ -123,6 +131,7 @@ class SemanticModel {
     }
 
     fun pass_build_scopes(mut this, unit: ast.CompilationUnit, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_build_scopes");
         let i: mut i64 = 0;
         while (i < cast<i64>(unit.definitions.size())) {
             let def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
@@ -135,6 +144,7 @@ class SemanticModel {
     }
 
     fun bind_definition(mut this, def: ast.Definition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_definition");
         if (def is ast.Definition.function_def) {
             return this.bind_function_def(def.function_def, scope);
         }
@@ -169,6 +179,7 @@ class SemanticModel {
     }
 
     fun extract_template_params(this, template_decl: Option<ast.TemplateDeclaration>, generic_params: mut _utils.List<string>) {
+        _utils.trace_enter("Enter extract_template_params");
         if (template_decl.is_some()) {
             let td: ast.TemplateDeclaration = template_decl.some;
             let j: mut i64 = 0;
@@ -181,6 +192,7 @@ class SemanticModel {
     }
 
     fun bind_function_def(mut this, def: ast.FunctionDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_function_def");
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(def.name, full_name, def.is_extern, def.is_pure, def.is_new, def.is_extern);
         this.extract_template_params(def.template_decl, result.generic_params);
@@ -203,6 +215,7 @@ class SemanticModel {
     }
 
     fun bind_class_def(mut this, def: ast.ClassDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_class_def");
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundClassDefinition = new BoundClassDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
@@ -276,6 +289,7 @@ class SemanticModel {
     }
 
     fun bind_enum_def(mut this, def: ast.EnumDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_enum_def");
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundEnumDefinition = new BoundEnumDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
@@ -342,6 +356,7 @@ class SemanticModel {
     }
 
     fun bind_interface_def(mut this, def: ast.InterfaceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_interface_def");
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
@@ -373,6 +388,7 @@ class SemanticModel {
     }
 
     fun bind_namespace_def(mut this, def: ast.NamespaceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_namespace_def");
         let ns_scope: mut BoundScope = scope.add_or_merge_namespace(def.name);
         let result: mut BoundNamespaceDefinition = new BoundNamespaceDefinition(def.name, ns_scope.full_name);
         result.scope = new Option<BoundScope>.some(ns_scope);
@@ -393,6 +409,7 @@ class SemanticModel {
     }
 
     fun bind_initial_routine(mut this, def: ast.InitialRoutineDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_initial_routine");
         let full_name: string = scope.full_name + ".<initial>";
         let result: mut BoundInitialRoutineDefinition = new BoundInitialRoutineDefinition(full_name);
         let init_scope: mut BoundScope = new BoundScope(new ScopeKind.InitialRoutineScope(), "<initial>", full_name + ".<body>", new Option<BoundScope>.some(scope));
@@ -405,6 +422,7 @@ class SemanticModel {
     }
 
     fun bind_impl_def(mut this, def: ast.InterfaceImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_impl_def");
         let result: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
         let i: mut i64 = 0;
         while (i < cast<i64>(def.functions.size())) {
@@ -421,6 +439,7 @@ class SemanticModel {
     }
 
     fun bind_impl_for_def(mut this, def: ast.InterfaceForImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_impl_for_def");
         let result: mut BoundInterfaceForImplementation = new BoundInterfaceForImplementation();
         let i: mut i64 = 0;
         while (i < cast<i64>(def.functions.size())) {
@@ -437,6 +456,7 @@ class SemanticModel {
     }
 
     fun bind_type_ref_def(mut this, def: ast.TypeReferenceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_type_ref_def");
         let result: mut BoundTypeReferenceDefinition = new BoundTypeReferenceDefinition(def.name);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, scope.full_name + "." + def.name);
         result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
@@ -445,6 +465,7 @@ class SemanticModel {
     }
 
     fun bind_global_var_def(mut this, def: ast.GlobalVariableDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_global_var_def");
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundGlobalVariableDefinition = new BoundGlobalVariableDefinition();
         result.name = def.name;
@@ -464,10 +485,12 @@ class SemanticModel {
     }
 
     fun report_error(mut this, message: string, location: ast.SourceLocation) {
+        _utils.trace_enter("Enter report_error");
         this.errors.push(new SemanticError(message, location));
     }
 
     fun substitute_generic_args(this, bt: mut BoundType, concrete_type: BoundType, generic_def: BoundDefinition) -> mut BoundType {
+        _utils.trace_enter("Enter substitute_generic_args");
         if (cast<i64>(concrete_type.generic_args.size()) == 0) { return bt; }
         let bt_name: string = bt.display_name();
         if (generic_def is BoundDefinition.enum_def) {
@@ -496,6 +519,7 @@ class SemanticModel {
     }
 
     fun pass_bind_symbols(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_bind_symbols");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
@@ -505,6 +529,7 @@ class SemanticModel {
     }
 
     fun bind_symbols_for_def(mut this, def: BoundDefinition) {
+        _utils.trace_enter("Enter bind_symbols_for_def");
         if (def is BoundDefinition.function_def) {
             this.bind_function_symbols(def.function_def);
         }
@@ -568,6 +593,7 @@ class SemanticModel {
     }
 
     fun bind_function_symbols(mut this, func: BoundFunctionDefinition) {
+        _utils.trace_enter("Enter bind_function_symbols");
         // Mirror the resolved parameters onto the function symbol so callers
         // (e.g. bind_function_call's method-vs-free check, IRGenerator) can tell
         // whether this is a true method (first param `this`) without a separate
@@ -600,10 +626,12 @@ class SemanticModel {
     }
 
     fun bind_function_symbols_for_init(mut this, init: BoundInitialRoutineDefinition) {
+        _utils.trace_enter("Enter bind_function_symbols_for_init");
         if (init.scope.is_none()) { return; }
     }
 
     fun bind_class_symbols(mut this, cls: BoundClassDefinition) {
+        _utils.trace_enter("Enter bind_class_symbols");
         if (cls.scope.is_none()) { return; }
         let i: mut i64 = 0;
         while (i < cast<i64>(cls.methods.size())) {
@@ -634,6 +662,7 @@ class SemanticModel {
     }
 
     fun pass_resolve_types(mut this, unit: ast.CompilationUnit, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_resolve_types");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let ast_def: ast.Definition = unit.definitions.at(cast<u64>(i)).some;
@@ -646,6 +675,7 @@ class SemanticModel {
     }
 
     fun resolve_pair(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, scope: BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter resolve_pair");
         if (bound_def is BoundDefinition.function_def && ast_def is ast.Definition.function_def) {
             let bf: mut BoundFunctionDefinition = bound_def.function_def;
             this.resolve_function_pair(ast_def.function_def, bf, scope);
@@ -710,6 +740,7 @@ class SemanticModel {
     }
 
     fun resolve_function_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_function_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         if (ast_func.return_type.is_some()) {
@@ -736,6 +767,7 @@ class SemanticModel {
     }
 
     fun resolve_class_method_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, cls: mut BoundClassDefinition) {
+        _utils.trace_enter("Enter resolve_class_method_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         if (ast_func.return_type.is_some()) {
@@ -768,6 +800,7 @@ class SemanticModel {
     }
 
     fun resolve_class_pair(mut this, ast_cls: ast.ClassDefinition, bound_cls: mut BoundClassDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_class_pair");
         let class_scope: BoundScope = bound_cls.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_cls.members.size())) {
@@ -837,6 +870,7 @@ class SemanticModel {
     }
 
     fun resolve_enum_types(mut this, e: mut BoundEnumDefinition, scope: BoundScope, ast_enum: ast.EnumDefinition) {
+        _utils.trace_enter("Enter resolve_enum_types");
         let i: mut i64 = 0;
         while (i < cast<i64>(e.members.size())) {
             let member: mut BoundEnumMemberDefinition = e.members.at(cast<u64>(i)).some;
@@ -906,6 +940,7 @@ class SemanticModel {
     }
 
     fun resolve_enum_method_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, e: mut BoundEnumDefinition) {
+        _utils.trace_enter("Enter resolve_enum_method_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         if (ast_func.return_type.is_some()) {
@@ -943,6 +978,7 @@ class SemanticModel {
     }
 
     fun resolve_interface_pair(mut this, ast_iface: ast.InterfaceDefinition, bound_iface: mut BoundInterfaceDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_interface_pair");
         let iface_scope: BoundScope = bound_iface.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_iface.members.size())) {
@@ -964,6 +1000,7 @@ class SemanticModel {
     }
 
     fun resolve_interface_method_pair(mut this, ast_func: ast.FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, iface: mut BoundInterfaceDefinition) {
+        _utils.trace_enter("Enter resolve_interface_method_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         if (ast_func.return_type.is_some()) {
@@ -992,6 +1029,7 @@ class SemanticModel {
     }
 
     fun resolve_namespace_pair(mut this, ast_ns: ast.NamespaceDefinition, bound_ns: mut BoundNamespaceDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_namespace_pair");
         let ns_scope: BoundScope = bound_ns.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_ns.children.size())) {
@@ -1036,6 +1074,7 @@ class SemanticModel {
     }
 
     fun resolve_generic_args(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> mut _utils.List<BoundType> {
+        _utils.trace_enter("Enter resolve_generic_args");
         let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let k: mut i64 = 0;
         while (k < cast<i64>(type_spec.generic_args.size())) {
@@ -1046,6 +1085,7 @@ class SemanticModel {
     }
 
     fun apply_mutability(this, bt: BoundType, is_mutable: bool) -> mut BoundType {
+        _utils.trace_enter("Enter apply_mutability");
         if (is_mutable) {
             return bt.with_mutability(new Mutability.Mutable());
         }
@@ -1053,6 +1093,7 @@ class SemanticModel {
     }
 
     fun resolve_type_specifier(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_type_specifier");
         if (type_spec.is_function_type || type_spec.is_async_function_type) {
             let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let i: mut i64 = 0;
@@ -1087,6 +1128,7 @@ class SemanticModel {
     }
 
     fun try_resolve_qualified_type(this, type_spec: ast.TypeSpecifier, scope: BoundScope) -> Option<BoundType> {
+        _utils.trace_enter("Enter try_resolve_qualified_type");
         if (cast<i64>(type_spec.qualified_parts.size()) == 0) {
             return new Option<BoundType>.none();
         }
@@ -1114,6 +1156,7 @@ class SemanticModel {
     }
 
     fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundType>) -> string {
+        _utils.trace_enter("Enter mangle_generic_name");
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
@@ -1138,12 +1181,14 @@ class SemanticModel {
     }
 
     fun is_instantiation_already_exists(this, mangled_name: string, scope: BoundScope) -> bool {
+        _utils.trace_enter("Enter is_instantiation_already_exists");
         let found: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled_name);
         if (found.is_some()) { return true; }
         return false;
     }
 
     fun pass_monomorphize(mut this, unit: ast.CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_monomorphize");
         // Iterative monomorphization: specialize, resolve, then re-collect from
         // the newly resolved definitions for transitive instantiations.
         let total_specialized: mut i64 = 0;
@@ -1298,6 +1343,7 @@ class SemanticModel {
     }
 
     fun find_ast_def_by_name(this, defs: _utils.List<ast.Definition>, name: string) -> Option<ast.Definition> {
+        _utils.trace_enter("Enter find_ast_def_by_name");
         // Search in reverse order so user-defined types override stdlib types
         let i: mut i64 = cast<i64>(defs.size()) - 1;
         while (i >= 0) {
@@ -1339,14 +1385,17 @@ class SemanticModel {
     }
 
     fun find_ast_def_by_name_from_scope(this, name: string, scope: BoundScope) -> Option<ast.Definition> {
+        _utils.trace_enter("Enter find_ast_def_by_name_from_scope");
         return this.find_ast_def_by_name(this.ast_definitions, name);
     }
 
     fun mangle_generic_name_for_ir(base_name: string, generic_args: _utils.List<BoundType>) -> string {
+        _utils.trace_enter("Enter mangle_generic_name_for_ir");
         return mangle_generic_name(base_name, generic_args);
     }
 
     fun replace_name_in_full_name(this, full_name: string, old_name: string, new_name: string) -> string {
+        _utils.trace_enter("Enter replace_name_in_full_name");
         let dot_pos: i64 = string_find(full_name, "." + old_name);
         if (dot_pos >= 0) {
             let before: string = string_substring(full_name, 0, dot_pos);
@@ -1356,6 +1405,7 @@ class SemanticModel {
     }
 
     fun collect_generic_instantiations(this, defs: _utils.List<BoundDefinition>, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_generic_instantiations");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -1365,6 +1415,7 @@ class SemanticModel {
     }
 
     fun collect_instantiations_from_def(this, def: BoundDefinition, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_instantiations_from_def");
         if (def is BoundDefinition.class_def) {
             let cls: BoundClassDefinition = def.class_def;
             // Skip template classes - their type params produce error types
@@ -1417,6 +1468,7 @@ class SemanticModel {
     }
 
     fun collect_instantiations_from_scope(this, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_instantiations_from_scope");
         let si: mut i64 = 0;
         while (si < cast<i64>(scope.symbols.size())) {
             let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
@@ -1433,6 +1485,7 @@ class SemanticModel {
     }
 
     fun try_add_instantiation(this, bt: BoundType, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter try_add_instantiation");
         if (cast<i64>(bt.generic_args.size()) > 0 && bt.type_definition.is_some()) {
             let already: mut bool = false;
             let j: mut i64 = 0;
@@ -1454,6 +1507,7 @@ class SemanticModel {
     }
 
     fun collect_generic_instantiations_from_ast(this, defs: _utils.List<ast.Definition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
@@ -1486,6 +1540,7 @@ class SemanticModel {
     }
 
     fun collect_from_ast_expr_safe(this, expr: ast.Expression, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_from_ast_expr_safe");
         if (expr is ast.Expression.new_expr) {
             let ne: ast.NewExpression = expr.new_expr;
             if (cast<i64>(ne.generic_args.size()) > 0) {
@@ -1540,6 +1595,7 @@ class SemanticModel {
     }
 
     fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<ast.TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        _utils.trace_enter("Enter resolve_new_generic_args_from_ast");
         let found: Option<BoundSymbol> = scope.lookup_type_in_scope(type_name);
         if (found.is_none()) { return new Option<BoundType>.none(); }
         if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundType>.none(); }
@@ -1557,6 +1613,7 @@ class SemanticModel {
     }
 
     fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_class_def");
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.class_def)) { return new Option<BoundDefinition>.none(); }
@@ -1653,6 +1710,7 @@ class SemanticModel {
     }
 
     fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_enum_def");
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.enum_def)) { return new Option<BoundDefinition>.none(); }
@@ -1730,6 +1788,7 @@ class SemanticModel {
     }
 
     fun pass_constructors(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_constructors");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let updated: BoundDefinition = this.init_constructors_for_def(result.definitions.at(cast<u64>(i)).some, result.global_scope);
@@ -1745,6 +1804,7 @@ class SemanticModel {
     }
 
     fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter init_constructors_for_def");
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.init_class_constructor(cls, global_scope);
@@ -1769,6 +1829,7 @@ class SemanticModel {
     }
 
     fun process_constructors_for_def(mut this, def: BoundDefinition) -> BoundDefinition {
+        _utils.trace_enter("Enter process_constructors_for_def");
         if (def is BoundDefinition.namespace_def) {
             let ns: mut BoundNamespaceDefinition = def.namespace_def;
             let k: mut i64 = 0;
@@ -1783,6 +1844,7 @@ class SemanticModel {
     }
 
     fun init_class_constructor(mut this, cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter init_class_constructor");
         let found_idx: mut i64 = -1;
         let i: mut i64 = 0;
         while (i < cast<i64>(cls.methods.size())) {
@@ -1825,6 +1887,7 @@ class SemanticModel {
     }
 
     fun init_interface_constructor(mut this, iface: mut BoundInterfaceDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter init_interface_constructor");
         let found_idx: mut i64 = -1;
         let i: mut i64 = 0;
         while (i < cast<i64>(iface.methods.size())) {
@@ -1861,6 +1924,7 @@ class SemanticModel {
     }
 
     fun pass_interface_implementation(mut this, unit: ast.CompilationUnit, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_interface_implementation");
         let ast_count: i64 = cast<i64>(unit.definitions.size());
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
@@ -1877,6 +1941,7 @@ class SemanticModel {
     }
 
     fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter build_vtables_for_specialized_def");
         if (bound_def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, this.extract_template_name(cls.name));
@@ -1897,6 +1962,7 @@ class SemanticModel {
     }
 
     fun extract_template_name(this, mangled_name: string) -> string {
+        _utils.trace_enter("Enter extract_template_name");
         let pos: i64 = string_find(mangled_name, "__");
         if (pos >= 0) {
             return string_substring(mangled_name, 0, pos);
@@ -1905,6 +1971,7 @@ class SemanticModel {
     }
 
     fun build_vtables_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter build_vtables_for_def");
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             this.build_class_vtables(ast_def.class_def, cls, global_scope);
@@ -1943,6 +2010,7 @@ class SemanticModel {
     }
 
     fun find_matching_ast_child(this, ast_ns: ast.NamespaceDefinition, bound_child: BoundDefinition) -> Option<ast.Definition> {
+        _utils.trace_enter("Enter find_matching_ast_child");
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_ns.children.size())) {
             let ast_child: ast.Definition = ast_ns.children.at(cast<u64>(i)).some;
@@ -1983,6 +2051,7 @@ class SemanticModel {
     }
 
     fun build_class_vtables(mut this, ast_cls: ast.ClassDefinition, bound_cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_class_vtables");
         let class_scope: mut BoundScope = bound_cls.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_cls.members.size())) {
@@ -2000,6 +2069,7 @@ class SemanticModel {
     }
 
     fun build_enum_vtables(mut this, ast_enum: ast.EnumDefinition, bound_enum: mut BoundEnumDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_enum_vtables");
         let enum_scope: mut BoundScope = bound_enum.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_enum.members.size())) {
@@ -2017,6 +2087,7 @@ class SemanticModel {
     }
 
     fun build_interface_vtables(mut this, ast_iface: ast.InterfaceDefinition, bound_iface: mut BoundInterfaceDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_interface_vtables");
         let iface_scope: mut BoundScope = bound_iface.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_iface.members.size())) {
@@ -2033,6 +2104,7 @@ class SemanticModel {
     }
 
     fun build_vtable_slots(mut this, impl_entry: ast.InterfaceImplementation, vtable: mut BoundVTable, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_vtable_slots");
         let i: mut i64 = 0;
         while (i < cast<i64>(impl_entry.functions.size())) {
             let func: ast.Definition = impl_entry.functions.at(cast<u64>(i)).some;
@@ -2073,6 +2145,7 @@ class SemanticModel {
     }
 
     fun process_impl_for(mut this, ast_impl: ast.InterfaceForImplementation, bound_impl: mut BoundInterfaceForImplementation, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
+        _utils.trace_enter("Enter process_impl_for");
         let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, impl_scope);
         let for_type: mut BoundType = this.resolve_type_name(ast_impl.for_type_name, impl_scope);
         bound_impl.interface_type = iface_type;
@@ -2121,6 +2194,7 @@ class SemanticModel {
     }
 
     fun pass_classify_value_types(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_classify_value_types");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let updated: BoundDefinition = this.classify_def(result.definitions.at(cast<u64>(i)).some, new _utils.List<string>());
@@ -2130,6 +2204,7 @@ class SemanticModel {
     }
 
     fun classify_def(mut this, def: BoundDefinition, visiting: mut _utils.List<string>) -> BoundDefinition {
+        _utils.trace_enter("Enter classify_def");
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.classify_class(cls, visiting);
@@ -2149,6 +2224,7 @@ class SemanticModel {
     }
 
     fun classify_class(mut this, cls: mut BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter classify_class");
         if (cls.is_value_class.is_some()) {
             return cls.is_value_class.some;
         }
@@ -2182,6 +2258,7 @@ class SemanticModel {
     }
 
     fun class_has_user_interfaces(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_user_interfaces");
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
@@ -2195,6 +2272,7 @@ class SemanticModel {
     }
 
     fun class_has_ivalue_type(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_ivalue_type");
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
@@ -2207,6 +2285,7 @@ class SemanticModel {
     }
 
     fun class_has_ireference_type(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_ireference_type");
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
@@ -2219,6 +2298,7 @@ class SemanticModel {
     }
 
     fun class_has_icopy(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_icopy");
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
@@ -2231,6 +2311,7 @@ class SemanticModel {
     }
 
     fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter is_in_visiting");
         let ci: mut i64 = 0;
         while (ci < cast<i64>(visiting.size())) {
             if (visiting.at(cast<u64>(ci)).some == full_name) {
@@ -2242,6 +2323,7 @@ class SemanticModel {
     }
 
     fun all_fields_value_type(mut this, cls: BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter all_fields_value_type");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(cls.fields.size())) {
             let field_def: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
@@ -2257,6 +2339,7 @@ class SemanticModel {
     }
 
     fun is_type_value_like(mut this, bt: BoundType, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter is_type_value_like");
         if (bt.kind is TypeKind.PrimitiveKind) {
             return true; // All primitives (including string) are value types
         }
@@ -2296,6 +2379,7 @@ class SemanticModel {
     }
 
     fun resolve_type_name(mut this, name: string, scope: mut BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_type_name");
         let prim: Option<BoundType> = this.type_registry.resolve_type(name);
         if (prim.is_some()) {
             let result: mut BoundType = prim.some;
@@ -2310,6 +2394,7 @@ class SemanticModel {
     }
 
     fun def_display_name(this, def: BoundDefinition) -> string {
+        _utils.trace_enter("Enter def_display_name");
         if (def is BoundDefinition.function_def) { return "function " + def.function_def.full_name; }
         if (def is BoundDefinition.class_def) { return "class " + def.class_def.name; }
         if (def is BoundDefinition.enum_def) { return "enum " + def.enum_def.name; }
@@ -2325,6 +2410,7 @@ class SemanticModel {
     }
 
     fun pass_bind_expressions(mut this, unit: ast.CompilationUnit, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_bind_expressions");
         this.current_unit = new Option<BoundCompilationUnit>.some(result);
         let ast_count: i64 = cast<i64>(unit.definitions.size());
         let total: i64 = cast<i64>(result.definitions.size());
@@ -2346,6 +2432,7 @@ class SemanticModel {
     }
 
     fun bind_body_for_specialized_def(mut this, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
+        _utils.trace_enter("Enter bind_body_for_specialized_def");
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
             let template_name: string = this.extract_template_name(bound_cls.name);
@@ -2377,6 +2464,7 @@ class SemanticModel {
     }
 
     fun ensure_params_in_scope(mut this, func: mut BoundFunctionDefinition) {
+        _utils.trace_enter("Enter ensure_params_in_scope");
         if (func.scope.is_none()) { return; }
         let func_scope: mut BoundScope = func.scope.some;
         let pi: mut i64 = 0;
@@ -2399,6 +2487,7 @@ class SemanticModel {
     }
 
     fun bind_body_for_def(mut this, ast_def: ast.Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
+        _utils.trace_enter("Enter bind_body_for_def");
         if (bound_def is BoundDefinition.function_def && ast_def is ast.Definition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let ast_func: ast.FunctionDefinition = ast_def.function_def;
@@ -2687,6 +2776,7 @@ class SemanticModel {
     }
 
     fun bind_expression(mut this, expr: ast.Expression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_expression");
         if (expr is ast.Expression.constant) {
             return this.bind_constant(expr.constant, scope);
         }
@@ -2738,29 +2828,34 @@ class SemanticModel {
     }
 
     fun bind_constant(mut this, expr: ast.ConstantExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_constant");
         let bt: BoundType = this.type_registry.resolve_type("i64").some;
         let result: mut BoundLiteralExpression = new BoundLiteralExpression(expr.value, bt, new LiteralKind.IntegerLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
     }
 
     fun bind_string_literal(mut this, expr: ast.StringLiteralExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_string_literal");
         let bt: BoundType = this.type_registry.resolve_type("string").some;
         let result: mut BoundLiteralExpression = new BoundLiteralExpression(expr.value, bt, new LiteralKind.StringLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
     }
 
     fun bind_bool_literal(mut this, expr: ast.BoolLiteralExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_bool_literal");
         let bt: BoundType = this.type_registry.resolve_type("bool").some;
         let result: mut BoundLiteralExpression = new BoundLiteralExpression(expr.value, bt, new LiteralKind.BoolLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
     }
 
     fun bind_void_literal(mut this, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_void_literal");
         let result: mut BoundLiteralExpression = new BoundLiteralExpression("void", this.type_registry.void_type, new LiteralKind.VoidLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
     }
 
     fun bind_identifier(mut this, expr: ast.IdentifierExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_identifier");
         let sym: Option<BoundSymbol> = scope.lookup_symbol(expr.name);
         if (sym.is_some()) {
             let bt: BoundType = this.resolve_symbol_type(sym.some);
@@ -2772,6 +2867,7 @@ class SemanticModel {
     }
 
     fun resolve_symbol_type(this, sym: BoundSymbol) -> BoundType {
+        _utils.trace_enter("Enter resolve_symbol_type");
         if (sym is BoundSymbol.variable) {
             return sym.variable.bound_type;
         }
@@ -2788,6 +2884,7 @@ class SemanticModel {
     }
 
     fun bind_binary(mut this, expr: ast.BinaryExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_binary");
         let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.operands.size())) {
@@ -2828,6 +2925,7 @@ class SemanticModel {
     }
 
     fun bind_unary(mut this, expr: ast.UnaryExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_unary");
         if (expr.operand.is_some()) {
             let bound_inner: Option<BoundExpression> = this.bind_expression(expr.operand.some, scope);
             if (bound_inner.is_some()) {
@@ -2841,6 +2939,7 @@ class SemanticModel {
     }
 
     fun resolve_field_type_from_class(this, base_type: BoundType, cls: BoundClassDefinition, field_name: string, scope: BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_field_type_from_class");
         // If base type has generic args, look up the field in the specialized class
         if (cast<i64>(base_type.generic_args.size()) > 0) {
             let mangled: string = mangle_generic_name(cls.name, base_type.generic_args);
@@ -2880,6 +2979,7 @@ class SemanticModel {
     }
 
     fun bind_member_access(mut this, expr: ast.MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_member_access");
         if (expr.base_expr.is_some()) {
             let bound_base: Option<BoundExpression> = this.bind_expression(expr.base_expr.some, scope);
             if (bound_base.is_some()) {
@@ -3000,6 +3100,7 @@ class SemanticModel {
     }
 
     fun find_function_return_type(this, sym: mut BoundFunctionSymbol) -> BoundType {
+        _utils.trace_enter("Enter find_function_return_type");
         if (sym.resolved_return_type.is_some()) {
             return sym.resolved_return_type.some;
         }
@@ -3007,10 +3108,20 @@ class SemanticModel {
             let found: BoundType = this.search_function_return_type_in_defs(sym.full_name, this.current_unit.some.definitions);
             if (found.kind is TypeKind.PrimitiveKind) {
                 let pt: PrimitiveType = found.primitive;
-                if (!(pt is PrimitiveType.VoidType)) {
+                if (pt is PrimitiveType.VoidType) {
+                    // The def search yielded void — either the function genuinely
+                    // returns void, or (for builtin-registered externs whose
+                    // declaration lives in a namespace, e.g. _emperor_gc_info at
+                    // <global>._emperor_gc_info vs its <global>.__builtin._emperor_gc_info
+                    // def) no matching def was found. The symbol's own return_type is
+                    // authoritative in both cases, so prefer it (returning `found`
+                    // here would wrongly make every such call void-typed).
+                    sym.resolved_return_type = new Option<BoundType>.some(sym.return_type);
+                    return sym.return_type;
+                } else {
                     sym.resolved_return_type = new Option<BoundType>.some(found);
-                    return found;
                 }
+                return found;
             } else {
                 sym.resolved_return_type = new Option<BoundType>.some(found);
                 return found;
@@ -3027,6 +3138,7 @@ class SemanticModel {
     }
 
     fun search_function_return_type_in_defs(this, target_full_name: string, defs: mut _utils.List<BoundDefinition>) -> BoundType {
+        _utils.trace_enter("Enter search_function_return_type_in_defs");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -3061,6 +3173,7 @@ class SemanticModel {
     // `this` parameter. function_sym.parameters is populated for every function
     // in bind_function_symbols (and for externs at registration).
     fun function_is_method(this, sym: BoundFunctionSymbol) -> bool {
+        _utils.trace_enter("Enter function_is_method");
         if (cast<i64>(sym.parameters.size()) > 0) {
             return sym.parameters.at(cast<u64>(0)).some.name == "this";
         }
@@ -3068,6 +3181,7 @@ class SemanticModel {
     }
 
     fun bind_function_call(mut this, expr: ast.FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_function_call");
         let args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments, scope);
         let mut empty_generic_args = new _utils.List<BoundType>();
         if (expr.callee.is_some()) {
@@ -3411,6 +3525,7 @@ class SemanticModel {
     }
 
     fun bind_arguments(mut this, args: _utils.List<ast.Expression>, scope: mut BoundScope) -> mut _utils.List<BoundExpression> {
+        _utils.trace_enter("Enter bind_arguments");
         let result: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
@@ -3424,6 +3539,7 @@ class SemanticModel {
     }
 
     fun bind_if_expr(mut this, expr: ast.IfExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_if_expr");
         let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, scope);
         let then_block: Option<BoundExpression> = this.bind_optional_expr(expr.then_block, scope);
         let else_block: Option<BoundExpression> = this.bind_optional_expr(expr.else_block, scope);
@@ -3437,6 +3553,7 @@ class SemanticModel {
     }
 
     fun bind_while_expr(mut this, expr: ast.WhileExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_while_expr");
         let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, scope);
         let body: Option<BoundExpression> = this.bind_optional_expr(expr.body, scope);
         let result: mut BoundWhileExpression = new BoundWhileExpression(this.type_registry.void_type, condition, body);
@@ -3444,6 +3561,7 @@ class SemanticModel {
     }
 
     fun bind_optional_expr(mut this, opt: Option<ast.Expression>, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_optional_expr");
         if (opt.is_some()) {
             return this.bind_expression(opt.some, scope);
         }
@@ -3451,6 +3569,7 @@ class SemanticModel {
     }
 
     fun bind_optional_stmt(mut this, opt: Option<ast.Statement>, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_optional_stmt");
         if (opt.is_some()) {
             return this.bind_statement(opt.some, scope);
         }
@@ -3458,6 +3577,7 @@ class SemanticModel {
     }
 
     fun bind_code_block(mut this, expr: ast.CodeBlockExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_code_block");
         let block_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<block>", scope.full_name + ".<block>", new Option<BoundScope>.some(scope));
         let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
         let i: mut i64 = 0;
@@ -3485,6 +3605,7 @@ class SemanticModel {
     // Given the inner (concrete) type, the interface type, and the interface method symbol,
     // find the corresponding implementation method in the class/enum definition's vtable.
     fun resolve_implementation_method(this, inner_type: BoundType, iface_type: BoundType, iface_method_sym: BoundSymbol) -> Option<BoundFunctionSymbol> {
+        _utils.trace_enter("Enter resolve_implementation_method");
         if (iface_method_sym is BoundSymbol.function_sym) {
             let method_name: string = iface_method_sym.function_sym.name;
             if (inner_type.type_definition.is_some()) {
@@ -3537,6 +3658,7 @@ class SemanticModel {
     }
 
     fun bind_cast(mut this, expr: ast.CastExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_cast");
         let target_type: BoundType = this.resolve_type_name(expr.type_name, scope);
         let inner: Option<BoundExpression> = this.bind_optional_expr(expr.inner, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
@@ -3563,6 +3685,7 @@ class SemanticModel {
     }
 
     fun get_concrete_type_name(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter get_concrete_type_name");
         if (bt.type_definition.is_some()) {
             return bt.type_definition.some.get_name();
         }
@@ -3570,6 +3693,7 @@ class SemanticModel {
     }
 
     fun resolve_new_generic_args(this, expr: ast.NewExpression, scope: BoundScope, bt: BoundType) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_new_generic_args");
         if (cast<i64>(expr.generic_args.size()) > 0) {
             let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let k: mut i64 = 0;
@@ -3583,6 +3707,7 @@ class SemanticModel {
     }
 
     fun resolve_type_by_name(this, name: string, scope: mut BoundScope) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter resolve_type_by_name");
         let dot_idx: i64 = string_find(name, ".");
         if (dot_idx < 0) {
             return scope.lookup_type_in_scope(name);
@@ -3605,6 +3730,7 @@ class SemanticModel {
     }
 
     fun find_last_dot(mut this, s: string) -> i64 {
+        _utils.trace_enter("Enter find_last_dot");
         let len: i64 = string_length(s);
         let last_dot: mut i64 = -1;
         let si: mut i64 = 0;
@@ -3619,6 +3745,7 @@ class SemanticModel {
     }
 
     fun try_bind_enum_variant(mut this, expr: ast.NewExpression, scope: mut BoundScope, last_dot: i64) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter try_bind_enum_variant");
         let len: i64 = string_length(expr.type_name);
         let enum_name: string = string_substring(expr.type_name, 0, last_dot);
         let variant_name: string = string_substring(expr.type_name, last_dot + 1, len - last_dot - 1);
@@ -3655,6 +3782,7 @@ class SemanticModel {
     }
 
     fun bind_new_expr(mut this, expr: ast.NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_new_expr");
         // First, try to resolve the full type_name as a class/struct type
         let type_sym: Option<BoundSymbol> = this.resolve_type_by_name(expr.type_name, scope);
         if (type_sym.is_some()) {
@@ -3699,6 +3827,7 @@ class SemanticModel {
     }
 
     fun bind_statement(mut this, stmt: ast.Statement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_statement");
         if (stmt is ast.Statement.expression) {
             if (stmt.expression.expression.is_some()) {
                 let bound_expr: Option<BoundExpression> = this.bind_expression(stmt.expression.expression.some, scope);
@@ -3845,6 +3974,7 @@ class SemanticModel {
     // --- Pass 7: Validate Control Flow ---
 
     fun pass_validate_control_flow(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_validate_control_flow");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
             let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
@@ -3854,6 +3984,7 @@ class SemanticModel {
     }
 
     fun validate_control_flow_for_def(mut this, def: BoundDefinition) {
+        _utils.trace_enter("Enter validate_control_flow_for_def");
         if (def is BoundDefinition.function_def) {
             let func: BoundFunctionDefinition = def.function_def;
             if (func.body.is_some() && func.symbol.is_some()) {
@@ -3894,6 +4025,7 @@ class SemanticModel {
     }
 
     fun validate_expr_control_flow(mut this, expr: BoundExpression, ret_type: BoundType, loop_depth: i64) {
+        _utils.trace_enter("Enter validate_expr_control_flow");
         if (expr is BoundExpression.code_block) {
             let cb: BoundCodeBlockExpression = expr.code_block;
             let i: mut i64 = 0;
@@ -3959,6 +4091,7 @@ class SemanticModel {
     }
 
     fun validate_stmt_control_flow(mut this, stmt: BoundStatement, ret_type: BoundType, loop_depth: i64) {
+        _utils.trace_enter("Enter validate_stmt_control_flow");
         if (stmt is BoundStatement.return_stmt) {
             let ret: BoundReturnStatement = stmt.return_stmt;
             if (ret.value.is_some()) {
@@ -4015,6 +4148,7 @@ class SemanticModel {
     }
 
     fun expr_always_returns(this, expr: BoundExpression) -> bool {
+        _utils.trace_enter("Enter expr_always_returns");
         if (expr is BoundExpression.code_block) {
             let cb: BoundCodeBlockExpression = expr.code_block;
             if (cast<i64>(cb.statements.size()) == 0) { return false; }
@@ -4033,6 +4167,7 @@ class SemanticModel {
     }
 
     fun stmt_always_returns(this, stmt: BoundStatement) -> bool {
+        _utils.trace_enter("Enter stmt_always_returns");
         if (stmt is BoundStatement.return_stmt) { return true; }
         if (stmt is BoundStatement.expression) {
             if (stmt.expression.expression.is_some()) {
@@ -4073,6 +4208,7 @@ class SemanticModel {
     }
 
     fun is_literal_true(this, opt: Option<BoundExpression>) -> bool {
+        _utils.trace_enter("Enter is_literal_true");
         if (opt.is_none()) { return false; }
         let expr: BoundExpression = opt.some;
         if (expr is BoundExpression.literal) {
@@ -4084,10 +4220,12 @@ class SemanticModel {
     }
 
     fun is_stmt_condition_literal_true(this, opt: Option<BoundExpression>) -> bool {
+        _utils.trace_enter("Enter is_stmt_condition_literal_true");
         return this.is_literal_true(opt);
     }
 
     fun collect_function_instantiations_from_ast(this, defs: _utils.List<ast.Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: ast.Definition = defs.at(cast<u64>(i)).some;
@@ -4124,6 +4262,7 @@ class SemanticModel {
     }
 
     fun collect_func_inst_from_expr(this, expr: ast.Expression, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_func_inst_from_expr");
         if (expr is ast.Expression.function_call) {
             let fc: ast.FunctionCallExpression = expr.function_call;
             if (fc.callee.is_some()) {
@@ -4224,6 +4363,7 @@ class SemanticModel {
     }
 
     fun find_bound_function_def(this, defs: _utils.List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter find_bound_function_def");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -4246,6 +4386,7 @@ class SemanticModel {
     }
 
     fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundType>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_function_def");
         let ast_def: Option<ast.Definition> = this.find_ast_def_by_name(this.ast_definitions, tmpl.name);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is ast.Definition.function_def)) { return new Option<BoundDefinition>.none(); }
@@ -4306,6 +4447,7 @@ class SemanticModel {
     // Find the specialized class scope for a method, if its parent class has been specialized.
     // This is needed so that class type params (e.g., T=i32) are visible in method specializations.
     fun find_specialized_class_scope(this, defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_specialized_class_scope");
         let orig_name: string = this.extract_template_name(method_name);
         // Find the template class that owns this method
         let i: mut i64 = 0;
@@ -4335,6 +4477,7 @@ class SemanticModel {
     }
 
     fun find_class_specialization_scope(this, defs: _utils.List<BoundDefinition>, template_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_class_specialization_scope");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: BoundDefinition = defs.at(cast<u64>(i)).some;
@@ -4353,6 +4496,7 @@ class SemanticModel {
     }
 
     fun find_method_class_scope(this, existing_defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_method_class_scope");
         let orig_name: string = this.extract_template_name(method_name);
         // Search existing defs
         let result: Option<BoundScope> = this.find_specialized_class_scope(existing_defs, method_name);
@@ -4384,6 +4528,7 @@ class SemanticModel {
     }
 
     fun build_specialized_full_name(this, tmpl: BoundFunctionDefinition, mangled_name: string, class_scope: Option<BoundScope>) -> string {
+        _utils.trace_enter("Enter build_specialized_full_name");
         if (class_scope.is_some()) {
             return class_scope.some.full_name + "." + mangled_name;
         }
@@ -4393,6 +4538,7 @@ class SemanticModel {
     // Find the parent class for a method by extracting the class name from the function's full_name
     // e.g. full_name="<global>.Foo__i32.foo__i64" -> parent class is "Foo__i32"
     fun find_parent_class_for_method(this, defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, func_full_name: string) -> Option<BoundClassDefinition> {
+        _utils.trace_enter("Enter find_parent_class_for_method");
         // Extract class name from full_name: strip <global>. prefix and last .method part
         let prefix: string = "<global>.";
         let prefix_len: i64 = string_length(prefix);
@@ -4454,6 +4600,7 @@ class SemanticModel {
 
     // Fix the 'this' parameter type for a specialized class method
     fun fix_this_param_type(this, func: mut BoundFunctionDefinition, cls: BoundClassDefinition) {
+        _utils.trace_enter("Enter fix_this_param_type");
         let pi: mut i64 = 0;
         while (pi < cast<i64>(func.parameters.size())) {
             let bp: mut BoundFunctionParameter = func.parameters.at(cast<u64>(pi)).some;

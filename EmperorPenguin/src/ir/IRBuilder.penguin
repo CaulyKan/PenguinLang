@@ -4,33 +4,40 @@ class IRBuilder {
     func: mut IRFunction = new IRFunction("", "", new ast.SourceLocation("", 0, 0));
 
     fun new(mut this, func: mut IRFunction) {
+
         this.func = func;
     }
 
     fun alloc_temp(mut this, ir_type: string) -> IRValue {
+        _utils.trace_enter("Enter alloc_temp");
         return this.func.alloc_temp(ir_type);
     }
 
     fun make_loc(mut this, file_path: string, line: i64, col: i64) -> ast.SourceLocation {
+        _utils.trace_enter("Enter make_loc");
         return new ast.SourceLocation(file_path, line, col);
     }
 
     // CONST instruction
     fun emit_const(mut this, value: string, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_const");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.const_inst(new IRConst(result, value, loc)));
         return result;
     }
 
     fun emit_const_direct(mut this, dest: IRValue, value: string, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_const_direct");
         this.func.add_inst(new IRInstruction.const_inst(new IRConst(dest, value, loc)));
     }
 
     fun emit_const_i64(mut this, value: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_const_i64");
         return this.emit_const(value, "i64", loc);
     }
 
     fun emit_const_bool(mut this, value: bool, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_const_bool");
         if (value) {
             return this.emit_const("true", "bool", loc);
         }
@@ -38,11 +45,13 @@ class IRBuilder {
     }
 
     fun emit_const_string(mut this, value: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_const_string");
         return this.emit_const(value, "string", loc);
     }
 
     // ARG instruction - parameter access
     fun emit_arg(mut this, param_name: string, param_index: i64, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_arg");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.arg(new IRArg(result, param_name, param_index, ir_type, loc)));
         return result;
@@ -50,11 +59,13 @@ class IRBuilder {
 
     // ASSIGN instruction
     fun emit_assign(mut this, dest: IRValue, src: IRValue, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_assign");
         this.func.add_inst(new IRInstruction.assign(new IRAssign(dest, src, loc)));
     }
 
     // CAST instruction
     fun emit_cast(mut this, operand: IRValue, from_type: string, to_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_cast");
         let result: IRValue = this.func.alloc_temp(to_type);
         this.func.add_inst(new IRInstruction.cast_inst(new IRCast(result, operand, from_type, to_type, loc)));
         return result;
@@ -62,6 +73,7 @@ class IRBuilder {
 
     // BINOP instruction (merges binary and comparison operations)
     fun emit_binop(mut this, op: string, left: IRValue, right: IRValue, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_binop");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.binop(new IRBinOp(op, left, right, result, ir_type, loc)));
         return result;
@@ -69,6 +81,7 @@ class IRBuilder {
 
     // UNARYOP instruction
     fun emit_unaryop(mut this, op: string, operand: IRValue, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_unaryop");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.unaryop(new IRUnaryOp(op, operand, result, ir_type, loc)));
         return result;
@@ -76,6 +89,7 @@ class IRBuilder {
 
     // RDMBR instruction (replaces GEP + LOAD)
     fun emit_rdmbr(mut this, obj: IRValue, field_name: string, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_rdmbr");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.rdmbr(new IRRdmbr(result, obj, field_name, ir_type, loc)));
         return result;
@@ -83,31 +97,37 @@ class IRBuilder {
 
     // WRMBR instruction (replaces GEP + STORE)
     fun emit_wrmbr(mut this, obj: IRValue, field_name: string, value: IRValue, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_wrmbr");
         this.func.add_inst(new IRInstruction.wrmbr(new IRWrmbr(obj, field_name, value, loc)));
     }
 
     // BR instruction
     fun emit_br(mut this, target: IRLabel, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_br");
         this.func.add_inst(new IRInstruction.br(new IRBr(target, loc)));
     }
 
     // BR_COND instruction
     fun emit_br_cond(mut this, cond: IRValue, true_lbl: IRLabel, false_lbl: IRLabel, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_br_cond");
         this.func.add_inst(new IRInstruction.br_cond(new IRBrCond(cond, true_lbl, false_lbl, loc)));
     }
 
     // RET instruction
     fun emit_ret(mut this, value: IRValue, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_ret");
         this.func.add_inst(new IRInstruction.ret(new IRRet(value, loc)));
     }
 
     // RET_VOID instruction
     fun emit_ret_void(mut this, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_ret_void");
         this.func.add_inst(new IRInstruction.ret_void(new IRRetVoid(loc)));
     }
 
     // CALL instruction
     fun emit_call(mut this, func_name: string, args: mut _utils.List<IRValue>, ret_type: string, loc: ast.SourceLocation) -> Option<IRValue> {
+        _utils.trace_enter("Enter emit_call");
         if (ret_type != "void") {
             let result: IRValue = this.func.alloc_temp(ret_type);
             this.func.add_inst(new IRInstruction.call(new IRCall(func_name, args, result, ret_type, loc)));
@@ -119,6 +139,7 @@ class IRBuilder {
 
     // CALL_VIRT instruction
     fun emit_call_virt(mut this, obj: IRValue, interface_id: string, slot: i64, args: mut _utils.List<IRValue>, ret_type: string, loc: ast.SourceLocation) -> Option<IRValue> {
+        _utils.trace_enter("Enter emit_call_virt");
         if (ret_type != "void") {
             let result: IRValue = this.func.alloc_temp(ret_type);
             this.func.add_inst(new IRInstruction.call_virt(new IRCallVirt(obj, interface_id, slot, args, result, ret_type, loc)));
@@ -131,6 +152,7 @@ class IRBuilder {
 
     // NEW instruction
     fun emit_new(mut this, type_name: string, args: mut _utils.List<IRValue>, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_new");
         // Use <global>.type_name so consumers (e.g. emit_new_enum heap-copy check)
         // can detect the actual class type of the result register.
         let result: IRValue = this.func.alloc_temp("<global>." + type_name);
@@ -140,6 +162,7 @@ class IRBuilder {
 
     // NEW_ENUM instruction
     fun emit_new_enum(mut this, type_name: string, variant_idx: i64, variant_name: string, payload: Option<IRValue>, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_new_enum");
         let result: IRValue = this.func.alloc_temp(type_name);
         this.func.add_inst(new IRInstruction.new_enum(new IRNewEnum(type_name, variant_idx, variant_name, payload, result, loc)));
         return result;
@@ -147,6 +170,7 @@ class IRBuilder {
 
     // ISENUM instruction - enum pattern matching
     fun emit_isenum(mut this, enum_value: IRValue, variant_idx: IRValue, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_isenum");
         let result: IRValue = this.func.alloc_temp("bool");
         this.func.add_inst(new IRInstruction.isenum(new IRIsEnum(enum_value, variant_idx, result, loc)));
         return result;
@@ -154,6 +178,7 @@ class IRBuilder {
 
     // RDENUM instruction - read enum payload
     fun emit_rdenum(mut this, enum_value: IRValue, variant_name: string, payload_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_rdenum");
         let result: IRValue = this.func.alloc_temp(payload_type);
         this.func.add_inst(new IRInstruction.rdenum(new IRRdenum(result, enum_value, variant_name, payload_type, loc)));
         return result;
@@ -161,11 +186,13 @@ class IRBuilder {
 
     // LABEL instruction
     fun emit_label(mut this, label: IRLabel) {
+        _utils.trace_enter("Enter emit_label");
         this.func.add_inst(new IRInstruction.label_inst(new IRLabelInst(label)));
     }
 
     // ISINSTANCE instruction - runtime type check via metadata
     fun emit_isinstance(mut this, obj: IRValue, type_id: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_isinstance");
         let result: IRValue = this.func.alloc_temp("bool");
         this.func.add_inst(new IRInstruction.isinstance(new IRIsInstance(result, obj, type_id, loc)));
         return result;
@@ -173,6 +200,7 @@ class IRBuilder {
 
     // BOX instruction - heap-allocate and copy value type for interface use
     fun emit_box(mut this, operand: IRValue, source_type_name: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_box");
         let result: IRValue = this.func.alloc_temp("ptr");
         this.func.add_inst(new IRInstruction.box(new IRBox(result, operand, source_type_name, loc)));
         return result;
@@ -180,17 +208,20 @@ class IRBuilder {
 
     // UNBOX instruction - load value type from heap pointer back to stack
     fun emit_unbox(mut this, operand: IRValue, target_type_name: string, target_ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_unbox");
         let result: IRValue = this.func.alloc_temp(target_ir_type);
         this.func.add_inst(new IRInstruction.unbox(new IRUnbox(result, operand, target_type_name, target_ir_type, loc)));
         return result;
     }
 
     fun void_value(mut this) -> IRValue {
+        _utils.trace_enter("Enter void_value");
         return new IRValue.constant(new IRConstant("void", "void"));
     }
 
     // GLOBAL_LOAD instruction - load value from global variable
     fun emit_global_load(mut this, global_name: string, ir_type: string, loc: ast.SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_global_load");
         let result: IRValue = this.func.alloc_temp(ir_type);
         this.func.add_inst(new IRInstruction.global_load(new IRGlobalLoad(result, global_name, ir_type, loc)));
         return result;
@@ -198,6 +229,7 @@ class IRBuilder {
 
     // GLOBAL_STORE instruction - store value to global variable
     fun emit_global_store(mut this, global_name: string, value: IRValue, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter emit_global_store");
         this.func.add_inst(new IRInstruction.global_store(new IRGlobalStore(global_name, value, loc)));
     }
 }

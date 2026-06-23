@@ -12,6 +12,7 @@ class BoundScope {
     imported_namespaces: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, kind: mut ScopeKind, name: string, full_name: string, parent: mut Option<BoundScope>) {
+
         this.kind = kind;
         this.name = name;
         this.full_name = full_name;
@@ -19,6 +20,7 @@ class BoundScope {
     }
 
     fun lookup_symbol_local(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_symbol_local");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.symbols.size())) {
             if (this.symbols.at(cast<u64>(i)).some.get_name() == name) {
@@ -30,6 +32,7 @@ class BoundScope {
     }
 
     fun lookup_symbol(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_symbol");
         let local: Option<BoundSymbol> = this.lookup_symbol_local(name);
         if (local.is_some()) {
             return local;
@@ -51,6 +54,7 @@ class BoundScope {
     }
 
     fun lookup_type_in_scope_local(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_type_in_scope_local");
         let i: mut u64 = 0;
         while (i < this.symbols.size()) {
             let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
@@ -63,6 +67,7 @@ class BoundScope {
     }
 
     fun lookup_type_in_scope(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_type_in_scope");
         let i: mut u64 = 0;
         while (i < this.symbols.size()) {
             let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
@@ -88,6 +93,7 @@ class BoundScope {
     }
 
     fun lookup_namespace(this, name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter lookup_namespace");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.children.size())) {
             let child: BoundScope = this.children.at(cast<u64>(i)).some;
@@ -100,6 +106,7 @@ class BoundScope {
     }
 
     fun resolve_qualified(this, parts: _utils.List<string>) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter resolve_qualified");
         if (cast<i64>(parts.size()) == 0) { return new Option<BoundSymbol>.none(); }
         if (cast<i64>(parts.size()) == 1) {
             return this.lookup_symbol(parts.at(cast<u64>(0)).some);
@@ -126,6 +133,7 @@ class BoundScope {
     }
 
     fun lookup_with_imports(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_with_imports");
         let result: Option<BoundSymbol> = this.lookup_symbol(name);
         if (result.is_some()) { return result; }
         let i: mut i64 = 0;
@@ -147,6 +155,7 @@ class BoundScope {
     }
 
     fun add_or_merge_namespace(mut this, name: string) -> BoundScope {
+        _utils.trace_enter("Enter add_or_merge_namespace");
         let existing: Option<BoundScope> = this.lookup_namespace(name);
         if (existing.is_some()) { return existing.some; }
         let ns: BoundScope = new BoundScope(new ScopeKind.NamespaceScope(), name, this.full_name + "." + name, new Option<BoundScope>.some(this));
@@ -155,6 +164,7 @@ class BoundScope {
     }
 
     fun add_symbol(mut this, symbol: BoundSymbol) {
+        _utils.trace_enter("Enter add_symbol");
         if (symbol is BoundSymbol.variable) {
             symbol.variable.enclosing_scope = new Option<BoundScope>.some(this);
             symbol.variable.full_name = this.full_name + "." + symbol.variable.name;
@@ -179,12 +189,14 @@ class BoundScope {
     }
 
     fun add_child(mut this, child: mut BoundScope) {
+        _utils.trace_enter("Enter add_child");
         child.parent = new Option<BoundScope>.some(this);
         child.full_name = this.full_name + "." + child.name;
         this.children.push(child);
     }
 
     fun find_child_by_name(this, name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_child_by_name");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.children.size())) {
             if (this.children.at(cast<u64>(i)).some.name == name) {

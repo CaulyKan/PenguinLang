@@ -4,6 +4,7 @@ class SymbolRegEntry {
     symbol_full_name: !mut string = "";
     value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     fun new(mut this, name: string, value: IRValue) {
+
         this.symbol_full_name = name;
         this.value = value;
     }
@@ -13,6 +14,7 @@ class LoopLabels {
     header: !mut IRLabel = new IRLabel("");
     exit: !mut IRLabel = new IRLabel("");
     fun new(mut this, header: IRLabel, exit: IRLabel) {
+
         this.header = header;
         this.exit = exit;
     }
@@ -29,11 +31,13 @@ class IRGenerator {
     fun new(mut this) {}
 
     fun make_loc(this, line: i64, col: i64) -> ast.SourceLocation {
+        _utils.trace_enter("Enter make_loc");
         return new ast.SourceLocation(this.source_file, line, col);
     }
 
     // Extract source location from a bound symbol (if available)
     fun sym_loc(this, sym: Option<bound.BoundSymbol>) -> ast.SourceLocation {
+        _utils.trace_enter("Enter sym_loc");
         if (sym.is_some()) {
             let s: bound.BoundSymbol = sym.some;
             if (s is bound.BoundSymbol.variable) {
@@ -57,6 +61,7 @@ class IRGenerator {
     }
 
     fun sym_loc_func(this, sym: Option<bound.BoundFunctionSymbol>) -> ast.SourceLocation {
+        _utils.trace_enter("Enter sym_loc_func");
         if (sym.is_some()) {
             let l: ast.SourceLocation = sym.some.location;
             return new ast.SourceLocation(l.filename, l.line, l.col);
@@ -65,6 +70,7 @@ class IRGenerator {
     }
 
     fun generate(mut this, unit: bound.BoundCompilationUnit) -> IRModule {
+        _utils.trace_enter("Enter generate");
         let module: mut IRModule = new IRModule(unit.location);
         this.source_file = unit.location.filename;
         this.current_module = module;
@@ -79,6 +85,7 @@ class IRGenerator {
     }
 
     fun lower_definition(mut this, def: bound.BoundDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_definition");
         if (def is bound.BoundDefinition.function_def) {
             this.lower_function_def(def.function_def, module);
         }
@@ -105,6 +112,7 @@ class IRGenerator {
     }
 
     fun lower_namespace(mut this, def: bound.BoundNamespaceDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_namespace");
         let i: mut i64 = 0;
         while (i < cast<i64>(def.children.size())) {
             this.lower_definition(def.children.at(cast<u64>(i)).some, module);
@@ -113,6 +121,7 @@ class IRGenerator {
     }
 
     fun lower_function_def(mut this, def: bound.BoundFunctionDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_function_def");
         if (def.is_generic_template) { return; }
         if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin IR]   Lowering function " + def.full_name); }
         let ret_type: string = this.bound_type_to_ir_type(def.return_type);
@@ -177,6 +186,7 @@ class IRGenerator {
     }
 
     fun lower_class_def(mut this, def: bound.BoundClassDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_class_def");
         if (def.is_generic_template) { return; }
         let ctor_lowered: mut bool = false;
         let mi: mut i64 = 0;
@@ -216,6 +226,7 @@ class IRGenerator {
     }
 
     fun lower_enum_def(mut this, def: bound.BoundEnumDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_enum_def");
         // Skip methods for generic template enums — only specialized versions get lowered
         if (cast<i64>(def.generic_params.size()) > 0) { return; }
         // Lower direct enum methods
@@ -247,6 +258,7 @@ class IRGenerator {
     }
 
     fun lower_interface_def(mut this, def: bound.BoundInterfaceDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_interface_def");
         let mi: mut i64 = 0;
         while (mi < cast<i64>(def.methods.size())) {
             let method_def: bound.BoundDefinition = def.methods.at(cast<u64>(mi)).some;
@@ -260,6 +272,7 @@ class IRGenerator {
     }
 
     fun lower_initial_routine(mut this, def: bound.BoundInitialRoutineDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_initial_routine");
         let loc: ast.SourceLocation = this.sym_loc_func(def.symbol);
         this.builder = new IRBuilder(new IRFunction(def.full_name, "void", loc));
         this.builder.func.display_name = "initial";
@@ -275,6 +288,7 @@ class IRGenerator {
     }
 
     fun lower_global_var_def(mut this, def: bound.BoundGlobalVariableDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_global_var_def");
         let ir_type: string = this.bound_type_to_ir_type(def.bound_type);
         let global_name: string = this.clean_function_name(def.full_name);
 
@@ -310,6 +324,7 @@ class IRGenerator {
     }
 
     fun lower_expression(mut this, expr: bound.BoundExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_expression");
         if (expr is bound.BoundExpression.literal) {
             return this.lower_literal(expr.literal);
         }
@@ -351,12 +366,14 @@ class IRGenerator {
     }
 
     fun lower_literal(mut this, expr: bound.BoundLiteralExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_literal");
         let ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
         let loc: ast.SourceLocation = this.make_loc(0, 0);
         return this.builder.emit_const(expr.value, ir_type, loc);
     }
 
     fun lower_identifier(mut this, expr: bound.BoundIdentifierExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_identifier");
         if (expr.symbol.is_some()) {
             let reg: Option<IRValue> = this.get_symbol_reg(expr.symbol.some);
             if (reg.is_some()) {
@@ -388,6 +405,7 @@ class IRGenerator {
     }
 
     fun lower_binary(mut this, expr: bound.BoundBinaryExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_binary");
         let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
         let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (cast<i64>(expr.operands.size()) == 0) {
@@ -443,6 +461,7 @@ class IRGenerator {
     }
 
     fun lower_binary_chain(mut this, expr: bound.BoundBinaryExpression, ir_type: string, idx: i64, accum: IRValue) -> IRValue {
+        _utils.trace_enter("Enter lower_binary_chain");
         if (idx >= cast<i64>(expr.operands.size())) {
             return accum;
         }
@@ -458,6 +477,7 @@ class IRGenerator {
     }
 
     fun lower_unary(mut this, expr: bound.BoundUnaryExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_unary");
         let ir_type: mut string = this.bound_type_to_ir_type(expr.get_bound_type());
         let loc: ast.SourceLocation = this.make_loc(0, 0);
         if (expr.operand.is_some()) {
@@ -476,6 +496,7 @@ class IRGenerator {
     }
 
     fun lower_function_call(mut this, expr: bound.BoundFunctionCallExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_function_call");
         let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
         let ai: mut i64 = 0;
         while (ai < cast<i64>(expr.arguments.size())) {
@@ -596,6 +617,7 @@ class IRGenerator {
     // For boxing optimization: when direct_dispatch=true, lower the inner expression
     // of the cast (skipping the box). Returns empty IRValue if not applicable.
     fun lower_direct_dispatch_this(mut this, ma: bound.BoundMemberAccessExpression, call_expr: bound.BoundFunctionCallExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_direct_dispatch_this");
         if (!call_expr.direct_dispatch) {
             return this.builder.void_value();
         }
@@ -614,6 +636,7 @@ class IRGenerator {
     }
 
     fun replace_in_func_name(this, func_name: string, old_class: string, new_class: string) -> string {
+        _utils.trace_enter("Enter replace_in_func_name");
         if (func_name == old_class) {
             return new_class;
         }
@@ -640,6 +663,7 @@ class IRGenerator {
     }
 
     fun ensure_extern_decl(mut this, func_name: string, args: _utils.List<IRValue>, ret_type: string) {
+        _utils.trace_enter("Enter ensure_extern_decl");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(this.current_module.functions.size())) {
             let existing: IRFunction = this.current_module.functions.at(cast<u64>(fi)).some;
@@ -665,6 +689,7 @@ class IRGenerator {
     // non-constructor methods, which matches the vtable slot ordering.
     // For concrete calls (class scope): walk to find class vtable.
     fun resolve_vtable_slot(this, expr: bound.BoundFunctionCallExpression) -> i64 {
+        _utils.trace_enter("Enter resolve_vtable_slot");
         if (expr.callee_symbol.is_some()) {
             let sym: bound.BoundSymbol = expr.callee_symbol.some;
             let scope: Option<bound.BoundScope> = sym.get_enclosing_scope();
@@ -734,6 +759,7 @@ class IRGenerator {
     // Walk up the scope chain to find a ClassScope, then look up the type symbol
     // in the parent scope to get the BoundClassDefinition with vtables.
     fun find_class_def_from_scope(this, scope: bound.BoundScope) -> Option<bound.BoundClassDefinition> {
+        _utils.trace_enter("Enter find_class_def_from_scope");
         if (scope.kind is bound.ScopeKind.ClassScope) {
             if (scope.parent.is_some()) {
                 let type_sym: Option<bound.BoundSymbol> = scope.parent.some.lookup_symbol_local(scope.name);
@@ -760,6 +786,7 @@ class IRGenerator {
     // Looks at the callee symbol's scope to find which interface it belongs to,
     // then returns the interface type's display name.
     fun resolve_interface_id(this, expr: bound.BoundFunctionCallExpression) -> string {
+        _utils.trace_enter("Enter resolve_interface_id");
         if (expr.callee_symbol.is_some()) {
             let sym: bound.BoundSymbol = expr.callee_symbol.some;
             let scope: Option<bound.BoundScope> = sym.get_enclosing_scope();
@@ -773,6 +800,7 @@ class IRGenerator {
     }
 
     fun lower_code_block(mut this, expr: bound.BoundCodeBlockExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_code_block");
         let si: mut i64 = 0;
         while (si < cast<i64>(expr.statements.size())) {
             this.lower_statement(expr.statements.at(cast<u64>(si)).some);
@@ -788,6 +816,7 @@ class IRGenerator {
     }
 
     fun lower_cast(mut this, expr: bound.BoundCastExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_cast");
         let inner: IRValue = this.lower_expression(expr.inner.some);
         let loc: ast.SourceLocation = this.make_loc(0, 0);
 
@@ -814,6 +843,7 @@ class IRGenerator {
     }
 
     fun lower_if_expr(mut this, expr: bound.BoundIfExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_if_expr");
         let ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
         let is_void: bool = ir_type == "void";
         let merge_lbl: IRLabel = this.builder.func.alloc_label("merge");
@@ -860,6 +890,7 @@ class IRGenerator {
     }
 
     fun lower_while_expr(mut this, expr: bound.BoundWhileExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_while_expr");
         let header_lbl: IRLabel = this.builder.func.alloc_label("while");
         let body_lbl: IRLabel = this.builder.func.alloc_label("while_body");
         let exit_lbl: IRLabel = this.builder.func.alloc_label("while_exit");
@@ -885,6 +916,7 @@ class IRGenerator {
     }
 
     fun lower_member_access(mut this, expr: bound.BoundMemberAccessExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_member_access");
         let loc: ast.SourceLocation = this.sym_loc(expr.member_symbol);
 
         // Handle namespace-qualified global variable access (e.g., Foo.msg)
@@ -942,6 +974,7 @@ class IRGenerator {
     }
 
     fun lower_new(mut this, expr: bound.BoundNewExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_new");
         let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
         let ai: mut i64 = 0;
         while (ai < cast<i64>(expr.arguments.size())) {
@@ -969,6 +1002,7 @@ class IRGenerator {
     }
 
     fun mangle_generic_name(this, base_name: string, generic_args: _utils.List<bound.BoundType>) -> string {
+        _utils.trace_enter("Enter mangle_generic_name");
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
@@ -994,6 +1028,7 @@ class IRGenerator {
 
     // Wrap a BoundStatement as a void BoundExpression (code block)
     fun wrap_stmt_as_expr(this, stmt: bound.BoundStatement) -> bound.BoundExpression {
+        _utils.trace_enter("Enter wrap_stmt_as_expr");
         let void_type: bound.BoundType = new bound.BoundType();
         let stmts: mut _utils.List<bound.BoundStatement> = new _utils.List<bound.BoundStatement>();
         stmts.push(stmt);
@@ -1003,6 +1038,7 @@ class IRGenerator {
 
     // Convert Option<BoundStatement> to Option<BoundExpression> by wrapping as code block
     fun wrap_stmt_option(this, stmt_opt: Option<bound.BoundStatement>) -> Option<bound.BoundExpression> {
+        _utils.trace_enter("Enter wrap_stmt_option");
         if (stmt_opt.is_some()) {
             return new Option<bound.BoundExpression>.some(this.wrap_stmt_as_expr(stmt_opt.some));
         }
@@ -1010,6 +1046,7 @@ class IRGenerator {
     }
 
     fun lower_enum_variant(mut this, expr: bound.BoundEnumVariantExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_enum_variant");
         let payload: mut Option<IRValue> = new Option<IRValue>.none();
         if (expr.payload.is_some()) {
             payload = new Option<IRValue>.some(this.lower_expression(expr.payload.some));
@@ -1027,6 +1064,7 @@ class IRGenerator {
     }
 
     fun lower_statement(mut this, stmt: bound.BoundStatement) {
+        _utils.trace_enter("Enter lower_statement");
         if (stmt is bound.BoundStatement.expression) {
             if (stmt.expression.expression.is_some()) {
                 let _ = this.lower_expression(stmt.expression.expression.some);
@@ -1068,6 +1106,7 @@ class IRGenerator {
     }
 
     fun lower_let_decl(mut this, stmt: bound.BoundLetDeclarationStatement) {
+        _utils.trace_enter("Enter lower_let_decl");
         if (stmt.variable_symbol.is_some()) {
             let sym: bound.BoundVariableSymbol = stmt.variable_symbol.some;
             let ir_type: string = this.bound_type_to_ir_type(sym.bound_type);
@@ -1088,6 +1127,7 @@ class IRGenerator {
     }
 
     fun lower_assignment(mut this, stmt: bound.BoundAssignmentStatement) {
+        _utils.trace_enter("Enter lower_assignment");
         if (stmt.value.is_some()) {
             let val: IRValue = this.lower_expression(stmt.value.some);
             let loc: ast.SourceLocation = stmt.location;
@@ -1167,6 +1207,7 @@ class IRGenerator {
     }
 
     fun lower_if_stmt(mut this, stmt: bound.BoundIfStatement) {
+        _utils.trace_enter("Enter lower_if_stmt");
         let void_type: bound.BoundType = new bound.BoundType();
         let then_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.then_statement);
         let else_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.else_statement);
@@ -1175,6 +1216,7 @@ class IRGenerator {
     }
 
     fun lower_while_stmt(mut this, stmt: bound.BoundWhileStatement) {
+        _utils.trace_enter("Enter lower_while_stmt");
         let void_type: bound.BoundType = new bound.BoundType();
         let body_expr: Option<bound.BoundExpression> = this.wrap_stmt_option(stmt.body);
         let while_expr: bound.BoundWhileExpression = new bound.BoundWhileExpression(void_type, stmt.condition, body_expr);
@@ -1182,6 +1224,7 @@ class IRGenerator {
     }
 
     fun lower_block(mut this, stmt: bound.BoundBlockStatement) {
+        _utils.trace_enter("Enter lower_block");
         let i: mut i64 = 0;
         while (i < cast<i64>(stmt.statements.size())) {
             this.lower_statement(stmt.statements.at(cast<u64>(i)).some);
@@ -1190,6 +1233,7 @@ class IRGenerator {
     }
 
     fun lower_break(mut this, stmt: bound.BoundBreakStatement) {
+        _utils.trace_enter("Enter lower_break");
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
             let loc: ast.SourceLocation = stmt.location;
@@ -1198,6 +1242,7 @@ class IRGenerator {
     }
 
     fun lower_continue(mut this, stmt: bound.BoundContinueStatement) {
+        _utils.trace_enter("Enter lower_continue");
         if (cast<i64>(this.loop_stack.size()) > 0) {
             let labels: LoopLabels = this.loop_stack.at(cast<u64>(cast<i64>(this.loop_stack.size()) - 1)).some;
             let loc: ast.SourceLocation = stmt.location;
@@ -1206,6 +1251,7 @@ class IRGenerator {
     }
 
     fun bound_type_to_ir_type(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter bound_type_to_ir_type");
         if (bt.kind is bound.TypeKind.PrimitiveKind) {
             if (bt.primitive is bound.PrimitiveType.BoolType) { return "bool"; }
             if (bt.primitive is bound.PrimitiveType.I8) { return "i8"; }
@@ -1253,6 +1299,7 @@ class IRGenerator {
     }
 
     fun binary_op_to_ir(this, op: ast.BinaryOperator) -> string {
+        _utils.trace_enter("Enter binary_op_to_ir");
         if (op is ast.BinaryOperator.Add) { return "add"; }
         if (op is ast.BinaryOperator.Subtract) { return "sub"; }
         if (op is ast.BinaryOperator.Multiply) { return "mul"; }
@@ -1275,14 +1322,17 @@ class IRGenerator {
     }
 
     fun unary_op_to_ir(this, op: ast.UnaryOperator) -> string {
+        _utils.trace_enter("Enter unary_op_to_ir");
         if (op is ast.UnaryOperator.Negate) { return "neg"; }
         if (op is ast.UnaryOperator.Not) { return "not"; }
         if (op is ast.UnaryOperator.BitwiseNot) { return "bitnot"; }
+        if (op is ast.UnaryOperator.UnaryPlus) { return "plus"; }
         println("[IR Warning] Unhandled unary operator, using 'unknown'");
         return "unknown";
     }
 
     fun get_symbol_reg(this, symbol: bound.BoundSymbol) -> Option<IRValue> {
+        _utils.trace_enter("Enter get_symbol_reg");
         let name: string = symbol.get_full_name();
         let i: mut i64 = 0;
         while (i < cast<i64>(this.symbol_regs.size())) {
@@ -1296,14 +1346,17 @@ class IRGenerator {
     }
 
     fun set_symbol_reg(mut this, symbol: bound.BoundSymbol, value: IRValue) {
+        _utils.trace_enter("Enter set_symbol_reg");
         this.symbol_regs.push(new SymbolRegEntry(symbol.get_full_name(), value));
     }
 
     fun set_symbol_reg_by_name(mut this, name: string, value: IRValue) {
+        _utils.trace_enter("Enter set_symbol_reg_by_name");
         this.symbol_regs.push(new SymbolRegEntry(name, value));
     }
 
     fun clean_function_name(this, full_name: string) -> string {
+        _utils.trace_enter("Enter clean_function_name");
         let prefix: string = "<global>.";
         let prefix_len: i64 = string_length(prefix);
         let full_len: i64 = string_length(full_name);
@@ -1326,6 +1379,7 @@ class IRGenerator {
     }
 
     fun reset_locals(mut this) {
+        _utils.trace_enter("Enter reset_locals");
         // Preserve global variable symbol registrations across function boundaries
         let saved_globals: mut _utils.List<SymbolRegEntry> = new _utils.List<SymbolRegEntry>();
         let i: mut i64 = 0;

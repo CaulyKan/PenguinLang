@@ -370,15 +370,16 @@ declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
 
-define %enum.Option @create() {
+define void @create(ptr sret(%enum.Option) %_sret_result) {
 entry:
-  %tmp_0 = alloca %enum.Option
-  %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 0
-  store ptr @Option_metadata, ptr %tmp_1
-  %tmp_2 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
-  store i32 0, ptr %tmp_2
-  %t0 = load %enum.Option, ptr %tmp_0
-  ret %enum.Option %t0
+  %t0 = alloca %enum.Option
+  %tmp_0 = getelementptr %enum.Option, ptr %t0, i32 0, i32 0
+  store ptr @Option_metadata, ptr %tmp_0
+  %tmp_1 = getelementptr %enum.Option, ptr %t0, i32 0, i32 1
+  store i32 0, ptr %tmp_1
+  %tmp_2 = load %enum.Option, ptr %t0
+  store %enum.Option %tmp_2, ptr %_sret_result
+  ret void
 }")]
     public void TestLLVMNewEnum() => _batch.Value.AssertSemantic();
 
@@ -417,7 +418,7 @@ declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
 
-define %enum.Option @create() {
+define void @create(ptr sret(%enum.Option) %_sret_result) {
 entry:
   %tmp_0 = alloca %enum.Option
   %t0 = add i64 0, 42
@@ -428,7 +429,8 @@ entry:
   %tmp_3 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 2
   store i64 %t0, ptr %tmp_3
   %t1 = load %enum.Option, ptr %tmp_0
-  ret %enum.Option %t1
+  store %enum.Option %t1, ptr %_sret_result
+  ret void
 }")]
     public void TestLLVMNewEnumWithPayload() => _batch.Value.AssertSemantic();
 
@@ -467,16 +469,14 @@ declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
 
-define i8 @is_some(%enum.Option %o) {
+define i8 @is_some(ptr byval(%enum.Option) %o) {
 entry:
-  %tmp_0 = alloca %enum.Option
   %t1 = add i64 0, 0
-  store %enum.Option %o, ptr %tmp_0
-  %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
-  %tmp_2 = load i32, ptr %tmp_1
-  %tmp_3 = trunc i64 %t1 to i32
-  %tmp_4 = icmp eq i32 %tmp_2, %tmp_3
-  %t2 = zext i1 %tmp_4 to i8
+  %tmp_0 = getelementptr %enum.Option, ptr %o, i32 0, i32 1
+  %tmp_1 = load i32, ptr %tmp_0
+  %tmp_2 = trunc i64 %t1 to i32
+  %tmp_3 = icmp eq i32 %tmp_1, %tmp_2
+  %t2 = zext i1 %tmp_3 to i8
   ret i8 %t2
 }")]
     public void TestLLVMIsEnum() => _batch.Value.AssertSemantic();
@@ -516,16 +516,14 @@ declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
 
-define i64 @match_option(%enum.Option %o) {
+define i64 @match_option(ptr byval(%enum.Option) %o) {
 entry:
-  %tmp_0 = alloca %enum.Option
   %t2 = add i64 0, 0
-  store %enum.Option %o, ptr %tmp_0
-  %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
-  %tmp_2 = load i32, ptr %tmp_1
-  %tmp_3 = trunc i64 %t2 to i32
-  %tmp_4 = icmp eq i32 %tmp_2, %tmp_3
-  %t3 = zext i1 %tmp_4 to i8
+  %tmp_0 = getelementptr %enum.Option, ptr %o, i32 0, i32 1
+  %tmp_1 = load i32, ptr %tmp_0
+  %tmp_2 = trunc i64 %t2 to i32
+  %tmp_3 = icmp eq i32 %tmp_1, %tmp_2
+  %t3 = zext i1 %tmp_3 to i8
   %cond_0 = trunc i8 %t3 to i1
   br i1 %cond_0, label %then1, label %else2
 then1:

@@ -6,6 +6,17 @@ namespace _utils {
     extern fun dir_exists(path: string) -> bool;
     extern fun dir_get_entries(path: string) -> string;
 
+    let verbose_level: mut i64 = 0;
+    fun trace_set_verbose(level: i64) {
+        verbose_level = level;
+    }
+
+    fun trace_enter(str: string) {
+        if (verbose_level >= 3) {
+            __builtin.eprintln(str);
+        }
+    }
+
     #template(T: type)
     class List {
         impl IReferenceType;

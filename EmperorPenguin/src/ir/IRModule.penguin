@@ -53,6 +53,10 @@ class IRModule {
         }
         return new Option<IRGlobalVariable>.none();
     }
+
+    fun to_string(this) -> string {
+        return "IRModule{functions=" + cast<string>(this.functions.size()) + "}";
+    }
 }
 
 }

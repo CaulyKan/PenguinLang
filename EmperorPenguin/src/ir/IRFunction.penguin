@@ -76,6 +76,10 @@ class IRFunction {
         }
         return false;
     }
+
+    fun to_string(this) -> string {
+        return "IRFunction{name=" + this.name + ", ret=" + this.return_type + ", params=" + cast<string>(this.parameters.size()) + ", instrs=" + cast<string>(this.instructions.size()) + "}";
+    }
 }
 
 }

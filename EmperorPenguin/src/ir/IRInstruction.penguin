@@ -15,6 +15,9 @@ class IRConst {
     fun display(this) -> string {
         return this.result.display() + ":" + this.result.get_ir_type() + " = CONST " + this.value;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 2. ARG - argument/parameter access
@@ -36,6 +39,9 @@ class IRArg {
     fun display(this) -> string {
         return this.result.display() + ":" + this.ir_type + " = ARG " + this.param_name + " " + cast<string>(this.param_index);
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 3. ASSIGN - variable assignment
@@ -52,6 +58,9 @@ class IRAssign {
 
     fun display(this) -> string {
         return this.dest.display() + ":" + this.dest.get_ir_type() + " = ASSIGN " + this.src.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -73,6 +82,9 @@ class IRCast {
 
     fun display(this) -> string {
         return this.result.display() + ":" + this.to_type + " = CAST " + this.operand.display() + " " + this.from_type + "->" + this.to_type;
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -97,6 +109,9 @@ class IRBinOp {
     fun display(this) -> string {
         return this.result.display() + ":" + this.ir_type + " = BINOP " + this.op + " " + this.left.display() + ", " + this.right.display();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 5. UNARYOP - unary operations
@@ -117,6 +132,9 @@ class IRUnaryOp {
 
     fun display(this) -> string {
         return this.result.display() + ":" + this.ir_type + " = UNARYOP " + this.op + " " + this.operand.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -139,6 +157,9 @@ class IRRdmbr {
     fun display(this) -> string {
         return this.result.display() + ":" + this.ir_type + " = RDMBR " + this.obj.display() + ", ." + this.field_name;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 7. WRMBR - write member (replaces GEP + STORE)
@@ -158,6 +179,9 @@ class IRWrmbr {
     fun display(this) -> string {
         return "WRMBR " + this.obj.display() + ", ." + this.field_name + ", " + this.value.display();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 8. BR - unconditional branch
@@ -172,6 +196,9 @@ class IRBr {
 
     fun display(this) -> string {
         return "BR " + this.target.name;
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -192,6 +219,9 @@ class IRBrCond {
     fun display(this) -> string {
         return "BR_COND " + this.cond.display() + ", " + this.true_label.name + ", " + this.false_label.name;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 10. RET - return with value
@@ -207,6 +237,9 @@ class IRRet {
     fun display(this) -> string {
         return "RET " + this.value.display();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 11. RET_VOID - return void
@@ -219,6 +252,9 @@ class IRRetVoid {
 
     fun display(this) -> string {
         return "RET_VOID";
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -255,6 +291,9 @@ class IRCall {
         sb.append(")");
         return sb.to_string();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 12b. CALL_VOID - void function call
@@ -280,6 +319,9 @@ class IRCallVoid {
         }
         sb.append(")");
         return sb.to_string();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -319,6 +361,9 @@ class IRCallVirt {
         sb.append(")");
         return sb.to_string();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 14. NEW - object creation
@@ -346,6 +391,9 @@ class IRNew {
         }
         sb.append(")");
         return sb.to_string();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -375,6 +423,9 @@ class IRNewEnum {
         }
         return sb.to_string();
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 16. ISENUM - enum pattern matching (check if enum value is a specific variant)
@@ -393,6 +444,9 @@ class IRIsEnum {
 
     fun display(this) -> string {
         return this.result.display() + ":bool = ISENUM " + this.enum_value.display() + ", " + this.variant_idx.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -415,6 +469,9 @@ class IRRdenum {
     fun display(this) -> string {
         return this.result.display() + ":" + this.payload_type + " = RDENUM " + this.enum_value.display() + ", ." + this.variant_name;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 18a. ISINSTANCE - interface/class type check (runtime metadata lookup)
@@ -434,6 +491,9 @@ class IRIsInstance {
     fun display(this) -> string {
         return this.result.display() + ":bool = ISINSTANCE " + this.obj.display() + ", " + this.type_id;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 19. BOX - heap-allocate and copy a value type for interface use
@@ -452,6 +512,9 @@ class IRBox {
 
     fun display(this) -> string {
         return this.result.display() + ":ptr = BOX " + this.operand.display() + ", " + this.source_type_name;
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -474,6 +537,9 @@ class IRUnbox {
     fun display(this) -> string {
         return this.result.display() + ":" + this.target_ir_type + " = UNBOX " + this.operand.display() + ", " + this.target_type_name;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 21. LABEL - label
@@ -486,6 +552,9 @@ class IRLabelInst {
 
     fun display(this) -> string {
         return this.label.name + ":";
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 
@@ -506,6 +575,9 @@ class IRGlobalLoad {
     fun display(this) -> string {
         return this.result.display() + ":" + this.ir_type + " = GLOBAL_LOAD @" + this.global_name;
     }
+    fun to_string(this) -> string {
+        return this.display();
+    }
 }
 
 // 23. GLOBAL_STORE - store value to a global variable
@@ -522,6 +594,9 @@ class IRGlobalStore {
 
     fun display(this) -> string {
         return "GLOBAL_STORE @" + this.global_name + ", " + this.value.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
     }
 }
 

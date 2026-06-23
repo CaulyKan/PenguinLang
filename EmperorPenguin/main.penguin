@@ -165,6 +165,7 @@ initial {
 
     if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(source_files.size()) + " source files..."); }
 
+    _utils.trace_set_verbose(verbose);
     let mut compiler = new bound.EmperorPenguinCompiler();
     compiler.verbose = verbose;
     let result = compiler.compile_sources(inputs);

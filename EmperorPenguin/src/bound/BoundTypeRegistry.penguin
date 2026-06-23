@@ -5,6 +5,7 @@ class NamedTypeEntry {
     bound_type: BoundType = new BoundType();
 
     fun new(mut this, name: string, bound_type: mut BoundType) {
+
         this.name = name;
         this.bound_type = bound_type;
     }
@@ -28,6 +29,7 @@ class BoundTypeRegistry {
     registered_types: mut _utils.List<NamedTypeEntry> = new _utils.List<NamedTypeEntry>();
 
     fun new(mut this) {
+
         this.bool_type = this.make_primitive(new PrimitiveType.BoolType());
         this.i8_type = this.make_primitive(new PrimitiveType.I8());
         this.i16_type = this.make_primitive(new PrimitiveType.I16());
@@ -45,6 +47,7 @@ class BoundTypeRegistry {
     }
 
     fun make_primitive(this, p: mut PrimitiveType) -> mut BoundType {
+        _utils.trace_enter("Enter make_primitive");
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.PrimitiveKind();
         t.primitive = p;
@@ -53,6 +56,7 @@ class BoundTypeRegistry {
     }
 
     fun resolve_type(this, name: string) -> Option<BoundType> {
+        _utils.trace_enter("Enter resolve_type");
         let prim: Option<BoundType> = this.try_primitive(name);
         if (prim.is_some()) { return prim; }
         let i: mut i64 = 0;
@@ -67,6 +71,7 @@ class BoundTypeRegistry {
     }
 
     fun try_primitive(this, name: string) -> Option<BoundType> {
+        _utils.trace_enter("Enter try_primitive");
         if (name == "bool") { return new Option<BoundType>.some(this.bool_type); }
         if (name == "i8") { return new Option<BoundType>.some(this.i8_type); }
         if (name == "i16") { return new Option<BoundType>.some(this.i16_type); }
@@ -85,10 +90,12 @@ class BoundTypeRegistry {
     }
 
     fun register_type(mut this, name: string, t: mut BoundType) {
+        _utils.trace_enter("Enter register_type");
         this.registered_types.push(new NamedTypeEntry(name, t));
     }
 
     fun is_numeric(this, t: BoundType) -> bool {
+        _utils.trace_enter("Enter is_numeric");
         if (t.kind is TypeKind.PrimitiveKind) {
             if (t.primitive is PrimitiveType.BoolType) { return false; }
             if (t.primitive is PrimitiveType.CharType) { return false; }
@@ -100,6 +107,7 @@ class BoundTypeRegistry {
     }
 
     fun is_integer(this, t: BoundType) -> bool {
+        _utils.trace_enter("Enter is_integer");
         if (t.kind is TypeKind.PrimitiveKind) {
             if (t.primitive is PrimitiveType.I8) { return true; }
             if (t.primitive is PrimitiveType.I16) { return true; }
@@ -114,6 +122,7 @@ class BoundTypeRegistry {
     }
 
     fun is_bool(this, t: BoundType) -> bool {
+        _utils.trace_enter("Enter is_bool");
         if (t.kind is TypeKind.PrimitiveKind) {
             return t.primitive is PrimitiveType.BoolType;
         }
@@ -121,6 +130,7 @@ class BoundTypeRegistry {
     }
 
     fun is_void(this, t: BoundType) -> bool {
+        _utils.trace_enter("Enter is_void");
         if (t.kind is TypeKind.PrimitiveKind) {
             return t.primitive is PrimitiveType.VoidType;
         }
@@ -128,6 +138,7 @@ class BoundTypeRegistry {
     }
 
     fun is_string(this, t: BoundType) -> bool {
+        _utils.trace_enter("Enter is_string");
         if (t.kind is TypeKind.PrimitiveKind) {
             return t.primitive is PrimitiveType.StringType;
         }
@@ -135,6 +146,7 @@ class BoundTypeRegistry {
     }
 
     fun can_implicitly_cast(this, from: BoundType, to: BoundType) -> bool {
+        _utils.trace_enter("Enter can_implicitly_cast");
         if (from.is_same_type(to)) { return true; }
         if (from.kind is TypeKind.PrimitiveKind && to.kind is TypeKind.PrimitiveKind) {
             return this.can_widen_primitive(from.primitive, to.primitive);
@@ -143,6 +155,7 @@ class BoundTypeRegistry {
     }
 
     fun can_widen_primitive(this, from: PrimitiveType, to: PrimitiveType) -> bool {
+        _utils.trace_enter("Enter can_widen_primitive");
         if (from is PrimitiveType.BoolType && to is PrimitiveType.StringType) { return true; }
         if (from is PrimitiveType.I8) {
             if (to is PrimitiveType.I16) { return true; }
@@ -208,6 +221,7 @@ class BoundTypeRegistry {
     }
 
     fun make_function_type(this, ret: BoundType, params: _utils.List<BoundType>, is_async: bool) -> mut BoundType {
+        _utils.trace_enter("Enter make_function_type");
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.FunctionKind();
         t.generic_args.push(ret);
@@ -221,6 +235,7 @@ class BoundTypeRegistry {
     }
 
     fun make_error_type(this) -> mut BoundType {
+        _utils.trace_enter("Enter make_error_type");
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.ErrorKind();
         return t;

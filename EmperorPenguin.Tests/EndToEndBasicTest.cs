@@ -73,6 +73,36 @@ public class EndToEndBasicTest : EndToEndTestBase
 
     #endregion
 
+    #region Unary Operators
+
+    [BatchE2ETest("""
+        initial {
+            println(cast<string>(+5));
+            println(cast<string>(+(-7)));
+            println(cast<string>(-3));
+            println(cast<string>(!true));
+        }
+        """,
+        "5\n-7\n-3\nfalse")]
+    [Fact]
+    public void UnaryNumericAndLogical() => batch.Assert();
+
+    // Regression for the bootstrap failure: a stray `+  +` in trace_enter lines
+    // produced a unary `+` on a string, which the LLVM emitter lowered to a
+    // comment instead of an instruction, yielding "use of undefined value".
+    [BatchE2ETest("""
+        initial {
+            let name: string = "world";
+            println("hello " + +name);
+            println(+(cast<string>(42)));
+        }
+        """,
+        "hello world\n42")]
+    [Fact]
+    public void UnaryPlusStringInConcat() => batch.Assert();
+
+    #endregion
+
     #region Variables & Assignment
 
     [BatchE2ETest("""

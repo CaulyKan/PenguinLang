@@ -8,10 +8,15 @@ class FieldLayout {
     bound_type: Option<bound.BoundType> = new Option<bound.BoundType>.none();
 
     fun new(mut this, field_name: string, llvm_type: string, byte_offset: i64, field_index: i64) {
+        _utils.trace_enter("Enter new(field_name=" + cast<string>(field_name) + ", llvm_type=" + cast<string>(llvm_type) + ", byte_offset=" + cast<string>(byte_offset) + ", field_index=" + cast<string>(field_index) + ")");
         this.field_name = field_name;
         this.llvm_type = llvm_type;
         this.byte_offset = byte_offset;
         this.field_index = field_index;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "FieldLayout{name=" + this.field_name + ", type=" + this.llvm_type + ", offset=" + cast<string>(this.byte_offset) + "}";
     }
 }
 
@@ -20,6 +25,7 @@ class InterfaceVTable {
     method_ptrs: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, interface_name: string) {
+        _utils.trace_enter("Enter new(interface_name=" + cast<string>(interface_name) + ")");
         this.interface_name = interface_name;
     }
 }
@@ -34,6 +40,7 @@ class ClassLayout {
     interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
 
     fun new(mut this, type_name: string, is_value_type: bool, has_metadata: bool) {
+        _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ", is_value_type=" + cast<string>(is_value_type) + ", has_metadata=" + cast<string>(has_metadata) + ")");
         this.type_name = type_name;
         this.is_value_type = is_value_type;
         this.has_metadata = has_metadata;
@@ -41,6 +48,7 @@ class ClassLayout {
     }
 
     fun total_vtable_entries(this) -> i64 {
+        _utils.trace_enter("Enter total_vtable_entries");
         let count: mut i64 = 0;
         let i: mut i64 = 0;
         while (i < cast<i64>(this.interface_vtables.size())) {
@@ -48,6 +56,10 @@ class ClassLayout {
             i = i + 1;
         }
         return count;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "ClassLayout{name=" + this.type_name + ", is_value=" + cast<string>(this.is_value_type) + ", size=" + cast<string>(this.sizeof_object) + ", fields=" + cast<string>(this.fields.size()) + "}";
     }
 }
 
@@ -58,6 +70,7 @@ class EnumVariantLayout {
     payload_bound_type: mut Option<bound.BoundType> = new Option<bound.BoundType>.none();
 
     fun new(mut this, name: string, index: i64, payload_llvm_type: string) {
+        _utils.trace_enter("Enter new(name=" + cast<string>(name) + ", index=" + cast<string>(index) + ", payload_llvm_type=" + cast<string>(payload_llvm_type) + ")");
         this.name = name;
         this.index = index;
         this.payload_llvm_type = payload_llvm_type;
@@ -73,8 +86,13 @@ class EnumLayout {
     interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
 
     fun new(mut this, type_name: string) {
+        _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ")");
         this.type_name = type_name;
         this.llvm_struct_type = "%enum." + type_name;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "EnumLayout{name=" + this.type_name + ", has_payload=" + cast<string>(this.has_payload) + ", payload_type=" + this.payload_llvm_type + ", variants=" + cast<string>(this.variants.size()) + "}";
     }
 }
 
@@ -82,10 +100,12 @@ class StringLitEntry {
     id: mut i64 = 0;
     value: mut string = "";
     fun new(mut this, id: i64, value: string) {
+        _utils.trace_enter("Enter new(id=" + cast<string>(id) + ", value=" + cast<string>(value) + ")");
         this.id = id;
         this.value = value;
     }
     fun global_name(this) -> string {
+        _utils.trace_enter("Enter global_name");
         return "@str_" + cast<string>(this.id);
     }
 }
@@ -94,6 +114,7 @@ class RegMapping {
     ir_name: mut string = "";
     llvm_value: mut string = "";
     fun new(mut this, ir_name: string, llvm_value: string) {
+        _utils.trace_enter("Enter new(ir_name=" + cast<string>(ir_name) + ", llvm_value=" + cast<string>(llvm_value) + ")");
         this.ir_name = ir_name;
         this.llvm_value = llvm_value;
     }
@@ -104,6 +125,7 @@ class TypeIdConstant {
     display_name: mut string = "";
     len: mut i64 = 0;
     fun new(mut this, global_name: string, display_name: string, len: i64) {
+        _utils.trace_enter("Enter new(global_name=" + cast<string>(global_name) + ", display_name=" + cast<string>(display_name) + ", len=" + cast<string>(len) + ")");
         this.global_name = global_name;
         this.display_name = display_name;
         this.len = len;
@@ -115,7 +137,12 @@ class FuncParamTypes {
     param_types: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, func_name: string) {
+        _utils.trace_enter("Enter new(func_name=" + cast<string>(func_name) + ")");
         this.func_name = func_name;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "FuncParamTypes{name=" + this.func_name + ", params=" + cast<string>(this.param_types.size()) + "}";
     }
 }
 
@@ -182,11 +209,13 @@ class LLVMEmitter {
     // Emit an alloca instruction to the entry block (not inline).
     // This prevents stack growth in loops. Only call during function body emission.
     fun emit_entry_alloca(mut this, name: string, llvm_type: string) {
+        _utils.trace_enter("Enter emit_entry_alloca(name=" + cast<string>(name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
         this.entry_allocas.append("  " + name + " = alloca " + llvm_type + "\n");
     }
 
     // Allocate a new debug metadata ID (returns just the number string, e.g. "0", "1")
     fun next_debug_id(mut this) -> string {
+        _utils.trace_enter("Enter next_debug_id");
         let id: string = cast<string>(this.debug_id_counter);
         this.debug_id_counter = this.debug_id_counter + 1;
         return id;
@@ -194,6 +223,7 @@ class LLVMEmitter {
 
     // Initialize debug info for a compilation unit
     fun debug_init_compile_unit(mut this, filename: string) {
+        _utils.trace_enter("Enter debug_init_compile_unit(filename=" + cast<string>(filename) + ")");
         if (!this.debug_enabled) { return; }
         this.debug_id_counter = 0;
         this.debug_metadata = new _utils.List<string>();
@@ -222,6 +252,7 @@ class LLVMEmitter {
 
     // Begin debug info for a function
     fun debug_begin_function(mut this, func_name: string, loc: ast.SourceLocation) {
+        _utils.trace_enter("Enter debug_begin_function(func_name=" + cast<string>(func_name) + ", loc=" + loc.to_string() + ")");
         if (!this.debug_enabled) { return; }
         // Attribute the function (and the locals/types emitted while it is
         // current) to its own source file, not whichever file was used to init
@@ -244,6 +275,7 @@ class LLVMEmitter {
     // file maps to a single DIFile id). Falls back to the compile-unit's file
     // for an empty filename so functions without a location still resolve.
     fun debug_get_file(mut this, filename: string) -> string {
+        _utils.trace_enter("Enter debug_get_file(filename=" + cast<string>(filename) + ")");
         if (string_length(filename) == 0) { return this.current_file_id; }
         let i: mut i64 = 0;
         while (i < cast<i64>(this.debug_file_cache.size())) {
@@ -260,6 +292,7 @@ class LLVMEmitter {
     // Get debug location suffix for an instruction at the given source location
     // Always emits !dbg when debug is enabled (LLVM requires all instructions in debug functions to have !dbg)
     fun debug_loc(mut this, loc: ast.SourceLocation) -> string {
+        _utils.trace_enter("Enter debug_loc(loc=" + loc.to_string() + ")");
         if (!this.debug_enabled) { return ""; }
         let line: i64 = loc.line;
         let col: i64 = loc.col;
@@ -276,6 +309,7 @@ class LLVMEmitter {
 
     // Emit all debug metadata at the end of the module
     fun debug_emit_metadata(mut this) {
+        _utils.trace_enter("Enter debug_emit_metadata");
         if (!this.debug_enabled) { return; }
         if (cast<i64>(this.debug_metadata.size()) == 0) { return; }
         this.sb.append("\n!llvm.dbg.cu = !{!" + this.current_compile_unit_id + "}\n");
@@ -291,6 +325,7 @@ class LLVMEmitter {
 
     // A register display string is a temp (%tN) iff, after '%', it is 't' followed by digits.
     fun is_debug_temp(this, display: string) -> bool {
+        _utils.trace_enter("Enter is_debug_temp(display=" + cast<string>(display) + ")");
         let s: string = display;
         if (string_length(s) < 2) { return false; }
         if (string_char_at(s, 0) != "%") { return false; }
@@ -306,6 +341,7 @@ class LLVMEmitter {
     }
 
     fun is_debug_param(this, name: string) -> bool {
+        _utils.trace_enter("Enter is_debug_param(name=" + cast<string>(name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.param_names.size())) {
             if (this.param_names.at(cast<u64>(i)).some == name) { return true; }
@@ -316,6 +352,7 @@ class LLVMEmitter {
 
     // Create a !DILocalVariable node; arg_no>0 means parameter (1-based), 0 means local. Returns the var id.
     fun debug_make_local(mut this, name: string, ir_type: string, line: i64, arg_no: i64) -> string {
+        _utils.trace_enter("Enter debug_make_local(name=" + cast<string>(name) + ", ir_type=" + cast<string>(ir_type) + ", line=" + cast<string>(line) + ", arg_no=" + cast<string>(arg_no) + ")");
         let type_id: string = this.get_debug_type(ir_type);
         let var_id: string = this.next_debug_id();
         let line_str: string = cast<string>(line);
@@ -329,17 +366,20 @@ class LLVMEmitter {
 
     // Emit a `#dbg_declare` record binding an alloca slot to a variable (LLVM 22+ record form).
     fun emit_dbg_declare(mut this, alloca_name: string, var_id: string, loc_id: string) {
+        _utils.trace_enter("Enter emit_dbg_declare(alloca_name=" + cast<string>(alloca_name) + ", var_id=" + cast<string>(var_id) + ", loc_id=" + cast<string>(loc_id) + ")");
         this.sb.append("  #dbg_declare(ptr " + alloca_name + ", !" + var_id + ", !DIExpression(), !" + loc_id + ")\n");
     }
 
     // Emit a `#dbg_value` record binding an SSA value to a variable (LLVM 22+ record form).
     fun emit_dbg_value(mut this, llvm_type: string, value_str: string, var_id: string, loc_id: string) {
+        _utils.trace_enter("Enter emit_dbg_value(llvm_type=" + cast<string>(llvm_type) + ", value_str=" + cast<string>(value_str) + ", var_id=" + cast<string>(var_id) + ", loc_id=" + cast<string>(loc_id) + ")");
         this.sb.append("  #dbg_value(" + llvm_type + " " + value_str + ", !" + var_id + ", !DIExpression(), !" + loc_id + ")\n");
     }
 
     // An LLVM type is an aggregate (struct/enum by-value) — dbg.value cannot take these as a
     // first-class value operand (LLVM nulls them on upgrade). Such vars are reached via dbg.declare instead.
     fun is_aggregate_llvm_type(this, llvm_type: string) -> bool {
+        _utils.trace_enter("Enter is_aggregate_llvm_type(llvm_type=" + cast<string>(llvm_type) + ")");
         if (this.string_starts_with(llvm_type, "%class.")) { return true; }
         if (this.string_starts_with(llvm_type, "%enum.")) { return true; }
         if (this.string_starts_with(llvm_type, "%struct.")) { return true; }
@@ -349,6 +389,7 @@ class LLVMEmitter {
     // For an immutable (single-def) named local: emit a dbg.value right after its SSA definition.
     // Skips temps, params, mutable locals (handled elsewhere), and value-less dests.
     fun maybe_emit_imm_dbg(mut this, dest: ir.IRValue, dbg_suffix: string) {
+        _utils.trace_enter("Enter maybe_emit_imm_dbg(dbg_suffix=" + cast<string>(dbg_suffix) + ")");
         if (!this.debug_enabled) { return; }
         if (!(dest is ir.IRValue.named_reg)) { return; }
         let name: string = dest.named_reg.name;
@@ -375,6 +416,7 @@ class LLVMEmitter {
     }
 
     fun lower(mut this, module: ir.IRModule, unit: bound.BoundCompilationUnit) -> string {
+        _utils.trace_enter("Enter lower(module=" + module.to_string() + ")");
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Starting LLVM lowering..."); }
         this.string_lits = new _utils.List<StringLitEntry>();
         this.next_str_id = 0;
@@ -432,6 +474,7 @@ class LLVMEmitter {
     // --- Pass 1: collect string literals ---
 
     fun collect_strings(mut this, module: ir.IRModule) {
+        _utils.trace_enter("Enter collect_strings(module=" + module.to_string() + ")");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
             let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
@@ -457,6 +500,7 @@ class LLVMEmitter {
     }
 
     fun collect_strings_in_func(mut this, func: ir.IRFunction) {
+        _utils.trace_enter("Enter collect_strings_in_func(func=" + func.to_string() + ")");
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
             let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
@@ -477,6 +521,7 @@ class LLVMEmitter {
     }
 
     fun find_string_lit(this, value: string) -> Option<StringLitEntry> {
+        _utils.trace_enter("Enter find_string_lit(value=" + cast<string>(value) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.string_lits.size())) {
             let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
@@ -491,6 +536,7 @@ class LLVMEmitter {
     // --- Pass 2: emit LLVM IR ---
 
     fun emit_global_strings(mut this) {
+        _utils.trace_enter("Enter emit_global_strings");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.string_lits.size())) {
             let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
@@ -508,6 +554,7 @@ class LLVMEmitter {
     }
 
     fun emit_global_variables(mut this, module: ir.IRModule) {
+        _utils.trace_enter("Enter emit_global_variables(module=" + module.to_string() + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(module.global_variables.size())) {
             let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(i)).some;
@@ -529,6 +576,7 @@ class LLVMEmitter {
     }
 
     fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: ir.IRModule) {
+        _utils.trace_enter("Enter emit_extern_declarations_to(module=" + module.to_string() + ")");
         let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
@@ -561,6 +609,7 @@ class LLVMEmitter {
     }
 
     fun emit_extern_declarations_runtime_to(mut this, target: mut StringBuilder) {
+        _utils.trace_enter("Enter emit_extern_declarations_runtime_to");
         let has_layouts: bool = cast<i64>(this.class_layouts.size()) > 0 || cast<i64>(this.enum_layouts.size()) > 0;
         let needs_its: bool = this.needs_int_to_string;
         let needs_sc: bool = this.needs_string_concat;
@@ -603,6 +652,7 @@ class LLVMEmitter {
     }
 
     fun emit_functions(mut this, module: ir.IRModule) {
+        _utils.trace_enter("Enter emit_functions(module=" + module.to_string() + ")");
         let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
@@ -640,6 +690,7 @@ class LLVMEmitter {
     }
 
     fun emit_function(mut this, func: ir.IRFunction) {
+        _utils.trace_enter("Enter emit_function(func=" + func.to_string() + ")");
         this.reg_map = new _utils.List<RegMapping>();
         this.reg_type_map = new _utils.List<RegMapping>();
         this.icmp_results = new _utils.List<string>();
@@ -647,10 +698,10 @@ class LLVMEmitter {
         this.current_ret_type = func.return_type;
         this.param_names = new _utils.List<string>();
 
-        // Determine if this function returns a value-type class (needs sret)
-        let use_sret: bool = !func.is_extern && this.is_value_class_ref(func.return_type);
+        // Determine if this function returns an aggregate that needs sret (RVO)
+        let use_sret: bool = !func.is_extern && this.needs_sret(func.return_type);
         if (use_sret) {
-            this.current_sret_llvm_type = this.get_value_class_llvm_struct_type(func.return_type);
+            this.current_sret_llvm_type = this.get_sret_llvm_type(func.return_type);
             this.current_sret_param = "%_sret_result";
         } else {
             this.current_sret_llvm_type = "";
@@ -658,7 +709,7 @@ class LLVMEmitter {
         }
 
         // Store parameter types for call argument coercion
-        let fpt: mut FuncParamTypes = new FuncParamTypes(func.name);
+        let fpt: mut FuncParamTypes = new FuncParamTypes(this.strip_global_prefix(func.name));
         let ppi: mut i64 = 0;
         while (ppi < cast<i64>(func.parameters.size())) {
             let pp: ir.IRParameter = func.parameters.at(cast<u64>(ppi)).some;
@@ -714,11 +765,34 @@ class LLVMEmitter {
         while (pi < cast<i64>(func.parameters.size())) {
             if (pi > 0 || use_sret) { this.sb.append(", "); }
             let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
-            this.sb.append(this.ir_type_to_llvm(p.ir_type) + " %" + p.name);
+            let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+            // For >16-byte aggregates (value-type classes and large enums), use
+            // byval so clang passes the argument via a pointer consistently between
+            // caller and callee (System V ABI for large structs).
+            if (this.llvm_type_size(p_llvm_type) > 16) {
+                this.sb.append("ptr byval(" + p_llvm_type + ") %" + p.name);
+            } else {
+                this.sb.append(p_llvm_type + " %" + p.name);
+            }
             pi = pi + 1;
         }
         this.sb.append(")" + func_dbg + " {\n");
         this.sb.append("entry:\n");
+
+        // For byval aggregate parameters (>16 bytes), register the parameter name as
+        // a pointer so coerce_operand / materialize_enum_ptr correctly handle
+        // ptr->struct loads.
+        {
+            let bi: mut i64 = 0;
+            while (bi < cast<i64>(func.parameters.size())) {
+                let p: ir.IRParameter = func.parameters.at(cast<u64>(bi)).some;
+                let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+                if (this.llvm_type_size(p_llvm_type) > 16) {
+                    this.register_llvm_type("%" + p.name, "ptr");
+                }
+                bi = bi + 1;
+            }
+        }
 
         // Emit allocas for mutable registers at function entry
         let ai: mut i64 = 0;
@@ -780,6 +854,7 @@ class LLVMEmitter {
     }
 
     fun emit_main(mut this, module: ir.IRModule) {
+        _utils.trace_enter("Enter emit_main(module=" + module.to_string() + ")");
         if (cast<i64>(module.entry_functions.size()) > 0) {
             this.has_main = true;
             this.sb.append("define i32 @main(i32 %argc, ptr %argv) {\n");
@@ -826,6 +901,7 @@ class LLVMEmitter {
     // --- Layout building ---
 
     fun build_layout_tables(mut this, unit: bound.BoundCompilationUnit) {
+        _utils.trace_enter("Enter build_layout_tables");
         // Pass 1: build all enum layouts first (classes may reference them)
         let di: mut i64 = 0;
         while (di < cast<i64>(unit.definitions.size())) {
@@ -843,6 +919,7 @@ class LLVMEmitter {
     }
 
     fun build_enum_layouts_for_def(mut this, def: bound.BoundDefinition) {
+        _utils.trace_enter("Enter build_enum_layouts_for_def");
         if (def is bound.BoundDefinition.enum_def) {
             if (cast<i64>(def.enum_def.generic_params.size()) == 0) {
                 this.build_enum_layout(def.enum_def);
@@ -859,6 +936,7 @@ class LLVMEmitter {
     }
 
     fun build_class_layouts_for_def(mut this, def: bound.BoundDefinition) {
+        _utils.trace_enter("Enter build_class_layouts_for_def");
         if (def is bound.BoundDefinition.class_def) {
             if (!def.class_def.is_generic_template) {
                 this.build_class_layout(def.class_def);
@@ -875,6 +953,7 @@ class LLVMEmitter {
     }
 
     fun build_class_layout(mut this, cls: bound.BoundClassDefinition) {
+        _utils.trace_enter("Enter build_class_layout");
         let is_value: mut bool = true;
         if (cls.is_value_class.is_some()) {
             is_value = cls.is_value_class.some;
@@ -937,6 +1016,7 @@ class LLVMEmitter {
     }
 
     fun build_enum_layout(mut this, enum_def: bound.BoundEnumDefinition) {
+        _utils.trace_enter("Enter build_enum_layout");
         let layout: mut EnumLayout = new EnumLayout(this.strip_global_prefix(enum_def.full_name));
         let has_payload: mut bool = false;
         let payload_type: mut string = "";
@@ -995,6 +1075,7 @@ class LLVMEmitter {
     }
 
     fun find_class_layout(this, type_name: string) -> Option<ClassLayout> {
+        _utils.trace_enter("Enter find_class_layout(type_name=" + cast<string>(type_name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.class_layouts.size())) {
             let layout: ClassLayout = this.class_layouts.at(cast<u64>(i)).some;
@@ -1042,6 +1123,7 @@ class LLVMEmitter {
     }
 
     fun find_enum_layout(this, type_name: string) -> Option<EnumLayout> {
+        _utils.trace_enter("Enter find_enum_layout(type_name=" + cast<string>(type_name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.enum_layouts.size())) {
             let layout: EnumLayout = this.enum_layouts.at(cast<u64>(i)).some;
@@ -1089,6 +1171,7 @@ class LLVMEmitter {
     }
 
     fun extract_type_name(this, ir_type: string) -> string {
+        _utils.trace_enter("Enter extract_type_name(ir_type=" + cast<string>(ir_type) + ")");
         // Parse "ref<X>" or "enum<X>" → "X"
         if (this.string_starts_with(ir_type, "ref<")) {
             return string_substring(ir_type, 4, string_length(ir_type) - 5);
@@ -1100,6 +1183,7 @@ class LLVMEmitter {
     }
 
     fun is_value_class_ref(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_value_class_ref(ir_type=" + cast<string>(ir_type) + ")");
         if (!this.string_starts_with(ir_type, "ref<")) { return false; }
         let type_name: string = this.extract_type_name(ir_type);
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
@@ -1107,7 +1191,40 @@ class LLVMEmitter {
         return false;
     }
 
+    // Determine whether a return type needs sret (RVO). Both value-type classes
+    // (ref<ValueClass>) and enums (enum<...>) always use sret, so that their
+    // LLVM codegen behavior is uniform and consistent. Extern functions are
+    // excluded by the caller (emit_function checks !func.is_extern).
+    fun needs_sret(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter needs_sret(ir_type=" + cast<string>(ir_type) + ")");
+        if (this.is_value_class_ref(ir_type)) { return true; }
+        if (this.string_starts_with(ir_type, "enum<")) {
+            let llvm_type: string = this.ir_type_to_llvm(ir_type);
+            if (this.string_starts_with(llvm_type, "%enum.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Get the LLVM struct type used for sret, for both value-type classes and
+    // enums.
+    fun get_sret_llvm_type(this, ir_type: string) -> string {
+        _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + cast<string>(ir_type) + ")");
+        if (this.string_starts_with(ir_type, "ref<")) {
+            let type_name: string = this.extract_type_name(ir_type);
+            let found: Option<ClassLayout> = this.find_class_layout(type_name);
+            if (found.is_some()) { return found.some.llvm_struct_type; }
+            return "";
+        }
+        if (this.string_starts_with(ir_type, "enum<")) {
+            return this.ir_type_to_llvm(ir_type);
+        }
+        return "";
+    }
+
     fun get_value_class_llvm_struct_type(this, ir_type: string) -> string {
+        _utils.trace_enter("Enter get_value_class_llvm_struct_type(ir_type=" + cast<string>(ir_type) + ")");
         let type_name: string = this.extract_type_name(ir_type);
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
         if (found.is_some()) { return found.some.llvm_struct_type; }
@@ -1115,6 +1232,7 @@ class LLVMEmitter {
     }
 
     fun next_tmp(mut this) -> string {
+        _utils.trace_enter("Enter next_tmp");
         let name: string = "%tmp_" + cast<string>(this.tmp_counter);
         this.tmp_counter = this.tmp_counter + 1;
         return name;
@@ -1123,6 +1241,7 @@ class LLVMEmitter {
     // --- Type definitions ---
 
     fun emit_type_definitions(mut this) {
+        _utils.trace_enter("Enter emit_type_definitions");
         // Emit ICopy class struct types (with metadata ptr at field 0)
         let ci: mut i64 = 0;
         while (ci < cast<i64>(this.class_layouts.size())) {
@@ -1194,6 +1313,7 @@ class LLVMEmitter {
     }
 
     fun emit_full_class_metadata(mut this, layout: ClassLayout) {
+        _utils.trace_enter("Enter emit_full_class_metadata(layout=" + layout.to_string() + ")");
         let name: string = layout.type_name;
 
         // Emit interface ID string constants (deduplicated)
@@ -1266,6 +1386,7 @@ class LLVMEmitter {
     }
 
     fun emit_field_arrays(mut this, name: string, fields: _utils.List<FieldLayout>) {
+        _utils.trace_enter("Enter emit_field_arrays(name=" + cast<string>(name) + ")");
         let field_count: i64 = cast<i64>(fields.size());
         if (field_count == 0) {
             this.sb.append("@" + name + "_field_offsets = private constant [0 x i32] zeroinitializer\n");
@@ -1297,6 +1418,7 @@ class LLVMEmitter {
     }
 
     fun emit_full_enum_metadata(mut this, layout: EnumLayout) {
+        _utils.trace_enter("Enter emit_full_enum_metadata(layout=" + layout.to_string() + ")");
         let name: string = layout.type_name;
 
         // Emit interface ID string constants (deduplicated)
@@ -1368,6 +1490,7 @@ class LLVMEmitter {
     // --- BoundType to LLVM type ---
 
     fun bound_type_to_llvm_type(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter bound_type_to_llvm_type");
         if (bt.kind is bound.TypeKind.PrimitiveKind) {
             return this.primitive_to_llvm(bt.primitive);
         }
@@ -1389,6 +1512,7 @@ class LLVMEmitter {
     }
 
     fun resolve_type_layout_name(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter resolve_type_layout_name");
         if (bt.type_definition.is_some()) {
             let def: bound.BoundDefinition = bt.type_definition.some;
             if (def is bound.BoundDefinition.class_def) {
@@ -1410,6 +1534,7 @@ class LLVMEmitter {
     }
 
     fun compute_mangled_name(this, base_name: string, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter compute_mangled_name(base_name=" + cast<string>(base_name) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(base_name);
         let i: mut i64 = 0;
@@ -1435,6 +1560,7 @@ class LLVMEmitter {
     }
 
     fun class_type_to_llvm(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter class_type_to_llvm");
         let name: string = this.resolve_type_layout_name(bt);
         let found: Option<ClassLayout> = this.find_class_layout(name);
         if (found.is_some()) {
@@ -1448,6 +1574,7 @@ class LLVMEmitter {
     }
 
     fun primitive_to_llvm(this, p: bound.PrimitiveType) -> string {
+        _utils.trace_enter("Enter primitive_to_llvm");
         if (p is bound.PrimitiveType.I8) { return "i8"; }
         if (p is bound.PrimitiveType.I16) { return "i16"; }
         if (p is bound.PrimitiveType.I32) { return "i32"; }
@@ -1468,6 +1595,7 @@ class LLVMEmitter {
     // --- Type size/align helpers ---
 
     fun llvm_type_size(this, llvm_type: string) -> i64 {
+        _utils.trace_enter("Enter llvm_type_size(llvm_type=" + cast<string>(llvm_type) + ")");
         if (llvm_type == "i8") { return 1; }
         if (llvm_type == "i16") { return 2; }
         if (llvm_type == "i32") { return 4; }
@@ -1503,6 +1631,7 @@ class LLVMEmitter {
     }
 
     fun llvm_type_align(this, llvm_type: string) -> i64 {
+        _utils.trace_enter("Enter llvm_type_align(llvm_type=" + cast<string>(llvm_type) + ")");
         if (llvm_type == "i8") { return 1; }
         if (llvm_type == "i16") { return 2; }
         if (llvm_type == "i32") { return 4; }
@@ -1518,6 +1647,7 @@ class LLVMEmitter {
     }
 
     fun align_up(this, offset: i64, alignment: i64) -> i64 {
+        _utils.trace_enter("Enter align_up(offset=" + cast<string>(offset) + ", alignment=" + cast<string>(alignment) + ")");
         if (alignment <= 1) { return offset; }
         let remainder: i64 = offset % alignment;
         if (remainder == 0) { return offset; }
@@ -1527,6 +1657,7 @@ class LLVMEmitter {
     // --- DWARF debug type cache ---
 
     fun debug_type_cache_get(this, key: string) -> string {
+        _utils.trace_enter("Enter debug_type_cache_get(key=" + cast<string>(key) + ")");
         let i: mut i64 = cast<i64>(this.debug_type_cache.size()) - 1;
         while (i >= 0) {
             if (this.debug_type_cache.at(cast<u64>(i)).some.ir_name == key) {
@@ -1538,11 +1669,13 @@ class LLVMEmitter {
     }
 
     fun debug_type_cache_set(mut this, key: string, id: string) {
+        _utils.trace_enter("Enter debug_type_cache_set(key=" + cast<string>(key) + ", id=" + cast<string>(id) + ")");
         this.debug_type_cache.push(new RegMapping(key, id));
     }
 
     // Build (or fetch cached) a !DIBasicType and return its metadata id.
     fun make_debug_basic_type(mut this, key: string, name: string, size_bits: i64, align_bits: i64, encoding: string) -> string {
+        _utils.trace_enter("Enter make_debug_basic_type(key=" + cast<string>(key) + ", name=" + cast<string>(name) + ", size_bits=" + cast<string>(size_bits) + ", align_bits=" + cast<string>(align_bits) + ", encoding=" + cast<string>(encoding) + ")");
         let cached: string = this.debug_type_cache_get(key);
         if (cached != "") { return cached; }
         let id: string = this.next_debug_id();
@@ -1553,6 +1686,7 @@ class LLVMEmitter {
 
     // Map a bound PrimitiveType to its IR-type string (for debug type lookup).
     fun primitive_to_debug_ir(this, p: bound.PrimitiveType) -> string {
+        _utils.trace_enter("Enter primitive_to_debug_ir");
         if (p is bound.PrimitiveType.BoolType) { return "bool"; }
         if (p is bound.PrimitiveType.I8) { return "i8"; }
         if (p is bound.PrimitiveType.I16) { return "i16"; }
@@ -1572,6 +1706,7 @@ class LLVMEmitter {
 
     // Map a BoundType to an IR-type string for debug purposes (reuses layout name resolution for generics).
     fun bound_type_to_debug_ir(this, bt: bound.BoundType) -> string {
+        _utils.trace_enter("Enter bound_type_to_debug_ir");
         if (bt.kind is bound.TypeKind.PrimitiveKind) {
             return this.primitive_to_debug_ir(bt.primitive);
         }
@@ -1586,6 +1721,7 @@ class LLVMEmitter {
 
     // Normalize an LLVM type string to an IR-type-ish key for debug lookup.
     fun llvm_type_to_debug_ir(this, lt: string) -> string {
+        _utils.trace_enter("Enter llvm_type_to_debug_ir(lt=" + cast<string>(lt) + ")");
         if (lt == "float") { return "f32"; }
         if (lt == "double") { return "f64"; }
         return lt;
@@ -1593,6 +1729,7 @@ class LLVMEmitter {
 
     // Build a `!{...}` elements metadata node from a list of member ids; returns the list node id.
     fun debug_make_elements_list(mut this, member_ids: _utils.List<string>) -> string {
+        _utils.trace_enter("Enter debug_make_elements_list");
         let id: string = this.next_debug_id();
         let s: mut string = "!" + id + " = !{";
         let first: mut bool = true;
@@ -1610,6 +1747,7 @@ class LLVMEmitter {
 
     // Main entry: get (creating if needed) the DWARF type metadata id for an IR type.
     fun get_debug_type(mut this, ir_type: string) -> string {
+        _utils.trace_enter("Enter get_debug_type(ir_type=" + cast<string>(ir_type) + ")");
         if (!this.debug_enabled) { return ""; }
         let cached: string = this.debug_type_cache_get(ir_type);
         if (cached != "") { return cached; }
@@ -1667,6 +1805,7 @@ class LLVMEmitter {
 
     // Build a DICompositeType (struct) for a class from its ClassLayout. Reserve-before-build for recursion.
     fun get_debug_composite(mut this, name: string) -> string {
+        _utils.trace_enter("Enter get_debug_composite(name=" + cast<string>(name) + ")");
         let cache_key: string = "composite:" + name;
         let cached: string = this.debug_type_cache_get(cache_key);
         if (cached != "") { return cached; }
@@ -1701,6 +1840,7 @@ class LLVMEmitter {
 
     // Build a DICompositeType (struct) for an enum: { ptr metadata, i32 tag, payload? }.
     fun get_debug_enum_type(mut this, name: string) -> string {
+        _utils.trace_enter("Enter get_debug_enum_type(name=" + cast<string>(name) + ")");
         let cache_key: string = "enumstruct:" + name;
         let cached: string = this.debug_type_cache_get(cache_key);
         if (cached != "") { return cached; }
@@ -1734,6 +1874,7 @@ class LLVMEmitter {
     }
 
     fun find_class_field_layout(this, type_name: string, field_name: string) -> Option<FieldLayout> {
+        _utils.trace_enter("Enter find_class_field_layout(type_name=" + cast<string>(type_name) + ", field_name=" + cast<string>(field_name) + ")");
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
         if (found.is_none()) { return new Option<FieldLayout>.none(); }
         let layout: ClassLayout = found.some;
@@ -1752,6 +1893,7 @@ class LLVMEmitter {
 
     // Get source location from an IR instruction
     fun get_inst_loc(inst: ir.IRInstruction) -> ast.SourceLocation {
+        _utils.trace_enter("Enter get_inst_loc(inst=" + inst.display() + ")");
         if (inst is ir.IRInstruction.const_inst) { return inst.const_inst.location; }
         if (inst is ir.IRInstruction.arg) { return inst.arg.location; }
         if (inst is ir.IRInstruction.assign) { return inst.assign.location; }
@@ -1781,10 +1923,12 @@ class LLVMEmitter {
 
     // Emit an instruction line with debug info suffix
     fun emit_line(mut this, line: string) {
+        _utils.trace_enter("Enter emit_line(line=" + cast<string>(line) + ")");
         this.sb.append(line + this.current_dbg + "\n");
     }
 
     fun emit_instruction(mut this, inst: ir.IRInstruction) {
+        _utils.trace_enter("Enter emit_instruction(inst=" + inst.display() + ")");
         // Set current debug location from instruction
         let loc: ast.SourceLocation = get_inst_loc(inst);
         this.current_dbg = this.debug_loc(loc);
@@ -1817,6 +1961,7 @@ class LLVMEmitter {
     }
 
     fun emit_const(mut this, inst: ir.IRConst) {
+        _utils.trace_enter("Enter emit_const(inst=" + inst.display() + ")");
         let ir_type: string = inst.result.get_ir_type();
         let result_name: string = inst.result.display();
         if (this.is_string_type(ir_type)) {
@@ -1870,16 +2015,23 @@ class LLVMEmitter {
     }
 
     fun emit_arg(mut this, inst: ir.IRArg) {
+        _utils.trace_enter("Enter emit_arg(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let param_name: string = "%" + inst.param_name;
         this.reg_map.push(new RegMapping(result_name, param_name));
         let llvm_type: string = this.ir_type_to_llvm(inst.result.get_ir_type());
-        if (llvm_type != "") {
+        // For byval aggregate parameters (>16 bytes), the LLVM IR parameter is a
+        // pointer; register it as "ptr" so coerce_operand / materialize_enum_ptr
+        // emit proper ptr->struct loads.
+        if (this.llvm_type_size(llvm_type) > 16) {
+            this.register_llvm_type(param_name, "ptr");
+        } else if (llvm_type != "") {
             this.register_llvm_type(param_name, llvm_type);
         }
     }
 
     fun emit_assign(mut this, inst: ir.IRAssign) {
+        _utils.trace_enter("Enter emit_assign(inst=" + inst.display() + ")");
         let dest_name: string = inst.dest.display();
         let src_resolved: string = this.resolve_value(inst.src);
         let ir_type: string = inst.dest.get_ir_type();
@@ -1894,9 +2046,13 @@ class LLVMEmitter {
             let alloca_name: string = this.get_alloca_name(dest_name);
             let coerced: string = this.coerce_operand(src_resolved, llvm_type);
             this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name);
-        } else if (llvm_type == "ptr" || this.string_starts_with(llvm_type, "%enum.")) {
-            // pointer or enum struct assignment: map dest to source directly
+        } else if (llvm_type == "ptr") {
+            // pointer assignment: map dest to source directly
             this.reg_map.push(new RegMapping(dest_name, src_resolved));
+        } else if (this.string_starts_with(llvm_type, "%enum.")) {
+            // enum struct assignment: coerce ptr->struct if needed, then map
+            let coerced: string = this.coerce_operand(src_resolved, llvm_type);
+            this.reg_map.push(new RegMapping(dest_name, coerced));
         } else {
             let coerced: string = this.coerce_operand(src_resolved, llvm_type);
             this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
@@ -1905,6 +2061,7 @@ class LLVMEmitter {
     }
 
     fun emit_cast(mut this, inst: ir.IRCast) {
+        _utils.trace_enter("Enter emit_cast(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let operand_resolved: mut string = this.resolve_value(inst.operand);
         let from_llvm: string = this.ir_type_to_llvm(inst.from_type);
@@ -1944,9 +2101,13 @@ class LLVMEmitter {
 
         // enum → string: extract tag index, convert to string
         if (this.is_string_type(inst.to_type) && this.is_enum_type(inst.from_type)) {
-            this.needs_int_to_string = true;
+            this.needs_int_to_string = true;            
+            // operand_resolved may be a ptr (from NEW_ENUM registered as ptr);
+            // coerce it to the struct value before extractvalue.
+            let coerced_operand: string = this.coerce_operand(operand_resolved, from_llvm);
+            
             let tag_tmp: string = this.next_tmp();
-            this.emit_line("  " + tag_tmp + " = extractvalue " + from_llvm + " " + operand_resolved + ", 1");
+            this.emit_line("  " + tag_tmp + " = extractvalue " + from_llvm + " " + coerced_operand + ", 1");
             this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + tag_tmp + ")");
             return;
         }
@@ -1964,6 +2125,7 @@ class LLVMEmitter {
     }
 
     fun emit_binop(mut this, inst: ir.IRBinOp) {
+        _utils.trace_enter("Enter emit_binop(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let left_resolved: string = this.resolve_value(inst.left);
         let right_resolved: string = this.resolve_value(inst.right);
@@ -2018,6 +2180,7 @@ class LLVMEmitter {
     }
 
     fun is_comparison_binop(this, op: string) -> bool {
+        _utils.trace_enter("Enter is_comparison_binop(op=" + cast<string>(op) + ")");
         if (op == "eq") { return true; }
         if (op == "ne") { return true; }
         if (op == "slt") { return true; }
@@ -2032,11 +2195,16 @@ class LLVMEmitter {
     }
 
     fun emit_unaryop(mut this, inst: ir.IRUnaryOp) {
+        _utils.trace_enter("Enter emit_unaryop(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let operand_resolved: string = this.resolve_value(inst.operand);
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         if (inst.op == "neg") {
             this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + operand_resolved);
+            return;
+        }
+        if (inst.op == "plus") {
+            this.emit_line("  " + result_name + " = freeze " + llvm_type + " " + operand_resolved);
             return;
         }
         if (inst.op == "not") {
@@ -2051,6 +2219,7 @@ class LLVMEmitter {
     }
 
     fun emit_rdmbr(mut this, inst: ir.IRRdmbr) {
+        _utils.trace_enter("Enter emit_rdmbr(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let obj_resolved: string = this.resolve_value(inst.obj);
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
@@ -2091,18 +2260,19 @@ class LLVMEmitter {
                         this.emit_line("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index));
                         this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
                     }
+                    this.register_llvm_type(result_name, llvm_type);
                 }
                 return;
             }
         }
 
         // Fallback: check if the base is an enum struct — extract payload first
-        let obj_llvm_type: string = this.get_llvm_type(obj_resolved);
+        let obj_ir_llvm_type: string = this.ir_type_to_llvm(obj_ir_type);
+        let obj_llvm_type: string = this.resolve_enum_struct_type(obj_ir_llvm_type, obj_resolved);
         if (this.string_starts_with(obj_llvm_type, "%enum.")) {
-            // The base is an enum struct, extract payload (field 2)
-            let alloca_name: string = this.next_tmp();
-            this.emit_entry_alloca(alloca_name, obj_llvm_type);
-            this.emit_line("  store " + obj_llvm_type + " " + obj_resolved + ", ptr " + alloca_name);
+            // The base is an enum struct, extract payload (field 2).
+            // obj_resolved may be a struct value or a pointer; materialize to ptr.
+            let alloca_name: string = this.materialize_enum_ptr(obj_resolved, obj_llvm_type);
             let payload_ptr: string = this.next_tmp();
             this.emit_line("  " + payload_ptr + " = getelementptr " + obj_llvm_type + ", ptr " + alloca_name + ", i32 0, i32 2");
             let payload_type: string = this.get_enum_payload_type(obj_llvm_type);
@@ -2140,6 +2310,7 @@ class LLVMEmitter {
     }
 
     fun emit_wrmbr(mut this, inst: ir.IRWrmbr) {
+        _utils.trace_enter("Enter emit_wrmbr(inst=" + inst.display() + ")");
         let obj_resolved: string = this.resolve_value(inst.obj);
         let value_resolved: string = this.resolve_value(inst.value);
         let value_type: string = inst.value.get_ir_type();
@@ -2180,10 +2351,12 @@ class LLVMEmitter {
     }
 
     fun emit_br(mut this, inst: ir.IRBr) {
+        _utils.trace_enter("Enter emit_br(inst=" + inst.display() + ")");
         this.emit_line("  br label %" + inst.target.name);
     }
 
     fun emit_br_cond(mut this, inst: ir.IRBrCond) {
+        _utils.trace_enter("Enter emit_br_cond(inst=" + inst.display() + ")");
         let cond_resolved: string = this.resolve_value(inst.cond);
         let is_icmp_result: bool = this.is_icmp_value(cond_resolved);
         if (is_icmp_result) {
@@ -2197,12 +2370,14 @@ class LLVMEmitter {
     }
 
     fun emit_ret(mut this, inst: ir.IRRet) {
+        _utils.trace_enter("Enter emit_ret(inst=" + inst.display() + ")");
         if (this.current_sret_llvm_type != "") {
-            // sret: load struct from the return value pointer, store to sret buffer, ret void
+            // sret: store the return struct into the sret buffer, ret void
             let val_resolved: string = this.resolve_value(inst.value);
-            let tmp: string = this.next_tmp();
-            this.emit_line("  " + tmp + " = load " + this.current_sret_llvm_type + ", ptr " + val_resolved);
-            this.emit_line("  store " + this.current_sret_llvm_type + " " + tmp + ", ptr " + this.current_sret_param);
+            // val_resolved may be a struct value (e.g. from NEW_ENUM) or a pointer
+            // (e.g. an sret alloca from a forwarded call). Coerce to struct value first.
+            let coerced: string = this.coerce_operand(val_resolved, this.current_sret_llvm_type);
+            this.emit_line("  store " + this.current_sret_llvm_type + " " + coerced + ", ptr " + this.current_sret_param);
             this.emit_line("  ret void");
         } else {
             let val_resolved: mut string = this.resolve_value(inst.value);
@@ -2218,6 +2393,7 @@ class LLVMEmitter {
     }
 
     fun emit_ret_void(mut this) {
+        _utils.trace_enter("Enter emit_ret_void");
         if (this.current_ret_type == "void") {
             this.emit_line("  ret void");
         } else {
@@ -2226,13 +2402,14 @@ class LLVMEmitter {
     }
 
     fun emit_call(mut this, inst: ir.IRCall) {
+        _utils.trace_enter("Enter emit_call(inst=" + inst.display() + ")");
         let result_name: string = inst.result_value.display();
         let func_name: string = this.llvm_func_name(inst.func_name);
 
-        // Check if callee returns a value-type class (uses sret)
+        // Check if callee returns an aggregate that uses sret (RVO)
         let callee_sret_type: mut string = "";
-        if (this.is_value_class_ref(inst.ret_type)) {
-            callee_sret_type = this.get_value_class_llvm_struct_type(inst.ret_type);
+        if (this.needs_sret(inst.ret_type)) {
+            callee_sret_type = this.get_sret_llvm_type(inst.ret_type);
         }
 
         if (callee_sret_type != "") {
@@ -2253,6 +2430,15 @@ class LLVMEmitter {
             // field), coerce_operand's get_llvm_type can resolve it and emit the
             // required ptr->struct load instead of using the slot pointer directly.
             this.register_llvm_type(sret_tmp, "ptr");
+            // If the result register is mutable, the caller expects the value to
+            // live in its alloca slot. Copy the sret buffer into that slot so
+            // subsequent loads (via resolve_value's mutable path) see the struct.
+            if (this.is_mutable_reg(result_name)) {
+                let dst_alloca: string = this.get_alloca_name(result_name);
+                let loaded: string = this.next_tmp();
+                this.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                this.emit_line("  store " + callee_sret_type + " " + loaded + ", ptr " + dst_alloca);
+            }
         } else {
             let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
             let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
@@ -2264,30 +2450,25 @@ class LLVMEmitter {
     }
 
     fun emit_call_void(mut this, inst: ir.IRCallVoid) {
+        _utils.trace_enter("Enter emit_call_void(inst=" + inst.display() + ")");
         let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
         let func_name: string = this.llvm_func_name(inst.func_name);
         this.emit_line("  call void " + func_name + "(" + args_str + ")");
     }
 
     fun emit_call_virt(mut this, inst: ir.IRCallVirt) {
+        _utils.trace_enter("Enter emit_call_virt(inst=" + inst.display() + ")");
         this.needs_vtable_lookup = true;
         let obj_resolved: string = this.resolve_value(inst.obj);
         let ret_type: string = this.ir_type_to_llvm(inst.ret_type);
 
-        // For enum types, alloca+store to get a pointer
-        let obj_llvm_type: string = this.get_llvm_type(obj_resolved);
-        let obj_ptr: mut string = obj_resolved;
-        if (string_find(obj_llvm_type, "%enum.") >= 0) {
-            let alloca_name: string = this.next_tmp();
-            this.emit_entry_alloca(alloca_name, obj_llvm_type);
-            this.emit_line("  store " + obj_llvm_type + " " + obj_resolved + ", ptr " + alloca_name);
-            obj_ptr = alloca_name;
-        }
+        // Enums are now registered as ptr (like value classes), so obj_resolved
+        // is already a pointer — no need to materialize enum structs.
 
         // 1. Look up function pointer via C runtime helper
         let func_ptr_name: string = this.next_tmp();
         let iface_id_name: string = "@." + inst.interface_id + "_interface_id";
-        this.emit_line("  " + func_ptr_name + " = call ptr @_emperor_vtable_lookup(ptr " + obj_ptr + ", ptr " + iface_id_name + ", i32 " + cast<string>(inst.vtable_slot) + ")");
+        this.emit_line("  " + func_ptr_name + " = call ptr @_emperor_vtable_lookup(ptr " + obj_resolved + ", ptr " + iface_id_name + ", i32 " + cast<string>(inst.vtable_slot) + ")");
 
         // 2. Build args string (prepend obj as first arg)
         let args_sb: mut StringBuilder = new StringBuilder();
@@ -2311,6 +2492,7 @@ class LLVMEmitter {
     }
 
     fun emit_new(mut this, inst: ir.IRNew) {
+        _utils.trace_enter("Enter emit_new(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let type_name: string = this.strip_global_prefix(inst.type_name);
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
@@ -2353,6 +2535,7 @@ class LLVMEmitter {
     }
 
     fun emit_args_with_first(mut this, args: _utils.List<ir.IRValue>, first_arg: string) -> string {
+        _utils.trace_enter("Enter emit_args_with_first(first_arg=" + cast<string>(first_arg) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(first_arg);
         let i: mut i64 = 0;
@@ -2362,13 +2545,21 @@ class LLVMEmitter {
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = arg.get_ir_type();
             let llvm_type: string = this.ir_type_to_llvm(arg_type);
-            sb2.append(llvm_type + " " + resolved);
+            // Coerce ptr→struct for enum/value-class operands registered as ptr
+            let actual_type: string = this.get_llvm_type(resolved);
+            if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
+                let coerced: string = this.coerce_operand(resolved, llvm_type);
+                sb2.append(llvm_type + " " + coerced);
+            } else {
+                sb2.append(llvm_type + " " + resolved);
+            }
             i = i + 1;
         }
         return sb2.to_string();
     }
 
     fun emit_new_enum(mut this, inst: ir.IRNewEnum) {
+        _utils.trace_enter("Enter emit_new_enum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let raw_type_name: string = inst.type_name;
         let type_name: string = this.extract_type_name(raw_type_name);
@@ -2380,19 +2571,18 @@ class LLVMEmitter {
         }
 
         let layout: EnumLayout = found.some;
-        let tmp_name: string = this.next_tmp();
 
-        // alloca enum struct
-        this.emit_entry_alloca(tmp_name, layout.llvm_struct_type);
+        // alloca enum struct directly as result (like emit_new for value classes)
+        this.emit_entry_alloca(result_name, layout.llvm_struct_type);
 
         // store metadata at field 0
         let md_ptr: string = this.next_tmp();
-        this.emit_line("  " + md_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 0");
+        this.emit_line("  " + md_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 0");
         this.emit_line("  store ptr @" + layout.type_name + "_metadata, ptr " + md_ptr);
 
         // store variant index at field 1
         let var_ptr: string = this.next_tmp();
-        this.emit_line("  " + var_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 1");
+        this.emit_line("  " + var_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 1");
         this.emit_line("  store i32 " + cast<string>(inst.variant_idx) + ", ptr " + var_ptr);
 
         // store payload at field 2 if present
@@ -2402,7 +2592,7 @@ class LLVMEmitter {
                 let pay_type: string = layout.payload_llvm_type;
                 let pay_val: string = this.coerce_operand(pay_val_raw, pay_type);
                 let pay_ptr: string = this.next_tmp();
-                this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2");
+                this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 2");
 
                 // If payload type is "ptr" and the value is a value-type class,
                 // we must heap-allocate a copy to prevent dangling stack pointers.
@@ -2451,12 +2641,13 @@ class LLVMEmitter {
             }
         }
 
-        // load complete struct value
-        this.emit_line("  " + result_name + " = load " + layout.llvm_struct_type + ", ptr " + tmp_name);
-        this.register_llvm_type(result_name, layout.llvm_struct_type);
+        // Register result as ptr (consistent with emit_new for value-type classes).
+        // Downstream consumers use coerce_operand to load the struct when needed.
+        this.register_llvm_type(result_name, "ptr");
     }
 
     fun emit_isenum(mut this, inst: ir.IRIsEnum) {
+        _utils.trace_enter("Enter emit_isenum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let enum_resolved: string = this.resolve_value(inst.enum_value);
         let idx_resolved: string = this.resolve_value(inst.variant_idx);
@@ -2465,18 +2656,17 @@ class LLVMEmitter {
         let found: Option<EnumLayout> = this.find_enum_layout(type_name);
 
         if (found.is_none()) {
-            // Determine LLVM type: first check register type map, then IR type
-            let resolved_llvm_type: mut string = this.get_llvm_type(enum_resolved);
-            if (resolved_llvm_type == "") {
-                resolved_llvm_type = this.ir_type_to_llvm(enum_ir_type);
-            }
+            // Determine LLVM type: prefer IR type (ir_type_to_llvm) over the
+            // registered type, because sret/byval operands may be registered as
+            // "ptr" or not registered at all.
+            let ir_llvm_type: string = this.ir_type_to_llvm(enum_ir_type);
+            let resolved_llvm_type: string = this.resolve_enum_struct_type(ir_llvm_type, enum_resolved);
             if (this.string_starts_with(resolved_llvm_type, "%enum.")) {
-                // The value is an enum struct — extract the tag (field 1) and compare
-                let tmp_alloca: string = this.next_tmp();
-                this.emit_entry_alloca(tmp_alloca, resolved_llvm_type);
-                this.emit_line("  store " + resolved_llvm_type + " " + enum_resolved + ", ptr " + tmp_alloca);
+                // The value is an enum struct — extract the tag (field 1) and compare.
+                // enum_resolved may be a struct value or a pointer; materialize to ptr.
+                let tmp_ptr: string = this.materialize_enum_ptr(enum_resolved, resolved_llvm_type);
                 let tag_ptr: string = this.next_tmp();
-                this.emit_line("  " + tag_ptr + " = getelementptr " + resolved_llvm_type + ", ptr " + tmp_alloca + ", i32 0, i32 1");
+                this.emit_line("  " + tag_ptr + " = getelementptr " + resolved_llvm_type + ", ptr " + tmp_ptr + ", i32 0, i32 1");
                 let tag_val: string = this.next_tmp();
                 this.emit_line("  " + tag_val + " = load i32, ptr " + tag_ptr);
                 // Truncate variant idx to i32 if needed
@@ -2511,11 +2701,8 @@ class LLVMEmitter {
         }
 
         let layout: EnumLayout = found.some;
-        let tmp_name: string = this.next_tmp();
-
-        // alloca + store enum struct
-        this.emit_entry_alloca(tmp_name, layout.llvm_struct_type);
-        this.emit_line("  store " + layout.llvm_struct_type + " " + enum_resolved + ", ptr " + tmp_name);
+        // enum_resolved may be a struct value or a pointer (byval/sret); materialize to ptr
+        let tmp_name: string = this.materialize_enum_ptr(enum_resolved, layout.llvm_struct_type);
 
         // GEP field 1 (variant tag)
         let var_ptr: string = this.next_tmp();
@@ -2539,6 +2726,7 @@ class LLVMEmitter {
     }
 
     fun emit_isinstance(mut this, inst: ir.IRIsInstance) {
+        _utils.trace_enter("Enter emit_isinstance(inst=" + inst.display() + ")");
         this.needs_isinstance = true;
         let result_name: string = inst.result.display();
         let obj_resolved: string = this.resolve_value(inst.obj);
@@ -2549,22 +2737,14 @@ class LLVMEmitter {
         let type_id_global: string = "@." + this.sanitize_type_id(type_id) + "_type_id";
         this.ensure_type_id_constant(type_id);
 
-        // For enum types, the value is a struct not a pointer.
-        // Alloca, store, and pass the pointer to the runtime.
-        let obj_llvm_type: string = this.get_llvm_type(obj_resolved);
-        let obj_ptr: mut string = obj_resolved;
-        if (string_find(obj_llvm_type, "%enum.") >= 0) {
-            let alloca_name: string = this.next_tmp();
-            this.emit_entry_alloca(alloca_name, obj_llvm_type);
-            this.emit_line("  store " + obj_llvm_type + " " + obj_resolved + ", ptr " + alloca_name);
-            obj_ptr = alloca_name;
-        }
+        // Enums are now registered as ptr (like value classes), so obj_resolved
+        // is already a pointer — no need to materialize enum structs.
 
         if (is_interface) {
-            this.emit_line("  " + call_result + " = call i32 @_emperor_isinstance(ptr " + obj_ptr + ", ptr " + type_id_global + ")");
+            this.emit_line("  " + call_result + " = call i32 @_emperor_isinstance(ptr " + obj_resolved + ", ptr " + type_id_global + ")");
         } else {
             this.needs_check_class = true;
-            this.emit_line("  " + call_result + " = call i32 @_emperor_check_class(ptr " + obj_ptr + ", ptr " + type_id_global + ")");
+            this.emit_line("  " + call_result + " = call i32 @_emperor_check_class(ptr " + obj_resolved + ", ptr " + type_id_global + ")");
         }
         let cmp_name: string = this.next_tmp();
         this.emit_line("  " + cmp_name + " = icmp ne i32 " + call_result + ", 0");
@@ -2575,6 +2755,7 @@ class LLVMEmitter {
     }
 
     fun emit_box(mut this, inst: ir.IRBox) {
+        _utils.trace_enter("Enter emit_box(inst=" + inst.display() + ")");
         this.has_boxing = true;
         let result_name: string = inst.result.display();
         let operand_resolved: string = this.resolve_value(inst.operand);
@@ -2605,6 +2786,7 @@ class LLVMEmitter {
     }
 
     fun emit_unbox(mut this, inst: ir.IRUnbox) {
+        _utils.trace_enter("Enter emit_unbox(inst=" + inst.display() + ")");
         this.has_boxing = true;
         let result_name: string = inst.result.display();
         let operand_resolved: string = this.resolve_value(inst.operand);
@@ -2630,6 +2812,7 @@ class LLVMEmitter {
     }
 
     fun compute_enum_struct_size(mut this, layout: EnumLayout) -> i64 {
+        _utils.trace_enter("Enter compute_enum_struct_size(layout=" + layout.to_string() + ")");
         // ptr (8 bytes) + i32 variant tag (4 bytes) = 12, aligned to 8 = 16
         // if has payload, add payload size + alignment
         let base_size: mut i64 = 16;
@@ -2647,6 +2830,7 @@ class LLVMEmitter {
 
 
     fun is_interface_type_id(this, type_id: string) -> bool {
+        _utils.trace_enter("Enter is_interface_type_id(type_id=" + cast<string>(type_id) + ")");
         // Walk the bound compilation unit to check if type_id refers to an interface
         if (this.current_unit.is_some()) {
             let i: mut i64 = 0;
@@ -2661,6 +2845,7 @@ class LLVMEmitter {
     }
 
     fun def_is_interface_type(this, def: bound.BoundDefinition, type_id: string) -> bool {
+        _utils.trace_enter("Enter def_is_interface_type(type_id=" + cast<string>(type_id) + ")");
         if (def is bound.BoundDefinition.interface_def) {
             if (def.interface_def.type_symbol.is_some()) {
                 if (def.interface_def.type_symbol.some.full_name == type_id) {
@@ -2681,6 +2866,7 @@ class LLVMEmitter {
     }
 
     fun sanitize_type_id(this, type_id: string) -> string {
+        _utils.trace_enter("Enter sanitize_type_id(type_id=" + cast<string>(type_id) + ")");
         let result: mut string = "";
         let i: mut i64 = 0;
         while (i < cast<i64>(string_length(type_id))) {
@@ -2698,6 +2884,7 @@ class LLVMEmitter {
     }
 
     fun ensure_type_id_constant(mut this, type_id: string) {
+        _utils.trace_enter("Enter ensure_type_id_constant(type_id=" + cast<string>(type_id) + ")");
         let sanitized: string = this.sanitize_type_id(type_id);
         let global_name: string = "@." + sanitized + "_type_id";
         // Check for duplicates
@@ -2714,6 +2901,7 @@ class LLVMEmitter {
     }
 
     fun type_id_display_name(this, type_id: string) -> string {
+        _utils.trace_enter("Enter type_id_display_name(type_id=" + cast<string>(type_id) + ")");
         let prefix: string = "<global>.";
         if (this.string_starts_with(type_id, prefix)) {
             return string_substring(type_id, string_length(prefix), cast<i64>(string_length(type_id)) - string_length(prefix));
@@ -2721,7 +2909,36 @@ class LLVMEmitter {
         return type_id;
     }
 
+    // If enum_value is a pointer (e.g. an sret alloca) to an enum struct, return it
+    // directly so the caller can GEP its fields. Otherwise (enum_value is an inlined
+    // struct value), allocate a temporary slot, store the struct, and return the slot
+    // pointer.
+    fun materialize_enum_ptr(mut this, enum_value: string, llvm_struct_type: string) -> string {
+        _utils.trace_enter("Enter materialize_enum_ptr(enum_value=" + cast<string>(enum_value) + ", llvm_struct_type=" + cast<string>(llvm_struct_type) + ")");
+        let actual_type: string = this.get_llvm_type(enum_value);
+        if (actual_type == "ptr" || actual_type == "") {
+            return enum_value;
+        }
+        let tmp_alloca: string = this.next_tmp();
+        this.emit_entry_alloca(tmp_alloca, llvm_struct_type);
+        this.emit_line("  store " + llvm_struct_type + " " + enum_value + ", ptr " + tmp_alloca);
+        return tmp_alloca;
+    }
+
+    // Resolve the LLVM struct type of an enum value for payload extraction.
+    // Prefer the IR-derived type; fall back to the registered LLVM type only when the
+    // IR type is not an enum (e.g. for non-enum struct operands). This is needed because
+    // sret call results are registered as "ptr" even though they hold an enum struct.
+    fun resolve_enum_struct_type(this, ir_llvm_type: string, enum_resolved: string) -> string {
+        _utils.trace_enter("Enter resolve_enum_struct_type(ir_llvm_type=" + cast<string>(ir_llvm_type) + ", enum_resolved=" + cast<string>(enum_resolved) + ")");
+        if (this.string_starts_with(ir_llvm_type, "%enum.")) {
+            return ir_llvm_type;
+        }
+        return this.get_llvm_type(enum_resolved);
+    }
+
     fun emit_rdenum(mut this, inst: ir.IRRdenum) {
+        _utils.trace_enter("Enter emit_rdenum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let enum_resolved: string = this.resolve_value(inst.enum_value);
         let llvm_type: string = this.ir_type_to_llvm(inst.payload_type);
@@ -2730,18 +2947,16 @@ class LLVMEmitter {
         let found: Option<EnumLayout> = this.find_enum_layout(type_name);
 
         if (found.is_none()) {
-            // Check if the resolved value is an enum struct that needs payload extraction
-            let resolved_llvm_type: mut string = this.get_llvm_type(enum_resolved);
-            if (resolved_llvm_type == "") {
-                resolved_llvm_type = this.ir_type_to_llvm(enum_ir_type);
-            }
+            // Check if the resolved value is an enum struct that needs payload extraction.
+            // Prefer the IR type (ir_type_to_llvm) over the registered LLVM type, because
+            // sret call results are registered as "ptr" even though they hold an enum struct.
+            let ir_llvm_type: string = this.ir_type_to_llvm(enum_ir_type);
+            let resolved_llvm_type: string = this.resolve_enum_struct_type(ir_llvm_type, enum_resolved);
             if (this.string_starts_with(resolved_llvm_type, "%enum.")) {
-                // Extract payload (field 2) from the enum struct
-                let tmp_alloca: string = this.next_tmp();
-                this.emit_entry_alloca(tmp_alloca, resolved_llvm_type);
-                this.emit_line("  store " + resolved_llvm_type + " " + enum_resolved + ", ptr " + tmp_alloca);
+                // Extract payload (field 2) from the enum struct.
+                let tmp_name: string = this.materialize_enum_ptr(enum_resolved, resolved_llvm_type);
                 let pay_ptr: string = this.next_tmp();
-                this.emit_line("  " + pay_ptr + " = getelementptr " + resolved_llvm_type + ", ptr " + tmp_alloca + ", i32 0, i32 2");
+                this.emit_line("  " + pay_ptr + " = getelementptr " + resolved_llvm_type + ", ptr " + tmp_name + ", i32 0, i32 2");
                 this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + pay_ptr);
                 this.register_llvm_type(result_name, llvm_type);
             } else {
@@ -2759,11 +2974,9 @@ class LLVMEmitter {
                 payload_load_type = layout.payload_llvm_type;
             }
         }
-        let tmp_name: string = this.next_tmp();
-
-        // alloca + store enum struct
-        this.emit_entry_alloca(tmp_name, layout.llvm_struct_type);
-        this.emit_line("  store " + layout.llvm_struct_type + " " + enum_resolved + ", ptr " + tmp_name);
+        // enum_resolved may be an enum struct value or a pointer to one (sret alloca).
+        // If it is a pointer, GEP the payload directly; otherwise alloca+store first.
+        let tmp_name: string = this.materialize_enum_ptr(enum_resolved, layout.llvm_struct_type);
 
         // GEP field 2 (payload)
         let pay_ptr: string = this.next_tmp();
@@ -2773,10 +2986,12 @@ class LLVMEmitter {
     }
 
     fun emit_label(mut this, inst: ir.IRLabelInst) {
+        _utils.trace_enter("Enter emit_label(inst=" + inst.display() + ")");
         this.sb.append(inst.label.name + ":\n");
     }
 
     fun emit_global_load(mut this, inst: ir.IRGlobalLoad) {
+        _utils.trace_enter("Enter emit_global_load(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         let global_name: string = "@" + this.sanitize_name(inst.global_name);
@@ -2785,6 +3000,7 @@ class LLVMEmitter {
     }
 
     fun emit_global_store(mut this, inst: ir.IRGlobalStore) {
+        _utils.trace_enter("Enter emit_global_store(inst=" + inst.display() + ")");
         let value_resolved: string = this.resolve_value(inst.value);
         let value_type: string = inst.value.get_ir_type();
         let llvm_type: string = this.ir_type_to_llvm(value_type);
@@ -2796,6 +3012,7 @@ class LLVMEmitter {
     // --- Argument list emission ---
 
     fun find_func_param_types(this, func_name: string) -> Option<FuncParamTypes> {
+        _utils.trace_enter("Enter find_func_param_types(func_name=" + cast<string>(func_name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.func_param_types.size())) {
             let fpt: FuncParamTypes = this.func_param_types.at(cast<u64>(i)).some;
@@ -2808,6 +3025,7 @@ class LLVMEmitter {
     }
 
     fun coerce_arg(mut this, resolved: string, arg_llvm_type: string, param_llvm_type: string) -> string {
+        _utils.trace_enter("Enter coerce_arg(resolved=" + cast<string>(resolved) + ", arg_llvm_type=" + cast<string>(arg_llvm_type) + ", param_llvm_type=" + cast<string>(param_llvm_type) + ")");
         if (arg_llvm_type == param_llvm_type) { return resolved; }
         // Integer truncation: i64 -> i32, i64 -> i16, etc.
         if (arg_llvm_type == "i64" && param_llvm_type == "i32") {
@@ -2841,10 +3059,42 @@ class LLVMEmitter {
             this.emit_line("  " + tmp + " = sext i8 " + resolved + " to i64");
             return tmp;
         }
+        // Pointer → struct: when an enum or value-type class operand is registered
+        // as "ptr" (e.g. from emit_new_enum) but the callee expects the struct value
+        // directly via register (≤16-byte aggregate without byval), load the struct.
+        if (arg_llvm_type == "ptr" && this.string_starts_with(param_llvm_type, "%")) {
+            return this.coerce_operand(resolved, param_llvm_type);
+        }
         return resolved;
     }
 
+    // Determine the byval struct type for a call argument, if the argument's
+    // IR type is a >16-byte aggregate. Returns "" otherwise.
+    fun resolve_byval_type(this, arg_ir_type: string) -> string {
+        _utils.trace_enter("Enter resolve_byval_type(arg_ir_type=" + cast<string>(arg_ir_type) + ")");
+        let ir_llvm_type: string = this.ir_type_to_llvm(arg_ir_type);
+        if (this.llvm_type_size(ir_llvm_type) > 16) {
+            return ir_llvm_type;
+        }
+        return "";
+    }
+
+    // Determine the struct type for a call argument when the operand is registered
+    // as "ptr" but the callee expects the struct value (≤16-byte aggregate without
+    // byval). Returns "" if no coercion is needed.
+    fun resolve_arg_struct_type(this, arg_llvm_type: string, arg_ir_llvm_type: string, param_llvm_type: string) -> string {
+        _utils.trace_enter("Enter resolve_arg_struct_type(arg_llvm_type=" + cast<string>(arg_llvm_type) + ", arg_ir_llvm_type=" + cast<string>(arg_ir_llvm_type) + ", param_llvm_type=" + cast<string>(param_llvm_type) + ")");
+        if (arg_llvm_type == "ptr") {
+            if (this.string_starts_with(arg_ir_llvm_type, "%enum.")) { return arg_ir_llvm_type; }
+            if (this.string_starts_with(arg_ir_llvm_type, "%class.")) { return arg_ir_llvm_type; }
+            if (this.string_starts_with(param_llvm_type, "%enum.")) { return param_llvm_type; }
+            if (this.string_starts_with(param_llvm_type, "%class.")) { return param_llvm_type; }
+        }
+        return "";
+    }
+
     fun emit_args_coerced(mut this, func_name: string, args: _utils.List<ir.IRValue>) -> string {
+        _utils.trace_enter("Enter emit_args_coerced(func_name=" + cast<string>(func_name) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         let fpt: Option<FuncParamTypes> = this.find_func_param_types(func_name);
         let first: mut bool = true;
@@ -2873,13 +3123,38 @@ class LLVMEmitter {
                 }
             }
             let final_resolved: string = this.coerce_arg(resolved, arg_llvm_type, param_llvm_type);
-            sb2.append(param_llvm_type + " " + final_resolved);
+            // For >16-byte aggregate parameters (byval), pass a pointer.
+            // Use the IR-derived type (not the registered type, which may be "ptr"
+            // for sret/byval operands) to match the callee's emit_function decision.
+            let byval_type: string = this.resolve_byval_type(arg_ir_type);
+            if (byval_type != "") {
+                let arg_ptr: string = this.materialize_enum_ptr(final_resolved, byval_type);
+                sb2.append("ptr " + arg_ptr);
+            } else {
+                // For ≤16-byte aggregates (enums, value classes), the callee expects
+                // the struct value by register. Use coerce_operand to handle ptr→struct
+                // conversion when needed (e.g. from emit_new_enum registered as ptr).
+                // Also check if the registered type differs from the expected type.
+                let coerced_type: string = param_llvm_type;
+                let actual_reg_type: string = this.get_llvm_type(final_resolved);
+                if (this.string_starts_with(coerced_type, "%enum.") || this.string_starts_with(coerced_type, "%class.")) {
+                    if (actual_reg_type == "ptr" || actual_reg_type != coerced_type) {
+                        let coerced: string = this.coerce_operand(final_resolved, coerced_type);
+                        sb2.append(coerced_type + " " + coerced);
+                    } else {
+                        sb2.append(coerced_type + " " + final_resolved);
+                    }
+                } else {
+                    sb2.append(param_llvm_type + " " + final_resolved);
+                }
+            }
             i = i + 1;
         }
         return sb2.to_string();
     }
 
     fun emit_args(mut this, args: _utils.List<ir.IRValue>) -> string {
+        _utils.trace_enter("Enter emit_args");
         let sb2: mut StringBuilder = new StringBuilder();
         let first: mut bool = true;
         let i: mut i64 = 0;
@@ -2895,7 +3170,14 @@ class LLVMEmitter {
             if (!first) { sb2.append(", "); }
             first = false;
             let llvm_type: string = this.ir_type_to_llvm(arg_type);
-            sb2.append(llvm_type + " " + resolved);
+            // Coerce ptr→struct for enum/value-class operands registered as ptr
+            let actual_type: string = this.get_llvm_type(resolved);
+            if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
+                let coerced: string = this.coerce_operand(resolved, llvm_type);
+                sb2.append(llvm_type + " " + coerced);
+            } else {
+                sb2.append(llvm_type + " " + resolved);
+            }
             i = i + 1;
         }
         return sb2.to_string();
@@ -2904,6 +3186,7 @@ class LLVMEmitter {
     // --- Value resolution ---
 
     fun resolve_value(mut this, val: ir.IRValue) -> string {
+        _utils.trace_enter("Enter resolve_value(val=" + val.display() + ")");
         let display: string = val.display();
         // Mutable register: emit load from alloca
         if (this.is_mutable_reg(display)) {
@@ -2931,6 +3214,7 @@ class LLVMEmitter {
     // --- Type mapping ---
 
     fun scan_mutable_regs(mut this, func: ir.IRFunction) {
+        _utils.trace_enter("Enter scan_mutable_regs(func=" + func.to_string() + ")");
         // Collect all register names that appear as definition targets
         let all_defs: mut _utils.List<string> = new _utils.List<string>();
         let ii: mut i64 = 0;
@@ -3012,6 +3296,7 @@ class LLVMEmitter {
     }
 
     fun is_mutable_reg(this, name: string) -> bool {
+        _utils.trace_enter("Enter is_mutable_reg(name=" + cast<string>(name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.mutable_regs.size())) {
             if (this.mutable_regs.at(cast<u64>(i)).some == name) { return true; }
@@ -3021,6 +3306,7 @@ class LLVMEmitter {
     }
 
     fun get_alloca_name(this, name: string) -> string {
+        _utils.trace_enter("Enter get_alloca_name(name=" + cast<string>(name) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.alloca_map.size())) {
             let entry: RegMapping = this.alloca_map.at(cast<u64>(i)).some;
@@ -3031,6 +3317,7 @@ class LLVMEmitter {
     }
 
     fun ir_type_to_llvm(this, ir_type: string) -> string {
+        _utils.trace_enter("Enter ir_type_to_llvm(ir_type=" + cast<string>(ir_type) + ")");
         if (ir_type == "i8") { return "i8"; }
         if (ir_type == "i16") { return "i16"; }
         if (ir_type == "i32") { return "i32"; }
@@ -3063,6 +3350,7 @@ class LLVMEmitter {
     // --- Cast operation mapping ---
 
     fun cast_op(this, from: string, to: string) -> string {
+        _utils.trace_enter("Enter cast_op(from=" + cast<string>(from) + ", to=" + cast<string>(to) + ")");
         // Integer widening
         if (from == "i8" && to == "i16") { return "zext"; }
         if (from == "i8" && to == "i32") { return "zext"; }
@@ -3098,6 +3386,7 @@ class LLVMEmitter {
     // --- BINOP mapping ---
 
     fun binop_to_llvm(this, op: string, ir_type: string) -> string {
+        _utils.trace_enter("Enter binop_to_llvm(op=" + cast<string>(op) + ", ir_type=" + cast<string>(ir_type) + ")");
         let is_float: bool = ir_type == "f32" || ir_type == "f64";
         if (op == "add") { if (is_float) { return "fadd"; } return "add"; }
         if (op == "sub") { if (is_float) { return "fsub"; } return "sub"; }
@@ -3123,6 +3412,7 @@ class LLVMEmitter {
     // --- Function name ---
 
     fun llvm_func_name(this, name: string) -> string {
+        _utils.trace_enter("Enter llvm_func_name(name=" + cast<string>(name) + ")");
         let cleaned: string = this.strip_global_prefix(name);
         let sanitized: string = this.sanitize_name(cleaned);
         // Map __builtin.* functions to C runtime @_emperor_* functions
@@ -3158,6 +3448,7 @@ class LLVMEmitter {
     }
 
     fun strip_global_prefix(this, name: string) -> string {
+        _utils.trace_enter("Enter strip_global_prefix(name=" + cast<string>(name) + ")");
         let prefix: string = "<global>.";
         let prefix_len: i64 = string_length(prefix);
         let name_len: i64 = string_length(name);
@@ -3168,6 +3459,7 @@ class LLVMEmitter {
     }
 
     fun sanitize_name(this, name: string) -> string {
+        _utils.trace_enter("Enter sanitize_name(name=" + cast<string>(name) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         let len: i64 = string_length(name);
         let i: mut i64 = 0;
@@ -3186,10 +3478,12 @@ class LLVMEmitter {
     // --- Type helpers ---
 
     fun register_llvm_type(mut this, reg_name: string, llvm_type: string) {
+        _utils.trace_enter("Enter register_llvm_type(reg_name=" + cast<string>(reg_name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
         this.reg_type_map.push(new RegMapping(reg_name, llvm_type));
     }
 
     fun get_llvm_type(this, reg_name: string) -> string {
+        _utils.trace_enter("Enter get_llvm_type(reg_name=" + cast<string>(reg_name) + ")");
         let i: mut i64 = cast<i64>(this.reg_type_map.size()) - 1;
         while (i >= 0) {
             let entry: RegMapping = this.reg_type_map.at(cast<u64>(i)).some;
@@ -3200,6 +3494,7 @@ class LLVMEmitter {
     }
 
     fun coerce_operand(mut this, resolved: string, expected_llvm: string) -> string {
+        _utils.trace_enter("Enter coerce_operand(resolved=" + cast<string>(resolved) + ", expected_llvm=" + cast<string>(expected_llvm) + ")");
         // Skip if expected type is ptr (opaque in LLVM)
         if (expected_llvm == "ptr") { return resolved; }
         // Look up actual type of register
@@ -3224,12 +3519,14 @@ class LLVMEmitter {
     }
 
     fun is_wider_int(this, a: string, b: string) -> bool {
+        _utils.trace_enter("Enter is_wider_int(a=" + cast<string>(a) + ", b=" + cast<string>(b) + ")");
         let wa: i64 = this.int_width(a);
         let wb: i64 = this.int_width(b);
         return wa > wb;
     }
 
     fun int_width(this, t: string) -> i64 {
+        _utils.trace_enter("Enter int_width(t=" + cast<string>(t) + ")");
         if (t == "i8") { return 8; }
         if (t == "i16") { return 16; }
         if (t == "i32") { return 32; }
@@ -3238,6 +3535,7 @@ class LLVMEmitter {
     }
 
     fun is_icmp_value(this, resolved: string) -> bool {
+        _utils.trace_enter("Enter is_icmp_value(resolved=" + cast<string>(resolved) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.icmp_results.size())) {
             if (this.icmp_results.at(cast<u64>(i)).some == resolved) { return true; }
@@ -3247,6 +3545,7 @@ class LLVMEmitter {
     }
 
     fun is_string_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_string_type(ir_type=" + cast<string>(ir_type) + ")");
         if (string_length(ir_type) >= 5) {
             let prefix: string = "ref<";
             let i: mut i64 = 0;
@@ -3262,10 +3561,12 @@ class LLVMEmitter {
     }
 
     fun is_bool_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_bool_type(ir_type=" + cast<string>(ir_type) + ")");
         return ir_type == "bool";
     }
 
     fun is_enum_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_enum_type(ir_type=" + cast<string>(ir_type) + ")");
         if (string_length(ir_type) >= 5) {
             let prefix: string = "enum<";
             let i: mut i64 = 0;
@@ -3281,6 +3582,7 @@ class LLVMEmitter {
     // Get the payload LLVM type for an enum struct type like "%enum.bound.BoundSymbol"
     // Returns "ptr" by default (reference-type payload)
     fun get_enum_payload_type(this, llvm_struct_type: string) -> string {
+        _utils.trace_enter("Enter get_enum_payload_type(llvm_struct_type=" + cast<string>(llvm_struct_type) + ")");
         let type_name: string = string_substring(llvm_struct_type, 6, string_length(llvm_struct_type) - 6);
         let found: Option<EnumLayout> = this.find_enum_layout(type_name);
         if (found.is_some()) {
@@ -3296,6 +3598,7 @@ class LLVMEmitter {
 
     // Find class layout by LLVM struct type (e.g., "%class.bound.BoundScope")
     fun find_class_layout_by_llvm(this, llvm_type: string) -> Option<ClassLayout> {
+        _utils.trace_enter("Enter find_class_layout_by_llvm(llvm_type=" + cast<string>(llvm_type) + ")");
         if (!this.string_starts_with(llvm_type, "%class.")) {
             return new Option<ClassLayout>.none();
         }
@@ -3305,6 +3608,7 @@ class LLVMEmitter {
 
     // Find class field layout using a ClassLayout directly
     fun find_class_field_layout_llvm(this, layout: ClassLayout, field_name: string) -> Option<FieldLayout> {
+        _utils.trace_enter("Enter find_class_field_layout_llvm(layout=" + layout.to_string() + ", field_name=" + cast<string>(field_name) + ")");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(layout.fields.size())) {
             let fl: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
@@ -3317,6 +3621,7 @@ class LLVMEmitter {
     }
 
     fun is_ref_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_ref_type(ir_type=" + cast<string>(ir_type) + ")");
         if (string_length(ir_type) >= 5) {
             let prefix: string = "ref<";
             let i: mut i64 = 0;
@@ -3330,6 +3635,7 @@ class LLVMEmitter {
     }
 
     fun is_int_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_int_type(ir_type=" + cast<string>(ir_type) + ")");
         if (ir_type == "i8") { return true; }
         if (ir_type == "i16") { return true; }
         if (ir_type == "i32") { return true; }
@@ -3342,6 +3648,7 @@ class LLVMEmitter {
     }
 
     fun list_contains(this, list: _utils.List<string>, value: string) -> bool {
+        _utils.trace_enter("Enter list_contains(value=" + cast<string>(value) + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(list.size())) {
             if (list.at(cast<u64>(i)).some == value) { return true; }
@@ -3351,6 +3658,7 @@ class LLVMEmitter {
     }
 
     fun string_starts_with(this, s: string, prefix: string) -> bool {
+        _utils.trace_enter("Enter string_starts_with(s=" + cast<string>(s) + ", prefix=" + cast<string>(prefix) + ")");
         let prefix_len: i64 = string_length(prefix);
         if (string_length(s) < prefix_len) { return false; }
         let i: mut i64 = 0;
@@ -3362,6 +3670,7 @@ class LLVMEmitter {
     }
 
     fun strip_string_quotes(this, s: string) -> string {
+        _utils.trace_enter("Enter strip_string_quotes(s=" + cast<string>(s) + ")");
         let len: i64 = string_length(s);
         let inner: mut string = s;
         if (len >= 2 && string_char_at(s, 0) == "\"" && string_char_at(s, len - 1) == "\"") {
@@ -3381,6 +3690,7 @@ class LLVMEmitter {
     // it emits already-decoded `@str_N` globals and Pass 2 inherits real control
     // characters in every `"\n"`/`"\t"`/... constant.
     fun unescape_string(this, s: string) -> string {
+        _utils.trace_enter("Enter unescape_string(s=" + cast<string>(s) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         let len: i64 = string_length(s);
         let i: mut i64 = 0;
@@ -3408,6 +3718,7 @@ class LLVMEmitter {
     // LLVM c"..." uses \xx hex escapes only. No \\ or \" escapes exist.
 
     fun escape_llvm_string(this, s: string) -> string {
+        _utils.trace_enter("Enter escape_llvm_string(s=" + cast<string>(s) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         let len: i64 = string_length(s);
         let i: mut i64 = 0;

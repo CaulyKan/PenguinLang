@@ -74,12 +74,14 @@ class IdentifierExpression {
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
 
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<IdentifierExpression>(this);
             let mut sb = new StringBuilder();
             sb.append(self.name);
@@ -103,11 +105,13 @@ class StringLiteralExpression {
     value: mut string = "";
 
     fun new(mut this, value: string) {
+
         this.value = value;
     }
 
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<StringLiteralExpression>(this);
             return self.value;
         }
@@ -118,6 +122,7 @@ class BoolLiteralExpression {
     value: mut string = "";
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<BoolLiteralExpression>(this);
             return self.value;
         }
@@ -128,6 +133,7 @@ class ParenthesizedExpression {
     inner: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ParenthesizedExpression>(this);
             return "(" + self.inner.some.build_text() + ")";
         }
@@ -139,6 +145,7 @@ class BinaryExpression {
     operands: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<BinaryExpression>(this);
             let mut sb = new StringBuilder();
             sb.append(self.operands.at(cast<u64>(0)).some.build_text());
@@ -160,6 +167,7 @@ class UnaryExpression {
     operand: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<UnaryExpression>(this);
             let op_str: string = cast<string>(self.operator_value);
             if (op_str == "Negate") { return "-" + self.operand.some.build_text(); }
@@ -177,6 +185,7 @@ class MemberAccessExpression {
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<MemberAccessExpression>(this);
             return self.base_expr.some.build_text() + "." + self.member_name;
         }
@@ -188,6 +197,7 @@ class FunctionCallExpression {
     arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<FunctionCallExpression>(this);
             let mut sb = new StringBuilder();
             sb.append(self.callee.some.build_text());
@@ -210,6 +220,7 @@ class IfExpression {
     else_block: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<IfExpression>(this);
             let s: mut string = "if (" + self.condition.some.build_text() + ") " + self.then_block.some.build_text();
             if (self.else_block.is_some()) {
@@ -225,6 +236,7 @@ class WhileExpression {
     body: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<WhileExpression>(this);
             return "while (" + self.condition.some.build_text() + ") " + self.body.some.build_text();
         }
@@ -236,6 +248,7 @@ class CodeBlockExpression {
     trailing_expr: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<CodeBlockExpression>(this);
             let mut sb = new StringBuilder();
             sb.append("{");
@@ -260,6 +273,7 @@ class CastExpression {
     inner: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<CastExpression>(this);
             return "cast<" + self.type_name + ">(" + self.inner.some.build_text() + ")";
         }
@@ -272,6 +286,7 @@ class NewExpression {
     arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<NewExpression>(this);
             let mut sb = new StringBuilder();
             sb.append("new ");
@@ -306,6 +321,7 @@ class LambdaFunctionExpression {
     is_async: mut bool = false;
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<LambdaFunctionExpression>(this);
             let s: mut string = "fun(";
             if (self.is_async) { s = "async_fun("; }
@@ -327,6 +343,7 @@ class SpawnAsyncExpression {
     expression: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<SpawnAsyncExpression>(this);
             return "async " + self.expression.some.build_text();
         }
@@ -337,6 +354,7 @@ class WaitExpression {
     expression: mut Option<Expression> = new Option<Expression>.none();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<WaitExpression>(this);
             if (self.expression.is_some()) {
                 return "wait " + self.expression.some.build_text();
@@ -350,6 +368,7 @@ class VoidLiteralExpression {
     value: mut string = "";
     impl IExpression {
         fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<VoidLiteralExpression>(this);
             return self.value;
         }
@@ -377,6 +396,7 @@ enum Expression {
     void_literal: VoidLiteralExpression;
 
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (this is Expression.constant) { return this.constant.build_text(); }
         if (this is Expression.identifier) { return this.identifier.build_text(); }
         if (this is Expression.string_literal) { return this.string_literal.build_text(); }
@@ -433,6 +453,7 @@ class ExpressionStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ExpressionStatement>(this);
             return self.expression.some.build_text() + ";";
         }
@@ -444,6 +465,7 @@ class BlockExpressionStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<BlockExpressionStatement>(this);
             return self.expression.some.build_text();
         }
@@ -457,6 +479,7 @@ class AssignmentStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<AssignmentStatement>(this);
             return self.target.some.build_text() + " " + assignment_operator_to_string(self.operator_value) + " " + self.value.some.build_text() + ";";
         }
@@ -470,6 +493,7 @@ class IfStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<IfStatement>(this);
             let s: mut string = "if (" + self.condition.some.build_text() + ") " + self.then_statement.some.build_text();
             if (self.else_statement.is_some()) {
@@ -486,6 +510,7 @@ class WhileStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<WhileStatement>(this);
             return "while (" + self.condition.some.build_text() + ") " + self.body.some.build_text();
         }
@@ -501,6 +526,7 @@ class ForStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ForStatement>(this);
             let s: mut string = "for (let ";
             if (self.is_mutable) { s = s + "mut "; }
@@ -517,6 +543,7 @@ class ReturnStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ReturnStatement>(this);
             if (self.value.is_some()) {
                 return "return " + self.value.some.build_text() + ";";
@@ -531,6 +558,7 @@ class BreakStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<BreakStatement>(this);
             if (self.value.is_some()) {
                 return "break " + self.value.some.build_text() + ";";
@@ -544,6 +572,7 @@ class ContinueStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             return "continue;";
         }
     }
@@ -558,6 +587,7 @@ class LetDeclarationStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<LetDeclarationStatement>(this);
             let s: mut string = "let ";
             if (self.is_mutable) { s = s + "mut "; }
@@ -575,6 +605,7 @@ class EmitEventStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<EmitEventStatement>(this);
             let s: mut string = "emit " + self.event_expr.some.build_text() + "(";
             if (self.argument.is_some()) { s = s + self.argument.some.build_text(); }
@@ -588,6 +619,7 @@ class YieldStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<YieldStatement>(this);
             if (self.value.is_some()) {
                 return "yield " + self.value.some.build_text() + ";";
@@ -602,6 +634,7 @@ class SignalStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<SignalStatement>(this);
             if (self.expression.is_some()) {
                 return "__signal " + self.expression.some.build_text();
@@ -627,6 +660,7 @@ enum Statement {
     signal_stmt: SignalStatement;
 
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (this is Statement.expression) { return this.expression.build_text(); }
         if (this is Statement.block_expr) { return this.block_expr.build_text(); }
         if (this is Statement.assignment) { return this.assignment.build_text(); }
@@ -657,6 +691,7 @@ class TypeSpecifier {
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     qualified_parts: mut _utils.List<string> = new _utils.List<string>();
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         let prefix: mut string = "";
         if (this.is_mutable) { prefix = "mut "; }
         if (this.is_not_mutable) { prefix = "!mut "; }
@@ -729,11 +764,13 @@ class Parameter {
     is_this: mut bool = false;
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
 
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (this.is_this) {
             if (this.is_mutable) { return "mut this"; }
             return "this";
@@ -749,6 +786,7 @@ class TemplateParameter {
     name: mut string = "";
     type_constraint: mut string = "";
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (string_length(this.type_constraint) > 0) {
             return this.name + ": " + this.type_constraint;
         }
@@ -759,6 +797,7 @@ class TemplateParameter {
 class TemplateDeclaration {
     parameters: mut _utils.List<TemplateParameter> = new _utils.List<TemplateParameter>();
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         let mut sb = new StringBuilder();
         sb.append("#template(");
         let i: mut i64 = 0;
@@ -776,6 +815,7 @@ class WhereClause {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (this.type_spec.is_some()) {
             return this.name + ": " + this.type_spec.some.build_text();
         }
@@ -786,6 +826,7 @@ class WhereClause {
 class WhereDefinition {
     clauses: mut _utils.List<WhereClause> = new _utils.List<WhereClause>();
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         let mut sb = new StringBuilder();
         sb.append("where (");
         let i: mut i64 = 0;
@@ -808,6 +849,7 @@ class FunctionDefinition {
     parameters: mut _utils.List<Parameter> = new _utils.List<Parameter>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
@@ -824,6 +866,7 @@ class FunctionDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<FunctionDefinition>(this);
             let mut sb = new StringBuilder();
             if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
@@ -855,6 +898,7 @@ class ClassDefinition {
     members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
@@ -863,6 +907,7 @@ class ClassDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ClassDefinition>(this);
             let mut sb = new StringBuilder();
             if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
@@ -886,6 +931,7 @@ class EnumDefinition {
     members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
@@ -894,6 +940,7 @@ class EnumDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<EnumDefinition>(this);
             let mut sb = new StringBuilder();
             if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
@@ -917,6 +964,7 @@ class InterfaceDefinition {
     members: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
@@ -925,6 +973,7 @@ class InterfaceDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<InterfaceDefinition>(this);
             let mut sb = new StringBuilder();
             if (self.template_decl.is_some()) { sb.append(self.template_decl.some.build_text()); sb.append(" "); }
@@ -950,12 +999,14 @@ class InterfaceImplementation {
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
 
     fun new(mut this, type_name: string) {
+
         this.type_name = type_name;
     }
 
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<InterfaceImplementation>(this);
             let mut sb = new StringBuilder();
             sb.append("impl ");
@@ -988,6 +1039,7 @@ class InterfaceForImplementation {
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
 
     fun new(mut this, type_name: string, for_type_name: string) {
+
         this.type_name = type_name;
         this.for_type_name = for_type_name;
     }
@@ -995,6 +1047,7 @@ class InterfaceForImplementation {
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<InterfaceForImplementation>(this);
             let mut sb = new StringBuilder();
             sb.append("impl ");
@@ -1026,12 +1079,14 @@ class EventDefinition {
     event_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<EventDefinition>(this);
             let s: mut string = "event " + self.name;
             if (self.event_type.is_some()) { s = s + ": " + self.event_type.some.build_text(); }
@@ -1045,12 +1100,14 @@ class NamespaceDefinition {
     children: mut _utils.List<Definition> = new _utils.List<Definition>();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<NamespaceDefinition>(this);
             let s: mut string = "namespace " + self.name + "{";
             let i: mut i64 = 0;
@@ -1069,6 +1126,7 @@ class InitialRoutineDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<InitialRoutineDefinition>(this);
             if (self.body.is_some()) { return "initial " + self.body.some.build_text(); }
             return "initial {}";
@@ -1083,6 +1141,7 @@ class OnRoutineDefinition {
     body: mut Option<Expression> = new Option<Expression>.none();
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<OnRoutineDefinition>(this);
             let mut sb = new StringBuilder();
             sb.append("on ");
@@ -1100,11 +1159,13 @@ class TypeReferenceDefinition {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<TypeReferenceDefinition>(this);
             let s: mut string = "type " + self.name + " = ";
             if (self.type_spec.is_some()) { s = s + self.type_spec.some.build_text(); }
@@ -1118,12 +1179,14 @@ class EnumMemberDefinition {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<EnumMemberDefinition>(this);
             let s: mut string = self.name;
             if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
@@ -1139,12 +1202,14 @@ class ClassFieldDefinition {
     initializer: mut Option<Expression> = new Option<Expression>.none();
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<ClassFieldDefinition>(this);
             let s: mut string = self.name;
             if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
@@ -1161,12 +1226,14 @@ class GlobalVariableDefinition {
     is_mutable: mut bool = false;
 
     fun new(mut this, name: string) {
+
         this.name = name;
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
             let self = cast<GlobalVariableDefinition>(this);
             let s: mut string = "let ";
             if (self.is_mutable) { s = s + "mut "; }
@@ -1195,6 +1262,7 @@ enum Definition {
     global_var: GlobalVariableDefinition;
 
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         if (this is Definition.function_def) { return this.function_def.build_text(); }
         if (this is Definition.class_def) { return this.class_def.build_text(); }
         if (this is Definition.enum_def) { return this.enum_def.build_text(); }
@@ -1216,6 +1284,7 @@ enum Definition {
 class CompilationUnit {
     definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
     fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
         let mut sb = new StringBuilder();
         let i: mut i64 = 0;
         while (i < cast<i64>(this.definitions.size())) {

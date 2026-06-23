@@ -5,6 +5,7 @@ class SourceInput {
     source: string = "";
 
     fun new(mut this, filename: string, source: string) {
+
         this.filename = filename;
         this.source = source;
     }
@@ -15,12 +16,14 @@ class EmperorPenguinCompiler {
     verbose: mut i64 = 0;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter compile");
         let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
         inputs.push(new SourceInput("", source));
         return this.compile_sources(inputs);
     }
 
     fun compile_sources(mut this, inputs: _utils.List<SourceInput>) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter compile_sources");
         let combined_defs: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
         let total_defs: mut i64 = 0;
         let i: mut i64 = 0;
