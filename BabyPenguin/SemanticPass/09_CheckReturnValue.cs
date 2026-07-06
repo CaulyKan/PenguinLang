@@ -28,6 +28,20 @@ namespace BabyPenguin.SemanticPass
                     {
                         // TODO: check if all path return a value
                     }
+
+                    // Validate: a function may not return a non-IRef interface. Such interfaces
+                    // have unknown size at the language level; returning one would require copying
+                    // an unknown-sized value. Wrap in Box<T> or impl IReferenceType on the interface.
+                    if (function.ReturnTypeInfo != null
+                        && IRTypeClassifier.IsUnsizedInterface(function.ReturnTypeInfo))
+                    {
+                        throw new BabyPenguinException(
+                            $"Function '{function.FullName()}' returns non-IRef interface type "
+                            + $"'{function.ReturnTypeInfo.TypeNode!.FullName()}'. Interfaces without "
+                            + "IReferenceType have unknown size and cannot be returned. Use Box<...> for "
+                            + "explicit indirection, or add 'impl IReferenceType' to the interface.",
+                            function.SourceLocation);
+                    }
                 }
 
                 returnVoid |= codeContainer is IInitialRoutine;

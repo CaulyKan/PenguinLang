@@ -385,6 +385,34 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
+        public void GetTempFolder_Test()
+        {
+            // get_temp_folder() must return an existing, writable directory and a
+            // distinct path on every call (so parallel invocations never collide).
+            // The non-deterministic path is validated inside the script; only the
+            // deterministic pass/fail marker reaches stdout for a full-output check.
+            var script = @"
+                initial {
+                    let dir1: string = _utils.get_temp_folder();
+                    let dir2: string = _utils.get_temp_folder();
+                    let ok: mut bool = true;
+                    if (!_utils.dir_exists(dir1)) { ok = false; }
+                    if (!_utils.dir_exists(dir2)) { ok = false; }
+                    if (dir1 == dir2) { ok = false; }
+                    _utils.file_write_text(dir1 + ""/probe.txt"", ""ping"");
+                    let back: string = _utils.file_read_text(dir1 + ""/probe.txt"");
+                    if (back != ""ping"") { ok = false; }
+                    if (ok) { println(""get_temp_folder:OK""); }
+                    else    { println(""get_temp_folder:FAIL""); }
+                }
+            ";
+
+            var (code, output) = RunScript(script);
+            Assert.Equal(0, code);
+            Assert.Equal("get_temp_folder:OK" + EOL, output);
+        }
+
+        [Fact]
         public void Stderr_Test()
         {
             var script = @"initial { eprintln(""hello error""); }";

@@ -120,10 +120,16 @@ initial {
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
     let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
 
-    let tmp_dir: mut string = "tmp";
+    // Build intermediates go into a per-process unique temp directory so that
+    // parallel EmperorPenguin invocations never collide on a shared path. The
+    // directory is created atomically by get_temp_folder().
+    let tmp_dir: mut string = _utils.get_temp_folder();
+    // The final executable defaults into that same isolated directory; -o
+    // overrides only the output location (intermediates always stay isolated).
     let exe_path: mut string = tmp_dir + "/out.exe";
     if (string_length(output_name) > 0) {
-        // Derive tmp_dir and exe_path from -o argument
+        exe_path = output_name;
+        // Ensure the output's parent directory exists.
         let last_slash: mut i64 = -1;
         let pos: mut i64 = string_find(output_name, "/");
         while (pos >= 0) {
@@ -131,14 +137,9 @@ initial {
             pos = string_find_from(output_name, "/", pos + 1);
         }
         if (last_slash > 0) {
-            tmp_dir = string_substring(output_name, 0, last_slash);
-            exe_path = output_name;
-        } else {
-            tmp_dir = "tmp";
-            exe_path = tmp_dir + "/" + output_name;
+            _utils.mkdir(string_substring(output_name, 0, last_slash));
         }
     }
-    _utils.mkdir(tmp_dir);
 
     let first_arg: string = source_files.at(0).some;
 
@@ -197,7 +198,7 @@ initial {
         let make_args: mut _utils.List<string> = new _utils.List<string>();
         make_args.push("-C");
         make_args.push("EmperorPenguin/std/c");
-        make_args.push("OUTPUT_DIR=../../../" + tmp_dir);
+        make_args.push("OUTPUT_DIR=" + tmp_dir);
         if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make -C EmperorPenguin/std/c"); }
         let make_exit: i64 = _utils.exec("make", make_args);
         if (make_exit != 0) {

@@ -79,6 +79,51 @@ namespace BabyPenguin.VirtualMachine
         }
 
         /// <summary>
+        /// Returns true if the type is an interface whose implementations are reference
+        /// types — i.e. the interface transitively implements <c>__builtin.IReferenceType</c>.
+        /// A non-reference ("unsized") interface has unknown size at the language level and
+        /// therefore cannot be used as a class/enum field or a function return type; it may
+        /// only appear as a local variable or parameter, or behind an explicit <c>Box&lt;T&gt;</c>.
+        /// </summary>
+        public static bool IsReferenceInterface(IType type)
+        {
+            if (type.TypeNode is not IInterfaceNode intf)
+                return false;
+            return InterfaceIsReference(intf, new HashSet<string>());
+        }
+
+        /// <summary>
+        /// Returns true if the given type is an interface that is NOT a reference interface
+        /// (i.e. does not transitively implement <c>__builtin.IReferenceType</c>).
+        /// Such interfaces are unsized and cannot be stored in fields or returned.
+        /// Non-interface types return false here (they are not "unsized interfaces").
+        /// </summary>
+        public static bool IsUnsizedInterface(IType type)
+        {
+            if (type.TypeNode is not IInterfaceNode intf)
+                return false;
+            return !InterfaceIsReference(intf, new HashSet<string>());
+        }
+
+        private static bool InterfaceIsReference(IInterfaceNode intf, HashSet<string> visiting)
+        {
+            var name = intf.FullName();
+            if (!visiting.Add(name))
+                return false;
+            // ImplementedInterfaces is derived from VTables (which include merged
+            // parent-interface vtables after pass 05), so a single level of iteration
+            // plus recursion covers the transitive closure safely.
+            foreach (var parent in intf.ImplementedInterfaces)
+            {
+                if (parent.FullName() == "__builtin.IReferenceType")
+                    return true;
+                if (InterfaceIsReference(parent, visiting))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Checks if a class implements IValueType, making it a value type.
         /// A class that does NOT implement IValueType is a reference type.
         /// </summary>

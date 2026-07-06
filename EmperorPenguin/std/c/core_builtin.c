@@ -7,8 +7,23 @@
 #include <sys/types.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
 #else
 #include <dirent.h>
+#include <unistd.h>
+#endif
+
+/* Debug asserts (Phase 3.4). Compile the C runtime with -DEMPEROR_DEBUG (e.g.
+ * `make CFLAGS=-DEMPEROR_DEBUG`) to enable. The default build (used by the
+ * test suite) leaves these out, so there is zero impact on E2E tests. The
+ * asserts catch the most common native value-type/codegen failure modes early
+ * — NULL pointers passed to runtime helpers, and failed GC allocations — which
+ * otherwise manifest as opaque segfaults deep in the bootstrap. */
+#ifdef EMPEROR_DEBUG
+#include <assert.h>
+#define EMPEROR_ASSERT(cond, msg) do { if (!(cond)) { fprintf(stderr, "emperor assert: %s (%s:%d)\n", msg, __FILE__, __LINE__); assert(cond); } } while (0)
+#else
+#define EMPEROR_ASSERT(cond, msg) do { } while (0)
 #endif
 
 /* --- I/O --- */
@@ -50,6 +65,7 @@ void _emperor_exit(int code) {
 /* --- Allocation --- */
 
 void* _emperor_alloc_impl(int size) {
+    EMPEROR_ASSERT(size > 0, "_emperor_alloc_impl: size must be positive");
     return _emperor_gc_alloc(size, 0);
 }
 
@@ -57,6 +73,7 @@ void* _emperor_alloc_impl(int size) {
 
 char* _emperor_int_to_string(int value) {
     char* buf = (char*)_emperor_gc_alloc(32, 1);
+    EMPEROR_ASSERT(buf != NULL, "_emperor_int_to_string: allocation failed");
     if (buf) {
         snprintf(buf, 32, "%d", value);
     }
@@ -65,6 +82,7 @@ char* _emperor_int_to_string(int value) {
 
 char* _emperor_i64_to_string(long long value) {
     char* buf = (char*)_emperor_gc_alloc(32, 1);
+    EMPEROR_ASSERT(buf != NULL, "_emperor_i64_to_string: allocation failed");
     if (buf) {
         snprintf(buf, 32, "%lld", value);
     }
@@ -72,6 +90,8 @@ char* _emperor_i64_to_string(long long value) {
 }
 
 char* _emperor_string_concat(const char* a, const char* b) {
+    EMPEROR_ASSERT(a != NULL, "_emperor_string_concat: NULL first argument");
+    EMPEROR_ASSERT(b != NULL, "_emperor_string_concat: NULL second argument");
     int la = a ? strlen(a) : 0;
     int lb = b ? strlen(b) : 0;
     char* result = (char*)_emperor_gc_alloc(la + lb + 1, 1);
@@ -272,6 +292,82 @@ char _emperor_mkdir(const char* path) {
     int ret = mkdir(path, 0755);
 #endif
     return (ret == 0) ? 1 : 0;
+}
+
+/* --- Per-process temp directory (parallel-compile safe) --- */
+
+/* Creates a fresh, guaranteed-unique directory under the system temp area and
+ * returns its path (GC-tracked). On POSIX this uses mkdtemp, which creates the
+ * directory atomically; on Windows a candidate name is built from pid + tick +
+ * counter and mkdir is retried until it succeeds. Either way two parallel
+ * callers can never receive the same path, so build intermediates placed here
+ * do not collide across concurrent compiler invocations. Returns an empty
+ * string on failure. */
+char* _emperor_create_temp_dir(const char* prefix) {
+    const char* pfx = (prefix && prefix[0]) ? prefix : "penguin";
+
+    /* Resolve the base temp directory. */
+    char base_buf[1100];
+    const char* base;
+#ifdef _WIN32
+    DWORD got = GetTempPathA(sizeof(base_buf), base_buf);
+    if (got == 0 || got >= sizeof(base_buf)) { base_buf[0] = '.'; base_buf[1] = '\0'; }
+    else { base_buf[got] = '\0'; }
+    base = base_buf;
+#else
+    const char* tdir = getenv("TMPDIR");
+    if (tdir && tdir[0]) {
+        size_t tl = strlen(tdir);
+        if (tl >= sizeof(base_buf)) tl = sizeof(base_buf) - 1;
+        memcpy(base_buf, tdir, tl);
+        base_buf[tl] = '\0';
+        base = base_buf;
+    } else {
+        base = "/tmp";
+    }
+#endif
+
+    size_t blen = strlen(base);
+    int base_has_sep = (blen > 0 && (base[blen - 1] == '/' || base[blen - 1] == '\\'));
+
+#ifndef _WIN32
+    /* POSIX: mkdtemp atomically creates the directory, guaranteeing uniqueness
+     * even under concurrent callers. Retry a bounded number of times. */
+    for (int attempt = 0; attempt < 256; attempt++) {
+        char tmpl[4096];
+        int n = snprintf(tmpl, sizeof(tmpl), "%s%s%s_%ld_%dXXXXXX",
+                         base, base_has_sep ? "" : "/", pfx, (long)getpid(), attempt);
+        if (n <= 0 || (size_t)n >= sizeof(tmpl)) break;
+        if (mkdtemp(tmpl) != NULL) {
+            size_t pl = strlen(tmpl);
+            char* result = (char*)_emperor_gc_alloc((int)(pl + 1), 1);
+            if (result) memcpy(result, tmpl, pl + 1);
+            return result;
+        }
+        /* EEXIST or transient failure: retry with a fresh suffix. */
+    }
+#else
+    /* Windows: loop building candidate names; _mkdir succeeds on the first one
+     * that does not yet exist, which is atomic with respect to creation. */
+    for (int attempt = 0; attempt < 256; attempt++) {
+        char path[4096];
+        unsigned long pid = (unsigned long)GetCurrentProcessId();
+        unsigned long tick = (unsigned long)(GetTickCount() + (unsigned long)attempt);
+        int n = snprintf(path, sizeof(path), "%s%s%s_%lu_%lu_%d",
+                         base, base_has_sep ? "" : "\\", pfx, pid, tick, attempt);
+        if (n <= 0 || (size_t)n >= sizeof(path)) break;
+        if (_mkdir(path) == 0) {
+            size_t pl = strlen(path);
+            char* result = (char*)_emperor_gc_alloc((int)(pl + 1), 1);
+            if (result) memcpy(result, path, pl + 1);
+            return result;
+        }
+    }
+#endif
+
+    char* r = (char*)_emperor_gc_alloc(1, 1);
+    if (r) r[0] = '\0';
+    return r;
 }
 
 /* --- Filesystem queries --- */

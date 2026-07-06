@@ -6,6 +6,20 @@ namespace _utils {
     extern fun dir_exists(path: string) -> bool;
     extern fun dir_get_entries(path: string) -> string;
 
+    // Create a fresh, process-unique temporary directory and return its path.
+    // Backed by the C runtime (_emperor_create_temp_dir): atomic on POSIX via
+    // mkdtemp, and a pid+counter mkdir retry loop on Windows. Guarantees no
+    // conflict across parallel compiler invocations.
+    extern fun create_temp_dir(prefix: string) -> string;
+
+    // Returns a guaranteed-unique temporary directory path, already created.
+    // Use this for build intermediates so parallel EmperorPenguin runs do not
+    // collide on a shared fixed path like "tmp/".
+    fun get_temp_folder() -> string {
+        let dir: string = create_temp_dir("penguin");
+        return dir;
+    }
+
     let verbose_level: mut i64 = 0;
     fun trace_set_verbose(level: i64) {
         verbose_level = level;

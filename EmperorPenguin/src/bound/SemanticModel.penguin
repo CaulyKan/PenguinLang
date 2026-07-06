@@ -121,6 +121,7 @@ class SemanticModel {
         this.pass_interface_implementation(unit, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 7/9: Classifying value types..."); }
         this.pass_classify_value_types(result);
+        this.pass_validate_interface_usage(result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9: Binding expressions..."); }
         this.pass_bind_expressions(unit, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
@@ -1596,7 +1597,13 @@ class SemanticModel {
 
     fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<ast.TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
         _utils.trace_enter("Enter resolve_new_generic_args_from_ast");
-        let found: Option<BoundSymbol> = scope.lookup_type_in_scope(type_name);
+        // Resolve the base type by name, handling qualified names like "_utils.List".
+        // lookup_type_in_scope only matches exact symbol names, so a qualified base type
+        // would not be found and its instantiation (e.g. List<BoundSymbol> in an initial
+        // block, which has no return type for the bound-tree collector to see and whose
+        // locals are not bound until pass 4) would never be monomorphized — leaving calls
+        // to undefined methods and invalid IR (the pass2 monomorphization crash).
+        let found: Option<BoundSymbol> = this.resolve_type_by_name(type_name, scope);
         if (found.is_none()) { return new Option<BoundType>.none(); }
         if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundType>.none(); }
         let base_type: BoundType = found.some.type_sym.bound_type;
@@ -2201,6 +2208,109 @@ class SemanticModel {
             result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
+    }
+
+    // Requirement 2 (no implicit boxing): a non-IRef interface has unknown size at the
+    // language level, so it cannot be stored in a class/enum field or returned from a
+    // function — it may only live as a local variable or parameter (a pointer), or behind
+    // an explicit Box<T>. This pass walks every definition and reports violations. Runs
+    // after classification (types resolved + monomorphized + vtables built).
+    fun pass_validate_interface_usage(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_validate_interface_usage");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            this.validate_interface_usage_def(result.definitions.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+    }
+
+    fun validate_interface_usage_def(mut this, def: BoundDefinition) {
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                this.validate_interface_usage_def(ns.children.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = def.class_def;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let field_def: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (field_def is BoundDefinition.class_field) {
+                    let ft: BoundType = field_def.class_field.bound_type;
+                    if (this.is_unsized_interface(ft)) {
+                        this.report_error(
+                            "Field of class '" + cls.full_name + "' has non-IRef interface type '"
+                            + ft.display_name() + "'. Interfaces without IReferenceType have unknown "
+                            + "size and cannot be fields. Use Box<" + ft.display_name()
+                            + "> or add 'impl IReferenceType' to the interface.",
+                            new ast.SourceLocation("", 0, 0));
+                    }
+                }
+                fi = fi + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                this.validate_interface_usage_def(cls.methods.at(cast<u64>(mi)).some);
+                mi = mi + 1;
+            }
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(cls.constructors.size())) {
+                this.validate_interface_usage_def(cls.constructors.at(cast<u64>(ci)).some);
+                ci = ci + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = def.enum_def;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(enm.members.size())) {
+                let member: BoundEnumMemberDefinition = enm.members.at(cast<u64>(mi)).some;
+                let mt: BoundType = member.member_type;
+                if (this.is_unsized_interface(mt)) {
+                    this.report_error(
+                        "Enum variant of '" + enm.full_name + "' has non-IRef interface payload type '"
+                        + mt.display_name() + "'. Interfaces without IReferenceType have unknown "
+                        + "size and cannot be enum payloads. Use Box<" + mt.display_name()
+                        + "> or add 'impl IReferenceType' to the interface.",
+                        new ast.SourceLocation("", 0, 0));
+                }
+                mi = mi + 1;
+            }
+            let mmi: mut i64 = 0;
+            while (mmi < cast<i64>(enm.methods.size())) {
+                this.validate_interface_usage_def(enm.methods.at(cast<u64>(mmi)).some);
+                mmi = mmi + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.function_def) {
+            let func: BoundFunctionDefinition = def.function_def;
+            if (this.is_unsized_interface(func.return_type)) {
+                this.report_error(
+                    "Function '" + func.full_name + "' returns non-IRef interface type '"
+                    + func.return_type.display_name() + "'. Interfaces without IReferenceType have "
+                    + "unknown size and cannot be returned. Use Box<...> or add 'impl IReferenceType' "
+                    + "to the interface.",
+                    new ast.SourceLocation("", 0, 0));
+            }
+            return;
+        }
+    }
+
+    // An interface is "unsized" (unknown size at the language level) unless it transitively
+    // implements __builtin.IReferenceType. Currently no EmperorPenguin interface implements
+    // IReferenceType, so every interface type is unsized. When an interface opts into being a
+    // sized reference interface (via `impl IReferenceType`), extend this to walk the interface's
+    // implemented-interface closure so such interfaces are permitted as fields/returns.
+    fun is_unsized_interface(this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.InterfaceKind) {
+            return true;
+        }
+        return false;
     }
 
     fun classify_def(mut this, def: BoundDefinition, visiting: mut _utils.List<string>) -> BoundDefinition {

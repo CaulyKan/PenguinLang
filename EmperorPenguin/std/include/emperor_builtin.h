@@ -60,6 +60,10 @@ void _emperor_file_write_text(const char* path, const char* text);
 /* Filesystem */
 char _emperor_mkdir(const char* path);
 
+/* Create and return a fresh, guaranteed-unique temporary directory path
+ * (parallel-compile safe). Returns an empty string on failure. */
+char* _emperor_create_temp_dir(const char* prefix);
+
 /* StringBuilder */
 void _emperor_stringbuilder_new(void* sb);
 void _emperor_stringbuilder_append(void* sb, const char* s);

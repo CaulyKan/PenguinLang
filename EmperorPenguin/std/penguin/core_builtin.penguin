@@ -129,16 +129,6 @@ namespace __builtin {
         }
     }
 
-    #template(T: type)
-    interface IIterator {
-        fun next(mut this) -> Option<T>;
-    }
-
-    #template(T: type)
-    interface IIterable {
-        fun iter(mut this) -> mut IIterator<T>;
-    }
-
     #template(K: type, V: type)
     class Pair {
         first: K;

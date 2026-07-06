@@ -591,9 +591,9 @@ declare ptr @_emperor_alloc_impl(i32)
 3. 将所有源文件拼接成一个字符串
 4. 调用词法分析器 → 解析器 → SemanticModel 管线
 5. 调用 IRGenerator → LLVMEmitter
-6. 写入 `tmp/combined.ll`
-7. 在 `std/c` 上运行 `make` 以构建 `libcore_builtin.a`
-8. 运行 `clang combined.ll libcore_builtin.a -o tmp/out.exe`
+6. 通过 `_utils.get_temp_folder()` 分配一个进程唯一的临时目录（使并行编译互不冲突），写入 `<temp>/combined.ll`
+7. 在 `std/c` 上运行 `make OUTPUT_DIR=<temp>` 以构建 `<temp>/libcore_builtin.a`
+8. 运行 `clang <temp>/combined.ll <temp>/libcore_builtin.a -o <exe>`（exe 默认为 `<temp>/out.exe`，可用 `-o` 覆盖）
 9. 报告成功或收集错误
 
 ### 12. 测试基础设施

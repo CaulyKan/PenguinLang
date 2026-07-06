@@ -373,6 +373,7 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 define void @create(ptr sret(%enum.Option) %_sret_result) {
 entry:
   %t0 = alloca %enum.Option
+  store %enum.Option zeroinitializer, ptr %t0
   %tmp_0 = getelementptr %enum.Option, ptr %t0, i32 0, i32 0
   store ptr @Option_metadata, ptr %tmp_0
   %tmp_1 = getelementptr %enum.Option, ptr %t0, i32 0, i32 1
@@ -421,6 +422,7 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 define void @create(ptr sret(%enum.Option) %_sret_result) {
 entry:
   %tmp_0 = alloca %enum.Option
+  store %enum.Option zeroinitializer, ptr %tmp_0
   %t0 = add i64 0, 42
   %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 0
   store ptr @Option_metadata, ptr %tmp_1
@@ -1079,7 +1081,6 @@ initial {
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
-declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)
 
 define void @Foo_new(ptr %this) {
 entry:
@@ -1089,7 +1090,7 @@ entry:
 define void @make_foo(ptr sret(%class.Foo) %_sret_result) {
 entry:
   %t0 = alloca %class.Foo
-  call void @llvm.memset.p0.i64(ptr %t0, i8 0, i64 16, i1 false)
+  store %class.Foo zeroinitializer, ptr %t0
   store ptr @Foo_metadata, ptr %t0
   call void @Foo_new(ptr %t0)
   %tmp_0 = load %class.Foo, ptr %t0

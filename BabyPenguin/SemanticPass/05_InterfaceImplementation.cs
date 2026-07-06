@@ -32,6 +32,11 @@ namespace BabyPenguin.SemanticPass
             {
                 FinishVTable(obj);
             }
+            // Validate that non-IRef interfaces are not used as class/enum fields or enum
+            // payloads. Such interfaces have unknown size at the language level and can only
+            // live as locals/parameters or behind an explicit Box<T>. (VTables are merged by
+            // this point, so IsUnsizedInterface can resolve the IReferenceType marker.)
+            ValidateInterfaceFieldTypes(items);
             foreach (var cls in items.OfType<IClassNode>())
             {
                 CallInterfaceConstructor(cls);
@@ -39,6 +44,59 @@ namespace BabyPenguin.SemanticPass
             foreach (var obj in items)
             {
                 obj.PassIndex = PassIndex;
+            }
+        }
+
+        /// <summary>
+        /// Validates that no class field or enum variant payload has a non-IRef interface type.
+        /// Non-IRef interfaces have unknown size at the language level and cannot be stored in
+        /// fields; they must be wrapped in Box&lt;T&gt; or the interface must impl IReferenceType.
+        /// Iterates specialized (concrete) types so generic instantiations like
+        /// <c>_ListNode&lt;IFutureBase&gt;.value</c> are also checked.
+        /// </summary>
+        void ValidateInterfaceFieldTypes(IEnumerable<ISemanticNode> items)
+        {
+            foreach (var cls in items.OfType<IClassNode>())
+            {
+                if (cls.IsGeneric && !cls.IsSpecialized)
+                    continue;
+                foreach (var symbol in cls.Symbols)
+                {
+                    if (!symbol.IsClassMember || !symbol.IsVariable)
+                        continue;
+                    var fieldType = symbol.TypeInfo;
+                    if (fieldType != null
+                        && IRTypeClassifier.IsUnsizedInterface(fieldType))
+                    {
+                        throw new BabyPenguinException(
+                            $"Field '{symbol.Name}' of class '{cls.FullName()}' has non-IRef interface type "
+                            + $"'{fieldType.TypeNode!.FullName()}'. Interfaces without IReferenceType have unknown "
+                            + $"size and cannot be used as fields. Use Box<{fieldType.TypeNode!.FullName()}> for "
+                            + "explicit indirection, or add 'impl IReferenceType' to the interface.",
+                            symbol.SourceLocation);
+                    }
+                }
+            }
+
+            foreach (var enm in items.OfType<IEnumNode>())
+            {
+                if (enm.IsGeneric && !enm.IsSpecialized)
+                    continue;
+                foreach (var decl in enm.EnumDeclarations)
+                {
+                    var payloadType = decl.TypeInfo;
+                    if (payloadType != null
+                        && payloadType.TypeNode is IInterfaceNode
+                        && IRTypeClassifier.IsUnsizedInterface(payloadType))
+                    {
+                        throw new BabyPenguinException(
+                            $"Enum variant '{enm.FullName()}.{decl.Name}' has non-IRef interface payload type "
+                            + $"'{payloadType.TypeNode!.FullName()}'. Interfaces without IReferenceType have unknown "
+                            + $"size and cannot be used as enum payloads. Use Box<{payloadType.TypeNode!.FullName()}> "
+                            + "for explicit indirection, or add 'impl IReferenceType' to the interface.",
+                            decl.SourceLocation);
+                    }
+                }
             }
         }
 

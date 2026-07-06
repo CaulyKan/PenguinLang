@@ -388,6 +388,32 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = entries;
             });
 
+            vm.Global.RegisterExternFunction("_utils.create_temp_dir", (result, args) =>
+            {
+                var prefix = args[0].As<BasicRuntimeValue>().StringValue;
+                if (string.IsNullOrEmpty(prefix)) prefix = "penguin";
+                var baseDir = System.IO.Path.GetTempPath();
+                // Each attempt derives a new GUID, so uniqueness is guaranteed
+                // even across parallel processes; CreateDirectory is atomic and
+                // throws if a (vanishingly unlikely) collision wins the race.
+                string dir = "";
+                for (int attempt = 0; ; attempt++)
+                {
+                    var candidate = System.IO.Path.Combine(baseDir, prefix + "_" + System.Guid.NewGuid().ToString("N"));
+                    try
+                    {
+                        System.IO.Directory.CreateDirectory(candidate);
+                        dir = candidate;
+                        break;
+                    }
+                    catch
+                    {
+                        if (attempt >= 16) throw;
+                    }
+                }
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = dir;
+            });
+
             vm.Global.RegisterExternFunction("__builtin._exec_cmd", (result, args) =>
             {
                 var cmd = args[0].As<BasicRuntimeValue>().StringValue;

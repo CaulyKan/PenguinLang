@@ -991,14 +991,15 @@ namespace BabyPenguin.Tests
             compiler.AddSource(@"
                 namespace ns {
                     interface IFoo {
+                        impl __builtin.IReferenceType;
                         fun a() -> Self {}
                     }
                     class Foo {
                         fun a() -> Self {}
                         impl IFoo {
                             fun a() -> IFoo {
-                                let b: Self; 
-                            } 
+                                let b: Self;
+                            }
                         }
                     }
                 }

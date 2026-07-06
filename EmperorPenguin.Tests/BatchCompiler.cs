@@ -209,7 +209,7 @@ public static class BatchCompiler
             var compilePsi = new ProcessStartInfo
             {
                 FileName = "dotnet",
-                Arguments = $"run --project \"{Path.Combine(projectRoot, "BabyPenguin", "BabyPenguin.csproj")}\" -q -- \"{Path.Combine(projectRoot, "EmperorPenguin", "EmperorPenguin.penguins")}\" -- \"{srcFile}\"",
+                Arguments = $"run --project \"{Path.Combine(projectRoot, "BabyPenguin", "BabyPenguin.csproj")}\" -q -- \"{Path.Combine(projectRoot, "EmperorPenguin", "EmperorPenguin.penguins")}\" -- \"{srcFile}\" -o \"{Path.Combine(empTmp, "out.exe")}\"",
                 WorkingDirectory = projectRoot,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,

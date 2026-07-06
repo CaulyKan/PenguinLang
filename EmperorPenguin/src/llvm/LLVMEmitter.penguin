@@ -211,6 +211,14 @@ class LLVMEmitter {
     fun emit_entry_alloca(mut this, name: string, llvm_type: string) {
         _utils.trace_enter("Enter emit_entry_alloca(name=" + cast<string>(name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
         this.entry_allocas.append("  " + name + " = alloca " + llvm_type + "\n");
+        // Zero-initialize the slot. Value-type structs (Option/enum, SourceLocation,
+        // etc.) have i32 tag fields stored with a 32-bit store; without zeroing, the
+        // upper 32 bits of that 8-byte slot keep whatever residual (often a prior
+        // pointer's high bits, e.g. 0x5555) was in the stack slot. When such a slot
+        // is later reused as a return-address (stack reuse across calls), the ret
+        // jumps to the residual-composed pointer (e.g. 0x555500000000) -> segfault.
+        // `store T zeroinitializer` clears the whole slot including padding.
+        this.entry_allocas.append("  store " + llvm_type + " zeroinitializer, ptr " + name + "\n");
     }
 
     // Allocate a new debug metadata ID (returns just the number string, e.g. "0", "1")
@@ -252,7 +260,7 @@ class LLVMEmitter {
 
     // Begin debug info for a function
     fun debug_begin_function(mut this, func_name: string, loc: ast.SourceLocation) {
-        _utils.trace_enter("Enter debug_begin_function(func_name=" + cast<string>(func_name) + ", loc=" + loc.to_string() + ")");
+        _utils.trace_enter("Enter debug_begin_function(func_name=" + cast<string>(func_name) + ")");
         if (!this.debug_enabled) { return; }
         // Attribute the function (and the locals/types emitted while it is
         // current) to its own source file, not whichever file was used to init
@@ -292,7 +300,7 @@ class LLVMEmitter {
     // Get debug location suffix for an instruction at the given source location
     // Always emits !dbg when debug is enabled (LLVM requires all instructions in debug functions to have !dbg)
     fun debug_loc(mut this, loc: ast.SourceLocation) -> string {
-        _utils.trace_enter("Enter debug_loc(loc=" + loc.to_string() + ")");
+        _utils.trace_enter("Enter debug_loc");
         if (!this.debug_enabled) { return ""; }
         let line: i64 = loc.line;
         let col: i64 = loc.col;
@@ -651,8 +659,30 @@ class LLVMEmitter {
         }
     }
 
+    fun precompute_function_signatures(mut this, module: ir.IRModule) {
+        _utils.trace_enter("Enter precompute_function_signatures");
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            let fpt: mut FuncParamTypes = new FuncParamTypes(this.strip_global_prefix(func.name));
+            let ppi: mut i64 = 0;
+            while (ppi < cast<i64>(func.parameters.size())) {
+                let pp: ir.IRParameter = func.parameters.at(cast<u64>(ppi)).some;
+                fpt.param_types.push(this.ir_type_to_llvm(pp.ir_type));
+                ppi = ppi + 1;
+            }
+            this.func_param_types.push(fpt);
+            fi = fi + 1;
+        }
+    }
+
     fun emit_functions(mut this, module: ir.IRModule) {
         _utils.trace_enter("Enter emit_functions(module=" + module.to_string() + ")");
+        // Pre-compute every function's parameter signature BEFORE emitting any body, so
+        // forward-reference call sites resolve callee param types via find_func_param_types.
+        // Without this, emit_args_coerced defaults the param type and produces by-ref vs
+        // by-val ABI mismatches (the enum-param crash, mechanism D).
+        this.precompute_function_signatures(module);
         let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
@@ -708,15 +738,9 @@ class LLVMEmitter {
             this.current_sret_param = "";
         }
 
-        // Store parameter types for call argument coercion
-        let fpt: mut FuncParamTypes = new FuncParamTypes(this.strip_global_prefix(func.name));
-        let ppi: mut i64 = 0;
-        while (ppi < cast<i64>(func.parameters.size())) {
-            let pp: ir.IRParameter = func.parameters.at(cast<u64>(ppi)).some;
-            fpt.param_types.push(this.ir_type_to_llvm(pp.ir_type));
-            ppi = ppi + 1;
-        }
-        this.func_param_types.push(fpt);
+        // Parameter types for call argument coercion are pre-computed for all
+        // functions in emit_functions (precompute_function_signatures), so forward
+        // references resolve. Nothing to populate here.
         // Map parameters: ARG instruction creates %tN → %paramname mapping
         let pi: mut i64 = 0;
         while (pi < cast<i64>(func.parameters.size())) {
@@ -2218,6 +2242,22 @@ class LLVMEmitter {
         this.emit_line("  ; unknown unaryop " + inst.op);
     }
 
+    // Compute a pointer to a class field, handling the IRef (byte-offset GEP) vs
+    // ICopy (struct-index GEP) split in one place (Requirement 1 centralization).
+    // Returned name is a fresh %tmp holding the field address.
+    fun gep_class_field(mut this, obj_resolved: string, layout: ClassLayout, fl: FieldLayout) -> string {
+        _utils.trace_enter("Enter gep_class_field");
+        let field_ptr: string = this.next_tmp();
+        if (!layout.is_value_type) {
+            // IRef: object is an opaque heap ptr; address the field by byte offset.
+            this.emit_line("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset));
+        } else {
+            // ICopy: object is an alloca'd struct; address the field by struct index.
+            this.emit_line("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index));
+        }
+        return field_ptr;
+    }
+
     fun emit_rdmbr(mut this, inst: ir.IRRdmbr) {
         _utils.trace_enter("Enter emit_rdmbr(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
@@ -2249,17 +2289,8 @@ class LLVMEmitter {
                     }
                     this.register_llvm_type(result_name, "ptr");
                 } else {
-                    if (!layout.is_value_type) {
-                        // IRef: obj is ptr, use byte-offset GEP
-                        let field_ptr: string = this.next_tmp();
-                        this.emit_line("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset));
-                        this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
-                    } else {
-                        // ICopy: obj is ptr to alloca, use struct field index GEP
-                        let field_ptr: string = this.next_tmp();
-                        this.emit_line("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index));
-                        this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
-                    }
+                    let field_ptr: string = this.gep_class_field(obj_resolved, layout, fl);
+                    this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
                     this.register_llvm_type(result_name, llvm_type);
                 }
                 return;
@@ -2330,18 +2361,8 @@ class LLVMEmitter {
                 let fl: FieldLayout = found_field.some;
                 let store_type: string = fl.llvm_type;
                 let coerced_value: string = this.coerce_operand(value_resolved, store_type);
-
-                if (!layout.is_value_type) {
-                    // IRef: byte-offset GEP + store
-                    let field_ptr: string = this.next_tmp();
-                    this.emit_line("  " + field_ptr + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset));
-                    this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
-                } else {
-                    // ICopy: struct field index GEP + store
-                    let field_ptr: string = this.next_tmp();
-                    this.emit_line("  " + field_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index));
-                    this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
-                }
+                let field_ptr: string = this.gep_class_field(obj_resolved, layout, fl);
+                this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
                 return;
             }
         }
@@ -2491,6 +2512,33 @@ class LLVMEmitter {
         }
     }
 
+    // Centralized object allocation (Requirement 1). Allocates a zero-initialized,
+    // metadata-stamped slot for a class: value types (ICopy) use an entry-block alloca,
+    // reference types (IRef) use the GC heap. Registers the result as "ptr". All
+    // class-construction paths route through here so the value/ref decision, zero-init,
+    // and metadata stamp live in exactly one place — eliminating the per-callsite
+    // inconsistencies that caused native value-type crashes (mechanisms C/E).
+    fun allocate_class(mut this, result_name: string, layout: ClassLayout) {
+        _utils.trace_enter("Enter allocate_class(result_name=" + cast<string>(result_name) + ")");
+        if (!layout.is_value_type) {
+            // IRef: heap allocation. Zero the heap object via memset (no alloca, so
+            // emit_entry_alloca's zero-init doesn't apply here).
+            this.has_iref_class = true;
+            this.emit_line("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(layout.sizeof_object) + ")");
+            this.needs_memset = true;
+            this.emit_line("  call void @llvm.memset.p0.i64(ptr " + result_name + ", i8 0, i64 " + cast<string>(layout.sizeof_object) + ", i1 false)");
+        } else {
+            // ICopy: stack allocation. emit_entry_alloca emits `alloca` + `store T
+            // zeroinitializer`, which zeroes the whole struct (including i32-tag padding
+            // — mechanism C). No separate memset needed.
+            this.emit_entry_alloca(result_name, layout.llvm_struct_type);
+        }
+        // Stamp the metadata pointer at offset 0.
+        this.emit_line("  store ptr @" + layout.type_name + "_metadata, ptr " + result_name);
+        // Register as ptr so coerce_operand can load the struct when a by-value use needs it.
+        this.register_llvm_type(result_name, "ptr");
+    }
+
     fun emit_new(mut this, inst: ir.IRNew) {
         _utils.trace_enter("Enter emit_new(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
@@ -2503,35 +2551,11 @@ class LLVMEmitter {
         }
 
         let layout: ClassLayout = found.some;
-
-        if (!layout.is_value_type) {
-            // IRef: heap allocation
-            this.has_iref_class = true;
-            this.emit_line("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(layout.sizeof_object) + ")");
-            // Zero-initialize the entire object (fields have default values)
-            this.needs_memset = true;
-            this.emit_line("  call void @llvm.memset.p0.i64(ptr " + result_name + ", i8 0, i64 " + cast<string>(layout.sizeof_object) + ", i1 false)");
-            // Init metadata
-            this.emit_line("  store ptr @" + layout.type_name + "_metadata, ptr " + result_name);
-            // Call constructor
-            let ctor_name: string = this.llvm_func_name("<global>." + type_name + ".new");
-            let ctor_args: string = this.emit_args_with_first(inst.args, "ptr " + result_name);
-            this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
-        } else {
-            // ICopy: stack allocation
-            this.emit_entry_alloca(result_name, layout.llvm_struct_type);
-            // Zero-initialize the entire object (fields have default values)
-            this.needs_memset = true;
-            this.emit_line("  call void @llvm.memset.p0.i64(ptr " + result_name + ", i8 0, i64 " + cast<string>(layout.sizeof_object) + ", i1 false)");
-            // Init metadata
-            this.emit_line("  store ptr @" + layout.type_name + "_metadata, ptr " + result_name);
-            // Call constructor
-            let ctor_name: string = this.llvm_func_name("<global>." + type_name + ".new");
-            let ctor_args: string = this.emit_args_with_first(inst.args, "ptr " + result_name);
-            this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
-        }
-        // Register result as ptr so coerce_operand can load the struct when needed
-        this.register_llvm_type(result_name, "ptr");
+        this.allocate_class(result_name, layout);
+        // Call constructor
+        let ctor_name: string = this.llvm_func_name("<global>." + type_name + ".new");
+        let ctor_args: string = this.emit_args_with_first(inst.args, "ptr " + result_name);
+        this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
     }
 
     fun emit_args_with_first(mut this, args: _utils.List<ir.IRValue>, first_arg: string) -> string {
@@ -2545,13 +2569,24 @@ class LLVMEmitter {
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = arg.get_ir_type();
             let llvm_type: string = this.ir_type_to_llvm(arg_type);
-            // Coerce ptr→struct for enum/value-class operands registered as ptr
-            let actual_type: string = this.get_llvm_type(resolved);
-            if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
-                let coerced: string = this.coerce_operand(resolved, llvm_type);
-                sb2.append(llvm_type + " " + coerced);
+            // For >16-byte aggregate constructor arguments, the callee declares the
+            // parameter as `ptr byval(type)` (emit_function), so the caller MUST pass a
+            // pointer (materialize the value into a temp alloca). Passing the struct value
+            // directly made the callee dereference the value's bits as a pointer — the
+            // pass2 BoundScope/Option corruption (parent field garbage, scope mis-offset).
+            let byval_type: string = this.resolve_byval_type(arg_type);
+            if (byval_type != "") {
+                let arg_ptr: string = this.materialize_enum_ptr(resolved, byval_type);
+                sb2.append("ptr " + arg_ptr);
             } else {
-                sb2.append(llvm_type + " " + resolved);
+                // Coerce ptr→struct for enum/value-class operands registered as ptr
+                let actual_type: string = this.get_llvm_type(resolved);
+                if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
+                    let coerced: string = this.coerce_operand(resolved, llvm_type);
+                    sb2.append(llvm_type + " " + coerced);
+                } else {
+                    sb2.append(llvm_type + " " + resolved);
+                }
             }
             i = i + 1;
         }
@@ -2737,14 +2772,20 @@ class LLVMEmitter {
         let type_id_global: string = "@." + this.sanitize_type_id(type_id) + "_type_id";
         this.ensure_type_id_constant(type_id);
 
-        // Enums are now registered as ptr (like value classes), so obj_resolved
-        // is already a pointer — no need to materialize enum structs.
+        // The operand may be an enum/value-class struct held in a register (e.g. an
+        // alloca'd %enum.X loaded into a temp). _emperor_isinstance / _emperor_check_class
+        // take a ptr, so materialize the struct to a temporary alloca when it isn't already
+        // a pointer. (This was the enum-isinstance boxing bug: passing a %enum.X value
+        // directly caused "'%tmp_N' defined with type '%enum.X' but expected 'ptr'".)
+        let obj_ir_type: string = inst.obj.get_ir_type();
+        let obj_llvm_type: string = this.resolve_enum_struct_type(this.ir_type_to_llvm(obj_ir_type), obj_resolved);
+        let obj_ptr: string = this.materialize_enum_ptr(obj_resolved, obj_llvm_type);
 
         if (is_interface) {
-            this.emit_line("  " + call_result + " = call i32 @_emperor_isinstance(ptr " + obj_resolved + ", ptr " + type_id_global + ")");
+            this.emit_line("  " + call_result + " = call i32 @_emperor_isinstance(ptr " + obj_ptr + ", ptr " + type_id_global + ")");
         } else {
             this.needs_check_class = true;
-            this.emit_line("  " + call_result + " = call i32 @_emperor_check_class(ptr " + obj_resolved + ", ptr " + type_id_global + ")");
+            this.emit_line("  " + call_result + " = call i32 @_emperor_check_class(ptr " + obj_ptr + ", ptr " + type_id_global + ")");
         }
         let cmp_name: string = this.next_tmp();
         this.emit_line("  " + cmp_name + " = icmp ne i32 " + call_result + ", 0");
@@ -3112,7 +3153,8 @@ class LLVMEmitter {
             first = false;
             // Prefer registered LLVM type over IR type (handles enum payload correctly)
             let registered_type: string = this.get_llvm_type(resolved);
-            let arg_llvm_type: mut string = this.ir_type_to_llvm(arg_ir_type);
+            let arg_struct_type: string = this.ir_type_to_llvm(arg_ir_type);
+            let arg_llvm_type: mut string = arg_struct_type;
             if (registered_type != "") {
                 arg_llvm_type = registered_type;
             }
@@ -3132,9 +3174,10 @@ class LLVMEmitter {
                 sb2.append("ptr " + arg_ptr);
             } else {
                 // For ≤16-byte aggregates (enums, value classes), the callee expects
-                // the struct value by register. Use coerce_operand to handle ptr→struct
+                // the struct value by register. precompute_function_signatures (Phase 3.0)
+                // populated func_param_types for every function, so param_llvm_type is the
+                // callee's true declared type — use coerce_operand to handle ptr→struct
                 // conversion when needed (e.g. from emit_new_enum registered as ptr).
-                // Also check if the registered type differs from the expected type.
                 let coerced_type: string = param_llvm_type;
                 let actual_reg_type: string = this.get_llvm_type(final_resolved);
                 if (this.string_starts_with(coerced_type, "%enum.") || this.string_starts_with(coerced_type, "%class.")) {
@@ -3440,6 +3483,7 @@ class LLVMEmitter {
         if (sanitized == "_utils_file_exists") { return "@_emperor_file_exists"; }
         if (sanitized == "_utils_dir_exists") { return "@_emperor_dir_exists"; }
         if (sanitized == "_utils_dir_get_entries") { return "@_emperor_dir_get_entries"; }
+        if (sanitized == "_utils_create_temp_dir") { return "@_emperor_create_temp_dir"; }
         // StringBuilder methods
         if (sanitized == "__builtin_StringBuilder_new") { return "@_emperor_stringbuilder_new"; }
         if (sanitized == "__builtin_StringBuilder_append") { return "@_emperor_stringbuilder_append"; }

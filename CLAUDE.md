@@ -202,9 +202,9 @@ main.penguin     -- Entry point (180 lines)
 5. Check for semantic errors → report with source locations
 6. `IRGenerator.generate(result)` → IR module
 7. `LLVMEmitter.lower(module, result)` → LLVM IR text
-8. Write `.ll` file to `tmp/`
-9. Run `make -C EmperorPenguin/std/c` to build C runtime (`libcore_builtin.a`)
-10. Run `clang combined.ll libcore_builtin.a -o tmp/out.exe` to produce native executable
+8. Allocate a per-process unique temp dir via `_utils.get_temp_folder()` (so parallel invocations never collide) and write `.ll` there
+9. Run `make -C EmperorPenguin/std/c OUTPUT_DIR=<temp_dir>` to build C runtime (`libcore_builtin.a`) into that temp dir
+10. Run `clang <temp_dir>/combined.ll <temp_dir>/libcore_builtin.a -o <exe>` to produce the native executable (exe path defaults to `<temp_dir>/out.exe`, overridden by `-o`)
 
 ### Bound Tree (Semantic Layer)
 

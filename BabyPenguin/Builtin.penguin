@@ -135,6 +135,10 @@ namespace __builtin {
 
     #template(T: type)
     interface IIterator {
+        // Iterators hold mutable state shared across .next() calls, so they are inherently
+        // reference-typed. Marking IReferenceType makes IIterator a sized reference interface
+        // so it can be returned (range/iter) and stored in containers.
+        impl IReferenceType;
         fun next(mut this) -> Option<T>;
     }
 
@@ -281,6 +285,10 @@ namespace __builtin {
 
     let __object_id : mut AtomicI64 = new AtomicI64(0);
     interface IObjectID {
+        // Object identity is inherently a reference concept. IEventReceiver extends this
+        // interface and is stored in List<IEventReceiver<T>> (Event.receivers), so the root
+        // must be reference-typed to make IEventReceiver a sized reference interface.
+        impl IReferenceType;
         object_id : mut i64 = __object_id.fetch_add(1);
         fun equals(this, other: IObjectID) -> bool {
             return this.object_id == other.object_id;
@@ -296,6 +304,9 @@ namespace __builtin {
     }
 
     interface IFutureBase {
+        // Futures are scheduled across the main scheduler and stored in Queue<IFutureBase>
+        // (Scheduler.pending_jobs), so they must be reference-typed (sized pointer).
+        impl IReferenceType;
         fun routine_state(this) -> RoutineState;
         fun switch_state(mut this, from: RoutineState, to: RoutineState) -> bool;
         fun start(mut this) -> bool;
