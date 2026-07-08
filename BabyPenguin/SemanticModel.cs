@@ -109,7 +109,48 @@ namespace BabyPenguin
             return result;
         }
 
+        // === Resolution cache (read-only mode) ===
+        // After compilation completes the semantic model is immutable, so a name
+        // always resolves to the same symbol/type. The VM performs millions of
+        // full-name lookups (ResolveSymbol/ResolveTypeNode with default args)
+        // during interpretation; without a cache each one re-scans scope children
+        // linearly (profiled at ~76% of bootstrap runtime). These dictionaries
+        // memoize that common case. They are populated only while the cache is
+        // enabled (EnableResolutionCache), which the VM turns on once the model
+        // is frozen — compilation passes, which mutate the model, never hit it.
+        private Dictionary<string, ISymbol?>? _resolveSymbolCache;
+        private Dictionary<string, ITypeNode?>? _resolveTypeNodeCache;
+
+        /// <summary>
+        /// Turn on read-only resolution memoization. Call only after the model is
+        /// fully compiled (e.g. when the VM starts running). Compilation passes
+        /// must NOT enable it — they mutate the model and would observe stale
+        /// cached results. Safe to call once per model; idempotent.
+        /// </summary>
+        public void EnableResolutionCache()
+        {
+            if (_resolveSymbolCache == null)
+            {
+                _resolveSymbolCache = new Dictionary<string, ISymbol?>();
+                _resolveTypeNodeCache = new Dictionary<string, ITypeNode?>();
+            }
+        }
+
         public ISymbol? ResolveSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, bool checkImportedNamespaces = true, bool requireSymbolTypeInferred = true)
+        {
+            // Memoize the VM's common case: full-name lookup with all defaults.
+            if (_resolveSymbolCache != null && predicate == null && scope == null && isOriginName && checkImportedNamespaces && requireSymbolTypeInferred)
+            {
+                if (_resolveSymbolCache.TryGetValue(name, out var cached))
+                    return cached;
+                var result = ResolveSymbolUncached(name, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred);
+                _resolveSymbolCache[name] = result;
+                return result;
+            }
+            return ResolveSymbolUncached(name, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred);
+        }
+
+        private ISymbol? ResolveSymbolUncached(string name, Predicate<ISymbol>? predicate, ISemanticScope? scope, bool isOriginName, bool checkImportedNamespaces, bool requireSymbolTypeInferred)
         {
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.Prefix.Count == 0)
@@ -123,7 +164,7 @@ namespace BabyPenguin
             if (ns != null)
                 return ResolveShortSymbol(nameComponents.Name, predicate, ns, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
 
-            var prefixSymbol = ResolveSymbol(nameComponents.PrefixString, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
+            var prefixSymbol = ResolveSymbolUncached(nameComponents.PrefixString, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
             if (prefixSymbol != null)
             {
                 if (prefixSymbol.WithoutMutability() is FunctionSymbol functionSymbol)
@@ -286,6 +327,20 @@ namespace BabyPenguin
 
         public ITypeNode? ResolveTypeNode(string name, Predicate<ITypeNode>? predicate = null, ISemanticScope? scope = null)
         {
+            // Memoize the VM's common case: full-name lookup with default args.
+            if (_resolveTypeNodeCache != null && predicate == null && scope == null)
+            {
+                if (_resolveTypeNodeCache.TryGetValue(name, out var cached))
+                    return cached;
+                var result = ResolveTypeNodeUncached(name, predicate, scope);
+                _resolveTypeNodeCache[name] = result;
+                return result;
+            }
+            return ResolveTypeNodeUncached(name, predicate, scope);
+        }
+
+        private ITypeNode? ResolveTypeNodeUncached(string name, Predicate<ITypeNode>? predicate, ISemanticScope? scope)
+        {
             var predicate_ = predicate ?? (t => true);
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.IsMutable != Mutability.Auto)
@@ -303,7 +358,7 @@ namespace BabyPenguin
                 if (scope is ITypeNode typ)
                     return typ;
                 else
-                    return ResolveTypeNode(name, predicate, scope.Parent);
+                    return ResolveTypeNodeUncached(name, predicate, scope.Parent);
             }
 
             // check if is a function type

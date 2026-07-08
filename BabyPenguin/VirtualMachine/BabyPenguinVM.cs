@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using BabyPenguin.Type;
+using BabyPenguin.Symbol;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -68,6 +70,11 @@ namespace BabyPenguin.VirtualMachine
         {
             if (StartFrame == null)
                 Initialize();
+            // The model is now frozen (IR generated, indices built, extern funcs
+            // registered). Turn on read-only resolution memoization so the
+            // interpreter's millions of name lookups stop re-scanning the scope
+            // tree linearly. This is the single biggest bootstrap hotspot.
+            Model.EnableResolutionCache();
             try
             {
                 // Fast path: direct execution without yield/iterator overhead
@@ -344,6 +351,16 @@ namespace BabyPenguin.VirtualMachine
         /// Eliminates the fallback linear scan in FindExternFunction.
         /// </summary>
         public Dictionary<string, Func<RuntimeFrame, IRuntimeSymbol?, List<IRuntimeValue>, IEnumerable<RuntimeBreak>>> SanitizedExternFunctionIndex { get; } = [];
+
+        /// <summary>
+        /// Memoized virtual/method dispatch: (type full name, method name) → the
+        /// resolved (TypeInfo, symbol) pair, or null if not found. Method dispatch
+        /// runs on every method-call instruction; without this each call linearly
+        /// scans the type's Symbols and VTable slots. The resolved symbol is stable
+        /// for a frozen model — only the receiver (Owner) differs per call and is
+        /// attached by TryResolveMethod after the cached lookup.
+        /// </summary>
+        public Dictionary<(string TypeFullName, string MethodName), (IType TypeInfo, ISymbol Symbol)?> MethodDispatchCache { get; } = [];
 
         public IRModule? IRModule { get; set; }
 

@@ -16,3 +16,4 @@ Documentation/BasicIntroductionSlide/BasicIntroduction
 tmp
 *.o
 tmp_bootstrap
+*.a

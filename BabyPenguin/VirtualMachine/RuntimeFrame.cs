@@ -1740,6 +1740,19 @@ namespace BabyPenguin.VirtualMachine
             var typeNode = obj.TypeInfo?.TypeNode;
             if (typeNode == null) return null;
 
+            // Method dispatch fires on every method-call instruction. The resolved
+            // symbol for a (type, methodName) pair is stable on a frozen model, so
+            // memoize it and skip the linear Symbols/VTables scans on repeat calls.
+            // Only the receiver (Owner) varies per call — it is attached afterward.
+            var key = (typeNode.FullName(), methodName);
+            if (Global.MethodDispatchCache.TryGetValue(key, out var cached))
+            {
+                if (cached == null) return null;
+                return new FunctionRuntimeValue(cached.Value.TypeInfo, cached.Value.Symbol) { Owner = obj };
+            }
+
+            (IType TypeInfo, ISymbol Symbol)? found = null;
+
             // Look up the method in the type's own symbols (works for IClassNode and IEnumNode)
             if (typeNode is ISymbolContainer container)
             {
@@ -1748,12 +1761,12 @@ namespace BabyPenguin.VirtualMachine
                 {
                     var methodSym = Model.ResolveSymbol(method.FullName());
                     if (methodSym != null)
-                        return new FunctionRuntimeValue(method.TypeInfo, methodSym) { Owner = obj };
+                        found = (method.TypeInfo, methodSym);
                 }
             }
 
             // Look up in interface implementations (VTables)
-            if (typeNode is IVTableContainer vtableContainer)
+            if (found == null && typeNode is IVTableContainer vtableContainer)
             {
                 foreach (var vtable in vtableContainer.VTables)
                 {
@@ -1761,12 +1774,15 @@ namespace BabyPenguin.VirtualMachine
                     if (slot != null)
                     {
                         var implSym = slot.ImplementationSymbol;
-                        return new FunctionRuntimeValue(implSym.TypeInfo, implSym) { Owner = obj };
+                        found = (implSym.TypeInfo, implSym);
+                        break;
                     }
                 }
             }
 
-            return null;
+            Global.MethodDispatchCache[key] = found;
+            if (found == null) return null;
+            return new FunctionRuntimeValue(found.Value.TypeInfo, found.Value.Symbol) { Owner = obj };
         }
 
         private void WriteField(IRuntimeValue obj, string fieldName, IRuntimeValue value)
