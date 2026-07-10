@@ -120,6 +120,25 @@ class RegMapping {
     }
 }
 
+// Records a CALL whose sret return value flows directly into a register via the
+// immediately-following ASSIGN (i.e. `let x = func()`). Such a pair is an RVO
+// (return-value-optimization) candidate: the callee can write its return value
+// straight into the destination's storage, avoiding a separate sret buffer and
+// the copy that overflowed mutable-reg allocas (the pass2 binding crash).
+class SretElision {
+    call_result: mut string = "";      // the CALL's result register (e.g. %t12)
+    dest_reg: mut string = "";         // the ASSIGN destination (e.g. %bound_init)
+    assign_index: mut i64 = 0;         // instruction index of the ASSIGN (to skip it)
+    callee_sret_llvm_type: mut string = "";  // LLVM struct type returned via sret
+    fun new(mut this, call_result: string, dest_reg: string, assign_index: i64, callee_sret_llvm_type: string) {
+        _utils.trace_enter("Enter new(call_result=" + cast<string>(call_result) + ", dest_reg=" + cast<string>(dest_reg) + ", assign_index=" + cast<string>(assign_index) + ")");
+        this.call_result = call_result;
+        this.dest_reg = dest_reg;
+        this.assign_index = assign_index;
+        this.callee_sret_llvm_type = callee_sret_llvm_type;
+    }
+}
+
 class TypeIdConstant {
     global_name: mut string = "";
     display_name: mut string = "";
@@ -182,6 +201,9 @@ class LLVMEmitter {
     func_param_types: mut _utils.List<FuncParamTypes> = new _utils.List<FuncParamTypes>();
     current_sret_llvm_type: mut string = "";
     current_sret_param: mut string = "";
+    // RVO / sret-elision state (reset per function by scan_sret_elision).
+    sret_elision_map: mut _utils.List<SretElision> = new _utils.List<SretElision>();
+    elided_assigns: mut _utils.List<i64> = new _utils.List<i64>();
 
     // Debug info state
     debug_enabled: mut bool = false;
@@ -211,13 +233,6 @@ class LLVMEmitter {
     fun emit_entry_alloca(mut this, name: string, llvm_type: string) {
         _utils.trace_enter("Enter emit_entry_alloca(name=" + cast<string>(name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
         this.entry_allocas.append("  " + name + " = alloca " + llvm_type + "\n");
-        // Zero-initialize the slot. Value-type structs (Option/enum, SourceLocation,
-        // etc.) have i32 tag fields stored with a 32-bit store; without zeroing, the
-        // upper 32 bits of that 8-byte slot keep whatever residual (often a prior
-        // pointer's high bits, e.g. 0x5555) was in the stack slot. When such a slot
-        // is later reused as a return-address (stack reuse across calls), the ret
-        // jumps to the residual-composed pointer (e.g. 0x555500000000) -> segfault.
-        // `store T zeroinitializer` clears the whole slot including padding.
         this.entry_allocas.append("  store " + llvm_type + " zeroinitializer, ptr " + name + "\n");
     }
 
@@ -754,6 +769,10 @@ class LLVMEmitter {
             pi = pi + 1;
         }
 
+        // Pre-scan for RVO / sret-elision (must precede scan_mutable_regs so the
+        // mutable-reg alloca can be sized to fit the callee's sret return type).
+        this.scan_sret_elision(func);
+
         // Pre-scan for mutable registers (reassigned multiple times)
         this.scan_mutable_regs(func);
 
@@ -825,6 +844,18 @@ class LLVMEmitter {
             let alloca_name: string = this.get_alloca_name(name);
             let llvm_type: string = this.get_llvm_type(name);
             this.sb.append("  " + alloca_name + " = alloca " + llvm_type + "\n");
+            // Zero-initialize mutable-reg allocas so i32-tag padding (and any other
+            // partial-write gap) doesn't retain stack residuals — same rationale as
+            // emit_entry_alloca's zero-init. Mutable locals are the value-type structs
+            // (Option<BoundExpression>, BoundSymbol, SourceLocation, ...) the semantic
+            // model builds on the stack; without this, their i32-tag stores leave the
+            // upper 32 bits of the slot as a prior pointer's high bits, which composes
+            // into a corrupted value that overwrites a return-address slot on stack
+            // reuse → control-flow hijack (the binding crash at get_temp_folder,
+            // RA = 0x555500000000).
+            if (llvm_type != "" && llvm_type != "void") {
+                this.sb.append("  store " + llvm_type + " zeroinitializer, ptr " + alloca_name + "\n");
+            }
             if (dbg_on && !func.is_extern && !this.is_debug_temp(name)) {
                 let mr_ir_type: string = this.mutable_reg_ir_types.at(cast<u64>(ai)).some;
                 let mr_line: i64 = this.mutable_reg_lines.at(cast<u64>(ai)).some;
@@ -862,7 +893,13 @@ class LLVMEmitter {
                 block_terminated = false;
             }
             if (block_terminated == false) {
-                this.emit_instruction(inst);
+                // RVO: an elided ASSIGN (its source CALL wrote the value directly
+                // into the destination's storage) must be skipped to avoid a
+                // redundant/overflowing store.
+                let skip_inst: bool = inst is ir.IRInstruction.assign && this.is_elided_assign(ii);
+                if (!skip_inst) {
+                    this.emit_instruction(inst);
+                }
             }
             if (inst is ir.IRInstruction.br || inst is ir.IRInstruction.br_cond || inst is ir.IRInstruction.ret || inst is ir.IRInstruction.ret_void) {
                 block_terminated = true;
@@ -2258,6 +2295,44 @@ class LLVMEmitter {
         return field_ptr;
     }
 
+    // For GEP-based member access on a value class / enum, return a POINTER to the
+    // object's storage. resolve_value on a mutable register holding an aggregate
+    // returns a loaded struct VALUE, which cannot be a GEP base — so use the
+    // register's own alloca. For immutable refs and primitives, resolve_value
+    // already yields the correct pointer (or the loaded primitive). This matters
+    // once mutable-reg allocas are correctly sized as the full struct (scan_mutable_regs
+    // picks the largest def type), so resolve_value returns a struct value, not a ptr.
+    fun member_base_ptr(mut this, val: ir.IRValue) -> string {
+        _utils.trace_enter("Enter member_base_ptr");
+        let name: string = val.display();
+        if (this.is_mutable_reg(name)) {
+            let reg_llvm: string = this.get_llvm_type(name);
+            if (this.string_starts_with(reg_llvm, "%class.") || this.string_starts_with(reg_llvm, "%enum.")) {
+                return this.get_alloca_name(name);
+            }
+        }
+        return this.resolve_value(val);
+    }
+
+    // Return a POINTER to a value-class/enum struct, for passing as a call argument
+    // whose parameter is declared `ptr` (value classes map to ref<X> -> ptr). A mutable
+    // register holding the struct resolves to a loaded struct VALUE, which is not a
+    // valid `ptr` argument — so use the register's own alloca. An immutable struct value
+    // (e.g. an sret-RVO alias) is materialized into a fresh temp alloca. This mirrors
+    // member_base_ptr's mutable-reg handling and is the call-argument counterpart to it.
+    fun struct_value_to_ptr(mut this, val: ir.IRValue, llvm_struct_type: string) -> string {
+        _utils.trace_enter("Enter struct_value_to_ptr");
+        let name: string = val.display();
+        if (this.is_mutable_reg(name)) {
+            let reg_llvm: string = this.get_llvm_type(name);
+            if (this.string_starts_with(reg_llvm, "%class.") || this.string_starts_with(reg_llvm, "%enum.")) {
+                return this.get_alloca_name(name);
+            }
+        }
+        let resolved: string = this.resolve_value(val);
+        return this.materialize_enum_ptr(resolved, llvm_struct_type);
+    }
+
     fun emit_rdmbr(mut this, inst: ir.IRRdmbr) {
         _utils.trace_enter("Enter emit_rdmbr(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
@@ -2276,20 +2351,24 @@ class LLVMEmitter {
 
             if (found_field.is_some()) {
                 let fl: FieldLayout = found_field.some;
+                // Member access needs a POINTER to the object storage; a mutable reg
+                // holding a value-class struct resolves to a loaded struct value, so
+                // gep its alloca instead.
+                let base_ptr: string = this.member_base_ptr(inst.obj);
                 // Use the field's actual LLVM type from the layout (may differ from ir_type for value-type class fields)
                 if (fl.llvm_type != "ptr" && llvm_type == "ptr") {
                     // Value-type class field stored inline, but IR expects a ref (ptr).
                     // Return the pointer to the inline field (GEP result) instead of loading the struct.
                     if (!layout.is_value_type) {
                         // IRef: byte-offset GEP, return the field pointer directly
-                        this.emit_line("  " + result_name + " = getelementptr i8, ptr " + obj_resolved + ", i32 " + cast<string>(fl.byte_offset));
+                        this.emit_line("  " + result_name + " = getelementptr i8, ptr " + base_ptr + ", i32 " + cast<string>(fl.byte_offset));
                     } else {
                         // ICopy: struct field index GEP, return the field pointer directly
-                        this.emit_line("  " + result_name + " = getelementptr " + layout.llvm_struct_type + ", ptr " + obj_resolved + ", i32 0, i32 " + cast<string>(fl.field_index));
+                        this.emit_line("  " + result_name + " = getelementptr " + layout.llvm_struct_type + ", ptr " + base_ptr + ", i32 0, i32 " + cast<string>(fl.field_index));
                     }
                     this.register_llvm_type(result_name, "ptr");
                 } else {
-                    let field_ptr: string = this.gep_class_field(obj_resolved, layout, fl);
+                    let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                     this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
                     this.register_llvm_type(result_name, llvm_type);
                 }
@@ -2361,7 +2440,11 @@ class LLVMEmitter {
                 let fl: FieldLayout = found_field.some;
                 let store_type: string = fl.llvm_type;
                 let coerced_value: string = this.coerce_operand(value_resolved, store_type);
-                let field_ptr: string = this.gep_class_field(obj_resolved, layout, fl);
+                // Field store needs a POINTER to the object storage; a mutable reg
+                // holding a value-class struct resolves to a loaded struct value, so
+                // gep its alloca instead.
+                let base_ptr: string = this.member_base_ptr(inst.obj);
+                let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                 this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
                 return;
             }
@@ -2434,7 +2517,67 @@ class LLVMEmitter {
         }
 
         if (callee_sret_type != "") {
-            // Callee uses sret: alloca in caller, pass as first arg
+            // Callee uses sret. If this CALL's result is an RVO-elision target
+            // (CALL immediately followed by ASSIGN into a register), write the
+            // return value directly into the destination's storage instead of
+            // allocating a separate buffer and copying. For a mutable destination
+            // this is mandatory: a separate ptr-sized buffer + store into an
+            // undersized alloca overflows the return-address slot (pass2 crash).
+            let elision: Option<SretElision> = this.find_sret_elision(result_name);
+            if (elision.is_some()) {
+                let dest_reg: string = elision.some.dest_reg;
+                let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+                if (this.is_mutable_reg(dest_reg)) {
+                    // RVO, mutable destination: the destination's alloca IS the
+                    // sret buffer — the callee writes the return value straight
+                    // into dest.addr. No separate buffer, no load/store copy.
+                    let alloca_name: string = this.get_alloca_name(dest_reg);
+                    if (string_length(args_str) > 0) {
+                        this.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + alloca_name + ", " + args_str + ")");
+                    } else {
+                        this.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + alloca_name + ")");
+                    }
+                    this.reg_map.push(new RegMapping(result_name, alloca_name));
+                    this.register_llvm_type(result_name, "ptr");
+                } else {
+                    // RVO, immutable destination: there is no alloca, so the sret
+                    // buffer is the value's home. We take over what emit_assign's
+                    // immutable branches would have done, so the following ASSIGN
+                    // can be elided. The representation depends on the type:
+                    //   - value-class ref (ref<T> -> ptr): alias dest to the sret
+                    //     buffer POINTER (member access geps through it), like the
+                    //     emit_assign "ptr" branch;
+                    //   - enum: load the struct once and alias dest to that value,
+                    //     like the emit_assign "%enum." branch.
+                    let sret_tmp: string = this.next_tmp();
+                    this.emit_entry_alloca(sret_tmp, callee_sret_type);
+                    if (string_length(args_str) > 0) {
+                        this.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")");
+                    } else {
+                        this.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")");
+                    }
+                    this.reg_map.push(new RegMapping(result_name, sret_tmp));
+                    this.register_llvm_type(result_name, "ptr");
+                    this.register_llvm_type(sret_tmp, "ptr");
+                    let dest_llvm: string = this.ir_type_to_llvm(inst.ret_type);
+                    if (dest_llvm == "ptr") {
+                        // value-class ref: dest is the buffer pointer.
+                        this.reg_map.push(new RegMapping(dest_reg, sret_tmp));
+                        this.register_llvm_type(dest_reg, "ptr");
+                    } else {
+                        // enum (or other aggregate): dest is the loaded struct.
+                        let loaded: string = this.next_tmp();
+                        this.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                        this.register_llvm_type(loaded, callee_sret_type);
+                        this.reg_map.push(new RegMapping(dest_reg, loaded));
+                        this.register_llvm_type(dest_reg, callee_sret_type);
+                    }
+                }
+                // The ASSIGN that consumes this CALL's result is now redundant.
+                this.elided_assigns.push(elision.some.assign_index);
+                return;
+            }
+            // No elision: alloca a fresh sret buffer in the caller, pass as first arg.
             let sret_tmp: string = this.next_tmp();
             this.emit_entry_alloca(sret_tmp, callee_sret_type);
             let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
@@ -2585,7 +2728,14 @@ class LLVMEmitter {
                     let coerced: string = this.coerce_operand(resolved, llvm_type);
                     sb2.append(llvm_type + " " + coerced);
                 } else {
-                    sb2.append(llvm_type + " " + resolved);
+                    if (llvm_type == "ptr" && (this.string_starts_with(actual_type, "%class.") || this.string_starts_with(actual_type, "%enum."))) {
+                        // value-class ctor arg (ref<X> -> ptr) but resolved to a struct value:
+                        // the callee treats the ptr as &struct, so pass a pointer to the storage.
+                        let arg_ptr: string = this.struct_value_to_ptr(arg, actual_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(llvm_type + " " + resolved);
+                    }
                 }
             }
             i = i + 1;
@@ -3188,7 +3338,16 @@ class LLVMEmitter {
                         sb2.append(coerced_type + " " + final_resolved);
                     }
                 } else {
-                    sb2.append(param_llvm_type + " " + final_resolved);
+                    if (coerced_type == "ptr" && (this.string_starts_with(actual_reg_type, "%class.") || this.string_starts_with(actual_reg_type, "%enum."))) {
+                        // Parameter is a pointer (value classes map to ref<X> -> ptr) but
+                        // the argument resolved to a struct VALUE (mutable/immutable reg
+                        // holding the struct). The callee treats the ptr as &struct for GEP
+                        // member access, so pass a pointer to the struct's storage.
+                        let arg_ptr: string = this.struct_value_to_ptr(arg, actual_reg_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(param_llvm_type + " " + final_resolved);
+                    }
                 }
             }
             i = i + 1;
@@ -3256,6 +3415,76 @@ class LLVMEmitter {
 
     // --- Type mapping ---
 
+    // Pre-scan a function for RVO / sret-elision opportunities: a CALL that
+    // returns an aggregate via sret, immediately followed by an ASSIGN whose
+    // source is exactly that CALL's result register (`let x = func()`). For each
+    // such pair we record the destination register so emit_call can pass the
+    // destination's storage directly as the sret buffer, and the dispatch loop
+    // can skip the now-redundant ASSIGN. Must run before scan_mutable_regs so the
+    // mutable-reg alloca can be sized to fit the sret return type.
+    fun scan_sret_elision(mut this, func: ir.IRFunction) {
+        _utils.trace_enter("Enter scan_sret_elision");
+        this.sret_elision_map = new _utils.List<SretElision>();
+        this.elided_assigns = new _utils.List<i64>();
+        let n: i64 = cast<i64>(func.instructions.size());
+        let i: mut i64 = 0;
+        while (i < n - 1) {
+            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(i)).some;
+            let next: ir.IRInstruction = func.instructions.at(cast<u64>(i + 1)).some;
+            if (inst is ir.IRInstruction.call) {
+                if (next is ir.IRInstruction.assign) {
+                    let call_result: string = inst.call.result_value.display();
+                    let assign_dest: string = next.assign.dest.display();
+                    let assign_src: string = next.assign.src.display();
+                    if (assign_src == call_result) {
+                        if (this.needs_sret(inst.call.ret_type)) {
+                            let sret_type: string = this.get_sret_llvm_type(inst.call.ret_type);
+                            this.sret_elision_map.push(new SretElision(call_result, assign_dest, i + 1, sret_type));
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Find the sret-elision record (if any) whose CALL result matches result_name.
+    fun find_sret_elision(this, result_name: string) -> Option<SretElision> {
+        _utils.trace_enter("Enter find_sret_elision(result_name=" + cast<string>(result_name) + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.sret_elision_map.size())) {
+            let e: SretElision = this.sret_elision_map.at(cast<u64>(i)).some;
+            if (e.call_result == result_name) { return new Option<SretElision>.some(e); }
+            i = i + 1;
+        }
+        return new Option<SretElision>.none();
+    }
+
+    // Find the sret-elision record (if any) whose destination register is dest_reg.
+    // Used by scan_mutable_regs to size an RVO destination's alloca to fit the
+    // callee's sret return type.
+    fun sret_elision_for_dest(this, dest_reg: string) -> Option<SretElision> {
+        _utils.trace_enter("Enter sret_elision_for_dest(dest_reg=" + cast<string>(dest_reg) + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.sret_elision_map.size())) {
+            let e: SretElision = this.sret_elision_map.at(cast<u64>(i)).some;
+            if (e.dest_reg == dest_reg) { return new Option<SretElision>.some(e); }
+            i = i + 1;
+        }
+        return new Option<SretElision>.none();
+    }
+
+    // True if the instruction at `index` is an ASSIGN that RVO has elided.
+    fun is_elided_assign(this, index: i64) -> bool {
+        _utils.trace_enter("Enter is_elided_assign(index=" + cast<string>(index) + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.elided_assigns.size())) {
+            if (this.elided_assigns.at(cast<u64>(i)).some == index) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
     fun scan_mutable_regs(mut this, func: ir.IRFunction) {
         _utils.trace_enter("Enter scan_mutable_regs(func=" + func.to_string() + ")");
         // Collect all register names that appear as definition targets
@@ -3301,38 +3530,67 @@ class LLVMEmitter {
             let alloca_name: string = name + ".addr";
             this.alloca_map.push(new RegMapping(name, alloca_name));
 
-            // Find type from first definition
-            let found_type: mut bool = false;
-            let mr_ir_type: mut string = "ptr";
+            // Determine the alloca type by scanning ALL definitions of this register
+            // and picking the one with the largest LLVM size. Using only the first
+            // definition is unsound: when one def writes a ptr-sized value and another
+            // (or the sret return) writes a 40-byte enum, the first-def-typed alloca is
+            // too small and the larger store overflows into the return-address slot on
+            // stack reuse (the pass2 binding crash, RA = 0x555500000000). If this reg is
+            // an RVO/sret-elision destination, also consider the callee's sret type.
+            let best_llvm: mut string = "ptr";
+            let best_size: mut i64 = 0;
+            let best_ir_type: mut string = "ptr";
             let mr_line: mut i64 = 0;
+            let found_line: mut bool = false;
+            let elision_for_dest: Option<SretElision> = this.sret_elision_for_dest(name);
+            if (elision_for_dest.is_some()) {
+                let st: string = elision_for_dest.some.callee_sret_llvm_type;
+                let sz: i64 = this.llvm_type_size(st);
+                if (sz > best_size) {
+                    best_llvm = st;
+                    best_size = sz;
+                    best_ir_type = elision_for_dest.some.callee_sret_llvm_type;
+                }
+            }
             let fi: mut i64 = 0;
-            while (fi < cast<i64>(func.instructions.size()) && !found_type) {
+            while (fi < cast<i64>(func.instructions.size())) {
                 let inst: ir.IRInstruction = func.instructions.at(cast<u64>(fi)).some;
-                if (!found_type && inst is ir.IRInstruction.const_inst) {
+                if (inst is ir.IRInstruction.const_inst) {
                     if (inst.const_inst.result.display() == name) {
                         let res: ir.IRValue = inst.const_inst.result;
-                        let ir_type: string = res.get_ir_type();
-                        let llvm_type: string = this.ir_type_to_llvm(ir_type);
-                        this.register_llvm_type(name, llvm_type);
-                        mr_ir_type = ir_type;
-                        if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; }
-                        found_type = true;
+                        let it: string = res.get_ir_type();
+                        let lt: string = this.ir_type_to_llvm(it);
+                        let sz: i64 = this.llvm_type_size(lt);
+                        if (sz > best_size) {
+                            best_llvm = lt;
+                            best_size = sz;
+                            best_ir_type = it;
+                        }
+                        if (!found_line) {
+                            if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
+                        }
                     }
                 }
-                if (!found_type && inst is ir.IRInstruction.assign) {
+                if (inst is ir.IRInstruction.assign) {
                     if (inst.assign.dest.display() == name) {
                         let res: ir.IRValue = inst.assign.dest;
-                        let ir_type: string = res.get_ir_type();
-                        let llvm_type: string = this.ir_type_to_llvm(ir_type);
-                        this.register_llvm_type(name, llvm_type);
-                        mr_ir_type = ir_type;
-                        if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; }
-                        found_type = true;
+                        let it: string = res.get_ir_type();
+                        let lt: string = this.ir_type_to_llvm(it);
+                        let sz: i64 = this.llvm_type_size(lt);
+                        if (sz > best_size) {
+                            best_llvm = lt;
+                            best_size = sz;
+                            best_ir_type = it;
+                        }
+                        if (!found_line) {
+                            if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
+                        }
                     }
                 }
                 fi = fi + 1;
             }
-            this.mutable_reg_ir_types.push(mr_ir_type);
+            this.register_llvm_type(name, best_llvm);
+            this.mutable_reg_ir_types.push(best_ir_type);
             this.mutable_reg_lines.push(mr_line);
             m = m + 1;
         }

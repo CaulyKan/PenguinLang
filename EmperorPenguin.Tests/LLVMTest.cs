@@ -291,7 +291,9 @@ initial {
 ", @"define i64 @test() {
 entry:
   %sum.addr = alloca i64
+  store i64 zeroinitializer, ptr %sum.addr
   %i.addr = alloca i64
+  store i64 zeroinitializer, ptr %i.addr
   store i64 0, ptr %sum.addr
   store i64 0, ptr %i.addr
   br label %while0
@@ -669,7 +671,9 @@ initial {
 ", @"define i64 @test(i64 %n) {
 entry:
   %sum.addr = alloca i64
+  store i64 zeroinitializer, ptr %sum.addr
   %i.addr = alloca i64
+  store i64 zeroinitializer, ptr %i.addr
   store i64 0, ptr %sum.addr
   store i64 0, ptr %i.addr
   br label %while0

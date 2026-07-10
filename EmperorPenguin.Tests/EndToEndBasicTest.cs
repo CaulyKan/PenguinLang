@@ -197,6 +197,26 @@ public class EndToEndBasicTest : EndToEndTestBase
     [Fact]
     public void BitwiseOps() => batch.Assert();
 
+    // Regression: && and || must short-circuit (not evaluate the RHS when the
+    // result is already determined). Before the fix, `lower_binary` straight-lined
+    // both operands via `and`/`or`, so a condition like `opt.is_some() && opt.some.x`
+    // would dereference opt.some on a none Option. Here rhs_evaluated() must NOT run.
+    [BatchE2ETest("""
+        fun rhs_evaluated() -> bool {
+            println("RHS");
+            return true;
+        }
+        initial {
+            let a: bool = false && rhs_evaluated();
+            let b: bool = true || rhs_evaluated();
+            if (a) { println("a_yes"); } else { println("a_no"); }
+            if (b) { println("b_yes"); } else { println("b_no"); }
+        }
+        """,
+        "a_no\nb_yes")]
+    [Fact]
+    public void LogicalShortCircuit() => batch.Assert();
+
     #endregion
 
     #region Control Flow

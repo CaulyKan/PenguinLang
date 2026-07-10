@@ -178,4 +178,30 @@ public class EndToEndEnumTest : EndToEndTestBase
         "0\n2")]
     [Fact]
     public void EnumCastToString() => batch.Assert();
+
+    // Exercises RVO (return-value optimization) for sret returns: a function
+    // returning an aggregate Option<i32> via sret, assigned into a mutable
+    // register that is reassigned (`let x = make(5); x = make(20)` — x is a
+    // genuine mutable reg, def'd twice) and an immutable register
+    // (`let y = make(0)`), then consumed through method calls. The mutable case
+    // must write the callee's sret return value straight into the destination's
+    // alloca (no separate buffer + overflow-prone copy); the immutable case must
+    // alias the destination to the returned value. Regression guard for the pass2
+    // binding crash (RA = 0x555500000000 from an undersized mutable-reg alloca).
+    [BatchE2ETest("""
+        fun make(i: i32) -> Option<i32> {
+            if (i > 0) { return new Option<i32>.some(i); }
+            return new Option<i32>.none();
+        }
+        initial {
+            let x: mut Option<i32> = make(5);
+            x = make(20);
+            let y = make(0);
+            println(cast<string>(x.value_or(99)));
+            println(cast<string>(y.value_or(99)));
+        }
+        """,
+        "20\n99")]
+    [Fact]
+    public void SretRvoMutableAndImmutable() => batch.Assert();
 }

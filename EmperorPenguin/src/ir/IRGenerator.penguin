@@ -457,7 +457,71 @@ class IRGenerator {
             }
         }
 
+        // Short-circuit evaluation for && and ||. The straight-line chain
+        // (lower_binary_chain) evaluates ALL operands via `and`/`or`, which is
+        // wrong for logical operators: `a && b` must NOT evaluate b when a is
+        // false (e.g. `opt.is_some() && opt.some.field` would dereference opt.some
+        // on a none Option -> NULL/wild deref). Detect a pure-&& or pure-|| chain
+        // and lower it with branches so the RHS is only evaluated when needed.
+        let all_and: mut bool = true;
+        let all_or: mut bool = true;
+        let oi: mut i64 = 0;
+        while (oi < cast<i64>(expr.operators.size())) {
+            let op: ast.BinaryOperator = expr.operators.at(cast<u64>(oi)).some;
+            let is_and_op: bool = op is ast.BinaryOperator.LogicalAnd;
+            let is_or_op: bool = op is ast.BinaryOperator.LogicalOr;
+            if (!is_and_op) { all_and = false; }
+            if (!is_or_op) { all_or = false; }
+            oi = oi + 1;
+        }
+        if (all_and) {
+            if (cast<i64>(expr.operators.size()) > 0) {
+                return this.lower_short_circuit(expr, true);
+            }
+        }
+        if (all_or) {
+            if (cast<i64>(expr.operators.size()) > 0) {
+                return this.lower_short_circuit(expr, false);
+            }
+        }
+
         return this.lower_binary_chain(expr, ir_type, 1, first);
+    }
+
+    // Lower a short-circuited logical chain: for `&&`, stop at the first false
+    // operand; for `||`, stop at the first true operand. Each operand is evaluated
+    // only if the result is not yet determined. The result temp is assigned in
+    // each block and read at the merge point.
+    fun lower_short_circuit(mut this, expr: bound.BoundBinaryExpression, is_and: bool) -> IRValue {
+        _utils.trace_enter("Enter lower_short_circuit");
+        let loc: ast.SourceLocation = this.make_loc(0, 0);
+        let result: IRValue = this.builder.func.alloc_temp("bool");
+        let merge_lbl: IRLabel = this.builder.func.alloc_label("sc_merge");
+        let n: i64 = cast<i64>(expr.operands.size());
+        let i: mut i64 = 0;
+        while (i < n) {
+            let val: IRValue = this.lower_expression(expr.operands.at(cast<u64>(i)).some);
+            this.builder.emit_assign(result, val, loc);
+            if (i < n - 1) {
+                let next_lbl: IRLabel = this.builder.func.alloc_label("sc_next");
+                if (is_and) {
+                    // && : if val is false, short-circuit to merge (result = val);
+                    //      otherwise evaluate the next operand.
+                    this.builder.emit_br_cond(val, next_lbl, merge_lbl, loc);
+                } else {
+                    // || : if val is true, short-circuit to merge (result = val);
+                    //      otherwise evaluate the next operand.
+                    this.builder.emit_br_cond(val, merge_lbl, next_lbl, loc);
+                }
+                this.builder.emit_label(next_lbl);
+            }
+            i = i + 1;
+        }
+        if (!this.builder.func.has_terminator()) {
+            this.builder.emit_br(merge_lbl, loc);
+        }
+        this.builder.emit_label(merge_lbl);
+        return result;
     }
 
     fun lower_binary_chain(mut this, expr: bound.BoundBinaryExpression, ir_type: string, idx: i64, accum: IRValue) -> IRValue {

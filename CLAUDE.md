@@ -52,6 +52,7 @@ cd MagellanicPenguin\vscode && npm run package
 * When writing penguinlang code, use skill penguin
 * Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
 * When writing unit tests, you must use try to compare if full test output is correct. The use of ambiguous assertions is **prohibited**, such as comparing only queue sizes, string contains, etc.
+* When debugging a codegen/runtime bug, write a minimal PenguinLang repro. Once the repro successfully reproduces the bug AND the fix is verified, **persist the repro as an e2e test** (e.g. add a `[BatchE2ETest]` case to the relevant `EndToEnd*Test.cs`) so the bug stays fixed. Do not discard working repros.
 
 ## Debugging with MCP DAP Tools
 
