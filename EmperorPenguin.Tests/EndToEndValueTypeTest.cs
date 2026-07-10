@@ -94,4 +94,40 @@ public class EndToEndValueTypeTest
         "60")]
     [Fact]
     public void RecursiveClassIsReferenceType() => batch.Assert();
+
+    // Regression: two `let item` in sibling if-branches with DIFFERENT types
+    // (a ref class vs a value enum) must each get a distinct IR register.
+    // Before uniquification (alloc_named_reg), they shared register `item`;
+    // the ref branch registered it as `ptr` and the enum branch's RVO-sret
+    // inline write was then read via `load ptr` (the enum's metaptr) ->
+    // garbage -> native pass2 crash. Each `let` must be independent.
+    [BatchE2ETest("""
+        class Box {
+            v: i64;
+            fun new(mut this, v: i64) {
+                this.v = v;
+            }
+        }
+        enum Opt {
+            some: i64;
+            none;
+        }
+        initial {
+            let cond: i64 = 1;
+            if (cond == 0) {
+                let item: mut Box = new Box(100);
+                println(cast<string>(item.v));
+            } else {
+                let item: mut Opt = new Opt.some(50);
+                if (item is Opt.some) {
+                    println(cast<string>(item.some));
+                } else {
+                    println("none");
+                }
+            }
+        }
+        """,
+        "50")]
+    [Fact]
+    public void SiblingScopeLetNameCollisionRefVsValue() => batch.Assert();
 }

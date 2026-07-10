@@ -24,6 +24,13 @@ class IRFunction {
     next_label: mut i64 = 0;
     is_extern: mut bool = false;
     location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    // Names already allocated in this function. PenguinLang reuses source variable
+    // names across sibling scopes (e.g. two `let x` in different if-branches of the
+    // same function). Without uniquification they collapse onto one IR register; when
+    // their types differ (ref vs value) the LLVMEmitter mis-sizes/mis-reads the slot
+    // (the pass2 native crash). alloc_named_reg appends a counter on collision so each
+    // `let` gets its own register.
+    used_reg_names: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, name: string, return_type: string, loc: ast.SourceLocation) {
         this.name = name;
@@ -32,7 +39,32 @@ class IRFunction {
     }
 
     fun alloc_named_reg(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
-        return new IRValue.named_reg(new IRNamedRegister(name, ir_type, line, col));
+        let unique_name: string = this.make_unique_reg_name(name);
+        return new IRValue.named_reg(new IRNamedRegister(unique_name, ir_type, line, col));
+    }
+
+    // Return `name` if not yet used in this function; otherwise `name_N` for the
+    // smallest N that is unused. Records the chosen name so later allocations
+    // (including redeclarations of the same source name in a sibling scope) get a
+    // distinct register.
+    fun make_unique_reg_name(mut this, name: string) -> string {
+        let candidate: mut string = name;
+        let n: mut i64 = 1;
+        while (this.reg_name_taken(candidate)) {
+            candidate = name + "_" + cast<string>(n);
+            n = n + 1;
+        }
+        this.used_reg_names.push(candidate);
+        return candidate;
+    }
+
+    fun reg_name_taken(this, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.used_reg_names.size())) {
+            if (this.used_reg_names.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
     }
 
     fun alloc_temp(mut this, ir_type: string) -> IRValue {

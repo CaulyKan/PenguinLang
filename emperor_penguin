@@ -22,6 +22,9 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
         EmperorPenguin/EmperorPenguin.penguins -- \
         EmperorPenguin/EmperorPenguin.penguins \
         -vv -o "tmp/pass2"
+    echo "Running Pass 2 with bootstrapping ..."
+    tmp/pass2 EmperorPenguin/EmperorPenguin.penguins \
+        -vv -o "tmp/pass3"
     exit $?
 fi
 

@@ -1411,7 +1411,22 @@ class IRGenerator {
 
     fun set_symbol_reg(mut this, symbol: bound.BoundSymbol, value: IRValue) {
         _utils.trace_enter("Enter set_symbol_reg");
-        this.symbol_regs.push(new SymbolRegEntry(symbol.get_full_name(), value));
+        let name: string = symbol.get_full_name();
+        // Replace any existing entry for this full_name. PenguinLang's block scopes
+        // reuse the literal full_name "<scope>.<block>" for sibling blocks, so two
+        // `let x` in different if-branches of one function share a full_name. With
+        // per-let uniquified registers (alloc_named_reg), each let now writes a
+        // distinct register; "replace" makes the in-lowering-order-most-recent let
+        // win, so each branch's references resolve to that branch's own register.
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbol_regs.size())) {
+            if (this.symbol_regs.at(cast<u64>(i)).some.symbol_full_name == name) {
+                this.symbol_regs.set(cast<u64>(i), new SymbolRegEntry(name, value));
+                return;
+            }
+            i = i + 1;
+        }
+        this.symbol_regs.push(new SymbolRegEntry(name, value));
     }
 
     fun set_symbol_reg_by_name(mut this, name: string, value: IRValue) {

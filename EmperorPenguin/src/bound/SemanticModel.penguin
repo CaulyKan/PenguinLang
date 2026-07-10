@@ -2611,15 +2611,15 @@ class SemanticModel {
             return new BoundDefinition.function_def(bound_func);
         }
         if (bound_def is BoundDefinition.initial_routine && ast_def is ast.Definition.initial_routine) {
-            let bound_init_routine: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
+            let bound_init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
             let ast_init: ast.InitialRoutineDefinition = ast_def.initial_routine;
             if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding initial routine"); }
-            if (bound_init_routine.scope.is_some() && ast_init.body.is_some()) {
-                let init_scope: mut BoundScope = bound_init_routine.scope.some;
+            if (bound_init.scope.is_some() && ast_init.body.is_some()) {
+                let init_scope: mut BoundScope = bound_init.scope.some;
                 let bound_init_body: mut Option<BoundExpression> = this.bind_expression(ast_init.body.some, init_scope);
-                bound_init_routine.body = bound_init_body;
+                bound_init.body = bound_init_body;
             }
-            return new BoundDefinition.initial_routine(bound_init_routine);
+            return new BoundDefinition.initial_routine(bound_init);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is ast.Definition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
