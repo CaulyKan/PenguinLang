@@ -101,6 +101,11 @@ namespace BabyPenguin
                 vm.Global.CommandLineArgs = args.Skip(filesBeforeSeparator.Count).ToArray();
             }
             vm.Global.EnableDebugPrint = !options.Quiet;
+            // In quiet mode, program output is emitted once at the end via
+            // CollectOutput() below; silence the live PrintFunc echo so the
+            // output stream isn't doubled.
+            if (options.Quiet)
+                vm.Global.PrintFunc = _ => { };
             vm.Global.GCEnabled = true;
             vm.Global.GCThreshold = 800_000; // 800K threshold — keep memory tight
             vm.Global.GCCheckInterval = 5_000; // Check every 5K instructions (global counter)
