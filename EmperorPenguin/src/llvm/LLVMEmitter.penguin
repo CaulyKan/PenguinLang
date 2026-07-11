@@ -176,8 +176,8 @@ class LLVMEmitter {
     sb: mut StringBuilder = new StringBuilder();
     // During function emission, body_sb receives instruction output
     // and entry_allocas collects alloca instructions for the entry block.
-    body_sb: mut StringBuilder = new mut StringBuilder();
-    entry_allocas: mut StringBuilder = new mut StringBuilder();
+    body_sb: mut StringBuilder = new StringBuilder();
+    entry_allocas: mut StringBuilder = new StringBuilder();
     cond_counter: mut i64 = 0;
     current_ret_type: mut string = "void";
     class_layouts: mut _utils.List<ClassLayout> = new _utils.List<ClassLayout>();
@@ -470,7 +470,7 @@ class LLVMEmitter {
         this.build_layout_tables(unit);
         // Emit functions first to determine which runtime declarations are needed
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Emitting functions..."); }
-        let func_sb: mut StringBuilder = new mut StringBuilder();
+        let func_sb: mut StringBuilder = new StringBuilder();
         let saved_sb: mut StringBuilder = this.sb;
         this.sb = func_sb;
         this.emit_functions(module);
@@ -785,7 +785,7 @@ class LLVMEmitter {
         }
 
         // Build debug variables for parameters (dbg.value calls emitted in the entry block below).
-        let param_dbg_sb: mut StringBuilder = new mut StringBuilder();
+        let param_dbg_sb: mut StringBuilder = new StringBuilder();
         if (dbg_on && !func.is_extern) {
             let pai: mut i64 = 0;
             while (pai < cast<i64>(func.parameters.size())) {
@@ -877,8 +877,8 @@ class LLVMEmitter {
         // Switch to body_sb for instruction emission and entry_allocas for alloca collection.
         // This ensures all alloca instructions land in the entry block (preventing stack growth in loops).
         let saved_sb: mut StringBuilder = this.sb;
-        this.body_sb = new mut StringBuilder();
-        this.entry_allocas = new mut StringBuilder();
+        this.body_sb = new StringBuilder();
+        this.entry_allocas = new StringBuilder();
         this.sb = this.body_sb;
 
         let block_terminated: mut bool = false;

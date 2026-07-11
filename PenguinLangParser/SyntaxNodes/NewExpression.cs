@@ -10,6 +10,18 @@ namespace PenguinLangParser.SyntaxNodes
             if (ctx is PostfixExpressionContext context)
             {
                 TypeSpecifier = Build<TypeSpecifier>(walker, context.typeSpecifier());
+                // 'new mut T()' / 'new !mut T()' is invalid PenguinLang: a `new`
+                // expression must not carry a mutability specifier on its type
+                // (mutability belongs on the binding, e.g. `let x: mut T = new T()`).
+                // Allowing it made `new mut T()` silently construct a value-typed
+                // inline object, which mismatches ref-typed buffers (the combined.ll
+                // header-loss native crash).
+                if (TypeSpecifier != null && TypeSpecifier.IsMutable != Mutability.Auto)
+                {
+                    throw new PenguinLangException(
+                        "'new' expression cannot have a mutability specifier (e.g. 'new mut T()'). Use 'new T()' instead.",
+                        SourceLocation.ToString());
+                }
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
                    .Select(x => Build<Expression>(walker, x).GetEffectiveExpression())
                    .ToList();

@@ -69,6 +69,15 @@ namespace __builtin {
         extern fun copy(this: T) -> T;
     }
 
+    // IReferenceType marks a class as a heap-allocated reference type, overriding
+    // the all-value-fields heuristic in classify_class. Without it, a class whose
+    // fields are all value-like (e.g. StringBuilder: string/i32/i32, where string
+    // is PrimitiveKind=>value-like) is misclassified as a VALUE type — value-copy
+    // semantics then break aliasing (the LLVMEmitter this.sb buffer swap copies the
+    // 24B struct instead of aliasing, so the buffer is never written).
+    interface IReferenceType {
+    }
+
     impl __builtin.ICopy<i64> for i64;
     impl __builtin.ICopy<u64> for u64;
     impl __builtin.ICopy<i32> for i32;
@@ -93,6 +102,7 @@ namespace __builtin {
         data: string;
         len: i32;
         cap: i32;
+        impl IReferenceType;
         extern fun new(mut this);
         extern fun append(mut this, s: string);
         extern fun to_string(this) -> mut string;

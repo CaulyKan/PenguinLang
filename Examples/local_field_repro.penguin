@@ -1,0 +1,19 @@
+// Repro for the local<->field StringBuilder swap miscompilation.
+// Holder has TWO StringBuilder fields (sb, body_sb) like LLVMEmitter.
+// If `this.sb = local_sb` correctly aliases sb to local's object,
+// this.sb.to_string() == "hello" (len 5). If this.sb resolves to body_sb
+// (field confusion) or the local<->field store is lost, len 0.
+class Holder {
+    sb: mut StringBuilder = new StringBuilder();
+    body_sb: mut StringBuilder = new StringBuilder();
+    fun test(mut this) -> i64 {
+        let local_sb: mut StringBuilder = new StringBuilder();
+        local_sb.append("hello");
+        this.sb = local_sb;
+        return string_length(this.sb.to_string());
+    }
+}
+initial {
+    let h: mut Holder = new Holder();
+    println(cast<string>(h.test()));
+}

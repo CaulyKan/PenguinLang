@@ -270,11 +270,8 @@ namespace parser {
         fun parse_postfixExpression(this) -> ast.Expression {
             if (this.stream.peek_type() is TokenType.New) {
             this.stream.expect(new TokenType.New());
-            if (this.stream.peek_type() is TokenType.Mut) {
-                this.stream.advance();
-            }
             let type_token: Token = this.stream.advance();
-            let mut sb = new mut StringBuilder();
+            let mut sb = new StringBuilder();
             sb.append(type_token.text);
             let generic_args: mut _utils.List<ast.TypeSpecifier> = new _utils.List<ast.TypeSpecifier>();
             if (this.stream.peek_type() is TokenType.Less) {

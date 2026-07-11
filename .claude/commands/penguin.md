@@ -256,7 +256,7 @@ if (ch >= "0" && ch <= "9") { ... }   // RUNTIME ERROR
 ### StringBuilder
 
 ```penguin
-let sb = new mut StringBuilder();
+let sb = new StringBuilder();
 sb.append("hello");
 sb.append(" ");
 sb.append("world");
@@ -449,7 +449,7 @@ PenguinLang supports defining functions directly at namespace level (not inside 
 namespace ast {
     // Namespace-level function (preferred over Utils classes)
     fun escape_string(s: string) -> string {
-        let sb = new mut StringBuilder();
+        let sb = new StringBuilder();
         // ...
         return sb.to_string();
     }
@@ -513,7 +513,7 @@ class PrimaryExpression {
     }
 
     fun from_sexp(sep: string) -> mut PrimaryExpression {
-        let result = new mut PrimaryExpression();
+        let result = new PrimaryExpression();
         if (has_identifier) {
             // Create some value
             result.identifier = new Option<SymbolIdentifier>.some(
