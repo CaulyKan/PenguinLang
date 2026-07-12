@@ -37,6 +37,13 @@ dotnet test BabyPenguin.Tests
 # Run single test (example)
 dotnet test --filter "FullyQualifiedName~BuiltinTest.PrintTest"
 
+# Run the cross-compiler markdown test suite (Tests/*.md) via PenguinTestRunner
+# Fast loop — BabyPenguin only, no bootstrap needed:
+dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin
+# Full matrix (requires ./penguin -b first, to build tmp/pass2 & tmp/pass3):
+dotnet run --project Tests/PenguinTestRunner --                                 # all compilers in each test's Apply To
+dotnet run --project Tests/PenguinTestRunner -- --filter CalculationTest/* --compilers babypenguin,pass1
+
 # Run a Penguin program
 dotnet run --project .\BabyPenguin -- .\Examples\HelloWorld.penguin
 
@@ -52,7 +59,33 @@ cd MagellanicPenguin\vscode && npm run package
 * When writing penguinlang code, use skill penguin
 * Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
 * When writing unit tests, you must use try to compare if full test output is correct. The use of ambiguous assertions is **prohibited**, such as comparing only queue sizes, string contains, etc.
-* When debugging a codegen/runtime bug, write a minimal PenguinLang repro. Once the repro successfully reproduces the bug AND the fix is verified, **persist the repro as an e2e test** (e.g. add a `[BatchE2ETest]` case to the relevant `EndToEnd*Test.cs`) so the bug stays fixed. Do not discard working repros.
+* When debugging a codegen/runtime bug, write a minimal PenguinLang repro. Once the repro successfully reproduces the bug AND the fix is verified, **persist the repro as a markdown test case** under `Tests/<Category>/<Name>.md` (format in `Tests/Readme.md`; set `Apply To` to the compiler(s) it was verified on). The legacy `[BatchE2ETest]` cases in `EmperorPenguin.Tests/EndToEnd*Test.cs` are being phased out in favor of these `Tests/*.md` cases. Do not discard working repros.
+
+## Markdown Test Framework (cross-compiler e2e)
+
+The cross-compiler end-to-end test suite lives in `Tests/` as **one markdown file per test case** (`Tests/<Category>/<Name>.md`, currently ~194 cases). It is driven by a single-file C# console runner — `Tests/PenguinTestRunner` (`Program.cs`, added to the .sln, **no** test SDK / xunit) — which spawns the compilers as processes. Full spec and examples: `Tests/Readme.md`.
+
+Each `*.md` describes a penguin program, the compilers it **Apply To** (`BabyPenguin`, `EmperorPenguin Pass1`, `EmperorPenguin Pass2`, `EmperorPenguin Pass3`), and the expected compile/run exit codes and stdout. The runner compiles (+ runs the produced exe, for EmperorPenguin) each program against each applicable compiler and checks results **byte-exact** (`ExpectedStdout: EQUALS \`...\``; `DISCARD` to skip a stream; `ExpectedExitCode` may be `0`, any int, `NONZERO`, or `ANY`). Omit the `## Run` section (or set a non-zero compile exit) for negative/compile-failure tests.
+
+- **Strict single-value**: a combination passes only if *every* compiler in its Apply To matches the expected output exactly. Set Apply To to only the compilers a test is verified on and expand later — use `--probe` to discover whether another compiler now agrees.
+- **Argument routing**: `Compile.Args` are appended in the backend-specific slot — EmperorPenguin (Pass1/2/3) honors them; BabyPenguin ignores them and always runs in `-q` for clean output (see note below).
+- **Bootstrap is manual**: Pass2/Pass3 require native binaries `tmp/pass2`/`tmp/pass3` (built by `./penguin -b`). The runner **never** bootstraps; if a required binary is missing it exits non-zero telling you to run `./penguin -b`. Pass1 and BabyPenguin only need `dotnet`.
+- **Per-case metrics**: each combination records compile and run **duration and peak RSS**.
+- **Artifacts & report**: each run writes `tmp/testruns/<timestamp>/<compiler>/<category>/<test>/` with `source.penguin`, `out.exe`/`combined.ll`/`libcore_builtin.a` (EmperorPenguin only — routed there via per-combo `TMPDIR`), `compile.log`, `run.log`, `result.json`; plus a self-contained, interactive **`summary.html`** (open in a browser). The HTML shows the git commit (with `*` if dirty) and per-compiler pass % (green at 100%, else red); the table groups by test with one row per compiler (status pill + vs-baseline badge + time/RSS + a summary column); filters (search + per-status + per-compiler toggles) drill into the compiler rows; clicking a test opens a full-page detail (source, the expectations shown once, then per-compiler compile/run stages). `tmp/testruns/latest.json` is diffed against to flag new failures / new passes and time & memory regressions.
+- **Exit code**: `0` iff all executed (test × compiler) combinations pass; non-zero on any fail/error.
+
+```bash
+dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
+  --compilers babypenguin,pass1,pass2,pass3   # default: each test's Apply To
+  --filter <glob|substr>     # e.g. CalculationTest/* or AddTest
+  --probe                    # ignore Apply To; run selected compilers on every test
+  --parallel <n>             # default cores-1
+  --timeout-compile <s>      # default 600   --timeout-run <s>   default 60
+  --baseline latest|none|<path>              # default tmp/testruns/latest.json
+  --time-regression-pct <pct>  --mem-regression-pct <pct>   # both default 50
+```
+
+> **BabyPenguin `-q` note**: `dotnet <BabyPenguin.dll> -q <file>` emits program output exactly once. (Previously `Print()` wrote to both the live console and the `CollectOutput()` buffer, so `-q` doubled the output; `BabyPenguin/Program.cs` now silences the live echo in quiet mode.) This is the invocation the BabyPenguin backend relies on.
 
 ## Debugging with MCP DAP Tools
 
@@ -291,13 +324,15 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 ### Verification Commands
 
 ```bash
-# Verify EmperorPenguin code compiles/runs through BabyPenguin VM
-dotnet run BabyPenguin.tests | tee /temp/test.log
+# Cross-compiler e2e: run the markdown test suite (see Markdown Test Framework above)
+dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin | tee /tmp/test.log
+# After ./penguin -b: full matrix across all four compilers
+dotnet run --project Tests/PenguinTestRunner -- | tee /tmp/test.log
 
-# Run EmperorPenguin tests
-dotnet test EmperorPenguin.Testst | tee /temp/test.log
+# In-process unit tests (compiler internals; AST/Bound/IR/LLVM)
+dotnet test EmperorPenguin.Tests | tee /tmp/test.log
 
-# Run all tests (both BabyPenguin and EmperorPenguin)
+# Run all xunit unit-test projects (both BabyPenguin.Tests and EmperorPenguin.Tests)
 dotnet test --verbosity normal | tee /temp/test.log
 ```
 
@@ -305,17 +340,18 @@ When doing tests, always tee full log to a file, avoid running expensive tests m
 
 ### Test Infrastructure (EmperorPenguin.Tests)
 
-Uses `BatchCompiler` with custom attributes:
+End-to-end compilation tests have **migrated to the markdown framework** (`Tests/*.md` driven by `Tests/PenguinTestRunner` — see *Markdown Test Framework* above). The legacy `[BatchE2ETest]` cases in `EmperorPenguin.Tests/EndToEnd*Test.cs` are superseded and being removed.
+
+`EmperorPenguin.Tests` now keeps only **in-process unit tests** that exercise compiler internals via `BatchCompiler` (the test runs penguin code on the in-process `BabyPenguinVM`, *not* as a separate process):
 - `BatchTest` / `InitBatch<T>()` — AST/parser tests
-- `BatchE2ETest` / `InitE2EBatch<T>()` — End-to-end compilation tests (39 basic tests passing)
 - `BatchBoundTest` / `InitBoundBatch<T>()` — Bound tree tests
 - `BatchIRTest` / `InitIRBatch<T>()` — IR generation tests
 - `BatchLLVMTest` / `InitLLVMBatch<T>()` — LLVM IR tests
 
 Test pattern:
 ```csharp
-private static readonly BatchResults batch = BatchCompiler.InitE2EBatch<ClassName>();
-[BatchE2ETest(/* penguin code */, /* expected output */)]
+private static readonly BatchResults batch = BatchCompiler.InitBoundBatch<ClassName>();
+[BatchBoundTest(/* penguin code */, /* expected bound-tree output */)]
 [Fact]
 public void TestName() => batch.Assert();
 ```
