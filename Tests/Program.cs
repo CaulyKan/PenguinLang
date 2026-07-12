@@ -8,7 +8,7 @@
 // run folder, writes a summary (md + json), and diffs against the previous run.
 //
 // Bootstrap is MANUAL: this runner never bootstraps EmperorPenguin. If a Pass2/3
-// binary is required but missing it errors out telling you to run ./emperor_penguin -b.
+// binary is required but missing it errors out telling you to run ./penguin -b.
 //
 // Invoke:
 //   dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
@@ -34,8 +34,7 @@ public static class Program
 
         if (opts.Migrate != null)
         {
-            Console.WriteLine("--migrate is implemented in Phase B/C (not in this build).");
-            return 1;
+            //return await Migrator.RunAsync(opts.Migrate, repoRoot, testsDir, opts.MergeRegions);
         }
 
         // Discover and parse test specs.
@@ -143,7 +142,7 @@ public static class Program
                 results.Add(r);
                 lock (Console.Out)
                 {
-                    Console.WriteLine($"  [{r.Status,-5}] {r.Compiler,-20} {r.Category}/{r.Name}" +
+                    Console.WriteLine($"  [{r.Status,-5}] {r.Compiler,-20} {r.Category}/{r.Name} ({results.Count}/{work.Count})" +
                                       (r.Message.Length > 0 ? "  — " + Truncate(r.Message, 100) : ""));
                 }
             });
@@ -151,15 +150,18 @@ public static class Program
         sw.Stop();
 
         var list = results.OrderBy(r => r.Category).ThenBy(r => r.Name).ThenBy(r => r.Compiler).ToList();
+        var specs = new Dictionary<string, MarkdownTestCase>();
+        foreach (var t in tests) specs[t.Category + "/" + t.Name] = t;
+        var commit = GitShort(repoRoot);
         var summaryDir = runDir;
-        var summaryPath = Path.Combine(summaryDir, "summary.md");
+        var summaryPath = Path.Combine(summaryDir, "summary.html");
         var jsonPath = Path.Combine(summaryDir, "summary.json");
 
         BaselineDiff? diff = null;
         if (baseline != null)
             diff = BaselineComparer.Compare(baseline, list, opts.TimeRegressionPct, opts.MemRegressionPct);
 
-        SummaryReporter.WriteMarkdown(summaryPath, list, sw.Elapsed, diff, repoRoot);
+        SummaryReporter.WriteHtml(summaryPath, list, sw.Elapsed, diff, repoRoot, runDir, specs, commit);
         SummaryReporter.WriteJson(jsonPath, list, sw.Elapsed, diff);
         File.Copy(jsonPath, Path.Combine(repoRoot, "tmp", "testruns", "latest.json"), overwrite: true);
 
@@ -237,6 +239,19 @@ public static class Program
     }
 
     public static string Truncate(string s, int n) => s.Length <= n ? s : s[..n] + "…";
+    public static string GitShort(string repoRoot)
+    {
+        try
+        {
+            var (code, hash, _) = ProcessRunner.RunSync("git", "rev-parse --short HEAD", repoRoot, TimeSpan.FromSeconds(5));
+            if (code != 0) return "no-git";
+            hash = hash.Trim();
+            var (dc, dout, _) = ProcessRunner.RunSync("git", "status --porcelain", repoRoot, TimeSpan.FromSeconds(5));
+            bool dirty = dc == 0 && dout.Trim().Length > 0;
+            return dirty ? hash + "*" : hash;
+        }
+        catch { return "no-git"; }
+    }
 
     public static readonly CompilerKind[] AllCompilers =
         { CompilerKind.BabyPenguin, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3 };
@@ -923,6 +938,7 @@ public sealed class ComboResult
     public CompilerKind Compiler;
     public Status Status;
     public string Message = "";
+    public string WorkDir = "";
 
     public StageResult? Compile;
     public StageResult? Run;
@@ -939,6 +955,7 @@ public sealed class StageResult
     public bool TimedOut;
     public string Stdout = "";
     public string Stderr = "";
+    public string Command = "";
     public string[] Failures = Array.Empty<string>(); // expectation failures for this stage
 }
 
@@ -956,6 +973,7 @@ public static class TestRunner
         };
 
         var workDir = Path.Combine(runDir, compiler.Key(), SafePath(test.Category), SafePath(test.Name));
+        result.WorkDir = workDir;
         Directory.CreateDirectory(workDir);
 
         var srcFile = Path.Combine(workDir, "source.penguin");
@@ -976,6 +994,7 @@ public static class TestRunner
             TimedOut = cproc.TimedOut,
             Stdout = cproc.Stdout,
             Stderr = cproc.Stderr,
+            Command = "$ " + compilePsi.FileName + " " + compilePsi.Arguments,
         };
         await WriteLogAsync(Path.Combine(workDir, "compile.log"), compilePsi, cproc);
         result.Compile = compileStage;
@@ -1042,6 +1061,7 @@ public static class TestRunner
                 PeakBytes = 0,
                 Stdout = cproc.Stdout,
                 Stderr = cproc.Stderr,
+                Command = compileStage.Command,
             };
             runStdout = cproc.Stdout;
         }
@@ -1065,6 +1085,7 @@ public static class TestRunner
                 TimedOut = rproc.TimedOut,
                 Stdout = rproc.Stdout,
                 Stderr = rproc.Stderr,
+                Command = "$ " + runPsi.FileName + " " + runPsi.Arguments,
             };
             await WriteLogAsync(Path.Combine(workDir, "run.log"), runPsi, rproc);
             runStdout = rproc.Stdout;
@@ -1176,9 +1197,9 @@ public static class BootstrapGuard
     {
         var set = used.ToHashSet();
         if (set.Contains(CompilerKind.EmperorPenguinPass2) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass2")))
-            return $"'tmp/pass2' not found. EmperorPenguin Pass2 requires a bootstrapped native binary.\nRun './emperor_penguin -b' first.";
+            return $"'tmp/pass2' not found. EmperorPenguin Pass2 requires a bootstrapped native binary.\nRun './penguin -b' first.";
         if (set.Contains(CompilerKind.EmperorPenguinPass3) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass3")))
-            return $"'tmp/pass3' not found. EmperorPenguin Pass3 requires a bootstrapped native binary.\nRun './emperor_penguin -b' first.";
+            return $"'tmp/pass3' not found. EmperorPenguin Pass3 requires a bootstrapped native binary.\nRun './penguin -b' first.";
         return null;
     }
 }
@@ -1299,93 +1320,435 @@ public static class SummaryReporter
         return (p, f, e, s);
     }
 
-    public static void WriteMarkdown(string path, List<ComboResult> list, TimeSpan total, BaselineDiff? diff, string repoRoot)
+    public static void WriteHtml(string path, List<ComboResult> list, TimeSpan total, BaselineDiff? diff, string repoRoot, string runDir, IReadOnlyDictionary<string, MarkdownTestCase> specs, string commit)
+    {
+        var (_p, _f, _e, _s) = Totals(list);
+        var marks = BuildBaselineMarks(diff);
+        var byTest = list.GroupBy(r => r.Test)
+            .Select(g => new { Test = g.Key, Items = g.OrderBy(r => r.Compiler).ToList() })
+            .OrderBy(g => g.Test).ToList();
+
+        var sb = new StringBuilder();
+        sb.Append(HtmlHead);
+
+        sb.Append("<header class='top'><h1>PenguinLang Test Report</h1>");
+        sb.Append($"<span class='meta'>commit <span class='mono'>{HE(commit)}</span>  ·  Generated {HE(DateTime.Now.ToString("O"))}  ·  {total.TotalSeconds:F1}s  ·  {byTest.Count} tests / {list.Count} combos</span>");
+        sb.Append("</header>");
+
+        sb.Append("<div class='stats'>");
+        sb.Append(StatCard("pass", _p.ToString(), "Pass"));
+        sb.Append(StatCard("fail", _f.ToString(), "Fail"));
+        sb.Append(StatCard("error", _e.ToString(), "Error"));
+        sb.Append(StatCard("skip", _s.ToString(), "Skip"));
+
+        // Per-compiler pass rate (green at 100%, otherwise red).
+        foreach (var g in list.GroupBy(r => r.Compiler).OrderBy(x => x.Key))
+        {
+            int cnt = g.Count();
+            int passed = g.Count(r => r.Status == Status.Pass);
+            int pct = cnt == 0 ? 100 : (int)Math.Round(100.0 * passed / cnt);
+            var cls = pct >= 100 ? "pass" : "fail";
+            // sb.Append($"<span class='crate {cls}'><span class='dot'></span>{HE(g.Key.Display())}  {passed}/{cnt} · {pct}%</span>");
+            sb.Append(StatCard(cls, $"{pct}%", HE(g.Key.Display())));
+        }
+        sb.Append("</div>");
+
+        // Filter controls + tests table.
+        sb.Append("<div class='card'><div class='controls'>");
+        sb.Append("<input type='text' id='search' placeholder='Filter by test name…'>");
+        sb.Append("<div class='badges' id='statusBtns'>");
+        foreach (var st in new[] { "PASS", "FAIL", "ERROR", "SKIP" })
+            sb.Append($"<button class='btn' data-s='{st}'>{st}</button>");
+        sb.Append("</div><div class='badges' id='compilerBtns'>");
+        foreach (var c in list.Select(r => r.Compiler).Distinct().OrderBy(x => x))
+            sb.Append($"<button class='btn' data-name='{HE(c.Key())}'>{HE(c.Display())}</button>");
+        sb.Append("</div></div>");
+
+        sb.Append("<div class='tblwrap'><table class='tests' id='testtable'>");
+        sb.Append("<thead><tr><th>Compiler</th><th>Status</th><th class='num'>Compile</th><th class='num'>Compile RSS</th><th class='num'>Run</th><th class='num'>Run RSS</th><th>Summary</th></tr></thead>");
+        int idx = 0;
+        foreach (var g in byTest)
+        {
+            string overall = RollupStatus(g.Items);
+            var compilers = string.Join(" ", g.Items.Select(r => r.Compiler.Key()).Distinct());
+            sb.Append($"<tbody class='tgroup' data-idx='{idx}' data-status='{overall}' data-compilers='{HE(compilers)}' data-search='{HE(g.Test)}'>");
+            sb.Append($"<tr class='tnamerow'><td colspan='7'><span class='mono tname'>{HE(g.Test)}</span></td></tr>");
+            foreach (var r in g.Items)
+            {
+                var status = r.Status.ToString().ToUpperInvariant();
+                sb.Append($"<tr class='crow' data-compiler='{HE(r.Compiler.Key())}' data-status='{status}'>");
+                sb.Append($"<td class='mono'>{HE(r.Compiler.Display())}</td>");
+                sb.Append($"<td><span class='pill {status}'>{status}</span>{BaselineMarkBadgeInline(r, marks)}</td>");
+                sb.Append($"<td class='num'>{FmtMs(r.Compile?.DurationMs)}</td>");
+                sb.Append($"<td class='num'>{FmtBytes(r.Compile?.PeakBytes ?? 0)}</td>");
+                sb.Append($"<td class='num'>{(r.Run != null ? FmtMs(r.Run.DurationMs) : "—")}</td>");
+                sb.Append($"<td class='num'>{(r.Run != null ? FmtBytes(r.Run.PeakBytes) : "—")}</td>");
+                sb.Append($"<td class='summary'>{HE(Program.Truncate(r.Message, 100))}</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("</tbody>");
+            idx++;
+        }
+        sb.Append("</table></div></div>");
+
+        // vs Baseline summary (after the table).
+        if (diff != null) sb.Append(RenderBaselineHtml(diff));
+
+        // Hidden per-test detail payloads.
+        sb.Append("<div id='casedetails' style='display:none'>");
+        idx = 0;
+        foreach (var g in byTest)
+        {
+            var spec = specs.TryGetValue(g.Test, out var sp) ? sp : null;
+            sb.Append($"<div id='cd-{idx}' data-name='{HE(g.Test)}'>");
+            sb.Append(RenderTestDetail(g.Items, runDir, marks, spec));
+            sb.Append("</div>");
+            idx++;
+        }
+        sb.Append("</div>");
+
+        // Full-page detail overlay.
+        sb.Append("<div id='page' class='page'>");
+        sb.Append("<div class='page-bar'><div class='t mono' id='pageTitle'></div><button class='closebtn' id='pageClose' aria-label='Close'>Close ✕</button></div>");
+        sb.Append("<div class='page-body'><div class='inner' id='pageBody'></div></div>");
+        sb.Append("</div>");
+
+        sb.Append("</div>"); // close container
+        sb.Append(HtmlApp);
+        sb.Append("</body></html>");
+        File.WriteAllText(path, sb.ToString());
+    }
+
+    private static string RollupStatus(IEnumerable<ComboResult> cs)
+    {
+        var arr = cs.ToList();
+        if (arr.Count == 0) return "SKIP";
+        if (arr.Any(r => r.Status == Status.Error)) return "ERROR";
+        if (arr.Any(r => r.Status == Status.Fail)) return "FAIL";
+        if (arr.All(r => r.Status == Status.Pass)) return "PASS";
+        return "SKIP";
+    }
+
+    private static Dictionary<string, (string Kind, string Detail)> BuildBaselineMarks(BaselineDiff? diff)
+    {
+        var d = new Dictionary<string, (string, string)>();
+        if (diff == null) return d;
+        foreach (var p in diff.NewFailures) d[KeyOf(p.Cur)] = ("newfail", "Regressed vs baseline: was PASS, now FAIL — " + p.Cur.Message);
+        foreach (var p in diff.NewPasses) d[KeyOf(p.Cur)] = ("newpass", "Improved vs baseline: was FAIL, now PASS");
+        foreach (var p in diff.TimeRegressions) d[KeyOf(p.Cur)] = ("timereg", $"Slower vs baseline: {MsOf(p.Old):F0} ms → {MsOf(p.Cur):F0} ms");
+        foreach (var p in diff.MemoryRegressions) d[KeyOf(p.Cur)] = ("memreg", $"More memory vs baseline: {MemOf(p.Old)} → {MemOf(p.Cur)}");
+        foreach (var c in diff.New) d.TryAdd(KeyOf(c), ("new", "New vs baseline (not present last run)"));
+        return d;
+    }
+
+    private static string KeyOf(ComboResult r) => r.Test + "|" + r.Compiler.Key();
+
+    private static string BaselineMarkBadgeInline(ComboResult r, Dictionary<string, (string Kind, string Detail)> marks)
+    {
+        if (!marks.TryGetValue(KeyOf(r), out var m)) return "";
+        var label = m.Kind switch
+        {
+            "newfail" => "regress",
+            "newpass" => "fixed",
+            "timereg" => "slower",
+            "memreg" => "+mem",
+            "new" => "new",
+            _ => m.Kind,
+        };
+        return $"<span class='bm {m.Kind}' title='{HE(m.Detail)}'>{label}</span>";
+    }
+
+    private static string RenderTestDetail(List<ComboResult> items, string runDir, Dictionary<string, (string Kind, string Detail)> marks, MarkdownTestCase? spec)
     {
         var sb = new StringBuilder();
-        var (pass, fail, err, skip) = Totals(list);
-        sb.AppendLine("# PenguinTestRunner — Summary");
-        sb.AppendLine();
-        sb.AppendLine($"- Generated: {DateTime.Now:O}");
-        sb.AppendLine($"- Total duration: {total.TotalSeconds:F1}s");
-        sb.AppendLine($"- Combos: **{pass} pass**, **{fail} fail**, **{err} error**, **{skip} skip** (of {list.Count})");
-        sb.AppendLine();
-
-        if (diff != null)
+        var first = items.First();
+        sb.Append("<h3 class='blk'>Source</h3>");
+        sb.Append(Pre(ReadSource(first.WorkDir)));
+        sb.Append(ExpectationsHtml(spec));
+        foreach (var r in items)
         {
-            sb.AppendLine("## vs Baseline");
-            sb.AppendLine();
-            if (diff.NewFailures.Count == 0 && diff.NewPasses.Count == 0 &&
-                diff.TimeRegressions.Count == 0 && diff.MemoryRegressions.Count == 0 &&
-                diff.New.Count == 0 && diff.Removed.Count == 0)
-            {
-                sb.AppendLine("No changes vs baseline.");
-            }
-            else
-            {
-                if (diff.NewFailures.Count > 0) { sb.AppendLine($"### 🆕 New failures ({diff.NewFailures.Count})"); foreach (var (c, _) in diff.NewFailures) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}` — {c.Message}"); sb.AppendLine(); }
-                if (diff.NewPasses.Count > 0) { sb.AppendLine($"### ✅ New passes ({diff.NewPasses.Count})"); foreach (var (c, _) in diff.NewPasses) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}`"); sb.AppendLine(); }
-                if (diff.TimeRegressions.Count > 0) { sb.AppendLine($"### ⏱ Time regressions"); foreach (var (c, b) in diff.TimeRegressions) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}` — {MsOf(b):F0}ms → {MsOf(c):F0}ms"); sb.AppendLine(); }
-                if (diff.MemoryRegressions.Count > 0) { sb.AppendLine($"### 💾 Memory regressions"); foreach (var (c, b) in diff.MemoryRegressions) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}` — {MemOf(b)} → {MemOf(c)}"); sb.AppendLine(); }
-                if (diff.New.Count > 0) { sb.AppendLine($"### + New tests ({diff.New.Count})"); foreach (var c in diff.New) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}`"); sb.AppendLine(); }
-                if (diff.Removed.Count > 0) { sb.AppendLine($"### − Removed ({diff.Removed.Count})"); foreach (var c in diff.Removed) sb.AppendLine($"- {c.Compiler.Display()} `{c.Test}`"); sb.AppendLine(); }
-            }
-            sb.AppendLine();
+            var status = r.Status.ToString().ToUpperInvariant();
+            sb.Append("<section class='csec'>");
+            sb.Append($"<h3 class='csec-h'><span class='mono'>{HE(r.Compiler.Display())}</span><span class='pill {status}'>{status}</span>{BaselineMarkBadgeInline(r, marks)}</h3>");
+            sb.Append(StageHtml("Compile", r.Compile));
+            sb.Append(StageHtml("Run", r.Run));
+            var rel = Rel(runDir, r.WorkDir);
+            sb.Append("<div class='lbl'>Artifacts</div>");
+            sb.Append($"<a class='fl' href='{HE(rel)}/compile.log' target='_blank'>compile.log</a>");
+            if (r.Run != null) sb.Append($"<a class='fl' href='{HE(rel)}/run.log' target='_blank'>run.log</a>");
+            sb.Append($"<a class='fl' href='{HE(rel)}/result.json' target='_blank'>result.json</a>");
+            sb.Append($"<div class='mono' style='font-size:11px;color:var(--muted);margin-top:6px'>{HE(rel)}/</div>");
+            sb.Append("</section>");
         }
+        return sb.ToString();
+    }
 
-        sb.AppendLine("## Per-compiler totals");
-        sb.AppendLine();
-        sb.AppendLine("| Compiler | Pass | Fail | Error | Skip |");
-        sb.AppendLine("|---|---:|---:|---:|---:|");
-        foreach (var g in list.GroupBy(r => r.Compiler).OrderBy(g => g.Key))
+    private static string ExpectationsHtml(MarkdownTestCase? spec)
+    {
+        if (spec == null) return "";
+        var sb = new StringBuilder();
+        sb.Append("<h3 class='blk'>Expectations</h3>");
+        sb.Append(StageExpectHtml("Compile", spec.Compile, false));
+        if (spec.Run != null) sb.Append(StageExpectHtml("Run", spec.Run, true));
+        return sb.ToString();
+    }
+
+    private static string StageExpectHtml(string title, StageSpec s, bool isRun)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"<div class='expstage'><div class='exph'>{HE(title)}</div>");
+        sb.Append("<div class='kv'>");
+        sb.Append($"<span class='k'>expected exit</span><span><code>{HE(s.ExpectedExitCode)}</code></span>");
+        sb.Append($"<span class='k'>stdout</span><span>{HE(ExpMode(s.ExpectedStdout))}</span>");
+        sb.Append($"<span class='k'>stderr</span><span>{HE(ExpMode(s.ExpectedStderr))}</span>");
+        if (!string.IsNullOrEmpty(s.Args)) sb.Append($"<span class='k'>args</span><span><code>{HE(s.Args)}</code></span>");
+        if (isRun && !string.IsNullOrEmpty(s.Stdin)) sb.Append($"<span class='k'>stdin</span><span><code>{HE(s.Stdin)}</code></span>");
+        sb.Append("</div>");
+        if (!s.ExpectedStdout.IsDiscard && !string.IsNullOrEmpty(s.ExpectedStdout.Operand))
+            sb.Append("<div class='lbl'>expected stdout</div>").Append(Pre(s.ExpectedStdout.Operand));
+        if (!s.ExpectedStderr.IsDiscard && !string.IsNullOrEmpty(s.ExpectedStderr.Operand))
+            sb.Append("<div class='lbl'>expected stderr</div>").Append(Pre(s.ExpectedStderr.Operand));
+        sb.Append("</div>");
+        return sb.ToString();
+    }
+
+    private static string ExpMode(Expectation e) => e.IsDiscard ? "DISCARD" : e.Mode;
+
+    private static string StatCard(string cls, string n, string label) =>
+        $"<div class='stat {cls}'><div class='n'>{n}</div><div class='l'>{label}</div></div>";
+
+    private static string FmtMs(double? ms)
+    {
+        if (ms == null) return "—";
+        if (ms < 1) return $"{ms} ms";
+        if (ms < 1000) return $"{Math.Round(ms.Value)} ms";
+        return $"{ms.Value / 1000:F2} s";
+    }
+
+    private static string HE(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+                .Replace("\"", "&quot;").Replace("'", "&#39;");
+    }
+
+    private static string Pre(string? s) => $"<pre>{HE(string.IsNullOrEmpty(s) ? "" : s)}</pre>";
+
+    private static string StageHtml(string title, StageResult? s)
+    {
+        if (s == null) return "";
+        var sb = new StringBuilder();
+        sb.Append($"<h3 class='blk'>{HE(title)}</h3>");
+        sb.Append("<div class='kv'>");
+        sb.Append($"<span class='k'>exit</span><span>{s.ExitCode}{(s.TimedOut ? "  (timed out)" : "")}</span>");
+        sb.Append($"<span class='k'>duration</span><span>{FmtMs(s.DurationMs)}</span>");
+        sb.Append($"<span class='k'>peak RSS</span><span>{FmtBytes(s.PeakBytes)}</span>");
+        sb.Append("</div>");
+        if (!string.IsNullOrEmpty(s.Command)) sb.Append($"<pre>{HE(s.Command)}</pre>");
+        if (s.Failures.Length > 0)
         {
-            var t = Totals(g.ToList());
-            sb.AppendLine($"| {g.Key.Display()} | {t.Pass} | {t.Fail} | {t.Error} | {t.Skip} |");
+            sb.Append("<ul class='dlist'>");
+            foreach (var f in s.Failures) sb.Append($"<li class='mono'>{HE(f)}</li>");
+            sb.Append("</ul>");
         }
-        sb.AppendLine();
+        if (!string.IsNullOrEmpty(s.Stdout)) sb.Append("<div class='lbl'>stdout</div>").Append(Pre(s.Stdout));
+        if (!string.IsNullOrEmpty(s.Stderr)) sb.Append("<div class='lbl'>stderr</div>").Append(Pre(s.Stderr));
+        return sb.ToString();
+    }
 
-        sb.AppendLine("## Details");
-        sb.AppendLine();
-        sb.AppendLine("| Test | Compiler | Status | Compile ms | Compile RSS | Run ms | Run RSS | Message |");
-        sb.AppendLine("|---|---|---|---:|---:|---:|---:|---|");
-        foreach (var r in list)
-        {
-            sb.AppendLine($"| `{r.Test}` | {r.Compiler.Display()} | {r.Status} | " +
-                $"{(r.Compile?.DurationMs ?? 0):F0} | {FmtBytes(r.Compile?.PeakBytes ?? 0)} | " +
-                $"{(r.Run?.DurationMs ?? 0):F0} | {FmtBytes(r.Run?.PeakBytes ?? 0)} | " +
-                $"{EscapeMd(r.Message)} |");
-        }
-        sb.AppendLine();
+    private static string ReadSource(string workDir)
+    {
+        try { var p = Path.Combine(workDir, "source.penguin"); return File.Exists(p) ? File.ReadAllText(p) : ""; }
+        catch { return ""; }
+    }
 
-        // Failures detail (full expected/actual).
-        var fails = list.Where(r => r.Status != Status.Pass && r.Status != Status.Skip).ToList();
-        if (fails.Count > 0)
-        {
-            sb.AppendLine("## Failures detail");
-            sb.AppendLine();
-            foreach (var r in fails)
-            {
-                sb.AppendLine($"### {r.Status} — {r.Compiler.Display()} `{r.Test}`");
-                sb.AppendLine();
-                sb.AppendLine($"- message: {r.Message}");
-                if (r.Run != null)
-                {
-                    sb.AppendLine($"- expected stdout: {Expectation.Render(r.ExpectedStdout)}");
-                    sb.AppendLine($"- actual stdout:   {Expectation.Render(r.ActualStdout)}");
-                }
-                sb.AppendLine($"- artifacts: `{Path.GetRelativePath(repoRoot, Path.Combine(repoRoot, "tmp", "testruns", "_", r.Compiler.Key(), r.Category, r.Name)).Replace("_\\" + Path.DirectorySeparatorChar, "")}`");
-                sb.AppendLine();
-            }
-        }
+    private static string Rel(string fromDir, string toPath)
+    {
+        try { return Path.GetRelativePath(fromDir, toPath).Replace('\\', '/'); }
+        catch { return toPath.Replace('\\', '/'); }
+    }
 
-        File.WriteAllText(path, sb.ToString());
+    private static string RenderBaselineHtml(BaselineDiff d)
+    {
+        if (d.NewFailures.Count == 0 && d.NewPasses.Count == 0 && d.TimeRegressions.Count == 0 &&
+            d.MemoryRegressions.Count == 0 && d.New.Count == 0 && d.Removed.Count == 0) return "";
+        var sb = new StringBuilder();
+        sb.Append("<div class='card'><h2>vs Baseline</h2>");
+        if (d.NewFailures.Count > 0)
+            sb.Append(Blist("🆕 New failures", d.NewFailures.Select(p =>
+                HE(p.Cur.Compiler.Display() + " " + p.Cur.Test) + (string.IsNullOrEmpty(p.Cur.Message) ? "" : " — " + HE(p.Cur.Message)))));
+        if (d.NewPasses.Count > 0)
+            sb.Append(Blist("✅ New passes", d.NewPasses.Select(p => HE(p.Cur.Compiler.Display() + " " + p.Cur.Test))));
+        if (d.TimeRegressions.Count > 0)
+            sb.Append(Blist("⏱ Time regressions", d.TimeRegressions.Select(p =>
+                HE(p.Cur.Compiler.Display() + " " + p.Cur.Test) + $" <span class='mono'>{MsOf(p.Old):F0} ms → {MsOf(p.Cur):F0} ms</span>")));
+        if (d.MemoryRegressions.Count > 0)
+            sb.Append(Blist("💾 Memory regressions", d.MemoryRegressions.Select(p =>
+                HE(p.Cur.Compiler.Display() + " " + p.Cur.Test) + $" <span class='mono'>{MemOf(p.Old)} → {MemOf(p.Cur)}</span>")));
+        if (d.New.Count > 0)
+            sb.Append(Blist("+ New", d.New.Select(c => HE(c.Compiler.Display() + " " + c.Test))));
+        if (d.Removed.Count > 0)
+            sb.Append(Blist("− Removed", d.Removed.Select(c => HE(c.Compiler.Display() + " " + c.Test))));
+        sb.Append("</div>");
+        return sb.ToString();
+    }
+
+    private static string Blist(string title, IEnumerable<string> items)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"<h3 class='blk'>{HE(title)}</h3><ul class='dlist'>");
+        foreach (var i in items) sb.Append($"<li>{i}</li>");
+        sb.Append("</ul>");
+        return sb.ToString();
     }
 
     private static double MsOf(ComboResult r) => (r.Compile?.DurationMs ?? 0) + (r.Run?.DurationMs ?? 0);
     private static string MemOf(ComboResult r) => FmtBytes((r.Compile?.PeakBytes ?? 0) + (r.Run?.PeakBytes ?? 0));
 
-    public static string FmtBytes(long bytes) => bytes <= 0 ? "-" : bytes >= 1 << 20 ? $"{bytes / (double)(1 << 20):F1}MB" : $"{bytes / (double)(1 << 10):F0}KB";
+    public static string FmtBytes(long bytes) => bytes <= 0 ? "—" : bytes >= 1 << 20 ? $"{bytes / (double)(1 << 20):F1}MB" : $"{bytes / (double)(1 << 10):F0}KB";
 
-    private static string EscapeMd(string s) => s.Replace("|", "\\|").Replace("\n", " ");
+    private const string HtmlHead = @"<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>PenguinLang Test Report</title>
+<style>
+:root{
+  --bg:#f4f5f7;--card:#ffffff;--border:#e4e6ea;--text:#1f2328;--muted:#6a737d;
+  --accent:#3b6ee8;--pass:#1a7f37;--fail:#cf222e;--error:#bc4c00;--skip:#6e7781;--code-bg:#f6f8fa;--hover:#f1f3f5;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--code-bg:#0d1117;--hover:#1c2128;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.5}
+.container{max-width:1320px;margin:0 auto;padding:24px 20px 90px}
+header.top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:4px}
+h1{font-size:20px;margin:0;font-weight:650}
+.meta{color:var(--muted);font-size:13px}
+.stats{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 16px;min-width:88px}
+.stat .n{font-size:22px;font-weight:750;line-height:1.1}
+.stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.stat.pass .n{color:var(--pass)} .stat.fail .n{color:var(--fail)} .stat.error .n{color:var(--error)} .stat.skip .n{color:var(--skip)}
+.compstats{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+.crate{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--card)}
+.crate .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.crate.green{color:var(--pass)} .crate.green .dot{background:var(--pass)}
+.crate.red{color:var(--fail)} .crate.red .dot{background:var(--fail)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin:16px 0}
+.card h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+h3.blk{margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+h3.blk:first-child{margin-top:0}
+.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.controls input{flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px}
+.badges{display:flex;gap:6px;flex-wrap:wrap}
+.btn{padding:5px 12px;border:1px solid var(--border);border-radius:999px;background:var(--card);color:var(--muted);cursor:pointer;font-size:12px;font-weight:600;transition:all .12s}
+.btn:hover{border-color:var(--accent)}
+.btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tblwrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+.summary{max-width:300px;}
+table.tests{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
+table.tests thead th{position:sticky;top:0;background:var(--card);text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);white-space:nowrap;z-index:2}
+tbody.tgroup{cursor:pointer}
+tbody.tgroup>tr{transition:background .08s}
+tbody.tgroup:hover>tr{background:var(--hover)}
+tbody.tgroup:hover>tr.tnamerow>td{background:var(--hover)}
+tr.tnamerow>td{padding:14px 14px 8px;font-weight:650;font-size:13.5px;background:var(--card);border-top:1px solid var(--border)}
+tr.tnamerow:first-child>td{border-top:none}
+.tname{margin:0}
+.rollpill{margin-left:10px;vertical-align:middle}
+tr.crow>td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.mono,pre,code{font-family:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace}
+code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:12px}
+.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.03em}
+.pill.PASS{background:rgba(26,127,55,.13);color:var(--pass)}
+.pill.FAIL{background:rgba(207,34,46,.13);color:var(--fail)}
+.pill.ERROR{background:rgba(188,76,0,.15);color:var(--error)}
+.pill.SKIP{background:rgba(110,120,129,.17);color:var(--skip)}
+.bm{display:inline-block;padding:1px 7px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.03em;cursor:help;margin-left:8px;vertical-align:middle}
+.bm.newfail{background:rgba(207,34,46,.15);color:var(--fail)}
+.bm.newpass{background:rgba(26,127,55,.15);color:var(--pass)}
+.bm.timereg{background:rgba(188,76,0,.17);color:var(--error)}
+.bm.memreg{background:rgba(188,76,0,.17);color:var(--error)}
+.bm.new{background:rgba(59,110,232,.16);color:var(--accent)}
+ul.dlist{margin:6px 0;padding-left:18px}
+ul.dlist li{margin:3px 0}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;margin:6px 0 4px}
+.kv .k{color:var(--muted)}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}
+.expstage{margin:8px 0 12px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--code-bg)}
+.expstage .exph{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+pre{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-word;margin:6px 0;max-height:360px}
+a.fl{color:var(--accent);text-decoration:none;font-size:12px;margin-right:14px;white-space:nowrap}
+a.fl:hover{text-decoration:underline}
+.page{position:fixed;inset:0;background:var(--bg);z-index:100;display:none;flex-direction:column}
+.page.open{display:flex}
+.page-bar{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--border)}
+.page-bar .t{font-weight:650;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-body{flex:1 1 auto;overflow:auto;padding:20px}
+.page-body .inner{max-width:1000px;margin:0 auto}
+.closebtn{border:1px solid var(--border);background:var(--card);color:var(--muted);font-size:13px;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer}
+.closebtn:hover{color:var(--text);border-color:var(--accent)}
+section.csec{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin:14px 0}
+section.csec>h3.csec-h{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:10px}
+</style>
+</head>
+<body>
+<div class='container'>
+";
+
+    private const string HtmlApp = @"<script>
+(function(){
+  function openPage(idx){
+    var src=document.getElementById('cd-'+idx);
+    if(!src)return;
+    document.getElementById('pageBody').innerHTML=src.innerHTML;
+    document.getElementById('pageTitle').textContent=src.getAttribute('data-name')||'';
+    var pg=document.getElementById('page');
+    pg.classList.add('open');
+    document.body.style.overflow='hidden';
+    pg.scrollTop=0;
+  }
+  function closePage(){var pg=document.getElementById('page');pg.classList.remove('open');document.getElementById('pageBody').innerHTML='';document.body.style.overflow='';}
+  var tbl=document.getElementById('testtable');
+  tbl.addEventListener('click',function(e){var g=e.target.closest('tbody.tgroup');if(!g)return;openPage(g.getAttribute('data-idx'));});
+  document.getElementById('pageClose').addEventListener('click',closePage);
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closePage();});
+  var activeS={},activeC={};
+  function apply(){
+    var st=[],cp=[];for(var k in activeS)if(activeS[k])st.push(k);for(var c in activeC)if(activeC[c])cp.push(c);
+    var q=document.getElementById('search').value.toLowerCase();
+    var groups=tbl.querySelectorAll('tbody.tgroup');
+    for(var i=0;i<groups.length;i++){
+      var g=groups[i];
+      var gstatus=g.getAttribute('data-status');
+      var gcomps=g.getAttribute('data-compilers').split(' ');
+      var gsearch=g.getAttribute('data-search').toLowerCase();
+      var gshow=true;
+      if(st.length&&st.indexOf(gstatus)<0)gshow=false;
+      if(gshow&&cp.length){var hit=false;for(var j=0;j<gcomps.length;j++)if(cp.indexOf(gcomps[j])>=0){hit=true;break;}if(!hit)gshow=false;}
+      if(gshow&&q&&gsearch.indexOf(q)<0)gshow=false;
+      var crows=g.querySelectorAll('tr.crow');
+      var anyVisible=false;
+      for(var m=0;m<crows.length;m++){
+        var cr=crows[m];var cshow=true;
+        if(cp.length&&cp.indexOf(cr.getAttribute('data-compiler'))<0)cshow=false;
+        if(st.length&&st.indexOf(cr.getAttribute('data-status'))<0)cshow=false;
+        cr.style.display=cshow?'':'none';
+        if(cshow)anyVisible=true;
+      }
+      g.style.display=(gshow&&anyVisible)?'':'none';
+    }
+  }
+  function bind(boxId,attr,map){var b=document.getElementById(boxId).getElementsByClassName('btn');for(var i=0;i<b.length;i++){(function(btn){btn.addEventListener('click',function(){var s=btn.getAttribute(attr);map[s]=!map[s];btn.classList.toggle('active',map[s]);apply();});})(b[i]);}}
+  bind('statusBtns','data-s',activeS);
+  bind('compilerBtns','data-name',activeC);
+  document.getElementById('search').addEventListener('input',apply);
+})();
+</script>";
 
     public static void WriteJson(string path, List<ComboResult> list, TimeSpan total, BaselineDiff? diff)
     {

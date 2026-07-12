@@ -57,7 +57,7 @@ Phase 3  LLVM refactor     — Requirements 1+3 + supplements         [LLVMEmitt
    3.3 IR-layer unification (IRGenerator + IRBuilder)
    3.4 debug assertions
    ↓ test: all EmperorPenguin E2E tests pass (incl. native execution)
-   ↓ final: bootstrap (`emperor_penguin -b`)
+   ↓ final: bootstrap (`penguin -b`)
 ```
 
 ---
@@ -255,6 +255,6 @@ H. C runtime, I. runtime errors.
 1. After Phase 1: `dotnet test BabyPenguin.Tests` (full log tee'd).
 2. After Phase 2: `dotnet test EmperorPenguin.Tests` (VM path).
 3. After each Phase 3 sub-step: EmperorPenguin E2E tests (which DO execute native code).
-4. Final: `./emperor_penguin -b` (≈4h on this machine) → produces a clean pass2.
+4. Final: `./penguin -b` (≈4h on this machine) → produces a clean pass2.
 
 Always tee full logs to a file; never re-run expensive tests redundantly.

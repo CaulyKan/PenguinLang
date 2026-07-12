@@ -65,15 +65,15 @@ Recognized names (matched case-insensitively, by substring):
 |---|---|
 | `BabyPenguin` | C# reference compiler/VM (interprets directly) |
 | `EmperorPenguin Pass1` | EmperorPenguin compiler source run on the BabyPenguin VM (slow) |
-| `EmperorPenguin Pass2` | Native `tmp/pass2` (built by `./emperor_penguin -b`) |
-| `EmperorPenguin Pass3` | Native `tmp/pass3` (built by `./emperor_penguin -b`) |
+| `EmperorPenguin Pass2` | Native `tmp/pass2` (built by `./penguin -b`) |
+| `EmperorPenguin Pass3` | Native `tmp/pass3` (built by `./penguin -b`) |
 
 Set **Apply To** to only the compilers a test is verified on. Expand it later
 once more compilers agree (use `--probe` to discover agreement; see *Running*).
 
 > Pass2/Pass3 require bootstrapped native binaries. The runner never bootstraps
 > automatically — if a Pass2/3 binary is missing it exits with an error telling
-> you to run `./emperor_penguin -b`. BabyPenguin and Pass1 only need `dotnet`.
+> you to run `./penguin -b`. BabyPenguin and Pass1 only need `dotnet`.
 
 ### `## Test Code`
 
@@ -241,10 +241,10 @@ Fast loop (no bootstrap needed):
 dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin
 ```
 
-Full matrix (requires `./emperor_penguin -b` first):
+Full matrix (requires `./penguin -b` first):
 
 ```
-./emperor_penguin -b
+./penguin -b
 dotnet run --project Tests/PenguinTestRunner
 ```
 
@@ -257,7 +257,7 @@ Each run writes to `tmp/testruns/<timestamp>/` (gitignored):
 
 ```
 tmp/testruns/<ts>/
-  summary.md            # human-readable report
+  summary.html          # interactive report — open in a browser
   summary.json          # machine-readable
   <compiler>/<category>/<test>/
     source.penguin      # the extracted Test Code
@@ -270,7 +270,14 @@ tmp/testruns/<ts>/
 tmp/testruns/latest.json  # stable copy — used as next run's baseline
 ```
 
+**`summary.html`** is a self-contained report (single file, no external
+dependencies, light/dark via the OS theme). It shows total pass/fail/error/skip
+counts, a **vs Baseline** section (new failures, new passes, time/memory
+regressions vs the previous run), and a filterable table (search + per-status
+and per-compiler toggles). **Click any row to expand a detail view** with
+expected vs actual stdout, the compile and run commands, per-stage exit code /
+duration / peak RSS / stdout / stderr / failures, the full source, and links to
+the raw `compile.log`, `run.log`, and `result.json`.
+
 Per case the report records **compile and run time and peak memory separately**
-(peak RSS via `/proc/<pid>/status` `VmHWM` on Linux). The summary's **vs
-Baseline** section flags new failures, new passes, and time/memory regressions
-versus the previous run.
+(peak RSS via `/proc/<pid>/status` `VmHWM` on Linux).

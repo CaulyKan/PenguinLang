@@ -19,8 +19,8 @@ There are different phases to bootstrapping a native full-powered emperor pengui
 3. EmperorPenguin pass 3: Recompile EmperorPenguin with EmperorPenguin pass 2, with full features 
 4. EmperorPenguin pass 4: The final full featured EmperorPenguin
 
-To run different EmperorPenguin compiler, use `emperor_penguin` script in root folder. e.g. `emperor_penguin -1 test.penguin`
-To build self-bootstrapping emperorpenguin, use `emperor_penguin -b`
+To run different EmperorPenguin compiler, use `penguin` script in root folder. e.g. `penguin -1 test.penguin`
+To build self-bootstrapping emperorpenguin, use `penguin -b`
 
 ## Build and Development Commands
 

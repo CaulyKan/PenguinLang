@@ -3,6 +3,7 @@
 PASS=1
 BOOTSTRAPPING=0
 OTHERS=""
+TESTING=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -11,6 +12,7 @@ for arg in "$@"; do
     -3) PASS=3 ;;
     -4) PASS=4 ;;
     -b) BOOTSTRAPPING=1 ;;
+    -t) TESTING=1 ;;
     *) OTHERS="$OTHERS $arg" ;;
   esac
 done
@@ -28,6 +30,12 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     exit $?
 fi
 
+if [ $TESTING -eq 1 ]; then
+    echo "Running PenguinLang Tests ..."
+    dotnet run --configuration Release --project Tests/PenguinTestRunner.csproj -- $OTHERS
+    exit $?
+fi
+
 if [ $PASS -eq 1 ]; then
     echo "Running EmperorPenguin Pass 1 ..."
     rm -rf tmp && mkdir -p tmp
@@ -37,9 +45,19 @@ fi
 if [ $PASS -eq 2 ]; then
     echo "Running EmperorPenguin Pass 2 ..."
     if [ ! -f tmp/pass2 ]; then
-        echo "Pass 1 binary not found. Run './emperor_penguin -1' first." >&2
+        echo "Pass 2 binary not found. Run './penguin -b' first." >&2
         exit 1
     fi
     tmp/pass2 $OTHERS
 fi
+
+if [ $PASS -eq 3 ]; then
+    echo "Running EmperorPenguin Pass 3 ..."
+    if [ ! -f tmp/pass3 ]; then
+        echo "Pass 3 binary not found. Run './penguin -b' first." >&2
+        exit 1
+    fi
+    tmp/pass3 $OTHERS
+fi
+
 

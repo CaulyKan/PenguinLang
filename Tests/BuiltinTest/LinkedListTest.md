@@ -1,0 +1,84 @@
+# LinkedListTest
+## Description
+Linked list implementation: add and print_all.
+
+## Apply To
+* BabyPenguin
+
+## Test Code
+```
+namespace ll {
+    #template(T: type)
+    class LinkedList {
+        head: LinkedListNode<T>;
+        tail: LinkedListNode<T>;
+        size: i32 = 0;
+
+        fun add(this: mut LinkedList<T>, v: T) {
+            if (this.size == 0) {
+               this.head = new LinkedListNode<T>();
+               this.head.value = v;
+               this.head.link = new LinkedListLink<T>.end();
+               this.tail = this.head;
+            } else {
+               let newNode : mut LinkedListNode<T> = new LinkedListNode<T>();
+               newNode.value = v;
+               newNode.link = new LinkedListLink<T>.end();
+               this.tail.link = new LinkedListLink<T>.next(newNode);
+               this.tail = newNode;
+            }
+            this.size += 1;
+        }
+
+        fun print_all(this: LinkedList<T>) {
+            if (this.size > 0) {
+                let current : mut LinkedListNode<T> = this.head;
+                while (true) {
+                    print(current.value);
+                    if (current.link is LinkedListLink<T>.end) {
+                        break;
+                    } else {
+                        current = current.link.next;
+                        print(",");
+                    }
+                }
+            }
+        }
+    }
+
+    #template(T: type)
+    enum LinkedListLink {
+        end;
+        next: auto LinkedListNode<T>;
+    }
+
+    #template(T: type)
+    class LinkedListNode {
+        value: auto T;
+        link: mut LinkedListLink<T> = new LinkedListLink<T>.end();
+    }
+
+    initial {
+        let ll : mut LinkedList<i32> = new LinkedList<i32>();
+        ll.add(1);
+        ll.add(2);
+        ll.add(3);
+        ll.print_all();
+    }
+}
+```
+
+## Compile
+Args: ``
+Env: ``
+ExpectedExitCode: 0
+ExpectedStdout: DISCARD
+ExpectedStderr: DISCARD
+
+## Run
+Args: ``
+Env: ``
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `1,2,3`
+ExpectedStderr: DISCARD
