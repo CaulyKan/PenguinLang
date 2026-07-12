@@ -122,10 +122,22 @@ namespace parser {
             this.stream.expect(new TokenType.LParen());
             let condition = this.parse_expression();
             this.stream.expect(new TokenType.RParen());
-            let body = this.parse_codeBlockExpression();
+            let body: mut Option<ast.Expression> = new Option<ast.Expression>.none();
+            if (this.stream.peek_type() is TokenType.LBrace) {
+                body = new Option<ast.Expression>.some(this.parse_codeBlockExpression());
+            } else {
+                // Braceless while: wrap single statement into a code block, mirroring
+                // parse_ifExpression. Without this, a brace-less while body (e.g. a
+                // nested `while (c) while (c2) {...}`) hit "Expected LBrace" because
+                // the body was unconditionally parsed as a braced codeBlockExpression.
+                let stmt = this.parse_statement();
+                let wrapper = new ast.CodeBlockExpression();
+                wrapper.statements.push(stmt);
+                body = new Option<ast.Expression>.some(new ast.Expression.code_block(wrapper));
+            }
             let node = new ast.WhileExpression();
             node.condition = new Option<ast.Expression>.some(condition);
-            node.body = new Option<ast.Expression>.some(body);
+            node.body = body;
             return new ast.Expression.while_expr(node);
         }
 
@@ -214,27 +226,43 @@ namespace parser {
                     // Empty <> — just consume >
                     this.stream.advance();
                 } else {
-                    if (this.is_type_name_token(this.stream.peek_type())) {
+                    if (this.is_type_name_token(this.stream.peek_type()) || this.stream.peek_type() is TokenType.Mut) {
                         let first: ast.TypeSpecifier = new ast.TypeSpecifier();
-                        let t1: Token = this.stream.advance();
-                        first.name = t1.text;
-                        if (this.stream.peek_type() is TokenType.Less) {
-                            this.parse_genericTypeArgs(first.generic_args);
-                        }
-                        generic_args.push(first);
-                        while (this.stream.peek_type() is TokenType.Comma) {
+                        // A type arg may have a leading 'mut' (e.g. Test<mut Foo>); without
+                        // this, 'mut' is not a type-name token so the generic-args parse
+                        // bailed and '<' was misread as a comparison (breaking
+                        // `x is Test<mut Foo>.b` etc.).
+                        if (this.stream.peek_type() is TokenType.Mut) {
                             this.stream.advance();
-                            let next_type: ast.TypeSpecifier = new ast.TypeSpecifier();
-                            if (!(this.is_type_name_token(this.stream.peek_type()))) {
-                                parse_ok = false;
-                                break;
-                            }
-                            let tn: Token = this.stream.advance();
-                            next_type.name = tn.text;
+                            first.is_mutable = true;
+                        }
+                        if (!(this.is_type_name_token(this.stream.peek_type()))) {
+                            parse_ok = false;
+                        } else {
+                            let t1: Token = this.stream.advance();
+                            first.name = t1.text;
                             if (this.stream.peek_type() is TokenType.Less) {
-                                this.parse_genericTypeArgs(next_type.generic_args);
+                                this.parse_genericTypeArgs(first.generic_args);
                             }
-                            generic_args.push(next_type);
+                            generic_args.push(first);
+                            while (this.stream.peek_type() is TokenType.Comma) {
+                                this.stream.advance();
+                                let next_type: ast.TypeSpecifier = new ast.TypeSpecifier();
+                                if (this.stream.peek_type() is TokenType.Mut) {
+                                    this.stream.advance();
+                                    next_type.is_mutable = true;
+                                }
+                                if (!(this.is_type_name_token(this.stream.peek_type()))) {
+                                    parse_ok = false;
+                                    break;
+                                }
+                                let tn: Token = this.stream.advance();
+                                next_type.name = tn.text;
+                                if (this.stream.peek_type() is TokenType.Less) {
+                                    this.parse_genericTypeArgs(next_type.generic_args);
+                                }
+                                generic_args.push(next_type);
+                            }
                         }
                     } else {
                         parse_ok = false;

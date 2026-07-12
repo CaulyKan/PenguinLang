@@ -444,6 +444,21 @@ fun assignment_operator_to_string(op: AssignmentOperator) -> string {
     return "=";
 }
 
+// Maps a compound assignment operator (e.g. PlusAssign) to the matching binary
+// operator (e.g. Add). Returns none for a plain Assign, so callers can detect
+// "is this compound?" with a single is_some() check.
+fun compound_assignment_to_binary_operator(op: AssignmentOperator) -> Option<BinaryOperator> {
+    if (op is AssignmentOperator.PlusAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.Add()); }
+    if (op is AssignmentOperator.MinusAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.Subtract()); }
+    if (op is AssignmentOperator.StarAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.Multiply()); }
+    if (op is AssignmentOperator.SlashAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.Divide()); }
+    if (op is AssignmentOperator.PercentAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.Modulo()); }
+    if (op is AssignmentOperator.AmpersandAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.BitwiseAnd()); }
+    if (op is AssignmentOperator.CaretAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.BitwiseXor()); }
+    if (op is AssignmentOperator.PipeAssign) { return new Option<BinaryOperator>.some(new BinaryOperator.BitwiseOr()); }
+    return new Option<BinaryOperator>.none();
+}
+
 interface IStatement {
     fun build_text(this: IStatement) -> string;
 }

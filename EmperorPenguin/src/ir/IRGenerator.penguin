@@ -1219,8 +1219,15 @@ class IRGenerator {
                             let variant_name: string = sym.enum_member.name;
                             let new_enum: IRValue = this.builder.emit_new_enum(enum_type, variant_idx, variant_name, new Option<IRValue>.some(val), loc);
 
-                            if (stmt.target_symbol.is_some()) {
-                                let reg: Option<IRValue> = this.get_symbol_reg(stmt.target_symbol.some);
+                            // Resolve the storage location to write the rebuilt enum back to.
+                            // For `enum_var.variant = value` (e.g. `e.a = new Foo()`) the target is
+                            // a member_access, so stmt.target_symbol is none — fall back to the
+                            // base identifier's symbol (the enum variable being mutated). Without
+                            // this, the rebuilt enum was constructed in a temp and never stored
+                            // back, so the payload reassignment was silently dropped.
+                            let target_sym: Option<bound.BoundSymbol> = this.resolve_enum_payload_target_sym(stmt, member_expr);
+                            if (target_sym.is_some()) {
+                                let reg: Option<IRValue> = this.get_symbol_reg(target_sym.some);
                                 if (reg.is_some()) {
                                     this.builder.emit_assign(reg.some, new_enum, loc);
                                 } else {
@@ -1268,6 +1275,21 @@ class IRGenerator {
                 }
             }
         }
+    }
+
+    // Resolve the storage symbol to write a rebuilt enum to in a payload assignment
+    // `enum_var.variant = value`. Prefer the explicit target_symbol; when the target is a
+    // member_access (target_symbol is none), fall back to the base identifier's symbol.
+    fun resolve_enum_payload_target_sym(this, stmt: bound.BoundAssignmentStatement, member_expr: bound.BoundMemberAccessExpression) -> Option<bound.BoundSymbol> {
+        if (stmt.target_symbol.is_some()) {
+            return stmt.target_symbol;
+        }
+        if (member_expr.base_expr.is_some()) {
+            if (member_expr.base_expr.some is bound.BoundExpression.identifier) {
+                return member_expr.base_expr.some.identifier.symbol;
+            }
+        }
+        return new Option<bound.BoundSymbol>.none();
     }
 
     fun lower_if_stmt(mut this, stmt: bound.BoundIfStatement) {

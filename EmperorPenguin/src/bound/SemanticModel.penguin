@@ -1597,17 +1597,11 @@ class SemanticModel {
 
     fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<ast.TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
         _utils.trace_enter("Enter resolve_new_generic_args_from_ast");
-        // Resolve the base type by name, handling qualified names like "_utils.List".
-        // lookup_type_in_scope only matches exact symbol names, so a qualified base type
-        // would not be found and its instantiation (e.g. List<BoundSymbol> in an initial
-        // block, which has no return type for the bound-tree collector to see and whose
-        // locals are not bound until pass 4) would never be monomorphized — leaving calls
-        // to undefined methods and invalid IR (the pass2 monomorphization crash).
-        let found: Option<BoundSymbol> = this.resolve_type_by_name(type_name, scope);
-        if (found.is_none()) { return new Option<BoundType>.none(); }
-        if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundType>.none(); }
-        let base_type: BoundType = found.some.type_sym.bound_type;
-        if (base_type.type_definition.is_none()) { return new Option<BoundType>.none(); }
+        // Resolve the base type, then apply the generic args. See
+        // resolve_new_base_type_from_ast for why the trailing variant segment of an
+        // enum new-expression ("Enum.variant") must be stripped.
+        let base_type: Option<BoundType> = this.resolve_new_base_type_from_ast(type_name, scope);
+        if (base_type.is_none()) { return new Option<BoundType>.none(); }
 
         let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let k: mut i64 = 0;
@@ -1616,7 +1610,40 @@ class SemanticModel {
             args.push(resolved_arg);
             k = k + 1;
         }
-        return new Option<BoundType>.some(base_type.with_generic_args(args));
+        return new Option<BoundType>.some(base_type.some.with_generic_args(args));
+    }
+
+    // Resolve the base type named by a new-expression's type_name for the AST-driven
+    // monomorphization collector. type_name may be qualified ("_utils.List"). For an
+    // enum variant new the parser flattens `new Enum<T>.variant()` into type_name =
+    // "Enum.variant" (the variant is appended after the generic args); "Enum.variant"
+    // resolves to the enum *member*, not a type. Without stripping the trailing variant
+    // segment, a generic enum used only as a local in an initial block (which the
+    // bound-tree collector never sees) is never monomorphized — no LLVM type is emitted
+    // and payload access falls back to i64. Try the full name, then strip one segment.
+    fun resolve_new_base_type_from_ast(this, type_name: string, scope: BoundScope) -> Option<BoundType> {
+        _utils.trace_enter("Enter resolve_new_base_type_from_ast");
+        let found: Option<BoundSymbol> = this.resolve_type_by_name(type_name, scope);
+        if (found.is_some()) {
+            if (found.some is BoundSymbol.type_sym) {
+                if (found.some.type_sym.bound_type.type_definition.is_some()) {
+                    return new Option<BoundType>.some(found.some.type_sym.bound_type);
+                }
+            }
+        }
+        let dot: i64 = this.find_last_dot(type_name);
+        if (dot > 0) {
+            let base_name: string = string_substring(type_name, 0, dot);
+            let found2: Option<BoundSymbol> = this.resolve_type_by_name(base_name, scope);
+            if (found2.is_some()) {
+                if (found2.some is BoundSymbol.type_sym) {
+                    if (found2.some.type_sym.bound_type.type_definition.is_some()) {
+                        return new Option<BoundType>.some(found2.some.type_sym.bound_type);
+                    }
+                }
+            }
+        }
+        return new Option<BoundType>.none();
     }
 
     fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
@@ -3839,7 +3866,7 @@ class SemanticModel {
         return scope.resolve_qualified(parts);
     }
 
-    fun find_last_dot(mut this, s: string) -> i64 {
+    fun find_last_dot(this, s: string) -> i64 {
         _utils.trace_enter("Enter find_last_dot");
         let len: i64 = string_length(s);
         let last_dot: mut i64 = -1;
@@ -3973,16 +4000,33 @@ class SemanticModel {
             if (stmt.assignment.target.is_some()) {
                 let target: Option<BoundExpression> = this.bind_expression(stmt.assignment.target.some, scope);
                 if (stmt.assignment.value.is_some()) {
-                    let value: Option<BoundExpression> = this.bind_expression(stmt.assignment.value.some, scope);
+                    let value: mut Option<BoundExpression> = this.bind_expression(stmt.assignment.value.some, scope);
+                    let effective_op: mut ast.AssignmentOperator = stmt.assignment.operator_value;
+                    // Desugar a compound assignment (target op= value) into a plain
+                    // assignment whose RHS reads the target: target = target op value.
+                    // Without this, op= was emitted as plain =, so e.g. i += 1 stored
+                    // the literal RHS and never read i, producing an infinite loop.
+                    let compound_binop: Option<ast.BinaryOperator> = ast.compound_assignment_to_binary_operator(stmt.assignment.operator_value);
+                    if (compound_binop.is_some()) {
+                        let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+                        operands.push(target.some);
+                        operands.push(value.some);
+                        let operators: mut _utils.List<ast.BinaryOperator> = new _utils.List<ast.BinaryOperator>();
+                        operators.push(compound_binop.some);
+                        let bin_type: BoundType = target.some.get_bound_type();
+                        let desugared: mut BoundBinaryExpression = new BoundBinaryExpression(bin_type, operators, operands);
+                        value = new Option<BoundExpression>.some(new BoundExpression.binary(desugared));
+                        effective_op = new ast.AssignmentOperator.Assign();
+                    }
                     let value_type: BoundType = target.some.get_bound_type();
                     if (target.some is bound.BoundExpression.identifier) {
                         if (target.some.identifier.symbol.is_some()) {
-                            let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, stmt.assignment.operator_value, value, value_type);
+                            let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, effective_op, value, value_type);
                             result.location = stmt.assignment.location;
                             return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
                         }
                     }
-                    let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), stmt.assignment.operator_value, value, value_type);
+                    let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), effective_op, value, value_type);
                     result.location = stmt.assignment.location;
                     return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
                 }
