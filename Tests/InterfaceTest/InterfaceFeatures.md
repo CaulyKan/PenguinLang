@@ -3,7 +3,7 @@
 Interface implementation, enum interface, value type boxing/unboxing, and multiple interface boxing. Interface support requires EmperorPenguin.
 
 ## Apply To
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

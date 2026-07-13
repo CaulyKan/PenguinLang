@@ -4,7 +4,7 @@ Assigning (not initializing) a mutable value to an immutable binding must fail.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 
@@ -23,4 +23,4 @@ Args: ``
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
+ExpectedStderr: CONTAINS `E_MUTABILITY`

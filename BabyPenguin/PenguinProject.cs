@@ -24,7 +24,7 @@ public class PenguinProject
     {
         if (!File.Exists(projectFilePath))
         {
-            throw new BabyPenguinException($"Project file not found: {projectFilePath}", SourceLocation.Empty());
+            throw new BabyPenguinException($"Project file not found: {projectFilePath}", SourceLocation.Empty(), code: ErrorCode.E_PROJECT_FILE);
         }
 
         var tomlContent = File.ReadAllText(projectFilePath);
@@ -56,7 +56,7 @@ public class PenguinProject
         }
         catch (Exception ex)
         {
-            throw new BabyPenguinException($"Failed to parse project file: {ex.Message}", SourceLocation.Empty());
+            throw new BabyPenguinException($"Failed to parse project file: {ex.Message}", SourceLocation.Empty(), code: ErrorCode.E_PROJECT_FILE);
         }
     }
 

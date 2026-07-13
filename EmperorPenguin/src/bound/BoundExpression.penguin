@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 enum LiteralKind {
     IntegerLiteral;
@@ -40,10 +40,10 @@ class BoundIdentifierExpression {
 
 class BoundBinaryExpression {
     bound_type: !mut BoundType = new BoundType();
-    operators: !mut _utils.List<ast.BinaryOperator> = new _utils.List<ast.BinaryOperator>();
+    operators: !mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
     operands: !mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
 
-    fun new(mut this, bound_type: BoundType, operators: _utils.List<ast.BinaryOperator>, operands: _utils.List<BoundExpression>) {
+    fun new(mut this, bound_type: BoundType, operators: _utils.List<BinaryOperator>, operands: _utils.List<BoundExpression>) {
         this.bound_type = bound_type;
         this.operators = operators;
         this.operands = operands;
@@ -56,10 +56,10 @@ class BoundBinaryExpression {
 
 class BoundUnaryExpression {
     bound_type: !mut BoundType = new BoundType();
-    operator_value: !mut ast.UnaryOperator = new ast.UnaryOperator.Negate();
+    operator_value: !mut UnaryOperator = new UnaryOperator.Negate();
     operand: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
 
-    fun new(mut this, bound_type: BoundType, operator_value: ast.UnaryOperator, operand: Option<BoundExpression>) {
+    fun new(mut this, bound_type: BoundType, operator_value: UnaryOperator, operand: Option<BoundExpression>) {
         this.bound_type = bound_type;
         this.operator_value = operator_value;
         this.operand = operand;

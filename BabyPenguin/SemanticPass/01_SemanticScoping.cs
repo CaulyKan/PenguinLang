@@ -30,7 +30,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var class_ = new ClassNode(Model, classNode);
                             if (ns.Classes.Any(c => c.Name == class_.Name))
-                                throw new BabyPenguinException($"Class '{class_.Name}' already exists in namespace '{ns.Name}'.", classNode.SourceLocation);
+                                throw new BabyPenguinException($"Class '{class_.Name}' already exists in namespace '{ns.Name}'.", classNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddClass(class_);
                             Process(class_);
                         }
@@ -39,7 +39,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
                             if (ns.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
-                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in namespace '{ns.Name}'.", initialRoutineNode.SourceLocation);
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in namespace '{ns.Name}'.", initialRoutineNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddInitialRoutine(initialRoutine);
                         }
 
@@ -47,7 +47,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var onRoutine = new OnRoutine(Model, onRoutineNode);
                             if (ns.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{ns.Name}'.", onRoutine.SourceLocation);
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{ns.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddOnRoutine(onRoutine);
                         }
 
@@ -55,7 +55,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var function = new Function(Model, func);
                             if (ns.Functions.Any(c => c.Name == function.Name))
-                                throw new BabyPenguinException($"Function '{function.Name}' already exists in namespace '{ns.Name}'.", func.SourceLocation);
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in namespace '{ns.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddFunction(function);
                         }
 
@@ -63,7 +63,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var enum_ = new SemanticNode.EnumNode(Model, enumNode);
                             if (ns.Enums.Any(c => c.Name == enum_.Name))
-                                throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation);
+                                throw new BabyPenguinException($"Enum '{enum_.Name}' already exists in namespace '{ns.Name}'.", enumNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddEnum(enum_);
                             Process(enum_);
                         }
@@ -72,7 +72,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var interface_ = new InterfaceNode(Model, intf);
                             if (ns.Interfaces.Any(c => c.Name == interface_.Name))
-                                throw new BabyPenguinException($"Interface '{interface_.Name}' already exists in namespace '{ns.Name}'.", intf.SourceLocation);
+                                throw new BabyPenguinException($"Interface '{interface_.Name}' already exists in namespace '{ns.Name}'.", intf.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             ns.AddInterface(interface_);
                             Process(interface_);
                         }
@@ -85,7 +85,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
                             if (cls.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
-                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation);
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             cls.AddInitialRoutine(initialRoutine);
                         }
 
@@ -93,7 +93,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var onRoutine = new OnRoutine(Model, onRoutineNode);
                             if (cls.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{cls.Name}'.", onRoutine.SourceLocation);
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{cls.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             cls.AddOnRoutine(onRoutine);
                         }
 
@@ -101,7 +101,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var function = new Function(Model, func);
                             if (cls.Functions.Any(c => c.Name == function.Name))
-                                throw new BabyPenguinException($"Function '{function.Name}' already exists in class '{cls.Name}'.", func.SourceLocation);
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in class '{cls.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             cls.AddFunction(function);
                         }
                     }
@@ -113,9 +113,9 @@ namespace BabyPenguin.SemanticPass
                         {
                             var function = new Function(Model, func);
                             if (intf.Functions.Any(c => c.Name == function.Name))
-                                throw new BabyPenguinException($"Function '{function.Name}' already exists in interface '{intf.Name}'.", func.SourceLocation);
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in interface '{intf.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             if (function.Name == "new")
-                                throw new BabyPenguinException($"Function 'new' is not allowed in interface '{intf.Name}'.", func.SourceLocation);
+                                throw new BabyPenguinException($"Function 'new' is not allowed in interface '{intf.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             intf.AddFunction(function);
                         }
                     }
@@ -127,7 +127,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
                             if (enm.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
-                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in enum '{enm.Name}'.", initialRoutineNode.SourceLocation);
+                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in enum '{enm.Name}'.", initialRoutineNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             enm.AddInitialRoutine(initialRoutine);
                         }
 
@@ -135,7 +135,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var onRoutine = new OnRoutine(Model, onRoutineNode);
                             if (enm.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{enm.Name}'.", onRoutine.SourceLocation);
+                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{enm.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             enm.AddOnRoutine(onRoutine);
                         }
 
@@ -143,7 +143,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             var function = new Function(Model, func);
                             if (enm.Functions.Any(c => c.Name == function.Name))
-                                throw new BabyPenguinException($"Function '{function.Name}' already exists in enum '{enm.Name}'.", func.SourceLocation);
+                                throw new BabyPenguinException($"Function '{function.Name}' already exists in enum '{enm.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             enm.AddFunction(function);
                         }
                     }

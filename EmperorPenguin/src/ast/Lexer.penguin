@@ -1,4 +1,4 @@
-namespace parser {
+namespace emperor {
     class Lexer {
         source: string = "";
         filename: string = "";
@@ -53,577 +53,577 @@ namespace parser {
                 }
 
                 if (this.match_keyword("__yield_not_finished_return")) {
-                    tokens.push(new Token(new TokenType.InternalYield_not_finished_return(), "__yield_not_finished_return", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.InternalYield_not_finished_return(), "__yield_not_finished_return", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 27;
                     this.advance_chars(27);
                     continue;
                 }
                 if (this.match_keyword("__yield_finished_return")) {
-                    tokens.push(new Token(new TokenType.InternalYield_finished_return(), "__yield_finished_return", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.InternalYield_finished_return(), "__yield_finished_return", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 23;
                     this.advance_chars(23);
                     continue;
                 }
                 if (this.match_keyword("__blocked_return")) {
-                    tokens.push(new Token(new TokenType.InternalBlocked_return(), "__blocked_return", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.InternalBlocked_return(), "__blocked_return", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 16;
                     this.advance_chars(16);
                     continue;
                 }
                 if (this.match_keyword("async_fun")) {
-                    tokens.push(new Token(new TokenType.Async_fun(), "async_fun", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Async_fun(), "async_fun", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 9;
                     this.advance_chars(9);
                     continue;
                 }
                 if (this.match_keyword("interface")) {
-                    tokens.push(new Token(new TokenType.Interface(), "interface", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Interface(), "interface", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 9;
                     this.advance_chars(9);
                     continue;
                 }
                 if (this.match_keyword("namespace")) {
-                    tokens.push(new Token(new TokenType.Namespace(), "namespace", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Namespace(), "namespace", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 9;
                     this.advance_chars(9);
                     continue;
                 }
                 if (this.match_keyword("template")) {
-                    tokens.push(new Token(new TokenType.TemplateKw(), "template", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.TemplateKw(), "template", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 8;
                     this.advance_chars(8);
                     continue;
                 }
                 if (this.match_keyword("continue")) {
-                    tokens.push(new Token(new TokenType.Continue(), "continue", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Continue(), "continue", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 8;
                     this.advance_chars(8);
                     continue;
                 }
                 if (this.match_keyword("__signal")) {
-                    tokens.push(new Token(new TokenType.InternalSignal(), "__signal", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.InternalSignal(), "__signal", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 8;
                     this.advance_chars(8);
                     continue;
                 }
                 if (this.match_keyword("initial")) {
-                    tokens.push(new Token(new TokenType.Initial(), "initial", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Initial(), "initial", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 7;
                     this.advance_chars(7);
                     continue;
                 }
                 if (this.match_keyword("extern")) {
-                    tokens.push(new Token(new TokenType.Extern(), "extern", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Extern(), "extern", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
                 if (this.match_keyword("double")) {
-                    tokens.push(new Token(new TokenType.Double(), "double", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Double(), "double", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
                 if (this.match_keyword("string")) {
-                    tokens.push(new Token(new TokenType.StringKw(), "string", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.StringKw(), "string", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
                 if (this.match_keyword("return")) {
-                    tokens.push(new Token(new TokenType.Return(), "return", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Return(), "return", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
                 if (this.match_string("!async")) {
-                    tokens.push(new Token(new TokenType.NotAsync(), "!async", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.NotAsync(), "!async", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
                 if (this.match_keyword("while")) {
-                    tokens.push(new Token(new TokenType.While(), "while", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.While(), "while", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("async")) {
-                    tokens.push(new Token(new TokenType.Async(), "async", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Async(), "async", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("float")) {
-                    tokens.push(new Token(new TokenType.Float(), "float", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Float(), "float", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("where")) {
-                    tokens.push(new Token(new TokenType.Where(), "where", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Where(), "where", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("class")) {
-                    tokens.push(new Token(new TokenType.Class(), "class", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Class(), "class", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("break")) {
-                    tokens.push(new Token(new TokenType.Break(), "break", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Break(), "break", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("yield")) {
-                    tokens.push(new Token(new TokenType.Yield(), "yield", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Yield(), "yield", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_string("!pure")) {
-                    tokens.push(new Token(new TokenType.NotPure(), "!pure", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.NotPure(), "!pure", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("event")) {
-                    tokens.push(new Token(new TokenType.EventKw(), "event", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.EventKw(), "event", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("false")) {
-                    tokens.push(new Token(new TokenType.False(), "false", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.False(), "false", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
                 if (this.match_keyword("cast")) {
-                    tokens.push(new Token(new TokenType.Cast(), "cast", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Cast(), "cast", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("else")) {
-                    tokens.push(new Token(new TokenType.Else(), "else", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Else(), "else", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("wait")) {
-                    tokens.push(new Token(new TokenType.Wait(), "wait", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Wait(), "wait", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("type")) {
-                    tokens.push(new Token(new TokenType.TypeKw(), "type", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.TypeKw(), "type", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_string("!mut")) {
-                    tokens.push(new Token(new TokenType.NotMut(), "!mut", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.NotMut(), "!mut", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("auto")) {
-                    tokens.push(new Token(new TokenType.AutoKw(), "auto", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.AutoKw(), "auto", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("void")) {
-                    tokens.push(new Token(new TokenType.Void(), "void", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Void(), "void", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("bool")) {
-                    tokens.push(new Token(new TokenType.Bool(), "bool", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Bool(), "bool", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("char")) {
-                    tokens.push(new Token(new TokenType.Char(), "char", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Char(), "char", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("Self")) {
-                    tokens.push(new Token(new TokenType.SelfKw(), "Self", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.SelfKw(), "Self", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("impl")) {
-                    tokens.push(new Token(new TokenType.Impl(), "impl", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Impl(), "impl", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("enum")) {
-                    tokens.push(new Token(new TokenType.Enum(), "enum", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Enum(), "enum", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("emit")) {
-                    tokens.push(new Token(new TokenType.Emit(), "emit", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Emit(), "emit", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("this")) {
-                    tokens.push(new Token(new TokenType.ThisKw(), "this", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.ThisKw(), "this", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("pure")) {
-                    tokens.push(new Token(new TokenType.Pure(), "pure", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Pure(), "pure", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("true")) {
-                    tokens.push(new Token(new TokenType.True(), "true", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.True(), "true", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
                 if (this.match_keyword("new")) {
-                    tokens.push(new Token(new TokenType.New(), "new", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.New(), "new", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("let")) {
-                    tokens.push(new Token(new TokenType.Let(), "let", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Let(), "let", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("mut")) {
-                    tokens.push(new Token(new TokenType.Mut(), "mut", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Mut(), "mut", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("u16")) {
-                    tokens.push(new Token(new TokenType.U16(), "u16", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.U16(), "u16", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("u32")) {
-                    tokens.push(new Token(new TokenType.U32(), "u32", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.U32(), "u32", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("u64")) {
-                    tokens.push(new Token(new TokenType.U64(), "u64", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.U64(), "u64", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("i16")) {
-                    tokens.push(new Token(new TokenType.I16(), "i16", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.I16(), "i16", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("i32")) {
-                    tokens.push(new Token(new TokenType.I32(), "i32", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.I32(), "i32", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("i64")) {
-                    tokens.push(new Token(new TokenType.I64(), "i64", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.I64(), "i64", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("fun")) {
-                    tokens.push(new Token(new TokenType.Fun(), "fun", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Fun(), "fun", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_string("...")) {
-                    tokens.push(new Token(new TokenType.Ellipsis(), "...", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Ellipsis(), "...", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("for")) {
-                    tokens.push(new Token(new TokenType.For(), "for", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.For(), "for", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
                     this.advance_chars(3);
                     continue;
                 }
                 if (this.match_keyword("if")) {
-                    tokens.push(new Token(new TokenType.If(), "if", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.If(), "if", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("<=")) {
-                    tokens.push(new Token(new TokenType.LessEqual(), "<=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.LessEqual(), "<=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string(">=")) {
-                    tokens.push(new Token(new TokenType.GreaterEqual(), ">=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.GreaterEqual(), ">=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("==")) {
-                    tokens.push(new Token(new TokenType.EqualEqual(), "==", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.EqualEqual(), "==", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("!=")) {
-                    tokens.push(new Token(new TokenType.BangEqual(), "!=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.BangEqual(), "!=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_keyword("is")) {
-                    tokens.push(new Token(new TokenType.Is(), "is", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Is(), "is", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("&&")) {
-                    tokens.push(new Token(new TokenType.AmpersandAmpersand(), "&&", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.AmpersandAmpersand(), "&&", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("||")) {
-                    tokens.push(new Token(new TokenType.PipePipe(), "||", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.PipePipe(), "||", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("*=")) {
-                    tokens.push(new Token(new TokenType.StarAssign(), "*=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.StarAssign(), "*=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("/=")) {
-                    tokens.push(new Token(new TokenType.SlashAssign(), "/=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.SlashAssign(), "/=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("%=")) {
-                    tokens.push(new Token(new TokenType.PercentAssign(), "%=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.PercentAssign(), "%=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("+=")) {
-                    tokens.push(new Token(new TokenType.PlusAssign(), "+=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.PlusAssign(), "+=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("-=")) {
-                    tokens.push(new Token(new TokenType.MinusAssign(), "-=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.MinusAssign(), "-=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("&=")) {
-                    tokens.push(new Token(new TokenType.AmpersandAssign(), "&=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.AmpersandAssign(), "&=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("^=")) {
-                    tokens.push(new Token(new TokenType.CaretAssign(), "^=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.CaretAssign(), "^=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("|=")) {
-                    tokens.push(new Token(new TokenType.PipeAssign(), "|=", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.PipeAssign(), "|=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_keyword("u8") && (this.pos + 2 >= string_length(this.source) || (string_substring(this.source, this.pos + 2, 1) != "\"" && string_substring(this.source, this.pos + 2, 1) != "'"))) {
-                    tokens.push(new Token(new TokenType.U8(), "u8", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.U8(), "u8", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_keyword("i8")) {
-                    tokens.push(new Token(new TokenType.I8(), "i8", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.I8(), "i8", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_keyword("in")) {
-                    tokens.push(new Token(new TokenType.In(), "in", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.In(), "in", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_string("->")) {
-                    tokens.push(new Token(new TokenType.Arrow(), "->", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Arrow(), "->", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (this.match_keyword("on")) {
-                    tokens.push(new Token(new TokenType.On(), "on", new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.On(), "on", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
                     continue;
                 }
                 if (ch == "(") {
-                    tokens.push(new Token(new TokenType.LParen(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.LParen(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ")") {
-                    tokens.push(new Token(new TokenType.RParen(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.RParen(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "<") {
-                    tokens.push(new Token(new TokenType.Less(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Less(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ">") {
-                    tokens.push(new Token(new TokenType.Greater(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Greater(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "{") {
-                    tokens.push(new Token(new TokenType.LBrace(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.LBrace(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "}") {
-                    tokens.push(new Token(new TokenType.RBrace(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.RBrace(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ".") {
-                    tokens.push(new Token(new TokenType.Dot(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Dot(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ",") {
-                    tokens.push(new Token(new TokenType.Comma(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Comma(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "&") {
-                    tokens.push(new Token(new TokenType.Ampersand(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Ampersand(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "*") {
-                    tokens.push(new Token(new TokenType.Star(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Star(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "+") {
-                    tokens.push(new Token(new TokenType.Plus(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Plus(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "-") {
-                    tokens.push(new Token(new TokenType.Minus(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Minus(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "~") {
-                    tokens.push(new Token(new TokenType.Tilde(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Tilde(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "!") {
-                    tokens.push(new Token(new TokenType.Bang(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Bang(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "/") {
-                    tokens.push(new Token(new TokenType.Slash(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Slash(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "%") {
-                    tokens.push(new Token(new TokenType.Percent(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Percent(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "^") {
-                    tokens.push(new Token(new TokenType.Caret(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Caret(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "|") {
-                    tokens.push(new Token(new TokenType.Pipe(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Pipe(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "=") {
-                    tokens.push(new Token(new TokenType.Assign(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Assign(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ":") {
-                    tokens.push(new Token(new TokenType.Colon(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Colon(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == "#") {
-                    tokens.push(new Token(new TokenType.Hash(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Hash(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 if (ch == ";") {
-                    tokens.push(new Token(new TokenType.Semicolon(), ch, new ast.SourceLocation(this.filename, this.line, this.col)));
+                    tokens.push(new Token(new TokenType.Semicolon(), ch, new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
@@ -635,7 +635,7 @@ namespace parser {
                     if (ch == "u" && this.pos + 2 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "8" && string_substring(this.source, this.pos + 2, 1) == "\"") {
                         let start_col: i64 = this.col;
                         let text: string = this.read_string_literal_with_prefix();
-                        tokens.push(new Token(new TokenType.Stringliteral(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                        tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
                         this.col = this.col + string_length(text);
                         continue;
                     }
@@ -643,7 +643,7 @@ namespace parser {
                     if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "\"") {
                         let start_col: i64 = this.col;
                         let text: string = this.read_string_literal_with_prefix();
-                        tokens.push(new Token(new TokenType.Stringliteral(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                        tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
                         this.col = this.col + string_length(text);
                         continue;
                     }
@@ -651,7 +651,7 @@ namespace parser {
                     if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "'") {
                         let start_col: i64 = this.col;
                         let text: string = this.read_char_constant();
-                        tokens.push(new Token(new TokenType.Constant(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                        tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
                         this.col = this.col + string_length(text);
                         continue;
                     }
@@ -660,7 +660,7 @@ namespace parser {
                 if (ch == "\"") {
                     let start_col: i64 = this.col;
                     let text: string = this.read_string_literal();
-                    tokens.push(new Token(new TokenType.Stringliteral(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                    tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
                     this.col = this.col + string_length(text);
                     continue;
                 }
@@ -669,7 +669,7 @@ namespace parser {
                 if (ch == "'") {
                     let start_col: i64 = this.col;
                     let text: string = this.read_char_constant();
-                    tokens.push(new Token(new TokenType.Constant(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                    tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
                     this.col = this.col + string_length(text);
                     continue;
                 }
@@ -678,7 +678,7 @@ namespace parser {
                 if (code >= string_char_code("0") && code <= string_char_code("9")) {
                     let start_col: i64 = this.col;
                     let text: string = this.read_constant();
-                    tokens.push(new Token(new TokenType.Constant(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                    tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
                     this.col = this.col + string_length(text);
                     continue;
                 }
@@ -689,7 +689,7 @@ namespace parser {
                     if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_") {
                         let start_col: i64 = this.col;
                         let text: string = this.read_while_identifier_start();
-                        tokens.push(new Token(new TokenType.Identifier(), text, new ast.SourceLocation(this.filename, this.line, start_col)));
+                        tokens.push(new Token(new TokenType.Identifier(), text, new SourceLocation(this.filename, this.line, start_col)));
                         this.col = this.col + string_length(text);
                         continue;
                     }
@@ -698,7 +698,7 @@ namespace parser {
                 // Unknown character - skip
                 this.advance_char();
             }
-            tokens.push(new Token(new TokenType.EOF(), "", new ast.SourceLocation(this.filename, this.line, this.col)));
+            tokens.push(new Token(new TokenType.EOF(), "", new SourceLocation(this.filename, this.line, this.col)));
             return tokens;
         }
 

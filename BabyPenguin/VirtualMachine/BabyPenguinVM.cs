@@ -39,7 +39,7 @@ namespace BabyPenguin.VirtualMachine
             BuildSanitizedExternFunctionIndex();
 
             var mainFunc = Model.ResolveSymbol("__builtin._main") as FunctionSymbol
-                ?? throw new BabyPenguinRuntimeException("__builtin._main function not found.");
+                ?? throw new BabyPenguinRuntimeException("__builtin._main function not found.", code: ErrorCode.E_RUNTIME_LOOKUP);
 
             var frame = new RuntimeFrame(mainFunc.CodeContainer, Global, [], null);
             StartFrame = frame;
@@ -117,7 +117,10 @@ namespace BabyPenguin.VirtualMachine
         }
     }
 
-    public class BabyPenguinRuntimeException(string message) : Exception(message) { }
+    public class BabyPenguinRuntimeException(string message, ErrorCode code = ErrorCode.E_RUNTIME_INVALID_OP) : Exception(message)
+    {
+        public ErrorCode Code { get; } = code;
+    }
 
     public class RuntimeGlobal
     {

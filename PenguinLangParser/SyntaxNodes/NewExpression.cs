@@ -20,7 +20,8 @@ namespace PenguinLangParser.SyntaxNodes
                 {
                     throw new PenguinLangException(
                         "'new' expression cannot have a mutability specifier (e.g. 'new mut T()'). Use 'new T()' instead.",
-                        SourceLocation.ToString());
+                        SourceLocation.ToString(),
+                        ErrorCode.E_PARSE);
                 }
                 ArgumentsExpression = context.children.OfType<ExpressionContext>()
                    .Select(x => Build<Expression>(walker, x).GetEffectiveExpression())

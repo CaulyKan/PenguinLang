@@ -20,6 +20,20 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: 8.0.x
+    - name: Install LLVM 22 (clang)
+      # EmperorPenguin emits LLVM 22 IR (`#dbg_value` / `#dbg_declare` record form),
+      # which needs clang >= 22 to assemble and link. ubuntu-24.04 ships clang-18, so
+      # install clang-22 from the official LLVM apt repo and expose it as `clang`
+      # via /usr/local/bin (ahead of /usr/bin on PATH, no system-clang clobbering).
+      run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | sudo gpg --dearmor --yes -o /usr/share/keyrings/llvm-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
+          | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends clang-22
+        sudo ln -sf /usr/bin/clang-22 /usr/local/bin/clang
+        clang --version
     - name: Restore dependencies
       run: dotnet restore
     - name: Build

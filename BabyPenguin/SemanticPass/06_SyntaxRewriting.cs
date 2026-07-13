@@ -76,7 +76,7 @@ namespace BabyPenguin.SemanticPass
             List<ISymbol> closureSymbols, SourceLocation sourceLocation, bool isStatic, bool isAsync)
         {
             ITypeContainer typeContainer = codeContainer.FindAncestorIncludingSelf(i => i is ITypeContainer) as ITypeContainer ??
-                throw new BabyPenguinException($"Parent is not a type container for lambda function", sourceLocation);
+                throw new BabyPenguinException($"Parent is not a type container for lambda function", sourceLocation, code: ErrorCode.E_INTERNAL);
 
             var lambdaClass = typeContainer.AddLambdaClass(
                 codeContainer.Name,
@@ -127,11 +127,11 @@ namespace BabyPenguin.SemanticPass
                 {
                     var parameters = lambdaFunctionExpression.Parameters.Select((p, i) => new FunctionParameter(
                         p.Name,
-                        Model.ResolveType(p.TypeSpecifier!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve parameter type '{p.TypeSpecifier.Name}'", p.SourceLocation),
+                        Model.ResolveType(p.TypeSpecifier!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve parameter type '{p.TypeSpecifier.Name}'", p.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE),
                         i
                     )).ToList();
 
-                    var returnType = Model.ResolveType(lambdaFunctionExpression.ReturnType!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve return type '{lambdaFunctionExpression.ReturnType.Name}'", lambdaFunctionExpression.ReturnType.SourceLocation);
+                    var returnType = Model.ResolveType(lambdaFunctionExpression.ReturnType!.Name, scope: codeContainer) ?? throw new BabyPenguinException($"Can't resolve return type '{lambdaFunctionExpression.ReturnType.Name}'", lambdaFunctionExpression.ReturnType.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                     var closureSymbols = CollectClosureSymbols(lambdaFunctionExpression.CodeBlockExpression!, codeContainer);
 
@@ -158,7 +158,7 @@ namespace BabyPenguin.SemanticPass
                     }
                     else
                     {
-                        throw new BabyPenguinException($"Unexpected parent type for lambda function expression: {parent.GetType().Name}", lambdaFunctionExpression.SourceLocation);
+                        throw new BabyPenguinException($"Unexpected parent type for lambda function expression: {parent.GetType().Name}", lambdaFunctionExpression.SourceLocation, code: ErrorCode.E_INTERNAL);
                     }
 
                     Model.Reporter.Write(DiagnosticLevel.Debug, $"Rewrote lambda function to class `{lambdaClass.FullName()}`");
@@ -190,7 +190,7 @@ namespace BabyPenguin.SemanticPass
                         throw new NotImplementedException(); // TODO: Handle other types of expressions
                     }
 
-                    if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
+                    if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                     var isAsync = false;
                     if (symbol is FunctionSymbol callingFunc)
@@ -381,7 +381,7 @@ namespace BabyPenguin.SemanticPass
                             throw new NotImplementedException(); // TODO: Handle other types of expressions
                         }
 
-                        if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation);
+                        if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                         if (symbol is MutableSymbolProxy proxy)
                             symbol = proxy.Symbol;
@@ -389,7 +389,7 @@ namespace BabyPenguin.SemanticPass
                         if (symbol is FunctionSymbol callingFuncSymbol)
                         {
                             var callingFunc = callingFuncSymbol.CodeContainer as IFunction;
-                            if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation);
+                            if (callingFunc == null) throw new BabyPenguinException($"Can't resolve function symbol context {exp}", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                             if (callingFunc.IsAsync == null)
                             {
@@ -421,7 +421,7 @@ namespace BabyPenguin.SemanticPass
         {
             if (func.IsGenerator == true)
             {
-                if (func.Parent is not ITypeContainer typeContainer) throw new BabyPenguinException($"Parent is not a type container: {func.FullName()}");
+                if (func.Parent is not ITypeContainer typeContainer) throw new BabyPenguinException($"Parent is not a type container: {func.FullName()}", null, code: ErrorCode.E_INTERNAL);
 
                 IType? returnType = null;
 
@@ -429,7 +429,7 @@ namespace BabyPenguin.SemanticPass
                     returnType = t;
                 else if (func.ReturnTypeInfo.IsVoidType)
                     returnType = Model.BasicTypeNodes.Void.ToType(Mutability.Auto);
-                else throw new BabyPenguinException($"Generator function '{func.FullName()}' return type should be an iterator or void");
+                else throw new BabyPenguinException($"Generator function '{func.FullName()}' return type should be an iterator or void", null, code: ErrorCode.E_YIELD_CONTEXT);
 
                 if (func.SyntaxNode is FunctionDefinition functionDefinition)
                 {

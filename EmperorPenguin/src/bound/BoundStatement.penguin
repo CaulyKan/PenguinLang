@@ -1,8 +1,8 @@
-namespace bound {
+namespace emperor {
 
 class BoundExpressionStatement {
     expression: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, expression: Option<BoundExpression>) {
         this.expression = expression;
@@ -12,12 +12,12 @@ class BoundExpressionStatement {
 class BoundAssignmentStatement {
     target: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     target_symbol: !mut Option<BoundSymbol> = new Option<BoundSymbol>.none();
-    operator_value: !mut ast.AssignmentOperator = new ast.AssignmentOperator.Assign();
+    operator_value: !mut AssignmentOperator = new AssignmentOperator.Assign();
     value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     value_type: !mut BoundType = new BoundType();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, target: Option<BoundExpression>, target_symbol: Option<BoundSymbol>, operator_value: ast.AssignmentOperator, value: Option<BoundExpression>, value_type: BoundType) {
+    fun new(mut this, target: Option<BoundExpression>, target_symbol: Option<BoundSymbol>, operator_value: AssignmentOperator, value: Option<BoundExpression>, value_type: BoundType) {
         this.target = target;
         this.target_symbol = target_symbol;
         this.operator_value = operator_value;
@@ -30,7 +30,7 @@ class BoundIfStatement {
     condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     then_statement: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
     else_statement: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, condition: Option<BoundExpression>, then_statement: Option<BoundStatement>, else_statement: Option<BoundStatement>) {
         this.condition = condition;
@@ -42,7 +42,7 @@ class BoundIfStatement {
 class BoundWhileStatement {
     condition: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     body: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, condition: Option<BoundExpression>, body: Option<BoundStatement>) {
         this.condition = condition;
@@ -55,7 +55,7 @@ class BoundForStatement {
     iterable: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     body: !mut Option<BoundStatement> = new Option<BoundStatement>.none();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, loop_variable: Option<BoundVariableSymbol>, iterable: Option<BoundExpression>, body: Option<BoundStatement>, scope: Option<BoundScope>) {
         this.loop_variable = loop_variable;
@@ -68,7 +68,7 @@ class BoundForStatement {
 class BoundReturnStatement {
     value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     return_type: !mut BoundType = new BoundType();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, value: Option<BoundExpression>, return_type: BoundType) {
         this.value = value;
@@ -78,7 +78,7 @@ class BoundReturnStatement {
 
 class BoundBreakStatement {
     value: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, value: Option<BoundExpression>) {
         this.value = value;
@@ -86,7 +86,7 @@ class BoundBreakStatement {
 }
 
 class BoundContinueStatement {
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 }
 
 class BoundLetDeclarationStatement {
@@ -94,7 +94,7 @@ class BoundLetDeclarationStatement {
     initializer: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     bound_type: !mut BoundType = new BoundType();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, variable_symbol: Option<BoundVariableSymbol>, initializer: Option<BoundExpression>, bound_type: BoundType, scope: Option<BoundScope>) {
         this.variable_symbol = variable_symbol;
@@ -107,7 +107,7 @@ class BoundLetDeclarationStatement {
 class BoundBlockStatement {
     statements: !mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
     scope: !mut Option<BoundScope> = new Option<BoundScope>.none();
-    location: mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, statements: _utils.List<BoundStatement>, scope: Option<BoundScope>) {
         this.statements = statements;

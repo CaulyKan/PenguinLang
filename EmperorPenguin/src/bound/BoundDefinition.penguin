@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 class BoundVTableSlot {
     interface_method: mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
@@ -66,7 +66,7 @@ class BoundClassDefinition {
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     is_value_class: mut Option<bool> = new Option<bool>.none();
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
-    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+    ast_source: Option<Definition> = new Option<Definition>.none();
     is_generic_template: bool = false;
 
     fun new(mut this, name: string, full_name: string) {
@@ -91,7 +91,7 @@ class BoundEnumDefinition {
     value_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
     interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
-    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+    ast_source: Option<Definition> = new Option<Definition>.none();
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -111,7 +111,7 @@ class BoundInterfaceDefinition {
     scope: Option<BoundScope> = new Option<BoundScope>.none();
     methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
-    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+    ast_source: Option<Definition> = new Option<Definition>.none();
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -213,7 +213,7 @@ class BoundGlobalVariableDefinition {
     initializer: Option<BoundExpression> = new Option<BoundExpression>.none();
     is_mutable: bool = false;
     scope: Option<BoundScope> = new Option<BoundScope>.none();
-    ast_source: Option<ast.Definition> = new Option<ast.Definition>.none();
+    ast_source: Option<Definition> = new Option<Definition>.none();
 }
 
 enum BoundDefinition {

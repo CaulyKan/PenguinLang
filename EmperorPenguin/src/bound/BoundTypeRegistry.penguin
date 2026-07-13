@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 class NamedTypeEntry {
     name: string = "";

@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 class SourceInput {
     filename: string = "";
@@ -24,16 +24,25 @@ class EmperorPenguinCompiler {
 
     fun compile_sources(mut this, inputs: _utils.List<SourceInput>) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile_sources");
-        let combined_defs: mut _utils.List<ast.Definition> = new _utils.List<ast.Definition>();
+        let combined_defs: mut _utils.List<Definition> = new _utils.List<Definition>();
         let total_defs: mut i64 = 0;
+        let parser_errors: mut _utils.List<string> = new _utils.List<string>();
         let i: mut i64 = 0;
         while (i < cast<i64>(inputs.size())) {
             let input: SourceInput = inputs.at(cast<u64>(i)).some;
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
-            let lexer = new parser.Lexer(input.source, input.filename);
+            let lexer = new Lexer(input.source, input.filename);
             let tokens = lexer.tokenize();
-            let p = new parser.Parser(tokens);
-            let unit: ast.CompilationUnit = p.parse_compilationUnit();
+            let p = new Parser(tokens);
+            let unit: CompilationUnit = p.parse_compilationUnit();
+            // Collect parser errors
+            if (p.has_errors()) {
+                let ei: mut i64 = 0;
+                while (ei < cast<i64>(p.errors.size())) {
+                    parser_errors.push(p.errors.at(cast<u64>(ei)).some);
+                    ei = ei + 1;
+                }
+            }
             let j: mut i64 = 0;
             while (j < cast<i64>(unit.definitions.size())) {
                 combined_defs.push(unit.definitions.at(cast<u64>(j)).some);
@@ -43,12 +52,19 @@ class EmperorPenguinCompiler {
             i = i + 1;
         }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
-        let combined_unit: ast.CompilationUnit = new ast.CompilationUnit();
+        let combined_unit: CompilationUnit = new CompilationUnit();
         combined_unit.definitions = combined_defs;
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
-        let mut model = new bound.SemanticModel();
+        let mut model = new SemanticModel();
         model.verbose = this.verbose;
-        let result = model.bind(combined_unit, new ast.SourceLocation(main_filename, 0, 0));
+        // Propagate parser errors into model errors
+        let pei: mut i64 = 0;
+        while (pei < cast<i64>(parser_errors.size())) {
+            let pe: string = parser_errors.at(cast<u64>(pei)).some;
+            model.report_error(new ErrorCode.E_PARSE(), pe, new SourceLocation(main_filename, 0, 0));
+            pei = pei + 1;
+        }
+        let result = model.bind(combined_unit, new SourceLocation(main_filename, 0, 0));
         this.errors = model.errors;
         return result;
     }

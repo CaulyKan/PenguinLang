@@ -67,13 +67,20 @@ public static class Program
         var work = new List<WorkItem>();
         foreach (var t in tests)
         {
-            var targets = probe
-                ? (requested ?? new HashSet<CompilerKind>(AllCompilers))
-                : (requested == null
-                    ? new HashSet<CompilerKind>(t.ApplyTo)
-                    : new HashSet<CompilerKind>(t.ApplyTo.Intersect(requested)));
-            foreach (var c in targets)
-                work.Add(new WorkItem(t, c));
+            IEnumerable<ApplyTarget> targets;
+            if (probe)
+            {
+                var set = requested ?? new HashSet<CompilerKind>(AllCompilers);
+                targets = set.Select(c => new ApplyTarget(c, null));
+            }
+            else
+            {
+                targets = requested == null
+                    ? t.ApplyTo
+                    : t.ApplyTo.Where(a => requested.Contains(a.Compiler)).ToList();
+            }
+            foreach (var a in targets)
+                work.Add(new WorkItem(t, a.Compiler, a.SkipIfPass));
         }
 
         if (work.Count == 0)
@@ -134,18 +141,9 @@ public static class Program
 
         var results = new ConcurrentBag<ComboResult>();
         var parallel = Math.Max(1, opts.Parallel);
-        await Parallel.ForEachAsync(work, new ParallelOptions { MaxDegreeOfParallelism = parallel },
-            async (item, ct) =>
-            {
-                var r = await TestRunner.RunAsync(item.Test, item.Compiler, backends[item.Compiler],
-                                                  repoRoot, runDir, opts, ct);
-                results.Add(r);
-                lock (Console.Out)
-                {
-                    Console.WriteLine($"  [{r.Status,-5}] {r.Compiler,-20} {r.Category}/{r.Name} ({results.Count}/{work.Count})" +
-                                      (r.Message.Length > 0 ? "  — " + Truncate(r.Message, 100) : ""));
-                }
-            });
+        var byTest = work.GroupBy(w => w.Test).Select(g => g.ToList()).ToList();
+        await Parallel.ForEachAsync(byTest, new ParallelOptions { MaxDegreeOfParallelism = parallel },
+            async (group, ct) => { await RunTestGroup(group, backends, repoRoot, runDir, opts, results, work.Count, ct); });
 
         sw.Stop();
 
@@ -181,6 +179,55 @@ public static class Program
         Console.WriteLine($"Artifacts: {Path.GetRelativePath(repoRoot, runDir)}/");
 
         return failCount == 0 ? 0 : 1;
+    }
+
+    private static async Task RunTestGroup(List<WorkItem> items,
+        Dictionary<CompilerKind, ICompilerBackend> backends, string repoRoot, string runDir,
+        Options opts, ConcurrentBag<ComboResult> results, int totalWork, CancellationToken ct)
+    {
+        // Per-test waves: run guard compilers first; for a compiler with a
+        // "skip if <guard> PASS" condition, skip it when the guard passed (else run it).
+        var decided = new Dictionary<CompilerKind, ComboResult>();
+        var pending = items.ToList();
+        while (pending.Count > 0)
+        {
+            var ready = pending.Where(w => w.SkipIfPass == null || decided.ContainsKey(w.SkipIfPass!.Value)).ToList();
+            if (ready.Count == 0) ready = pending.ToList();
+            var toRun = new List<WorkItem>();
+            foreach (var w in ready)
+            {
+                if (w.SkipIfPass is CompilerKind g && decided.TryGetValue(g, out var gr) && gr.Status == Status.Pass)
+                {
+                    var skip = new ComboResult
+                    {
+                        Category = w.Test.Category, Name = w.Test.Name, Compiler = w.Compiler,
+                        Status = Status.Skip,
+                        Message = $"skipped: {g.Display()} passed",
+                    };
+                    results.Add(skip);
+                    lock (decided) decided[w.Compiler] = skip;
+                    LogCombo(skip, results.Count, totalWork);
+                }
+                else toRun.Add(w);
+            }
+            await Task.WhenAll(toRun.Select(async w =>
+            {
+                var r = await TestRunner.RunAsync(w.Test, w.Compiler, backends[w.Compiler], repoRoot, runDir, opts, ct);
+                results.Add(r);
+                lock (decided) decided[w.Compiler] = r;
+                LogCombo(r, results.Count, totalWork);
+            }));
+            foreach (var w in ready) pending.Remove(w);
+        }
+    }
+
+    private static void LogCombo(ComboResult r, int done, int total)
+    {
+        lock (Console.Out)
+        {
+            Console.WriteLine($"  [{r.Status,-5}] {r.Compiler.Key(),-12} {r.Category}/{r.Name} ({done}/{total})" +
+                              (r.Message.Length > 0 ? "  — " + Truncate(r.Message, 100) : ""));
+        }
     }
 
     public static string LocateRepoRoot()
@@ -415,6 +462,13 @@ public sealed record Expectation(string Mode, string? Operand)
             reason = DiffReason(Operand ?? "", actual);
             return false;
         }
+        if (Mode == "CONTAINS")
+        {
+            var op = Operand ?? "";
+            if (op.Length > 0 && actual.Contains(op, StringComparison.Ordinal)) { reason = ""; return true; }
+            reason = $"expected to contain '{op}' but got {Render(actual)}";
+            return false;
+        }
         reason = $"unknown match mode '{Mode}'";
         return false;
     }
@@ -456,11 +510,13 @@ public sealed class StageSpec
     public string? Stdin; // Run only
 }
 
+public sealed record ApplyTarget(CompilerKind Compiler, CompilerKind? SkipIfPass);
+
 public sealed class MarkdownTestCase
 {
     public string Title = "";
     public string Description = "";
-    public List<CompilerKind> ApplyTo = new();
+    public List<ApplyTarget> ApplyTo = new();
     public string Code = "";
     public StageSpec Compile = new();
     public StageSpec? Run;
@@ -469,7 +525,7 @@ public sealed class MarkdownTestCase
     public string Name => string.IsNullOrEmpty(Title) ? Path.GetFileNameWithoutExtension(SourcePath) : Title;
 }
 
-public sealed record WorkItem(MarkdownTestCase Test, CompilerKind Compiler);
+public sealed record WorkItem(MarkdownTestCase Test, CompilerKind Compiler, CompilerKind? SkipIfPass);
 
 // ───────────────────────── Markdown parser ─────────────────────────
 
@@ -551,7 +607,7 @@ public static class MarkdownTestParser
         }
 
         tc.Description = description.ToString().Trim();
-        tc.ApplyTo = MapCompilers(applyTo);
+        tc.ApplyTo = ParseApplyTo(applyTo);
         if (tc.ApplyTo.Count == 0)
             throw new FormatException("No compilers listed under '## Apply To'.");
         if (string.IsNullOrWhiteSpace(tc.Code))
@@ -634,18 +690,36 @@ public static class MarkdownTestParser
         return dict;
     }
 
-    private static List<CompilerKind> MapCompilers(List<string> names)
+    private static List<ApplyTarget> ParseApplyTo(List<string> bullets)
     {
-        var result = new List<CompilerKind>();
-        foreach (var n in names)
+        var result = new List<ApplyTarget>();
+        foreach (var raw in bullets)
         {
-            var l = n.ToLowerInvariant();
-            if (l.Contains("baby")) result.Add(CompilerKind.BabyPenguin);
-            else if (l.Contains("pass1") || l == "pass 1" || l.Contains("pass 1")) result.Add(CompilerKind.EmperorPenguinPass1);
-            else if (l.Contains("pass2") || l.Contains("pass 2")) result.Add(CompilerKind.EmperorPenguinPass2);
-            else if (l.Contains("pass3") || l.Contains("pass 3")) result.Add(CompilerKind.EmperorPenguinPass3);
+            // Match the compiler on the name only (before any "(SKIP if ...)" condition),
+            // so a guard name inside the condition can't reclassify the entry.
+            var l = raw.Split('(')[0].ToLowerInvariant();
+            CompilerKind? kind = null;
+            if (l.Contains("baby")) kind = CompilerKind.BabyPenguin;
+            else if (l.Contains("pass1") || l.Contains("pass 1")) kind = CompilerKind.EmperorPenguinPass1;
+            else if (l.Contains("pass2") || l.Contains("pass 2")) kind = CompilerKind.EmperorPenguinPass2;
+            else if (l.Contains("pass3") || l.Contains("pass 3")) kind = CompilerKind.EmperorPenguinPass3;
+            if (kind == null) continue;
+            // Optional "(SKIP if '<compiler>' PASS)" — skip this compiler when the guard passes.
+            CompilerKind? skipIf = null;
+            var m = Regex.Match(raw, @"SKIP\s+if\s+'([^']+)'\s+PASS", RegexOptions.IgnoreCase);
+            if (m.Success)
+            {
+                var g = m.Groups[1].Value.ToLowerInvariant();
+                if (g.Contains("baby")) skipIf = CompilerKind.BabyPenguin;
+                else if (g.Contains("pass1") || g.Contains("pass 1")) skipIf = CompilerKind.EmperorPenguinPass1;
+                else if (g.Contains("pass2") || g.Contains("pass 2")) skipIf = CompilerKind.EmperorPenguinPass2;
+                else if (g.Contains("pass3") || g.Contains("pass 3")) skipIf = CompilerKind.EmperorPenguinPass3;
+            }
+            result.Add(new ApplyTarget(kind.Value, skipIf));
         }
-        return result.Distinct().ToList();
+        return result.GroupBy(a => a.Compiler)
+            .Select(g => new ApplyTarget(g.Key, g.FirstOrDefault(a => a.SkipIfPass != null)?.SkipIfPass))
+            .ToList();
     }
 
     private static string DeIndent(string code)
@@ -1011,10 +1085,11 @@ public static class TestRunner
             {
                 if (!test.Compile.ExpectedStdout.Evaluate(cproc.Stdout, out var r) && r.Length > 0) failures.Add("compile stdout: " + r);
             }
-            if (!test.Compile.ExpectedStderr.IsDiscard)
-            {
-                if (!test.Compile.ExpectedStderr.Evaluate(cproc.Stderr, out var r) && r.Length > 0) failures.Add("compile stderr: " + r);
-            }
+        }
+        // Always check stderr, even for negative tests (they assert via CONTAINS).
+        if (!cproc.TimedOut && !test.Compile.ExpectedStderr.IsDiscard)
+        {
+            if (!test.Compile.ExpectedStderr.Evaluate(cproc.Stderr, out var r) && r.Length > 0) failures.Add("compile stderr: " + r);
         }
         compileStage.Failures = failures.ToArray();
 
@@ -1345,11 +1420,19 @@ public static class SummaryReporter
         foreach (var g in list.GroupBy(r => r.Compiler).OrderBy(x => x.Key))
         {
             int cnt = g.Count();
+            int skipped = g.Count(r => r.Status == Status.Skip);
+            int runCnt = cnt - skipped;
             int passed = g.Count(r => r.Status == Status.Pass);
-            int pct = cnt == 0 ? 100 : (int)Math.Round(100.0 * passed / cnt);
-            var cls = pct >= 100 ? "pass" : "fail";
-            // sb.Append($"<span class='crate {cls}'><span class='dot'></span>{HE(g.Key.Display())}  {passed}/{cnt} · {pct}%</span>");
-            sb.Append(StatCard(cls, $"{pct}%", HE(g.Key.Display())));
+            string cls, value, label = HE(g.Key.Display());
+            if (runCnt == 0) { cls = "skip"; value = "skip"; label += " (all skipped)"; }
+            else
+            {
+                int pct = (int)Math.Round(100.0 * passed / runCnt);
+                cls = pct >= 100 ? "pass" : "fail";
+                value = $"{pct}%";
+                if (skipped > 0) label += $" (+{skipped} skip)";
+            }
+            sb.Append(StatCard(cls, value, label));
         }
         sb.Append("</div>");
 

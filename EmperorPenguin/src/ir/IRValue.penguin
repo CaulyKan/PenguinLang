@@ -1,14 +1,14 @@
-namespace ir {
+namespace emperor {
 
 class IRNamedRegister {
     name: !mut string = "";
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, name: string, ir_type: string, source_line: i64, source_col: i64) {
         this.name = name;
         this.ir_type = ir_type;
-        this.location = new ast.SourceLocation("", source_line, source_col);
+        this.location = new SourceLocation("", source_line, source_col);
     }
 
     fun display(this) -> string {

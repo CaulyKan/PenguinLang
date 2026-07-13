@@ -1,3 +1,5 @@
+namespace emperor {
+
 fun get_base_name(path: string) -> string {
     let pos: mut i64 = string_find(path, "/");
     while (pos >= 0) {
@@ -17,37 +19,37 @@ fun get_stem(path: string) -> string {
     return string_substring(base, 0, dot);
 }
 
-fun scope_kind_name(kind: bound.ScopeKind) -> string {
-    if (kind is bound.ScopeKind.GlobalScope) { return "GlobalScope"; }
-    if (kind is bound.ScopeKind.NamespaceScope) { return "NamespaceScope"; }
-    if (kind is bound.ScopeKind.ClassScope) { return "ClassScope"; }
-    if (kind is bound.ScopeKind.EnumScope) { return "EnumScope"; }
-    if (kind is bound.ScopeKind.InterfaceScope) { return "InterfaceScope"; }
-    if (kind is bound.ScopeKind.FunctionScope) { return "FunctionScope"; }
-    if (kind is bound.ScopeKind.BlockScope) { return "BlockScope"; }
-    if (kind is bound.ScopeKind.InitialRoutineScope) { return "InitialRoutineScope"; }
-    if (kind is bound.ScopeKind.ImplScope) { return "ImplScope"; }
+fun scope_kind_name(kind: ScopeKind) -> string {
+    if (kind is ScopeKind.GlobalScope) { return "GlobalScope"; }
+    if (kind is ScopeKind.NamespaceScope) { return "NamespaceScope"; }
+    if (kind is ScopeKind.ClassScope) { return "ClassScope"; }
+    if (kind is ScopeKind.EnumScope) { return "EnumScope"; }
+    if (kind is ScopeKind.InterfaceScope) { return "InterfaceScope"; }
+    if (kind is ScopeKind.FunctionScope) { return "FunctionScope"; }
+    if (kind is ScopeKind.BlockScope) { return "BlockScope"; }
+    if (kind is ScopeKind.InitialRoutineScope) { return "InitialRoutineScope"; }
+    if (kind is ScopeKind.ImplScope) { return "ImplScope"; }
     return "Unknown";
 }
 
-fun symbol_kind_name(sym: bound.BoundSymbol) -> string {
-    if (sym is bound.BoundSymbol.variable) { return "var"; }
-    if (sym is bound.BoundSymbol.function_sym) { return "func"; }
-    if (sym is bound.BoundSymbol.type_sym) { return "type"; }
-    if (sym is bound.BoundSymbol.enum_member) { return "enum_member"; }
-    if (sym is bound.BoundSymbol.namespace_sym) { return "namespace"; }
+fun symbol_kind_name(sym: BoundSymbol) -> string {
+    if (sym is BoundSymbol.variable) { return "var"; }
+    if (sym is BoundSymbol.function_sym) { return "func"; }
+    if (sym is BoundSymbol.type_sym) { return "type"; }
+    if (sym is BoundSymbol.enum_member) { return "enum_member"; }
+    if (sym is BoundSymbol.namespace_sym) { return "namespace"; }
     return "unknown";
 }
 
-fun symbol_type_name(sym: bound.BoundSymbol) -> string {
-    if (sym is bound.BoundSymbol.variable) { return sym.variable.bound_type.display_name(); }
-    if (sym is bound.BoundSymbol.function_sym) { return sym.function_sym.return_type.display_name(); }
-    if (sym is bound.BoundSymbol.type_sym) { return sym.type_sym.bound_type.display_name(); }
-    if (sym is bound.BoundSymbol.enum_member) { return sym.enum_member.member_type.display_name(); }
+fun symbol_type_name(sym: BoundSymbol) -> string {
+    if (sym is BoundSymbol.variable) { return sym.variable.bound_type.display_name(); }
+    if (sym is BoundSymbol.function_sym) { return sym.function_sym.return_type.display_name(); }
+    if (sym is BoundSymbol.type_sym) { return sym.type_sym.bound_type.display_name(); }
+    if (sym is BoundSymbol.enum_member) { return sym.enum_member.member_type.display_name(); }
     return "";
 }
 
-fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
+fun print_scope_to(sb: mut StringBuilder, scope: BoundScope, level: i64) {
     let pad: mut string = "";
     let pi: mut i64 = 0;
     while (pi < level * 2) {
@@ -62,7 +64,7 @@ fun print_scope_to(sb: mut StringBuilder, scope: bound.BoundScope, level: i64) {
 
     let si: mut i64 = 0;
     while (si < cast<i64>(scope.symbols.size())) {
-        let sym: bound.BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
+        let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
         let type_str: string = symbol_type_name(sym);
         sb.append(pad + "  " + symbol_kind_name(sym) + " " + sym.get_name());
         if (string_length(type_str) > 0) {
@@ -119,6 +121,7 @@ initial {
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
     let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
+    let error_codes_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/error_codes.penguin");
 
     // Build intermediates go into a per-process unique temp directory so that
     // parallel EmperorPenguin invocations never collide on a shared path. The
@@ -143,23 +146,24 @@ initial {
 
     let first_arg: string = source_files.at(0).some;
 
-    if (project.string_ends_with(first_arg, ".penguins")) {
+    if (string_ends_with(first_arg, ".penguins")) {
         // .penguins mode: parse project file and resolve sources
-        let proj: mut project.PenguinProject = project.PenguinProject.load(first_arg);
-        let project_dir: string = project.get_parent_dir(first_arg);
+        let proj: mut PenguinProject = PenguinProject.load(first_arg);
+        let project_dir: string = get_parent_dir(first_arg);
         let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
         source_files = resolved;
         if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Loaded: " + proj.name + " (" + cast<string>(resolved.size()) + " sources)"); }
     }   
 
-    let inputs: mut _utils.List<bound.SourceInput> = new _utils.List<bound.SourceInput>();
-    inputs.push(new bound.SourceInput("core_builtin.penguin", stdlib_source));
-    inputs.push(new bound.SourceInput("utils.penguin", utils_source));
+    let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+    inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
+    inputs.push(new SourceInput("utils.penguin", utils_source));
+    inputs.push(new SourceInput("error_codes.penguin", error_codes_source));
     let fi: mut i64 = 0;
     while (fi < cast<i64>(source_files.size())) {
         let file: string = source_files.at(cast<u64>(fi)).some;
         let source: string = _utils.file_read_text(file);
-        inputs.push(new bound.SourceInput(file, source));
+        inputs.push(new SourceInput(file, source));
         if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
         fi = fi + 1;
     }
@@ -167,7 +171,7 @@ initial {
     if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(source_files.size()) + " source files..."); }
 
     _utils.trace_set_verbose(verbose);
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = verbose;
     let result = compiler.compile_sources(inputs);
 
@@ -175,17 +179,18 @@ initial {
         __builtin.eprintln("[EmperorPenguin] Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
-            let err: bound.SemanticError = result.errors.at(cast<u64>(ei)).some;
-            __builtin.eprintln("  " + err.location.to_string() + ": error: " + err.message);
+            let err: SemanticError = result.errors.at(cast<u64>(ei)).some;
+            __builtin.eprintln("  " + err.location.to_string() + ": error[" + error_code_name(err.code) + "]: " + err.message);
             ei = ei + 1;
         }
+        __builtin.exit(1);
     } else {
-        let generator = new ir.IRGenerator();
+        let generator = new IRGenerator();
         generator.verbose = verbose;
         let module = generator.generate(result);
         if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] IR generation done"); }
 
-        let emitter = new llvm.LLVMEmitter();
+        let emitter = new LLVMEmitter();
         emitter.verbose = verbose;
         let llvm_ir: string = emitter.lower(module, result);
         if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
@@ -221,4 +226,5 @@ initial {
             __builtin.exit(1);
         }
     }
+}
 }

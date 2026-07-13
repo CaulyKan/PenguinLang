@@ -4,7 +4,7 @@ Cascade write to an immutable nested field must fail.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 
@@ -28,4 +28,4 @@ Args: ``
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
+ExpectedStderr: CONTAINS `E_MUTABILITY`

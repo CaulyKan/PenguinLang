@@ -75,6 +75,26 @@ once more compilers agree (use `--probe` to discover agreement; see *Running*).
 > automatically — if a Pass2/3 binary is missing it exits with an error telling
 > you to run `./penguin -b`. BabyPenguin and Pass1 only need `dotnet`.
 
+#### Conditional skip (`SKIP if '<compiler>' PASS`)
+
+An entry may be suffixed with a condition so a slow compiler is only run when a
+faster one can't vouch for it:
+
+```
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
+```
+
+Semantics: the runner first runs the **guard** compiler (`EmperorPenguin Pass2`)
+for that test. If the guard **passes**, this compiler (`Pass1`) is **skipped**;
+if the guard fails or isn't being run, this compiler **runs normally**. This
+avoids running the slow Pass1 (EmperorPenguin on the BabyPenguin VM) when the
+fast native Pass2 already confirms the result.
+
+By default every `EmperorPenguin Pass1` entry carries
+`(SKIP if 'EmperorPenguin Pass2' PASS)`. A skipped combo is recorded with
+`SKIP` status (not a failure); per-compiler pass rates exclude skips from the
+denominator, and the run's exit code is unaffected by skips.
+
 ### `## Test Code`
 
 A fenced code block (```` ``` ````). Common leading indentation is stripped
@@ -102,6 +122,7 @@ Each stage is a list of `Key: value` lines. Values may be wrapped in backticks
 
 - `DISCARD` — do not check the stream.
 - `EQUALS \`literal\`` — **byte-exact** match against the captured stream.
+- `CONTAINS \`literal\`` — **substring** match: passes if the literal appears anywhere in the captured stream. Useful for negative tests that assert a specific error code is present in stderr.
 
 The `EQUALS` literal is a backtick-delimited string that **may span multiple
 lines** (terminated by a closing backtick), so multi-line output reads naturally:
@@ -160,7 +181,7 @@ A success test (full compile→run→stdout):
 Force GC, confirm a retained node survives.
 
 ## Apply To
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 
 ## Test Code
 ```

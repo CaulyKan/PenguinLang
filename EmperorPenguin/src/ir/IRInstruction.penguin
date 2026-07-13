@@ -1,12 +1,12 @@
-namespace ir {
+namespace emperor {
 
 // 1. CONST - constant assignment
 class IRConst {
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     value: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, value: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, value: string, loc: SourceLocation) {
         this.result = result;
         this.value = value;
         this.location = loc;
@@ -26,9 +26,9 @@ class IRArg {
     param_name: !mut string = "";
     param_index: !mut i64 = 0;
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, param_name: string, param_index: i64, ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, param_name: string, param_index: i64, ir_type: string, loc: SourceLocation) {
         this.result = result;
         this.param_name = param_name;
         this.param_index = param_index;
@@ -48,9 +48,9 @@ class IRArg {
 class IRAssign {
     dest: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     src: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, dest: IRValue, src: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, dest: IRValue, src: IRValue, loc: SourceLocation) {
         this.dest = dest;
         this.src = src;
         this.location = loc;
@@ -70,9 +70,9 @@ class IRCast {
     operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     from_type: !mut string = "";
     to_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, operand: IRValue, from_type: string, to_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, operand: IRValue, from_type: string, to_type: string, loc: SourceLocation) {
         this.result = result;
         this.operand = operand;
         this.from_type = from_type;
@@ -95,9 +95,9 @@ class IRBinOp {
     right: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, op: string, left: IRValue, right: IRValue, result: IRValue, ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, op: string, left: IRValue, right: IRValue, result: IRValue, ir_type: string, loc: SourceLocation) {
         this.op = op;
         this.left = left;
         this.right = right;
@@ -120,9 +120,9 @@ class IRUnaryOp {
     operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, op: string, operand: IRValue, result: IRValue, ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, op: string, operand: IRValue, result: IRValue, ir_type: string, loc: SourceLocation) {
         this.op = op;
         this.operand = operand;
         this.result = result;
@@ -144,9 +144,9 @@ class IRRdmbr {
     obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     field_name: !mut string = "";
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, obj: IRValue, field_name: string, ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, obj: IRValue, field_name: string, ir_type: string, loc: SourceLocation) {
         this.result = result;
         this.obj = obj;
         this.field_name = field_name;
@@ -167,9 +167,9 @@ class IRWrmbr {
     obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     field_name: !mut string = "";
     value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, obj: IRValue, field_name: string, value: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, obj: IRValue, field_name: string, value: IRValue, loc: SourceLocation) {
         this.obj = obj;
         this.field_name = field_name;
         this.value = value;
@@ -187,9 +187,9 @@ class IRWrmbr {
 // 8. BR - unconditional branch
 class IRBr {
     target: !mut IRLabel = new IRLabel("");
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, target: IRLabel, loc: ast.SourceLocation) {
+    fun new(mut this, target: IRLabel, loc: SourceLocation) {
         this.target = target;
         this.location = loc;
     }
@@ -207,9 +207,9 @@ class IRBrCond {
     cond: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     true_label: !mut IRLabel = new IRLabel("");
     false_label: !mut IRLabel = new IRLabel("");
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, cond: IRValue, true_label: IRLabel, false_label: IRLabel, loc: ast.SourceLocation) {
+    fun new(mut this, cond: IRValue, true_label: IRLabel, false_label: IRLabel, loc: SourceLocation) {
         this.cond = cond;
         this.true_label = true_label;
         this.false_label = false_label;
@@ -227,9 +227,9 @@ class IRBrCond {
 // 10. RET - return with value
 class IRRet {
     value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, value: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, value: IRValue, loc: SourceLocation) {
         this.value = value;
         this.location = loc;
     }
@@ -244,9 +244,9 @@ class IRRet {
 
 // 11. RET_VOID - return void
 class IRRetVoid {
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, loc: ast.SourceLocation) {
+    fun new(mut this, loc: SourceLocation) {
         this.location = loc;
     }
 
@@ -264,9 +264,9 @@ class IRCall {
     args: !mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ret_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: SourceLocation) {
         this.func_name = func_name;
         this.args = args;
         this.result_value = result;
@@ -300,9 +300,9 @@ class IRCall {
 class IRCallVoid {
     func_name: !mut string = "";
     args: !mut _utils.List<IRValue> = new _utils.List<IRValue>();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, loc: ast.SourceLocation) {
+    fun new(mut this, func_name: string, args: mut _utils.List<IRValue>, loc: SourceLocation) {
         this.func_name = func_name;
         this.args = args;
         this.location = loc;
@@ -333,9 +333,9 @@ class IRCallVirt {
     args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     ret_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, obj: IRValue, interface_id: string, vtable_slot: i64, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, obj: IRValue, interface_id: string, vtable_slot: i64, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: SourceLocation) {
         this.obj = obj;
         this.interface_id = interface_id;
         this.vtable_slot = vtable_slot;
@@ -371,9 +371,9 @@ class IRNew {
     type_name: !mut string = "";
     args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, type_name: string, args: mut _utils.List<IRValue>, result: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, type_name: string, args: mut _utils.List<IRValue>, result: IRValue, loc: SourceLocation) {
         this.type_name = type_name;
         this.args = args;
         this.result = result;
@@ -404,9 +404,9 @@ class IRNewEnum {
     variant_name: !mut string = "";
     payload: !mut Option<IRValue> = new Option<IRValue>.none();
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, type_name: string, variant_idx: i64, variant_name: string, payload: Option<IRValue>, result: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, type_name: string, variant_idx: i64, variant_name: string, payload: Option<IRValue>, result: IRValue, loc: SourceLocation) {
         this.type_name = type_name;
         this.variant_idx = variant_idx;
         this.variant_name = variant_name;
@@ -433,9 +433,9 @@ class IRIsEnum {
     enum_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     variant_idx: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, enum_value: IRValue, variant_idx: IRValue, result: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, enum_value: IRValue, variant_idx: IRValue, result: IRValue, loc: SourceLocation) {
         this.enum_value = enum_value;
         this.variant_idx = variant_idx;
         this.result = result;
@@ -456,9 +456,9 @@ class IRRdenum {
     enum_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     variant_name: !mut string = "";
     payload_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, enum_value: IRValue, variant_name: string, payload_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, enum_value: IRValue, variant_name: string, payload_type: string, loc: SourceLocation) {
         this.result = result;
         this.enum_value = enum_value;
         this.variant_name = variant_name;
@@ -479,9 +479,9 @@ class IRIsInstance {
     obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     type_id: !mut string = "";
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, obj: IRValue, type_id: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, obj: IRValue, type_id: string, loc: SourceLocation) {
         this.result = result;
         this.obj = obj;
         this.type_id = type_id;
@@ -501,9 +501,9 @@ class IRBox {
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     source_type_name: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, operand: IRValue, source_type_name: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, operand: IRValue, source_type_name: string, loc: SourceLocation) {
         this.result = result;
         this.operand = operand;
         this.source_type_name = source_type_name;
@@ -524,9 +524,9 @@ class IRUnbox {
     operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     target_type_name: !mut string = "";
     target_ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, operand: IRValue, target_type_name: string, target_ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, operand: IRValue, target_type_name: string, target_ir_type: string, loc: SourceLocation) {
         this.result = result;
         this.operand = operand;
         this.target_type_name = target_type_name;
@@ -563,9 +563,9 @@ class IRGlobalLoad {
     result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     global_name: !mut string = "";
     ir_type: !mut string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, result: IRValue, global_name: string, ir_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, result: IRValue, global_name: string, ir_type: string, loc: SourceLocation) {
         this.result = result;
         this.global_name = global_name;
         this.ir_type = ir_type;
@@ -584,9 +584,9 @@ class IRGlobalLoad {
 class IRGlobalStore {
     global_name: !mut string = "";
     value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, global_name: string, value: IRValue, loc: ast.SourceLocation) {
+    fun new(mut this, global_name: string, value: IRValue, loc: SourceLocation) {
         this.global_name = global_name;
         this.value = value;
         this.location = loc;

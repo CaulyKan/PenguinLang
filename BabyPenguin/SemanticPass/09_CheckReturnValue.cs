@@ -40,7 +40,7 @@ namespace BabyPenguin.SemanticPass
                             + $"'{function.ReturnTypeInfo.TypeNode!.FullName()}'. Interfaces without "
                             + "IReferenceType have unknown size and cannot be returned. Use Box<...> for "
                             + "explicit indirection, or add 'impl IReferenceType' to the interface.",
-                            function.SourceLocation);
+                            function.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                     }
                 }
 

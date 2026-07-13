@@ -64,7 +64,7 @@ namespace BabyPenguin.SemanticInterface
                 return unresolvedSymbol;
             }
 
-            var typeinfo = (type.IsLeft ? Model.ResolveType(type.Left!, scope: this, useImmutableAsDefault: !isClassMember) : type.Right) ?? throw new BabyPenguinException($"Cant resolve type '{type}' for '{Name}'", sourceLocation);
+            var typeinfo = (type.IsLeft ? Model.ResolveType(type.Left!, scope: this, useImmutableAsDefault: !isClassMember) : type.Right) ?? throw new BabyPenguinException($"Cant resolve type '{type}' for '{Name}'", sourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
             if (isClassMember && isClassMemberMutable != Mutability.Unspecified)
             {
@@ -79,7 +79,7 @@ namespace BabyPenguin.SemanticInterface
             else
             {
                 if (typeinfo.GenericArguments.Count == 0)
-                    throw new BabyPenguinException($"Function type '{typeinfo.FullName()}' must have at least one generic arguments as return type", sourceLocation);
+                    throw new BabyPenguinException($"Function type '{typeinfo.FullName()}' must have at least one generic arguments as return type", sourceLocation, code: ErrorCode.E_INTERNAL);
 
                 var basicType = typeinfo.TypeNode as BasicTypeNode;
 
@@ -89,7 +89,7 @@ namespace BabyPenguin.SemanticInterface
             {
                 if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
                 {
-                    throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                    throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                 }
             }
             Symbols.Add(symbol);
@@ -104,14 +104,14 @@ namespace BabyPenguin.SemanticInterface
             var originName = name;
             var eventParamDecl = (onRoutine.SyntaxNode as OnRoutineDefinition)?.Parameter;
             var eventParam = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: this) ??
-                throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
+                throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
             var param = eventParamDecl == null ? new FunctionParameter("___void", eventParam, 0) : new FunctionParameter(eventParamDecl.Identifier!.Name, eventParam, 0);
             var symbol = new FunctionSymbol(this, onRoutine, false, name, sourceLocation, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [param], originName, false, -1, isClassMember, true, false, null, Mutability.Immutable);
             onRoutine.AddVariableSymbol(param.Name, true, new(param.Type), eventParamDecl?.SourceLocation ?? SourceLocation.Empty(), 0, false, null);
 
             if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
             {
-                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
             }
 
             Symbols.Add(symbol);
@@ -127,7 +127,7 @@ namespace BabyPenguin.SemanticInterface
             var symbol = new FunctionSymbol(this, initialRoutine, false, name, sourceLocation, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [], originName, false, -1, isClassMember, false, false, null, Mutability.Immutable);
             if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
             {
-                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
             }
 
             Symbols.Add(symbol);
@@ -166,7 +166,7 @@ namespace BabyPenguin.SemanticInterface
             {
                 if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
                 {
-                    throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                    throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                 }
             }
             Symbols.Add(symbol);
@@ -178,7 +178,7 @@ namespace BabyPenguin.SemanticInterface
             var symbol = new EnumSymbol(enum_, name, typeInfo, value, sourceLocation) as ISymbol;
             if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && s.IsEnum))
             {
-                throw new BabyPenguinException($"Enum Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                throw new BabyPenguinException($"Enum Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
             }
             Symbols.Add(symbol);
             return symbol;
@@ -189,7 +189,7 @@ namespace BabyPenguin.SemanticInterface
             var symbol = new TypeReferenceSymbol(this, isLocal, name, typeReference, sourceLocation);
             if (Model.Symbols.Any(s => s.FullName() == symbol.FullName()))
             {
-                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation);
+                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
             }
             Symbols.Add(symbol);
             return symbol;

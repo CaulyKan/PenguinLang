@@ -35,12 +35,14 @@ namespace BabyPenguin
 
     public class BabyPenguinException : Exception
     {
-        public BabyPenguinException(string message, SourceLocation? location = null) : base(location == null ? message : $"{location}: {message}")
+        public BabyPenguinException(string message, SourceLocation? location = null, ErrorCode code = ErrorCode.E_INTERNAL) : base(location == null ? message : $"{location}: {message}")
         {
             Location = location;
+            Code = code;
         }
 
         public SourceLocation? Location { get; }
+        public ErrorCode Code { get; }
     }
 
     public partial record NameComponents(Mutability IsMutable, List<string> Prefix, string Name, List<string> Generics)

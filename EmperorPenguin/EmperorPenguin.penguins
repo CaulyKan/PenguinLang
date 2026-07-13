@@ -1,3 +1,3 @@
 [Project]
 name="EmperorPenguin"
-sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/llvm/*.penguin", "src/project/*.penguin", "main.penguin"]
+sources=["std/penguin/error_codes.penguin", "src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/llvm/*.penguin", "src/project/*.penguin", "main.penguin"]

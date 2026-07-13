@@ -88,7 +88,7 @@ namespace BabyPenguin.SemanticInterface
         {
             return ImportedNamespaces.Select(i =>
                     Model.Namespaces.Find(n => n.Name == i.Namespace) ??
-                        throw new BabyPenguinException($"Namespace '{i}' not found.", i.SourceLocation))
+                        throw new BabyPenguinException($"Namespace '{i}' not found.", i.SourceLocation, code: ErrorCode.E_RESOLVE_NAMESPACE))
                 .Concat(
                     Parent?.GetImportedNamespaces(false) ?? []
                 ).Concat(

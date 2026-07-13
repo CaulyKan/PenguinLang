@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 enum ScopeKind { GlobalScope; NamespaceScope; ClassScope; EnumScope; InterfaceScope; FunctionScope; BlockScope; InitialRoutineScope; ImplScope; }
 

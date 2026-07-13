@@ -73,7 +73,7 @@ namespace BabyPenguin.SemanticPass
                             + $"'{fieldType.TypeNode!.FullName()}'. Interfaces without IReferenceType have unknown "
                             + $"size and cannot be used as fields. Use Box<{fieldType.TypeNode!.FullName()}> for "
                             + "explicit indirection, or add 'impl IReferenceType' to the interface.",
-                            symbol.SourceLocation);
+                            symbol.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                     }
                 }
             }
@@ -94,7 +94,7 @@ namespace BabyPenguin.SemanticPass
                             + $"'{payloadType.TypeNode!.FullName()}'. Interfaces without IReferenceType have unknown "
                             + $"size and cannot be used as enum payloads. Use Box<{payloadType.TypeNode!.FullName()}> "
                             + "for explicit indirection, or add 'impl IReferenceType' to the interface.",
-                            decl.SourceLocation);
+                            decl.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                     }
                 }
             }
@@ -110,13 +110,13 @@ namespace BabyPenguin.SemanticPass
                     {
                         var interfaceTypeNode = Model.ResolveTypeNode(impl.InterfaceType!.Text, scope: ns);
                         if (interfaceTypeNode == null)
-                            throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
+                            throw new BabyPenguinException($"Could not resolve type {impl.InterfaceType.Text} in namespace {ns.FullName()}", impl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                         if (interfaceTypeNode is IInterfaceNode intf && intf.HasDeclartion)
-                            throw new BabyPenguinException($"Interface {intf.FullName()} has declarations, so it must be implemented in the scope of a class.");
+                            throw new BabyPenguinException($"Interface {intf.FullName()} has declarations, so it must be implemented in the scope of a class.", code: ErrorCode.E_INTERNAL);
 
                         var forType = Model.ResolveType(impl.ForType!.Text, scope: ns, useImmutableAsDefault: false);
                         if (forType == null)
-                            throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName()}", impl.SourceLocation);
+                            throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName()}", impl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                         if (forType.TypeNode.FullName() == implementingClass.FullName())
                             yield return impl;
@@ -166,7 +166,7 @@ namespace BabyPenguin.SemanticPass
                         foreach (var funcSyntax in implSyntax.Functions)
                         {
                             if (!vtable.Interface.Functions.Any(f => f.Name == funcSyntax.Name))
-                                throw new BabyPenguinException($"Interface {vtable.Interface.Name} does not have a function {funcSyntax.Name} to implement in class {container.Name}");
+                                throw new BabyPenguinException($"Interface {vtable.Interface.Name} does not have a function {funcSyntax.Name} to implement in class {container.Name}", null, code: ErrorCode.E_INTERFACE_IMPL);
 
                             var func = new Function(Model, funcSyntax);
                             (vtable as IRoutineContainer).AddFunction(func);
@@ -182,7 +182,7 @@ namespace BabyPenguin.SemanticPass
                                         || implFunc.Parameters.Count != interfaceFunc.Parameters.Count
                                         || implFunc.Parameters.Zip(interfaceFunc.Parameters, (p1, p2) => p1.Type.FullName() != p2.Type.FullName()).Any(b => b))
                                 {
-                                    throw new BabyPenguinException($"Function {interfaceFunc.Name} in interface {vtable.Interface.Name} does not match the implementation in class {container.Name}");
+                                    throw new BabyPenguinException($"Function {interfaceFunc.Name} in interface {vtable.Interface.Name} does not match the implementation in class {container.Name}", null, code: ErrorCode.E_TYPE_MISMATCH);
                                 }
                                 vtable.Slots.RemoveAll(s => s.InterfaceSymbol.FullName() == interfaceFunc.FunctionSymbol!.FullName());
                                 vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
@@ -434,11 +434,11 @@ namespace BabyPenguin.SemanticPass
             {
                 var leftType = Model.ResolveType(condition.Identifier!.Text, scope: container);
                 if (leftType == null)
-                    throw new BabyPenguinException($"Could not resolve type {condition.Identifier.Text}", condition.SourceLocation);
+                    throw new BabyPenguinException($"Could not resolve type {condition.Identifier.Text}", condition.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                 var rightType = Model.ResolveType(condition.TypeSpecifier!.Text, scope: container);
                 if (rightType == null)
-                    throw new BabyPenguinException($"Could not resolve type {condition.TypeSpecifier.Text}", condition.SourceLocation);
+                    throw new BabyPenguinException($"Could not resolve type {condition.TypeSpecifier.Text}", condition.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                 if (!leftType.CanImplicitlyCastTo(rightType))
                     return false;
@@ -492,7 +492,7 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (interfaceFunc.IsDeclarationOnly && container is not IInterfaceNode)
                             {
-                                throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName()}'");
+                                throw new BabyPenguinException($"Interface '{vtable.Interface.Name}' requires an implementation for function '{interfaceFunc.Name}' in class '{container.FullName()}'", null, code: ErrorCode.E_INTERFACE_IMPL);
                             }
                             else
                             {
@@ -509,9 +509,9 @@ namespace BabyPenguin.SemanticPass
             foreach (var vt in cls.VTables)
             {
                 var intf = vt.Interface;
-                var funcSymbol = intf.Constructor?.FunctionSymbol ?? throw new BabyPenguinException($"Cant resolve constructor for interface '{intf.Name}'");
-                if (cls.Constructor == null) throw new BabyPenguinException($"Cant resolve constructor for class '{cls.Name}'");
-                var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName()}'");
+                var funcSymbol = intf.Constructor?.FunctionSymbol ?? throw new BabyPenguinException($"Cant resolve constructor for interface '{intf.Name}'", null, code: ErrorCode.E_NO_CONSTRUCTOR);
+                if (cls.Constructor == null) throw new BabyPenguinException($"Cant resolve constructor for class '{cls.Name}'", null, code: ErrorCode.E_NO_CONSTRUCTOR);
+                var thisSymbol = Model.ResolveShortSymbol("this", scope: cls.Constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' for '{cls.Constructor.FullName()}'", null, code: ErrorCode.E_RESOLVE_SYMBOL);
                 var intfSymbol = cls.Constructor.AllocTempSymbol(intf.ToType(thisSymbol.IsMutable), vt.SourceLocation);
                 cls.Constructor.AddCastExpression(new(thisSymbol), intfSymbol, vt.SourceLocation);
                 cls.Constructor.Instructions.Add(new FunctionCallInstruction(vt.SourceLocation, funcSymbol, [intfSymbol], null));

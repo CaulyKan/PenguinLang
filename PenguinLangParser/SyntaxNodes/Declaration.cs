@@ -19,7 +19,7 @@ namespace PenguinLangParser.SyntaxNodes
                     if (codeBlockItem.letKeyword().GetText().EndsWith("mut"))
                     {
                         if (context.typeSpecifier() != null)
-                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString(), code: ErrorCode.E_PARSE);
 
                         SuggestMutableTypeInfer = true;
                     }
@@ -29,7 +29,7 @@ namespace PenguinLangParser.SyntaxNodes
                     if (namespaceDeclaration.letKeyword().GetText().EndsWith("mut"))
                     {
                         if (context.typeSpecifier() != null)
-                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString(), code: ErrorCode.E_PARSE);
 
                         SuggestMutableTypeInfer = true;
                     }
@@ -39,7 +39,7 @@ namespace PenguinLangParser.SyntaxNodes
                     if (forStatement.letKeyword().GetText().EndsWith("mut"))
                     {
                         if (context.typeSpecifier() != null)
-                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString());
+                            throw new PenguinLangException("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.", SourceLocation.ToString(), code: ErrorCode.E_PARSE);
 
                         SuggestMutableTypeInfer = true;
                     }

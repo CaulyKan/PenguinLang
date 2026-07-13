@@ -277,7 +277,7 @@ namespace BabyPenguin.VirtualMachine
             }
             else
             {
-                var funcSymbol = target?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + target!.ToString());
+                var funcSymbol = target?.FunctionSymbol as FunctionSymbol ?? throw new BabyPenguinRuntimeException("cant find function symbol on " + target!.ToString(), code: ErrorCode.E_RUNTIME_LOOKUP);
                 List<IRuntimeValue> funcArguments = [];
                 if (target!.TypeInfo.GenericArguments.Count > 1 && target.Owner is not NotInitializedRuntimeValue)
                 {

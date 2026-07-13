@@ -19,7 +19,7 @@ done
 
 if [ $BOOTSTRAPPING -eq 1 ]; then
     echo "Bootstrapping mode enabled. Running Pass 1 with bootstrapping ..."
-    rm -rf tmp && mkdir -p tmp
+    mkdir -p tmp
     dotnet run --configuration Release --project BabyPenguin -- \
         EmperorPenguin/EmperorPenguin.penguins -- \
         EmperorPenguin/EmperorPenguin.penguins \

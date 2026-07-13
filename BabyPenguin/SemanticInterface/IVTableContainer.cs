@@ -22,7 +22,7 @@ namespace BabyPenguin.SemanticInterface
         {
             var type = Model.ResolveTypeNode(syntaxNode.InterfaceType!.Text, s => s is IInterfaceNode, implementingClass);
             if (type is not IInterfaceNode interfaceType)
-                throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}");
+                throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}", null, code: ErrorCode.E_INTERFACE_IMPL);
             Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
             Interface = interfaceType;

@@ -3,7 +3,7 @@
 Cast an enum variant to string returns the tag ordinal (0, 1, 2...) on EmperorPenguin. BabyPenguin returns the variant name instead, so this is EP-only.
 
 ## Apply To
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

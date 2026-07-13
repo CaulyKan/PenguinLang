@@ -1,4 +1,4 @@
-namespace ast {
+namespace emperor {
 
 class SourceLocation {
     filename: string = "";
@@ -20,6 +20,6 @@ class SourceLocation {
     }
 }
 
-impl __builtin.ICopy<ast.SourceLocation> for ast.SourceLocation;
+impl __builtin.ICopy<SourceLocation> for SourceLocation;
 
 }

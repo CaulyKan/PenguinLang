@@ -71,7 +71,7 @@ namespace PenguinLangParser
             }
             catch (PenguinLangException e)
             {
-                throw new PenguinLangException(e.Message + "\n\nSource:\n" + source, e.CurrentContext);
+                throw new PenguinLangException(e.Message + "\n\nSource:\n" + source, e.CurrentContext, code: ErrorCode.E_PARSE);
             }
             return result;
         }
@@ -86,7 +86,7 @@ namespace PenguinLangParser
 
                     var err = string.Join("\n", ParserListener.Reporter.Messages.Where(i => i.Level == DiagnosticLevel.Error).Select(i => i.Message + " @ " + i.SourceLocation?.ToString()));
 
-                    throw new PenguinLangException("Failed to parse input, messages: \n" + err, rule == null ? null : Parser.RuleNames[rule.Value]);
+                    throw new PenguinLangException("Failed to parse input, messages: \n" + err, rule == null ? null : Parser.RuleNames[rule.Value], code: ErrorCode.E_PARSE);
                 }
             }
         }

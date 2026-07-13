@@ -46,11 +46,11 @@ namespace BabyPenguin.SemanticPass
             {
                 foreach (var typeRefDecl in syntaxNode.TypeReferenceDeclarations)
                 {
-                    var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation);
-                    var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation);
+                    var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                    var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                     var type = Model.ResolveType(typeName, scope: ns);
                     if (type == null)
-                        throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation);
+                        throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                     ns.AddTypeReferenceSymbol(typeRefDecl.Identifier.Name, type, false, typeRefDecl.SourceLocation);
                 }
             }
@@ -60,11 +60,11 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (node is TypeReferenceDeclaration typeRefDecl)
                     {
-                        var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation);
-                        var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation);
+                        var name = typeRefDecl.Identifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have an identifier", typeRefDecl.SourceLocation, code: ErrorCode.E_INTERNAL);
+                        var typeName = typeRefDecl.TypeSpecifier?.Name ?? throw new BabyPenguinException($"Type reference declaration must have a type specifier", typeRefDecl.SourceLocation, code: ErrorCode.E_INTERNAL);
                         var type = Model.ResolveType(typeName, scope: symbolContainer);
                         if (type == null)
-                            throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve type '{typeName}'", typeRefDecl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                         symbolContainer.AddTypeReferenceSymbol(typeRefDecl.Identifier.Name, type, true, typeRefDecl.SourceLocation);
                     }
                     return true;
@@ -78,9 +78,9 @@ namespace BabyPenguin.SemanticPass
             {
                 var typeName = evt.EventType?.TypeName ?? "void";
                 var type = Model.ResolveType(typeName, scope: container)
-                    ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation);
+                    ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                 var eventType = Model.ResolveType($"__builtin.Event<{type.FullName()}>")
-                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName()}>");
+                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName()}>", null, code: ErrorCode.E_BUILTIN_MISSING);
 
                 container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.Name, false, null, container is not INamespace, null));
             }
@@ -176,7 +176,7 @@ namespace BabyPenguin.SemanticPass
                                 {
                                     var type = Model.ResolveType(enumDeclSyntax.TypeSpecifier.Name, scope: enm, useImmutableAsDefault: false);
                                     if (type == null)
-                                        throw new BabyPenguinException($"Cant resolve type '{enumDeclSyntax.TypeSpecifier.Name}'", enumDeclSyntax.SourceLocation);
+                                        throw new BabyPenguinException($"Cant resolve type '{enumDeclSyntax.TypeSpecifier.Name}'", enumDeclSyntax.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                                     enumDecl.TypeInfo = type;
                                 }
                                 else enumDecl.TypeInfo = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
@@ -217,7 +217,7 @@ namespace BabyPenguin.SemanticPass
                             if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode)
                             {
                                 var eventParamDecl = syntaxNode.Parameter;
-                                var eventType = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation);
+                                var eventType = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                                 onRoutine.EventType = eventType;
 
                                 var funcSymbol = (onRoutine.Parent as ISymbolContainer)!.AddOnRoutineSymbol(
@@ -246,7 +246,7 @@ namespace BabyPenguin.SemanticPass
                                 var retType = Model.ResolveType(syntaxNode.ReturnType!.Name, scope: func);
                                 if (retType == null)
                                 {
-                                    throw new BabyPenguinException($"Cant resolve return type '{syntaxNode.ReturnType.Name}'", syntaxNode.SourceLocation);
+                                    throw new BabyPenguinException($"Cant resolve return type '{syntaxNode.ReturnType.Name}'", syntaxNode.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                                 }
                                 else
                                 {
@@ -260,7 +260,7 @@ namespace BabyPenguin.SemanticPass
                                 {
                                     if (func.Parameters.Any(f => f.Name == param.Name))
                                     {
-                                        throw new BabyPenguinException($"Duplicate parameter name '{param.Name}' for function '{syntaxNode.Name}'", param.SourceLocation);
+                                        throw new BabyPenguinException($"Duplicate parameter name '{param.Name}' for function '{syntaxNode.Name}'", param.SourceLocation, code: ErrorCode.E_DUPLICATE_PARAM);
                                     }
                                     else
                                     {
@@ -268,7 +268,7 @@ namespace BabyPenguin.SemanticPass
                                         var paramType = Model.ResolveType(paramTypeName, scope: func);
                                         if (paramType == null)
                                         {
-                                            throw new BabyPenguinException($"Cant resolve parameter type '{paramTypeName}' for param '{param.Name}'", param.SourceLocation);
+                                            throw new BabyPenguinException($"Cant resolve parameter type '{paramTypeName}' for param '{param.Name}'", param.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                                         }
                                         else
                                         {
@@ -282,7 +282,7 @@ namespace BabyPenguin.SemanticPass
                                         if ((func.Parent is IClassNode || func.Parent is IEnumNode || func.Parent is IInterfaceNode || func.Parent is VTable) && i == 0)
                                             func.IsStatic = false;
                                         else
-                                            throw new BabyPenguinException($"'this' parameter can only be the first parameter for class method in function '{syntaxNode.Name}'", param.SourceLocation);
+                                            throw new BabyPenguinException($"'this' parameter can only be the first parameter for class method in function '{syntaxNode.Name}'", param.SourceLocation, code: ErrorCode.E_INTERNAL);
                                     }
                                     i++;
                                 }

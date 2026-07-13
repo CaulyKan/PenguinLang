@@ -1,4 +1,4 @@
-namespace parser {
+namespace emperor {
     enum TokenType {
         EOF;
         Identifier;
@@ -108,9 +108,9 @@ namespace parser {
     class Token {
         token_type: TokenType = new TokenType.EOF();
         text: string = "";
-        location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+        location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-        fun new(mut this, token_type: mut TokenType, text: string, location: ast.SourceLocation) {
+        fun new(mut this, token_type: mut TokenType, text: string, location: SourceLocation) {
             this.token_type = token_type;
             this.text = text;
             this.location = location;
@@ -132,7 +132,7 @@ namespace parser {
 
         fun peek(this) -> Token {
             if (this.pos >= cast<i64>(this.tokens.size())) {
-                return new Token(new TokenType.EOF(), "", new ast.SourceLocation("", 0, 0));
+                return new Token(new TokenType.EOF(), "", new SourceLocation("", 0, 0));
             }
             return this.tokens.at(cast<u64>(this.pos)).some;
         }

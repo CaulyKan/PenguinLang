@@ -1,11 +1,11 @@
-namespace llvm {
+namespace emperor {
 
 class FieldLayout {
     field_name: string = "";
     llvm_type: string = "";
     byte_offset: i64 = 0;
     field_index: i64 = 0;
-    bound_type: Option<bound.BoundType> = new Option<bound.BoundType>.none();
+    bound_type: Option<BoundType> = new Option<BoundType>.none();
 
     fun new(mut this, field_name: string, llvm_type: string, byte_offset: i64, field_index: i64) {
         _utils.trace_enter("Enter new(field_name=" + cast<string>(field_name) + ", llvm_type=" + cast<string>(llvm_type) + ", byte_offset=" + cast<string>(byte_offset) + ", field_index=" + cast<string>(field_index) + ")");
@@ -67,7 +67,7 @@ class EnumVariantLayout {
     name: string = "";
     index: i64 = 0;
     payload_llvm_type: string = "";
-    payload_bound_type: mut Option<bound.BoundType> = new Option<bound.BoundType>.none();
+    payload_bound_type: mut Option<BoundType> = new Option<BoundType>.none();
 
     fun new(mut this, name: string, index: i64, payload_llvm_type: string) {
         _utils.trace_enter("Enter new(name=" + cast<string>(name) + ", index=" + cast<string>(index) + ", payload_llvm_type=" + cast<string>(payload_llvm_type) + ")");
@@ -197,7 +197,7 @@ class LLVMEmitter {
     icmp_results: mut _utils.List<string> = new _utils.List<string>();
     type_id_constants: mut _utils.List<TypeIdConstant> = new _utils.List<TypeIdConstant>();
     emitted_interface_ids: mut _utils.List<string> = new _utils.List<string>();
-    current_unit: Option<bound.BoundCompilationUnit> = new Option<bound.BoundCompilationUnit>.none();
+    current_unit: Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     func_param_types: mut _utils.List<FuncParamTypes> = new _utils.List<FuncParamTypes>();
     current_sret_llvm_type: mut string = "";
     current_sret_param: mut string = "";
@@ -274,7 +274,7 @@ class LLVMEmitter {
     }
 
     // Begin debug info for a function
-    fun debug_begin_function(mut this, func_name: string, loc: ast.SourceLocation) {
+    fun debug_begin_function(mut this, func_name: string, loc: SourceLocation) {
         _utils.trace_enter("Enter debug_begin_function(func_name=" + cast<string>(func_name) + ")");
         if (!this.debug_enabled) { return; }
         // Attribute the function (and the locals/types emitted while it is
@@ -314,7 +314,7 @@ class LLVMEmitter {
 
     // Get debug location suffix for an instruction at the given source location
     // Always emits !dbg when debug is enabled (LLVM requires all instructions in debug functions to have !dbg)
-    fun debug_loc(mut this, loc: ast.SourceLocation) -> string {
+    fun debug_loc(mut this, loc: SourceLocation) -> string {
         _utils.trace_enter("Enter debug_loc");
         if (!this.debug_enabled) { return ""; }
         let line: i64 = loc.line;
@@ -411,10 +411,10 @@ class LLVMEmitter {
 
     // For an immutable (single-def) named local: emit a dbg.value right after its SSA definition.
     // Skips temps, params, mutable locals (handled elsewhere), and value-less dests.
-    fun maybe_emit_imm_dbg(mut this, dest: ir.IRValue, dbg_suffix: string) {
+    fun maybe_emit_imm_dbg(mut this, dest: IRValue, dbg_suffix: string) {
         _utils.trace_enter("Enter maybe_emit_imm_dbg(dbg_suffix=" + cast<string>(dbg_suffix) + ")");
         if (!this.debug_enabled) { return; }
-        if (!(dest is ir.IRValue.named_reg)) { return; }
+        if (!(dest is IRValue.named_reg)) { return; }
         let name: string = dest.named_reg.name;
         let display: string = dest.display();
         if (this.is_debug_temp(display)) { return; }
@@ -438,7 +438,7 @@ class LLVMEmitter {
         }
     }
 
-    fun lower(mut this, module: ir.IRModule, unit: bound.BoundCompilationUnit) -> string {
+    fun lower(mut this, module: IRModule, unit: BoundCompilationUnit) -> string {
         _utils.trace_enter("Enter lower(module=" + module.to_string() + ")");
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Starting LLVM lowering..."); }
         this.string_lits = new _utils.List<StringLitEntry>();
@@ -460,7 +460,7 @@ class LLVMEmitter {
         this.type_id_constants = new _utils.List<TypeIdConstant>();
         this.emitted_interface_ids = new _utils.List<string>();
         this.func_param_types = new _utils.List<FuncParamTypes>();
-        this.current_unit = new Option<bound.BoundCompilationUnit>.some(unit);
+        this.current_unit = new Option<BoundCompilationUnit>.some(unit);
         // Enable debug info
         this.debug_enabled = true;
         this.debug_init_compile_unit(module.location.filename);
@@ -496,11 +496,11 @@ class LLVMEmitter {
 
     // --- Pass 1: collect string literals ---
 
-    fun collect_strings(mut this, module: ir.IRModule) {
+    fun collect_strings(mut this, module: IRModule) {
         _utils.trace_enter("Enter collect_strings(module=" + module.to_string() + ")");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
-            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
             if (!func.is_extern) {
                 this.collect_strings_in_func(func);
             }
@@ -509,7 +509,7 @@ class LLVMEmitter {
         // Collect strings from global variable initializers
         let gi: mut i64 = 0;
         while (gi < cast<i64>(module.global_variables.size())) {
-            let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+            let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
             if (this.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
                 let val: string = this.strip_string_quotes(gv.initializer_value);
                 if (!this.find_string_lit(val).is_some()) {
@@ -522,12 +522,12 @@ class LLVMEmitter {
         }
     }
 
-    fun collect_strings_in_func(mut this, func: ir.IRFunction) {
+    fun collect_strings_in_func(mut this, func: IRFunction) {
         _utils.trace_enter("Enter collect_strings_in_func(func=" + func.to_string() + ")");
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
-            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            if (inst is ir.IRInstruction.const_inst) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is IRInstruction.const_inst) {
                 let ir_type: string = inst.const_inst.result.get_ir_type();
                 if (this.is_string_type(ir_type)) {
                     let raw_val: string = inst.const_inst.value;
@@ -576,11 +576,11 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_global_variables(mut this, module: ir.IRModule) {
+    fun emit_global_variables(mut this, module: IRModule) {
         _utils.trace_enter("Enter emit_global_variables(module=" + module.to_string() + ")");
         let i: mut i64 = 0;
         while (i < cast<i64>(module.global_variables.size())) {
-            let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(i)).some;
+            let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(i)).some;
             let llvm_type: string = this.ir_type_to_llvm(gv.ir_type);
             let global_name: string = "@" + this.sanitize_name(gv.name);
             if (gv.initializer_value == "null") {
@@ -598,12 +598,12 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: ir.IRModule) {
+    fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: IRModule) {
         _utils.trace_enter("Enter emit_extern_declarations_to(module=" + module.to_string() + ")");
         let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
-            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
             if (func.is_extern) {
                 let llvm_name: string = this.llvm_func_name(func.name);
                 let already: mut bool = false;
@@ -620,7 +620,7 @@ class LLVMEmitter {
                     let pi: mut i64 = 0;
                     while (pi < cast<i64>(func.parameters.size())) {
                         if (pi > 0) { target.append(", "); }
-                        let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+                        let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
                         target.append(this.ir_type_to_llvm(p.ir_type));
                         pi = pi + 1;
                     }
@@ -674,15 +674,15 @@ class LLVMEmitter {
         }
     }
 
-    fun precompute_function_signatures(mut this, module: ir.IRModule) {
+    fun precompute_function_signatures(mut this, module: IRModule) {
         _utils.trace_enter("Enter precompute_function_signatures");
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
-            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
             let fpt: mut FuncParamTypes = new FuncParamTypes(this.strip_global_prefix(func.name));
             let ppi: mut i64 = 0;
             while (ppi < cast<i64>(func.parameters.size())) {
-                let pp: ir.IRParameter = func.parameters.at(cast<u64>(ppi)).some;
+                let pp: IRParameter = func.parameters.at(cast<u64>(ppi)).some;
                 fpt.param_types.push(this.ir_type_to_llvm(pp.ir_type));
                 ppi = ppi + 1;
             }
@@ -691,7 +691,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_functions(mut this, module: ir.IRModule) {
+    fun emit_functions(mut this, module: IRModule) {
         _utils.trace_enter("Enter emit_functions(module=" + module.to_string() + ")");
         // Pre-compute every function's parameter signature BEFORE emitting any body, so
         // forward-reference call sites resolve callee param types via find_func_param_types.
@@ -701,7 +701,7 @@ class LLVMEmitter {
         let emitted: mut _utils.List<string> = new _utils.List<string>();
         let fi: mut i64 = 0;
         while (fi < cast<i64>(module.functions.size())) {
-            let func: ir.IRFunction = module.functions.at(cast<u64>(fi)).some;
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
             // Skip already-emitted functions (dedup)
             let fname: string = this.llvm_func_name(func.name);
             let already: mut bool = false;
@@ -717,8 +717,8 @@ class LLVMEmitter {
                 let has_body: mut bool = false;
                 let ii: mut i64 = 0;
                 while (ii < cast<i64>(func.instructions.size())) {
-                    let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-                    if (!(inst is ir.IRInstruction.ret) && !(inst is ir.IRInstruction.ret_void) && !(inst is ir.IRInstruction.arg)) {
+                    let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+                    if (!(inst is IRInstruction.ret) && !(inst is IRInstruction.ret_void) && !(inst is IRInstruction.arg)) {
                         has_body = true;
                     }
                     ii = ii + 1;
@@ -734,7 +734,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_function(mut this, func: ir.IRFunction) {
+    fun emit_function(mut this, func: IRFunction) {
         _utils.trace_enter("Enter emit_function(func=" + func.to_string() + ")");
         this.reg_map = new _utils.List<RegMapping>();
         this.reg_type_map = new _utils.List<RegMapping>();
@@ -759,7 +759,7 @@ class LLVMEmitter {
         // Map parameters: ARG instruction creates %tN → %paramname mapping
         let pi: mut i64 = 0;
         while (pi < cast<i64>(func.parameters.size())) {
-            let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+            let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
             this.reg_map.push(new RegMapping("%" + p.name, "%" + p.name));
             this.param_names.push(p.name);
             let param_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
@@ -789,7 +789,7 @@ class LLVMEmitter {
         if (dbg_on && !func.is_extern) {
             let pai: mut i64 = 0;
             while (pai < cast<i64>(func.parameters.size())) {
-                let p: ir.IRParameter = func.parameters.at(cast<u64>(pai)).some;
+                let p: IRParameter = func.parameters.at(cast<u64>(pai)).some;
                 let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
                 if (this.is_aggregate_llvm_type(p_llvm_type)) { pai = pai + 1; continue; }
                 let var_id: string = this.debug_make_local(p.name, p.ir_type, p.location.line, pai + 1);
@@ -807,7 +807,7 @@ class LLVMEmitter {
         pi = 0;
         while (pi < cast<i64>(func.parameters.size())) {
             if (pi > 0 || use_sret) { this.sb.append(", "); }
-            let p: ir.IRParameter = func.parameters.at(cast<u64>(pi)).some;
+            let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
             let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
             // For >16-byte aggregates (value-type classes and large enums), use
             // byval so clang passes the argument via a pointer consistently between
@@ -828,7 +828,7 @@ class LLVMEmitter {
         {
             let bi: mut i64 = 0;
             while (bi < cast<i64>(func.parameters.size())) {
-                let p: ir.IRParameter = func.parameters.at(cast<u64>(bi)).some;
+                let p: IRParameter = func.parameters.at(cast<u64>(bi)).some;
                 let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
                 if (this.llvm_type_size(p_llvm_type) > 16) {
                     this.register_llvm_type("%" + p.name, "ptr");
@@ -884,8 +884,8 @@ class LLVMEmitter {
         let block_terminated: mut bool = false;
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
-            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            let is_label: bool = inst is ir.IRInstruction.label_inst;
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            let is_label: bool = inst is IRInstruction.label_inst;
             if (is_label) {
                 if (block_terminated == false) {
                     this.sb.append("  br label %" + inst.label_inst.label.name + "\n");
@@ -896,12 +896,12 @@ class LLVMEmitter {
                 // RVO: an elided ASSIGN (its source CALL wrote the value directly
                 // into the destination's storage) must be skipped to avoid a
                 // redundant/overflowing store.
-                let skip_inst: bool = inst is ir.IRInstruction.assign && this.is_elided_assign(ii);
+                let skip_inst: bool = inst is IRInstruction.assign && this.is_elided_assign(ii);
                 if (!skip_inst) {
                     this.emit_instruction(inst);
                 }
             }
-            if (inst is ir.IRInstruction.br || inst is ir.IRInstruction.br_cond || inst is ir.IRInstruction.ret || inst is ir.IRInstruction.ret_void) {
+            if (inst is IRInstruction.br || inst is IRInstruction.br_cond || inst is IRInstruction.ret || inst is IRInstruction.ret_void) {
                 block_terminated = true;
             }
             ii = ii + 1;
@@ -914,7 +914,7 @@ class LLVMEmitter {
         this.sb.append("}\n\n");
     }
 
-    fun emit_main(mut this, module: ir.IRModule) {
+    fun emit_main(mut this, module: IRModule) {
         _utils.trace_enter("Enter emit_main(module=" + module.to_string() + ")");
         if (cast<i64>(module.entry_functions.size()) > 0) {
             this.has_main = true;
@@ -927,7 +927,7 @@ class LLVMEmitter {
             // Register global reference-type variables as GC roots
             let gi: mut i64 = 0;
             while (gi < cast<i64>(module.global_variables.size())) {
-                let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+                let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
                 if (this.is_string_type(gv.ir_type) || this.is_ref_type(gv.ir_type)) {
                     let global_name: string = "@" + this.sanitize_name(gv.name);
                     this.sb.append("  call void @_emperor_gc_add_root(ptr " + global_name + ")\n");
@@ -937,7 +937,7 @@ class LLVMEmitter {
             // Initialize global variables with non-trivial initializers
             gi = 0;
             while (gi < cast<i64>(module.global_variables.size())) {
-                let gv: ir.IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+                let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
                 if (this.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
                     let val: string = this.strip_string_quotes(gv.initializer_value);
                     let entry: Option<StringLitEntry> = this.find_string_lit(val);
@@ -950,7 +950,7 @@ class LLVMEmitter {
             }
             let i: mut i64 = 0;
             while (i < cast<i64>(module.entry_functions.size())) {
-                let entry: ir.IRFunction = module.entry_functions.at(cast<u64>(i)).some;
+                let entry: IRFunction = module.entry_functions.at(cast<u64>(i)).some;
                 this.sb.append("  call void " + this.llvm_func_name(entry.name) + "()\n");
                 i = i + 1;
             }
@@ -961,33 +961,33 @@ class LLVMEmitter {
 
     // --- Layout building ---
 
-    fun build_layout_tables(mut this, unit: bound.BoundCompilationUnit) {
+    fun build_layout_tables(mut this, unit: BoundCompilationUnit) {
         _utils.trace_enter("Enter build_layout_tables");
         // Pass 1: build all enum layouts first (classes may reference them)
         let di: mut i64 = 0;
         while (di < cast<i64>(unit.definitions.size())) {
-            let def: bound.BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
+            let def: BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
             this.build_enum_layouts_for_def(def);
             di = di + 1;
         }
         // Pass 2: build class layouts (can now reference enum layouts)
         di = 0;
         while (di < cast<i64>(unit.definitions.size())) {
-            let def: bound.BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
+            let def: BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
             this.build_class_layouts_for_def(def);
             di = di + 1;
         }
     }
 
-    fun build_enum_layouts_for_def(mut this, def: bound.BoundDefinition) {
+    fun build_enum_layouts_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter build_enum_layouts_for_def");
-        if (def is bound.BoundDefinition.enum_def) {
+        if (def is BoundDefinition.enum_def) {
             if (cast<i64>(def.enum_def.generic_params.size()) == 0) {
                 this.build_enum_layout(def.enum_def);
             }
         }
-        if (def is bound.BoundDefinition.namespace_def) {
-            let ns: bound.BoundNamespaceDefinition = def.namespace_def;
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ns.children.size())) {
                 this.build_enum_layouts_for_def(ns.children.at(cast<u64>(i)).some);
@@ -996,15 +996,15 @@ class LLVMEmitter {
         }
     }
 
-    fun build_class_layouts_for_def(mut this, def: bound.BoundDefinition) {
+    fun build_class_layouts_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter build_class_layouts_for_def");
-        if (def is bound.BoundDefinition.class_def) {
+        if (def is BoundDefinition.class_def) {
             if (!def.class_def.is_generic_template) {
                 this.build_class_layout(def.class_def);
             }
         }
-        if (def is bound.BoundDefinition.namespace_def) {
-            let ns: bound.BoundNamespaceDefinition = def.namespace_def;
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ns.children.size())) {
                 this.build_class_layouts_for_def(ns.children.at(cast<u64>(i)).some);
@@ -1013,7 +1013,7 @@ class LLVMEmitter {
         }
     }
 
-    fun build_class_layout(mut this, cls: bound.BoundClassDefinition) {
+    fun build_class_layout(mut this, cls: BoundClassDefinition) {
         _utils.trace_enter("Enter build_class_layout");
         let is_value: mut bool = true;
         if (cls.is_value_class.is_some()) {
@@ -1034,15 +1034,15 @@ class LLVMEmitter {
         let field_idx: mut i64 = 1;
         let fi: mut i64 = 0;
         while (fi < cast<i64>(cls.fields.size())) {
-            let fdef: bound.BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
-            if (fdef is bound.BoundDefinition.class_field) {
-                let cf: bound.BoundClassFieldDefinition = fdef.class_field;
+            let fdef: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fdef is BoundDefinition.class_field) {
+                let cf: BoundClassFieldDefinition = fdef.class_field;
                 let field_llvm_type: string = this.bound_type_to_llvm_type(cf.bound_type);
                 let field_size: i64 = this.llvm_type_size(field_llvm_type);
                 let field_align: i64 = this.llvm_type_align(field_llvm_type);
                 let aligned_offset: i64 = this.align_up(offset, field_align);
                 let fl: mut FieldLayout = new FieldLayout(cf.name, field_llvm_type, aligned_offset, field_idx);
-                fl.bound_type = new Option<bound.BoundType>.some(cf.bound_type);
+                fl.bound_type = new Option<BoundType>.some(cf.bound_type);
                 layout.fields.push(fl);
                 offset = aligned_offset + field_size;
                 field_idx = field_idx + 1;
@@ -1054,12 +1054,12 @@ class LLVMEmitter {
         // Collect vtable info from class's implemented interfaces
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
-            let vtable: bound.BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+            let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
             let iface_name: string = vtable.interface_type.display_name();
             let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
             let si: mut i64 = 0;
             while (si < cast<i64>(vtable.slots.size())) {
-                let slot: bound.BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                let slot: BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
                 if (slot.implementation_method.is_some()) {
                     let func_name: string = this.llvm_func_name(slot.implementation_method.some.full_name);
                     iface_vtable.method_ptrs.push(func_name);
@@ -1076,7 +1076,7 @@ class LLVMEmitter {
         this.class_layouts.push(layout);
     }
 
-    fun build_enum_layout(mut this, enum_def: bound.BoundEnumDefinition) {
+    fun build_enum_layout(mut this, enum_def: BoundEnumDefinition) {
         _utils.trace_enter("Enter build_enum_layout");
         let layout: mut EnumLayout = new EnumLayout(this.strip_global_prefix(enum_def.full_name));
         let has_payload: mut bool = false;
@@ -1085,11 +1085,11 @@ class LLVMEmitter {
 
         let mi: mut i64 = 0;
         while (mi < cast<i64>(enum_def.members.size())) {
-            let member: bound.BoundEnumMemberDefinition = enum_def.members.at(cast<u64>(mi)).some;
-            let mt: bound.BoundType = member.member_type;
-            let is_void: bool = mt.kind is bound.TypeKind.PrimitiveKind
-                && mt.primitive is bound.PrimitiveType.VoidType;
-            let is_self_enum: bool = mt.kind is bound.TypeKind.EnumKind
+            let member: BoundEnumMemberDefinition = enum_def.members.at(cast<u64>(mi)).some;
+            let mt: BoundType = member.member_type;
+            let is_void: bool = mt.kind is TypeKind.PrimitiveKind
+                && mt.primitive is PrimitiveType.VoidType;
+            let is_self_enum: bool = mt.kind is TypeKind.EnumKind
                 && mt.display_name() == enum_name;
             if (is_void || is_self_enum) {
                 let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, "");
@@ -1097,7 +1097,7 @@ class LLVMEmitter {
             } else {
                 let member_llvm_type: string = this.bound_type_to_llvm_type(mt);
                 let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, member_llvm_type);
-                variant.payload_bound_type = new Option<bound.BoundType>.some(mt);
+                variant.payload_bound_type = new Option<BoundType>.some(mt);
                 layout.variants.push(variant);
                 has_payload = true;
                 if (payload_type == "" || this.llvm_type_size(member_llvm_type) > this.llvm_type_size(payload_type)) {
@@ -1113,12 +1113,12 @@ class LLVMEmitter {
         // Collect vtable info from enum's implemented interfaces
         let vi: mut i64 = 0;
         while (vi < cast<i64>(enum_def.vtables.size())) {
-            let vtable: bound.BoundVTable = enum_def.vtables.at(cast<u64>(vi)).some;
+            let vtable: BoundVTable = enum_def.vtables.at(cast<u64>(vi)).some;
             let iface_name: string = vtable.interface_type.display_name();
             let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
             let si: mut i64 = 0;
             while (si < cast<i64>(vtable.slots.size())) {
-                let slot: bound.BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                let slot: BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
                 if (slot.implementation_method.is_some()) {
                     let func_name: string = this.llvm_func_name(slot.implementation_method.some.full_name);
                     iface_vtable.method_ptrs.push(func_name);
@@ -1550,41 +1550,43 @@ class LLVMEmitter {
 
     // --- BoundType to LLVM type ---
 
-    fun bound_type_to_llvm_type(this, bt: bound.BoundType) -> string {
+    fun bound_type_to_llvm_type(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter bound_type_to_llvm_type");
-        if (bt.kind is bound.TypeKind.PrimitiveKind) {
+        if (bt.kind is TypeKind.PrimitiveKind) {
             return this.primitive_to_llvm(bt.primitive);
         }
-        if (bt.kind is bound.TypeKind.ClassKind) {
+        if (bt.kind is TypeKind.ClassKind) {
             return this.class_type_to_llvm(bt);
         }
-        if (bt.kind is bound.TypeKind.EnumKind) {
+        if (bt.kind is TypeKind.EnumKind) {
             let name: string = this.resolve_type_layout_name(bt);
             let found: Option<EnumLayout> = this.find_enum_layout(name);
             if (found.is_some()) {
                 return found.some.llvm_struct_type;
             }
+            __builtin.eprintln("error[E_INTERNAL]: Enum layout not found in bound_type_to_llvm_type"); __builtin.exit(1);
             return "i64";
         }
-        if (bt.kind is bound.TypeKind.InterfaceKind) {
-            return "ptr";
+        if (bt.kind is TypeKind.InterfaceKind) {
+            __builtin.eprintln("error[E_INTERNAL]: Class layout not found in class_type_to_llvm"); __builtin.exit(1);
+        return "ptr";
         }
         return "ptr";
     }
 
-    fun resolve_type_layout_name(this, bt: bound.BoundType) -> string {
+    fun resolve_type_layout_name(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter resolve_type_layout_name");
         if (bt.type_definition.is_some()) {
-            let def: bound.BoundDefinition = bt.type_definition.some;
-            if (def is bound.BoundDefinition.class_def) {
-                let cls: bound.BoundClassDefinition = def.class_def;
+            let def: BoundDefinition = bt.type_definition.some;
+            if (def is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = def.class_def;
                 if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(cls.generic_params.size()) > 0) {
                     return this.compute_mangled_name(cls.name, bt);
                 }
                 return this.strip_global_prefix(cls.full_name);
             }
-            if (def is bound.BoundDefinition.enum_def) {
-                let e: bound.BoundEnumDefinition = def.enum_def;
+            if (def is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = def.enum_def;
                 if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(e.generic_params.size()) > 0) {
                     return this.compute_mangled_name(e.name, bt);
                 }
@@ -1594,14 +1596,14 @@ class LLVMEmitter {
         return bt.display_name();
     }
 
-    fun compute_mangled_name(this, base_name: string, bt: bound.BoundType) -> string {
+    fun compute_mangled_name(this, base_name: string, bt: BoundType) -> string {
         _utils.trace_enter("Enter compute_mangled_name(base_name=" + cast<string>(base_name) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(base_name);
         let i: mut i64 = 0;
         while (i < cast<i64>(bt.generic_args.size())) {
             sb2.append("__");
-            let arg: bound.BoundType = bt.generic_args.at(cast<u64>(i)).some;
+            let arg: BoundType = bt.generic_args.at(cast<u64>(i)).some;
             let arg_name: string = arg.display_name();
             let sanitized: mut StringBuilder = new StringBuilder();
             let j: mut i64 = 0;
@@ -1620,7 +1622,7 @@ class LLVMEmitter {
         return sb2.to_string();
     }
 
-    fun class_type_to_llvm(this, bt: bound.BoundType) -> string {
+    fun class_type_to_llvm(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter class_type_to_llvm");
         let name: string = this.resolve_type_layout_name(bt);
         let found: Option<ClassLayout> = this.find_class_layout(name);
@@ -1634,22 +1636,22 @@ class LLVMEmitter {
         return "ptr";
     }
 
-    fun primitive_to_llvm(this, p: bound.PrimitiveType) -> string {
+    fun primitive_to_llvm(this, p: PrimitiveType) -> string {
         _utils.trace_enter("Enter primitive_to_llvm");
-        if (p is bound.PrimitiveType.I8) { return "i8"; }
-        if (p is bound.PrimitiveType.I16) { return "i16"; }
-        if (p is bound.PrimitiveType.I32) { return "i32"; }
-        if (p is bound.PrimitiveType.I64) { return "i64"; }
-        if (p is bound.PrimitiveType.U8) { return "i8"; }
-        if (p is bound.PrimitiveType.U16) { return "i16"; }
-        if (p is bound.PrimitiveType.U32) { return "i32"; }
-        if (p is bound.PrimitiveType.U64) { return "i64"; }
-        if (p is bound.PrimitiveType.F32) { return "float"; }
-        if (p is bound.PrimitiveType.F64) { return "double"; }
-        if (p is bound.PrimitiveType.BoolType) { return "i8"; }
-        if (p is bound.PrimitiveType.CharType) { return "i32"; }
-        if (p is bound.PrimitiveType.StringType) { return "ptr"; }
-        if (p is bound.PrimitiveType.VoidType) { return "void"; }
+        if (p is PrimitiveType.I8) { return "i8"; }
+        if (p is PrimitiveType.I16) { return "i16"; }
+        if (p is PrimitiveType.I32) { return "i32"; }
+        if (p is PrimitiveType.I64) { return "i64"; }
+        if (p is PrimitiveType.U8) { return "i8"; }
+        if (p is PrimitiveType.U16) { return "i16"; }
+        if (p is PrimitiveType.U32) { return "i32"; }
+        if (p is PrimitiveType.U64) { return "i64"; }
+        if (p is PrimitiveType.F32) { return "float"; }
+        if (p is PrimitiveType.F64) { return "double"; }
+        if (p is PrimitiveType.BoolType) { return "i8"; }
+        if (p is PrimitiveType.CharType) { return "i32"; }
+        if (p is PrimitiveType.StringType) { return "ptr"; }
+        if (p is PrimitiveType.VoidType) { return "void"; }
         return "ptr";
     }
 
@@ -1746,35 +1748,35 @@ class LLVMEmitter {
     }
 
     // Map a bound PrimitiveType to its IR-type string (for debug type lookup).
-    fun primitive_to_debug_ir(this, p: bound.PrimitiveType) -> string {
+    fun primitive_to_debug_ir(this, p: PrimitiveType) -> string {
         _utils.trace_enter("Enter primitive_to_debug_ir");
-        if (p is bound.PrimitiveType.BoolType) { return "bool"; }
-        if (p is bound.PrimitiveType.I8) { return "i8"; }
-        if (p is bound.PrimitiveType.I16) { return "i16"; }
-        if (p is bound.PrimitiveType.I32) { return "i32"; }
-        if (p is bound.PrimitiveType.I64) { return "i64"; }
-        if (p is bound.PrimitiveType.U8) { return "u8"; }
-        if (p is bound.PrimitiveType.U16) { return "u16"; }
-        if (p is bound.PrimitiveType.U32) { return "u32"; }
-        if (p is bound.PrimitiveType.U64) { return "u64"; }
-        if (p is bound.PrimitiveType.F32) { return "f32"; }
-        if (p is bound.PrimitiveType.F64) { return "f64"; }
-        if (p is bound.PrimitiveType.CharType) { return "char"; }
-        if (p is bound.PrimitiveType.StringType) { return "ref<string>"; }
-        if (p is bound.PrimitiveType.VoidType) { return "void"; }
+        if (p is PrimitiveType.BoolType) { return "bool"; }
+        if (p is PrimitiveType.I8) { return "i8"; }
+        if (p is PrimitiveType.I16) { return "i16"; }
+        if (p is PrimitiveType.I32) { return "i32"; }
+        if (p is PrimitiveType.I64) { return "i64"; }
+        if (p is PrimitiveType.U8) { return "u8"; }
+        if (p is PrimitiveType.U16) { return "u16"; }
+        if (p is PrimitiveType.U32) { return "u32"; }
+        if (p is PrimitiveType.U64) { return "u64"; }
+        if (p is PrimitiveType.F32) { return "f32"; }
+        if (p is PrimitiveType.F64) { return "f64"; }
+        if (p is PrimitiveType.CharType) { return "char"; }
+        if (p is PrimitiveType.StringType) { return "ref<string>"; }
+        if (p is PrimitiveType.VoidType) { return "void"; }
         return "ptr";
     }
 
     // Map a BoundType to an IR-type string for debug purposes (reuses layout name resolution for generics).
-    fun bound_type_to_debug_ir(this, bt: bound.BoundType) -> string {
+    fun bound_type_to_debug_ir(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter bound_type_to_debug_ir");
-        if (bt.kind is bound.TypeKind.PrimitiveKind) {
+        if (bt.kind is TypeKind.PrimitiveKind) {
             return this.primitive_to_debug_ir(bt.primitive);
         }
-        if (bt.kind is bound.TypeKind.ClassKind) {
+        if (bt.kind is TypeKind.ClassKind) {
             return "ref<" + this.resolve_type_layout_name(bt) + ">";
         }
-        if (bt.kind is bound.TypeKind.EnumKind) {
+        if (bt.kind is TypeKind.EnumKind) {
             return "enum<" + this.resolve_type_layout_name(bt) + ">";
         }
         return "ptr";
@@ -1953,33 +1955,33 @@ class LLVMEmitter {
     // --- Instruction lowering ---
 
     // Get source location from an IR instruction
-    fun get_inst_loc(inst: ir.IRInstruction) -> ast.SourceLocation {
+    fun get_inst_loc(inst: IRInstruction) -> SourceLocation {
         _utils.trace_enter("Enter get_inst_loc(inst=" + inst.display() + ")");
-        if (inst is ir.IRInstruction.const_inst) { return inst.const_inst.location; }
-        if (inst is ir.IRInstruction.arg) { return inst.arg.location; }
-        if (inst is ir.IRInstruction.assign) { return inst.assign.location; }
-        if (inst is ir.IRInstruction.cast_inst) { return inst.cast_inst.location; }
-        if (inst is ir.IRInstruction.binop) { return inst.binop.location; }
-        if (inst is ir.IRInstruction.unaryop) { return inst.unaryop.location; }
-        if (inst is ir.IRInstruction.rdmbr) { return inst.rdmbr.location; }
-        if (inst is ir.IRInstruction.wrmbr) { return inst.wrmbr.location; }
-        if (inst is ir.IRInstruction.br) { return inst.br.location; }
-        if (inst is ir.IRInstruction.br_cond) { return inst.br_cond.location; }
-        if (inst is ir.IRInstruction.ret) { return inst.ret.location; }
-        if (inst is ir.IRInstruction.ret_void) { return inst.ret_void.location; }
-        if (inst is ir.IRInstruction.call) { return inst.call.location; }
-        if (inst is ir.IRInstruction.call_void) { return inst.call_void.location; }
-        if (inst is ir.IRInstruction.call_virt) { return inst.call_virt.location; }
-        if (inst is ir.IRInstruction.new_inst) { return inst.new_inst.location; }
-        if (inst is ir.IRInstruction.new_enum) { return inst.new_enum.location; }
-        if (inst is ir.IRInstruction.isenum) { return inst.isenum.location; }
-        if (inst is ir.IRInstruction.rdenum) { return inst.rdenum.location; }
-        if (inst is ir.IRInstruction.isinstance) { return inst.isinstance.location; }
-        if (inst is ir.IRInstruction.box) { return inst.box.location; }
-        if (inst is ir.IRInstruction.unbox) { return inst.unbox.location; }
-        if (inst is ir.IRInstruction.global_load) { return inst.global_load.location; }
-        if (inst is ir.IRInstruction.global_store) { return inst.global_store.location; }
-        return new ast.SourceLocation("", 0, 0);
+        if (inst is IRInstruction.const_inst) { return inst.const_inst.location; }
+        if (inst is IRInstruction.arg) { return inst.arg.location; }
+        if (inst is IRInstruction.assign) { return inst.assign.location; }
+        if (inst is IRInstruction.cast_inst) { return inst.cast_inst.location; }
+        if (inst is IRInstruction.binop) { return inst.binop.location; }
+        if (inst is IRInstruction.unaryop) { return inst.unaryop.location; }
+        if (inst is IRInstruction.rdmbr) { return inst.rdmbr.location; }
+        if (inst is IRInstruction.wrmbr) { return inst.wrmbr.location; }
+        if (inst is IRInstruction.br) { return inst.br.location; }
+        if (inst is IRInstruction.br_cond) { return inst.br_cond.location; }
+        if (inst is IRInstruction.ret) { return inst.ret.location; }
+        if (inst is IRInstruction.ret_void) { return inst.ret_void.location; }
+        if (inst is IRInstruction.call) { return inst.call.location; }
+        if (inst is IRInstruction.call_void) { return inst.call_void.location; }
+        if (inst is IRInstruction.call_virt) { return inst.call_virt.location; }
+        if (inst is IRInstruction.new_inst) { return inst.new_inst.location; }
+        if (inst is IRInstruction.new_enum) { return inst.new_enum.location; }
+        if (inst is IRInstruction.isenum) { return inst.isenum.location; }
+        if (inst is IRInstruction.rdenum) { return inst.rdenum.location; }
+        if (inst is IRInstruction.isinstance) { return inst.isinstance.location; }
+        if (inst is IRInstruction.box) { return inst.box.location; }
+        if (inst is IRInstruction.unbox) { return inst.unbox.location; }
+        if (inst is IRInstruction.global_load) { return inst.global_load.location; }
+        if (inst is IRInstruction.global_store) { return inst.global_store.location; }
+        return new SourceLocation("", 0, 0);
     }
 
     // Emit an instruction line with debug info suffix
@@ -1988,40 +1990,40 @@ class LLVMEmitter {
         this.sb.append(line + this.current_dbg + "\n");
     }
 
-    fun emit_instruction(mut this, inst: ir.IRInstruction) {
+    fun emit_instruction(mut this, inst: IRInstruction) {
         _utils.trace_enter("Enter emit_instruction(inst=" + inst.display() + ")");
         // Set current debug location from instruction
-        let loc: ast.SourceLocation = get_inst_loc(inst);
+        let loc: SourceLocation = get_inst_loc(inst);
         this.current_dbg = this.debug_loc(loc);
         // Skip debug for labels
-        if (inst is ir.IRInstruction.label_inst) { this.current_dbg = ""; this.emit_label(inst.label_inst); return; }
-        if (inst is ir.IRInstruction.const_inst) { this.emit_const(inst.const_inst); this.maybe_emit_imm_dbg(inst.const_inst.result, this.current_dbg); return; }
-        if (inst is ir.IRInstruction.arg) { this.emit_arg(inst.arg); return; }
-        if (inst is ir.IRInstruction.assign) { this.emit_assign(inst.assign); this.maybe_emit_imm_dbg(inst.assign.dest, this.current_dbg); return; }
-        if (inst is ir.IRInstruction.cast_inst) { this.emit_cast(inst.cast_inst); return; }
-        if (inst is ir.IRInstruction.binop) { this.emit_binop(inst.binop); return; }
-        if (inst is ir.IRInstruction.unaryop) { this.emit_unaryop(inst.unaryop); return; }
-        if (inst is ir.IRInstruction.rdmbr) { this.emit_rdmbr(inst.rdmbr); return; }
-        if (inst is ir.IRInstruction.wrmbr) { this.emit_wrmbr(inst.wrmbr); return; }
-        if (inst is ir.IRInstruction.br) { this.emit_br(inst.br); return; }
-        if (inst is ir.IRInstruction.br_cond) { this.emit_br_cond(inst.br_cond); return; }
-        if (inst is ir.IRInstruction.ret) { this.emit_ret(inst.ret); return; }
-        if (inst is ir.IRInstruction.ret_void) { this.emit_ret_void(); return; }
-        if (inst is ir.IRInstruction.call) { this.emit_call(inst.call); return; }
-        if (inst is ir.IRInstruction.call_void) { this.emit_call_void(inst.call_void); return; }
-        if (inst is ir.IRInstruction.call_virt) { this.emit_call_virt(inst.call_virt); return; }
-        if (inst is ir.IRInstruction.new_inst) { this.emit_new(inst.new_inst); return; }
-        if (inst is ir.IRInstruction.new_enum) { this.emit_new_enum(inst.new_enum); return; }
-        if (inst is ir.IRInstruction.isenum) { this.emit_isenum(inst.isenum); return; }
-        if (inst is ir.IRInstruction.rdenum) { this.emit_rdenum(inst.rdenum); return; }
-        if (inst is ir.IRInstruction.isinstance) { this.emit_isinstance(inst.isinstance); return; }
-        if (inst is ir.IRInstruction.box) { this.emit_box(inst.box); return; }
-        if (inst is ir.IRInstruction.unbox) { this.emit_unbox(inst.unbox); return; }
-        if (inst is ir.IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
-        if (inst is ir.IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
+        if (inst is IRInstruction.label_inst) { this.current_dbg = ""; this.emit_label(inst.label_inst); return; }
+        if (inst is IRInstruction.const_inst) { this.emit_const(inst.const_inst); this.maybe_emit_imm_dbg(inst.const_inst.result, this.current_dbg); return; }
+        if (inst is IRInstruction.arg) { this.emit_arg(inst.arg); return; }
+        if (inst is IRInstruction.assign) { this.emit_assign(inst.assign); this.maybe_emit_imm_dbg(inst.assign.dest, this.current_dbg); return; }
+        if (inst is IRInstruction.cast_inst) { this.emit_cast(inst.cast_inst); return; }
+        if (inst is IRInstruction.binop) { this.emit_binop(inst.binop); return; }
+        if (inst is IRInstruction.unaryop) { this.emit_unaryop(inst.unaryop); return; }
+        if (inst is IRInstruction.rdmbr) { this.emit_rdmbr(inst.rdmbr); return; }
+        if (inst is IRInstruction.wrmbr) { this.emit_wrmbr(inst.wrmbr); return; }
+        if (inst is IRInstruction.br) { this.emit_br(inst.br); return; }
+        if (inst is IRInstruction.br_cond) { this.emit_br_cond(inst.br_cond); return; }
+        if (inst is IRInstruction.ret) { this.emit_ret(inst.ret); return; }
+        if (inst is IRInstruction.ret_void) { this.emit_ret_void(); return; }
+        if (inst is IRInstruction.call) { this.emit_call(inst.call); return; }
+        if (inst is IRInstruction.call_void) { this.emit_call_void(inst.call_void); return; }
+        if (inst is IRInstruction.call_virt) { this.emit_call_virt(inst.call_virt); return; }
+        if (inst is IRInstruction.new_inst) { this.emit_new(inst.new_inst); return; }
+        if (inst is IRInstruction.new_enum) { this.emit_new_enum(inst.new_enum); return; }
+        if (inst is IRInstruction.isenum) { this.emit_isenum(inst.isenum); return; }
+        if (inst is IRInstruction.rdenum) { this.emit_rdenum(inst.rdenum); return; }
+        if (inst is IRInstruction.isinstance) { this.emit_isinstance(inst.isinstance); return; }
+        if (inst is IRInstruction.box) { this.emit_box(inst.box); return; }
+        if (inst is IRInstruction.unbox) { this.emit_unbox(inst.unbox); return; }
+        if (inst is IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
+        if (inst is IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
     }
 
-    fun emit_const(mut this, inst: ir.IRConst) {
+    fun emit_const(mut this, inst: IRConst) {
         _utils.trace_enter("Enter emit_const(inst=" + inst.display() + ")");
         let ir_type: string = inst.result.get_ir_type();
         let result_name: string = inst.result.display();
@@ -2075,7 +2077,7 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, llvm_type);
     }
 
-    fun emit_arg(mut this, inst: ir.IRArg) {
+    fun emit_arg(mut this, inst: IRArg) {
         _utils.trace_enter("Enter emit_arg(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let param_name: string = "%" + inst.param_name;
@@ -2091,7 +2093,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_assign(mut this, inst: ir.IRAssign) {
+    fun emit_assign(mut this, inst: IRAssign) {
         _utils.trace_enter("Enter emit_assign(inst=" + inst.display() + ")");
         let dest_name: string = inst.dest.display();
         let src_resolved: string = this.resolve_value(inst.src);
@@ -2121,7 +2123,7 @@ class LLVMEmitter {
         this.register_llvm_type(dest_name, llvm_type);
     }
 
-    fun emit_cast(mut this, inst: ir.IRCast) {
+    fun emit_cast(mut this, inst: IRCast) {
         _utils.trace_enter("Enter emit_cast(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let operand_resolved: mut string = this.resolve_value(inst.operand);
@@ -2185,7 +2187,7 @@ class LLVMEmitter {
         this.emit_line("  " + result_name + " = " + cast_op + " " + from_llvm + " " + operand_resolved + " to " + to_llvm);
     }
 
-    fun emit_binop(mut this, inst: ir.IRBinOp) {
+    fun emit_binop(mut this, inst: IRBinOp) {
         _utils.trace_enter("Enter emit_binop(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let left_resolved: string = this.resolve_value(inst.left);
@@ -2255,7 +2257,7 @@ class LLVMEmitter {
         return false;
     }
 
-    fun emit_unaryop(mut this, inst: ir.IRUnaryOp) {
+    fun emit_unaryop(mut this, inst: IRUnaryOp) {
         _utils.trace_enter("Enter emit_unaryop(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let operand_resolved: string = this.resolve_value(inst.operand);
@@ -2302,7 +2304,7 @@ class LLVMEmitter {
     // already yields the correct pointer (or the loaded primitive). This matters
     // once mutable-reg allocas are correctly sized as the full struct (scan_mutable_regs
     // picks the largest def type), so resolve_value returns a struct value, not a ptr.
-    fun member_base_ptr(mut this, val: ir.IRValue) -> string {
+    fun member_base_ptr(mut this, val: IRValue) -> string {
         _utils.trace_enter("Enter member_base_ptr");
         let name: string = val.display();
         if (this.is_mutable_reg(name)) {
@@ -2320,7 +2322,7 @@ class LLVMEmitter {
     // valid `ptr` argument — so use the register's own alloca. An immutable struct value
     // (e.g. an sret-RVO alias) is materialized into a fresh temp alloca. This mirrors
     // member_base_ptr's mutable-reg handling and is the call-argument counterpart to it.
-    fun struct_value_to_ptr(mut this, val: ir.IRValue, llvm_struct_type: string) -> string {
+    fun struct_value_to_ptr(mut this, val: IRValue, llvm_struct_type: string) -> string {
         _utils.trace_enter("Enter struct_value_to_ptr");
         let name: string = val.display();
         if (this.is_mutable_reg(name)) {
@@ -2333,7 +2335,7 @@ class LLVMEmitter {
         return this.materialize_enum_ptr(resolved, llvm_struct_type);
     }
 
-    fun emit_rdmbr(mut this, inst: ir.IRRdmbr) {
+    fun emit_rdmbr(mut this, inst: IRRdmbr) {
         _utils.trace_enter("Enter emit_rdmbr(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let obj_resolved: string = this.resolve_value(inst.obj);
@@ -2419,7 +2421,7 @@ class LLVMEmitter {
         this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + obj_resolved);
     }
 
-    fun emit_wrmbr(mut this, inst: ir.IRWrmbr) {
+    fun emit_wrmbr(mut this, inst: IRWrmbr) {
         _utils.trace_enter("Enter emit_wrmbr(inst=" + inst.display() + ")");
         let obj_resolved: string = this.resolve_value(inst.obj);
         let value_resolved: string = this.resolve_value(inst.value);
@@ -2454,12 +2456,12 @@ class LLVMEmitter {
         this.emit_line("  store " + llvm_type + " " + value_resolved + ", ptr " + obj_resolved);
     }
 
-    fun emit_br(mut this, inst: ir.IRBr) {
+    fun emit_br(mut this, inst: IRBr) {
         _utils.trace_enter("Enter emit_br(inst=" + inst.display() + ")");
         this.emit_line("  br label %" + inst.target.name);
     }
 
-    fun emit_br_cond(mut this, inst: ir.IRBrCond) {
+    fun emit_br_cond(mut this, inst: IRBrCond) {
         _utils.trace_enter("Enter emit_br_cond(inst=" + inst.display() + ")");
         let cond_resolved: string = this.resolve_value(inst.cond);
         let is_icmp_result: bool = this.is_icmp_value(cond_resolved);
@@ -2473,7 +2475,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_ret(mut this, inst: ir.IRRet) {
+    fun emit_ret(mut this, inst: IRRet) {
         _utils.trace_enter("Enter emit_ret(inst=" + inst.display() + ")");
         if (this.current_sret_llvm_type != "") {
             // sret: store the return struct into the sret buffer, ret void
@@ -2505,7 +2507,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_call(mut this, inst: ir.IRCall) {
+    fun emit_call(mut this, inst: IRCall) {
         _utils.trace_enter("Enter emit_call(inst=" + inst.display() + ")");
         let result_name: string = inst.result_value.display();
         let func_name: string = this.llvm_func_name(inst.func_name);
@@ -2613,14 +2615,14 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_call_void(mut this, inst: ir.IRCallVoid) {
+    fun emit_call_void(mut this, inst: IRCallVoid) {
         _utils.trace_enter("Enter emit_call_void(inst=" + inst.display() + ")");
         let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
         let func_name: string = this.llvm_func_name(inst.func_name);
         this.emit_line("  call void " + func_name + "(" + args_str + ")");
     }
 
-    fun emit_call_virt(mut this, inst: ir.IRCallVirt) {
+    fun emit_call_virt(mut this, inst: IRCallVirt) {
         _utils.trace_enter("Enter emit_call_virt(inst=" + inst.display() + ")");
         this.needs_vtable_lookup = true;
         let obj_resolved: string = this.resolve_value(inst.obj);
@@ -2639,7 +2641,7 @@ class LLVMEmitter {
         let ai: mut i64 = 0;
         while (ai < cast<i64>(inst.args.size())) {
             if (ai > 0) { args_sb.append(", "); }
-            let arg: ir.IRValue = inst.args.at(cast<u64>(ai)).some;
+            let arg: IRValue = inst.args.at(cast<u64>(ai)).some;
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = this.ir_type_to_llvm(arg.get_ir_type());
             args_sb.append(arg_type + " " + resolved);
@@ -2682,7 +2684,7 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, "ptr");
     }
 
-    fun emit_new(mut this, inst: ir.IRNew) {
+    fun emit_new(mut this, inst: IRNew) {
         _utils.trace_enter("Enter emit_new(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let type_name: string = this.strip_global_prefix(inst.type_name);
@@ -2701,14 +2703,14 @@ class LLVMEmitter {
         this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
     }
 
-    fun emit_args_with_first(mut this, args: _utils.List<ir.IRValue>, first_arg: string) -> string {
+    fun emit_args_with_first(mut this, args: _utils.List<IRValue>, first_arg: string) -> string {
         _utils.trace_enter("Enter emit_args_with_first(first_arg=" + cast<string>(first_arg) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(first_arg);
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
             sb2.append(", ");
-            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let arg: IRValue = args.at(cast<u64>(i)).some;
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = arg.get_ir_type();
             let llvm_type: string = this.ir_type_to_llvm(arg_type);
@@ -2743,7 +2745,7 @@ class LLVMEmitter {
         return sb2.to_string();
     }
 
-    fun emit_new_enum(mut this, inst: ir.IRNewEnum) {
+    fun emit_new_enum(mut this, inst: IRNewEnum) {
         _utils.trace_enter("Enter emit_new_enum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let raw_type_name: string = inst.type_name;
@@ -2790,9 +2792,9 @@ class LLVMEmitter {
                     while (vi < cast<i64>(layout.variants.size())) {
                         let variant: EnumVariantLayout = layout.variants.at(cast<u64>(vi)).some;
                         if (variant.index == inst.variant_idx && variant.payload_bound_type.is_some()) {
-                            let pbt: bound.BoundType = variant.payload_bound_type.some;
+                            let pbt: BoundType = variant.payload_bound_type.some;
                             // Check if the payload is a class type (not string, not primitive)
-                            if (pbt.kind is bound.TypeKind.ClassKind) {
+                            if (pbt.kind is TypeKind.ClassKind) {
                                 if (pbt.type_definition.is_some()) {
                                     let class_full_name: string = pbt.type_definition.some.class_def.full_name;
                                     let class_name: string = this.strip_global_prefix(class_full_name);
@@ -2831,7 +2833,7 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, "ptr");
     }
 
-    fun emit_isenum(mut this, inst: ir.IRIsEnum) {
+    fun emit_isenum(mut this, inst: IRIsEnum) {
         _utils.trace_enter("Enter emit_isenum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let enum_resolved: string = this.resolve_value(inst.enum_value);
@@ -2910,7 +2912,7 @@ class LLVMEmitter {
         this.emit_line("  " + result_name + " = zext i1 " + cmp_name + " to i8");
     }
 
-    fun emit_isinstance(mut this, inst: ir.IRIsInstance) {
+    fun emit_isinstance(mut this, inst: IRIsInstance) {
         _utils.trace_enter("Enter emit_isinstance(inst=" + inst.display() + ")");
         this.needs_isinstance = true;
         let result_name: string = inst.result.display();
@@ -2945,7 +2947,7 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, "i8");
     }
 
-    fun emit_box(mut this, inst: ir.IRBox) {
+    fun emit_box(mut this, inst: IRBox) {
         _utils.trace_enter("Enter emit_box(inst=" + inst.display() + ")");
         this.has_boxing = true;
         let result_name: string = inst.result.display();
@@ -2976,7 +2978,7 @@ class LLVMEmitter {
         }
     }
 
-    fun emit_unbox(mut this, inst: ir.IRUnbox) {
+    fun emit_unbox(mut this, inst: IRUnbox) {
         _utils.trace_enter("Enter emit_unbox(inst=" + inst.display() + ")");
         this.has_boxing = true;
         let result_name: string = inst.result.display();
@@ -3035,16 +3037,16 @@ class LLVMEmitter {
         return false;
     }
 
-    fun def_is_interface_type(this, def: bound.BoundDefinition, type_id: string) -> bool {
+    fun def_is_interface_type(this, def: BoundDefinition, type_id: string) -> bool {
         _utils.trace_enter("Enter def_is_interface_type(type_id=" + cast<string>(type_id) + ")");
-        if (def is bound.BoundDefinition.interface_def) {
+        if (def is BoundDefinition.interface_def) {
             if (def.interface_def.type_symbol.is_some()) {
                 if (def.interface_def.type_symbol.some.full_name == type_id) {
                     return true;
                 }
             }
         }
-        if (def is bound.BoundDefinition.namespace_def) {
+        if (def is BoundDefinition.namespace_def) {
             let i: mut i64 = 0;
             while (i < cast<i64>(def.namespace_def.children.size())) {
                 if (this.def_is_interface_type(def.namespace_def.children.at(cast<u64>(i)).some, type_id)) {
@@ -3128,7 +3130,7 @@ class LLVMEmitter {
         return this.get_llvm_type(enum_resolved);
     }
 
-    fun emit_rdenum(mut this, inst: ir.IRRdenum) {
+    fun emit_rdenum(mut this, inst: IRRdenum) {
         _utils.trace_enter("Enter emit_rdenum(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let enum_resolved: string = this.resolve_value(inst.enum_value);
@@ -3176,12 +3178,12 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, payload_load_type);
     }
 
-    fun emit_label(mut this, inst: ir.IRLabelInst) {
+    fun emit_label(mut this, inst: IRLabelInst) {
         _utils.trace_enter("Enter emit_label(inst=" + inst.display() + ")");
         this.sb.append(inst.label.name + ":\n");
     }
 
-    fun emit_global_load(mut this, inst: ir.IRGlobalLoad) {
+    fun emit_global_load(mut this, inst: IRGlobalLoad) {
         _utils.trace_enter("Enter emit_global_load(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
@@ -3190,7 +3192,7 @@ class LLVMEmitter {
         this.register_llvm_type(result_name, llvm_type);
     }
 
-    fun emit_global_store(mut this, inst: ir.IRGlobalStore) {
+    fun emit_global_store(mut this, inst: IRGlobalStore) {
         _utils.trace_enter("Enter emit_global_store(inst=" + inst.display() + ")");
         let value_resolved: string = this.resolve_value(inst.value);
         let value_type: string = inst.value.get_ir_type();
@@ -3284,14 +3286,14 @@ class LLVMEmitter {
         return "";
     }
 
-    fun emit_args_coerced(mut this, func_name: string, args: _utils.List<ir.IRValue>) -> string {
+    fun emit_args_coerced(mut this, func_name: string, args: _utils.List<IRValue>) -> string {
         _utils.trace_enter("Enter emit_args_coerced(func_name=" + cast<string>(func_name) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         let fpt: Option<FuncParamTypes> = this.find_func_param_types(func_name);
         let first: mut bool = true;
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
-            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let arg: IRValue = args.at(cast<u64>(i)).some;
             let arg_ir_type: string = arg.get_ir_type();
             let resolved: string = this.resolve_value(arg);
             // Skip void/unknown arguments (can occur from VM enum variant check issues)
@@ -3355,13 +3357,13 @@ class LLVMEmitter {
         return sb2.to_string();
     }
 
-    fun emit_args(mut this, args: _utils.List<ir.IRValue>) -> string {
+    fun emit_args(mut this, args: _utils.List<IRValue>) -> string {
         _utils.trace_enter("Enter emit_args");
         let sb2: mut StringBuilder = new StringBuilder();
         let first: mut bool = true;
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
-            let arg: ir.IRValue = args.at(cast<u64>(i)).some;
+            let arg: IRValue = args.at(cast<u64>(i)).some;
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = arg.get_ir_type();
             // Skip void/unknown arguments
@@ -3387,7 +3389,7 @@ class LLVMEmitter {
 
     // --- Value resolution ---
 
-    fun resolve_value(mut this, val: ir.IRValue) -> string {
+    fun resolve_value(mut this, val: IRValue) -> string {
         _utils.trace_enter("Enter resolve_value(val=" + val.display() + ")");
         let display: string = val.display();
         // Mutable register: emit load from alloca
@@ -3422,17 +3424,17 @@ class LLVMEmitter {
     // destination's storage directly as the sret buffer, and the dispatch loop
     // can skip the now-redundant ASSIGN. Must run before scan_mutable_regs so the
     // mutable-reg alloca can be sized to fit the sret return type.
-    fun scan_sret_elision(mut this, func: ir.IRFunction) {
+    fun scan_sret_elision(mut this, func: IRFunction) {
         _utils.trace_enter("Enter scan_sret_elision");
         this.sret_elision_map = new _utils.List<SretElision>();
         this.elided_assigns = new _utils.List<i64>();
         let n: i64 = cast<i64>(func.instructions.size());
         let i: mut i64 = 0;
         while (i < n - 1) {
-            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(i)).some;
-            let next: ir.IRInstruction = func.instructions.at(cast<u64>(i + 1)).some;
-            if (inst is ir.IRInstruction.call) {
-                if (next is ir.IRInstruction.assign) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(i)).some;
+            let next: IRInstruction = func.instructions.at(cast<u64>(i + 1)).some;
+            if (inst is IRInstruction.call) {
+                if (next is IRInstruction.assign) {
                     let call_result: string = inst.call.result_value.display();
                     let assign_dest: string = next.assign.dest.display();
                     let assign_src: string = next.assign.src.display();
@@ -3485,17 +3487,17 @@ class LLVMEmitter {
         return false;
     }
 
-    fun scan_mutable_regs(mut this, func: ir.IRFunction) {
+    fun scan_mutable_regs(mut this, func: IRFunction) {
         _utils.trace_enter("Enter scan_mutable_regs(func=" + func.to_string() + ")");
         // Collect all register names that appear as definition targets
         let all_defs: mut _utils.List<string> = new _utils.List<string>();
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
-            let inst: ir.IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            if (inst is ir.IRInstruction.const_inst) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is IRInstruction.const_inst) {
                 all_defs.push(inst.const_inst.result.display());
             }
-            if (inst is ir.IRInstruction.assign) {
+            if (inst is IRInstruction.assign) {
                 all_defs.push(inst.assign.dest.display());
             }
             ii = ii + 1;
@@ -3554,10 +3556,10 @@ class LLVMEmitter {
             }
             let fi: mut i64 = 0;
             while (fi < cast<i64>(func.instructions.size())) {
-                let inst: ir.IRInstruction = func.instructions.at(cast<u64>(fi)).some;
-                if (inst is ir.IRInstruction.const_inst) {
+                let inst: IRInstruction = func.instructions.at(cast<u64>(fi)).some;
+                if (inst is IRInstruction.const_inst) {
                     if (inst.const_inst.result.display() == name) {
-                        let res: ir.IRValue = inst.const_inst.result;
+                        let res: IRValue = inst.const_inst.result;
                         let it: string = res.get_ir_type();
                         let lt: string = this.ir_type_to_llvm(it);
                         let sz: i64 = this.llvm_type_size(lt);
@@ -3567,13 +3569,13 @@ class LLVMEmitter {
                             best_ir_type = it;
                         }
                         if (!found_line) {
-                            if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
+                            if (res is IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
                         }
                     }
                 }
-                if (inst is ir.IRInstruction.assign) {
+                if (inst is IRInstruction.assign) {
                     if (inst.assign.dest.display() == name) {
-                        let res: ir.IRValue = inst.assign.dest;
+                        let res: IRValue = inst.assign.dest;
                         let it: string = res.get_ir_type();
                         let lt: string = this.ir_type_to_llvm(it);
                         let sz: i64 = this.llvm_type_size(lt);
@@ -3583,7 +3585,7 @@ class LLVMEmitter {
                             best_ir_type = it;
                         }
                         if (!found_line) {
-                            if (res is ir.IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
+                            if (res is IRValue.named_reg) { mr_line = res.named_reg.location.line; found_line = true; }
                         }
                     }
                 }
@@ -3707,6 +3709,7 @@ class LLVMEmitter {
         if (op == "and") { return "and"; }
         if (op == "or") { return "or"; }
         if (op == "xor") { return "xor"; }
+        __builtin.eprintln("error[E_INTERNAL]: Unhandled LLVM op in llvm_op_to_llvm"); __builtin.exit(1);
         return "add";
     }
 

@@ -104,7 +104,7 @@ namespace BabyPenguin.SemanticPass
         {
             foreach (var symbol in symbolContainer.Symbols.OfType<VariableSymbol>().Where(s => s.TypeInferStatus != TypeInferStatus.ExplicitTyped))
             {
-                throw new BabyPenguinException($"Variable '{symbol.Name}' type was not inferred in TypeInferencePass", symbol.SourceLocation);
+                throw new BabyPenguinException($"Variable '{symbol.Name}' type was not inferred in TypeInferencePass", symbol.SourceLocation, code: ErrorCode.E_TYPE_INFERENCE);
             }
         }
 
@@ -137,7 +137,7 @@ namespace BabyPenguin.SemanticPass
                     if (decl.InitializeExpression != null)
                     {
                         var symbol = Model.ResolveSymbol(decl.Name, scope: ns, requireSymbolTypeInferred: false) ??
-                            throw new BabyPenguinException($"Cant resolve symbol '{decl.Name}' in namespace '{ns.FullName()}'", decl.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve symbol '{decl.Name}' in namespace '{ns.FullName()}'", decl.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                         if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
                             constructor!.CodeContainer.InferVariableType(symbol);
@@ -157,15 +157,15 @@ namespace BabyPenguin.SemanticPass
         {
             if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode && syntaxNode.EventExpression != null)
             {
-                var eventReceiverSymbol = onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName()}'", onRoutine.SourceLocation);
-                var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName() + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName()}'", onRoutine.SourceLocation);
+                var eventReceiverSymbol = onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName()}'", onRoutine.SourceLocation, code: ErrorCode.E_INTERNAL);
+                var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName() + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName()}'", onRoutine.SourceLocation, code: ErrorCode.E_NO_CONSTRUCTOR);
                 constructorBody.AllocTempSymbol(receiverConstructor.TypeInfo, onRoutine.SourceLocation);
                 var eventSymbol = constructorBody.AddExpression(syntaxNode.EventExpression, false);
 
                 if (eventSymbol.TypeNode!.GenericType?.FullName() != "__builtin.Event<?>")
-                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' is not an event", syntaxNode.EventExpression.SourceLocation);
+                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' is not an event", syntaxNode.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
                 if (eventSymbol.TypeInfo.GenericArguments[0].FullName() != onRoutine.EventType?.FullName())
-                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName()}', but got '{onRoutine.EventType?.FullName()}'", syntaxNode.EventExpression.SourceLocation);
+                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName()}', but got '{onRoutine.EventType?.FullName()}'", syntaxNode.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
 
                 if (!eventReceiverSymbol.IsClassMember)
                 {
@@ -177,7 +177,7 @@ namespace BabyPenguin.SemanticPass
                     var tempSymbol = constructorBody.AllocTempSymbol(eventReceiverSymbol.TypeInfo, onRoutine.SourceLocation);
                     constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, tempSymbol));
                     constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [tempSymbol, eventSymbol, onRoutine.FunctionSymbol!], null));
-                    var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", onRoutine.SourceLocation);
+                    var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", onRoutine.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                     constructorBody.AddInstruction(new WriteMemberInstruction(onRoutine.SourceLocation, eventReceiverSymbol, tempSymbol, thisSymbol));
                 }
             }
@@ -201,7 +201,7 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter 'this' with type '{cls.FullName()}'", sourceLocation);
+                    throw new BabyPenguinException($"Constructor function of class '{cls.Name}' should have first parameter 'this' with type '{cls.FullName()}'", sourceLocation, code: ErrorCode.E_INTERNAL);
                 }
             }
             else
@@ -247,7 +247,7 @@ namespace BabyPenguin.SemanticPass
                     constructorFunc.Parameters[0].Type.FullName() == intf.FullName())
                 {
                     if (constructorFunc.Parameters.Count > 1 || constructorFunc.Parameters[0].Name != "this")
-                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter 'this' with type '{intf.FullName()}'", sourceLocation);
+                        throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter 'this' with type '{intf.FullName()}'", sourceLocation, code: ErrorCode.E_INTERNAL);
                     if (constructorFunc.Parameters[0].Type.IsMutable == Mutability.Auto)
                     {
                         constructorFunc.Parameters[0] = new FunctionParameter("this", constructorFunc.Parameters[0].Type.WithMutability(Mutability.Immutable), 0);
@@ -257,7 +257,7 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have first parameter of type '{intf.FullName()}'", sourceLocation);
+                    throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have first parameter of type '{intf.FullName()}'", sourceLocation, code: ErrorCode.E_INTERNAL);
                 }
             }
             else
@@ -303,7 +303,7 @@ namespace BabyPenguin.SemanticPass
                 {
                     if (!temp.TypeInfo.CanImplicitlyCastTo(memberSymbol.TypeInfo))
                     {
-                        throw new BabyPenguinException($"Cannot assign type '{temp.TypeInfo.FullName()}' to type '{memberSymbol.TypeInfo.FullName()}'", varDecl.SourceLocation);
+                        throw new BabyPenguinException($"Cannot assign type '{temp.TypeInfo.FullName()}' to type '{memberSymbol.TypeInfo.FullName()}'", varDecl.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                     }
                     else
                     {
@@ -318,7 +318,7 @@ namespace BabyPenguin.SemanticPass
 
         public void InitializeEventDefinition(ICodeContainer constructor, ISymbolContainer parent, EventDefinition eventDefinition)
         {
-            var eventSymbol = Model.ResolveSymbol(eventDefinition.Name, scope: parent) ?? throw new BabyPenguinException($"Cant resolve symbol '{eventDefinition.Name}'", eventDefinition.SourceLocation);
+            var eventSymbol = Model.ResolveSymbol(eventDefinition.Name, scope: parent) ?? throw new BabyPenguinException($"Cant resolve symbol '{eventDefinition.Name}'", eventDefinition.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
             var initializeExpression = new NewExpression()
             {
                 SourceLocation = eventDefinition.SourceLocation,
@@ -332,7 +332,7 @@ namespace BabyPenguin.SemanticPass
             };
             if (eventSymbol.IsClassMember)
             {
-                var thisSymbol = Model.ResolveShortSymbol("this", scope: constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", eventDefinition.SourceLocation);
+                var thisSymbol = Model.ResolveShortSymbol("this", scope: constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", eventDefinition.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                 var symbol = constructor.AddExpression(initializeExpression, true);
                 constructor.AddInstruction(new WriteMemberInstruction(eventDefinition.SourceLocation, eventSymbol, symbol, thisSymbol));
             }

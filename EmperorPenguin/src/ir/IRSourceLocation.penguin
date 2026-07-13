@@ -1,4 +1,4 @@
-namespace ir {
+namespace emperor {
 
 // IRSourceLocation is now an alias for ast.SourceLocation.
 // All IR code should use ast.SourceLocation directly.

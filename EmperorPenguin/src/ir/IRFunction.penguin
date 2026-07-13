@@ -1,12 +1,12 @@
-namespace ir {
+namespace emperor {
 
 class IRParameter {
     name: mut string = "";
     ir_type: mut string = "";
     index: mut i64 = 0;
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, name: string, ir_type: string, index: i64, loc: ast.SourceLocation) {
+    fun new(mut this, name: string, ir_type: string, index: i64, loc: SourceLocation) {
         this.name = name;
         this.ir_type = ir_type;
         this.index = index;
@@ -23,7 +23,7 @@ class IRFunction {
     next_temp: mut i64 = 0;
     next_label: mut i64 = 0;
     is_extern: mut bool = false;
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
     // Names already allocated in this function. PenguinLang reuses source variable
     // names across sibling scopes (e.g. two `let x` in different if-branches of the
     // same function). Without uniquification they collapse onto one IR register; when
@@ -32,7 +32,7 @@ class IRFunction {
     // `let` gets its own register.
     used_reg_names: mut _utils.List<string> = new _utils.List<string>();
 
-    fun new(mut this, name: string, return_type: string, loc: ast.SourceLocation) {
+    fun new(mut this, name: string, return_type: string, loc: SourceLocation) {
         this.name = name;
         this.return_type = return_type;
         this.location = loc;
@@ -85,7 +85,7 @@ class IRFunction {
 
     fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
         let idx: i64 = cast<i64>(this.parameters.size());
-        let param_loc: ast.SourceLocation = new ast.SourceLocation(this.location.filename, line, col);
+        let param_loc: SourceLocation = new SourceLocation(this.location.filename, line, col);
         let param = new IRParameter(name, ir_type, idx, param_loc);
         this.parameters.push(param);
         return this.alloc_named_reg(name, ir_type, line, col);

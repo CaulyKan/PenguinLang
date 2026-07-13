@@ -3,7 +3,7 @@
 Generic class with string type parameter.
 
 ## Apply To
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

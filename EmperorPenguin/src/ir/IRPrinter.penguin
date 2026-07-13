@@ -1,4 +1,4 @@
-namespace ir {
+namespace emperor {
 
 class IRPrinter {
 

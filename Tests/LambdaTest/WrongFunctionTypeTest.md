@@ -19,4 +19,4 @@ Args: ``
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
+ExpectedStderr: CONTAINS `E_TYPE_MISMATCH`

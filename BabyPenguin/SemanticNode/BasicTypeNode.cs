@@ -204,7 +204,7 @@ namespace BabyPenguin.SemanticNode
         {
             if (this.Type == TypeEnum.Fun)
             {
-                if (this.GenericArguments.Count > 0) throw new BabyPenguinException("Cannot specialize a specialized type.");
+                if (this.GenericArguments.Count > 0) throw new BabyPenguinException("Cannot specialize a specialized type.", null, code: ErrorCode.E_RESOLVE_TYPE);
 
                 var typeInfo = new BasicTypeNode(Model, "fun", TypeEnum.Fun)
                 {
@@ -219,7 +219,7 @@ namespace BabyPenguin.SemanticNode
             }
             else
             {
-                throw new BabyPenguinException("Cannot specialize a basic type.");
+                throw new BabyPenguinException("Cannot specialize a basic type.", null, code: ErrorCode.E_GENERIC_ARITY);
             }
         }
 

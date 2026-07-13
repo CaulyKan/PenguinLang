@@ -12,10 +12,10 @@ namespace BabyPenguin.SemanticNode
         ITypeNode ITypeNode.Specialize(List<IType> genericArguments)
         {
             if (genericArguments.Count == 0)
-                throw new BabyPenguinException("Cannot specialize without generic arguments.");
+                throw new BabyPenguinException("Cannot specialize without generic arguments.", null, code: ErrorCode.E_UNSUPPORTED);
 
             if (genericArguments.Count > 0 && genericArguments.Count != GenericDefinitions.Count)
-                throw new BabyPenguinException("Count of generic arguments and definitions do not match.");
+                throw new BabyPenguinException("Count of generic arguments and definitions do not match.", null, code: ErrorCode.E_UNSUPPORTED);
 
             EnumNode result;
             if (SyntaxNode is EnumDefinition syntax)
@@ -76,7 +76,7 @@ namespace BabyPenguin.SemanticNode
             return n;
         }
 
-        public INamespace Namespace => Parent as Namespace ?? throw new BabyPenguinException("Enum is not inserted into model yet.");
+        public INamespace Namespace => Parent as Namespace ?? throw new BabyPenguinException("Enum is not inserted into model yet.", null, code: ErrorCode.E_UNSUPPORTED);
 
         public List<IInitialRoutine> InitialRoutines { get; } = [];
 

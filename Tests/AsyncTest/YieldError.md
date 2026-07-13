@@ -23,4 +23,4 @@ Args: ``
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
+ExpectedStderr: CONTAINS `E_YIELD_CONTEXT`

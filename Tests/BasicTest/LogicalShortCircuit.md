@@ -3,7 +3,7 @@
 Short-circuit evaluation of && and ||: RHS must not be evaluated when the result is already determined. Only EmperorPenguin Pass1 implements short-circuit codegen.
 
 ## Apply To
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

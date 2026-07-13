@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 fun indent(level: i64) -> string {
     let result: mut string = "";

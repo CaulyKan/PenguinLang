@@ -61,7 +61,7 @@ namespace BabyPenguin.VirtualMachine
 
             var sanitizedName = SanitizeName(container.FullName());
             _function = Global.IRModule?.FindFunction(sanitizedName)
-                ?? throw new BabyPenguinRuntimeException($"No IR function found for {container.FullName()} (tried {sanitizedName})");
+                ?? throw new BabyPenguinRuntimeException($"No IR function found for {container.FullName()} (tried {sanitizedName})", code: ErrorCode.E_RUNTIME_LOOKUP);
 
             // Pre-allocate register array sized to total register count (named + temp)
             var regCount = _function.RegisterCount;
@@ -379,7 +379,7 @@ namespace BabyPenguin.VirtualMachine
                                 }
                                 else
                                 {
-                                    throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                    throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
                                 }
                             }
                         }
@@ -435,7 +435,7 @@ namespace BabyPenguin.VirtualMachine
                                 }
                                 else
                                 {
-                                    throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                    throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
                                 }
                             }
                         }
@@ -804,7 +804,7 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 // Module function - call directly (no yield)
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName)
-                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
                                 var calleeCC = FindCodeContainer(ci.FuncName);
                                 var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
                                 var retVal = childFrame.RunDirect();
@@ -827,7 +827,7 @@ namespace BabyPenguin.VirtualMachine
                             if (!found)
                             {
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName)
-                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found");
+                                    ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
                                 var calleeCC = FindCodeContainer(ci.FuncName);
                                 var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
                                 childFrame.RunDirect();
@@ -988,7 +988,7 @@ namespace BabyPenguin.VirtualMachine
                     : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
                 IRConstant c => ResolveConstant(c),
                 IRGlobalRef g => Global.GlobalVariables.TryGetValue(g.Name, out var sym) ? sym.Value : new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)),
-                _ => throw new BabyPenguinRuntimeException($"Cannot resolve IR value: {val.Display()}")
+                _ => throw new BabyPenguinRuntimeException($"Cannot resolve IR value: {val.Display()}", code: ErrorCode.E_RUNTIME_INVALID_OP)
             };
         }
 
@@ -1016,7 +1016,7 @@ namespace BabyPenguin.VirtualMachine
                         return new FunctionRuntimeValue(sym.TypeInfo, sym);
                 }
 
-                throw new BabyPenguinRuntimeException($"Cannot resolve function pointer: {c.Value}");
+                throw new BabyPenguinRuntimeException($"Cannot resolve function pointer: {c.Value}", code: ErrorCode.E_RUNTIME_LOOKUP);
             }
             return MakeValue(c.Value, c.IrType);
         }
@@ -1056,7 +1056,7 @@ namespace BabyPenguin.VirtualMachine
                     Global.HasExited = true;
                     return (resultSym.Value, true);
                 }
-                throw new BabyPenguinRuntimeException($"Extern function {funcName} yielded break: {brk.Reason}");
+                throw new BabyPenguinRuntimeException($"Extern function {funcName} yielded break: {brk.Reason}", code: ErrorCode.E_RUNTIME_INVALID_OP);
             }
             return (resultSym.Value, false);
         }
@@ -1073,7 +1073,7 @@ namespace BabyPenguin.VirtualMachine
                     Global.HasExited = true;
                     return (true, true);
                 }
-                throw new BabyPenguinRuntimeException($"Extern function {funcName} yielded break: {brk.Reason}");
+                throw new BabyPenguinRuntimeException($"Extern function {funcName} yielded break: {brk.Reason}", code: ErrorCode.E_RUNTIME_INVALID_OP);
             }
             return (true, false);
         }
@@ -1222,7 +1222,7 @@ namespace BabyPenguin.VirtualMachine
         private IRuntimeValue EvalBinOp(string op, IRuntimeValue left, IRuntimeValue right, string irType)
         {
             if (left is not BasicRuntimeValue lbv || right is not BasicRuntimeValue rbv)
-                throw new BabyPenguinRuntimeException("Cannot evaluate binary op on non-basic values");
+                throw new BabyPenguinRuntimeException("Cannot evaluate binary op on non-basic values", code: ErrorCode.E_RUNTIME_INVALID_OP);
 
             // Determine result type from irType (matches original behavior)
             var resultTypeInfo = GetResultTypeInfo(irType);
@@ -1255,7 +1255,7 @@ namespace BabyPenguin.VirtualMachine
                 case "ge": BinCmpGe(result, lt, lbv, rbv); break;
                 case "land": result.BoolValue = ToBoolFromAny(lbv) && ToBoolFromAny(rbv); break;
                 case "lor": result.BoolValue = ToBoolFromAny(lbv) || ToBoolFromAny(rbv); break;
-                default: throw new BabyPenguinRuntimeException($"Unknown binary op: {op}");
+                default: throw new BabyPenguinRuntimeException($"Unknown binary op: {op}", code: ErrorCode.E_RUNTIME_INVALID_OP);
             }
             return result;
         }
@@ -1591,7 +1591,7 @@ namespace BabyPenguin.VirtualMachine
         private IRuntimeValue EvalUnaryOp(string op, IRuntimeValue operand, string irType)
         {
             if (operand is not BasicRuntimeValue bv)
-                throw new BabyPenguinRuntimeException("Cannot apply unary op to non-basic value");
+                throw new BabyPenguinRuntimeException("Cannot apply unary op to non-basic value", code: ErrorCode.E_RUNTIME_INVALID_OP);
 
             // Determine result type from irType (matches original behavior)
             var resultTypeInfo = GetResultTypeInfo(irType);
@@ -1645,7 +1645,7 @@ namespace BabyPenguin.VirtualMachine
                     CopyValueDirect(result, bv);
                     break;
                 default:
-                    throw new BabyPenguinRuntimeException($"Unknown unary op: {op}");
+                    throw new BabyPenguinRuntimeException($"Unknown unary op: {op}", code: ErrorCode.E_RUNTIME_INVALID_OP);
             }
             return result;
         }
@@ -1686,7 +1686,7 @@ namespace BabyPenguin.VirtualMachine
                 if (methodFunc != null)
                     return methodFunc;
 
-                throw new BabyPenguinRuntimeException($"Field '{fieldName}' not found on {obj.TypeInfo}");
+                throw new BabyPenguinRuntimeException($"Field '{fieldName}' not found on {obj.TypeInfo}", code: ErrorCode.E_RUNTIME_LOOKUP);
             }
             if (obj is EnumRuntimeValue enumVal)
             {
@@ -1709,7 +1709,7 @@ namespace BabyPenguin.VirtualMachine
 
                 if (enumVal.ContainingValue != null)
                     return enumVal.ContainingValue;
-                throw new BabyPenguinRuntimeException($"Enum has no containing value and field '{fieldName}' not found");
+                throw new BabyPenguinRuntimeException($"Enum has no containing value and field '{fieldName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
             }
             if (obj is BasicRuntimeValue)
             {
@@ -1732,7 +1732,7 @@ namespace BabyPenguin.VirtualMachine
                         return new FunctionRuntimeValue(method.TypeInfo, method) { Owner = obj };
                 }
             }
-            throw new BabyPenguinRuntimeException($"Cannot read field '{fieldName}' from {obj.GetType().Name} (type={obj.TypeInfo?.FullName() ?? "unknown"}) in {_function.Name} ip={_ip}");
+            throw new BabyPenguinRuntimeException($"Cannot read field '{fieldName}' from {obj.GetType().Name} (type={obj.TypeInfo?.FullName() ?? "unknown"}) in {_function.Name} ip={_ip}", code: ErrorCode.E_RUNTIME_LOOKUP);
         }
 
         private FunctionRuntimeValue? TryResolveMethod(IRuntimeValue obj, string methodName)
@@ -1802,7 +1802,7 @@ namespace BabyPenguin.VirtualMachine
                 enumVal.FieldsValue.Fields[fieldName] = value;
                 return;
             }
-            throw new BabyPenguinRuntimeException($"Cannot write field '{fieldName}' to {obj.GetType().Name}");
+            throw new BabyPenguinRuntimeException($"Cannot write field '{fieldName}' to {obj.GetType().Name}", code: ErrorCode.E_RUNTIME_TYPE);
         }
 
         private bool ToBool(IRuntimeValue val)
@@ -1811,7 +1811,7 @@ namespace BabyPenguin.VirtualMachine
                 return bv.BoolValue;
             var currentInst = _ip < _function.Instructions.Count ? _function.Instructions[_ip] : null;
             throw new BabyPenguinRuntimeException(
-                $"Cannot convert {val.GetType().Name} to bool in function {_function.Name} at ip={_ip}, inst={currentInst?.Display() ?? "none"}");
+                $"Cannot convert {val.GetType().Name} to bool in function {_function.Name} at ip={_ip}, inst={currentInst?.Display() ?? "none"}", code: ErrorCode.E_RUNTIME_INVALID_OP);
         }
 
         private IRuntimeValue CreateNewObject(IType type, List<IRuntimeValue> args)
@@ -1902,7 +1902,7 @@ namespace BabyPenguin.VirtualMachine
         {
             if (enumVal is EnumRuntimeValue ev)
                 return ev.ContainingValue ?? new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
-            throw new BabyPenguinRuntimeException("Cannot extract payload from non-enum value");
+            throw new BabyPenguinRuntimeException("Cannot extract payload from non-enum value", code: ErrorCode.E_RUNTIME_INVALID_OP);
         }
 
         // === Helpers ===
@@ -1912,7 +1912,7 @@ namespace BabyPenguin.VirtualMachine
             // O(1) lookup via pre-built index (eliminates full semantic tree traversal)
             if (Global.CodeContainerIndex.TryGetValue(sanitizedFuncName, out var cc))
                 return cc;
-            throw new BabyPenguinRuntimeException($"No code container found for function '{sanitizedFuncName}'");
+            throw new BabyPenguinRuntimeException($"No code container found for function '{sanitizedFuncName}'", code: ErrorCode.E_RUNTIME_LOOKUP);
         }
 
         private static string SanitizeName(string name) => name.Replace(".", "_");

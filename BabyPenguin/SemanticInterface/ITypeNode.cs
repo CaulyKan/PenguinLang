@@ -43,7 +43,7 @@ namespace BabyPenguin.SemanticInterface
         ITypeNode? GetImplementedInterfaceType(Or<ITypeNode, string> interfaceTypeOrName, SourceLocation sourceLocation)
         {
             ITypeNode interfaceType = interfaceTypeOrName.IsLeft ? interfaceTypeOrName.Left! :
-                (Model.ResolveTypeNode(interfaceTypeOrName.Right!) ?? throw new BabyPenguinException($"Could not resolve interface type '{interfaceTypeOrName.Right!}'", sourceLocation));
+                (Model.ResolveTypeNode(interfaceTypeOrName.Right!) ?? throw new BabyPenguinException($"Could not resolve interface type '{interfaceTypeOrName.Right!}'", sourceLocation, code: ErrorCode.E_INTERFACE_IMPL));
 
             if (this.FullName() == interfaceType.FullName())
                 return this;

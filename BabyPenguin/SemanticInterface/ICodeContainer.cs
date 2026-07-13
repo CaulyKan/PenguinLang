@@ -87,7 +87,7 @@ namespace BabyPenguin.SemanticInterface
                     // 对于没有初始化表达式的变量，如果需要类型推断，这是一个错误
                     if (variableSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
                     {
-                        throw new BabyPenguinException($"Variable '{variableSymbol.Name}' requires type inference but has no initializer", variableSymbol.SourceLocation);
+                        throw new BabyPenguinException($"Variable '{variableSymbol.Name}' requires type inference but has no initializer", variableSymbol.SourceLocation, code: ErrorCode.E_TYPE_INFERENCE);
                     }
                     else return variableSymbol.TypeInfo;
                 }
@@ -124,7 +124,7 @@ namespace BabyPenguin.SemanticInterface
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Cannot find suitable code container for type inference of variable '{variableSymbol.Name}' in container '{GetType()}'", variableSymbol.SourceLocation);
+                    throw new BabyPenguinException($"Cannot find suitable code container for type inference of variable '{variableSymbol.Name}' in container '{GetType()}'", variableSymbol.SourceLocation, code: ErrorCode.E_TYPE_INFERENCE);
                 }
             }
             else throw new NotImplementedException();
@@ -133,7 +133,7 @@ namespace BabyPenguin.SemanticInterface
         public ISymbol AddLocalDeclaration(Declaration item, bool generateCode = true)
         {
             var symbol = Model.ResolveShortSymbol(item.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: item.ScopeId) ??
-                throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation);
+                throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
             if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
                 InferVariableType(symbol);
@@ -183,7 +183,7 @@ namespace BabyPenguin.SemanticInterface
                             }
                             else
                             {
-                                throw new BabyPenguinException($"Invalid assignment target '{item.AssignmentStatement.LeftHandSide!.BuildText()}'", item.AssignmentStatement.LeftHandSide.SourceLocation);
+                                throw new BabyPenguinException($"Invalid assignment target '{item.AssignmentStatement.LeftHandSide!.BuildText()}'", item.AssignmentStatement.LeftHandSide.SourceLocation, code: ErrorCode.E_INTERNAL);
                             }
                         }
                         else
@@ -206,7 +206,7 @@ namespace BabyPenguin.SemanticInterface
                                 target = Model.ResolveShortSymbol(basePrimary.Identifier!.Name,
                                     s => !s.IsClassMember, scope: this, expressionScopeId: item.ScopeId);
                                 if (target == null)
-                                    throw new BabyPenguinException($"Cant resolve symbol '{basePrimary.Identifier.Name}'", basePrimary.SourceLocation);
+                                    throw new BabyPenguinException($"Cant resolve symbol '{basePrimary.Identifier.Name}'", basePrimary.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             }
                             else
                             {
@@ -220,7 +220,7 @@ namespace BabyPenguin.SemanticInterface
                                 var symbolName = target.TypeInfo.FullName() + "." + memberId.Name;
                                 member = Model.ResolveSymbol(symbolName, scope: this);
                                 if (member == null)
-                                    throw new BabyPenguinException($"Cant resolve symbol '{memberId.Name}'", memberId.SourceLocation);
+                                    throw new BabyPenguinException($"Cant resolve symbol '{memberId.Name}'", memberId.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                                 // check mutability
                                 if (member.IsMutable == Mutability.Mutable)
@@ -253,7 +253,7 @@ namespace BabyPenguin.SemanticInterface
 
                         if (target == null)
                         {
-                            throw new BabyPenguinException($"Cant resolve symbol '{item.AssignmentStatement.LeftHandSide}'", item.AssignmentStatement.LeftHandSide.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve symbol '{item.AssignmentStatement.LeftHandSide}'", item.AssignmentStatement.LeftHandSide.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         }
                         else
                         {
@@ -322,7 +322,7 @@ namespace BabyPenguin.SemanticInterface
                         var ifStatement = item.IfStatement!;
                         var conditionVar = AddExpression(ifStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            throw new BabyPenguinException($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation);
+                            throw new BabyPenguinException($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
                         if (ifStatement.HasElse)
                         {
                             var elseLabel = CreateLabel();
@@ -350,7 +350,7 @@ namespace BabyPenguin.SemanticInterface
                         AddInstruction(new NopInstuction(whileStatement.Condition!.SourceLocation).WithLabel(beginLabel));
                         var conditionVar = AddExpression(whileStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            throw new BabyPenguinException($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation);
+                            throw new BabyPenguinException($"While condition must be bool type, but got '{conditionVar.TypeInfo}'", whileStatement.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
                         var endLabel = CreateLabel();
 
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
@@ -386,10 +386,10 @@ namespace BabyPenguin.SemanticInterface
                                 iteratorSymbol = temp;
                             }
                             else
-                                throw new BabyPenguinException($"For loop requires an iterator of type {iteratorType!.FullName()}, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation);
+                                throw new BabyPenguinException($"For loop requires an iterator of type {iteratorType!.FullName()}, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation, code: ErrorCode.E_ITERATOR_INVALID);
                         }
                         else
-                            throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation);
+                            throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation, code: ErrorCode.E_ITERATOR_INVALID);
 
                         var iterItemSymbol = AddLocalDeclaration(forStatement.Declaration!);
 
@@ -402,7 +402,7 @@ namespace BabyPenguin.SemanticInterface
                         // call .next on IIterator 
                         var nextMethodSymbol = Model.ResolveSymbol(iteratorSymbol.TypeInfo.FullName() + ".next", scope: this) as FunctionSymbol;
                         if (nextMethodSymbol == null)
-                            throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName()}'", forStatement.SourceLocation);
+                            throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName()}'", forStatement.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression!.SourceLocation);
                         AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, nextMethodSymbol, iteratorSymbol, nextMethodImplSymbol, false));
 
@@ -411,7 +411,7 @@ namespace BabyPenguin.SemanticInterface
                         AddInstruction(new FunctionCallInstruction(forStatement.Declaration!.SourceLocation, nextMethodImplSymbol, [iteratorSymbol], nextResult));
                         var optionValueSymbol = Model.ResolveSymbol(nextResult.TypeInfo.FullName() + "._value");
                         if (optionValueSymbol == null)
-                            throw new BabyPenguinException($"Cant resolve symbol '{nextResult.TypeInfo.FullName()}._value'", forStatement.Expression.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve symbol '{nextResult.TypeInfo.FullName()}._value'", forStatement.Expression.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
                         // compare Option value is none
                         var tempRightVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), forStatement.Expression.SourceLocation);
@@ -419,7 +419,7 @@ namespace BabyPenguin.SemanticInterface
                         AddInstruction(new ReadMemberInstruction(forStatement.Declaration!.SourceLocation, optionValueSymbol, nextResult, tempLeftVar, false));
                         var noneEnumValue = (nextResult.TypeInfo.TypeNode as IEnumNode)?.EnumDeclarations.Find(i => i.Name == "none")?.Value;
                         if (noneEnumValue == null)
-                            throw new BabyPenguinException($"Can't resolve 'none' enum value of type '{nextResult.TypeInfo.FullName()}'", forStatement.Expression.SourceLocation);
+                            throw new BabyPenguinException($"Can't resolve 'none' enum value of type '{nextResult.TypeInfo.FullName()}'", forStatement.Expression.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         AddInstruction(new AssignLiteralToSymbolInstruction(forStatement.Declaration!.SourceLocation, tempRightVar, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), noneEnumValue.ToString()!));
                         var condVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), forStatement.Expression.SourceLocation);
                         AddInstruction(new BinaryOperationInstruction(forStatement.Declaration!.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, condVar));
@@ -479,7 +479,7 @@ namespace BabyPenguin.SemanticInterface
                         if (jumpStatement.JumpType == JumpStatement.Type.Break)
                         {
                             if (CodeContainerData.CurrentWhileLoop.Count == 0)
-                                throw new BabyPenguinException("Break statement outside of while loop", jumpStatement.SourceLocation);
+                                throw new BabyPenguinException("Break statement outside of while loop", jumpStatement.SourceLocation, code: ErrorCode.E_LOOP_CONTEXT);
                             var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
                             if (jumpStatement.BreakExpression != null && currentWhileLoop.BreakValueSymbol != null)
                             {
@@ -490,7 +490,7 @@ namespace BabyPenguin.SemanticInterface
                         else if (jumpStatement.JumpType == JumpStatement.Type.Continue)
                         {
                             if (CodeContainerData.CurrentWhileLoop.Count == 0)
-                                throw new BabyPenguinException("Continue statement outside of while loop", jumpStatement.SourceLocation);
+                                throw new BabyPenguinException("Continue statement outside of while loop", jumpStatement.SourceLocation, code: ErrorCode.E_LOOP_CONTEXT);
                             var currentWhileLoop = CodeContainerData.CurrentWhileLoop.Peek();
                             AddInstruction(new GotoInstruction(item.SourceLocation, currentWhileLoop.BeginLabel));
                         }
@@ -505,17 +505,17 @@ namespace BabyPenguin.SemanticInterface
                         {
                             if (this.ReturnTypeInfo.IsVoidType)
                                 AddInstruction(new ReturnInstruction(item.SourceLocation, null, ReturnStatus.YieldNotFinished));
-                            else throw new BabyPenguinException($"Yield statement without an expression requires function return type to be void, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                            else throw new BabyPenguinException($"Yield statement without an expression requires function return type to be void, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation, code: ErrorCode.E_YIELD_CONTEXT);
                         }
                         else
                         {
                             var returnVar = AddExpression(yieldStatement.YieldExpression, false);
                             if (ReturnTypeInfo.TypeNode?.GenericType?.FullName() != "__builtin.IGenerator<?>")
-                                throw new BabyPenguinException($"This yield statement requires function return type to be IGenerator<?>, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                                throw new BabyPenguinException($"This yield statement requires function return type to be IGenerator<?>, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation, code: ErrorCode.E_YIELD_CONTEXT);
 
                             var returnType = ReturnTypeInfo.TypeNode.GenericType.GenericArguments.First();
                             if (returnType == null)
-                                throw new BabyPenguinException($"This yield statement requires function return type to be IGenerator<?>, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation);
+                                throw new BabyPenguinException($"This yield statement requires function return type to be IGenerator<?>, but got '{ReturnTypeInfo}'", yieldStatement.SourceLocation, code: ErrorCode.E_YIELD_CONTEXT);
 
                             if (returnVar.TypeInfo.CanImplicitlyCastTo(returnType))
                             {
@@ -524,7 +524,7 @@ namespace BabyPenguin.SemanticInterface
                                 returnVar = temp;
                             }
                             else
-                                throw new BabyPenguinException($"The function return type is {ReturnTypeInfo.FullName()}, but yield returns '{returnVar.TypeInfo.FullName()}'", yieldStatement.SourceLocation);
+                                throw new BabyPenguinException($"The function return type is {ReturnTypeInfo.FullName()}, but yield returns '{returnVar.TypeInfo.FullName()}'", yieldStatement.SourceLocation, code: ErrorCode.E_YIELD_CONTEXT);
                             AddInstruction(new ReturnInstruction(item.SourceLocation, returnVar, ReturnStatus.YieldNotFinished));
                         }
 
@@ -540,7 +540,7 @@ namespace BabyPenguin.SemanticInterface
                         }
                         else
                         {
-                            throw new BabyPenguinException($"Signal statement requires an integer type, but got '{signalValue.TypeInfo}'", signalStatement.SourceLocation);
+                            throw new BabyPenguinException($"Signal statement requires an integer type, but got '{signalValue.TypeInfo}'", signalStatement.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
                         }
                     }
                     break;
@@ -548,16 +548,16 @@ namespace BabyPenguin.SemanticInterface
                     {
                         var emitEventStatement = item.EmitEventStatement!;
                         if (emitEventStatement.EventExpression == null)
-                            throw new BabyPenguinException($"Event expression is required", emitEventStatement.SourceLocation);
+                            throw new BabyPenguinException($"Event expression is required", emitEventStatement.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
                         var eventSymbol = AddExpression(emitEventStatement.EventExpression, false);
                         var notifySymbol = Model.ResolveSymbol($"{eventSymbol.TypeInfo.FullName()}.notify") ??
-                            throw new BabyPenguinException($"Can't resolve 'notify' method of event type '{eventSymbol.TypeInfo.FullName()}'", emitEventStatement.SourceLocation);
+                            throw new BabyPenguinException($"Can't resolve 'notify' method of event type '{eventSymbol.TypeInfo.FullName()}'", emitEventStatement.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
                         var paramSymbol = emitEventStatement.ArgumentExpression == null ?
                             AllocTempSymbol(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), emitEventStatement.SourceLocation) :
                             AddExpression(emitEventStatement.ArgumentExpression, false);
 
                         if (eventSymbol.TypeInfo.TypeNode?.GenericType?.FullName() != "__builtin.Event<?>")
-                            throw new BabyPenguinException($"This emit event statement requires event type to be __builtin.Event<?>, but got '{eventSymbol.TypeInfo}'", emitEventStatement.EventExpression.SourceLocation);
+                            throw new BabyPenguinException($"This emit event statement requires event type to be __builtin.Event<?>, but got '{eventSymbol.TypeInfo}'", emitEventStatement.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
                         if (paramSymbol.TypeInfo.FullName() != eventSymbol.TypeInfo.GenericArguments.First().FullName())
                         {
                             var temp = AllocTempSymbol(eventSymbol.TypeInfo.GenericArguments.First(), emitEventStatement.SourceLocation);
@@ -584,14 +584,14 @@ namespace BabyPenguin.SemanticInterface
             {
                 if (types.Find(i => i.IsClassType) != null)
                 {
-                    throw new BabyPenguinException($"Type {types.Find(i => i.IsClassType)} can't be used here", sourceLocation);
+                    throw new BabyPenguinException($"Type {types.Find(i => i.IsClassType)} can't be used here", sourceLocation, code: ErrorCode.E_INTERNAL);
                 }
 
                 if (!allowImplicitConversion)
                 {
                     foreach (var t in types.Skip(1))
                         if (t.FullName() != types.First().FullName())
-                            throw new BabyPenguinException($"Incompatible types in expression, expected '{types.First()}' but got '{t}'", sourceLocation);
+                            throw new BabyPenguinException($"Incompatible types in expression, expected '{types.First()}' but got '{t}'", sourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                 }
                 else
                 {
@@ -602,7 +602,7 @@ namespace BabyPenguin.SemanticInterface
                         else if (b.CanImplicitlyCastTo(a))
                             return a;
                         else
-                            throw new BabyPenguinException($"Incompatible types in expression, expected '{a}' but got '{b}'", sourceLocation);
+                            throw new BabyPenguinException($"Incompatible types in expression, expected '{a}' but got '{b}'", sourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                     });
                 }
                 return types.First();
@@ -652,7 +652,7 @@ namespace BabyPenguin.SemanticInterface
                         }
                         else
                         {
-                            throw new BabyPenguinException($"Logical operators can only be used with bool types, but got '{types.First()}'", sourceLocation);
+                            throw new BabyPenguinException($"Logical operators can only be used with bool types, but got '{types.First()}'", sourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
                         }
                     }
                     else
@@ -702,7 +702,7 @@ namespace BabyPenguin.SemanticInterface
                     if (candidates.Count > 1)
                     {
                         var candidateNames = candidates.Select(c => c!.InterfaceSymbol.FullName());
-                        throw new BabyPenguinException($"Ambiguous static interface function '{memberName}' between: {string.Join(" & ", candidateNames)}", expression.SourceLocation);
+                        throw new BabyPenguinException($"Ambiguous static interface function '{memberName}' between: {string.Join(" & ", candidateNames)}", expression.SourceLocation, code: ErrorCode.E_INTERNAL);
                     }
                     else if (candidates.Count == 1)
                     {
@@ -712,7 +712,7 @@ namespace BabyPenguin.SemanticInterface
                     }
                 }
 
-                throw new BabyPenguinException($"Since '{type}' is a type, '{expression.Text}' is expected to be a function'");
+                throw new BabyPenguinException($"Since '{type}' is a type, '{expression.Text}' is expected to be a function'", code: ErrorCode.E_CALL_NOT_FUNCTION);
             }
 
             // Instance member access
@@ -726,13 +726,13 @@ namespace BabyPenguin.SemanticInterface
                     intf => Model.ResolveShortSymbol(expression.Member.Name, scope: intf)
                 ).Where(s => s != null).ToList();
                 if (candidates.Count > 1)
-                    throw new BabyPenguinException($"Ambiguous interface method for {expression.Member.Name}, please explicitly specify cast to interface", expression.SourceLocation);
+                    throw new BabyPenguinException($"Ambiguous interface method for {expression.Member.Name}, please explicitly specify cast to interface", expression.SourceLocation, code: ErrorCode.E_INTERNAL);
                 else if (candidates.Count == 1)
                     member = candidates[0];
             }
 
             if (member == null)
-                throw new BabyPenguinException($"Cant resolve symbol '{expression.Member.Name}'", expression.Member.SourceLocation);
+                throw new BabyPenguinException($"Cant resolve symbol '{expression.Member.Name}'", expression.Member.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
             targetSymbol = member;
         }
@@ -769,7 +769,7 @@ namespace BabyPenguin.SemanticInterface
                 case CastExpression exp:
                     {
                         var t = Model.ResolveType(exp.CastTypeSpecifier!.Name, scope: this);
-                        if (t == null) throw new BabyPenguinException($"Cant resolve type '{exp.CastTypeSpecifier.Name}'", exp.CastTypeSpecifier.SourceLocation);
+                        if (t == null) throw new BabyPenguinException($"Cant resolve type '{exp.CastTypeSpecifier.Name}'", exp.CastTypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                         else return t;
                     }
                 case UnaryExpression exp:
@@ -843,7 +843,7 @@ namespace BabyPenguin.SemanticInterface
                             if (ownerType.IsMutable == Mutability.Auto) ownerType = ownerType.WithMutability(Mutability.Immutable);
 
                             if (!ownerType.CanImplicitlyCastTo(thisType))
-                                throw new BabyPenguinException($"Cant use {ownerType} as 'this' param of type {thisType} for function {fs.FullName()}", exp.SourceLocation);
+                                throw new BabyPenguinException($"Cant use {ownerType} as 'this' param of type {thisType} for function {fs.FullName()}", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
 
                             // pack fat pointer, remove first argument
                             return (fs.IsAsync ? Model.BasicTypeNodes.AsyncFun : Model.BasicTypeNodes.Fun).Specialize([.. symbol.TypeInfo.GenericArguments.Take(1), .. symbol.TypeInfo.GenericArguments.Skip(2)]).ToType(Mutability.Mutable);
@@ -868,11 +868,11 @@ namespace BabyPenguin.SemanticInterface
                                 var type = Model.ResolveType(exp.Identifier.Name, scope: this);
                                 if (type != null) return new TypeReferenceType(type);
                             }
-                            throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         case PrimaryExpression.Type.Constant:
                             var t = Model.BasicTypeNodes.ResolveLiteralType(exp.Literal!);
                             if (t == null)
-                                throw new BabyPenguinException($"Cant resolve literal type '{exp.Literal}'", exp.SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve literal type '{exp.Literal}'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                             else
                                 return t;
                         case PrimaryExpression.Type.StringLiteral:
@@ -910,7 +910,7 @@ namespace BabyPenguin.SemanticInterface
                         }
 
                         if (res == null)
-                            throw new BabyPenguinException($"Cant resolve type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                         return res.WithMutability(Mutability.Mutable);
                     }
                 case WaitExpression exp:
@@ -928,7 +928,7 @@ namespace BabyPenguin.SemanticInterface
 
                             if (waitExpType.IsFutureType)
                             {
-                                var futureType = waitExpTypeNode.GetImplementedInterfaceType("__builtin.IFuture<?>", exp.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName()}' does not implement __builtin.IFuture<?> interface", exp.SourceLocation);
+                                var futureType = waitExpTypeNode.GetImplementedInterfaceType("__builtin.IFuture<?>", exp.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName()}' does not implement __builtin.IFuture<?> interface", exp.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
 
                                 return futureType.GenericArguments.FirstOrDefault() ?? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
                             }
@@ -944,8 +944,8 @@ namespace BabyPenguin.SemanticInterface
                     }
                 case LambdaFunctionExpression exp:
                     {
-                        var returnType = Model.ResolveType(exp.ReturnType!.Name, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{exp.ReturnType.Name}'", exp.ReturnType.SourceLocation);
-                        var parameters = exp.Parameters.Select(p => Model.ResolveType(p.Text, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{p.Text}'", p.SourceLocation)).ToList();
+                        var returnType = Model.ResolveType(exp.ReturnType!.Name, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{exp.ReturnType.Name}'", exp.ReturnType.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                        var parameters = exp.Parameters.Select(p => Model.ResolveType(p.Text, scope: this) ?? throw new BabyPenguinException($"Cant resolve type '{p.Text}'", p.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE)).ToList();
                         var funType = (exp.IsAsync ? Model.BasicTypeNodes.AsyncFun : Model.BasicTypeNodes.Fun).Specialize([returnType, .. parameters]).ToType(Mutability.Mutable);
                         return funType;
                     }
@@ -962,7 +962,7 @@ namespace BabyPenguin.SemanticInterface
                             {
                                 var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression!);
                                 if (mainType.FullName() != elseType.FullName())
-                                    throw new BabyPenguinException($"If expression branches have different types: '{mainType}' and '{elseType}'", exp.SourceLocation);
+                                    throw new BabyPenguinException($"If expression branches have different types: '{mainType}' and '{elseType}'", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                             }
                             return mainType;
                         }
@@ -980,7 +980,7 @@ namespace BabyPenguin.SemanticInterface
                 default:
                     break;
             }
-            throw new BabyPenguinException($"Unsupported expression type '{expression.GetType()}'", expression.SourceLocation);
+            throw new BabyPenguinException($"Unsupported expression type '{expression.GetType()}'", expression.SourceLocation, code: ErrorCode.E_UNSUPPORTED);
         }
 
         IType? InferWhileExpressionType(ISyntaxNode node)
@@ -999,7 +999,7 @@ namespace BabyPenguin.SemanticInterface
         IType ResolveSpawnAsyncExpressionType(SpawnAsyncExpression exp)
         {
             // TODO: change to lambda expression
-            if (exp.Expression == null) throw new BabyPenguinException($"async expression must not be empty.");
+            if (exp.Expression == null) throw new BabyPenguinException($"async expression must not be empty.", null, code: ErrorCode.E_ASYNC_INVALID);
             var funcReturnType = ResolveExpressionType(exp.Expression);
             IType futureType = funcReturnType;
 
@@ -1036,21 +1036,21 @@ namespace BabyPenguin.SemanticInterface
             if (nonStaticSymbol != null)
                 return false;
 
-            throw new BabyPenguinException($"Cant determine expression type for '{exp.Text}'", exp.SourceLocation);
+            throw new BabyPenguinException($"Cant determine expression type for '{exp.Text}'", exp.SourceLocation, code: ErrorCode.E_INTERNAL);
         }
 
         public ISymbol SchedulerAddSimpleJob(ISymbol functionSymbol, SourceLocation sourceLocation, ISymbol targetSymbol)
         {
             if (targetSymbol.TypeNode?.GenericType?.IsFutureType == true)
-                throw new BabyPenguinException($"expecting symbol '{targetSymbol.FullName()}' to be of type '__builtin.IFuture<?>'", sourceLocation);
+                throw new BabyPenguinException($"expecting symbol '{targetSymbol.FullName()}' to be of type '__builtin.IFuture<?>'", sourceLocation, code: ErrorCode.E_ASYNC_INVALID);
             var futureResultType = targetSymbol.TypeInfo.GenericArguments.FirstOrDefault();
             if (futureResultType == null)
-                throw new BabyPenguinException($"can't get generic argument of symbol '{targetSymbol.FullName()}'", sourceLocation);
+                throw new BabyPenguinException($"can't get generic argument of symbol '{targetSymbol.FullName()}'", sourceLocation, code: ErrorCode.E_INTERNAL);
             if (functionSymbol is not FunctionSymbol && functionSymbol is not FunctionVariableSymbol)
-                throw new BabyPenguinException($"expecting symbol '{functionSymbol.FullName()}' to be a function symbol", sourceLocation);
+                throw new BabyPenguinException($"expecting symbol '{functionSymbol.FullName()}' to be a function symbol", sourceLocation, code: ErrorCode.E_INTERNAL);
 
-            var DefaultRoutineType = Model.ResolveType($"__builtin._DefaultRoutine<{futureResultType.FullName()}>") ?? throw new BabyPenguinException($"type '__builtin._DefaultRoutine<{futureResultType.FullName()}>' is not found.");
-            var DefaultRoutineConstructor = Model.ResolveSymbol($"__builtin._DefaultRoutine<{futureResultType.FullName()}>.new") ?? throw new BabyPenguinException($"symbol '__builtin._DefaultRoutine<{futureResultType.FullName()}>.new' is not found.");
+            var DefaultRoutineType = Model.ResolveType($"__builtin._DefaultRoutine<{futureResultType.FullName()}>") ?? throw new BabyPenguinException($"type '__builtin._DefaultRoutine<{futureResultType.FullName()}>' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
+            var DefaultRoutineConstructor = Model.ResolveSymbol($"__builtin._DefaultRoutine<{futureResultType.FullName()}>.new") ?? throw new BabyPenguinException($"symbol '__builtin._DefaultRoutine<{futureResultType.FullName()}>.new' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
 
             var trueSymbol = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), sourceLocation);
             var routineSymbol = AllocTempSymbol(DefaultRoutineType, sourceLocation);
@@ -1086,7 +1086,7 @@ namespace BabyPenguin.SemanticInterface
             {
                 // try implicit conversion to interface
                 var implicitSymbol = cls.ImplementedInterfaces.Select(intf => Model.ResolveShortSymbol(exp.Member.Name, scope: intf)).First(s => s != null);
-                var implicitSymbolType = implicitSymbol?.Parent as ITypeNode ?? throw new BabyPenguinException($"can't get parent of symbol {implicitSymbol?.FullName()}");
+                var implicitSymbolType = implicitSymbol?.Parent as ITypeNode ?? throw new BabyPenguinException($"can't get parent of symbol {implicitSymbol?.FullName()}", null, code: ErrorCode.E_INTERNAL);
                 var temp = AllocTempSymbol(implicitSymbolType.ToType(Mutability.Mutable), exp.SourceLocation);
                 AddCastExpression(new(ownerSymbol), temp, exp.SourceLocation);
                 member = implicitSymbol;
@@ -1095,7 +1095,7 @@ namespace BabyPenguin.SemanticInterface
             }
 
             if (member == null)
-                throw new BabyPenguinException($"Cant resolve symbol '{exp.Member.Name}'", exp.Member.SourceLocation);
+                throw new BabyPenguinException($"Cant resolve symbol '{exp.Member.Name}'", exp.Member.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
             if (ownerSymbol.TypeInfo.IsEnumType && !member.IsFunction)
                 AddInstruction(new ReadEnumInstruction(exp.SourceLocation, ownerSymbol, to));
@@ -1115,7 +1115,7 @@ namespace BabyPenguin.SemanticInterface
             {
                 var exp = from.Left!;
                 if (ResolveExpressionType(exp).FullName() != to.TypeInfo.FullName())
-                    throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName()}' to type '{to.TypeInfo.FullName()}'", exp.SourceLocation);
+                    throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName()}' to type '{to.TypeInfo.FullName()}'", exp.SourceLocation, code: ErrorCode.E_CAST_INVALID);
 
                 tempSymbol = AddExpression(exp.SubExpression!, false);
                 type = tempSymbol.TypeInfo;
@@ -1140,13 +1140,13 @@ namespace BabyPenguin.SemanticInterface
             {
                 if (to.TypeInfo.IsClassType)
                 {
-                    throw new BabyPenguinException($"Cant cast class type to class type", sourceLocation);
+                    throw new BabyPenguinException($"Cant cast class type to class type", sourceLocation, code: ErrorCode.E_CAST_INVALID);
                 }
                 else if (to.TypeInfo.IsInterfaceType)
                 {
                     // class to interface conversion
                     if (!cls.ImplementedInterfaces.Any(i => i.FullName() == to.TypeInfo.FullName()))
-                        throw new BabyPenguinException($"Cant cast class {cls.FullName()} to interface '{to.TypeInfo.FullName()}'", sourceLocation);
+                        throw new BabyPenguinException($"Cant cast class {cls.FullName()} to interface '{to.TypeInfo.FullName()}'", sourceLocation, code: ErrorCode.E_CAST_INVALID);
 
                     AddInstruction(new CastInstruction(sourceLocation, tempSymbol, to.TypeInfo, to));
                 }
@@ -1170,7 +1170,7 @@ namespace BabyPenguin.SemanticInterface
                     fromSymbol = temp;
                 }
                 else
-                    throw new BabyPenguinException($"Cant assign type '{fromSymbol.TypeInfo.FullName()}' to type '{to.TypeInfo.FullName()}'", sourceLocation);
+                    throw new BabyPenguinException($"Cant assign type '{fromSymbol.TypeInfo.FullName()}' to type '{to.TypeInfo.FullName()}'", sourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
             }
 
             if (!to.IsTemp)
@@ -1178,7 +1178,7 @@ namespace BabyPenguin.SemanticInterface
                 if (to.IsMutable == Mutability.Immutable)
                 {
                     if (!isInitial)
-                        throw new BabyPenguinException($"Cant assign to immutable symbol '{to.FullName()}'", sourceLocation);
+                        throw new BabyPenguinException($"Cant assign to immutable symbol '{to.FullName()}'", sourceLocation, code: ErrorCode.E_MUTABILITY);
                 }
                 else if (fromSymbol.IsMutable == Mutability.Immutable)
                 {
@@ -1192,13 +1192,13 @@ namespace BabyPenguin.SemanticInterface
                     {
                         var temp = AllocTempSymbol(to.TypeInfo, sourceLocation ?? SourceLocation.Empty());
                         var copyFunc = Model.ResolveSymbol(ICopy.FullName() + ".copy", s => s.IsFunction) ??
-                            throw new BabyPenguinException($"Cant resolve function '{ICopy.FullName()}.copy'", sourceLocation);
+                            throw new BabyPenguinException($"Cant resolve function '{ICopy.FullName()}.copy'", sourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         AddInstruction(new FunctionCallInstruction(sourceLocation ?? SourceLocation.Empty(), copyFunc, [fromSymbol], temp));
                         fromSymbol = temp;
                     }
                     else
                     {
-                        throw new BabyPenguinException($"Cant assign immutable symbol '{fromSymbol.FullName()}' to mutable symbol '{to.FullName()}'", sourceLocation);
+                        throw new BabyPenguinException($"Cant assign immutable symbol '{fromSymbol.FullName()}' to mutable symbol '{to.FullName()}'", sourceLocation, code: ErrorCode.E_MUTABILITY);
                     }
                 }
             }
@@ -1240,7 +1240,7 @@ namespace BabyPenguin.SemanticInterface
                 }
                 else
                 {
-                    throw new BabyPenguinException($"Cant assign type '{rightType.FullName()}' to type '{targetSymbol.TypeInfo.FullName()}'", expression.SourceLocation);
+                    throw new BabyPenguinException($"Cant assign type '{rightType.FullName()}' to type '{targetSymbol.TypeInfo.FullName()}'", expression.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                 }
             }
             else
@@ -1264,10 +1264,10 @@ namespace BabyPenguin.SemanticInterface
             List<ISymbol> convertParams(IType funcType, List<ISymbol> paramVars, SourceLocation sourceLocation)
             {
                 if (!funcType.IsFunctionType)
-                    throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", sourceLocation);
+                    throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", sourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
 
                 if (funcType.GenericArguments.Count - 1 != paramVars.Count)
-                    throw new BabyPenguinException($"Function call expects {funcType.GenericArguments.Count - 1} parameters, but got {paramVars.Count}", sourceLocation);
+                    throw new BabyPenguinException($"Function call expects {funcType.GenericArguments.Count - 1} parameters, but got {paramVars.Count}", sourceLocation, code: ErrorCode.E_CALL_ARITY);
 
                 return paramVars.Select((p, i) =>
                 {
@@ -1280,7 +1280,7 @@ namespace BabyPenguin.SemanticInterface
                             AddInstruction(new CastInstruction(sourceLocation, p, expectedParamType, casted));
                             return casted;
                         }
-                        else throw new BabyPenguinException($"Cant cast type '{p.TypeInfo}' to '{expectedParamType}'", sourceLocation);
+                        else throw new BabyPenguinException($"Cant cast type '{p.TypeInfo}' to '{expectedParamType}'", sourceLocation, code: ErrorCode.E_CAST_INVALID);
                     }
                     else
                         return p;
@@ -1409,13 +1409,13 @@ namespace BabyPenguin.SemanticInterface
                             var leftVar = AddExpression(exp.SubExpressions[0], false);
                             var rightVar = Model.ResolveSymbol(exp.SubExpressions[1].Text, s => s.IsEnum, scope: this);
                             if (rightVar == null)
-                                throw new BabyPenguinException($"Cant resolve enum symbol '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve enum symbol '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             var enumValue = ((rightVar is MutableSymbolProxy proxy ? proxy.Symbol : rightVar) as EnumSymbol)!.Value;
                             var tempRightVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
                             var tempLeftVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
                             var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName() + "._value");
                             if (enumValueSymbol == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName()}._value'", exp.SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName()}._value'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar, false));
                             AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempRightVar, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumValue.ToString()));
                             AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
@@ -1552,10 +1552,10 @@ namespace BabyPenguin.SemanticInterface
                             // Simple function call: foo(args)
                             ISymbol? funVar = Model.ResolveShortSymbol(primaryExp.Text, scope: this, expressionScopeId: exp.ScopeId);
                             if (funVar == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{primaryExp.Text}'", primaryExp.SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve symbol '{primaryExp.Text}'", primaryExp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             paramVars = convertParams(funVar.TypeInfo, paramVars, exp.SourceLocation);
                             if (!funVar.TypeInfo.IsFunctionType)
-                                throw new BabyPenguinException($"Function call expects function symbol, but got '{funVar.TypeInfo}'", primaryExp.SourceLocation);
+                                throw new BabyPenguinException($"Function call expects function symbol, but got '{funVar.TypeInfo}'", primaryExp.SourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
                             AddInstruction(new FunctionCallInstruction(exp.SourceLocation, funVar, paramVars, to));
                         }
                         else
@@ -1563,10 +1563,10 @@ namespace BabyPenguin.SemanticInterface
                             // Other callee (e.g., result of another expression)
                             var funVar = AddExpression(callee, false);
                             if (funVar == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{callee.BuildText()}'", callee.SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve symbol '{callee.BuildText()}'", callee.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             paramVars = convertParams(funVar.TypeInfo, paramVars, exp.SourceLocation);
                             if (!funVar.TypeInfo.IsFunctionType)
-                                throw new BabyPenguinException($"Function call expects function symbol, but got '{funVar.TypeInfo}'", callee.SourceLocation);
+                                throw new BabyPenguinException($"Function call expects function symbol, but got '{funVar.TypeInfo}'", callee.SourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
                             AddInstruction(new FunctionCallInstruction(exp.SourceLocation, funVar, paramVars, to));
                         }
                     }
@@ -1600,7 +1600,7 @@ namespace BabyPenguin.SemanticInterface
                         }
 
                         if (type == null)
-                            throw new BabyPenguinException($"Cant resolve class '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                            throw new BabyPenguinException($"Cant resolve class '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                         var typeNode = type.TypeNode;
 
@@ -1608,10 +1608,10 @@ namespace BabyPenguin.SemanticInterface
                         {
                             var constructorFunc = cls.Constructor;
                             if (constructorFunc == null)
-                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation, code: ErrorCode.E_NO_CONSTRUCTOR);
                             var constructorSymbol = constructorFunc.FunctionSymbol;
                             if (constructorSymbol == null)
-                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                                throw new BabyPenguinException($"Cant find constructor of type '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation, code: ErrorCode.E_NO_CONSTRUCTOR);
                             var paramVars = new List<ISymbol> { to };
                             paramVars.AddRange(exp.ArgumentsExpression.Select(e => AddExpression(e, false)));
                             paramVars = convertParams(constructorSymbol.TypeInfo, paramVars, exp.SourceLocation);
@@ -1620,7 +1620,7 @@ namespace BabyPenguin.SemanticInterface
                         else if (typeNode is IEnumNode enm)
                         {
                             var enumDecl = enm.EnumDeclarations.Find(i => i.Name == enumOption!) ??
-                                throw new BabyPenguinException($"Cant find enum option '{enumOption}' in enum '{enm.FullName()}'", exp.SourceLocation);
+                                throw new BabyPenguinException($"Cant find enum option '{enumOption}' in enum '{enm.FullName()}'", exp.SourceLocation, code: ErrorCode.E_ENUM_VARIANT);
 
                             var tempValue = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumDecl.SourceLocation);
                             AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempValue, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumDecl.Value.ToString()));
@@ -1628,7 +1628,7 @@ namespace BabyPenguin.SemanticInterface
                             if (!enumDecl.TypeInfo.IsVoidType)
                             {
                                 if (exp.ArgumentsExpression.Count != 1)
-                                    throw new BabyPenguinException($"Enum '{enm.FullName()}.{enumDecl.Name}' expects exactly 1 argument", exp.SourceLocation);
+                                    throw new BabyPenguinException($"Enum '{enm.FullName()}.{enumDecl.Name}' expects exactly 1 argument", exp.SourceLocation, code: ErrorCode.E_ENUM_VARIANT);
                                 var enmValSymbol = AddExpression(exp.ArgumentsExpression[0], false);
                                 if (enumDecl.TypeInfo.FullName() != enmValSymbol.TypeInfo.FullName())
                                 {
@@ -1648,13 +1648,13 @@ namespace BabyPenguin.SemanticInterface
                                 }
                                 else if (exp.ArgumentsExpression.Count != 0)
                                 {
-                                    throw new BabyPenguinException($"Enum '{enm.FullName()}.{enumDecl.Name}' expects no argument", exp.SourceLocation);
+                                    throw new BabyPenguinException($"Enum '{enm.FullName()}.{enumDecl.Name}' expects no argument", exp.SourceLocation, code: ErrorCode.E_ENUM_VARIANT);
                                 }
                             }
                         }
                         else if (typeNode is IInterfaceNode intf)
                         {
-                            throw new BabyPenguinException($"Cant create instance of interface '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation);
+                            throw new BabyPenguinException($"Cant create instance of interface '{exp.TypeSpecifier.Name}'", exp.TypeSpecifier.SourceLocation, code: ErrorCode.E_NEW_INTERFACE);
                         }
                         else throw new NotImplementedException();
                     }
@@ -1666,13 +1666,13 @@ namespace BabyPenguin.SemanticInterface
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
                                 s => !s.IsClassMember, scope: this, expressionScopeId: exp.ScopeId);
                             if (symbol == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation);
+                                throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             else
                                 AddAssignmentExpression(new(symbol), to, isVariableInitialize, null, expression.SourceLocation);
                             break;
                         case PrimaryExpression.Type.Constant:
                             var t = Model.BasicTypeNodes.ResolveLiteralType(exp.Literal!);
-                            if (t == null) throw new BabyPenguinException($"Cant resolve Type '{exp.Literal}'", exp.SourceLocation);
+                            if (t == null) throw new BabyPenguinException($"Cant resolve Type '{exp.Literal}'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
                             else AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, to, t, exp.Literal!));
                             break;
                         case PrimaryExpression.Type.StringLiteral:
@@ -1712,11 +1712,11 @@ namespace BabyPenguin.SemanticInterface
                             if (waitExpType.IsFutureType)
                             {
                                 var waitExpressionSymbol = AddExpression(waitExpression.Expression, isVariableInitialize);
-                                var futureType = waitExpType.TypeNode.GetImplementedInterfaceType("__builtin.IFuture<?>", waitExpression.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName()}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation);
+                                var futureType = waitExpType.TypeNode.GetImplementedInterfaceType("__builtin.IFuture<?>", waitExpression.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName()}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
                                 var futureSymbol = AllocTempSymbol(futureType.ToType(Mutability.Mutable), waitExpression.SourceLocation);
                                 AddCastExpression(new(waitExpressionSymbol), futureSymbol, waitExpression.SourceLocation);
                                 var doWaitFuncSymbol = Model.ResolveSymbol($"{futureType.FullName()}.do_wait", i => i.IsFunction) ??
-                                    throw new BabyPenguinException($"Cant find do_wait function for future type '{waitExpType.FullName()}'", waitExpression.SourceLocation);
+                                    throw new BabyPenguinException($"Cant find do_wait function for future type '{waitExpType.FullName()}'", waitExpression.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
                                 var doWaitSymbol = AllocTempSymbol(doWaitFuncSymbol.TypeInfo, waitExpression.SourceLocation);
                                 AddInstruction(new ReadMemberInstruction(waitExpression.SourceLocation, doWaitFuncSymbol, futureSymbol, doWaitSymbol, true));
                                 AddInstruction(new FunctionCallInstruction(waitExpression.SourceLocation, doWaitSymbol, [], to));
@@ -1735,7 +1735,7 @@ namespace BabyPenguin.SemanticInterface
                         // TODO: we need to convert expression into a annoymous function
                         var functionCallExpression = exp.GetEffectiveExpression() as FunctionCallExpression;
                         if (functionCallExpression == null)
-                            throw new BabyPenguinException($"expecting spawn expression to be a function call", exp.SourceLocation);
+                            throw new BabyPenguinException($"expecting spawn expression to be a function call", exp.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
                         var callee = functionCallExpression.Callee!.GetEffectiveExpression();
                         var funcSymbol = callee is MemberAccessExpression ma ? AddExpression(ma, false) : AddExpression((PrimaryExpression)callee!, false);
                         if (funcSymbol.TypeInfo.GenericArguments.Count > 1)
@@ -1759,7 +1759,7 @@ namespace BabyPenguin.SemanticInterface
                     {
                         var conditionVar = AddExpression(ifExpression.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            throw new BabyPenguinException($"If expression condition must be bool type, but got '{conditionVar.TypeInfo}'", ifExpression.SourceLocation);
+                            throw new BabyPenguinException($"If expression condition must be bool type, but got '{conditionVar.TypeInfo}'", ifExpression.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
 
                         if (ifExpression.HasElse)
                         {
@@ -1819,7 +1819,7 @@ namespace BabyPenguin.SemanticInterface
                         AddInstruction(new NopInstuction(whileExpression.Condition!.SourceLocation).WithLabel(beginLabel));
                         var conditionVar = AddExpression(whileExpression.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
-                            throw new BabyPenguinException($"While expression condition must be bool type, but got '{conditionVar.TypeInfo}'", whileExpression.SourceLocation);
+                            throw new BabyPenguinException($"While expression condition must be bool type, but got '{conditionVar.TypeInfo}'", whileExpression.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
 
                         var whileLoopInfo = new CurrentWhileLoopInfo(beginLabel, endLabel) { BreakValueSymbol = breakValueSymbol };
                         CodeContainerData.CurrentWhileLoop.Push(whileLoopInfo);

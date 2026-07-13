@@ -14,7 +14,7 @@ namespace BabyPenguin
         public ErrorReporter Reporter { get; } = new ErrorReporter();
         public IEnumerable<ISymbol> Symbols => FindAll(s => s is ISymbolContainer).Cast<ISymbolContainer>().SelectMany(c => c.Symbols);
         public List<ISemanticPass> Passes { get; }
-        public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new BabyPenguinException("Builtin namespace not found.", SourceLocation.Empty());
+        public MergedNamespace BuiltinNamespace => Namespaces.Find(n => n.Name == "__builtin") ?? throw new BabyPenguinException("Builtin namespace not found.", SourceLocation.Empty(), code: ErrorCode.E_BUILTIN_MISSING);
 
         public BasicTypeNodes BasicTypeNodes { get; }
 
@@ -175,7 +175,7 @@ namespace BabyPenguin
                 else if (prefixSymbol.WithoutMutability() is VariableSymbol variableSymbol)
                 {
                     var parentType = variableSymbol.TypeInfo.TypeNode as ISymbolContainer ??
-                        throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type");
+                        throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type", null, code: ErrorCode.E_RESOLVE_TYPE);
                     var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, checkImportedNamespaces, prefixSymbol.IsMutable, requireSymbolTypeInferred);
                     if (symbol != null)
                         return symbol;
@@ -235,7 +235,7 @@ namespace BabyPenguin
             {
                 if (variableSymbol.TypeInferStatus != TypeInferStatus.ExplicitTyped && requireSymbolTypeInferred)
                 {
-                    throw new BabyPenguinException($"Variable '{variableSymbol.Name}' type was not inferred", variableSymbol.SourceLocation);
+                    throw new BabyPenguinException($"Variable '{variableSymbol.Name}' type was not inferred", variableSymbol.SourceLocation, code: ErrorCode.E_TYPE_INFERENCE);
                 }
             }
             return symbol;
@@ -344,7 +344,7 @@ namespace BabyPenguin
             var predicate_ = predicate ?? (t => true);
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.IsMutable != Mutability.Auto)
-                throw new BabyPenguinException("ResolveTypeNode dont support mutability");
+                throw new BabyPenguinException("ResolveTypeNode dont support mutability", null, code: ErrorCode.E_INTERNAL);
 
             // check if is a built-in type
             if (BasicTypeNodes.Nodes.TryGetValue(name, out BasicTypeNode? value))
@@ -354,7 +354,7 @@ namespace BabyPenguin
             if (name == "Self")
             {
                 if (scope is null)
-                    throw new BabyPenguinException("Self is not allowed here.", SourceLocation.Empty());
+                    throw new BabyPenguinException("Self is not allowed here.", SourceLocation.Empty(), code: ErrorCode.E_RESOLVE_SYMBOL);
                 if (scope is ITypeNode typ)
                     return typ;
                 else
@@ -463,7 +463,7 @@ namespace BabyPenguin
             }
             else if (typeCandidate.IsGeneric && nameComponents.Generics.Count == 0)
             {
-                throw new BabyPenguinException($"Resolving generic type '{name}' without generic arguments is not supported. If non-specialized type is needed, use '?' as generic argument.");
+                throw new BabyPenguinException($"Resolving generic type '{name}' without generic arguments is not supported. If non-specialized type is needed, use '?' as generic argument.", code: ErrorCode.E_GENERIC_ARITY);
             }
             else
             {
@@ -493,7 +493,7 @@ namespace BabyPenguin
                 {
                     var genericArgument = genericAncestor.GenericArguments[genericAncestor.GenericDefinitions.IndexOf(name)];
                     if (!useImmutableAsDefault && isMutable != Mutability.Auto)
-                        throw new BabyPenguinException($"Setting mutability of generic argument is not allowed");
+                        throw new BabyPenguinException($"Setting mutability of generic argument is not allowed", null, code: ErrorCode.E_INTERNAL);
                     else
                         isMutable = genericArgument.IsMutable;
                 }

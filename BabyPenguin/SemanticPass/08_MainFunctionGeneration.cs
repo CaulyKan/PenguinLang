@@ -17,14 +17,14 @@ namespace BabyPenguin.SemanticPass
         {
             var symbol = Model.ResolveSymbol("__builtin._main");
             if (symbol != null)
-                throw new BabyPenguinException("symbol '__builtin._main' is reserved.", symbol.SourceLocation);
+                throw new BabyPenguinException("symbol '__builtin._main' is reserved.", symbol.SourceLocation, code: ErrorCode.E_BUILTIN_MISSING);
 
-            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.");
-            var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.");
+            var schedulerSymbol = Model.ResolveSymbol("__builtin._main_scheduler") ?? throw new BabyPenguinException("symbol '__builtin._main_scheduler' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
+            var schedulerEntrySymbol = Model.ResolveSymbol("__builtin.Scheduler.entry") ?? throw new BabyPenguinException("symbol '__builtin.Scheduler.entry' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
 
             var mainFunc = new Function(Model, "_main", [], Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), schedulerEntrySymbol.SourceLocation.StartLocation, false, true, false, false, true, false);
             if (Model.Namespaces.Find(ns => ns.Name == "__builtin")?.Namespaces.First() is not INamespace builtinNamespace)
-                throw new BabyPenguinException("namespace '__builtin' is not found.");
+                throw new BabyPenguinException("namespace '__builtin' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
 
             builtinNamespace.AddFunctionSymbol(mainFunc, true, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [], schedulerEntrySymbol.SourceLocation.StartLocation, null, true, false, true, Mutability.Immutable);
             builtinNamespace.AddFunction(mainFunc);
@@ -32,14 +32,14 @@ namespace BabyPenguin.SemanticPass
             // init global variables
             foreach (var mergedNamespace in Model.Namespaces)
             {
-                var constructor = Model.ResolveSymbol(mergedNamespace.FullName() + ".new") ?? throw new BabyPenguinException($"symbol '{mergedNamespace.FullName() + ".new"}' is not found.");
+                var constructor = Model.ResolveSymbol(mergedNamespace.FullName() + ".new") ?? throw new BabyPenguinException($"symbol '{mergedNamespace.FullName() + ".new"}' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
                 mainFunc.Instructions.Add(new FunctionCallInstruction(constructor.SourceLocation, constructor, [], null));
             }
 
             // push all initial routines into pending queue
             foreach (var initialRoutine in Model.FindAll(i => i is IInitialRoutine).Cast<IInitialRoutine>())
             {
-                var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.");
+                var ifutureVoidType = Model.ResolveType("__builtin.IFuture<void>") ?? throw new BabyPenguinException("type '__builtin.IFutureBase' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
                 var targetSymbol = (mainFunc as ICodeContainer).AllocTempSymbol(ifutureVoidType, schedulerEntrySymbol.SourceLocation.StartLocation);
                 (mainFunc as ICodeContainer).SchedulerAddSimpleJob(initialRoutine.FunctionSymbol!, schedulerEntrySymbol.SourceLocation.StartLocation, targetSymbol);
             }

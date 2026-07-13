@@ -1,4 +1,4 @@
-namespace bound {
+namespace emperor {
 
 enum ErrorSeverity {
     Error;
@@ -6,11 +6,13 @@ enum ErrorSeverity {
 }
 
 class SemanticError {
+    code: ErrorCode = new ErrorCode.E_INTERNAL();
     message: string = "";
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
     severity: ErrorSeverity = new ErrorSeverity.Error();
 
-    fun new(mut this, message: string, location: ast.SourceLocation) {
+    fun new(mut this, code: ErrorCode, message: string, location: SourceLocation) {
+        this.code = code;
         this.message = message;
         this.location = location;
     }
@@ -21,14 +23,14 @@ class BoundCompilationUnit {
     global_scope: BoundScope = new BoundScope(new ScopeKind.GlobalScope(), "", "", new Option<BoundScope>.none());
     type_registry: BoundTypeRegistry = new BoundTypeRegistry();
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
-    location: !mut ast.SourceLocation = new ast.SourceLocation("", 0, 0);
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
-    fun new(mut this, location: ast.SourceLocation) {
+    fun new(mut this, location: SourceLocation) {
         this.location = location;
     }
 
-    fun add_error(mut this, message: string, location: ast.SourceLocation) {
-        this.errors.push(new SemanticError(message, location));
+    fun add_error(mut this, code: ErrorCode, message: string, location: SourceLocation) {
+        this.errors.push(new SemanticError(code, message, location));
     }
 
     fun has_errors(this) -> bool {

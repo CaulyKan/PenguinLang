@@ -4,7 +4,7 @@ Basic enum with variant a (no payload) and b (u8 payload), matching via `is`, an
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

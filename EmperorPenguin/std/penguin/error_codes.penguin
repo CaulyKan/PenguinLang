@@ -1,0 +1,120 @@
+// Error codes shared between BabyPenguin and EmperorPenguin.
+// This enum must be kept consistent with PenguinLangParser.ErrorCode (C#).
+
+namespace emperor {
+
+enum ErrorCode {
+    // Resolution errors
+    E_RESOLVE_SYMBOL;
+    E_RESOLVE_TYPE;
+    E_RESOLVE_NAMESPACE;
+
+    // Duplicate declarations
+    E_DUPLICATE_SYMBOL;
+    E_DUPLICATE_PARAM;
+
+    // Type errors
+    E_TYPE_MISMATCH;
+    E_RETURN_TYPE_MISMATCH;
+    E_CAST_INVALID;
+    E_MUTABILITY;
+    E_TYPE_INFERENCE;
+
+    // Generics
+    E_GENERIC_ARITY;
+    E_GENERIC_SPECIALIZE;
+
+    // Interface / value-type
+    E_UNSIZED_INTERFACE;
+    E_VALUE_TYPE_CONFLICT;
+    E_INTERFACE_IMPL;
+
+    // Control flow
+    E_COND_NOT_BOOL;
+    E_LOOP_CONTEXT;
+    E_RETURN_MISSING;
+
+    // Call errors
+    E_CALL_NOT_FUNCTION;
+    E_CALL_ARITY;
+    E_CALL_CONVENTION;
+
+    // Constructor / new
+    E_NO_CONSTRUCTOR;
+    E_NEW_INTERFACE;
+
+    // Enum
+    E_ENUM_VARIANT;
+
+    // Iterator / yield
+    E_ITERATOR_INVALID;
+    E_YIELD_CONTEXT;
+
+    // Event
+    E_EVENT_INVALID;
+
+    // Async / coroutine
+    E_ASYNC_INVALID;
+
+    // Parse
+    E_PARSE;
+
+    // Project / CLI
+    E_PROJECT_FILE;
+
+    // Builtin / internal
+    E_BUILTIN_MISSING;
+    E_UNSUPPORTED;
+    E_INTERNAL;
+
+    // Runtime errors
+    E_RUNTIME_TYPE;
+    E_RUNTIME_LOOKUP;
+    E_RUNTIME_INVALID_OP;
+}
+
+impl __builtin.ICopy<ErrorCode> for ErrorCode {}
+
+// Helper: convert ErrorCode to its string name (since 
+// PenguinLang has no enum-to-string yet).
+fun error_code_name(code: ErrorCode) -> string {
+    if (code is ErrorCode.E_RESOLVE_SYMBOL) { return "E_RESOLVE_SYMBOL"; }
+    if (code is ErrorCode.E_RESOLVE_TYPE) { return "E_RESOLVE_TYPE"; }
+    if (code is ErrorCode.E_RESOLVE_NAMESPACE) { return "E_RESOLVE_NAMESPACE"; }
+    if (code is ErrorCode.E_DUPLICATE_SYMBOL) { return "E_DUPLICATE_SYMBOL"; }
+    if (code is ErrorCode.E_DUPLICATE_PARAM) { return "E_DUPLICATE_PARAM"; }
+    if (code is ErrorCode.E_TYPE_MISMATCH) { return "E_TYPE_MISMATCH"; }
+    if (code is ErrorCode.E_RETURN_TYPE_MISMATCH) { return "E_RETURN_TYPE_MISMATCH"; }
+    if (code is ErrorCode.E_CAST_INVALID) { return "E_CAST_INVALID"; }
+    if (code is ErrorCode.E_MUTABILITY) { return "E_MUTABILITY"; }
+    if (code is ErrorCode.E_TYPE_INFERENCE) { return "E_TYPE_INFERENCE"; }
+    if (code is ErrorCode.E_GENERIC_ARITY) { return "E_GENERIC_ARITY"; }
+    if (code is ErrorCode.E_GENERIC_SPECIALIZE) { return "E_GENERIC_SPECIALIZE"; }
+    if (code is ErrorCode.E_UNSIZED_INTERFACE) { return "E_UNSIZED_INTERFACE"; }
+    if (code is ErrorCode.E_VALUE_TYPE_CONFLICT) { return "E_VALUE_TYPE_CONFLICT"; }
+    if (code is ErrorCode.E_INTERFACE_IMPL) { return "E_INTERFACE_IMPL"; }
+    if (code is ErrorCode.E_COND_NOT_BOOL) { return "E_COND_NOT_BOOL"; }
+    if (code is ErrorCode.E_LOOP_CONTEXT) { return "E_LOOP_CONTEXT"; }
+    if (code is ErrorCode.E_RETURN_MISSING) { return "E_RETURN_MISSING"; }
+    if (code is ErrorCode.E_CALL_NOT_FUNCTION) { return "E_CALL_NOT_FUNCTION"; }
+    if (code is ErrorCode.E_CALL_ARITY) { return "E_CALL_ARITY"; }
+    if (code is ErrorCode.E_CALL_CONVENTION) { return "E_CALL_CONVENTION"; }
+    if (code is ErrorCode.E_NO_CONSTRUCTOR) { return "E_NO_CONSTRUCTOR"; }
+    if (code is ErrorCode.E_NEW_INTERFACE) { return "E_NEW_INTERFACE"; }
+    if (code is ErrorCode.E_ENUM_VARIANT) { return "E_ENUM_VARIANT"; }
+    if (code is ErrorCode.E_ITERATOR_INVALID) { return "E_ITERATOR_INVALID"; }
+    if (code is ErrorCode.E_YIELD_CONTEXT) { return "E_YIELD_CONTEXT"; }
+    if (code is ErrorCode.E_EVENT_INVALID) { return "E_EVENT_INVALID"; }
+    if (code is ErrorCode.E_ASYNC_INVALID) { return "E_ASYNC_INVALID"; }
+    if (code is ErrorCode.E_PARSE) { return "E_PARSE"; }
+    if (code is ErrorCode.E_PROJECT_FILE) { return "E_PROJECT_FILE"; }
+    if (code is ErrorCode.E_BUILTIN_MISSING) { return "E_BUILTIN_MISSING"; }
+    if (code is ErrorCode.E_UNSUPPORTED) { return "E_UNSUPPORTED"; }
+    if (code is ErrorCode.E_INTERNAL) { return "E_INTERNAL"; }
+    if (code is ErrorCode.E_RUNTIME_TYPE) { return "E_RUNTIME_TYPE"; }
+    if (code is ErrorCode.E_RUNTIME_LOOKUP) { return "E_RUNTIME_LOOKUP"; }
+    if (code is ErrorCode.E_RUNTIME_INVALID_OP) { return "E_RUNTIME_INVALID_OP"; }
+    return "E_INTERNAL";
+}
+
+}

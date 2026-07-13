@@ -9,7 +9,7 @@ namespace BabyPenguin.VirtualMachine
     {
         IType TypeInfo { get; }
 
-        T As<T>() where T : class, IRuntimeValue => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}");
+        T As<T>() where T : class, IRuntimeValue => this as T ?? throw new BabyPenguinRuntimeException($"Cannot cast {GetType().Name} to {typeof(T).Name}", code: ErrorCode.E_RUNTIME_TYPE);
 
         IRuntimeValue Clone();
         IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited);
@@ -132,7 +132,7 @@ namespace BabyPenguin.VirtualMachine
                     case TypeEnum.String: StringValue = value as string ?? ""; break;
                     case TypeEnum.Char: CharValue = unchecked((char)Convert.ToInt64(value)); break;
                     case TypeEnum.Void: break;
-                    default: throw new BabyPenguinRuntimeException($"Cannot assign value of type {value?.GetType()} to type {TypeInfo}");
+                    default: throw new BabyPenguinRuntimeException($"Cannot assign value of type {value?.GetType()} to type {TypeInfo}", code: ErrorCode.E_RUNTIME_TYPE);
                 }
             }
         }
@@ -185,7 +185,7 @@ namespace BabyPenguin.VirtualMachine
             FunctionSymbol = funcSymbol;
             owner = owner_ ?? new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
             if (funcSymbol is not Symbol.FunctionSymbol)
-                throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}");
+                throw new BabyPenguinRuntimeException($"Cannot create FunctionRuntimeValue with symbol of type {funcSymbol.GetType().Name}", code: ErrorCode.E_RUNTIME_TYPE);
         }
 
         public IType TypeInfo { get; }
