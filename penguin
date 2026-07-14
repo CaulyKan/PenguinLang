@@ -22,12 +22,44 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     mkdir -p tmp
     dotnet run --configuration Release --project BabyPenguin -- \
         EmperorPenguin/EmperorPenguin.penguins -- \
-        EmperorPenguin/EmperorPenguin.penguins \
+        EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
         -vv -o "tmp/pass2"
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass1 (BabyPenguin VM -> tmp/pass2)" >&2
+        exit 1
+    fi
     echo "Running Pass 2 with bootstrapping ..."
-    tmp/pass2 EmperorPenguin/EmperorPenguin.penguins \
+    tmp/pass2 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
         -vv -o "tmp/pass3"
-    exit $?
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass2 (tmp/pass2 -> tmp/pass3)" >&2
+        exit 1
+    fi
+    echo "Running Pass 3 with bootstrapping ..."
+    tmp/pass3 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+        -vv -o "tmp/pass4"
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass3 (tmp/pass3 -> tmp/pass4)" >&2
+        exit 1
+    fi
+    if command -v md5sum >/dev/null 2>&1; then
+        HASH3=$(md5sum tmp/pass3 | cut -d' ' -f1)
+        HASH4=$(md5sum tmp/pass4 | cut -d' ' -f1)
+    else
+        HASH3=$(md5 -q tmp/pass3)
+        HASH4=$(md5 -q tmp/pass4)
+    fi
+    echo "  tmp/pass3: $HASH3"
+    echo "  tmp/pass4: $HASH4"
+    if [ "$HASH3" = "$HASH4" ]; then
+        echo "============================================================"
+        echo "Bootstrap complete"
+        echo "============================================================"
+        exit 0
+    else
+        echo "Bootstrap NOT converged: pass3 and pass4 differ." >&2
+        exit 1
+    fi
 fi
 
 if [ $TESTING -eq 1 ]; then
@@ -58,6 +90,15 @@ if [ $PASS -eq 3 ]; then
         exit 1
     fi
     tmp/pass3 $OTHERS
+fi
+
+if [ $PASS -eq 4 ]; then
+    echo "Running EmperorPenguin Pass 4 ..."
+    if [ ! -f tmp/pass4 ]; then
+        echo "Pass 4 binary not found. Run './penguin -b' first." >&2
+        exit 1
+    fi
+    tmp/pass4 $OTHERS
 fi
 
 

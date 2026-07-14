@@ -59,7 +59,11 @@ cd MagellanicPenguin\vscode && npm run package
 * When writing penguinlang code, use skill penguin
 * Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
 * When writing unit tests, you must use try to compare if full test output is correct. The use of ambiguous assertions is **prohibited**, such as comparing only queue sizes, string contains, etc.
-* When debugging a codegen/runtime bug, write a minimal PenguinLang repro. Once the repro successfully reproduces the bug AND the fix is verified, **persist the repro as a markdown test case** under `Tests/<Category>/<Name>.md` (format in `Tests/Readme.md`; set `Apply To` to the compiler(s) it was verified on). The legacy `[BatchE2ETest]` cases in `EmperorPenguin.Tests/EndToEnd*Test.cs` are being phased out in favor of these `Tests/*.md` cases. Do not discard working repros.
+* **Any bug or unexpected behavior you hit during work that can be reproduced with a minimal PenguinLang program MUST be persisted as a markdown test case** under `Tests/<Category>/<Name>.md` (format in `Tests/Readme.md`). This is mandatory, not optional — do this the moment you have a minimal repro, and never discard a working repro.
+  - **Fixed bug**: assert the now-correct behavior (exit code + stdout); set `Apply To` to the compiler(s) the fix was verified on. This locks in the fix against regressions.
+  - **Unfixed / deferred bug**: still persist it, as a **red regression sentinel**. Write the minimal repro, assert the *correct* intended behavior (what a working compiler should do), set `Apply To` to include both a known-good compiler (usually `BabyPenguin`, the C# reference) and the buggy compiler(s), and say so explicitly in `## Description` (root cause, where in the source, and "should turn green once fixed"). Example: `Tests/GenericTest/GenericClassShadowedByBuiltin.md` captures the `%t0 undefined` EmperorPenguin bug — green on BabyPenguin, red on EmperorPenguin, auto-passes the day the bug is fixed. The test runner keeps a stable baseline, so a known-red sentinel shows as a steady failure (not a new regression) until it goes green.
+  - Trim the repro to the smallest program that still triggers the issue before committing it.
+  The legacy `[BatchE2ETest]` cases in `EmperorPenguin.Tests/EndToEnd*Test.cs` are being phased out in favor of these `Tests/*.md` cases.
 
 ## Markdown Test Framework (cross-compiler e2e)
 

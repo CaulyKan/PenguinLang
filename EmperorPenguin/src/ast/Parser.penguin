@@ -70,6 +70,7 @@ namespace emperor {
                 this.stream.expect(new TokenType.RParen());
                 let cast_node: CastExpression = new CastExpression();
                 cast_node.type_name = type_token.text;
+                cast_node.location = this.tok_loc(type_token);
                 cast_node.inner = new Option<Expression>.some(cast_inner);
                 return new Expression.cast_expr(cast_node);
             } else {
@@ -240,6 +241,7 @@ namespace emperor {
                             parse_ok = false;
                         } else {
                             let t1: Token = this.stream.advance();
+                            first.location = this.tok_loc(t1);
                             first.name = t1.text;
                             if (this.stream.peek_type() is TokenType.Less) {
                                 this.parse_genericTypeArgs(first.generic_args);
@@ -257,6 +259,7 @@ namespace emperor {
                                     break;
                                 }
                                 let tn: Token = this.stream.advance();
+                                next_type.location = this.tok_loc(tn);
                                 next_type.name = tn.text;
                                 if (this.stream.peek_type() is TokenType.Less) {
                                     this.parse_genericTypeArgs(next_type.generic_args);
@@ -367,6 +370,7 @@ namespace emperor {
                     let ga: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
                     let t1: TypeSpecifier = new TypeSpecifier();
                     let tn: Token = this.stream.advance();
+                    t1.location = this.tok_loc(tn);
                     t1.name = tn.text;
                     if (this.stream.peek_type() is TokenType.Less) {
                         parse_ok = this.try_parse_genericTypeArgs(t1.generic_args);
@@ -382,6 +386,7 @@ namespace emperor {
                         }
                         let next_type: TypeSpecifier = new TypeSpecifier();
                         let tn2: Token = this.stream.advance();
+                        next_type.location = this.tok_loc(tn2);
                         next_type.name = tn2.text;
                         if (this.stream.peek_type() is TokenType.Less) {
                             parse_ok = this.try_parse_genericTypeArgs(next_type.generic_args);
@@ -798,6 +803,7 @@ namespace emperor {
             let type_next: Token = this.stream.peek();
             if (type_next.token_type is TokenType.Fun) {
                 this.stream.advance();
+                node.location = this.tok_loc(type_next);
                 if (this.stream.peek_type() is TokenType.Less) {
                     node.is_function_type = true;
                     this.parse_genericTypeArgs(node.function_params);
@@ -806,6 +812,7 @@ namespace emperor {
                 }
             } else {
                 let type_token: Token = this.stream.advance();
+                node.location = this.tok_loc(type_token);
                 node.name = type_token.text;
                 while (this.stream.peek_type() is TokenType.Dot) {
                     node.qualified_parts.push(node.name);
@@ -855,6 +862,7 @@ namespace emperor {
             }
             let first: TypeSpecifier = new TypeSpecifier();
             let t1: Token = this.stream.advance();
+            first.location = this.tok_loc(t1);
             first.name = t1.text;
             if (this.stream.peek_type() is TokenType.Less) {
                 if (!this.try_parse_genericTypeArgs(first.generic_args)) {
@@ -870,6 +878,7 @@ namespace emperor {
                 }
                 let next_type: TypeSpecifier = new TypeSpecifier();
                 let tn: Token = this.stream.advance();
+                next_type.location = this.tok_loc(tn);
                 next_type.name = tn.text;
                 if (this.stream.peek_type() is TokenType.Less) {
                     if (!this.try_parse_genericTypeArgs(next_type.generic_args)) {
@@ -892,6 +901,7 @@ namespace emperor {
                 ts.is_mutable = true;
             }
             let t: Token = this.stream.advance();
+            ts.location = this.tok_loc(t);
             ts.name = t.text;
             while (this.stream.peek_type() is TokenType.Dot) {
                 ts.qualified_parts.push(ts.name);
@@ -1080,6 +1090,7 @@ namespace emperor {
                 this.stream.expect(new TokenType.For());
                 let for_type_spec: TypeSpecifier = this.parse_typeSpecifier();
                 let node: InterfaceForImplementation = new InterfaceForImplementation(type_spec.name, for_type_spec.name);
+                node.location = type_spec.location;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.Where) {
@@ -1100,6 +1111,7 @@ namespace emperor {
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
+            node2.location = type_spec.location;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
@@ -1128,6 +1140,7 @@ namespace emperor {
                 this.stream.expect(new TokenType.For());
                 let for_type_spec: TypeSpecifier = this.parse_typeSpecifier();
                 let node: InterfaceForImplementation = new InterfaceForImplementation(type_spec.name, for_type_spec.name);
+                node.location = type_spec.location;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.Where) {
@@ -1148,6 +1161,7 @@ namespace emperor {
             }
             // interfaceImplementation: impl Type { ... } or impl Type ;
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
+            node2.location = type_spec.location;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.Where) {
                 let wd2 = this.parse_whereDefinition();
@@ -1801,6 +1815,7 @@ namespace emperor {
             if (this.stream.match(new TokenType.Colon())) {
                 let type_token: Token = this.stream.advance();
                 let ts: TypeSpecifier = new TypeSpecifier();
+                ts.location = this.tok_loc(type_token);
                 ts.name = type_token.text;
                 node.event_type = new Option<TypeSpecifier>.some(ts);
             }

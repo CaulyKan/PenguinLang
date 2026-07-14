@@ -31,7 +31,7 @@ namespace BabyPenguin
 
             return Parser.Default.ParseArguments<Options>(parserArgs).MapResult(
                 (options) => Run(options, args),
-                _ => -1
+                _ => 1
             );
         }
 
@@ -140,17 +140,17 @@ namespace BabyPenguin
             {
                 var loc = e.Location != null ? $" (at {e.Location.FileName}:{e.Location.RowStart},{e.Location.ColStart})" : "";
                 Console.Error.WriteLine($"error[{e.Code}]: {e.Message}{loc}");
-                return -1;
+                return 1;
             }
             catch (PenguinLangException e)
             {
                 Console.Error.WriteLine($"error[{e.Code}]: {e.Message}");
-                return -1;
+                return 1;
             }
             catch (BabyPenguinRuntimeException e)
             {
                 Console.Error.WriteLine($"error[{e.Code}]: {e.Message}");
-                return -1;
+                return 1;
             }
         }
 

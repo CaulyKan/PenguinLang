@@ -271,6 +271,7 @@ class CodeBlockExpression {
 class CastExpression {
     type_name: mut string = "";
     inner: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
@@ -695,6 +696,7 @@ enum Statement {
 
 class TypeSpecifier {
     name: mut string = "";
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     is_mutable: mut bool = false;
     is_not_mutable: mut bool = false;
@@ -1012,6 +1014,7 @@ class InterfaceImplementation {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, type_name: string) {
 
@@ -1052,6 +1055,7 @@ class InterfaceForImplementation {
     for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, type_name: string, for_type_name: string) {
 

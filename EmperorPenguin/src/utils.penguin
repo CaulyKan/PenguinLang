@@ -31,10 +31,22 @@ namespace _utils {
         }
     }
 
+    fun args() -> _utils.List<string> {
+        let result = new _utils.List<string>();
+        let count: i64 = __builtin.__args_count();
+        let i: mut i64 = 0;
+        while (i < count) {
+            result.push(__builtin.__args_get(i));
+            i = i + 1;
+        }
+        return result;
+    }
+
     #template(T: type)
     class _ListNode {
         value: mut __builtin.Option<T> = new __builtin.Option<T>.none();
         next: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+        prev: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
     }
 
     #template(T: type)
@@ -42,16 +54,25 @@ namespace _utils {
         head: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
         tail: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
         count: mut u64 = 0;
+        // Access cursor: caches the node + index most recently returned by node_at, so
+        // sequential / short-distance access (the parser's token-stream pattern) is O(1)
+        // instead of re-walking from the head every call (which made parse O(n^2)).
+        // This is pure internal cache state — callers only ever use at()/set(); the node
+        // structure is never exposed upward. Invalidated by pop()/remove().
+        cursor_node: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+        cursor_index: mut u64 = 0;
 
         fun new(mut this) {}
 
         fun push(mut this, value: T) {
             let node: mut _ListNode<T> = new _ListNode<T>();
             node.value = new __builtin.Option<T>.some(value);
+            node.prev = new __builtin.Option<_ListNode<T>>.none();
             if (this.count == 0) {
                 this.head = new __builtin.Option<_ListNode<T>>.some(node);
                 this.tail = new __builtin.Option<_ListNode<T>>.some(node);
             } else {
+                node.prev = new __builtin.Option<_ListNode<T>>.some(this.tail.some);
                 let t: mut _ListNode<T> = this.tail.some;
                 t.next = new __builtin.Option<_ListNode<T>>.some(node);
                 this.tail = new __builtin.Option<_ListNode<T>>.some(node);
@@ -59,30 +80,72 @@ namespace _utils {
             this.count = this.count + 1;
         }
 
+        // Return the node at `index`, updating the access cursor. Assumes index < count
+        // (callers gate on that). Picks the closest starting point — head, tail, or the
+        // cached cursor — and walks forward (via next) or backward (via prev), so cost is
+        // O(distance) from the nearest of those three. For sequential + short-backtrack
+        // access this is O(1) amortized.
+        fun node_at(this, index: u64) -> _ListNode<T> {
+            let start_node: mut _ListNode<T> = this.head.some;
+            let start_index: mut u64 = 0;
+            let forward: mut bool = true;
+            let best: mut u64 = index;
+            // From tail, walking backward.
+            let dist_tail: u64 = this.count - 1 - index;
+            if (dist_tail < best) {
+                start_node = this.tail.some;
+                start_index = this.count - 1;
+                forward = false;
+                best = dist_tail;
+            }
+            // From the cached cursor, walking forward or backward.
+            if (this.cursor_node.is_some()) {
+                let dist_c: mut u64 = 0;
+                let fwd_c: mut bool = true;
+                if (index >= this.cursor_index) {
+                    dist_c = index - this.cursor_index;
+                    fwd_c = true;
+                } else {
+                    dist_c = this.cursor_index - index;
+                    fwd_c = false;
+                }
+                if (dist_c < best) {
+                    start_node = this.cursor_node.some;
+                    start_index = this.cursor_index;
+                    forward = fwd_c;
+                    best = dist_c;
+                }
+            }
+            let cur: mut _ListNode<T> = start_node;
+            let ci: mut u64 = start_index;
+            if (forward) {
+                while (ci < index) {
+                    cur = cur.next.some;
+                    ci = ci + 1;
+                }
+            } else {
+                while (ci > index) {
+                    cur = cur.prev.some;
+                    ci = ci - 1;
+                }
+            }
+            this.cursor_node = new __builtin.Option<_ListNode<T>>.some(cur);
+            this.cursor_index = index;
+            return cur;
+        }
+
         fun at(this, index: u64) -> __builtin.Option<T> {
             if (index >= this.count) {
                 return new __builtin.Option<T>.none();
             }
-            let current: mut __builtin.Option<_ListNode<T>> = this.head;
-            let i: mut u64 = 0;
-            while (i < index) {
-                current = current.some.next;
-                i = i + 1;
-            }
-            return current.some.value;
+            return this.node_at(index).value;
         }
 
         fun set(mut this, index: u64, value: T) {
             if (index >= this.count) {
                 return;
             }
-            let current: mut __builtin.Option<_ListNode<T>> = this.head;
-            let i: mut u64 = 0;
-            while (i < index) {
-                current = current.some.next;
-                i = i + 1;
-            }
-            let node: mut _ListNode<T> = current.some;
+            let node: mut _ListNode<T> = this.node_at(index);
             node.value = new __builtin.Option<T>.some(value);
         }
 
@@ -95,18 +158,18 @@ namespace _utils {
                 this.head = new __builtin.Option<_ListNode<T>>.none();
                 this.tail = new __builtin.Option<_ListNode<T>>.none();
                 this.count = 0;
+                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
+                this.cursor_index = 0;
                 return result;
             }
-            let current: mut __builtin.Option<_ListNode<T>> = this.head;
-            let j: mut u64 = 0;
-            while (j < this.count - 2) {
-                current = current.some.next;
-                j = j + 1;
-            }
-            let new_tail: mut _ListNode<T> = current.some;
+            // Doubly-linked: the new tail is the old tail's prev (O(1), no walk).
+            let old_tail: _ListNode<T> = this.tail.some;
+            let new_tail: mut _ListNode<T> = old_tail.prev.some;
             new_tail.next = new __builtin.Option<_ListNode<T>>.none();
             this.tail = new __builtin.Option<_ListNode<T>>.some(new_tail);
             this.count = this.count - 1;
+            this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
+            this.cursor_index = 0;
             return result;
         }
 
@@ -118,28 +181,33 @@ namespace _utils {
                 this.head = new __builtin.Option<_ListNode<T>>.none();
                 this.tail = new __builtin.Option<_ListNode<T>>.none();
                 this.count = 0;
+                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
+                this.cursor_index = 0;
                 return;
             }
             if (index == 0) {
-                this.head = this.head.some.next;
+                let new_head: mut _ListNode<T> = this.head.some.next.some;
+                new_head.prev = new __builtin.Option<_ListNode<T>>.none();
+                this.head = new __builtin.Option<_ListNode<T>>.some(new_head);
                 this.count = this.count - 1;
+                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
+                this.cursor_index = 0;
                 return;
             }
-            let current: mut __builtin.Option<_ListNode<T>> = this.head;
-            let i: mut u64 = 0;
-            while (i < index - 1) {
-                current = current.some.next;
-                i = i + 1;
-            }
-            let prev: mut _ListNode<T> = current.some;
-            let target: mut __builtin.Option<_ListNode<T>> = prev.next;
-            if (target.is_some()) {
-                prev.next = target.some.next;
-                if (index == this.count - 1) {
-                    this.tail = new __builtin.Option<_ListNode<T>>.some(prev);
-                }
+            let target: _ListNode<T> = this.node_at(index);
+            let target_prev: mut _ListNode<T> = target.prev.some;
+            let target_next_opt: __builtin.Option<_ListNode<T>> = target.next;
+            if (target_next_opt.is_some()) {
+                let target_next: mut _ListNode<T> = target_next_opt.some;
+                target_next.prev = new __builtin.Option<_ListNode<T>>.some(target_prev);
+                target_prev.next = new __builtin.Option<_ListNode<T>>.some(target_next);
+            } else {
+                target_prev.next = new __builtin.Option<_ListNode<T>>.none();
+                this.tail = new __builtin.Option<_ListNode<T>>.some(target_prev);
             }
             this.count = this.count - 1;
+            this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
+            this.cursor_index = 0;
         }
 
         fun size(this) -> u64 {

@@ -12,17 +12,6 @@ namespace __builtin {
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
 
-    fun args() -> _utils.List<string> {
-        let count: i64 = __args_count();
-        let result: mut _utils.List<string> = new _utils.List<string>();
-        let i: mut i64 = 0;
-        while (i < count) {
-            result.push(__args_get(i));
-            i = i + 1;
-        }
-        return result;
-    }
-
     fun hello_world() {
         println("hello world!");
     }

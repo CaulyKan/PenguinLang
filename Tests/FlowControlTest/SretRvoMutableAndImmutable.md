@@ -10,7 +10,7 @@ RVO (return-value optimization) for sret returns. Tests mutable and immutable as
 
 ## Test Code
 ```
-    fun make(i: i32) -> Option<i32> {
+    fun make(i: i32) -> mut Option<i32> {
         if (i > 0) { return new Option<i32>.some(i); }
         return new Option<i32>.none();
     }

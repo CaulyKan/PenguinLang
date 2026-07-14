@@ -82,7 +82,7 @@ fun print_scope_to(sb: mut StringBuilder, scope: BoundScope, level: i64) {
 }
 
 initial {
-    let args: _utils.List<string> = __builtin.args();
+    let args: _utils.List<string> = _utils.args();
     if (args.size() == 0) {
         __builtin.eprintln("Usage: EmperorPenguin [-v|-vv|-vvv] [-o output] <file.penguins | file1.penguin [file2.penguin ...]>");
         __builtin.exit(1);
@@ -120,8 +120,6 @@ initial {
     }
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
-    let utils_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/utils.penguin");
-    let error_codes_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/error_codes.penguin");
 
     // Build intermediates go into a per-process unique temp directory so that
     // parallel EmperorPenguin invocations never collide on a shared path. The
@@ -144,27 +142,29 @@ initial {
         }
     }
 
-    let first_arg: string = source_files.at(0).some;
-
-    if (string_ends_with(first_arg, ".penguins")) {
-        // .penguins mode: parse project file and resolve sources
-        let proj: mut PenguinProject = PenguinProject.load(first_arg);
-        let project_dir: string = get_parent_dir(first_arg);
-        let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
-        source_files = resolved;
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Loaded: " + proj.name + " (" + cast<string>(resolved.size()) + " sources)"); }
-    }   
-
     let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
-    inputs.push(new SourceInput("utils.penguin", utils_source));
-    inputs.push(new SourceInput("error_codes.penguin", error_codes_source));
     let fi: mut i64 = 0;
     while (fi < cast<i64>(source_files.size())) {
         let file: string = source_files.at(cast<u64>(fi)).some;
-        let source: string = _utils.file_read_text(file);
-        inputs.push(new SourceInput(file, source));
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
+        if (string_ends_with(file, ".penguins")) { 
+            let proj: mut PenguinProject = PenguinProject.load(file);
+            let project_dir: string = get_parent_dir(file);
+            let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
+            let project_file_index: mut i64 = 0;
+            while (project_file_index < cast<i64>(resolved.size())) {
+                let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
+                let source: string = _utils.file_read_text(proj_file);
+                inputs.push(new SourceInput(proj_file, source));
+                if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + proj_file); }
+                project_file_index = project_file_index + 1;
+            }
+        }
+        else {
+            let source: string = _utils.file_read_text(file);
+            inputs.push(new SourceInput(file, source));
+            if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
+        }
         fi = fi + 1;
     }
 

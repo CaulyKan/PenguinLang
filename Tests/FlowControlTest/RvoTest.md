@@ -18,6 +18,7 @@ Return value optimization: function returning a class with three fields, then di
     fun test() -> Foo {
         let f : mut Foo = new Foo();
         f.x = 1;
+        return f;
     }
     fun test2() -> Foo {
         let f : Foo = test();

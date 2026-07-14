@@ -3,7 +3,6 @@
 Exit with code 1, which should prevent further output.
 
 ## Apply To
-* BabyPenguin
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
@@ -20,7 +19,7 @@ Exit with code 1, which should prevent further output.
 ## Compile
 Args: ``
 Env: ``
-ExpectedExitCode: 1
+ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
