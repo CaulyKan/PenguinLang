@@ -162,7 +162,10 @@ public static class Program
 
         SummaryReporter.WriteHtml(summaryPath, list, sw.Elapsed, diff, repoRoot, runDir, specs, commit);
         SummaryReporter.WriteJson(jsonPath, list, sw.Elapsed, diff);
-        File.Copy(jsonPath, Path.Combine(repoRoot, "tmp", "testruns", "latest.json"), overwrite: true);
+        // Only update the baseline (latest.json) on a full run (no filter),
+        // so subsequent filtered runs always compare against a complete baseline.
+        if (opts.Filter == null)
+            File.Copy(jsonPath, Path.Combine(repoRoot, "tmp", "testruns", "latest.json"), overwrite: true);
 
         int failCount = list.Count(r => r.Status != Status.Pass && r.Status != Status.Skip);
         var totals = SummaryReporter.Totals(list);

@@ -200,6 +200,23 @@ class SemanticModel {
         if (!def.is_extern && def.body.is_some()) {
             let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), def.name, full_name + ".<body>", new Option<BoundScope>.some(scope));
             result.scope = new Option<BoundScope>.some(func_scope);
+            // Register generic type params in function scope so parameter/return types
+            // can resolve them (mirrors bind_class_def). Without this, resolving a
+            // type like `T` inside `#template(T: type) fun identity(x: T) -> T` fails.
+            if (cast<i64>(result.generic_params.size()) > 0) {
+                let gi: mut i64 = 0;
+                while (gi < cast<i64>(result.generic_params.size())) {
+                    let param_name: string = result.generic_params.at(cast<u64>(gi)).some;
+                    let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                    let pt: mut BoundType = new BoundType();
+                    pt.kind = new TypeKind.ClassKind();
+                    let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                    pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                    param_sym.bound_type = pt;
+                    func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    gi = gi + 1;
+                }
+            }
         }
         let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(def.name, full_name);
         sym.is_extern = def.is_extern;
@@ -802,8 +819,13 @@ class SemanticModel {
         _utils.trace_enter("Enter resolve_function_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
+        // For generic functions, use the function's own scope (has template params registered)
+        let resolve_scope: BoundScope = scope;
+        if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            resolve_scope = bound_func.scope.some;
+        }
         if (ast_func.return_type.is_some()) {
-            ret = this.resolve_type_specifier(ast_func.return_type.some, scope);
+            ret = this.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
@@ -813,7 +835,7 @@ class SemanticModel {
             let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
             let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
             if (p.type_spec.is_some()) {
-                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, scope);
+                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, resolve_scope);
             }
             bound_func.parameters.push(bp);
             func_type_params.push(bp.bound_type);
@@ -829,8 +851,13 @@ class SemanticModel {
         _utils.trace_enter("Enter resolve_class_method_pair");
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
+        // For generic methods, use the method's own scope (has its own template params registered)
+        let resolve_scope: BoundScope = scope;
+        if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            resolve_scope = bound_func.scope.some;
+        }
         if (ast_func.return_type.is_some()) {
-            ret = this.resolve_type_specifier(ast_func.return_type.some, scope);
+            ret = this.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
@@ -840,7 +867,7 @@ class SemanticModel {
             let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
             let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
             if (p.type_spec.is_some()) {
-                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, scope);
+                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, resolve_scope);
             } else if (p.is_this) {
                 if (bound_func.is_new) {
                     bp.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
@@ -1259,7 +1286,7 @@ class SemanticModel {
         while (iteration < max_iterations) {
             let instantiations: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             this.collect_generic_instantiations(result.definitions, instantiations);
-            this.collect_generic_instantiations_from_ast(unit.definitions, result.global_scope, instantiations);
+            this.collect_generic_instantiations_from_ast(unit.definitions, result.definitions, result.global_scope, instantiations);
 
             let specialized_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
             let specialized_asts: mut _utils.List<Definition> = new _utils.List<Definition>();
@@ -1568,7 +1595,7 @@ class SemanticModel {
         }
     }
 
-    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
         _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
@@ -1595,7 +1622,17 @@ class SemanticModel {
                 }
             }
             if (def is Definition.namespace_def) {
-                this.collect_generic_instantiations_from_ast(def.namespace_def.children, scope, instantiations);
+                // Find matching bound namespace to get its scope
+                let ns_scope: BoundScope = scope;
+                let ns_bound_children: _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+                if (i < cast<i64>(bound_defs.size())) {
+                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                        ns_scope = bd.namespace_def.scope.some;
+                        ns_bound_children = bd.namespace_def.children;
+                    }
+                }
+                this.collect_generic_instantiations_from_ast(def.namespace_def.children, ns_bound_children, ns_scope, instantiations);
             }
             i = i + 1;
         }
