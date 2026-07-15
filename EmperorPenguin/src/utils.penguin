@@ -50,6 +50,29 @@ namespace _utils {
     }
 
     #template(T: type)
+    class _ListIterator {
+        current: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
+
+        fun new(mut this, start: __builtin.Option<_ListNode<T>>) {
+            this.current = start;
+        }
+
+        fun next(mut this) -> __builtin.Option<T> {
+            if (this.current.is_some()) {
+                let node: mut _ListNode<T> = this.current.some;
+                let val: T = node.value.some;
+                this.current = node.next;
+                return new __builtin.Option<T>.some(val);
+            }
+            return new __builtin.Option<T>.none();
+        }
+
+        fun iter(mut this) -> mut _ListIterator<T> {
+            return new _ListIterator<T>(this.current);
+        }
+    }
+
+    #template(T: type)
     class List {
         head: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
         tail: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
@@ -212,6 +235,10 @@ namespace _utils {
 
         fun size(this) -> u64 {
             return this.count;
+        }
+
+        fun iter(mut this) -> mut _ListIterator<T> {
+            return new _ListIterator<T>(this.head);
         }
     }
 

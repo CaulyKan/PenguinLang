@@ -23,21 +23,21 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     dotnet run --configuration Release --project BabyPenguin -- \
         EmperorPenguin/EmperorPenguin.penguins -- \
         EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -vv -o "tmp/pass2"
+        -vv -o "tmp/pass2" 2>&1 | ts "%F %T" | tee tmp/pass1.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass1 (BabyPenguin VM -> tmp/pass2)" >&2
         exit 1
     fi
     echo "Running Pass 2 with bootstrapping ..."
     tmp/pass2 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -vv -o "tmp/pass3"
+        -vv -o "tmp/pass3" 2>&1 | ts "%F %T" | tee tmp/pass2.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass2 (tmp/pass2 -> tmp/pass3)" >&2
         exit 1
     fi
     echo "Running Pass 3 with bootstrapping ..."
     tmp/pass3 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -vv -o "tmp/pass4"
+        -vv -o "tmp/pass4" 2>&1 | ts "%F %T" | tee tmp/pass3.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass3 (tmp/pass3 -> tmp/pass4)" >&2
         exit 1
@@ -64,7 +64,7 @@ fi
 
 if [ $TESTING -eq 1 ]; then
     echo "Running PenguinLang Tests ..."
-    dotnet run --configuration Release --project Tests/PenguinTestRunner.csproj -- $OTHERS
+    dotnet run --configuration Release --project Tests/PenguinTestRunner.csproj -- $OTHERS 2>&1 | ts "%F %T" | tee tmp/test.log
     exit $?
 fi
 

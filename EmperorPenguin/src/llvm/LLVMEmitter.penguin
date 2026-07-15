@@ -916,7 +916,7 @@ class LLVMEmitter {
 
     fun emit_main(mut this, module: IRModule) {
         _utils.trace_enter("Enter emit_main(module=" + module.to_string() + ")");
-        if (cast<i64>(module.entry_functions.size()) > 0) {
+        if (cast<i64>(module.entry_functions.size()) > 0 || cast<i64>(module.init_functions.size()) > 0) {
             this.has_main = true;
             this.sb.append("define i32 @main(i32 %argc, ptr %argv) {\n");
             this.sb.append("entry:\n");
@@ -947,6 +947,13 @@ class LLVMEmitter {
                     }
                 }
                 gi = gi + 1;
+            }
+            // Call global init functions (non-literal initializers)
+            let ini: mut i64 = 0;
+            while (ini < cast<i64>(module.init_functions.size())) {
+                let init_func: IRFunction = module.init_functions.at(cast<u64>(ini)).some;
+                this.sb.append("  call void " + this.llvm_func_name(init_func.name) + "()\n");
+                ini = ini + 1;
             }
             let i: mut i64 = 0;
             while (i < cast<i64>(module.entry_functions.size())) {

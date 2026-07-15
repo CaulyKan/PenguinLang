@@ -30,6 +30,7 @@ public static class Program
         if (opts.Help) { Options.PrintHelp(); return 0; }
 
         var repoRoot = LocateRepoRoot();
+        Environment.SetEnvironmentVariable("PENGUIN_ROOT", repoRoot);
         var testsDir = Path.Combine(repoRoot, "Tests");
 
         if (opts.Migrate != null)
@@ -910,7 +911,7 @@ public sealed class EmperorOnVmBackend : ICompilerBackend
     public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile)
     {
         // dotnet <bpDll> -q <empPenguins> -- <compileArgs> <src> -o <exe>
-        var extra = ArgumentBuilder.SplitArgs(compile.Args);
+        var extra = ArgumentBuilder.SplitArgs(EnvHelper.Expand(compile.Args));
         var all = new List<string> { _bpDll, "-q", _empPenguins, "--" };
         all.AddRange(extra);
         all.Add(srcFile);
@@ -923,7 +924,7 @@ public sealed class EmperorOnVmBackend : ICompilerBackend
 
     public ProcessStartInfo BuildRunProcess(string exeFile, StageSpec run)
     {
-        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(run.Args).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(run.Args)) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
+        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args)).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args))) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
         EnvHelper.ApplyEnv(psi, run.Env);
         return psi;
     }
@@ -941,7 +942,7 @@ public sealed class EmperorNativeBackend : ICompilerBackend
     public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile)
     {
         var all = new List<string>();
-        all.AddRange(ArgumentBuilder.SplitArgs(compile.Args));
+        all.AddRange(ArgumentBuilder.SplitArgs(EnvHelper.Expand(compile.Args)));
         all.Add(srcFile);
         all.Add("-o");
         all.Add(exeFile);
@@ -952,7 +953,7 @@ public sealed class EmperorNativeBackend : ICompilerBackend
 
     public ProcessStartInfo BuildRunProcess(string exeFile, StageSpec run)
     {
-        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(run.Args).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(run.Args)) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
+        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args)).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args))) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
         EnvHelper.ApplyEnv(psi, run.Env);
         return psi;
     }
@@ -998,7 +999,19 @@ public static class EnvHelper
     public static void ApplyEnv(ProcessStartInfo psi, Dictionary<string, string> env)
     {
         foreach (var kv in env)
-            psi.Environment[kv.Key] = kv.Value;
+            psi.Environment[kv.Key] = Expand(kv.Value);
+    }
+
+    /// <summary>
+    /// Expand ${VAR} tokens against the process environment. ${PENGUIN_ROOT}
+    /// (the workspace top-level) is always available — it is set in Main before
+    /// any test runs. Unset variables expand to the empty string.
+    /// </summary>
+    public static string Expand(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return s ?? "";
+        return Regex.Replace(s, @"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+            m => Environment.GetEnvironmentVariable(m.Groups[1].Value) ?? "");
     }
 }
 

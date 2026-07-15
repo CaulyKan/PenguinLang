@@ -30,7 +30,7 @@ _utils.List basic operations: push, pop, size, at.
 ```
 
 ## Compile
-Args: ``
+Args: `${PENGUIN_ROOT}/EmperorPenguin/src/utils.penguin`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

@@ -16,6 +16,7 @@ class IRModule {
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
     functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
     entry_functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+    init_functions: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
     global_variables: mut _utils.List<IRGlobalVariable> = new _utils.List<IRGlobalVariable>();
 
     fun new(mut this, location: SourceLocation) {

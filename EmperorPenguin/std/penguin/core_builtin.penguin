@@ -67,6 +67,16 @@ namespace __builtin {
     interface IReferenceType {
     }
 
+    #template(T: type)
+    interface IIterator {
+        fun next(mut this) -> Option<T>;
+    }
+
+    #template(T: type)
+    interface IIterable {
+        fun iter(mut this) -> mut IIterator<T>;
+    }
+
     impl __builtin.ICopy<i64> for i64;
     impl __builtin.ICopy<u64> for u64;
     impl __builtin.ICopy<i32> for i32;
@@ -133,4 +143,38 @@ namespace __builtin {
         first: K;
         second: V;
     }
+}
+
+// Range iterator: a simple numeric range for for-loop support
+class RangeIterator {
+    current: mut i64 = 0;
+    end: i64 = 0;
+    fun new(mut this, start: i64, end: i64) {
+        this.current = start;
+        this.end = end;
+    }
+    fun next(mut this) -> __builtin.Option<i64> {
+        if (this.current < this.end) {
+            let val: i64 = this.current;
+            this.current = this.current + 1;
+            return new __builtin.Option<i64>.some(val);
+        }
+        return new __builtin.Option<i64>.none();
+    }
+}
+
+class Range {
+    start: i64 = 0;
+    end: i64 = 0;
+    fun new(mut this, start: i64, end: i64) {
+        this.start = start;
+        this.end = end;
+    }
+    fun iter(mut this) -> mut RangeIterator {
+        return new RangeIterator(this.start, this.end);
+    }
+}
+
+fun range(start: i64, end: i64) -> Range {
+    return new Range(start, end);
 }

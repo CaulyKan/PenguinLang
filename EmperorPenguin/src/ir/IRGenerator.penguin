@@ -307,12 +307,24 @@ class IRGenerator {
         let gv: IRGlobalVariable = new IRGlobalVariable(global_name, ir_type, init_value);
         module.add_global_variable(gv);
 
-        // If the initializer is non-trivial (not a literal), emit init code
+        // If the initializer is non-trivial (not a literal), emit a runtime init function
         if (def.initializer.is_some()) {
             let init_expr: BoundExpression = def.initializer.some;
             if (!(init_expr is BoundExpression.literal)) {
-                // Non-trivial initializers are handled during initial routine lowering
-                // by registering the global variable symbol so identifier lookups work
+                let init_name: string = def.full_name + ".<init>";
+                let loc: SourceLocation = this.make_loc(0, 0);
+                let saved_builder: IRBuilder = this.builder;
+                this.builder = new IRBuilder(new IRFunction(init_name, "void", loc));
+                this.builder.func.display_name = "global_init";
+                this.reset_locals();
+                let val: IRValue = this.lower_expression(init_expr);
+                this.builder.emit_global_store(global_name, val, loc);
+                if (!this.builder.func.has_terminator()) {
+                    this.builder.emit_ret_void(loc);
+                }
+                module.add_function(this.builder.func);
+                module.init_functions.push(this.builder.func);
+                this.builder = saved_builder;
             }
         }
 
@@ -1165,7 +1177,9 @@ class IRGenerator {
             this.lower_while_stmt(stmt.while_stmt);
         }
         if (stmt is BoundStatement.for_stmt) {
-            __builtin.eprintln("error[E_UNSUPPORTED]: for loops are not yet supported in IR generation");
+            // For loops are lowered to while loops in SemanticModel.bind_statement,
+            // so this case should never be reached at the IR level.
+            __builtin.eprintln("error[E_INTERNAL]: for_stmt should have been lowered to while loop in SemanticModel");
             __builtin.exit(1);
         }
         if (stmt is BoundStatement.block) {

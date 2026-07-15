@@ -447,7 +447,9 @@ class SemanticModel {
 
     fun bind_initial_routine(mut this, def: InitialRoutineDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_initial_routine");
-        let full_name: string = scope.full_name + ".<initial>";
+        let count: i64 = scope.init_routine_count;
+        scope.init_routine_count = count + 1;
+        let full_name: string = scope.full_name + ".<initial>" + cast<string>(count);
         let result: mut BoundInitialRoutineDefinition = new BoundInitialRoutineDefinition(full_name);
         let init_scope: mut BoundScope = new BoundScope(new ScopeKind.InitialRoutineScope(), "<initial>", full_name + ".<body>", new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(init_scope);
@@ -4184,6 +4186,178 @@ class SemanticModel {
             scope.add_symbol(new BoundSymbol.variable(var_sym));
             return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
         }
+        if (stmt is Statement.for_stmt) {
+            let fs: ForStatement = stmt.for_stmt;
+            let loc: SourceLocation = fs.location;
+
+            // Create for scope
+            let for_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for>", scope.full_name + ".<for>", new Option<BoundScope>.some(scope));
+
+            // 1. Build iterable.iter() call
+            let ast_iter_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_iter_ma.member_access.base_expr = fs.iterable;
+            ast_iter_ma.member_access.member_name = "iter";
+            let ast_iter_call: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_iter_call.function_call.callee = new Option<Expression>.some(ast_iter_ma);
+            let bound_iter_call: Option<BoundExpression> = this.bind_expression(ast_iter_call, for_scope);
+
+            if (bound_iter_call.is_none()) {
+                return new Option<BoundStatement>.none();
+            }
+            let iter_type: mut BoundType = bound_iter_call.some.get_bound_type();
+
+            // 2. Declare __iter
+            let iter_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            iter_sym.name = "__iter";
+            iter_sym.full_name = for_scope.full_name + ".__iter";
+            iter_sym.bound_type = iter_type;
+            iter_sym.is_mutable = true;
+            iter_sym.variable_kind = new VariableSymbolKind.Local();
+            iter_sym.location = loc;
+            for_scope.add_symbol(new BoundSymbol.variable(iter_sym));
+
+            // 3. Build __iter.next() call
+            let ast_iter_ident: Expression = new Expression.identifier(new IdentifierExpression("__iter"));
+            let ast_next_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_next_ma.member_access.base_expr = new Option<Expression>.some(ast_iter_ident);
+            ast_next_ma.member_access.member_name = "next";
+            let ast_next_call: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_next_call.function_call.callee = new Option<Expression>.some(ast_next_ma);
+            let bound_next_call: Option<BoundExpression> = this.bind_expression(ast_next_call, for_scope);
+
+            if (bound_next_call.is_none()) {
+                return new Option<BoundStatement>.none();
+            }
+            let opt_type: mut BoundType = bound_next_call.some.get_bound_type();
+
+            // 4. Declare __opt
+            let opt_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            opt_sym.name = "__opt";
+            opt_sym.full_name = for_scope.full_name + ".__opt";
+            opt_sym.bound_type = opt_type;
+            opt_sym.is_mutable = true;
+            opt_sym.variable_kind = new VariableSymbolKind.Local();
+            opt_sym.location = loc;
+            for_scope.add_symbol(new BoundSymbol.variable(opt_sym));
+
+            // 5. Build __opt.is_none() call (for break condition)
+            let ast_opt_ident: Expression = new Expression.identifier(new IdentifierExpression("__opt"));
+            let ast_isnone_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_isnone_ma.member_access.base_expr = new Option<Expression>.some(ast_opt_ident);
+            ast_isnone_ma.member_access.member_name = "is_none";
+            let ast_isnone_call: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_isnone_call.function_call.callee = new Option<Expression>.some(ast_isnone_ma);
+            let bound_isnone_call: Option<BoundExpression> = this.bind_expression(ast_isnone_call, for_scope);
+
+            // 6. Build __opt.some (for loop variable initialization)
+            let ast_opt_some_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_opt_some_ma.member_access.base_expr = new Option<Expression>.some(ast_opt_ident);
+            ast_opt_some_ma.member_access.member_name = "some";
+            let bound_opt_some: Option<BoundExpression> = this.bind_expression(ast_opt_some_ma, for_scope);
+
+            // 7. Determine element type
+            let elem_type: mut BoundType;
+            if (bound_opt_some.is_some()) {
+                let tmp_elem: mut BoundType = bound_opt_some.some.get_bound_type();
+                elem_type = tmp_elem;
+            } else {
+                elem_type = new BoundType();
+            }
+
+            // 8. Create body scope for loop variable
+            let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for_body>", for_scope.full_name + ".<for_body>", new Option<BoundScope>.some(for_scope));
+
+            // 9. Create loop variable
+            let loop_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            loop_sym.name = fs.variable_name;
+            loop_sym.full_name = body_scope.full_name + "." + fs.variable_name;
+            loop_sym.bound_type = elem_type;
+            loop_sym.is_mutable = fs.is_mutable;
+            loop_sym.variable_kind = new VariableSymbolKind.Local();
+            loop_sym.location = loc;
+            body_scope.add_symbol(new BoundSymbol.variable(loop_sym));
+
+            // 10. Bind original body
+            let bound_body: Option<BoundStatement> = this.bind_optional_stmt(fs.body, body_scope);
+
+            // 11. Build advance assignment: __opt = __iter.next()
+            let ast_iter_ident2: Expression = new Expression.identifier(new IdentifierExpression("__iter"));
+            let ast_next_ma2: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_next_ma2.member_access.base_expr = new Option<Expression>.some(ast_iter_ident2);
+            ast_next_ma2.member_access.member_name = "next";
+            let ast_next_call2: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_next_call2.function_call.callee = new Option<Expression>.some(ast_next_ma2);
+            let ast_assign: Statement = new Statement.assignment(new AssignmentStatement());
+            ast_assign.assignment.target = new Option<Expression>.some(new Expression.identifier(new IdentifierExpression("__opt")));
+            ast_assign.assignment.operator_value = new AssignmentOperator.Assign();
+            ast_assign.assignment.value = new Option<Expression>.some(ast_next_call2);
+            ast_assign.assignment.location = loc;
+            let bound_advance: Option<BoundStatement> = this.bind_statement(ast_assign, for_scope);
+
+            // 12. Build inner body block
+            let inner_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            // let x = __opt.some
+            let loop_let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(loop_sym),
+                bound_opt_some,
+                elem_type,
+                new Option<BoundScope>.some(body_scope));
+            loop_let_stmt.location = loc;
+            inner_stmts.push(new BoundStatement.let_decl(loop_let_stmt));
+            // original body
+            if (bound_body.is_some()) {
+                inner_stmts.push(bound_body.some);
+            }
+            let inner_block: Option<BoundStatement> = new Option<BoundStatement>.some(
+                new BoundStatement.block(new BoundBlockStatement(inner_stmts, new Option<BoundScope>.some(body_scope))));
+
+            // 13. Build if-break: if (__opt.is_none()) break;
+            let break_stmt: mut BoundBreakStatement = new BoundBreakStatement(new Option<BoundExpression>.none());
+            break_stmt.location = loc;
+            let if_check: mut BoundIfStatement = new BoundIfStatement(
+                bound_isnone_call,
+                new Option<BoundStatement>.some(new BoundStatement.break_stmt(break_stmt)),
+                new Option<BoundStatement>.none());
+            if_check.location = loc;
+
+            // 14. Build while body block
+            let wb_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            if (bound_advance.is_some()) { wb_stmts.push(bound_advance.some); }
+            wb_stmts.push(new BoundStatement.if_stmt(if_check));
+            if (inner_block.is_some()) { wb_stmts.push(inner_block.some); }
+            let while_body_block: mut BoundBlockStatement = new BoundBlockStatement(wb_stmts, new Option<BoundScope>.some(for_scope));
+
+            // 15. Build while(true) loop
+            let true_literal: BoundLiteralExpression = new BoundLiteralExpression("true", this.type_registry.bool_type, new LiteralKind.BoolLiteral());
+            let true_bound: Option<BoundExpression> = new Option<BoundExpression>.some(new BoundExpression.literal(true_literal));
+            let while_stmt: mut BoundWhileStatement = new BoundWhileStatement(true_bound, new Option<BoundStatement>.some(new BoundStatement.block(while_body_block)));
+            while_stmt.location = loc;
+
+            // 16. Build final block
+            let final_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            // let mut __iter = iterable.iter()
+            let iter_decl: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(iter_sym),
+                bound_iter_call,
+                iter_type,
+                new Option<BoundScope>.some(for_scope));
+            iter_decl.location = loc;
+            final_stmts.push(new BoundStatement.let_decl(iter_decl));
+            // let mut __opt: Option<T> (no initializer)
+            let opt_decl: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(opt_sym),
+                new Option<BoundExpression>.none(),
+                opt_type,
+                new Option<BoundScope>.some(for_scope));
+            opt_decl.location = loc;
+            final_stmts.push(new BoundStatement.let_decl(opt_decl));
+            // while (true) { ... }
+            final_stmts.push(new BoundStatement.while_stmt(while_stmt));
+
+            let result: mut BoundBlockStatement = new BoundBlockStatement(final_stmts, new Option<BoundScope>.some(for_scope));
+            result.location = loc;
+            return new Option<BoundStatement>.some(new BoundStatement.block(result));
+        }
         return new Option<BoundStatement>.none();
     }
 
@@ -4341,6 +4515,11 @@ class SemanticModel {
             let ws: BoundWhileStatement = stmt.while_stmt;
             if (ws.condition.is_some()) { this.validate_expr_control_flow(ws.condition.some, ret_type, loop_depth); }
             if (ws.body.is_some()) { this.validate_stmt_control_flow(ws.body.some, ret_type, loop_depth + 1); }
+        }
+        if (stmt is BoundStatement.for_stmt) {
+            let fs: BoundForStatement = stmt.for_stmt;
+            if (fs.iterable.is_some()) { this.validate_expr_control_flow(fs.iterable.some, ret_type, loop_depth); }
+            if (fs.body.is_some()) { this.validate_stmt_control_flow(fs.body.some, ret_type, loop_depth + 1); }
         }
         if (stmt is BoundStatement.break_stmt) {
             if (loop_depth == 0) {
