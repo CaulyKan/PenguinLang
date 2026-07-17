@@ -44,6 +44,11 @@
         "command": "penguinlangvscode.restartLanguageServer",
         "title": "PenguinLang: Restart Language Server",
         "category": "PenguinLang"
+      },
+      {
+        "command": "penguinlangvscode.runWithEmperorPenguin",
+        "title": "Run with Emperor Penguin",
+        "category": "PenguinLang"
       }
     ],
     "configuration": {

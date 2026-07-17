@@ -83,6 +83,40 @@ fi
 if [ $PUBLISH -eq 1 ]; then
     echo "Publishing self-contained executables + VSCode extension ..."
     echo "============================================================"
+
+    # --- Build native EmperorPenguin binaries via self-bootstrap ---
+    if [ ! -f tmp/pass4 ]; then
+        echo "Pass 4 binary not found. Run './penguin -b' first." >&2
+        exit 1
+    fi
+
+    echo "Building Linux EmperorPenguin (tmp/linux/emperor_penguin) ..."
+    mkdir -p tmp/linux
+    OPT=-O2 tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+        -o tmp/linux/emperor_penguin -vv 2>&1 | ts "%F %T" | tee tmp/publish-linux.log
+    if [ $? -ne 0 ]; then
+        echo "Publish FAILED: Linux EmperorPenguin build" >&2
+        exit 1
+    fi
+
+    echo "Building Windows EmperorPenguin (tmp/win64/emperor_penguin.exe) ..."
+    mkdir -p tmp/win64
+    CC=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
+    AR=/opt/llvm-mingw/bin/x86_64-w64-mingw32-ar \
+    CLANG=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
+    CLANG_FLAGS="-Wl,-subsystem:console" \
+    OPT=-O2 \
+    tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+        -o tmp/win64/emperor_penguin.exe -vv 2>&1 | ts "%F %T" | tee tmp/publish-win64.log
+    if [ $? -ne 0 ]; then
+        echo "Publish FAILED: Windows EmperorPenguin cross-compile" >&2
+        exit 1
+    fi
+
+    # --- Copy emperor_penguin binaries to vscode server directories ---
+    cp tmp/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/emperor_penguin
+    cp tmp/win64/emperor_penguin.exe MagellanicPenguin/vscode/server/windows/emperor_penguin.exe
+
     # Publish native, self-contained executables for both targets.
     dotnet publish -r win-x64 --self-contained
     if [ $? -ne 0 ]; then

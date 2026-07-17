@@ -1,6 +1,18 @@
-CC = cc
-CFLAGS = -I../include -g
-AR = ar
+# Cross-compilation support:
+#   CROSS=win64   → use /opt/llvm-mingw x86_64-w64-mingw32 toolchain
+#   OPT=-O2       → optimization level (appended to CFLAGS)
+#   CC / AR / CFLAGS can also be set directly from the environment.
+
+ifeq ($(CROSS),win64)
+  CC  ?= /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
+  AR  ?= /opt/llvm-mingw/bin/x86_64-w64-mingw32-ar
+else
+  CC  ?= cc
+  AR  ?= ar
+endif
+
+CFLAGS ?= -I../include -g
+CFLAGS += $(OPT)
 
 SRC = core_builtin.c gc.c penguinlang_interop.c
 OBJ = $(SRC:.c=.o)
