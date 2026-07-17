@@ -1,9 +1,16 @@
 #!/bin/sh
+# Fail the script when a stage command fails, even if it's upstream of a pipe.
+# Without this, `$?` after `dotnet ... | ts | tee` is `tee`'s exit code (always 0),
+# so a failing pass1/pass2/pass3 is not detected and the bootstrap falsely succeeds.
+# (Supported by bash/ksh/zsh/ash; /bin/sh on this system is bash.)
+set -o pipefail
 
 PASS=1
 BOOTSTRAPPING=0
 OTHERS=""
 TESTING=0
+CLEAN=0
+PUBLISH=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -11,14 +18,22 @@ for arg in "$@"; do
     -2) PASS=2 ;;
     -3) PASS=3 ;;
     -4) PASS=4 ;;
+    -c) CLEAN=1 ;;
     -b) BOOTSTRAPPING=1 ;;
     -t) TESTING=1 ;;
+    -p) PUBLISH=1 ;;
     *) OTHERS="$OTHERS $arg" ;;
   esac
 done
 
+if [ $CLEAN -eq 1 ]; then
+    echo "Cleaning build artifacts ..."
+    rm -rf tmp
+fi
+
 if [ $BOOTSTRAPPING -eq 1 ]; then
-    echo "Bootstrapping mode enabled. Running Pass 1 with bootstrapping ..."
+    echo "Bootstrapping EmperorPenguin ..."
+    echo "============================================================"
     mkdir -p tmp
     dotnet run --configuration Release --project BabyPenguin -- \
         EmperorPenguin/EmperorPenguin.penguins -- \
@@ -49,13 +64,9 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
         HASH3=$(md5 -q tmp/pass3)
         HASH4=$(md5 -q tmp/pass4)
     fi
-    echo "  tmp/pass3: $HASH3"
-    echo "  tmp/pass4: $HASH4"
     if [ "$HASH3" = "$HASH4" ]; then
-        echo "============================================================"
         echo "Bootstrap complete"
         echo "============================================================"
-        exit 0
     else
         echo "Bootstrap NOT converged: pass3 and pass4 differ." >&2
         exit 1
@@ -64,18 +75,45 @@ fi
 
 if [ $TESTING -eq 1 ]; then
     echo "Running PenguinLang Tests ..."
+    echo "============================================================"
     dotnet run --configuration Release --project Tests/PenguinTestRunner.csproj -- $OTHERS 2>&1 | ts "%F %T" | tee tmp/test.log
     exit $?
 fi
 
+if [ $PUBLISH -eq 1 ]; then
+    echo "Publishing self-contained executables + VSCode extension ..."
+    echo "============================================================"
+    # Publish native, self-contained executables for both targets.
+    dotnet publish -r win-x64 --self-contained
+    if [ $? -ne 0 ]; then
+        echo "Publish FAILED: win-x64 self-contained" >&2
+        exit 1
+    fi
+    dotnet publish -r linux-x64 --self-contained
+    if [ $? -ne 0 ]; then
+        echo "Publish FAILED: linux-x64 self-contained" >&2
+        exit 1
+    fi
+    # Build the VSCode extension package (subshell keeps this script's cwd intact).
+    (cd MagellanicPenguin/vscode && npm run package)
+    if [ $? -ne 0 ]; then
+        echo "Publish FAILED: vscode extension (npm run package)" >&2
+        exit 1
+    fi
+    echo "Publish complete"
+    exit 0
+fi
+
 if [ $PASS -eq 1 ]; then
     echo "Running EmperorPenguin Pass 1 ..."
+    echo "============================================================"
     rm -rf tmp && mkdir -p tmp
     dotnet run --configuration Release --project BabyPenguin/BabyPenguin.csproj -- -q EmperorPenguin/EmperorPenguin.penguins -- $OTHERS
 fi
 
 if [ $PASS -eq 2 ]; then
     echo "Running EmperorPenguin Pass 2 ..."
+    echo "============================================================"
     if [ ! -f tmp/pass2 ]; then
         echo "Pass 2 binary not found. Run './penguin -b' first." >&2
         exit 1
@@ -85,6 +123,7 @@ fi
 
 if [ $PASS -eq 3 ]; then
     echo "Running EmperorPenguin Pass 3 ..."
+    echo "============================================================"
     if [ ! -f tmp/pass3 ]; then
         echo "Pass 3 binary not found. Run './penguin -b' first." >&2
         exit 1
@@ -94,6 +133,7 @@ fi
 
 if [ $PASS -eq 4 ]; then
     echo "Running EmperorPenguin Pass 4 ..."
+    echo "============================================================"
     if [ ! -f tmp/pass4 ]; then
         echo "Pass 4 binary not found. Run './penguin -b' first." >&2
         exit 1

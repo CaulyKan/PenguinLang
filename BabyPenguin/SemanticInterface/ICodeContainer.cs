@@ -645,7 +645,7 @@ namespace BabyPenguin.SemanticInterface
                 case BinaryOperatorEnum.LogicalOr:
                     if (types.Count > 1)
                     {
-                        checkTypes(types, false);
+                        checkTypes(types, true);
                         if (types.All(t => t.IsBoolType))
                         {
                             return Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable);
@@ -951,18 +951,67 @@ namespace BabyPenguin.SemanticInterface
                     }
                 case CodeBlockExpression exp:
                     {
-                        return ResolveExpressionType(exp.TrailingExpression!);
+                        if (exp.TrailingExpression != null)
+                            return ResolveExpressionType(exp.TrailingExpression);
+                        // Check if last item is an if-statement with code block branches —
+                        // the grammar may parse an if-expression as ifStatement in code blocks
+                        if (exp.BlockItems.Count > 0)
+                        {
+                            var last = exp.BlockItems[^1];
+                            if (last.Type == CodeBlockItem.CodeBlockItemType.Statement
+                                && last.Statement?.StatementType == Statement.Type.IfStatement)
+                            {
+                                return ResolveIfStatementType(last.Statement.IfStatement!);
+                            }
+                        }
+                        return Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
                     }
                 case IfExpression exp:
                     {
                         if (exp.HasElse)
                         {
-                            var mainType = ResolveExpressionType(exp.MainBranch!.TrailingExpression!);
+                            // If main branch's trailing expression is null, check if the last block item
+                            // is an if-statement that should be treated as an if-expression (grammar ambiguity)
+                            if (exp.MainBranch?.TrailingExpression == null)
+                            {
+                                if (exp.MainBranch != null && exp.MainBranch.BlockItems.Count > 0)
+                                {
+                                    var last = exp.MainBranch.BlockItems[^1];
+                                    if (last.Type == CodeBlockItem.CodeBlockItemType.Statement
+                                        && last.Statement?.StatementType == Statement.Type.IfStatement)
+                                    {
+                                        var ifMainType = ResolveIfStatementType(last.Statement.IfStatement!);
+                                        // Check else branch type too
+                                        if (exp.ElseBranch != null)
+                                        {
+                                            if (exp.ElseBranch.TrailingExpression == null)
+                                                return ifMainType;
+                                            var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression);
+                                            if (ifMainType.FullName() != elseType.FullName())
+                                            {
+                                                if (ifMainType.TypeNode?.FullName() == elseType.TypeNode?.FullName())
+                                                    return ifMainType;
+                                                throw new BabyPenguinException($"If expression branches have different types: '{ifMainType}' and '{elseType}'", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                                            }
+                                        }
+                                        return ifMainType;
+                                    }
+                                }
+                                return Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+                            }
+                            var mainType = ResolveExpressionType(exp.MainBranch.TrailingExpression);
                             if (exp.ElseBranch != null)
                             {
-                                var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression!);
+                                if (exp.ElseBranch.TrailingExpression == null)
+                                    return mainType;
+                                var elseType = ResolveExpressionType(exp.ElseBranch.TrailingExpression);
                                 if (mainType.FullName() != elseType.FullName())
+                                {
+                                    // Allow when the underlying type matches (mutability may differ)
+                                    if (mainType.TypeNode?.FullName() == elseType.TypeNode?.FullName())
+                                        return mainType;
                                     throw new BabyPenguinException($"If expression branches have different types: '{mainType}' and '{elseType}'", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                                }
                             }
                             return mainType;
                         }
@@ -981,6 +1030,51 @@ namespace BabyPenguin.SemanticInterface
                     break;
             }
             throw new BabyPenguinException($"Unsupported expression type '{expression.GetType()}'", expression.SourceLocation, code: ErrorCode.E_UNSUPPORTED);
+        }
+
+        /// <summary>
+        /// Resolve the type of an if-statement that was parsed as a statement (due to grammar ambiguity)
+        /// but is intended as a value-returning if-expression. Both branches must be code blocks.
+        /// </summary>
+        IType ResolveIfStatementType(PenguinLangParser.SyntaxNodes.IfStatement ifStmt)
+        {
+            // Main branch type
+            var mainType = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+            if (ifStmt.MainStatement?.StatementType == Statement.Type.SubBlock
+                && ifStmt.MainStatement.CodeBlockExpression?.TrailingExpression != null)
+            {
+                mainType = ResolveExpressionType(ifStmt.MainStatement.CodeBlockExpression.TrailingExpression);
+            }
+
+            // Else branch type (if present)
+            if (ifStmt.HasElse && ifStmt.ElseStatement != null)
+            {
+                IType elseType;
+                if (ifStmt.ElseStatement.StatementType == Statement.Type.SubBlock
+                    && ifStmt.ElseStatement.CodeBlockExpression?.TrailingExpression != null)
+                {
+                    elseType = ResolveExpressionType(ifStmt.ElseStatement.CodeBlockExpression.TrailingExpression);
+                }
+                else if (ifStmt.ElseStatement.StatementType == Statement.Type.IfStatement)
+                {
+                    // else-if: recursively resolve
+                    elseType = ResolveIfStatementType(ifStmt.ElseStatement.IfStatement!);
+                }
+                else
+                {
+                    return mainType;
+                }
+
+                // Check type compatibility
+                if (mainType.FullName() != elseType.FullName())
+                {
+                    if (mainType.TypeNode?.FullName() == elseType.TypeNode?.FullName())
+                        return mainType;
+                    throw new BabyPenguinException($"If expression branches have different types: '{mainType}' and '{elseType}'", ifStmt.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                }
+            }
+
+            return mainType;
         }
 
         IType? InferWhileExpressionType(ISyntaxNode node)
@@ -1751,8 +1845,24 @@ namespace BabyPenguin.SemanticInterface
                         {
                             AddCodeBlockItem(item);
                         }
-                        // Evaluate trailing expression (always present)
-                        AddExpression(codeBlockExpression.TrailingExpression!, isVariableInitialize, to);
+                        // Evaluate trailing expression (if present)
+                        if (codeBlockExpression.TrailingExpression != null)
+                        {
+                            AddExpression(codeBlockExpression.TrailingExpression, isVariableInitialize, to);
+                        }
+                        // If no trailing expression but the last item is an if-statement with code block
+                        // branches, treat it as an if-expression (grammar ambiguity resolution)
+                        else if (codeBlockExpression.BlockItems.Count > 0)
+                        {
+                            var last = codeBlockExpression.BlockItems[^1];
+                            if (last.Type == CodeBlockItem.CodeBlockItemType.Statement
+                                && last.Statement?.StatementType == Statement.Type.IfStatement)
+                            {
+                                // Generate code for the if-statement as an if-expression
+                                var ifStmt = last.Statement.IfStatement!;
+                                AddIfStatementAsExpression(ifStmt, isVariableInitialize, to);
+                            }
+                        }
                     }
                     break;
                 case IfExpression ifExpression:
@@ -1767,12 +1877,8 @@ namespace BabyPenguin.SemanticInterface
                             var endifLabel = CreateLabel();
                             AddInstruction(new GotoInstruction(ifExpression.Condition!.SourceLocation, elseLabel, conditionVar, false));
 
-                            // Main branch - evaluate trailing expression
-                            foreach (var item in ifExpression.MainBranch!.BlockItems)
-                            {
-                                AddCodeBlockItem(item);
-                            }
-                            AddExpression(ifExpression.MainBranch!.TrailingExpression!, isVariableInitialize, to);
+                            // Main branch - delegate to CodeBlockExpression handler
+                            AddExpression(ifExpression.MainBranch!, isVariableInitialize, to);
 
                             AddInstruction(new GotoInstruction(ifExpression.Condition!.SourceLocation, endifLabel));
                             AddInstruction(new NopInstuction(ifExpression.SourceLocation.EndLocation).WithLabel(elseLabel));
@@ -1780,11 +1886,7 @@ namespace BabyPenguin.SemanticInterface
                             // Else branch
                             if (ifExpression.ElseBranch != null)
                             {
-                                foreach (var item in ifExpression.ElseBranch.BlockItems)
-                                {
-                                    AddCodeBlockItem(item);
-                                }
-                                AddExpression(ifExpression.ElseBranch.TrailingExpression!, isVariableInitialize, to);
+                                AddExpression(ifExpression.ElseBranch, isVariableInitialize, to);
                             }
                             else if (ifExpression.ElseBranchExpression != null)
                             {
@@ -1799,13 +1901,7 @@ namespace BabyPenguin.SemanticInterface
                             // No else - execute main branch as statement
                             var endifLabel = CreateLabel();
                             AddInstruction(new GotoInstruction(ifExpression.Condition!.SourceLocation, endifLabel, conditionVar, false));
-
-                            foreach (var item in ifExpression.MainBranch!.BlockItems)
-                            {
-                                AddCodeBlockItem(item);
-                            }
-                            AddExpression(ifExpression.MainBranch!.TrailingExpression!, isVariableInitialize, to);
-
+                            AddExpression(ifExpression.MainBranch!, isVariableInitialize, to);
                             AddInstruction(new NopInstuction(ifExpression.SourceLocation.EndLocation).WithLabel(endifLabel));
                         }
                     }
@@ -1851,6 +1947,52 @@ namespace BabyPenguin.SemanticInterface
             return to;
 
 
+        }
+
+        /// <summary>
+        /// Generate code for an if-statement that should be treated as a value-returning if-expression.
+        /// Used when the grammar parses an if-expression as an if-statement in code blocks.
+        /// </summary>
+        void AddIfStatementAsExpression(PenguinLangParser.SyntaxNodes.IfStatement ifStmt, bool isVariableInitialize, ISymbol to)
+        {
+            var conditionVar = AddExpression(ifStmt.Condition!, false);
+            if (!conditionVar.TypeInfo.IsBoolType)
+                throw new BabyPenguinException($"If expression condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStmt.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
+
+            if (ifStmt.HasElse)
+            {
+                var elseLabel = CreateLabel();
+                var endifLabel = CreateLabel();
+                AddInstruction(new GotoInstruction(ifStmt.Condition!.SourceLocation, elseLabel, conditionVar, false));
+
+                // Main branch
+                if (ifStmt.MainStatement?.StatementType == Statement.Type.SubBlock && ifStmt.MainStatement.CodeBlockExpression != null)
+                    AddExpression(ifStmt.MainStatement.CodeBlockExpression, isVariableInitialize, to);
+
+                AddInstruction(new GotoInstruction(ifStmt.Condition!.SourceLocation, endifLabel));
+                AddInstruction(new NopInstuction(ifStmt.SourceLocation.EndLocation).WithLabel(elseLabel));
+
+                // Else branch
+                if (ifStmt.ElseStatement?.StatementType == Statement.Type.SubBlock && ifStmt.ElseStatement.CodeBlockExpression != null)
+                {
+                    AddExpression(ifStmt.ElseStatement.CodeBlockExpression, isVariableInitialize, to);
+                }
+                else if (ifStmt.ElseStatement?.StatementType == Statement.Type.IfStatement)
+                {
+                    // else-if: recursive
+                    AddIfStatementAsExpression(ifStmt.ElseStatement.IfStatement!, isVariableInitialize, to);
+                }
+
+                AddInstruction(new NopInstuction(ifStmt.SourceLocation.EndLocation).WithLabel(endifLabel));
+            }
+            else
+            {
+                var endifLabel = CreateLabel();
+                AddInstruction(new GotoInstruction(ifStmt.Condition!.SourceLocation, endifLabel, conditionVar, false));
+                if (ifStmt.MainStatement?.StatementType == Statement.Type.SubBlock && ifStmt.MainStatement.CodeBlockExpression != null)
+                    AddExpression(ifStmt.MainStatement.CodeBlockExpression, isVariableInitialize, to);
+                AddInstruction(new NopInstuction(ifStmt.SourceLocation.EndLocation).WithLabel(endifLabel));
+            }
         }
 
         public void AddInstruction(BabyPenguinIR instruction)

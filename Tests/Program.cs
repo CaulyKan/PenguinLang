@@ -204,7 +204,9 @@ public static class Program
                 {
                     var skip = new ComboResult
                     {
-                        Category = w.Test.Category, Name = w.Test.Name, Compiler = w.Compiler,
+                        Category = w.Test.Category,
+                        Name = w.Test.Name,
+                        Compiler = w.Compiler,
                         Status = Status.Skip,
                         Message = $"skipped: {g.Display()} passed",
                     };
@@ -1446,7 +1448,8 @@ public static class SummaryReporter
                 int pct = (int)Math.Round(100.0 * passed / runCnt);
                 cls = pct >= 100 ? "pass" : "fail";
                 value = $"{pct}%";
-                if (skipped > 0) label += $" (+{skipped} skip)";
+                var skip_pct = (int)Math.Round(100.0 * skipped / cnt);
+                if (skipped > 0) value += $" ({skip_pct}% SKIP)";
             }
             sb.Append(StatCard(cls, value, label));
         }

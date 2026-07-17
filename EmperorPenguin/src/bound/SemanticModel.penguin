@@ -820,10 +820,11 @@ class SemanticModel {
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         // For generic functions, use the function's own scope (has template params registered)
-        let resolve_scope: BoundScope = scope;
-        if (bound_func.is_generic_template && bound_func.scope.is_some()) {
-            resolve_scope = bound_func.scope.some;
-        }
+        let resolve_scope: BoundScope = if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            bound_func.scope.some
+        } else {
+            scope
+        };
         if (ast_func.return_type.is_some()) {
             ret = this.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
         }
@@ -852,10 +853,11 @@ class SemanticModel {
         let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
         let ret: mut BoundType = this.type_registry.void_type;
         // For generic methods, use the method's own scope (has its own template params registered)
-        let resolve_scope: BoundScope = scope;
-        if (bound_func.is_generic_template && bound_func.scope.is_some()) {
-            resolve_scope = bound_func.scope.some;
-        }
+        let resolve_scope: BoundScope = if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            bound_func.scope.some
+        } else {
+            scope
+        };
         if (ast_func.return_type.is_some()) {
             ret = this.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
         }
@@ -1623,15 +1625,26 @@ class SemanticModel {
             }
             if (def is Definition.namespace_def) {
                 // Find matching bound namespace to get its scope
-                let ns_scope: BoundScope = scope;
-                let ns_bound_children: _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
-                if (i < cast<i64>(bound_defs.size())) {
-                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
-                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
-                        ns_scope = bd.namespace_def.scope.some;
-                        ns_bound_children = bd.namespace_def.children;
-                    }
-                }
+        let ns_scope: BoundScope = if (i < cast<i64>(bound_defs.size())) {
+            let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+            if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                bd.namespace_def.scope.some
+            } else {
+                scope
+            }
+        } else {
+            scope
+        };
+        let ns_bound_children: _utils.List<BoundDefinition> = if (i < cast<i64>(bound_defs.size())) {
+            let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+            if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                bd.namespace_def.children
+            } else {
+                new _utils.List<BoundDefinition>()
+            }
+        } else {
+            new _utils.List<BoundDefinition>()
+        };
                 this.collect_generic_instantiations_from_ast(def.namespace_def.children, ns_bound_children, ns_scope, instantiations);
             }
             i = i + 1;
@@ -3827,6 +3840,32 @@ class SemanticModel {
             }
             i = i + 1;
         }
+        // Promote a trailing expression-statement that wraps a value-producing if-expression
+        // to the block's trailing value. The parser wraps a trailing `if c {..} else {..}` in
+        // a code block as a block_expr statement; when that if yields a non-void value it is
+        // the block's value (trailing expression), not a value-less statement. This makes
+        // `let x: T = { ...; if c { a } else { b } }` resolve to T instead of void (which
+        // previously produced `ASSIGN void` and invalid `#dbg_value(ptr void, ...)`).
+        // Void ifs (e.g. both branches `return`) are left as statements, so control-flow ifs
+        // such as `fun f() -> T { if c { return a; } else { return b; } }` are unaffected.
+        if (expr.trailing_expr.is_none()) {
+            if (cast<i64>(stmts.size()) > 0) {
+                let last_stmt: BoundStatement = stmts.at(stmts.size() - 1).some;
+                if (last_stmt is BoundStatement.expression) {
+                    let inner_opt: Option<BoundExpression> = last_stmt.expression.expression;
+                    if (inner_opt.is_some()) {
+                        if (inner_opt.some is BoundExpression.if_expr) {
+                            let ift: BoundType = inner_opt.some.get_bound_type();
+                            if (ift.display_name() != "void") {
+                                let _discarded: __builtin.Option<BoundStatement> = stmts.pop();
+                                let result: mut BoundCodeBlockExpression = new BoundCodeBlockExpression(ift, stmts, inner_opt, new Option<BoundScope>.some(block_scope));
+                                return new Option<BoundExpression>.some(new BoundExpression.code_block(result));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (expr.trailing_expr.is_some()) {
             let trailing: Option<BoundExpression> = this.bind_expression(expr.trailing_expr.some, block_scope);
             if (trailing.is_some()) {
@@ -4201,6 +4240,10 @@ class SemanticModel {
                 let initializer: Option<BoundExpression> = this.bind_expression(stmt.let_decl.initializer.some, scope);
                 if (initializer.is_some()) {
                     let decl_type: mut BoundType = initializer.some.get_bound_type();
+                    if (stmt.let_decl.type_spec.is_some()) {
+                        let resolved: mut BoundType = this.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
+                        decl_type = resolved;
+                    }
                     var_sym.bound_type = decl_type;
                     let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                         new Option<BoundVariableSymbol>.some(var_sym),

@@ -201,6 +201,7 @@ initial {
         let lib_path: string = tmp_dir + "/libcore_builtin.a";
 
         let make_args: mut _utils.List<string> = new _utils.List<string>();
+        make_args.push("--silent");
         make_args.push("-C");
         make_args.push("EmperorPenguin/std/c");
         make_args.push("OUTPUT_DIR=" + tmp_dir);

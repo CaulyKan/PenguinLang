@@ -313,7 +313,7 @@ class IRGenerator {
             if (!(init_expr is BoundExpression.literal)) {
                 let init_name: string = def.full_name + ".<init>";
                 let loc: SourceLocation = this.make_loc(0, 0);
-                let saved_builder: IRBuilder = this.builder;
+                let saved_builder: mut IRBuilder = this.builder;
                 this.builder = new IRBuilder(new IRFunction(init_name, "void", loc));
                 this.builder.func.display_name = "global_init";
                 this.reset_locals();
