@@ -15,6 +15,17 @@ namespace BabyPenguin.CSharpBackend
     {
         public static int Run(SemanticModel? model, Options options, string[] args, int separatorIndex)
         {
+            // Standalone exe mode: lower to C# with a Main, build an Exe + copy BabyPenguin deps,
+            // print the path, and exit. The resulting exe runs the program without BabyPenguin hosting.
+            if (!string.IsNullOrEmpty(options.CsOut))
+            {
+                var program = new CSharpBackend().Lower(model!, standalone: true);
+                var exePath = new DiskCompiler().CompileExe(program.Sources, options.CsOut, keepCs: options.KeepCs);
+                Console.WriteLine($"[cs backend] standalone exe: {exePath}");
+                Console.WriteLine($"[cs backend] run with: {exePath} <program args>");
+                return 0;
+            }
+
             Assembly assembly;
 
             if (options.RunOnly != "")

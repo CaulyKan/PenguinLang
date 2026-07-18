@@ -175,12 +175,12 @@ void _emperor_gc_collect(void) {
 
 /* ---- GC Init ---- */
 
-void _emperor_gc_init(void) {
+void _emperor_gc_init(void* stack_bottom) {
     _emperor_gc_allocation_list = NULL;
     _emperor_gc_total_allocated = 0;
     _emperor_gc_threshold = EMPEROR_GC_DISABLED ? (8ULL << 40) : (256 * 1024);
     _emperor_gc_global_root_count = 0;
-    _emperor_gc_stack_bottom = _emperor_gc_get_stack_pointer();
+    _emperor_gc_stack_bottom = stack_bottom;
 }
 
 /* ---- GC Info ---- */

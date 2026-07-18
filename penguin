@@ -32,15 +32,17 @@ if [ $CLEAN -eq 1 ]; then
 fi
 
 if [ $BOOTSTRAPPING -eq 1 ]; then
-    echo "Bootstrapping EmperorPenguin ..."
+    echo "Bootstrapping EmperorPenguin (BabyPenguin --backend=cs) ..."
     echo "============================================================"
     mkdir -p tmp
+    # Pass 1: BabyPenguin lowers+compiles EmperorPenguin to C# and runs it (via the cs backend,
+    # ~same order of magnitude as the native passes), which emits LLVM IR + clang -> tmp/pass2.
     dotnet run --configuration Release --project BabyPenguin -- \
-        EmperorPenguin/EmperorPenguin.penguins -- \
+        --backend=cs EmperorPenguin/EmperorPenguin.penguins -- \
         EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
         -vv -o "tmp/pass2" 2>&1 | ts "%F %T" | tee tmp/pass1.log
     if [ $? -ne 0 ]; then
-        echo "Bootstrap FAILED at pass1 (BabyPenguin VM -> tmp/pass2)" >&2
+        echo "Bootstrap FAILED at pass1 (BabyPenguin cs backend -> tmp/pass2)" >&2
         exit 1
     fi
     echo "Running Pass 2 with bootstrapping ..."
@@ -140,10 +142,10 @@ if [ $PUBLISH -eq 1 ]; then
 fi
 
 if [ $PASS -eq 1 ]; then
-    echo "Running EmperorPenguin Pass 1 ..."
+    echo "Running EmperorPenguin Pass 1 (BabyPenguin --backend=cs) ..."
     echo "============================================================"
     mkdir -p tmp
-    dotnet run --configuration Release --project BabyPenguin/BabyPenguin.csproj -- -q EmperorPenguin/EmperorPenguin.penguins -- $OTHERS
+    dotnet run --configuration Release --project BabyPenguin/BabyPenguin.csproj -- -q --backend=cs EmperorPenguin/EmperorPenguin.penguins -- $OTHERS
     exit $?
 fi
 

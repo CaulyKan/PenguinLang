@@ -27,6 +27,7 @@ public enum ErrorCode
     E_UNSIZED_INTERFACE,   // Using interface as field without Box
     E_VALUE_TYPE_CONFLICT, // Class implements both ICopy and IRef
     E_INTERFACE_IMPL,      // Missing/mismatched interface method impl
+    E_ORPHAN_IMPL,         // Impl block is orphan (neither type nor interface is local)
 
     // ── Control flow ──
     E_COND_NOT_BOOL,       // if/while condition not bool

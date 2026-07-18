@@ -25,7 +25,9 @@ namespace BabyPenguin.CSharpBackend
     {
         public IRModule IRModule { get; private set; } = null!;
 
-        public CSharpProgram Lower(SemanticModel model)
+        public CSharpProgram Lower(SemanticModel model) => Lower(model, standalone: false);
+
+        public CSharpProgram Lower(SemanticModel model, bool standalone)
         {
             IRModule = new IRGenerator(model).Generate();
             try
@@ -127,6 +129,27 @@ namespace BabyPenguin.CSharpBackend
                 src.AppendLine($"            {emitter.MangleName(ir)}();");
             src.AppendLine("        }");
             src.AppendLine("    }");
+
+            if (standalone)
+            {
+                // Standalone exe entry: wire a RuntimeGlobal (shared I/O/exit channel), run __builtin__main,
+                // write captured stdout, return the exit code. Live output via PrintFunc.
+                src.AppendLine("    public static class Program");
+                src.AppendLine("    {");
+                src.AppendLine("        public static int Main(string[] args)");
+                src.AppendLine("        {");
+                src.AppendLine("            var g = new BabyPenguin.VirtualMachine.RuntimeGlobal();");
+                src.AppendLine("            g.CommandLineArgs = args;");
+                src.AppendLine("            g.PrintFunc = (s) => System.Console.Write(s);");
+                src.AppendLine("            BabyPenguin.CSharpBackend.Runtime.GlobalState.Global = g;");
+                src.AppendLine("            BabyPenguin.CSharpBackend.Runtime.GlobalState.Args = args;");
+                src.AppendLine("            try { Generated.__builtin__main(); }");
+                src.AppendLine("            catch (BabyPenguin.VirtualMachine.ProgramExitException) { }");
+                src.AppendLine("            return g.ExitCode;");
+                src.AppendLine("        }");
+                src.AppendLine("    }");
+            }
+
             src.AppendLine("}");
 
             var prog = new CSharpProgram();

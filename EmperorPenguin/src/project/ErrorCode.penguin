@@ -28,6 +28,7 @@ enum ErrorCode {
     E_UNSIZED_INTERFACE;
     E_VALUE_TYPE_CONFLICT;
     E_INTERFACE_IMPL;
+    E_ORPHAN_IMPL;
 
     // Control flow
     E_COND_NOT_BOOL;
@@ -93,6 +94,7 @@ fun error_code_name(code: ErrorCode) -> string {
     if (code is ErrorCode.E_UNSIZED_INTERFACE) { return "E_UNSIZED_INTERFACE"; }
     if (code is ErrorCode.E_VALUE_TYPE_CONFLICT) { return "E_VALUE_TYPE_CONFLICT"; }
     if (code is ErrorCode.E_INTERFACE_IMPL) { return "E_INTERFACE_IMPL"; }
+    if (code is ErrorCode.E_ORPHAN_IMPL) { return "E_ORPHAN_IMPL"; }
     if (code is ErrorCode.E_COND_NOT_BOOL) { return "E_COND_NOT_BOOL"; }
     if (code is ErrorCode.E_LOOP_CONTEXT) { return "E_LOOP_CONTEXT"; }
     if (code is ErrorCode.E_RETURN_MISSING) { return "E_RETURN_MISSING"; }

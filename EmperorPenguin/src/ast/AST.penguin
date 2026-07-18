@@ -828,35 +828,6 @@ class TemplateDeclaration {
     }
 }
 
-class WhereClause {
-    name: mut string = "";
-    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
-    fun build_text(this) -> string {
-        _utils.trace_enter("Enter build_text");
-        if (this.type_spec.is_some()) {
-            return this.name + ": " + this.type_spec.some.build_text();
-        }
-        return this.name;
-    }
-}
-
-class WhereDefinition {
-    clauses: mut _utils.List<WhereClause> = new _utils.List<WhereClause>();
-    fun build_text(this) -> string {
-        _utils.trace_enter("Enter build_text");
-        let mut sb = new StringBuilder();
-        sb.append("where (");
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.clauses.size())) {
-            if (i > 0) { sb.append(", "); }
-            sb.append(this.clauses.at(cast<u64>(i)).some.build_text());
-            i = i + 1;
-        }
-        sb.append(")");
-        return sb.to_string();
-    }
-}
-
 interface IDefinition {
     fun build_text(this: IDefinition) -> string;
 }
@@ -1013,7 +984,6 @@ class InterfaceImplementation {
     type_name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
-    where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, type_name: string) {
@@ -1030,7 +1000,6 @@ class InterfaceImplementation {
             sb.append("impl ");
             if (self.type_spec.is_some()) { sb.append(self.type_spec.some.build_text()); }
             else { sb.append(self.type_name); }
-            if (self.where_def.is_some()) { sb.append(" "); sb.append(self.where_def.some.build_text()); }
             if (cast<i64>(self.functions.size()) > 0) {
                 sb.append(" {");
                 let i: mut i64 = 0;
@@ -1054,7 +1023,6 @@ class InterfaceForImplementation {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
-    where_def: mut Option<WhereDefinition> = new Option<WhereDefinition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, type_name: string, for_type_name: string) {
@@ -1075,7 +1043,6 @@ class InterfaceForImplementation {
             sb.append(" for ");
             if (self.for_type_spec.is_some()) { sb.append(self.for_type_spec.some.build_text()); }
             else { sb.append(self.for_type_name); }
-            if (self.where_def.is_some()) { sb.append(" "); sb.append(self.where_def.some.build_text()); }
             if (cast<i64>(self.functions.size()) > 0) {
                 sb.append(" {");
                 let i: mut i64 = 0;

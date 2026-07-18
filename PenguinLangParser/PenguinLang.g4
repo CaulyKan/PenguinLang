@@ -153,10 +153,6 @@ templateParameter: identifier ':' ('type' | typeSpecifier);
 templateDeclaration:
 	'#' 'template' '(' templateParameter (',' templateParameter)* ')';
 
-whereClause: identifier ':' typeSpecifier;
-
-whereDefinition: 'where' (whereClause (',' whereClause)*);
-
 interfaceDefinition:
 	(templateDeclaration)? 'interface' identifier '{' (
 		(declaration ';')
@@ -166,13 +162,13 @@ interfaceDefinition:
 	)* '}';
 
 interfaceImplementation:
-	'impl' typeSpecifier (whereDefinition)? (
+	'impl' typeSpecifier (
 		';'
 		| ( '{' (functionDefinition)* '}')
 	);
 
 interfaceForImplementation:
-	'impl' typeSpecifier 'for' typeSpecifier (whereDefinition)? (
+	'impl' typeSpecifier 'for' typeSpecifier (
 		';'
 		| ( '{' (functionDefinition)* '}')
 	);

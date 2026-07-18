@@ -16,7 +16,6 @@ namespace PenguinLangParser.SyntaxNodes
                 Functions = context.children.OfType<FunctionDefinitionContext>()
                    .Select(x => Build<FunctionDefinition>(walker, x))
                    .ToList();
-                WhereDefinition = context.whereDefinition() != null ? Build<WhereDefinition>(walker, context.whereDefinition()) : null;
 
                 walker.PopScope();
             }
@@ -53,9 +52,6 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public List<FunctionDefinition> Functions { get; set; } = [];
 
-        [ChildrenNode]
-        public WhereDefinition? WhereDefinition { get; set; }
-
         public override string ToShortString() => Name;
 
         public override string BuildText()
@@ -65,11 +61,6 @@ namespace PenguinLangParser.SyntaxNodes
             parts.Add(InterfaceType!.BuildText());
             parts.Add("for");
             parts.Add(ForType!.BuildText());
-
-            if (WhereDefinition != null)
-            {
-                parts.Add(WhereDefinition.BuildText());
-            }
 
             parts.Add("{\n");
 

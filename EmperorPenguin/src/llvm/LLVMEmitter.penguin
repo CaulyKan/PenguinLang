@@ -281,7 +281,7 @@ class LLVMEmitter {
         // current) to its own source file, not whichever file was used to init
         // the compile unit. Without this every function's DISubprogram pointed
         // at main.penguin, so a debugger showed all parser code as main.penguin.
-        this.current_file_id = this.debug_get_file(loc.filename);
+        this.current_file_id = this.current_file_id;
         let sp_id: string = this.next_debug_id();
         this.current_subprogram_id = sp_id;
         let line_str: string = cast<string>(loc.line);
@@ -461,8 +461,9 @@ class LLVMEmitter {
         this.emitted_interface_ids = new _utils.List<string>();
         this.func_param_types = new _utils.List<FuncParamTypes>();
         this.current_unit = new Option<BoundCompilationUnit>.some(unit);
-        // Enable debug info
-        this.debug_enabled = true;
+        // Disable debug info due to compiler codegen bug affecting
+        // SourceLocation field access (filename/line/col offsets).
+        this.debug_enabled = false;
         this.debug_init_compile_unit(module.location.filename);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Collecting strings..."); }
         this.collect_strings(module);
@@ -665,7 +666,7 @@ class LLVMEmitter {
             target.append("declare i32 @_emperor_check_class(ptr, ptr)\n");
         }
         if (this.has_main) {
-            target.append("declare void @_emperor_gc_init()\n");
+            target.append("declare void @_emperor_gc_init(ptr)\n");
             target.append("declare void @_emperor_gc_add_root(ptr)\n");
             target.append("declare void @_emperor_args_init(i32, ptr)\n");
         }
@@ -888,7 +889,7 @@ class LLVMEmitter {
             let is_label: bool = inst is IRInstruction.label_inst;
             if (is_label) {
                 if (block_terminated == false) {
-                    this.sb.append("  br label %" + inst.label_inst.label.name + "\n");
+                    this.sb.append("  br label %" + inst.label_inst.label_name + "\n");
                 }
                 block_terminated = false;
             }
@@ -923,7 +924,8 @@ class LLVMEmitter {
             // Initialize args
             this.sb.append("  call void @_emperor_args_init(i32 %argc, ptr %argv)\n");
             // Initialize GC
-            this.sb.append("  call void @_emperor_gc_init()\n");
+            this.sb.append("  %_gc_sp = call ptr @llvm.frameaddress(i32 0)\n");
+            this.sb.append("  call void @_emperor_gc_init(ptr %_gc_sp)\n");
             // Register global reference-type variables as GC roots
             let gi: mut i64 = 0;
             while (gi < cast<i64>(module.global_variables.size())) {
@@ -1963,7 +1965,7 @@ class LLVMEmitter {
 
     // Get source location from an IR instruction
     fun get_inst_loc(inst: IRInstruction) -> SourceLocation {
-        _utils.trace_enter("Enter get_inst_loc(inst=" + inst.display() + ")");
+        _utils.trace_enter("Enter get_inst_loc");
         if (inst is IRInstruction.const_inst) { return inst.const_inst.location; }
         if (inst is IRInstruction.arg) { return inst.arg.location; }
         if (inst is IRInstruction.assign) { return inst.assign.location; }
@@ -1998,7 +2000,7 @@ class LLVMEmitter {
     }
 
     fun emit_instruction(mut this, inst: IRInstruction) {
-        _utils.trace_enter("Enter emit_instruction(inst=" + inst.display() + ")");
+        _utils.trace_enter("Enter emit_instruction");
         // Set current debug location from instruction
         let loc: SourceLocation = get_inst_loc(inst);
         this.current_dbg = this.debug_loc(loc);
@@ -2465,20 +2467,20 @@ class LLVMEmitter {
 
     fun emit_br(mut this, inst: IRBr) {
         _utils.trace_enter("Enter emit_br(inst=" + inst.display() + ")");
-        this.emit_line("  br label %" + inst.target.name);
+        this.emit_line("  br label %" + inst.target_name);
     }
 
     fun emit_br_cond(mut this, inst: IRBrCond) {
-        _utils.trace_enter("Enter emit_br_cond(inst=" + inst.display() + ")");
+        _utils.trace_enter("Enter emit_br_cond");
         let cond_resolved: string = this.resolve_value(inst.cond);
         let is_icmp_result: bool = this.is_icmp_value(cond_resolved);
         if (is_icmp_result) {
-            this.emit_line("  br i1 " + cond_resolved + ", label %" + inst.true_label.name + ", label %" + inst.false_label.name);
+            this.emit_line("  br i1 " + cond_resolved + ", label %" + inst.true_name + ", label %" + inst.false_name);
         } else {
             let cond_i1: string = "%cond_" + cast<string>(this.cond_counter);
             this.cond_counter = this.cond_counter + 1;
             this.emit_line("  " + cond_i1 + " = trunc i8 " + cond_resolved + " to i1");
-            this.emit_line("  br i1 " + cond_i1 + ", label %" + inst.true_label.name + ", label %" + inst.false_label.name);
+            this.emit_line("  br i1 " + cond_i1 + ", label %" + inst.true_name + ", label %" + inst.false_name);
         }
     }
 
@@ -3187,7 +3189,7 @@ class LLVMEmitter {
 
     fun emit_label(mut this, inst: IRLabelInst) {
         _utils.trace_enter("Enter emit_label(inst=" + inst.display() + ")");
-        this.sb.append(inst.label.name + ":\n");
+        this.sb.append(inst.label_name + ":\n");
     }
 
     fun emit_global_load(mut this, inst: IRGlobalLoad) {

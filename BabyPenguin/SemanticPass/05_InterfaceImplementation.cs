@@ -150,9 +150,6 @@ namespace BabyPenguin.SemanticPass
 
                     foreach (var implSyntax in interfaceImplementations)
                     {
-                        if (!CheckWhere(implSyntax.WhereDefinition, container))
-                            continue;
-
                         var vtable = new VTable(Model, implSyntax, container);
                         if (container.VTables.Find(v => v.Interface.FullName() == vtable.Interface.FullName()) is VTable existingVTable)
                         {
@@ -423,27 +420,6 @@ namespace BabyPenguin.SemanticPass
             }
 
             return false;
-        }
-
-        private bool CheckWhere(WhereDefinition? whereDefinition, IVTableContainer container)
-        {
-            if (whereDefinition is null)
-                return true;
-
-            foreach (var condition in whereDefinition.WhereClauses)
-            {
-                var leftType = Model.ResolveType(condition.Identifier!.Text, scope: container);
-                if (leftType == null)
-                    throw new BabyPenguinException($"Could not resolve type {condition.Identifier.Text}", condition.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-
-                var rightType = Model.ResolveType(condition.TypeSpecifier!.Text, scope: container);
-                if (rightType == null)
-                    throw new BabyPenguinException($"Could not resolve type {condition.TypeSpecifier.Text}", condition.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-
-                if (!leftType.CanImplicitlyCastTo(rightType))
-                    return false;
-            }
-            return true;
         }
 
         public void MergeVTables(ISemanticNode obj)

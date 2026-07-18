@@ -99,7 +99,6 @@ namespace emperor {
         U8;
         Void;
         Wait;
-        Where;
         While;
         Yield;
     }

@@ -24,6 +24,7 @@ namespace __builtin {
     #template(T: type)
     class Box {
         value: T;
+        impl IReferenceType;
         fun new(mut this, value: T) {
             this.value = value;
         }

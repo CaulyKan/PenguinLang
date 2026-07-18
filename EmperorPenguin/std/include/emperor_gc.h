@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 /* Initialize the GC. Must be called once at program start. */
-void _emperor_gc_init(void);
+void _emperor_gc_init(void* stack_bottom);
 
 /* Register a global pointer as a GC root. */
 void _emperor_gc_add_root(void** root);

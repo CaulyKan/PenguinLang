@@ -28,6 +28,9 @@ namespace BabyPenguin
 
         [Option("run-only", Default = "", HelpText = "C# backend (--backend cs): skip compile and run given dll")]
         public string RunOnly { get; set; } = "";
+
+        [Option("cs-out", Default = "", HelpText = "C# backend (--backend cs): build a STANDALONE exe at this path (no extension) and exit, instead of running in-process. Runnable directly: ./<path> <args>")]
+        public string CsOut { get; set; } = "";
     }
 
     public class Program

@@ -73,6 +73,66 @@ namespace BabyPenguin.CSharpBackend
             return LoadAssembly(cachedDll);
         }
 
+        /// <summary>Build a STANDALONE executable (with a Main entry point) at outExePath, copying
+        /// BabyPenguin's runtime deps alongside so it runs without BabyPenguin hosting it.
+        /// outExePath is the desired exe path without extension (e.g. /tmp/myprog).</summary>
+        public string CompileExe(IEnumerable<(string FileName, string Content)> sources, string outExePath, bool keepCs)
+        {
+            var sourceList = sources.ToList();
+            var outDir = Path.GetDirectoryName(outExePath);
+            if (string.IsNullOrEmpty(outDir)) outDir = ".";
+            var assemblyName = Path.GetFileNameWithoutExtension(outExePath);
+            if (string.IsNullOrEmpty(assemblyName)) assemblyName = "BabyPenguinCompiled";
+            Directory.CreateDirectory(outDir);
+
+            var buildDir = Path.Combine(Path.GetTempPath(), $"bp_cs_exe_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(buildDir);
+            try
+            {
+                WriteProject(buildDir, sourceList, exe: true, assemblyName, projectName: assemblyName);
+                RunDotnetBuild(buildDir, assemblyName);
+                var builtDir = Path.Combine(buildDir, "bin", "Release", _targetFramework);
+                // Copy the built exe + its files to outDir.
+                foreach (var f in Directory.GetFiles(builtDir))
+                    File.Copy(f, Path.Combine(outDir, Path.GetFileName(f)), overwrite: true);
+                // The exe references BabyPenguin.dll (HintPath) which isn't copied by the build —
+                // bring BabyPenguin's runtime deps so the standalone exe can resolve them.
+                CopyBabyPenguinDeps(outDir, assemblyName);
+            }
+            finally
+            {
+                if (!keepCs)
+                {
+                    try { Directory.Delete(buildDir, recursive: true); } catch { }
+                }
+                else
+                {
+                    var keepDir = buildDir + "_kept";
+                    try { if (Directory.Exists(keepDir)) Directory.Delete(keepDir, true); Directory.Move(buildDir, keepDir); } catch { }
+                    Console.Error.WriteLine($"[cs backend] kept sources at {keepDir}");
+                }
+            }
+            return Path.Combine(outDir, assemblyName);
+        }
+
+        private void CopyBabyPenguinDeps(string outDir, string exeAssemblyName)
+        {
+            var bpDir = Path.GetDirectoryName(_babyPenguinDll);
+            if (string.IsNullOrEmpty(bpDir) || !Directory.Exists(bpDir)) return;
+            foreach (var f in Directory.GetFiles(bpDir))
+            {
+                var name = Path.GetFileName(f);
+                // Skip the new exe's own files (already copied) and the BabyPenguin apphost/pdb.
+                if (name.StartsWith(exeAssemblyName + ".", StringComparison.OrdinalIgnoreCase)) continue;
+                var ext = Path.GetExtension(name);
+                if (ext == ".dll" || ext == ".json" || ext == ".so")
+                {
+                    var dest = Path.Combine(outDir, name);
+                    if (!File.Exists(dest)) File.Copy(f, dest, overwrite: false);
+                }
+            }
+        }
+
         private string ComputeHash(List<(string FileName, string Content)> sources)
         {
             using var sha = SHA256.Create();
@@ -89,15 +149,19 @@ namespace BabyPenguin.CSharpBackend
             return Convert.ToHexString(bytes);
         }
 
-        private void WriteProject(string dir, List<(string FileName, string Content)> sources)
+        private void WriteProject(string dir, List<(string FileName, string Content)> sources) =>
+            WriteProject(dir, sources, exe: false, assemblyName: "BabyPenguinCompiled", projectName: "BabyPenguinCompiled");
+
+        private void WriteProject(string dir, List<(string FileName, string Content)> sources, bool exe, string assemblyName, string projectName)
         {
+            var outputType = exe ? "Exe" : "Library";
             var csproj = $"""
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Library</OutputType>
+    <OutputType>{outputType}</OutputType>
     <TargetFramework>{_targetFramework}</TargetFramework>
     <Nullable>disable</Nullable>
-    <AssemblyName>BabyPenguinCompiled</AssemblyName>
+    <AssemblyName>{assemblyName}</AssemblyName>
     <LangVersion>latest</LangVersion>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <BaseIntermediateOutputPath>obj\</BaseIntermediateOutputPath>
@@ -113,14 +177,16 @@ namespace BabyPenguin.CSharpBackend
   </ItemGroup>
 </Project>
 """;
-            File.WriteAllText(Path.Combine(dir, "BabyPenguinCompiled.csproj"), csproj);
+            File.WriteAllText(Path.Combine(dir, projectName + ".csproj"), csproj);
             foreach (var (name, content) in sources)
                 File.WriteAllText(Path.Combine(dir, name), content);
         }
 
-        private void RunDotnetBuild(string dir)
+        private void RunDotnetBuild(string dir) => RunDotnetBuild(dir, "BabyPenguinCompiled");
+
+        private void RunDotnetBuild(string dir, string projectName)
         {
-            var csproj = Path.Combine(dir, "BabyPenguinCompiled.csproj");
+            var csproj = Path.Combine(dir, projectName + ".csproj");
             // No PackageReferences, but a normal build still runs the (trivial) restore
             // phase to materialize obj/project.assets.json in a fresh build dir.
             var psi = new ProcessStartInfo

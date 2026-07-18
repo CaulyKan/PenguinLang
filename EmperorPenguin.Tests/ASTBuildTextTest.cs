@@ -645,21 +645,6 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let clause = new ast.WhereClause();
-    clause.name = ""T"";
-    let type_spec = new ast.TypeSpecifier();
-    type_spec.name = ""Comparable"";
-    clause.type_spec = new Option<ast.TypeSpecifier>.some(type_spec);
-    let where_def = new ast.WhereDefinition();
-    where_def.clauses.push(clause);
-    println(where_def.build_text());
-}
-", "where (T: Comparable)")]
-    public void AST_WhereClauseAndDefinition_BuildText() => Batch.Assert();
-
-    [Fact]
-    [BatchTest(@"
-initial {
     let fd = new ast.FunctionDefinition("""");
     fd.name = ""compute"";
     fd.is_pure = true;
@@ -1035,51 +1020,6 @@ initial {
 }
 ", "#template(T) interface Comparable{ fun compare(other: T) -> i64; }")]
     public void AST_InterfaceDefinition_WithTemplate_BuildText() => Batch.Assert();
-
-    [Fact]
-    [BatchTest(@"
-initial {
-    let clause = new ast.WhereClause();
-    clause.name = ""T"";
-    let clause_type = new ast.TypeSpecifier();
-    clause_type.name = ""Comparable"";
-    clause.type_spec = new Option<ast.TypeSpecifier>.some(clause_type);
-    let where_def = new ast.WhereDefinition();
-    where_def.clauses.push(clause);
-    let fd = new ast.FunctionDefinition("""");
-    fd.name = ""sort"";
-    let impl_node = new ast.InterfaceImplementation("""");
-    impl_node.type_name = ""Sorter"";
-    impl_node.where_def = new Option<ast.WhereDefinition>.some(where_def);
-    impl_node.functions.push(new ast.Definition.function_def(fd));
-    let d = new ast.Definition.impl_def(impl_node);
-    println(d.build_text());
-}
-", "impl Sorter where (T: Comparable) { fun sort(); }")]
-    public void AST_InterfaceImplementation_WithWhere_BuildText() => Batch.Assert();
-
-    [Fact]
-    [BatchTest(@"
-initial {
-    let clause = new ast.WhereClause();
-    clause.name = ""T"";
-    let clause_type = new ast.TypeSpecifier();
-    clause_type.name = ""Comparable"";
-    clause.type_spec = new Option<ast.TypeSpecifier>.some(clause_type);
-    let where_def = new ast.WhereDefinition();
-    where_def.clauses.push(clause);
-    let fd = new ast.FunctionDefinition("""");
-    fd.name = ""compare_to"";
-    let impl_node = new ast.InterfaceForImplementation("""", """");
-    impl_node.type_name = ""Comparable"";
-    impl_node.for_type_name = ""MyType"";
-    impl_node.where_def = new Option<ast.WhereDefinition>.some(where_def);
-    impl_node.functions.push(new ast.Definition.function_def(fd));
-    let d = new ast.Definition.impl_for_def(impl_node);
-    println(d.build_text());
-}
-", "impl Comparable for MyType where (T: Comparable) { fun compare_to(); }")]
-    public void AST_InterfaceForImplementation_WithWhere_BuildText() => Batch.Assert();
 
     [Fact]
     [BatchTest(@"

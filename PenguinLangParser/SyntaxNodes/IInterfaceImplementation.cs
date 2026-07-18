@@ -16,7 +16,5 @@ namespace PenguinLangParser.SyntaxNodes
         ISyntaxScope? ParentScope { get; set; }
 
         List<FunctionDefinition> Functions { get; set; }
-
-        WhereDefinition? WhereDefinition { get; set; }
     }
 }

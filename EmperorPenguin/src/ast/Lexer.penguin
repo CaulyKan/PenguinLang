@@ -160,12 +160,6 @@ namespace emperor {
                     this.advance_chars(5);
                     continue;
                 }
-                if (this.match_keyword("where")) {
-                    tokens.push(new Token(new TokenType.Where(), "where", new SourceLocation(this.filename, this.line, this.col)));
-                    this.col = this.col + 5;
-                    this.advance_chars(5);
-                    continue;
-                }
                 if (this.match_keyword("class")) {
                     tokens.push(new Token(new TokenType.Class(), "class", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;

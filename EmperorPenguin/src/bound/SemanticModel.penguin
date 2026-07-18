@@ -2295,6 +2295,15 @@ class SemanticModel {
         let for_type: mut BoundType = this.resolve_type_name(ast_impl.for_type_name, impl_scope, ast_impl.location);
         bound_impl.interface_type = iface_type;
         bound_impl.for_type = for_type;
+        // Orphan principle: at least one of (interface, target type) must be in
+        // the same namespace as the impl block.
+        if (this.check_orphan_impl(iface_type, for_type, impl_scope)) {
+            this.report_error(new ErrorCode.E_ORPHAN_IMPL(),
+                "impl " + ast_impl.type_name + " for " + ast_impl.for_type_name
+                + " is orphaned - neither the interface nor the target type is "
+                + "defined in the current namespace. At least one must be local.",
+                ast_impl.location);
+        }
         let vtable: mut BoundVTable = new BoundVTable();
         vtable.interface_type = iface_type;
         let i: mut i64 = 0;
@@ -4019,6 +4028,28 @@ class SemanticModel {
             si = si + 1;
         }
         return last_dot;
+    }
+
+    // Check if an impl for is orphaned (both interface and type are external).
+    fun check_orphan_impl(this, iface_type: BoundType, for_type: BoundType, impl_scope: BoundScope) -> bool {
+        _utils.trace_enter("Enter check_orphan_impl");
+        let ns_prefix: string = impl_scope.full_name + ".";
+        let iface_ns: mut string = "";
+        if (iface_type.type_definition.is_some()) {
+            let def: BoundDefinition = iface_type.type_definition.some;
+            if (def is BoundDefinition.interface_def) {
+                iface_ns = def.interface_def.full_name;
+            }
+        }
+        let for_ns: mut string = "";
+        if (for_type.type_definition.is_some()) {
+            let def: BoundDefinition = for_type.type_definition.some;
+            if (def is BoundDefinition.class_def) { for_ns = def.class_def.full_name; }
+            if (def is BoundDefinition.enum_def) { for_ns = def.enum_def.full_name; }
+        }
+        let iface_local: bool = string_length(iface_ns) > 0 && string_find(iface_ns, ns_prefix) == 0;
+        let for_local: bool = string_length(for_ns) > 0 && string_find(for_ns, ns_prefix) == 0;
+        return !iface_local && !for_local;
     }
 
     fun try_bind_enum_variant(mut this, expr: NewExpression, scope: mut BoundScope, last_dot: i64) -> Option<BoundExpression> {

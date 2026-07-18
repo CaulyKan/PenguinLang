@@ -56,7 +56,6 @@ namespace __builtin {
             }
         }
 
-        impl __builtin.ICopy<Option<T>> where T: ICopy<T>;
     }
 
     #template(T: type)
@@ -118,8 +117,6 @@ namespace __builtin {
                 return default_val;
             }
         }
-
-        impl __builtin.ICopy<Result<T, E>> where T: ICopy<T>, E: ICopy<E>;
     }
 
     #template(T: type)

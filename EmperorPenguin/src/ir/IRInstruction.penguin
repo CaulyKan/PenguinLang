@@ -186,16 +186,16 @@ class IRWrmbr {
 
 // 8. BR - unconditional branch
 class IRBr {
-    target: !mut IRLabel = new IRLabel("");
+    target_name: string = "";
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, target: IRLabel, loc: SourceLocation) {
-        this.target = target;
+        this.target_name = target.name;
         this.location = loc;
     }
 
     fun display(this) -> string {
-        return "BR " + this.target.name;
+        return "BR " + this.target_name;
     }
     fun to_string(this) -> string {
         return this.display();
@@ -205,19 +205,19 @@ class IRBr {
 // 9. BR_COND - conditional branch
 class IRBrCond {
     cond: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    true_label: !mut IRLabel = new IRLabel("");
-    false_label: !mut IRLabel = new IRLabel("");
+    true_name: string = "";
+    false_name: string = "";
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, cond: IRValue, true_label: IRLabel, false_label: IRLabel, loc: SourceLocation) {
         this.cond = cond;
-        this.true_label = true_label;
-        this.false_label = false_label;
+        this.true_name = true_label.name;
+        this.false_name = false_label.name;
         this.location = loc;
     }
 
     fun display(this) -> string {
-        return "BR_COND " + this.cond.display() + ", " + this.true_label.name + ", " + this.false_label.name;
+        return "BR_COND " + this.cond.display() + ", " + this.true_name + ", " + this.false_name;
     }
     fun to_string(this) -> string {
         return this.display();
@@ -544,14 +544,14 @@ class IRUnbox {
 
 // 21. LABEL - label
 class IRLabelInst {
-    label: !mut IRLabel = new IRLabel("");
+    label_name: string = "";
 
     fun new(mut this, label: IRLabel) {
-        this.label = label;
+        this.label_name = label.name;
     }
 
     fun display(this) -> string {
-        return this.label.name + ":";
+        return this.label_name + ":";
     }
     fun to_string(this) -> string {
         return this.display();

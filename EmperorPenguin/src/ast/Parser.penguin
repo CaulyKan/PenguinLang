@@ -1009,35 +1009,6 @@ namespace emperor {
             return node;
         }
 
-        // whereClause: identifier ':' typeSpecifier;
-        // Classification: Sequence
-        fun parse_whereClause(this) -> WhereClause {
-            let name_token: Token = this.stream.advance();
-            this.stream.expect(new TokenType.Colon());
-            let node: WhereClause = new WhereClause();
-            node.name = name_token.text;
-            let ts = this.parse_typeSpecifier();
-            return node;
-        }
-
-        // whereDefinition: 'where' (whereClause (',' whereClause)*);
-        // Classification: Sequence
-        fun parse_whereDefinition(this) -> WhereDefinition {
-            this.stream.expect(new TokenType.Where());
-            this.stream.expect(new TokenType.LParen());
-            let node: WhereDefinition = new WhereDefinition();
-            let wc = this.parse_whereClause();
-            node.clauses.push(wc);
-            while (this.stream.peek_type() is TokenType.Comma) {
-                this.stream.advance();
-                let wc2 = this.parse_whereClause();
-                node.clauses.push(wc2);
-            }
-            this.stream.expect(new TokenType.RParen());
-            return node;
-        }
-
-        // interfaceDefinition: (templateDeclaration)? 'interface' identifier '{' ((declaration ';') | functionDefinition | interfaceImplementation | eventDefinition)* '}';
         // Classification: Sequence
         fun parse_interfaceDefinition(this) -> Definition {
             let node: mut InterfaceDefinition = new InterfaceDefinition("");
@@ -1080,7 +1051,7 @@ namespace emperor {
             return new Definition.interface_def(node);
         }
 
-        // interfaceImplementation: 'impl' typeSpecifier (whereDefinition)? (';' | ('{' (functionDefinition)* '}'));
+        // interfaceImplementation: 'impl' typeSpecifier (';' | ('{' (functionDefinition)* '}'));
         // Classification: Sequence
         fun parse_interfaceImplementation(this) -> Definition {
             this.stream.expect(new TokenType.Impl());
@@ -1093,10 +1064,6 @@ namespace emperor {
                 node.location = type_spec.location;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
-                if (this.stream.peek_type() is TokenType.Where) {
-                    let wd = this.parse_whereDefinition();
-                    node.where_def = new Option<WhereDefinition>.some(wd);
-                }
                 if (this.stream.peek_type() is TokenType.LBrace) {
                     this.stream.expect(new TokenType.LBrace());
                     while (!(this.stream.peek_type() is TokenType.RBrace)) {
@@ -1113,10 +1080,6 @@ namespace emperor {
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
             node2.location = type_spec.location;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
-            if (this.stream.peek_type() is TokenType.Where) {
-                let wd2 = this.parse_whereDefinition();
-                node2.where_def = new Option<WhereDefinition>.some(wd2);
-            }
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.stream.expect(new TokenType.LBrace());
                 while (!(this.stream.peek_type() is TokenType.RBrace)) {
@@ -1130,7 +1093,7 @@ namespace emperor {
             return new Definition.impl_def(node2);
         }
 
-        // interfaceForImplementation: 'impl' typeSpecifier 'for' typeSpecifier (whereDefinition)? (';' | ('{' (functionDefinition)* '}'));
+        // interfaceForImplementation: 'impl' typeSpecifier 'for' typeSpecifier (';' | ('{' (functionDefinition)* '}'));
         // Classification: Sequence
         fun parse_interfaceForImplementation(this) -> Definition {
             this.stream.expect(new TokenType.Impl());
@@ -1143,10 +1106,6 @@ namespace emperor {
                 node.location = type_spec.location;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
-                if (this.stream.peek_type() is TokenType.Where) {
-                    let wd = this.parse_whereDefinition();
-                    node.where_def = new Option<WhereDefinition>.some(wd);
-                }
                 if (this.stream.peek_type() is TokenType.LBrace) {
                     this.stream.expect(new TokenType.LBrace());
                     while (!(this.stream.peek_type() is TokenType.RBrace)) {
@@ -1163,10 +1122,6 @@ namespace emperor {
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
             node2.location = type_spec.location;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
-            if (this.stream.peek_type() is TokenType.Where) {
-                let wd2 = this.parse_whereDefinition();
-                node2.where_def = new Option<WhereDefinition>.some(wd2);
-            }
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.stream.expect(new TokenType.LBrace());
                 while (!(this.stream.peek_type() is TokenType.RBrace)) {

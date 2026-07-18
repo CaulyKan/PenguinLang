@@ -1016,36 +1016,6 @@ namespace BabyPenguin.Tests
         }
 
         [Fact]
-        public void ImplWithWhere()
-        {
-            var compiler = new SemanticCompiler(new ErrorReporter(this));
-            compiler.AddSource(@"
-                namespace ns {
-                    interface IFoo {
-                    }
-                    class Bar {
-                        impl IFoo;
-                    }
-                    #template(T: type)
-                    class Foo {
-                        impl IFoo where T : IFoo;
-                    }
-                }
-            ");
-            var model = compiler.Compile();
-
-            var bar = model.Classes.First(i => i.Name == "Bar") as IClassNode;
-            Assert.Single(bar.ImplementedInterfaces);
-
-            var foo_u8 = model.ResolveTypeNode("ns.Foo<u8>") as IClassNode;
-            Assert.Empty(foo_u8!.ImplementedInterfaces);
-
-            var foo_bar = model.ResolveTypeNode("ns.Foo<ns.Bar>") as IClassNode;
-            Assert.Single(foo_bar!.ImplementedInterfaces);
-            Assert.Equal("ns.IFoo", foo_bar.ImplementedInterfaces.First().FullName());
-        }
-
-        [Fact]
         public void InterfaceCascadeWithFunction()
         {
             var compiler = new SemanticCompiler(new ErrorReporter(this));
