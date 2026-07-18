@@ -19,6 +19,15 @@ namespace BabyPenguin
 
         [Option('q', "quiet", Default = false, HelpText = "Quiet mode: suppress debug trace, only show program output")]
         public bool Quiet { get; set; }
+
+        [Option("backend", Default = "vm", HelpText = "Execution backend: 'vm' (interpreter, default) or 'cs' (compile Penguin IR to C# via dotnet build and run it)")]
+        public string Backend { get; set; } = "vm";
+
+        [Option("keep-cs", Default = false, HelpText = "C# backend (--backend cs): keep the generated C# sources for inspection")]
+        public bool KeepCs { get; set; }
+
+        [Option("run-only", Default = "", HelpText = "C# backend (--backend cs): skip compile and run given dll")]
+        public string RunOnly { get; set; } = "";
     }
 
     public class Program
@@ -53,85 +62,97 @@ namespace BabyPenguin
                 var projectFiles = filesBeforeSeparator.Where(f => f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
                 var regularFiles = filesBeforeSeparator.Where(f => !f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();
 
-                // Handle project files
-                foreach (var projectFile in projectFiles)
+                SemanticModel? model = null;
+                if (options.RunOnly == "")
                 {
-                    compiler.AddProject(projectFile);
-                }
 
-                // Handle regular .penguin files
-                foreach (var file in regularFiles)
-                {
-                    compiler.AddFile(file);
-                }
-
-                // If no files specified, search for .penguins in current directory
-                if (!projectFiles.Any() && !regularFiles.Any())
-                {
-                    var currentDir = Directory.GetCurrentDirectory();
-                    var foundProjectFile = FindPenguinsProjectFile(currentDir);
-
-                    if (foundProjectFile != null)
+                    // Handle project files
+                    foreach (var projectFile in projectFiles)
                     {
-                        Console.WriteLine($"Found project file: {foundProjectFile}");
-                        compiler.AddProject(foundProjectFile);
+                        compiler.AddProject(projectFile);
                     }
-                    else
+
+                    // Handle regular .penguin files
+                    foreach (var file in regularFiles)
                     {
-                        Console.Error.WriteLine("No input files specified and no .penguins project file found.");
-                        return 1;
+                        compiler.AddFile(file);
+                    }
+
+                    // If no files specified, search for .penguins in current directory
+                    if (!projectFiles.Any() && !regularFiles.Any())
+                    {
+                        var currentDir = Directory.GetCurrentDirectory();
+                        var foundProjectFile = FindPenguinsProjectFile(currentDir);
+
+                        if (foundProjectFile != null)
+                        {
+                            Console.WriteLine($"Found project file: {foundProjectFile}");
+                            compiler.AddProject(foundProjectFile);
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine("No input files specified and no .penguins project file found.");
+                            return 1;
+                        }
+                    }
+
+                    model = compiler.Compile();
+
+                    if (!string.IsNullOrEmpty(options.Report))
+                    {
+                        model.WriteReport(options.Report);
                     }
                 }
 
-                var model = compiler.Compile();
-
-                if (!string.IsNullOrEmpty(options.Report))
+                if (string.Equals(options.Backend, "cs", StringComparison.OrdinalIgnoreCase))
                 {
-                    model.WriteReport(options.Report);
-                }
-
-                var vm = new BabyPenguinVM(model);
-                // Program args: everything after "--" separator, or empty if no separator
-                if (separatorIndex >= 0)
-                {
-                    vm.Global.CommandLineArgs = args.Skip(separatorIndex + 1).ToArray();
+                    return CSharpBackend.CSharpBackendRunner.Run(model, options, args, separatorIndex);
                 }
                 else
                 {
-                    vm.Global.CommandLineArgs = args.Skip(filesBeforeSeparator.Count).ToArray();
-                }
-                vm.Global.EnableDebugPrint = !options.Quiet;
-                // In quiet mode, program output is emitted once at the end via
-                // CollectOutput() below; silence the live PrintFunc echo so the
-                // output stream isn't doubled.
-                if (options.Quiet)
-                    vm.Global.PrintFunc = _ => { };
-                vm.Global.GCEnabled = true;
-                vm.Global.GCThreshold = 800_000; // 800K threshold — keep memory tight
-                vm.Global.GCCheckInterval = 5_000; // Check every 5K instructions (global counter)
-                vm.Global.GCStatsFile = "/tmp/babypenguin_gc_stats.log";
-
-                if (!options.CompileOnly)
-                {
-                    if (vm.Global.EnableDebugPrint)
-                        Console.WriteLine("----------- Start Execution -----------");
-                    var code = vm.Run();
-
+                    var vm = new BabyPenguinVM(model!);
+                    // Program args: everything after "--" separator, or empty if no separator
+                    if (separatorIndex >= 0)
+                    {
+                        vm.Global.CommandLineArgs = args.Skip(separatorIndex + 1).ToArray();
+                    }
+                    else
+                    {
+                        vm.Global.CommandLineArgs = args.Skip(filesBeforeSeparator.Count).ToArray();
+                    }
+                    vm.Global.EnableDebugPrint = !options.Quiet;
+                    // In quiet mode, program output is emitted once at the end via
+                    // CollectOutput() below; silence the live PrintFunc echo so the
+                    // output stream isn't doubled.
                     if (options.Quiet)
-                    {
-                        // In quiet mode, write program output directly to stdout
-                        Console.Write(vm.CollectOutput());
-                    }
-                    else if (vm.Global.EnableDebugPrint)
-                    {
-                        Console.WriteLine("----------- Console Output -----------");
-                        Console.WriteLine(vm.CollectOutput());
-                    }
+                        vm.Global.PrintFunc = _ => { };
+                    vm.Global.GCEnabled = true;
+                    vm.Global.GCThreshold = 800_000; // 800K threshold — keep memory tight
+                    vm.Global.GCCheckInterval = 5_000; // Check every 5K instructions (global counter)
+                    vm.Global.GCStatsFile = "/tmp/babypenguin_gc_stats.log";
 
-                    if (vm.Global.EnableDebugPrint)
-                        Console.WriteLine("Program exited with code: " + code);
+                    if (!options.CompileOnly)
+                    {
+                        if (vm.Global.EnableDebugPrint)
+                            Console.WriteLine("----------- Start Execution -----------");
+                        var code = vm.Run();
 
-                    return code;
+                        if (options.Quiet)
+                        {
+                            // In quiet mode, write program output directly to stdout
+                            Console.Write(vm.CollectOutput());
+                        }
+                        else if (vm.Global.EnableDebugPrint)
+                        {
+                            Console.WriteLine("----------- Console Output -----------");
+                            Console.WriteLine(vm.CollectOutput());
+                        }
+
+                        if (vm.Global.EnableDebugPrint)
+                            Console.WriteLine("Program exited with code: " + code);
+
+                        return code;
+                    }
                 }
 
                 return 0;

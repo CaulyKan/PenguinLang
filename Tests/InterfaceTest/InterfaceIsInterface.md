@@ -3,6 +3,7 @@
 Test `is InterfaceType` between derived and base interfaces. Requires EmperorPenguin for interface instance checks.
 
 ## Apply To
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

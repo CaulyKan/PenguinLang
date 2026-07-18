@@ -4,6 +4,7 @@ Compile error: ambiguous static function call when class implements two interfac
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

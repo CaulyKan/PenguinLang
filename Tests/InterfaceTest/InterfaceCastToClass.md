@@ -4,6 +4,7 @@ Cast interface to class and access class field.
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

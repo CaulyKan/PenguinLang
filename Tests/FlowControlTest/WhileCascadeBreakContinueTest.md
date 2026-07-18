@@ -4,6 +4,7 @@ Nested while loops with break and continue in both inner and outer loops.
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

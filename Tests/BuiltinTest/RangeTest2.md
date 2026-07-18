@@ -4,6 +4,7 @@ Range as array type: i64[] = range(0, 5).
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

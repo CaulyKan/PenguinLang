@@ -4,6 +4,7 @@ Basic integer arithmetic operations: add, subtract, multiply, divide, modulo, pr
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

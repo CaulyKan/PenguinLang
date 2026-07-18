@@ -205,7 +205,7 @@ initial {
         make_args.push("-C");
         make_args.push("EmperorPenguin/std/c");
         make_args.push("OUTPUT_DIR=" + tmp_dir);
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make -C EmperorPenguin/std/c"); }
+        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make --silent -C EmperorPenguin/std/c OUTPUT_DIR=" + tmp_dir); }
         let make_exit: i64 = _utils.exec("make", make_args);
         if (make_exit != 0) {
             __builtin.eprintln("[EmperorPenguin Link] make failed with exit code " + cast<string>(make_exit));

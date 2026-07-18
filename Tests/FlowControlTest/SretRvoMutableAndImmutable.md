@@ -4,6 +4,7 @@ RVO (return-value optimization) for sret returns. Tests mutable and immutable as
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

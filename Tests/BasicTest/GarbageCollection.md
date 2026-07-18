@@ -3,6 +3,7 @@
 EmperorPenguin GC tests: retains reachable objects, preserves string locals/globals, frees memory on collection, and reflects allocations. Uses _emperor_gc_* builtins only available in EmperorPenguin.
 
 ## Apply To
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

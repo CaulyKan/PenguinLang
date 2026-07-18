@@ -4,6 +4,7 @@ Result<T,E> built-in: ok and error variants with is_ok, is_error, value_or, and 
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

@@ -3,6 +3,7 @@
 Generic class with single type parameter, basic get/set.
 
 ## Apply To
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

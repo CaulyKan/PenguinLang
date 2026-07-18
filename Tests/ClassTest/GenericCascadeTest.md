@@ -4,6 +4,7 @@ Nested generic types: Test<Test2<u8>> and Test<Test2<string>>.
 
 ## Apply To
 * BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

@@ -143,6 +143,10 @@ namespace emperor {
 
         fun advance(this) -> Token {
             let token: Token = this.peek();
+            if (this.is_at_end()) {
+                eprintln("error[E_INTERNAL]: Invalid advance of token stream at end of input " + token.location.to_string() + "\n");
+                exit(1);
+            }
             this.pos = this.pos + 1;
             return token;
         }

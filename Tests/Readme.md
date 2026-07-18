@@ -81,6 +81,7 @@ An entry may be suffixed with a condition so a slow compiler is only run when a
 faster one can't vouch for it:
 
 ```
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 ```
 
@@ -181,6 +182,7 @@ A success test (full compile→run→stdout):
 Force GC, confirm a retained node survives.
 
 ## Apply To
+* BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 
 ## Test Code

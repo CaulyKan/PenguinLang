@@ -285,6 +285,7 @@ public static class Program
         return new()
         {
             [CompilerKind.BabyPenguin] = new BabyPenguinBackend(bpDll),
+            [CompilerKind.BabyPenguinCs] = new BabyPenguinCsBackend(bpDll),
             [CompilerKind.EmperorPenguinPass1] = new EmperorOnVmBackend(bpDll, Path.Combine(repoRoot, "EmperorPenguin", "EmperorPenguin.penguins")),
             [CompilerKind.EmperorPenguinPass2] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass2"), CompilerKind.EmperorPenguinPass2),
             [CompilerKind.EmperorPenguinPass3] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass3"), CompilerKind.EmperorPenguinPass3),
@@ -307,7 +308,7 @@ public static class Program
     }
 
     public static readonly CompilerKind[] AllCompilers =
-        { CompilerKind.BabyPenguin, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3 };
+        { CompilerKind.BabyPenguin, CompilerKind.BabyPenguinCs, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3 };
 }
 
 // ───────────────────────── Options ─────────────────────────
@@ -376,7 +377,8 @@ public sealed class Options
             {
                 set.UnionWith(Program.AllCompilers); continue;
             }
-            if (part.Contains("baby", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.BabyPenguin);
+            if (part.Contains("cs", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.BabyPenguinCs);
+            else if (part.Contains("baby", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.BabyPenguin);
             else if (part.Contains("pass1") || part.Equals("pass-1", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass1);
             else if (part.Contains("pass2") || part.Equals("pass-2", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass2);
             else if (part.Contains("pass3") || part.Equals("pass-3", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass3);
@@ -413,7 +415,7 @@ public sealed class Options
 
 // ───────────────────────── Model ─────────────────────────
 
-public enum CompilerKind { BabyPenguin, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3 }
+public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3 }
 
 public enum Status { Pass, Fail, Skip, Error }
 
@@ -422,6 +424,7 @@ public static class CompilerKindExtensions
     public static string Key(this CompilerKind c) => c switch
     {
         CompilerKind.BabyPenguin => "babypenguin",
+        CompilerKind.BabyPenguinCs => "babypenguincs",
         CompilerKind.EmperorPenguinPass1 => "pass1",
         CompilerKind.EmperorPenguinPass2 => "pass2",
         CompilerKind.EmperorPenguinPass3 => "pass3",
@@ -430,6 +433,7 @@ public static class CompilerKindExtensions
     public static string Display(this CompilerKind c) => c switch
     {
         CompilerKind.BabyPenguin => "BabyPenguin",
+        CompilerKind.BabyPenguinCs => "BabyPenguin CS",
         CompilerKind.EmperorPenguinPass1 => "EmperorPenguin Pass1",
         CompilerKind.EmperorPenguinPass2 => "EmperorPenguin Pass2",
         CompilerKind.EmperorPenguinPass3 => "EmperorPenguin Pass3",
@@ -705,7 +709,8 @@ public static class MarkdownTestParser
             // so a guard name inside the condition can't reclassify the entry.
             var l = raw.Split('(')[0].ToLowerInvariant();
             CompilerKind? kind = null;
-            if (l.Contains("baby")) kind = CompilerKind.BabyPenguin;
+            if (l.Contains("babypenguin cs")) kind = CompilerKind.BabyPenguinCs;
+            else if (l.Contains("babypenguin")) kind = CompilerKind.BabyPenguin;
             else if (l.Contains("pass1") || l.Contains("pass 1")) kind = CompilerKind.EmperorPenguinPass1;
             else if (l.Contains("pass2") || l.Contains("pass 2")) kind = CompilerKind.EmperorPenguinPass2;
             else if (l.Contains("pass3") || l.Contains("pass 3")) kind = CompilerKind.EmperorPenguinPass3;
@@ -895,6 +900,31 @@ public sealed class BabyPenguinBackend : ICompilerBackend
         {
             FileName = "dotnet",
             Arguments = ArgumentBuilder.Build(_bpDll, "-q", srcFile),
+            WorkingDirectory = repoRoot,
+        };
+        EnvHelper.ApplyEnv(psi, compile.Env);
+        return psi;
+    }
+
+    public ProcessStartInfo? BuildRunProcess(string exeFile, StageSpec run) => null;
+}
+
+// BabyPenguin with the experimental C# lowering backend (--backend=cs). Same I/O model as
+// BabyPenguin (in-process compile+run); used to find divergences vs the interpreter oracle.
+public sealed class BabyPenguinCsBackend : ICompilerBackend
+{
+    private readonly string _bpDll;
+    public BabyPenguinCsBackend(string bpDll) { _bpDll = bpDll; }
+    public CompilerKind Kind => CompilerKind.BabyPenguinCs;
+    public bool IsInterpreted => true;
+
+    public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            // --backend=cs (equals form: CommandLineParser otherwise treats 'cs' as a positional file).
+            Arguments = ArgumentBuilder.Build(_bpDll, "-q", "--backend=cs", srcFile),
             WorkingDirectory = repoRoot,
         };
         EnvHelper.ApplyEnv(psi, compile.Env);

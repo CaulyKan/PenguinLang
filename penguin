@@ -67,6 +67,7 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     if [ "$HASH3" = "$HASH4" ]; then
         echo "Bootstrap complete"
         echo "============================================================"
+        exit 0
     else
         echo "Bootstrap NOT converged: pass3 and pass4 differ." >&2
         exit 1
@@ -141,8 +142,9 @@ fi
 if [ $PASS -eq 1 ]; then
     echo "Running EmperorPenguin Pass 1 ..."
     echo "============================================================"
-    rm -rf tmp && mkdir -p tmp
+    mkdir -p tmp
     dotnet run --configuration Release --project BabyPenguin/BabyPenguin.csproj -- -q EmperorPenguin/EmperorPenguin.penguins -- $OTHERS
+    exit $?
 fi
 
 if [ $PASS -eq 2 ]; then
@@ -153,6 +155,7 @@ if [ $PASS -eq 2 ]; then
         exit 1
     fi
     tmp/pass2 $OTHERS
+        exit $?
 fi
 
 if [ $PASS -eq 3 ]; then
@@ -163,6 +166,7 @@ if [ $PASS -eq 3 ]; then
         exit 1
     fi
     tmp/pass3 $OTHERS
+    exit $?
 fi
 
 if [ $PASS -eq 4 ]; then
@@ -173,6 +177,7 @@ if [ $PASS -eq 4 ]; then
         exit 1
     fi
     tmp/pass4 $OTHERS
+    exit $?
 fi
 
 
