@@ -11,11 +11,9 @@ Penguin-lang provides powerful compile-time meta-programming capabilities throug
 | Compile-Time Condition | `#if` / `#elif` / `#else` | Conditional code generation                     |
 | Compile-Time Loop      | `#for` / `#while`  | Loop unrolling at compile time                         |
 | Generic Declaration    | `#template`        | Syntactic sugar for type-level meta functions          |
-| Type Query             | `#typeof(T)`       | Resolve a type at compile time                         |
-| Compile-Time Symbol    | `#define`          | Define compile-time key-value pairs (compiler option sugar) |
-| AST Parameter          | `ast` type         | Pass code blocks as structured AST nodes               |
-| Code Generation        | `#fun -> ast`      | Generate code at compile time and splice inline        |
-| Compiler Interface     | `#compiler()`      | Access compiler internals for reflection and code gen  |
+| Compile-Time Options   | `#define` / `#defined` / `#option` | Built-in meta functions; compile-time key-value store |
+| Compiler Interface     | `#compiler()`      | Built-in meta function; access compiler internals     |
+| Type Query             | `#typeof(T)`       | Built-in meta function; resolve type at compile time  |
 
 ### Execution Model
 
@@ -93,7 +91,11 @@ fun abs(v: T) -> #signed_to_unsigned(T) {
 }
 ```
 
-## Type Query: `#typeof(T)`
+## Built-in Meta Functions
+
+PenguinLang provides several **built-in meta functions** that are automatically available without being declared. They use the standard meta function call syntax (`#name(args)`) — they are NOT separate parser keywords. Users can shadow them by defining a `#fun` of the same name.
+
+### `#typeof(T)` — Type Query
 
 `#typeof(T)` resolves a type name to a `type` value at compile time. It works in both meta and non-meta contexts with unified semantics:
 
@@ -150,11 +152,11 @@ class A {}
 fun default_value() -> T {
     #if (T == i32) {
         return 0;
-    } #elif (T == f32) {
+    } else if (T == f32) {
         return 0.0;
-    } #elif (T == string) {
+    } else if (T == string) {
         return "";
-    } #else {
+    } else {
         return T.default();
     }
 }
@@ -166,14 +168,14 @@ fun default_value() -> T {
 // CORRECT: All branches are compile-time
 #if (condition) {
     // ...
-} #else {
+} else {
     // This is also compile-time
 }
 
 // CORRECT: #if at global scope controls entire definitions
-#if (PLATFORM == "linux") {
+#if (option("PLATFORM") == "linux") {
     extern fun linux_specific() -> i32;
-} #else {
+} else {
     extern fun generic_impl() -> i32;
 }
 ```
@@ -247,37 +249,21 @@ class Container<T> {
 }
 ```
 
-> **Note**: `#template` is currently implemented as a separate code path in the monomorphization pass. In the future it will be unified under the `#fun` meta function framework.
+### `#define(key, value)` / `#defined(key)` / `#option(key)` — Compile-Time Options
 
-## Compile-Time Symbols: `#define`, `#value`, and `#defined`
-
-PenguinLang supports `#define`, `#value`, and `#defined` as syntactic sugar over `compiler().set_option()`, `compiler().get_option()`, and `compiler().has_option()` respectively. They provide a lightweight compile-time key-value store:
+These built-in meta functions provide a lightweight compile-time key-value store, which can also be set in compiler command line(`-DFoo=Bar`). They delegate to `compiler().set_option()`, `compiler().get_option()`, and `compiler().has_option()` respectively:
 
 ```penguin
 initial {
     #define("PI", 3.14);
-    println("PI = {}", #value("PI"));          // PI = 3.14
-    #if (#defined("PI")) {
+    println("PI = {}", #option("PI"));          // PI = 3.14
+    #if (defined("PI")) {
         println("PI is defined");
     }
 }
 ```
 
-These are equivalent to:
-
-```penguin
-initial {
-    compiler().set_option("PI", "3.14");
-    println("PI = {}", compiler().get_option("PI"));
-    #if (compiler().has_option("PI")) {
-        println("PI is defined");
-    }
-}
-```
-
-> **Unlike C/C++ preprocessor macros**, `#define` is not text substitution. It is scoped to the compilation unit and type information is preserved.
-
-## Compiler Interface: `#compiler()`
+### `#compiler()` — Compiler Context Access
 
 `#compiler()` returns a reference to the current compiler context, giving meta functions access to the compiler's internal state for reflection, code generation, and error reporting.
 
@@ -298,7 +284,7 @@ initial {
 | `get_option` | `(key: string) -> string` | Get a compile-time option |
 | `has_option` | `(key: string) -> bool` | Check if a compile-time option is defined |
 
-> **Design note**: `#compiler()` currently returns a concrete compiler context object. In the future it will be abstracted behind an `interface ICompiler` for API stability across compiler versions.
+> **Design note**: `#compiler()`, `#typeof(T)`, `#define(key,val)`, `#defined(key)`, and `#option(key)` are **built-in meta functions** — not parser keywords. The compiler provides their implementations directly (no JIT needed). They use the exact same `#identifier(args)` syntax as user-defined meta functions, and users can shadow them by defining a `#fun` of the same name. In the future `#compiler()`'s return value may be abstracted behind an `interface ICompiler` for API stability.
 
 ### Probing Type Capabilities
 
@@ -335,7 +321,7 @@ fun max(a: T, b: T) -> T {
     #if (Comparable(T)) {
         if (a < b) return b;
         return a;
-    } #else {
+    } else {
         compiler().error("Type T must be Comparable");
     }
 }
@@ -364,8 +350,8 @@ class Point {
     x: i32;
     y: i32;
 
-    #getter() { x };  // Generates: fun get_x() -> i32 { return this.x; }
-    #getter() { y };  // Generates: fun get_y() -> i32 { return this.y; }
+    #getter { x };  // Generates: fun get_x() -> i32 { return this.x; }
+    #getter { y };  // Generates: fun get_y() -> i32 { return this.y; }
 }
 ```
 
@@ -441,7 +427,7 @@ class Point {
     x: i32;
     y: i32;
 
-    #derive_clone(#typeof(Point));  // Inserts clone() method implementation
+    #derive_clone(#typeof(Self));  // Inserts clone() method implementation
 }
 ```
 
@@ -464,43 +450,18 @@ enum Color {
     Blue;
 }
 
-#fun derive_enum_strings(e: type) -> ast {
-    let variants = compiler().get_enum_variants(e);
-    let mut to_string_body = "if (value is " + e.to_string() + ".Red) { return \"Red\"; }\n";
-    let mut from_string_body = "";
-
-    let i: u64 = 0;
-    while (i < variants.size()) {
-        let v = variants.at(i).some;
-        let name = v.name;
-
-        // Build to_string branch
-        if (i > 0) {
-            to_string_body = to_string_body + "    else if (value is " + e.to_string() + "." + name + ") { return \"" + name + "\"; }\n";
+#template<T: Type>
+fun enum_to_string(v: T) -> string {
+    #for (let item : #typeof(T).as_enum().enum_items()) {
+        if (#item.value == #cast<int>(v)) {
+            return #item.name;
         }
-
-        // Build from_string lookup
-        from_string_body = from_string_body + "    if (s == \"" + name + "\") { return new Option<" + e.to_string() + ">.some(" + e.to_string() + "." + name + "()); }\n";
-
-        i = i + 1;
     }
-    to_string_body = to_string_body + "    return \"<unknown>\";\n";
-
-    return compiler().create_ast(
-        "fun to_string(value: " + e.to_string() + ") -> string { " + to_string_body + " }" +
-        "fun from_string(s: string) -> Option<" + e.to_string() + "> {" + from_string_body + "    return new Option<" + e.to_string() + ">.none(); }"
-    );
 }
 
-#derive_enum_strings(#typeof(Color));
-
 initial {
-    let c = Color.Red();
-    println(to_string(c));                     // "Red"
-    let parsed = from_string("Blue");
-    if (parsed.is_some()) {
-        println(to_string(parsed.some));        // "Blue"
-    }
+    let c = new Color.Red();
+    println(enum_to_string(c));                     // "Red"
 }
 ```
 

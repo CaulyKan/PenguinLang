@@ -6,12 +6,12 @@ initial {
     println("Input: " + source);
 
     // Tokenize
-    let lexer = new parser.Lexer(source);
+    let lexer = new emperor.Lexer(source);
     let tokens = lexer.tokenize();
     println("Tokens: " + cast<string>(tokens.size()));
 
     // Parse
-    let p = new parser.Parser(tokens);
+    let p = new emperor.Parser(tokens);
     let ast_result = p.parse_expression();
 
     // Print AST as S-expression

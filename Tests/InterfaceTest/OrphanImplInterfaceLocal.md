@@ -3,6 +3,8 @@
 Orphan principle: `impl Interface for Type` where the interface is defined in the same namespace as the impl block (but the type is external). Should succeed because at least one (the interface) is local.
 
 ## Apply To
+* BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

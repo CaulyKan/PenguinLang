@@ -423,8 +423,8 @@ public static class CompilerKindExtensions
 {
     public static string Key(this CompilerKind c) => c switch
     {
-        CompilerKind.BabyPenguin => "babypenguin",
-        CompilerKind.BabyPenguinCs => "babypenguincs",
+        CompilerKind.BabyPenguin => "baby vm",
+        CompilerKind.BabyPenguinCs => "baby cs",
         CompilerKind.EmperorPenguinPass1 => "pass1",
         CompilerKind.EmperorPenguinPass2 => "pass2",
         CompilerKind.EmperorPenguinPass3 => "pass3",
@@ -432,7 +432,7 @@ public static class CompilerKindExtensions
     };
     public static string Display(this CompilerKind c) => c switch
     {
-        CompilerKind.BabyPenguin => "BabyPenguin",
+        CompilerKind.BabyPenguin => "BabyPenguin VM",
         CompilerKind.BabyPenguinCs => "BabyPenguin CS",
         CompilerKind.EmperorPenguinPass1 => "EmperorPenguin Pass1",
         CompilerKind.EmperorPenguinPass2 => "EmperorPenguin Pass2",
@@ -721,7 +721,8 @@ public static class MarkdownTestParser
             if (m.Success)
             {
                 var g = m.Groups[1].Value.ToLowerInvariant();
-                if (g.Contains("baby")) skipIf = CompilerKind.BabyPenguin;
+                if (g.Contains("babypenguin cs")) skipIf = CompilerKind.BabyPenguinCs;
+                else if (g.Contains("babypenguin")) skipIf = CompilerKind.BabyPenguin;
                 else if (g.Contains("pass1") || g.Contains("pass 1")) skipIf = CompilerKind.EmperorPenguinPass1;
                 else if (g.Contains("pass2") || g.Contains("pass 2")) skipIf = CompilerKind.EmperorPenguinPass2;
                 else if (g.Contains("pass3") || g.Contains("pass 3")) skipIf = CompilerKind.EmperorPenguinPass3;

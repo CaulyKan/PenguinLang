@@ -15,9 +15,9 @@ This document describes the architecture, design rationale, and phased implement
 | `#fun` meta function | ✅ | Pass3 only, JIT execution via LLVM ORC |
 | `#if` / `#for` / `#while` | ✅ | Compiler hardcoded special-case; no JIT required |
 | `#template` | ✅ | Already implemented (generics); treated as `#fun` sugar |
-| `#typeof(T)` | ✅ | Two-level compile-time resolution |
-| `#compiler()` | ✅ | Returns native EmperorPenguin compiler context object |
-| `#define` / `#value` / `#defined` | ✅ | Syntax sugar over `compiler().set_option/get_option/has_option` |
+| `#typeof(T)` | ✅ | Built-in meta function; two-level compile-time resolution |
+| `#compiler()` | ✅ | Built-in meta function; returns native EmperorPenguin compiler context object |
+| `#define` / `#defined` / `#option` | ✅ | Built-in meta functions; syntax sugar over `compiler().set_option/get_option/has_option` |
 | `ast` / `type` parameter types | ✅ | Aliases for AST node pointer / `BoundType` pointer |
 | AST code generation (`#fun -> ast`) | ✅ | Meta function returns structured AST; compiler splices inline |
 | Variadic AST (trailing `{ }`) | ✅ | Trailing code block always passed as `ast` typed parameter |
@@ -61,7 +61,28 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - JIT'd code shares the same GC heap with the host compiler. Returning a reference to a compiler context object is a natural, zero-cost operation.
 - An interface abstraction would add indirection without immediate benefit; it can be retrofitted once the API surface stabilizes.
 
-### 2.3 #if / #for / #while: Hardcoded Special-Case
+### 2.3 Parser Keywords vs Built-in Meta Functions
+
+**Choice: Only `#fun`, `#if`/`#elif`/`#else`, `#for`, `#while`, and `#template` are parser keywords (hardcoded syntax). All other `#`-prefixed identifiers — `#compiler()`, `#define(…)`, `#defined(…)`, `#option(…)`, `#typeof(T)` — are generic meta function calls (`MetaCallExpression`). The compiler provides built-in implementations for them.**
+
+**Rationale:**
+- `#if`/`#for`/`#while` need hardcoded parser support because they have unique syntax (multi-branch `#elif`/`#else`, range-based `#for`, inline unrolling) that doesn't fit the `#identifier(args)` pattern.
+- `#fun` needs parser-level recognition to distinguish a meta function **declaration** from a meta function **call**.
+- `#template` is existing sugar that the parser already handles.
+- All other `#name(...)` forms share identical syntax: they are calls with parenthesized arguments. Parsing them uniformly as `MetaCallExpression` simplifies the lexer/parser AND allows user-defined `#fun` to shadow or extend them.
+- The MetaExecutionEngine maintains a **built-in registry** mapping names to compiler-provided implementations. At meta call dispatch time, it checks: (1) user-defined `#fun` → JIT; (2) built-in registry → direct compiler implementation; (3) not found → error.
+
+**Registry of built-in meta functions:**
+
+| Name | Implementation | Description |
+|---|---|---|
+| `compiler` | Returns `CompilerContext*` reference | Access compiler internals |
+| `typeof` | Resolves type name → `BoundType*` | Compile-time type query |
+| `define` | Calls `compiler().set_option(key, value)` | Set compile-time option |
+| `defined` | Calls `compiler().has_option(key)` | Check if option exists |
+| `option` | Calls `compiler().get_option(key)` | Get compile-time option value |
+
+### 2.4 #if / #for / #while: Hardcoded Special-Case
 
 **Choice: Compiler directly evaluates `#if` conditions in-process (no JIT)**  
 **Rejected: Implement `#if` as a built-in `#fun`**
@@ -71,7 +92,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - Hardcoding them is simpler and faster. The code path is essentially: evaluate a boolean condition in the host Penguin process, then either keep or discard the corresponding AST subtree.
 - This does **not** preclude later refactoring into true built-in meta functions when the JIT infrastructure is stable.
 
-### 2.4 Meta Function Execution: Lazy On-Demand Compilation
+### 2.5 Meta Function Execution: Lazy On-Demand Compilation
 
 **Choice: Compile each meta function on first call; cache the function pointer**  
 **Rejected: Batch topological-sort compilation**
@@ -81,7 +102,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - ORC JIT natively supports lazy compilation. Each `#fun` is compiled to an LLVM module on first use and added to the JIT session.
 - Recursive meta functions (e.g., `#fun fib`) are handled naturally: during JIT compilation of `fib`, the self-referential call to `fib` resolves to the module's own symbol.
 
-### 2.5 AST Splicing: Structured AST
+### 2.6 AST Splicing: Structured AST
 
 **Choice: `ast` type is a pointer to structured AST nodes (`Expression`, `Definition`, `Statement`). Meta functions that generate code return these structured nodes.**  
 **Helper: `compiler().create_ast(code_string)` for text → AST conversion.**
@@ -91,7 +112,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - Source location tracking is preserved (AST nodes carry `SourceLocation`).
 - The `create_ast()` helper provides an escape hatch for text-based code generation, useful for simple fragments.
 
-### 2.6 Meta Call Syntax
+### 2.7 Meta Call Syntax
 
 **Grammar:** `'#' identifier ('(' parameter_list ')')? (';' | code_block)`
 
@@ -100,7 +121,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - If no trailing `code_block`, the call must end with `;`.
 - A standalone `#name` (without `()`) followed by a definition block (e.g., `class A {}`) is equivalent to `#name() { class A {} }` — the entire trailing definition is passed as `ast`.
 
-### 2.7 #typeof(T): Two-Level Compile-Time Semantics
+### 2.8 #typeof(T): Two-Level Compile-Time Semantics
 
 **Choice: `#typeof(T)` resolves the type `T` at the JIT compilation time of the enclosing meta function, embedding a `BoundType*` constant into the generated native code.**
 
@@ -109,7 +130,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - In meta context: `#typeof(i32)` inside a `#fun` body is resolved when the meta function is JIT-compiled; by that point, all type names in scope are known.
 - `compiler().resolve_type(name: string) -> type` is the dynamic counterpart for cases where the type name is computed at meta-execution time.
 
-### 2.8 can_compile Restriction
+### 2.9 can_compile Restriction
 
 **Choice: `compiler().can_compile_expression(expr: string) -> bool` — expression-only, no side effects.**
 
@@ -118,7 +139,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - Expression-only probing covers the 90% use case (checking if a type supports `+`, `<`, `.foo()`, etc.) while being side-effect-free.
 - Can be relaxed to full `can_compile` once the compiler is proven re-entrant-safe.
 
-### 2.9 GC Interaction: Conservative Stack Scan
+### 2.10 GC Interaction: Conservative Stack Scan
 
 **Choice: Trust the conservative mark-sweep GC (existing `gc.c`) to scan JIT stack frames.**
 
@@ -127,7 +148,7 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - Meta functions are typically short-lived and rarely trigger GC. Even if a false positive retains a dead object, the memory will be reclaimed eventually.
 - JIT'd code does not directly allocate GC objects; all heap manipulation goes through `compiler()` API, which runs in the host context.
 
-### 2.10 LLVM Integration: C Wrapper Library
+### 2.11 LLVM Integration: C Wrapper Library
 
 **Choice: `libpenguin_jit` — a small C library wrapping LLVM ORC JIT behind a pure C API, callable from Penguin via `extern`.**
 
@@ -136,15 +157,17 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
 - A thin C wrapper (`penguin_jit_init`, `penguin_jit_add_module`, `penguin_jit_lookup`, `penguin_jit_shutdown`) is sufficient for the meta programming use case.
 - Only Core + ORCJIT + native target backend components need to be linked, keeping binary size manageable.
 
-### 2.11 #define / #value / #defined: Compiler Option Sugar
+### 2.12 #define / #defined / #option: Built-in Meta Functions for Compile-Time Options
 
-**Choice: `#define("K", "V")` is syntactic sugar for `compiler().set_option("K", "V")`. `#value("K")` → `compiler().get_option("K")`. `#defined("K")` → `compiler().has_option("K")`.**
+**Choice: `#define("K", "V")`, `#defined("K")`, and `#option("K")` are built-in meta functions (not parser keywords). They use the generic `#identifier(args)` meta call syntax and are implemented directly by the compiler as calls to `compiler().set_option/get_option/has_option`.**
 
 **Rationale:**
-- These are essentially a compile-time key-value store. Realizing them through the `#compiler()` API unifies the concept without needing a separate mechanism.
+- These are essentially a compile-time key-value store. Realizing them as meta function calls unifies them with the rest of the meta programming model.
+- No special parser tokens needed — they follow the exact same syntax as user-defined meta function calls.
 - Similar to C preprocessor macros but type-safe and scoped to the compilation unit.
+- `#value` has been renamed to `#option` to better reflect that it retrieves a compiler option value.
 
-### 2.12 `type` and `ast` Runtime Representation
+### 2.13 `type` and `ast` Runtime Representation
 
 **Choice: `type` is `BoundType*`, `ast` is AST node pointer. Both are GC-tracked reference types.**  
 **Future: Formalize as builtin `class MetaType` / `interface IAst` in stdlib.**
@@ -170,9 +193,6 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
                         │   │   MetaFunctionDefinition        │
                         │   │   MetaCallExpression            │
                         │   │   MetaIfBlock / MetaForBlock    │
-                        │   │   MetaTypeofExpression          │
-                        │   │   MetaCompilerExpression        │
-                        │   │   MetaDefineStatement           │
                         │   │         │                       │
                         │   │   ┌────▼───────────────────┐    │
                         │   │   │  MetaExecutionEngine   │    │
@@ -180,6 +200,13 @@ Meta programming requires LLVM ORC JIT, which in turn requires linking `libLLVM`
                         │   │   │  ┌──────────────────┐  │    │
                         │   │   │  │  #if/#for/#while  │  │    │
                         │   │   │  │  (direct eval)    │  │    │
+                        │   │   │  └──────────────────┘  │    │
+                        │   │   │                        │    │
+                        │   │   │  ┌──────────────────┐  │    │
+                        │   │   │  │  Built-in Registry│  │    │
+                        │   │   │  │  compiler/typeof/ │  │    │
+                        │   │   │  │  define/defined/  │  │    │
+                        │   │   │  │  option           │  │    │
                         │   │   │  └──────────────────┘  │    │
                         │   │   │                        │    │
                         │   │   │  ┌──────────────────┐  │    │
@@ -326,24 +353,29 @@ MetaWhileStmt  ::= '#while' '(' expression ')' code_block
 - Body is duplicated (unrolled) for each iteration, with the loop variable replaced by its value
 - `#while` may loop infinitely at compile time → compiler should have a configurable iteration limit
 
-### 4.5 Type Query: `#typeof`
+### 4.5 Built-in Meta Functions
+
+The compiler provides a set of **built-in meta functions** that are automatically available without being declared. They use the standard meta function call syntax (`#name(args)`) and are dispatched by the MetaExecutionEngine's built-in registry. Users can shadow them by defining a `#fun` of the same name; user-defined versions take priority over built-ins.
+
+#### `#typeof(T)` — Type Query
 
 ```
-MetaTypeofExpr ::= '#typeof' '(' (identifier | qualified_identifier) ')'
+Syntax:  #typeof '(' (identifier | qualified_identifier) ')'
 ```
 
-**Semantics:**
-- In non-meta context: resolves to `BoundType*` constant at host compile time
-- In `#fun` body: resolves when the enclosing meta function is JIT-compiled
+Returns a `type` value resolved at compile time:
+
+- **In non-meta context**: resolves to `BoundType*` constant at host compile time
+- **In `#fun` body**: resolves when the enclosing meta function is JIT-compiled; the resolved `BoundType*` is embedded as a constant in the generated native code
 - The argument must be a type name visible in the current scope
 
-### 4.6 Compiler Interface: `#compiler`
+#### `#compiler()` — Compiler Context Access
 
 ```
-MetaCompilerExpr ::= '#compiler' '(' ')'
+Syntax:  #compiler '(' ')'
 ```
 
-Returns the current `CompilerContext` object reference.
+Returns the current `CompilerContext` object reference. All compiler reflection and code generation flows through this object.
 
 **CompilerContext API (initial):**
 
@@ -352,34 +384,29 @@ Returns the current `CompilerContext` object reference.
 | `create_ast` | `(code: string) -> ast` | Parse text into AST node |
 | `create_empty_ast` | `() -> ast` | Returns an empty AST (no-op) |
 | `create_function_ast` | `(name: string, return_type: type, body: string) -> ast` | Generate a function AST |
-| `can_compile_expression` | `(expr: string) -> bool` | Probe if expression compiles |
-| `resolve_type` | `(name: string) -> type` | Resolve type by name |
-| `resolve_symbol` | `(name: string) -> SymbolInfo` | Get symbol information |
-| `get_fields` | `(t: type) -> List<FieldInfo>` | Get fields of a class |
-| `error` | `(msg: string)` | Emit compile error |
-| `warn` | `(msg: string)` | Emit compile warning |
-| `set_option` | `(key: string, value: string)` | Set compile-time option |
-| `get_option` | `(key: string) -> string` | Get compile-time option |
-| `has_option` | `(key: string) -> bool` | Check if option is defined |
+| `can_compile_expression` | `(expr: string) -> bool` | Probe if expression compiles (side-effect-free) |
+| `resolve_type` | `(name: string) -> type` | Resolve type by qualified name |
+| `resolve_symbol` | `(name: string) -> SymbolInfo` | Look up a symbol and get its metadata |
+| `get_fields` | `(t: type) -> List<FieldInfo>` | Get all fields of a class type |
+| `get_methods` | `(t: type) -> List<MethodInfo>` | Get all methods of a type |
+| `get_enum_variants` | `(t: type) -> List<VariantInfo>` | Get all variants of an enum |
+| `error` | `(msg: string)` | Emit a compile error with source location |
+| `warn` | `(msg: string)` | Emit a compile warning with source location |
+| `set_option` | `(key: string, value: string)` | Set a compile-time option |
+| `get_option` | `(key: string) -> string` | Get a compile-time option |
+| `has_option` | `(key: string) -> bool` | Check if a compile-time option is defined |
 
-### 4.7 Compile-Time Symbols: `#define`, `#value`, `#defined`
-
-```
-MetaDefineStmt   ::= '#define' '(' string_literal ',' expression ')'
-MetaValueExpr    ::= '#value' '(' string_literal ')'
-MetaDefinedExpr  ::= '#defined' '(' string_literal ')'
-```
-
-**Semantics:** Syntactic sugar over `compiler().set_option/get_option/has_option`.
-
-### 4.8 Generic Declaration: `#template`
+#### `#define(key, value)` / `#defined(key)` / `#option(key)` — Compile-Time Options
 
 ```
-TemplateDecl ::= '#' 'template' '(' template_param (',' template_param)* ')'
-template_param ::= identifier (':' 'type')?
+Syntax:  #define  '(' string_literal ',' expression ')'
+         #defined '(' string_literal ')'
+         #option  '(' string_literal ')'
 ```
 
-`#template(T: type) class Box<T> { ... }` is treated as syntax sugar. After parsing, the compiler conceptually transforms it into an equivalent `#fun` form. This transformation is internal to the compiler and not exposed to the user.
+These are convenience built-in meta functions for a compile-time key-value store. They delegate to `compiler().set_option/get_option/has_option`.
+
+### 4.6 Generic Declaration: `#template`
 
 ---
 
@@ -508,33 +535,26 @@ clang combined.ll libcore_builtin.a libpenguin_jit.a $(LLVM_LDFLAGS) -o out.exe
 
 **Files:** `ast/Token.penguin`, `ast/Lexer.penguin`, `ast/AST.penguin`, `ast/Parser.penguin`
 
-- [ ] 1.1 Add `TokenType` variants:
-  - `MetaFunKw` (for `#fun`)
+- [ ] 1.1 Add `TokenType` variants (hardcoded constructs only — built-in meta functions use generic `MetaCallExpression`):
+  - `MetaFunKw` (for `#fun` declaration)
   - `MetaIfKw` (for `#if`)
-  - `MetaForKw` (for `#for`)
-  - `MetaWhileKw` (for `#while` — or reuse existing `While`)
-  - `MetaDefineKw` (for `#define`)
-  - `MetaValueKw` (for `#value`)
-  - `MetaDefinedKw` (for `#defined`)
-  - `MetaTypeofKw` (for `#typeof`)
-  - `MetaCompilerKw` (for `#compiler`)
   - `MetaElifKw` (for `#elif`)
-- [ ] 1.2 Extend `Lexer` to recognize `#keyword` tokens (after `Hash` token, peek at next identifier)
+  - `MetaForKw` (for `#for`)
+  - `MetaWhileKw` (for `#while`)
+- [ ] 1.2 Extend `Lexer` to recognize `#` followed by above keywords; any other `#identifier` is parsed as `Hash` + `Identifier` tokens
 - [ ] 1.3 Add AST node classes:
   - `MetaFunctionDefinition`: name, params (typed: `type`/`ast`/primitive), return_type, body
-  - `MetaCallExpression`: func_name, args, trailing_block
+  - `MetaCallExpression`: func_name, args, trailing_block (generic, covers all `#ident(args)` calls including built-ins)
   - `MetaIfBlock`: conditions[], bodies[], else_body
   - `MetaForBlock`: loop_var, range_start, range_end, body
   - `MetaWhileBlock`: condition, body
-  - `MetaTypeofExpression`: type_name
-  - `MetaCompilerExpression`: (unit)
-  - `MetaDefineStatement`: key, value
-  - `MetaValueExpression`: key
-  - `MetaDefinedExpression`: key
 - [ ] 1.4 Add `Expression` enum variant: `meta_call: MetaCallExpression`
-- [ ] 1.5 Add `Statement` variant or handle meta constructs inline
-- [ ] 1.6 Add `Definition` enum variant: `meta_fun_def: MetaFunctionDefinition`
-- [ ] 1.7 Extend `Parser` to parse all `#`-prefixed constructs per the syntax spec
+- [ ] 1.5 Add `Definition` enum variant: `meta_fun_def: MetaFunctionDefinition`
+- [ ] 1.6 Extend `Parser`:
+  - `#fun` at global/namespace scope → `MetaFunctionDefinition`
+  - `#if` / `#for` / `#while` → respective AST nodes
+  - `#identifier(args)` → `MetaCallExpression` (generic; `compiler`, `typeof`, `define`, `defined`, `option` are NOT parser keywords)
+  - `#template(...)` → existing `TemplateDeclaration` sugar
 
 ### Phase 2: Bound Layer Extension
 
@@ -549,11 +569,11 @@ clang combined.ll libcore_builtin.a libpenguin_jit.a $(LLVM_LDFLAGS) -o out.exe
   - compiled_native_ptr: `u64` (cache)
   - is_compiled: `bool`
 - [ ] 2.3 Add `BoundDefinition.meta_fun_def: BoundMetaFunctionDefinition`
-- [ ] 2.4 Add `BoundMetaCallExpression`, `BoundMetaTypeofExpression` to `BoundExpression`
+- [ ] 2.4 Add `BoundMetaCallExpression` to `BoundExpression` (single generic node; built-in dispatch happens at execution time)
 - [ ] 2.5 Add `BoundMetaIfStatement`, `BoundMetaForStatement`, `BoundMetaWhileStatement` to `BoundStatement`
-- [ ] 2.6 Add `BoundMetaDefineStatement`
+- [ ] 2.6 Remove (built-in dispatch handled by MetaExecutionEngine, no need for per-function bound statements)
 - [ ] 2.7 Register `MetaType` and `MetaAst` as internal types in `BoundTypeRegistry`
-- [ ] 2.8 Add `MetaCompilerSymbol` to `BoundSymbol` for `#compiler()` resolution
+- [ ] 2.8 Remove (built-in `compiler`/`typeof`/`define`/`defined`/`option` are resolved at execution time via the built-in registry, not as bound symbols)
 
 ### Phase 3: C Runtime — libpenguin_jit
 
@@ -574,24 +594,27 @@ clang combined.ll libcore_builtin.a libpenguin_jit.a $(LLVM_LDFLAGS) -o out.exe
   - `jit_ctx: u64` — JIT session handle
   - `compiled_funcs: Map<string, u64>` — name → native fn pointer cache
   - `compiler_context: CompilerContext` — reference for `#compiler()` calls
-- [ ] 4.2 Implement `execute_meta_call(meta_call: BoundMetaCallExpression) -> MetaResult`
-  - Lookup meta function definition in global scope
-  - If not compiled: `compile_meta_function(meta_fun_def) → fn_ptr`
-  - Marshal args (type → BoundType*, ast → AST*, primitive → value)
-  - Call fn_ptr
-  - Return result (type, ast, or value)
+- [ ] 4.2 Implement `dispatch_meta_call(meta_call: BoundMetaCallExpression) -> MetaResult`:
+  - Extract function name from `meta_call.func_name`
+  - **Check user-defined `#fun`**: look up in global scope → if found, JIT + call (see 4.3)
+  - **Check built-in registry**: if name matches `compiler`, `typeof`, `define`, `defined`, or `option` → call built-in implementation directly (no JIT)
+  - **Not found**: compiler error
 - [ ] 4.3 Implement `compile_meta_function(meta_fun_def: BoundMetaFunctionDefinition) -> u64`:
   - Take the meta function's bound body
   - Run through IRGenerator → LLVMEmitter to produce LLVM IR
   - Add compiler context global variable to the IR
   - Call `penguin_jit_add_module()` and `penguin_jit_lookup()`
   - Cache and return function pointer
-- [ ] 4.4 Implement direct evaluators for `#if` / `#for` / `#while`:
+- [ ] 4.4 Implement direct evaluators for hardcoded constructs (`#if` / `#for` / `#while`):
   - `evaluate_meta_if(meta_if: BoundMetaIfStatement, scope) → AST`
   - `evaluate_meta_for(meta_for: BoundMetaForStatement, scope) → List<AST>`
   - `evaluate_meta_while(meta_while: BoundMetaWhileStatement, scope) → List<AST>`
-- [ ] 4.5 Implement `#typeof` resolution: lookup type in scope, return BoundType*
-- [ ] 4.6 Implement `#define` / `#value` / `#defined` as compiler option operations
+- [ ] 4.5 Implement built-in meta function implementations:
+  - `builtin_compiler()` → return `CompilerContext` reference
+  - `builtin_typeof(name)` → resolve type name in current scope, return `BoundType*`
+  - `builtin_define(key, value)` → call `compiler().set_option(key, value)`
+  - `builtin_defined(key)` → call `compiler().has_option(key)`
+  - `builtin_option(key)` → call `compiler().get_option(key)`
 
 ### Phase 5: Pipeline Integration
 
@@ -645,7 +668,7 @@ clang combined.ll libcore_builtin.a libpenguin_jit.a $(LLVM_LDFLAGS) -o out.exe
 - [ ] 7.6 `CustomConcept.md`: `#fun Addable/Comparable` with `can_compile_expression`
 - [ ] 7.7 `MetaRecursion.md`: Recursive `#fun` (fib, factorial)
 - [ ] 7.8 `TypeofTest.md`: `#typeof` in meta and non-meta contexts
-- [ ] 7.9 `DefineTest.md`: `#define` / `#value` / `#defined`
+- [ ] 7.9 `DefineTest.md`: `#define` / `#defined` / `#option` as built-in meta functions
 - [ ] 7.10 `MetaErrorTest.md`: Error messages with correct source locations from meta function bodies
 
 ---

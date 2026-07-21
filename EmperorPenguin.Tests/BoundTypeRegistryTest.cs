@@ -37,6 +37,9 @@ public class BoundTypeRegistryTest
         // Add ast source files (needed by SemanticModel)
         foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
             compiler.AddFile(f);
+        // Add project source files (needed by ErrorCode, etc.)
+        foreach (var f in Directory.GetFiles(BatchCompiler.ProjectDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(userCode);
         var model = compiler.Compile();
         vm = new BabyPenguinVM(model);
@@ -51,7 +54,7 @@ public class BoundTypeRegistryTest
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     let i32t = reg.resolve_type(""i32"");
     if (i32t.is_some()) {
         println(""i32="" + i32t.some.display_name());
@@ -86,7 +89,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     let i32t = reg.i32_type;
     let boolt = reg.bool_type;
     let strt = reg.string_type;
@@ -117,7 +120,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     println(reg.i32_type.display_name());
     println(reg.bool_type.display_name());
     println(reg.string_type.display_name());
@@ -143,7 +146,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     println(""i32_to_i64="" + cast<string>(reg.can_implicitly_cast(reg.i32_type, reg.i64_type)));
     println(""i32_to_f64="" + cast<string>(reg.can_implicitly_cast(reg.i32_type, reg.f64_type)));
     println(""i32_to_bool="" + cast<string>(reg.can_implicitly_cast(reg.i32_type, reg.bool_type)));
@@ -169,13 +172,13 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
-    let params = new _utils.List<bound.BoundType>();
+    let reg = new emperor.BoundTypeRegistry();
+    let params = new _utils.List<emperor.BoundType>();
     params.push(reg.i32_type);
     params.push(reg.i64_type);
     let ft = reg.make_function_type(reg.bool_type, params, false);
     println(ft.display_name());
-    let aft = reg.make_function_type(reg.void_type, new _utils.List<bound.BoundType>(), true);
+    let aft = reg.make_function_type(reg.void_type, new _utils.List<emperor.BoundType>(), true);
     println(aft.display_name());
 }
 ");
@@ -190,7 +193,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     let err = reg.make_error_type();
     println(err.display_name());
 }
@@ -203,7 +206,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
+    let reg = new emperor.BoundTypeRegistry();
     println(""i32_value="" + cast<string>(reg.i32_type.is_value_type()));
     println(""bool_value="" + cast<string>(reg.bool_type.is_value_type()));
     println(""string_value="" + cast<string>(reg.string_type.is_value_type()));
@@ -223,14 +226,14 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new bound.BoundTypeRegistry();
-    let t: mut bound.BoundType = new bound.BoundType();
-    t.kind = new bound.TypeKind.ClassKind();
+    let reg = new emperor.BoundTypeRegistry();
+    let t: mut emperor.BoundType = new emperor.BoundType();
+    t.kind = new emperor.TypeKind.ClassKind();
     reg.register_type(""MyClass"", t);
     let resolved = reg.resolve_type(""MyClass"");
     if (resolved.is_some()) {
         let r = resolved.some;
-        if (r.kind is bound.TypeKind.ClassKind) {
+        if (r.kind is emperor.TypeKind.ClassKind) {
             println(""found=class"");
         }
     }

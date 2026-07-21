@@ -39,7 +39,7 @@ Regression test: method `this` binding must see field mutations after children.p
 ```
 
 ## Compile
-Args: ``
+Args: `${PENGUIN_ROOT}/EmperorPenguin/src/utils.penguin`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

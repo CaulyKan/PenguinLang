@@ -10,10 +10,10 @@ public class BoundScopeTest
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let mut sym = new bound.BoundVariableSymbol();
+    let mut scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let mut sym = new emperor.BoundVariableSymbol();
     sym.name = ""x"";
-    scope.add_symbol(new bound.BoundSymbol.variable(sym));
+    scope.add_symbol(new emperor.BoundSymbol.variable(sym));
     let found = scope.lookup_symbol(""x"");
     if (found.is_some()) {
         println(""found="" + found.some.get_name());
@@ -29,11 +29,11 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut parent = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let mut sym = new bound.BoundVariableSymbol();
+    let mut parent = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let mut sym = new emperor.BoundVariableSymbol();
     sym.name = ""x"";
-    parent.add_symbol(new bound.BoundSymbol.variable(sym));
-    let mut child = new bound.BoundScope(new bound.ScopeKind.FunctionScope(), ""func"", ""<global>.func"", new Option<bound.BoundScope>.some(parent));
+    parent.add_symbol(new emperor.BoundSymbol.variable(sym));
+    let mut child = new emperor.BoundScope(new emperor.ScopeKind.FunctionScope(), ""func"", ""<global>.func"", new Option<emperor.BoundScope>.some(parent));
     parent.add_child(child);
     let found = child.lookup_symbol(""x"");
     if (found.is_some()) {
@@ -50,12 +50,12 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let mut type_sym = new bound.BoundTypeSymbol(""MyClass"", ""MyClass"");
-    scope.add_symbol(new bound.BoundSymbol.type_sym(type_sym));
-    let mut var_sym = new bound.BoundVariableSymbol();
+    let mut scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let mut type_sym = new emperor.BoundTypeSymbol(""MyClass"", ""MyClass"");
+    scope.add_symbol(new emperor.BoundSymbol.type_sym(type_sym));
+    let mut var_sym = new emperor.BoundVariableSymbol();
     var_sym.name = ""x"";
-    scope.add_symbol(new bound.BoundSymbol.variable(var_sym));
+    scope.add_symbol(new emperor.BoundSymbol.variable(var_sym));
     let found_type = scope.lookup_type_in_scope(""MyClass"");
     if (found_type.is_some()) {
         println(""type_found="" + found_type.some.get_name());
@@ -71,15 +71,15 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut global_scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let ns1: mut bound.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
-    let mut sym1 = new bound.BoundVariableSymbol();
+    let mut global_scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let ns1: mut emperor.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
+    let mut sym1 = new emperor.BoundVariableSymbol();
     sym1.name = ""a"";
-    ns1.add_symbol(new bound.BoundSymbol.variable(sym1));
-    let ns2: mut bound.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
-    let mut sym2 = new bound.BoundVariableSymbol();
+    ns1.add_symbol(new emperor.BoundSymbol.variable(sym1));
+    let ns2: mut emperor.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
+    let mut sym2 = new emperor.BoundVariableSymbol();
     sym2.name = ""b"";
-    ns2.add_symbol(new bound.BoundSymbol.variable(sym2));
+    ns2.add_symbol(new emperor.BoundSymbol.variable(sym2));
     if (cast<string>(ns1.kind) == cast<string>(ns2.kind)) {
         println(""same_scope"");
     }
@@ -95,10 +95,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut global_scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let ns: mut bound.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
-    let mut type_sym = new bound.BoundTypeSymbol(""Bar"", ""Bar"");
-    ns.add_symbol(new bound.BoundSymbol.type_sym(type_sym));
+    let mut global_scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let ns: mut emperor.BoundScope = global_scope.add_or_merge_namespace(""Foo"");
+    let mut type_sym = new emperor.BoundTypeSymbol(""Bar"", ""Bar"");
+    ns.add_symbol(new emperor.BoundSymbol.type_sym(type_sym));
     let parts: mut _utils.List<string> = new _utils.List<string>();
     parts.push(""Foo"");
     parts.push(""Bar"");
@@ -119,11 +119,11 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut global_scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
-    let ns: mut bound.BoundScope = global_scope.add_or_merge_namespace(""NS"");
-    let mut sym = new bound.BoundVariableSymbol();
+    let mut global_scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
+    let ns: mut emperor.BoundScope = global_scope.add_or_merge_namespace(""NS"");
+    let mut sym = new emperor.BoundVariableSymbol();
     sym.name = ""myvar"";
-    ns.add_symbol(new bound.BoundSymbol.variable(sym));
+    ns.add_symbol(new emperor.BoundSymbol.variable(sym));
     println(sym.full_name);
 }
 ", "<global>.NS.myvar")]
@@ -132,7 +132,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut global_scope = new bound.BoundScope(new bound.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<bound.BoundScope>.none());
+    let mut global_scope = new emperor.BoundScope(new emperor.ScopeKind.GlobalScope(), ""<global>"", ""<global>"", new Option<emperor.BoundScope>.none());
     let ns = global_scope.add_or_merge_namespace(""MyNS"");
     let found = global_scope.lookup_namespace(""MyNS"");
     if (found.is_some()) {

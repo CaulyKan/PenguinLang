@@ -76,6 +76,10 @@ public static class BatchCompiler
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
                       "EmperorPenguin", "src", "llvm"));
 
+    public static string ProjectDir => Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                      "EmperorPenguin", "src", "project"));
+
     public static BatchResults InitBatch<T>()
     {
         var testData = CollectMethods<T, BatchTestAttribute>(
@@ -347,6 +351,8 @@ public static class BatchCompiler
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(IRDir, "*.penguin"))
             compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 
         var model = compiler.Compile();
@@ -380,6 +386,8 @@ public static class BatchCompiler
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(LLVMDir, "*.penguin"))
             compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 
         var model = compiler.Compile();
@@ -412,6 +420,8 @@ public static class BatchCompiler
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
             compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 
         var model = compiler.Compile();
@@ -431,9 +441,9 @@ public static class BatchCompiler
         return @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source, """");
+    let lexer = new emperor.Lexer(source, """");
     let tokens = lexer.tokenize();
-    let p = new parser.Parser(tokens);
+    let p = new emperor.Parser(tokens);
     let result = p.{parseMethod}();
     println(result.build_text());
 }}";
@@ -447,7 +457,7 @@ initial {{
         return @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source, """");
+    let lexer = new emperor.Lexer(source, """");
     let tokens = lexer.tokenize();
     let i: mut i64 = 0;
     while (i < cast<i64>(tokens.size())) {{

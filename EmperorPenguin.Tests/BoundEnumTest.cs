@@ -16,7 +16,7 @@ public class BoundEnumTest
     [BatchBoundTest(@"
 	initial {
 	    let source = ""enum Test { A; B; }"";
-	    let mut compiler = new bound.EmperorPenguinCompiler();
+	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
 	    println(""defs="" + cast<string>(cast<i64>(result.definitions.size())));
 	}
@@ -27,10 +27,10 @@ public class BoundEnumTest
     [BatchBoundTest(@"
 	initial {
 	    let source = ""enum Option { some: i64; none; }"";
-	    let mut compiler = new bound.EmperorPenguinCompiler();
+	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
 	    let def = result.definitions.at(cast<u64>(0)).some;
-	    if (def is bound.BoundDefinition.enum_def) {
+	    if (def is emperor.BoundDefinition.enum_def) {
 	        let e = def.enum_def;
 	        println(""members="" + cast<string>(cast<i64>(e.members.size())));
 	        println(""name="" + e.name);
@@ -48,7 +48,7 @@ name=Option")]
     [BatchBoundTest(@"
 	initial {
 	    let source = ""enum Test { A; B; } fun test() -> Test { return Test.A; }"";
-	    let mut compiler = new bound.EmperorPenguinCompiler();
+	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
 	    println(""defs="" + cast<string>(cast<i64>(result.definitions.size())));
 	}
@@ -63,7 +63,7 @@ name=Option")]
     [BatchBoundTest(@"
 	initial {
 	    let source = ""enum Option { some: i64; none; } fun test(o: Option) -> i64 { if (o is Option.some) { return 0; } else { return 1; } }"";
-	    let mut compiler = new bound.EmperorPenguinCompiler();
+	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
 	    println(""defs="" + cast<string>(cast<i64>(result.definitions.size())));
 	}

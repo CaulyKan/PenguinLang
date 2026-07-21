@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
@@ -19,6 +20,28 @@
  * asserts catch the most common native value-type/codegen failure modes early
  * — NULL pointers passed to runtime helpers, and failed GC allocations — which
  * otherwise manifest as opaque segfaults deep in the bootstrap. */
+
+/* Increase the stack limit at load time. The self-hosted EmperorPenguin
+ * compiler uses deep recursion in the semantic analysis passes (especially
+ * pass_build_scopes), which can overflow the default 8 MB stack limit on
+ * Linux and cause intermittent SIGSEGV. 32 MB gives a generous safety margin
+ * without consuming significant memory (stack pages are committed on demand). */
+__attribute__((constructor))
+static void emperor_boost_stack_ctor(void) {
+    _emperor_boost_stack();
+}
+
+void _emperor_boost_stack(void) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+        if (rl.rlim_cur < 32 * 1024 * 1024) {
+            rl.rlim_cur = 32 * 1024 * 1024;
+            if (rl.rlim_max < 32 * 1024 * 1024)
+                rl.rlim_max = 32 * 1024 * 1024;
+            setrlimit(RLIMIT_STACK, &rl);
+        }
+    }
+}
 #ifdef EMPEROR_DEBUG
 #include <assert.h>
 #define EMPEROR_ASSERT(cond, msg) do { if (!(cond)) { fprintf(stderr, "emperor assert: %s (%s:%d)\n", msg, __FILE__, __LINE__); assert(cond); } } while (0)

@@ -9,7 +9,7 @@ public class BoundTreeControlFlowTest
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() -> i64 {}"");
     if (result.has_errors()) {
         let err = result.errors.at(cast<u64>(0)).some;
@@ -23,7 +23,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() {}"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -33,7 +33,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { return; }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -43,7 +43,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() -> i64 { return 42; }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -53,7 +53,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { while (true) { break; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -63,7 +63,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { while (true) { continue; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -73,7 +73,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { break; }"");
     if (result.has_errors()) {
         let err = result.errors.at(cast<u64>(0)).some;
@@ -87,7 +87,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { continue; }"");
     if (result.has_errors()) {
         let err = result.errors.at(cast<u64>(0)).some;
@@ -101,7 +101,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() -> bool { return true; }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -111,7 +111,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""extern fun foo() -> i64;"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -121,7 +121,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { while (true) { while (true) { break; } break; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -131,7 +131,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() -> i64 { while (true) { return 1; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -141,7 +141,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo() { break; continue; }"");
     println(""error_count="" + cast<string>(cast<i64>(result.errors.size())));
 }
@@ -151,7 +151,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""initial { 42; }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -161,7 +161,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Foo { fun get() -> i64 {} }"");
     if (result.has_errors()) {
         println(""has_error=true"");
@@ -173,7 +173,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Foo { fun get() -> i64 { return 0; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -183,7 +183,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } else { return 30; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }
@@ -193,7 +193,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } }"");
     if (result.has_errors()) {
         println(""has_error=true"");
@@ -205,7 +205,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun foo(x: i64) -> i64 { if (x == 1) { return 10; } else if (x == 2) { return 20; } else if (x == 3) { return 30; } else { return 40; } }"");
     println(""has_errors="" + cast<string>(result.has_errors()));
 }

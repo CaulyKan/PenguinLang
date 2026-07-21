@@ -12,11 +12,11 @@ Recursive fibonacci function with u32 returns.
 ## Test Code
 ```
     initial {
-        let res : u32 = fib(10);
+        let res : i64 = fib(10);
         print(cast<string>(res));
     }
 
-    fun fib(n: u32) -> u32 {
+    fun fib(n: i64) -> i64 {
         if (n == 0) {
             return 0;
         } else if (n == 1) {

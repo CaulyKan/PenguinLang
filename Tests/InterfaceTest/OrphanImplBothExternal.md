@@ -3,6 +3,8 @@
 Orphan principle: `impl Interface for Type` where both the interface and the target type are defined in external namespaces. Should report E_ORPHAN_IMPL.
 
 ## Apply To
+* BabyPenguin
+* BabyPenguin CS
 * EmperorPenguin Pass1
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

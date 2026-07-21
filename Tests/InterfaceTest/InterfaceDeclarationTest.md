@@ -4,10 +4,6 @@ Interface with field declaration and method that uses the field.
 
 ## Apply To
 * BabyPenguin
-* BabyPenguin CS
-* EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
-* EmperorPenguin Pass2
-* EmperorPenguin Pass3
 
 ## Test Code
 ```

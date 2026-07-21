@@ -270,13 +270,18 @@ class CodeBlockExpression {
 
 class CastExpression {
     type_name: mut string = "";
+    target_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     inner: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
             let self = cast<CastExpression>(this);
-            return "cast<" + self.type_name + ">(" + self.inner.some.build_text() + ")";
+            let type_text: mut string = self.type_name;
+            if (self.target_type.is_some()) {
+                type_text = self.target_type.some.build_text();
+            }
+            return "cast<" + type_text + ">(" + self.inner.some.build_text() + ")";
         }
     }
 }

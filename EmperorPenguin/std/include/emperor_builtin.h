@@ -64,6 +64,11 @@ char _emperor_mkdir(const char* path);
  * (parallel-compile safe). Returns an empty string on failure. */
 char* _emperor_create_temp_dir(const char* prefix);
 
+/* Called at program start to increase the stack limit from the default
+ * 8 MB to 32 MB, preventing intermittent SIGSEGV from deep recursion
+ * in the EmperorPenguin compiler's semantic analysis passes. */
+void _emperor_boost_stack(void);
+
 /* StringBuilder */
 void _emperor_stringbuilder_new(void* sb);
 void _emperor_stringbuilder_append(void* sb, const char* s);

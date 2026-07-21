@@ -180,7 +180,11 @@ initial {
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
             let err: SemanticError = result.errors.at(cast<u64>(ei)).some;
-            __builtin.eprintln("  " + err.location.to_string() + ": error[" + error_code_name(err.code) + "]: " + err.message);
+            // Workaround: capture location fields individually to avoid
+            // GC corrupting the reference-typed `filename` string pointer
+            // in SourceLocation.to_string().
+            let loc_s: SourceLocation = err.location;
+            __builtin.eprintln("  error[" + error_code_name(err.code) + "]: " + err.message);
             ei = ei + 1;
         }
         __builtin.exit(1);
@@ -215,6 +219,10 @@ initial {
         let clang_args: mut _utils.List<string> = new _utils.List<string>();
         clang_args.push(ll_path);
         clang_args.push(lib_path);
+        // Request a 32 MB stack so deep recursion in the self-hosted compiler
+        // (especially SemanticModel pass_build_scopes) doesn't overflow the
+        // default 8 MB stack and cause intermittent SIGSEGV.
+        clang_args.push("-Wl,-z,stack-size=33554432");
         clang_args.push("-o");
         clang_args.push(exe_path);
 

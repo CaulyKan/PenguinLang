@@ -288,18 +288,22 @@ class SemanticModel {
                     if (ts.is_not_mutable) {
                         fsym.is_mutable = false;
                         field.mutability = new Mutability.Immutable();
+                    } else if (ts.is_mutable) {
+                        // Explicit 'mut': field is always mutable
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Mutable();
                     } else if (ts.is_auto_mutability) {
                         fsym.is_mutable = true;
                         field.mutability = new Mutability.Auto();
                     } else {
-                        // Default: mutable (includes explicit 'mut' and no modifier)
+                        // Default: aligns with container (Auto)
                         fsym.is_mutable = true;
-                        field.mutability = new Mutability.Mutable();
+                        field.mutability = new Mutability.Auto();
                     }
                 } else {
-                    // No type spec: default mutable
+                    // No type spec: default aligns with container
                     fsym.is_mutable = true;
-                    field.mutability = new Mutability.Mutable();
+                    field.mutability = new Mutability.Auto();
                 }
                 fsym.enclosing_scope = new Option<BoundScope>.some(class_scope);
                 field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
@@ -361,11 +365,10 @@ class SemanticModel {
         while (i < cast<i64>(def.members.size())) {
             let member: Definition = def.members.at(cast<u64>(i)).some;
             if (member is Definition.enum_member) {
-                // Resolve payload type from type_spec
+                // Defer payload type resolution to pass 2 (resolve_enum_types)
+                // so that forward-referenced types (e.g. class A defined after
+                // enum B { a: A }) are available in scope.
                 let payload_type: mut BoundType = this.type_registry.void_type;
-                if (member.enum_member.type_spec.is_some()) {
-                    payload_type = this.resolve_type_specifier(member.enum_member.type_spec.some, enum_scope);
-                }
                 let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
                 let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
                 m.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
@@ -435,6 +438,15 @@ class SemanticModel {
                     result.methods.push(bound_member.some);
                 }
             }
+            if (member is Definition.impl_def) {
+                // Nested `impl IOther<T> { ... }` (interface inheritance): bind the
+                // impl's methods in this interface's scope so they can be emitted and
+                // referenced by the interface's own vtables.
+                let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, iface_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
             i = i + 1;
         }
         result.ast_source = new Option<Definition>.some(new Definition.interface_def(def));
@@ -480,6 +492,12 @@ class SemanticModel {
     fun bind_impl_def(mut this, def: InterfaceImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_impl_def");
         let result: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
+        // Resolve the implemented interface type (with generic args, e.g.
+        // IFoo<u8>) so downstream passes (monomorphization collection, etc.)
+        // can see which generic interfaces a class instantiates.
+        if (def.type_spec.is_some()) {
+            result.interface_type = this.resolve_type_specifier(def.type_spec.some, scope);
+        }
         let i: mut i64 = 0;
         while (i < cast<i64>(def.functions.size())) {
             let func: Definition = def.functions.at(cast<u64>(i)).some;
@@ -534,6 +552,11 @@ class SemanticModel {
         var_sym.full_name = full_name;
         var_sym.variable_kind = new VariableSymbolKind.Global();
         var_sym.is_mutable = def.is_mutable;
+        if (def.type_spec.is_some()) {
+            if (def.type_spec.some.is_mutable) {
+                var_sym.is_mutable = true;
+            }
+        }
         var_sym.enclosing_scope = new Option<BoundScope>.some(scope);
         result.variable_symbol = new Option<BoundVariableSymbol>.some(var_sym);
         scope.add_symbol(new BoundSymbol.variable(var_sym));
@@ -837,6 +860,9 @@ class SemanticModel {
             let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
             if (p.type_spec.is_some()) {
                 bp.bound_type = this.resolve_type_specifier(p.type_spec.some, resolve_scope);
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
             }
             bound_func.parameters.push(bp);
             func_type_params.push(bp.bound_type);
@@ -870,8 +896,12 @@ class SemanticModel {
             let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
             if (p.type_spec.is_some()) {
                 bp.bound_type = this.resolve_type_specifier(p.type_spec.some, resolve_scope);
+                // Propagate type-level mutability to parameter-level (BabyPenguin conflates them)
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
             } else if (p.is_this) {
-                if (bound_func.is_new) {
+                if (bound_func.is_new || p.is_mutable) {
                     bp.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
                 } else {
                     bp.bound_type = cls.bound_type;
@@ -884,6 +914,9 @@ class SemanticModel {
         let is_async: bool = ast_func.is_async;
         sym.bound_type = this.type_registry.make_function_type(ret, func_type_params, is_async);
         sym.is_async = is_async;
+
+        // Note: p.is_this check was removed because p is scoped inside the while loop.
+        // The fix-up for generic methods happens via fix_this_param_type below.
         bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
     }
 
@@ -959,18 +992,38 @@ class SemanticModel {
 
     fun resolve_enum_types(mut this, e: mut BoundEnumDefinition, scope: BoundScope, ast_enum: EnumDefinition) {
         _utils.trace_enter("Enter resolve_enum_types");
-        let i: mut i64 = 0;
-        while (i < cast<i64>(e.members.size())) {
-            let member: mut BoundEnumMemberDefinition = e.members.at(cast<u64>(i)).some;
-            let is_void: bool = member.member_type.kind is TypeKind.PrimitiveKind
-                && member.member_type.primitive is PrimitiveType.VoidType;
-            if (is_void) {
-                member.member_type = e.bound_type;
+        let enum_scope: BoundScope = e.scope.some;
+        // Resolve enum member payload types (deferred from pass 1 to allow
+        // forward references: e.g. enum B { a: A } where class A follows B).
+        let mi: mut i64 = 0;
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(ast_enum.members.size())) {
+            let ast_member: Definition = ast_enum.members.at(cast<u64>(ai)).some;
+            if (ast_member is Definition.enum_member) {
+                let member: mut BoundEnumMemberDefinition = e.members.at(cast<u64>(mi)).some;
+                if (ast_member.enum_member.type_spec.is_some()) {
+                    let resolved: mut BoundType = this.resolve_type_specifier(ast_member.enum_member.type_spec.some, enum_scope);
+                    member.member_type = resolved;
+                    if (member.member_symbol.is_some()) {
+                        let msym: mut BoundEnumMemberSymbol = member.member_symbol.some;
+                        msym.member_type = resolved;
+                        member.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                    }
+                } else {
+                    // No type spec: this is a tag-only variant (like `none`)
+                    member.member_type = e.bound_type;
+                    if (member.member_symbol.is_some()) {
+                        let msym: mut BoundEnumMemberSymbol = member.member_symbol.some;
+                        msym.member_type = e.bound_type;
+                        member.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                    }
+                }
+                e.members.set(cast<u64>(mi), member);
+                mi = mi + 1;
             }
-            i = i + 1;
+            ai = ai + 1;
         }
         // Resolve interface implementation method types
-        let enum_scope: BoundScope = e.scope.some;
         let ai: mut i64 = 0;
         while (ai < cast<i64>(ast_enum.members.size())) {
             let ast_member: Definition = ast_enum.members.at(cast<u64>(ai)).some;
@@ -1333,6 +1386,24 @@ class SemanticModel {
                             }
                         }
                     }
+                    if (template_def is BoundDefinition.interface_def) {
+                        let iface: BoundInterfaceDefinition = template_def.interface_def;
+                        if (cast<i64>(iface.generic_params.size()) > 0) {
+                            let mangled: string = mangle_generic_name(iface.name, inst.generic_args);
+                            if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
+                                let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, iface.name);
+                                if (ast_def.is_some()) {
+                                    let spec_result: Option<BoundDefinition> = this.specialize_interface_def(
+                                        iface, inst.generic_args, mangled, result.global_scope);
+                                    if (spec_result.is_some()) {
+                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized interface " + mangled); }
+                                        specialized_defs.push(spec_result.some);
+                                        specialized_asts.push(ast_def.some);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 i = i + 1;
             }
@@ -1466,6 +1537,11 @@ class SemanticModel {
                     return new Option<Definition>.some(def);
                 }
             }
+            if (def is Definition.interface_def) {
+                if (def.interface_def.name == name) {
+                    return new Option<Definition>.some(def);
+                }
+            }
             if (def is Definition.namespace_def) {
                 let found: Option<Definition> = this.find_ast_def_by_name(def.namespace_def.children, name);
                 if (found.is_some()) { return found; }
@@ -1531,6 +1607,16 @@ class SemanticModel {
                     }
                 }
                 mi = mi + 1;
+            }
+            // Collect generic interface instantiations from `impl IFoo<u8>` blocks
+            // so the interface (and its default methods) get specialized.
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    this.try_add_instantiation(id.impl_def.interface_type, instantiations);
+                }
+                ii = ii + 1;
             }
         }
         if (def is BoundDefinition.function_def) {
@@ -1694,6 +1780,30 @@ class SemanticModel {
         }
         if (expr is Expression.cast_expr) {
             let ce: CastExpression = expr.cast_expr;
+            // A cast to a generic interface (e.g. cast<IFoo<u8>>(x)) must register
+            // the instantiation so its default methods get monomorphized with the
+            // concrete type args (otherwise their T-typed returns stay unresolved).
+            if (ce.target_type.is_some()) {
+                let ts: TypeSpecifier = ce.target_type.some;
+                if (cast<i64>(ts.generic_args.size()) > 0) {
+                    let base_name: mut string = ts.name;
+                    if (cast<i64>(ts.qualified_parts.size()) > 0) {
+                        let sb2: mut StringBuilder = new StringBuilder();
+                        let qi: mut i64 = 0;
+                        while (qi < cast<i64>(ts.qualified_parts.size())) {
+                            sb2.append(ts.qualified_parts.at(cast<u64>(qi)).some);
+                            sb2.append(".");
+                            qi = qi + 1;
+                        }
+                        sb2.append(ts.name);
+                        base_name = sb2.to_string();
+                    }
+                    let resolved: Option<BoundType> = this.resolve_new_generic_args_from_ast(base_name, ts.generic_args, scope);
+                    if (resolved.is_some()) {
+                        this.try_add_instantiation(resolved.some, instantiations);
+                    }
+                }
+            }
             if (ce.inner.is_some()) {
                 this.collect_from_ast_expr_safe(ce.inner.some, scope, instantiations);
             }
@@ -1932,6 +2042,75 @@ class SemanticModel {
         return new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
     }
 
+    // Specialize a generic interface for concrete type args (e.g. IFoo<T> -> IFoo__u8).
+    // Re-binds each default method in a scope where the type params map to the args,
+    // so a default method `fun bar(this: IFoo<T>) -> T` specializes its signature and
+    // body (T -> u8). Without this, lower_interface_def emits the unspecialized
+    // template default method with an unresolved T-typed return.
+    fun specialize_interface_def(mut this, tmpl: BoundInterfaceDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_interface_def");
+        let ast_def: Option<Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
+        if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
+        if (!(ast_def.some is Definition.interface_def)) { return new Option<BoundDefinition>.none(); }
+
+        let ast_iface: InterfaceDefinition = ast_def.some.interface_def;
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
+        let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(mangled_name, full_name);
+        let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), mangled_name, full_name, scope_parent);
+
+        // Register generic type params in the specialized scope so method
+        // signatures and bodies resolve T -> the concrete type arg.
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+            let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+            let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
+            let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+            param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+            iface_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            pi = pi + 1;
+        }
+
+        result.scope = new Option<BoundScope>.some(iface_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.InterfaceKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_iface.members.size())) {
+            let member: Definition = ast_iface.members.at(cast<u64>(i)).some;
+            if (member is Definition.function_def) {
+                let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, iface_scope);
+                if (bound_member.is_some()) {
+                    result.methods.push(bound_member.some);
+                }
+            }
+            if (member is Definition.impl_def) {
+                // Nested interface impl (interface inheritance): re-bind in the
+                // specialized scope so the impl's `impl IFoo<T>` resolves T -> arg.
+                let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, iface_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
+            i = i + 1;
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.interface_def(ast_iface));
+        return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+    }
+
     fun pass_constructors(mut this, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_constructors");
         let i: mut i64 = 0;
@@ -2083,6 +2262,117 @@ class SemanticModel {
             }
             i = i + 1;
         }
+        // Phase 2: merge inherited interface vtables (transitive interface
+        // inheritance). A class implementing IBar<u8> (which itself implements
+        // IFoo<u8> via a nested impl) must also carry an IFoo<u8> vtable. Done
+        // after Phase 1 so specialized interfaces' own vtables exist first.
+        // Walks the bound tree recursively (classes may be nested in namespaces).
+        let m: mut i64 = 0;
+        while (m < cast<i64>(result.definitions.size())) {
+            this.merge_inherited_vtables_for_def(result.definitions.at(cast<u64>(m)).some, result.global_scope);
+            m = m + 1;
+        }
+    }
+
+    fun merge_inherited_vtables_for_def(mut this, def: BoundDefinition, global_scope: BoundScope) {
+        _utils.trace_enter("Enter merge_inherited_vtables_for_def");
+        if (def is BoundDefinition.class_def) {
+            this.merge_container_vtables(def.class_def.vtables, def.class_def.interface_impls, global_scope);
+        }
+        if (def is BoundDefinition.enum_def) {
+            this.merge_container_vtables(def.enum_def.vtables, def.enum_def.interface_impls, global_scope);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(ns.children.size())) {
+                this.merge_inherited_vtables_for_def(ns.children.at(cast<u64>(ci)).some, global_scope);
+                ci = ci + 1;
+            }
+        }
+    }
+
+    // Transitive interface-inheritance merge. A worklist is seeded from the
+    // container's own impls (their interface_types carry generic args, e.g.
+    // IBar<u8>), then each is resolved to its specialized def and its nested-impl
+    // vtables copied into the container; copied vtables' interface types are
+    // added back to the worklist so multi-level chains (IBaz -> IBar -> IFoo) are
+    // flattened to any depth.
+    fun merge_container_vtables(mut this, container_vtables: mut _utils.List<BoundVTable>, seed_impls: _utils.List<BoundDefinition>, global_scope: BoundScope) {
+        _utils.trace_enter("Enter merge_container_vtables");
+        let worklist: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let si: mut i64 = 0;
+        while (si < cast<i64>(seed_impls.size())) {
+            let sd: BoundDefinition = seed_impls.at(cast<u64>(si)).some;
+            if (sd is BoundDefinition.impl_def) {
+                worklist.push(sd.impl_def.interface_type);
+            }
+            si = si + 1;
+        }
+        let processed: mut _utils.List<string> = new _utils.List<string>();
+        let wi: mut i64 = 0;
+        while (wi < cast<i64>(worklist.size())) {
+            let iface_type: BoundType = worklist.at(cast<u64>(wi)).some;
+            wi = wi + 1;
+            let iface_name: string = iface_type.display_name();
+            let already_processed: mut bool = false;
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(processed.size())) {
+                if (processed.at(cast<u64>(pi)).some == iface_name) { already_processed = true; }
+                pi = pi + 1;
+            }
+            if (already_processed) { continue; }
+            processed.push(iface_name);
+            let src_opt: Option<BoundInterfaceDefinition> = this.specialized_interface_for_type(iface_type, global_scope);
+            if (src_opt.is_none()) { continue; }
+            let src: BoundInterfaceDefinition = src_opt.some;
+            let j: mut i64 = 0;
+            while (j < cast<i64>(src.vtables.size())) {
+                let svt: BoundVTable = src.vtables.at(cast<u64>(j)).some;
+                if (!this.has_vtable_for_interface(container_vtables, svt.interface_type)) {
+                    let new_vt: mut BoundVTable = new BoundVTable();
+                    new_vt.interface_type = svt.interface_type;
+                    let k: mut i64 = 0;
+                    while (k < cast<i64>(svt.slots.size())) {
+                        let slot: BoundVTableSlot = svt.slots.at(cast<u64>(k)).some;
+                        let ns: mut BoundVTableSlot = new BoundVTableSlot();
+                        ns.interface_method = slot.interface_method;
+                        ns.implementation_method = slot.implementation_method;
+                        new_vt.slots.push(ns);
+                        k = k + 1;
+                    }
+                    container_vtables.push(new_vt);
+                    worklist.push(svt.interface_type);
+                }
+                j = j + 1;
+            }
+        }
+    }
+
+    // Resolve the (possibly specialized) interface def for a BoundType that
+    // references an interface (e.g. IBar<u8>). Returns the template for
+    // non-generic types, or none if not an interface.
+    fun specialized_interface_for_type(this, iface_type: BoundType, global_scope: BoundScope) -> Option<BoundInterfaceDefinition> {
+        _utils.trace_enter("Enter specialized_interface_for_type");
+        if (iface_type.type_definition.is_none()) { return new Option<BoundInterfaceDefinition>.none(); }
+        let td: BoundDefinition = iface_type.type_definition.some;
+        if (!(td is BoundDefinition.interface_def)) { return new Option<BoundInterfaceDefinition>.none(); }
+        let tmpl: BoundInterfaceDefinition = td.interface_def;
+        if (cast<i64>(iface_type.generic_args.size()) > 0) {
+            let mangled: string = mangle_generic_name(tmpl.name, iface_type.generic_args);
+            let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+            if (spec_sym.is_some()) {
+                if (spec_sym.some is BoundSymbol.type_sym) {
+                    if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
+                        let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                        if (spec_td is BoundDefinition.interface_def) {
+                            return new Option<BoundInterfaceDefinition>.some(spec_td.interface_def);
+                        }
+                    }
+                }
+            }
+        }
+        return new Option<BoundInterfaceDefinition>.some(tmpl);
     }
 
     fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
@@ -2102,6 +2392,16 @@ class SemanticModel {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
             return new BoundDefinition.enum_def(e);
+        }
+        if (bound_def is BoundDefinition.interface_def) {
+            let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            let ast_def: Option<Definition> = this.find_ast_def_by_name(this.ast_definitions, this.extract_template_name(iface.name));
+            if (ast_def.is_some()) {
+                if (ast_def.some is Definition.interface_def) {
+                    this.build_interface_vtables(ast_def.some.interface_def, iface, global_scope);
+                }
+            }
+            return new BoundDefinition.interface_def(iface);
         }
         return bound_def;
     }
@@ -2204,13 +2504,30 @@ class SemanticModel {
             if (member is Definition.impl_def) {
                 let impl_entry: InterfaceImplementation = member.impl_def;
                 let iface_type: mut BoundType = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
-                let vtable: mut BoundVTable = new BoundVTable();
-                vtable.interface_type = iface_type;
-                this.build_vtable_slots(impl_entry, vtable, global_scope, class_scope);
-                bound_cls.vtables.push(vtable);
+                // A class may have several `impl IFoo<u8>` blocks; build only one
+                // vtable per interface (build_vtable_slots scans the whole class
+                // scope for overrides, so one pass covers all blocks).
+                if (!this.has_vtable_for_interface(bound_cls.vtables, iface_type)) {
+                    let vtable: mut BoundVTable = new BoundVTable();
+                    vtable.interface_type = iface_type;
+                    this.build_vtable_slots(impl_entry, vtable, global_scope, class_scope);
+                    bound_cls.vtables.push(vtable);
+                }
             }
             i = i + 1;
         }
+    }
+
+    fun has_vtable_for_interface(this, vtables: _utils.List<BoundVTable>, iface_type: BoundType) -> bool {
+        _utils.trace_enter("Enter has_vtable_for_interface");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(vtables.size())) {
+            if (vtables.at(cast<u64>(i)).some.interface_type.display_name() == iface_type.display_name()) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 
     fun build_enum_vtables(mut this, ast_enum: EnumDefinition, bound_enum: mut BoundEnumDefinition, global_scope: mut BoundScope) {
@@ -2222,10 +2539,12 @@ class SemanticModel {
             if (member is Definition.impl_def) {
                 let impl_entry: InterfaceImplementation = member.impl_def;
                 let iface_type: mut BoundType = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
-                let vtable: mut BoundVTable = new BoundVTable();
-                vtable.interface_type = iface_type;
-                this.build_vtable_slots(impl_entry, vtable, global_scope, enum_scope);
-                bound_enum.vtables.push(vtable);
+                if (!this.has_vtable_for_interface(bound_enum.vtables, iface_type)) {
+                    let vtable: mut BoundVTable = new BoundVTable();
+                    vtable.interface_type = iface_type;
+                    this.build_vtable_slots(impl_entry, vtable, global_scope, enum_scope);
+                    bound_enum.vtables.push(vtable);
+                }
             }
             i = i + 1;
         }
@@ -2233,6 +2552,13 @@ class SemanticModel {
 
     fun build_interface_vtables(mut this, ast_iface: InterfaceDefinition, bound_iface: mut BoundInterfaceDefinition, global_scope: mut BoundScope) {
         _utils.trace_enter("Enter build_interface_vtables");
+        // Generic interface templates are not processed here: their nested
+        // `impl IFoo<T>` blocks reference the unresolved type param T. They are
+        // specialized per instantiation (IBar<u8> -> IBar__u8) and the
+        // specialized defs build the concrete nested-impl vtables.
+        if (cast<i64>(bound_iface.generic_params.size()) > 0) {
+            return;
+        }
         let iface_scope: mut BoundScope = bound_iface.scope.some;
         let i: mut i64 = 0;
         while (i < cast<i64>(ast_iface.members.size())) {
@@ -2243,47 +2569,85 @@ class SemanticModel {
                 let vtable: mut BoundVTable = new BoundVTable();
                 vtable.interface_type = iface_type;
                 this.build_vtable_slots(impl_entry, vtable, global_scope, iface_scope);
+                bound_iface.vtables.push(vtable);
             }
             i = i + 1;
         }
     }
 
-    fun build_vtable_slots(mut this, impl_entry: InterfaceImplementation, vtable: mut BoundVTable, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
-        _utils.trace_enter("Enter build_vtable_slots");
-        let i: mut i64 = 0;
-        while (i < cast<i64>(impl_entry.functions.size())) {
-            let func: Definition = impl_entry.functions.at(cast<u64>(i)).some;
-            if (func is Definition.function_def) {
-                let slot: mut BoundVTableSlot = new BoundVTableSlot();
-                let iface_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(impl_entry.type_name);
-                if (iface_sym.is_some()) {
-                    if (iface_sym.some is BoundSymbol.type_sym) {
-                        let iface_def: BoundDefinition = iface_sym.some.type_sym.bound_type.type_definition.some;
-                        if (iface_def is BoundDefinition.interface_def) {
-                            let iface: BoundInterfaceDefinition = iface_def.interface_def;
-                            let j: mut i64 = 0;
-                            while (j < cast<i64>(iface.methods.size())) {
-                                let md: BoundDefinition = iface.methods.at(cast<u64>(j)).some;
-                                if (md is BoundDefinition.function_def) {
-                                    if (md.function_def.name == func.function_def.name) {
-                                        if (md.function_def.symbol.is_some()) {
-                                            slot.interface_method = new Option<BoundFunctionSymbol>.some(md.function_def.symbol.some);
-                                        }
-                                    }
-                                }
-                                j = j + 1;
+    // For a generic interface impl (impl IFoo<u8>), resolve the specialized
+    // interface def (IFoo__u8) so default-method slots point to the specialized
+    // (emitted) default rather than the unemitted template. Returns the template
+    // for non-generic impls or if the specialization can't be found.
+    // Type args are resolved in `arg_scope` (the impl's enclosing scope) so a
+    // nested interface impl like IBar<T> { impl IFoo<T> {...} } resolves T from
+    // IBar's scope; the specialized def is looked up in global_scope.
+    fun resolve_specialized_interface(this, tmpl_iface: BoundInterfaceDefinition, impl_entry: InterfaceImplementation, arg_scope: BoundScope, global_scope: BoundScope) -> BoundInterfaceDefinition {
+        _utils.trace_enter("Enter resolve_specialized_interface");
+        if (impl_entry.type_spec.is_some()) {
+            if (cast<i64>(impl_entry.type_spec.some.generic_args.size()) > 0) {
+                let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                let gi: mut i64 = 0;
+                while (gi < cast<i64>(impl_entry.type_spec.some.generic_args.size())) {
+                    args.push(this.resolve_type_specifier(impl_entry.type_spec.some.generic_args.at(cast<u64>(gi)).some, arg_scope));
+                    gi = gi + 1;
+                }
+                let mangled: string = mangle_generic_name(tmpl_iface.name, args);
+                let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some()) {
+                    if (spec_sym.some is BoundSymbol.type_sym) {
+                        if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
+                            let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                            if (spec_td is BoundDefinition.interface_def) {
+                                return spec_td.interface_def;
                             }
                         }
                     }
                 }
-                let impl_func_name: string = func.function_def.name;
-                let impl_sym: Option<BoundSymbol> = impl_scope.lookup_symbol(impl_func_name);
-                if (impl_sym.is_some()) {
-                    if (impl_sym.some is BoundSymbol.function_sym) {
-                        slot.implementation_method = new Option<BoundFunctionSymbol>.some(impl_sym.some.function_sym);
+            }
+        }
+        return tmpl_iface;
+    }
+
+    fun build_vtable_slots(mut this, impl_entry: InterfaceImplementation, vtable: mut BoundVTable, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_vtable_slots");
+        // Build one vtable slot per non-constructor interface method, in interface
+        // declaration order (matches resolve_vtable_slot's index computation). Each
+        // slot points to the class's override if it provides one, otherwise to the
+        // interface's default method — for a generic interface, the specialized
+        // default (ns_IFoo__u8_bar) so the slot references an emitted function.
+        // Use the already-resolved vtable.interface_type rather than a name lookup
+        // (the interface may be nested in a namespace the bare lookup can't reach).
+        if (vtable.interface_type.type_definition.is_none()) { return; }
+        let tmpl_td: BoundDefinition = vtable.interface_type.type_definition.some;
+        if (!(tmpl_td is BoundDefinition.interface_def)) { return; }
+        let tmpl_iface: BoundInterfaceDefinition = tmpl_td.interface_def;
+        let spec_iface: BoundInterfaceDefinition = this.resolve_specialized_interface(tmpl_iface, impl_entry, impl_scope, global_scope);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(tmpl_iface.methods.size())) {
+            let md: BoundDefinition = tmpl_iface.methods.at(cast<u64>(i)).some;
+            if (md is BoundDefinition.function_def) {
+                if (md.function_def.name != "new") {
+                    let slot: mut BoundVTableSlot = new BoundVTableSlot();
+                    if (md.function_def.symbol.is_some()) {
+                        slot.interface_method = new Option<BoundFunctionSymbol>.some(md.function_def.symbol.some);
                     }
+                    let mname: string = md.function_def.name;
+                    let override_sym: Option<BoundSymbol> = impl_scope.lookup_symbol(mname);
+                    if (override_sym.is_some()) {
+                        if (override_sym.some is BoundSymbol.function_sym) {
+                            slot.implementation_method = new Option<BoundFunctionSymbol>.some(override_sym.some.function_sym);
+                        }
+                    } else if (spec_iface.scope.is_some()) {
+                        let def_sym: Option<BoundSymbol> = spec_iface.scope.some.lookup_symbol(mname);
+                        if (def_sym.is_some()) {
+                            if (def_sym.some is BoundSymbol.function_sym) {
+                                slot.implementation_method = new Option<BoundFunctionSymbol>.some(def_sym.some.function_sym);
+                            }
+                        }
+                    }
+                    vtable.slots.push(slot);
                 }
-                vtable.slots.push(slot);
             }
             i = i + 1;
         }
@@ -2541,6 +2905,17 @@ class SemanticModel {
         return false;
     }
 
+    fun is_iref_type(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter is_iref_type");
+        if (bt.kind is TypeKind.ClassKind && bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                return this.class_has_ireference_type(td.class_def);
+            }
+        }
+        return false;
+    }
+
     fun class_has_ireference_type(this, cls: BoundClassDefinition) -> bool {
         _utils.trace_enter("Enter class_has_ireference_type");
         let vi: mut i64 = 0;
@@ -2717,6 +3092,17 @@ class SemanticModel {
             let ast_def: Option<Definition> = this.find_ast_def_by_name(this.ast_definitions, template_name);
             if (ast_def.is_some() && ast_def.some is Definition.function_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
+            }
+            return bound_def;
+        }
+        if (bound_def is BoundDefinition.interface_def) {
+            let bound_iface: BoundInterfaceDefinition = bound_def.interface_def;
+            let template_name: string = this.extract_template_name(bound_iface.name);
+            let ast_def: Option<Definition> = this.find_ast_def_by_name(this.ast_definitions, template_name);
+            if (ast_def.is_some()) {
+                if (ast_def.some is Definition.interface_def) {
+                    return this.bind_body_for_def(ast_def.some, bound_def, result);
+                }
             }
             return bound_def;
         }
@@ -2971,6 +3357,44 @@ class SemanticModel {
                         j = j + 1;
                     }
                 }
+                if (ast_member is Definition.impl_def) {
+                    // Bind bodies of nested-impl methods (interface inheritance).
+                    let ast_impl_member: InterfaceImplementation = ast_member.impl_def;
+                    let bi: mut i64 = 0;
+                    while (bi < cast<i64>(bound_iface.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_iface.interface_impls.at(cast<u64>(bi)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            let bmd: mut BoundFunctionDefinition = bound_method.function_def;
+                                            // Nested-impl methods are missed by the normal
+                                            // function-pair resolution pass, so resolve their
+                                            // signature (params, return type) here. The scope
+                                            // has T -> concrete arg for specialized interfaces.
+                                            if (cast<i64>(bmd.parameters.size()) == 0) {
+                                                if (bound_iface.scope.is_some()) {
+                                                    this.resolve_function_pair(ast_func_def.function_def, bmd, bound_iface.scope.some);
+                                                }
+                                            }
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_iface.interface_impls.set(cast<u64>(bi), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        bi = bi + 1;
+                    }
+                }
                 i = i + 1;
             }
             return new BoundDefinition.interface_def(bound_iface);
@@ -3118,11 +3542,33 @@ class SemanticModel {
         _utils.trace_enter("Enter bind_identifier");
         let sym: Option<BoundSymbol> = scope.lookup_symbol(expr.name);
         if (sym.is_some()) {
+            // Reject class field access from methods without `this` parameter.
+            // For example, `fun foo() { a = 1; }` inside a class where `a` is a
+            // field but `foo` has no `this` — the identifier `a` resolves to the
+            // field, but IR generation later crashes when it can't find a register
+            // for the field. Catch it early with a proper E_RESOLVE_SYMBOL error.
+            if (sym.some is BoundSymbol.variable) {
+                if (sym.some.variable.variable_kind is VariableSymbolKind.Field) {
+                    let this_sym: Option<BoundSymbol> = scope.lookup_symbol("this");
+                    if (this_sym.is_none()) {
+                        this.report_error(new ErrorCode.E_RESOLVE_SYMBOL(),
+                            "Cannot access field '" + expr.name + "' without a 'this' reference; add 'this.' prefix or add a 'this' parameter to the function",
+                            new SourceLocation("", 0, 0));
+                        let result: mut BoundIdentifierExpression = new BoundIdentifierExpression(new BoundType(), new Option<BoundSymbol>.none());
+                        return new Option<BoundExpression>.some(new BoundExpression.identifier(result));
+                    }
+                }
+            }
             let bt: BoundType = this.resolve_symbol_type(sym.some);
             let result: mut BoundIdentifierExpression = new BoundIdentifierExpression(bt, sym);
             return new Option<BoundExpression>.some(new BoundExpression.identifier(result));
         }
         let result: mut BoundIdentifierExpression = new BoundIdentifierExpression(new BoundType(), sym);
+        // Report E_RESOLVE_SYMBOL for undefined identifiers instead of
+        // letting them silently produce E_INTERNAL in the IR generator.
+        this.report_error(new ErrorCode.E_RESOLVE_SYMBOL(),
+            "Cannot resolve symbol '" + expr.name + "'",
+            new SourceLocation("", 0, 0));
         return new Option<BoundExpression>.some(new BoundExpression.identifier(result));
     }
 
@@ -3198,6 +3644,21 @@ class SemanticModel {
         return new Option<BoundExpression>.some(new BoundExpression.unary(result));
     }
 
+    fun get_field_mutability_from_class(this, cls: BoundClassDefinition, field_name: string) -> Mutability {
+        _utils.trace_enter("Enter get_field_mutability_from_class");
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(cls.fields.size())) {
+            let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fd is BoundDefinition.class_field) {
+                if (fd.class_field.name == field_name) {
+                    return fd.class_field.mutability;
+                }
+            }
+            fi = fi + 1;
+        }
+        return new Mutability.Mutable();
+    }
+
     fun resolve_field_type_from_class(this, base_type: BoundType, cls: BoundClassDefinition, field_name: string, scope: BoundScope) -> mut BoundType {
         _utils.trace_enter("Enter resolve_field_type_from_class");
         // If base type has generic args, look up the field in the specialized class
@@ -3256,13 +3717,32 @@ class SemanticModel {
                                 if (found.some is BoundSymbol.variable) {
                                     if (found.some.variable.variable_kind is VariableSymbolKind.Field) {
                                         bt = this.resolve_field_type_from_class(base_type, cls, expr.member_name, scope);
+                                        // Adjust field type mutability based on field's declared
+                                        // mutability (Auto/Mutable/Immutable) and container mutability.
+                                        let field_mut: Mutability = this.get_field_mutability_from_class(cls, expr.member_name);
+                                        if (field_mut is Mutability.Auto) {
+                                            // For Auto fields, use container's mutability
+                                            // UNLESS the field type already has explicit Mutable
+                                            // (from generic specialization like A<mut i32>).
+                                            if (!(bt.mutability is Mutability.Mutable)) {
+                                                bt = bt.with_mutability(base_type.mutability);
+                                            }
+                                        } else if (field_mut is Mutability.Immutable) {
+                                            bt = bt.with_mutability(new Mutability.Immutable());
+                                        }
                                     }
                                 }
                                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
                                 return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
                             }
-                            // Fallback: search implemented interface scopes for default methods
+                            // Fallback: search implemented interface scopes for default methods.
+                            // Detect ambiguity: if two or more implemented interfaces each
+                            // provide a member with this name, the access is ambiguous
+                            // (e.g. Foo.foo() where Foo implements both IB and IC, each
+                            // defining foo). Collect every matching interface first so we
+                            // never silently pick the first.
                             let vi: mut i64 = 0;
+                            let match_iface_names: mut _utils.List<string> = new _utils.List<string>();
                             while (vi < cast<i64>(cls.vtables.size())) {
                                 let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
                                 let iface_type: BoundType = vtable.interface_type;
@@ -3273,14 +3753,45 @@ class SemanticModel {
                                         if (iface.scope.is_some()) {
                                             let iface_found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
                                             if (iface_found.is_some()) {
-                                                let bt: BoundType = this.resolve_symbol_type(iface_found.some);
-                                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, iface_found);
-                                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                                match_iface_names.push(iface.name);
                                             }
                                         }
                                     }
                                 }
                                 vi = vi + 1;
+                            }
+                            if (cast<i64>(match_iface_names.size()) > 1) {
+                                this.report_error(new ErrorCode.E_INTERNAL(),
+                                    "Ambiguous member '" + expr.member_name + "' on type '" + cls.name +
+                                    "': provided by multiple implemented interfaces ('" +
+                                    match_iface_names.at(cast<u64>(0)).some + "', '" +
+                                    match_iface_names.at(cast<u64>(1)).some + "')",
+                                    new SourceLocation("", 0, 0));
+                                let ambig_result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(this.type_registry.make_error_type(), bound_base, expr.member_name, new Option<BoundSymbol>.none());
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(ambig_result));
+                            }
+                            if (cast<i64>(match_iface_names.size()) == 1) {
+                                // Exactly one interface provides the member — resolve it.
+                                let vi2: mut i64 = 0;
+                                while (vi2 < cast<i64>(cls.vtables.size())) {
+                                    let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi2)).some;
+                                    let iface_type: BoundType = vtable.interface_type;
+                                    if (iface_type.type_definition.is_some()) {
+                                        let iface_def: BoundDefinition = iface_type.type_definition.some;
+                                        if (iface_def is BoundDefinition.interface_def) {
+                                            let iface: BoundInterfaceDefinition = iface_def.interface_def;
+                                            if (iface.scope.is_some()) {
+                                                let iface_found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
+                                                if (iface_found.is_some()) {
+                                                    let bt: BoundType = this.resolve_symbol_type(iface_found.some);
+                                                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, iface_found);
+                                                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    vi2 = vi2 + 1;
+                                }
                             }
                         }
                     }
@@ -3323,8 +3834,14 @@ class SemanticModel {
                     }
                     if (td is BoundDefinition.interface_def) {
                         let iface: BoundInterfaceDefinition = td.interface_def;
-                        if (iface.scope.is_some()) {
-                            let found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
+                        // For a generic interface base (e.g. f.bar() where f: IFoo<u8>),
+                        // resolve through the specialized def (IFoo__u8) so method
+                        // signatures use concrete types (T -> u8) and the symbol points
+                        // to the specialized method (ns.IFoo__u8.bar). Falls back to
+                        // the template scope for non-generic interfaces.
+                        let search_scope: Option<BoundScope> = this.specialized_interface_scope(iface, base_type, scope);
+                        if (search_scope.is_some()) {
+                            let found: Option<BoundSymbol> = search_scope.some.lookup_symbol(expr.member_name);
                             if (found.is_some()) {
                                 let bt: BoundType = this.resolve_symbol_type(found.some);
                                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
@@ -3349,6 +3866,17 @@ class SemanticModel {
                                 }
                             }
                         }
+                    }
+                }
+                // Member not found: if base is a concrete type (class, enum),
+                // report E_RESOLVE_SYMBOL instead of silently creating an empty
+                // member access (which causes E_INTERNAL in the IR generator).
+                if (base_type.type_definition.is_some()) {
+                    let td: BoundDefinition = base_type.type_definition.some;
+                    if (td is BoundDefinition.class_def || td is BoundDefinition.enum_def) {
+                        this.report_error(new ErrorCode.E_RESOLVE_SYMBOL(),
+                            "Type '" + base_type.display_name() + "' has no member '" + expr.member_name + "'",
+                            new SourceLocation("", 0, 0));
                     }
                 }
                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(new BoundType(), bound_base, expr.member_name, new Option<BoundSymbol>.none());
@@ -3486,6 +4014,19 @@ class SemanticModel {
                                     return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
                                 }
                             }
+                            // Check argument count
+                            let param_count: i64 = cast<i64>(sym.function_sym.parameters.size());
+                            let arg_count: i64 = cast<i64>(args.size());
+                            let expected_args: mut i64 = param_count;
+                            if (this.function_is_method(sym.function_sym)) {
+                                expected_args = param_count - 1;
+                            }
+                            if (arg_count != expected_args) {
+                                this.report_error(new ErrorCode.E_CALL_ARITY(),
+                                    "Function '" + sym.function_sym.name + "' expects " + cast<string>(expected_args)
+                                    + " arguments but " + cast<string>(arg_count) + " were provided",
+                                    sym.function_sym.location);
+                            }
                             let bt: mut BoundType = this.find_function_return_type(sym.function_sym);
                             let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, id_expr.symbol, args, false, resolved_generic_args, false);
                             return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
@@ -3497,35 +4038,34 @@ class SemanticModel {
                     if (ma_expr.member_symbol.is_some()) {
                         let sym: BoundSymbol = ma_expr.member_symbol.some;
                         if (sym is BoundSymbol.function_sym) {
-                            // A free function (no `this` parameter) reached via
-                            // `receiver.foo(...)` where `receiver` is a value (not a
-                            // namespace or type) is a calling-convention mismatch:
-                            // IR emission prepends the receiver, shifting every
-                            // argument by one (the VM happens to tolerate this, but
-                            // the native ABI does not — see the mangle_generic_name
-                            // bootstrap crash). Require such helpers to be called
-                            // bare: foo(...).
-                            if (!this.function_is_method(sym.function_sym)) {
-                                let base_is_ns_or_type: mut bool = false;
-                                if (ma_expr.base_expr.is_some()) {
-                                    let base_be: BoundExpression = ma_expr.base_expr.some;
-                                    if (base_be is BoundExpression.identifier) {
-                                        let base_id: BoundIdentifierExpression = base_be.identifier;
-                                        if (base_id.symbol.is_some()) {
-                                            if (base_id.symbol.some is BoundSymbol.namespace_sym) { base_is_ns_or_type = true; }
-                                            if (base_id.symbol.some is BoundSymbol.type_sym) { base_is_ns_or_type = true; }
+                            // A member function whose first parameter is not `this`
+                            // may still be called via `receiver.foo(...)` -- the
+                            // receiver is simply discarded at the call site (not
+                            // passed). For interface-typed receivers the receiver is
+                            // still used for vtable lookup (virtual dispatch), set in
+                            // the dispatch-decision block below.
+                            // Mutability check: calling `mut this` method on an immutable
+                            // binding must fail (E_TYPE_MISMATCH). The first parameter
+                            // of a method is `this`; if it's `mut this`, the receiver
+                            // must provide a mutable reference.
+                            if (this.function_is_method(sym.function_sym) && ma_expr.base_expr.is_some()) {
+                                let this_param: BoundFunctionParameter = sym.function_sym.parameters.at(cast<u64>(0)).some;
+                                if (this_param.is_mutable) {
+                                    // Check the binding's mutability (not the type's)
+                                    let base_expr: BoundExpression = ma_expr.base_expr.some;
+                                    if (base_expr is BoundExpression.identifier) {
+                                        let id_expr: BoundIdentifierExpression = base_expr.identifier;
+                                        if (id_expr.symbol.is_some()) {
+                                            let sym2: BoundSymbol = id_expr.symbol.some;
+                                            if (sym2 is BoundSymbol.variable) {
+                                                if (!sym2.variable.is_mutable) {
+                                                    this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                                                        "Cannot call method '" + sym.function_sym.name + "' with 'mut this' on an immutable binding",
+                                                        new SourceLocation("", 0, 0));
+                                                }
+                                            }
                                         }
                                     }
-                                    if (base_be is BoundExpression.member_access) {
-                                        let inner_ma: BoundMemberAccessExpression = base_be.member_access;
-                                        if (inner_ma.member_symbol.is_some()) {
-                                            if (inner_ma.member_symbol.some is BoundSymbol.type_sym) { base_is_ns_or_type = true; }
-                                            if (inner_ma.member_symbol.some is BoundSymbol.namespace_sym) { base_is_ns_or_type = true; }
-                                        }
-                                    }
-                                }
-                                if (!base_is_ns_or_type) {
-                                    this.report_error(new ErrorCode.E_CALL_CONVENTION(), "Function '" + sym.function_sym.name + "' has no 'this' parameter (it is a free function, not a method); call it bare as '" + sym.function_sym.name + "(...)', not via a receiver", sym.function_sym.location);
                                 }
                             }
                             // Resolve generic args from AST callee (member access with <T>)
@@ -3764,7 +4304,52 @@ class SemanticModel {
                                             is_virt = true;
                                         }
                                     } else {
-                                        is_virt = true;
+                                        // Distinguish a value receiver (`f.foo()`) from a type-name
+                                        // call (`IFoo.foo()` / `ns.IFoo.foo()`). A value receiver uses
+                                        // virtual dispatch so the override is selected at runtime --
+                                        // including for no-`this` (default/static) methods, where the
+                                        // receiver is used only for the vtable lookup and not passed
+                                        // (see lower_function_call). A type-name call stays static.
+                                        let base_is_value: mut bool = false;
+                                        if (ma_expr.base_expr.some is BoundExpression.identifier) {
+                                            let base_id: BoundIdentifierExpression = ma_expr.base_expr.some.identifier;
+                                            if (base_id.symbol.is_some()) {
+                                                if (base_id.symbol.some is BoundSymbol.variable) {
+                                                    base_is_value = true;
+                                                }
+                                            }
+                                        }
+                                        if (ma_expr.base_expr.some is BoundExpression.member_access) {
+                                            // A member_access base is a value unless it resolves to a
+                                            // type/namespace (e.g. `ns.IFoo` in `ns.IFoo.foo()`).
+                                            let inner_ma: BoundMemberAccessExpression = ma_expr.base_expr.some.member_access;
+                                            let inner_is_type_or_ns: mut bool = false;
+                                            if (inner_ma.member_symbol.is_some()) {
+                                                if (inner_ma.member_symbol.some is BoundSymbol.type_sym) { inner_is_type_or_ns = true; }
+                                                if (inner_ma.member_symbol.some is BoundSymbol.namespace_sym) { inner_is_type_or_ns = true; }
+                                            }
+                                            if (!inner_is_type_or_ns) {
+                                                base_is_value = true;
+                                            }
+                                        }
+                                        if (ma_expr.base_expr.some is BoundExpression.function_call) {
+                                            base_is_value = true;
+                                        }
+                                        if (base_is_value) {
+                                            is_virt = true;
+                                        } else if (ma_expr.member_symbol.is_some()) {
+                                            // Static interface methods (no 'this' parameter) called on
+                                            // the interface type name directly: no object receiver, so
+                                            // no virtual dispatch.
+                                            let ms: BoundSymbol = ma_expr.member_symbol.some;
+                                            if (ms is BoundSymbol.function_sym) {
+                                                if (this.function_is_method(ms.function_sym)) {
+                                                    is_virt = true;
+                                                }
+                                            } else {
+                                                is_virt = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -3945,7 +4530,10 @@ class SemanticModel {
 
     fun bind_cast(mut this, expr: CastExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_cast");
-        let target_type: BoundType = this.resolve_type_name(expr.type_name, scope, expr.location);
+        let target_type: mut BoundType = this.resolve_type_name(expr.type_name, scope, expr.location);
+        if (expr.target_type.is_some()) {
+            target_type = this.resolve_type_specifier(expr.target_type.some, scope);
+        }
         let inner: Option<BoundExpression> = this.bind_optional_expr(expr.inner, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
 
@@ -3990,6 +4578,28 @@ class SemanticModel {
             return bt.with_generic_args(args);
         }
         return bt;
+    }
+
+    // For a generic interface base type (e.g. IFoo<u8>), return the scope of the
+    // specialized def (IFoo__u8) so member lookup resolves concrete method types
+    // (T -> u8) and symbols (ns.IFoo__u8.bar). Falls back to the template scope.
+    fun specialized_interface_scope(this, iface: BoundInterfaceDefinition, base_type: BoundType, scope: BoundScope) -> Option<BoundScope> {
+        _utils.trace_enter("Enter specialized_interface_scope");
+        if (cast<i64>(base_type.generic_args.size()) > 0) {
+            let mangled: string = mangle_generic_name(iface.name, base_type.generic_args);
+            let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+            if (spec_sym.is_some()) {
+                if (spec_sym.some is BoundSymbol.type_sym) {
+                    if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
+                        let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                        if (spec_td is BoundDefinition.interface_def) {
+                            return spec_td.interface_def.scope;
+                        }
+                    }
+                }
+            }
+        }
+        return iface.scope;
     }
 
     fun resolve_type_by_name(this, name: string, scope: mut BoundScope) -> Option<BoundSymbol> {
@@ -4106,7 +4716,7 @@ class SemanticModel {
                     }
                     i = i + 1;
                 }
-                let result: mut BoundNewExpression = new BoundNewExpression(bt, new Option<BoundTypeSymbol>.some(type_sym.some.type_sym), new Option<BoundFunctionSymbol>.none(), args);
+                let result: mut BoundNewExpression = new BoundNewExpression(bt.with_mutability(new Mutability.Mutable()), new Option<BoundTypeSymbol>.some(type_sym.some.type_sym), new Option<BoundFunctionSymbol>.none(), args);
                 return new Option<BoundExpression>.some(new BoundExpression.new_expr(result));
             }
         }
@@ -4190,8 +4800,70 @@ class SemanticModel {
                         effective_op = new AssignmentOperator.Assign();
                     }
                     let value_type: BoundType = target.some.get_bound_type();
+                    // Binding mutability check: cannot reassign an immutable variable.
+                    // For `let x: i32`, `x = ...` is rejected (binding is immutable).
+                    // `let x: mut i32` makes the binding mutable (BabyPenguin conflates
+                    // binding and type mutability), so reassignment is allowed.
+                    if (target.some is BoundExpression.identifier) {
+                        let id_expr: BoundIdentifierExpression = target.some.identifier;
+                        if (id_expr.symbol.is_some()) {
+                            let sym: BoundSymbol = id_expr.symbol.some;
+                            if (sym is BoundSymbol.variable) {
+                                if (!sym.variable.is_mutable) {
+                                    this.report_error(new ErrorCode.E_MUTABILITY(),
+                                        "Cannot assign to immutable variable '" + sym.variable.name + "'",
+                                        new SourceLocation("", 0, 0));
+                                }
+                            }
+                        }
+                    }
+                    // Member access target mutability: for a.a = 1, check field's
+                    // effective mutability. Skip for `this` (constructor/method init).
+                    if (target.some is BoundExpression.member_access) {
+                        let ma: BoundMemberAccessExpression = target.some.member_access;
+                        if (ma.base_expr.is_some() && ma.member_symbol.is_some()) {
+                            let ms: BoundSymbol = ma.member_symbol.some;
+                            if (ms is BoundSymbol.variable && ms.variable.variable_kind is VariableSymbolKind.Field) {
+                                // Skip check for `this.xxx` assignments (constructor/method init)
+                                let is_this_assign: mut bool = false;
+                                if (ma.base_expr.some is BoundExpression.identifier) {
+                                    let base_id: BoundIdentifierExpression = ma.base_expr.some.identifier;
+                                    if (base_id.symbol.is_some()) {
+                                        if (base_id.symbol.some is BoundSymbol.variable) {
+                                            if (base_id.symbol.some.variable.name == "this") {
+                                                is_this_assign = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!is_this_assign) {
+                                    // Compute effective field mutability based on
+                                    // the field's bound type mutability (which already
+                                    // reflects container mutability for Auto fields).
+                                    if (value_type.mutability is Mutability.Immutable) {
+                                        this.report_error(new ErrorCode.E_MUTABILITY(),
+                                            "Cannot assign to field '" + ms.variable.name + "' (field is immutable)",
+                                            new SourceLocation("", 0, 0));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (target.some is BoundExpression.identifier) {
                         if (target.some.identifier.symbol.is_some()) {
+                            // Reference type mutability compatibility: for explicit
+                            // IReferenceType types, the value's mutability must match
+                            // the target's binding mutability.
+                            if (value.is_some() && this.is_iref_type(value_type)) {
+                                let val_type: BoundType = value.some.get_bound_type();
+                                let target_mut: Mutability = value_type.mutability;
+                                let val_mut: Mutability = val_type.mutability;
+                                if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
+                                    this.report_error(new ErrorCode.E_MUTABILITY(),
+                                        "Cannot assign immutable value to mutable variable",
+                                        new SourceLocation("", 0, 0));
+                                }
+                            }
                             let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, effective_op, value, value_type);
                             result.location = stmt.assignment.location;
                             return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
@@ -4266,10 +4938,26 @@ class SemanticModel {
             var_sym.name = stmt.let_decl.variable_name;
             var_sym.full_name = scope.full_name + "." + stmt.let_decl.variable_name;
             var_sym.is_mutable = stmt.let_decl.is_mutable;
+            // BabyPenguin conflates binding mutability with type mutability:
+            // `let x: mut T` makes both the binding and the value mutable.
+            if (stmt.let_decl.type_spec.is_some()) {
+                if (stmt.let_decl.type_spec.some.is_mutable) {
+                    var_sym.is_mutable = true;
+                }
+            }
             var_sym.location = stmt.let_decl.location;
             if (stmt.let_decl.initializer.is_some()) {
                 let initializer: Option<BoundExpression> = this.bind_expression(stmt.let_decl.initializer.some, scope);
                 if (initializer.is_some()) {
+                    let init_type: BoundType = initializer.some.get_bound_type();
+                    // When type is inferred (no type_spec), propagate mutability
+                    // from the initializer's type to the binding (BabyPenguin
+                    // conflates binding and type mutability).
+                    if (stmt.let_decl.type_spec.is_none()) {
+                        if (init_type.mutability is Mutability.Mutable) {
+                            var_sym.is_mutable = true;
+                        }
+                    }
                     let decl_type: mut BoundType = initializer.some.get_bound_type();
                     if (stmt.let_decl.type_spec.is_some()) {
                         let resolved: mut BoundType = this.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
@@ -4598,7 +5286,18 @@ class SemanticModel {
             if (ret.value.is_some()) {
                 this.validate_expr_control_flow(ret.value.some, ret_type, loop_depth);
                 let value_type: BoundType = ret.value.some.get_bound_type();
-                if (!this.type_registry.is_void(ret_type) && !this.type_registry.can_implicitly_cast(value_type, ret_type)) {
+                // Integer literals coerce to any integer return type (BabyPenguin
+                // allows `return 5` for a u8 function; the literal defaults to i64).
+                // Guard the `.literal` access via an if-expression: `&&` does not
+                // short-circuit in PenguinLang, so a bare `is && .literal` would
+                // cast non-literal returns and crash.
+                let is_int_lit: bool = if (ret.value.some is BoundExpression.literal) {
+                    ret.value.some.literal.literal_kind is LiteralKind.IntegerLiteral
+                } else {
+                    false
+                };
+                let int_literal_coercion: bool = is_int_lit && this.type_registry.is_integer(ret_type);
+                if (!this.type_registry.is_void(ret_type) && !this.type_registry.can_implicitly_cast(value_type, ret_type) && !int_literal_coercion) {
                     this.report_error(new ErrorCode.E_RETURN_TYPE_MISMATCH(), "Return type mismatch: expected " + ret_type.display_name() + " but got " + value_type.display_name() + " in " + this._current_validating_func, ret.location);
                 }
             }
@@ -4711,6 +5410,33 @@ class SemanticModel {
             return this.stmt_always_returns(block.statements.at(cast<u64>(last_idx)).some);
         }
         return false;
+    }
+
+    fun get_field_mutability(this, ma: BoundMemberAccessExpression) -> Mutability {
+        _utils.trace_enter("Enter get_field_mutability");
+        if (ma.base_expr.is_some() && ma.member_symbol.is_some()) {
+            let ms: BoundSymbol = ma.member_symbol.some;
+            if (ms is BoundSymbol.variable && ms.variable.variable_kind is VariableSymbolKind.Field) {
+                let base_type: BoundType = ma.base_expr.some.get_bound_type();
+                if (base_type.type_definition.is_some()) {
+                    let td: BoundDefinition = base_type.type_definition.some;
+                    if (td is BoundDefinition.class_def) {
+                        let cls: BoundClassDefinition = td.class_def;
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(cls.fields.size())) {
+                            let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                            if (fd is BoundDefinition.class_field) {
+                                if (fd.class_field.name == ms.variable.name) {
+                                    return fd.class_field.mutability;
+                                }
+                            }
+                            fi = fi + 1;
+                        }
+                    }
+                }
+            }
+        }
+        return new Mutability.Mutable();
     }
 
     fun is_literal_true(this, opt: Option<BoundExpression>) -> bool {

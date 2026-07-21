@@ -8,10 +8,10 @@ public class BoundTreeConstructorTest
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class MyClass {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some()) {
             println(""has_ctor"");
@@ -27,10 +27,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Point {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some()) {
             let ctor = cls.constructor.some;
@@ -49,10 +49,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Foo {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some()) {
             let ctor = cls.constructor.some;
@@ -66,16 +66,16 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Bar {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.scope.is_some()) {
             let ctor_sym = cls.scope.some.lookup_symbol(""new"");
             if (ctor_sym.is_some()) {
                 println(""ctor_sym_name="" + ctor_sym.some.get_name());
-                if (ctor_sym.some is bound.BoundSymbol.function_sym) {
+                if (ctor_sym.some is emperor.BoundSymbol.function_sym) {
                     println(""is_function_sym"");
                 }
             }
@@ -88,10 +88,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Widget {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some() && cls.constructor.some.symbol.is_some()) {
             let sym = cls.constructor.some.symbol.some;
@@ -105,10 +105,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class MyClass {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         println(""ctor_count="" + cast<string>(cast<i64>(cls.constructors.size())));
     }
@@ -119,10 +119,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Person { fun new(mut this, name: string) {} }"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some()) {
             let ctor = cls.constructor.some;
@@ -139,12 +139,12 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""namespace App { class Item {} }"");
     let ns = result.definitions.at(cast<u64>(0)).some;
-    if (ns is bound.BoundDefinition.namespace_def) {
+    if (ns is emperor.BoundDefinition.namespace_def) {
         let child = ns.namespace_def.children.at(cast<u64>(0)).some;
-        if (child is bound.BoundDefinition.class_def) {
+        if (child is emperor.BoundDefinition.class_def) {
             let cls = child.class_def;
             if (cls.constructor.is_some()) {
                 println(""has_ctor"");
@@ -160,14 +160,14 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Data {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         if (cls.constructor.is_some() && cls.constructor.some.symbol.is_some()) {
             let sym = cls.constructor.some.symbol.some;
-            if (sym.bound_type.kind is bound.TypeKind.FunctionKind) {
+            if (sym.bound_type.kind is emperor.TypeKind.FunctionKind) {
                 println(""is_func_type"");
             }
             println(""is_new="" + cast<string>(sym.is_new));

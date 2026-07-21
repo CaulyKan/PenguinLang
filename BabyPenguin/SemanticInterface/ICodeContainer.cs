@@ -1355,6 +1355,34 @@ namespace BabyPenguin.SemanticInterface
                     return a;
             }
 
+            // Lower a short-circuiting logical chain (a && b && ... or a || b || ...)
+            // with control flow: evaluate operands left-to-right, assigning each
+            // result into resVar, and skip the remaining operands once the result
+            // is already decisive (false for &&, true for ||). Previously every
+            // operand was evaluated eagerly via .Select(...).ToList(), so the
+            // right-hand side always ran even when the left already fixed the
+            // outcome.
+            ISymbol AddShortCircuitLogical(ISyntaxExpression expression, List<ISyntaxExpression> subExpressions, bool isAnd)
+            {
+                var type = ResolveExpressionType(expression);
+                var loc = expression.SourceLocation;
+                var resVar = AllocTempSymbol(type, loc);
+                var first = ensureType(AddExpression(subExpressions[0], false), type, loc);
+                AddInstruction(new AssignmentInstruction(loc, first, resVar));
+                // isAnd short-circuits when resVar is false (expected=false);
+                // !isAnd (||) short-circuits when resVar is true (expected=true).
+                var expected = !isAnd;
+                for (int i = 1; i < subExpressions.Count; i++)
+                {
+                    var skipLabel = CreateLabel();
+                    AddInstruction(new GotoInstruction(loc, skipLabel, resVar, expected));
+                    var v = ensureType(AddExpression(subExpressions[i], false), type, loc);
+                    AddInstruction(new AssignmentInstruction(loc, v, resVar));
+                    AddInstruction(new NopInstuction(loc).WithLabel(skipLabel));
+                }
+                return resVar;
+            }
+
             List<ISymbol> convertParams(IType funcType, List<ISymbol> paramVars, SourceLocation sourceLocation)
             {
                 if (!funcType.IsFunctionType)
@@ -1391,16 +1419,7 @@ namespace BabyPenguin.SemanticInterface
                 case LogicalOrExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
-                        var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
-                        var resVar = tempVars.Aggregate((a, b) =>
-                        {
-                            a = ensureType(a, type, expression.SourceLocation);
-                            b = ensureType(b, type, expression.SourceLocation);
-                            var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.LogicalOr, a, b, res));
-                            return res;
-                        });
+                        var resVar = AddShortCircuitLogical(exp, exp.SubExpressions, isAnd: false);
                         AddAssignmentExpression(new(resVar), to, isVariableInitialize, null, expression.SourceLocation);
                     }
                     else
@@ -1411,16 +1430,7 @@ namespace BabyPenguin.SemanticInterface
                 case LogicalAndExpression exp:
                     if (exp.SubExpressions.Count > 1)
                     {
-                        var type = ResolveExpressionType(exp);
-                        var tempVars = exp.SubExpressions.Select(e => AddExpression(e, false)).ToList();
-                        var resVar = tempVars.Aggregate((a, b) =>
-                        {
-                            a = ensureType(a, type, expression.SourceLocation);
-                            b = ensureType(b, type, expression.SourceLocation);
-                            var res = AllocTempSymbol(type, expression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.LogicalAnd, a, b, res));
-                            return res;
-                        });
+                        var resVar = AddShortCircuitLogical(exp, exp.SubExpressions, isAnd: true);
                         AddAssignmentExpression(new(resVar), to, isVariableInitialize, null, expression.SourceLocation);
                     }
                     else

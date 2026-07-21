@@ -3,6 +3,7 @@
 Interface with default method using `fun new` in interface (EmperorPenguin-only feature).
 
 ## Apply To
+* BabyPenguin
 * BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2

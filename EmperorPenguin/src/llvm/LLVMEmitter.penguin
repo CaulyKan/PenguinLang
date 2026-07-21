@@ -669,6 +669,7 @@ class LLVMEmitter {
             target.append("declare void @_emperor_gc_init(ptr)\n");
             target.append("declare void @_emperor_gc_add_root(ptr)\n");
             target.append("declare void @_emperor_args_init(i32, ptr)\n");
+            target.append("declare void @_emperor_boost_stack()\n");
         }
         if (this.needs_memset) {
             target.append("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n");
@@ -921,6 +922,10 @@ class LLVMEmitter {
             this.has_main = true;
             this.sb.append("define i32 @main(i32 %argc, ptr %argv) {\n");
             this.sb.append("entry:\n");
+            // Increase stack limit early (before any deep recursion).
+            // The semantic analysis passes use deep recursion and may overflow
+            // the default 8 MB stack, causing intermittent SIGSEGV.
+            this.sb.append("  call void @_emperor_boost_stack()\n");
             // Initialize args
             this.sb.append("  call void @_emperor_args_init(i32 %argc, ptr %argv)\n");
             // Initialize GC
@@ -2036,6 +2041,9 @@ class LLVMEmitter {
         _utils.trace_enter("Enter emit_const(inst=" + inst.display() + ")");
         let ir_type: string = inst.result.get_ir_type();
         let result_name: string = inst.result.display();
+        // void has no LLVM value; skip emission entirely to avoid
+        // generating invalid IR like "add void 0, void"
+        if (ir_type == "void") { return; }
         if (this.is_string_type(ir_type)) {
             let stripped: string = this.strip_string_quotes(inst.value);
             let found: Option<StringLitEntry> = this.find_string_lit(stripped);
@@ -2063,11 +2071,14 @@ class LLVMEmitter {
         }
         if (this.is_int_type(ir_type)) {
             let llvm_type: string = this.ir_type_to_llvm(ir_type);
+            // Coerce the value register if its type differs from the result type
+            // (e.g. an i64 constant being assigned to an i16 variable)
+            let coerced: string = this.coerce_operand(inst.value, llvm_type);
             if (this.is_mutable_reg(result_name)) {
                 let alloca_name: string = this.get_alloca_name(result_name);
-                this.emit_line("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name);
+                this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name);
             } else {
-                this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + inst.value);
+                this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + coerced);
             }
             this.register_llvm_type(result_name, llvm_type);
             return;
@@ -2158,6 +2169,13 @@ class LLVMEmitter {
             this.needs_int_to_string = true;
             if (inst.from_type == "i64") {
                 this.emit_line("  " + result_name + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + operand_resolved + ")");
+            } else if (inst.from_type == "i8" || inst.from_type == "i16") {
+                // Signed i8/i16 must be sign-extended to i32 before calling
+                // _emperor_int_to_string(i32); otherwise LLVM zero-extends,
+                // turning negative values into large positive integers.
+                let sext_tmp: string = this.next_tmp();
+                this.emit_line("  " + sext_tmp + " = sext " + from_llvm + " " + operand_resolved + " to i32");
+                this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + sext_tmp + ")");
             } else {
                 this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + operand_resolved + ")");
             }
@@ -2272,19 +2290,30 @@ class LLVMEmitter {
         let operand_resolved: string = this.resolve_value(inst.operand);
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         if (inst.op == "neg") {
-            this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + operand_resolved);
+            let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
+            this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + coerced);
             return;
         }
         if (inst.op == "plus") {
-            this.emit_line("  " + result_name + " = freeze " + llvm_type + " " + operand_resolved);
+            let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
+            this.emit_line("  " + result_name + " = freeze " + llvm_type + " " + coerced);
             return;
         }
         if (inst.op == "not") {
-            this.emit_line("  " + result_name + " = xor i8 " + operand_resolved + ", 1");
+            // If operand is an icmp result (i1), zext to i8 first to avoid
+            // type mismatch (xor i8 expects i8, not i1)
+            let operand: mut string = operand_resolved;
+            if (this.is_icmp_value(operand_resolved)) {
+                let zext_tmp: string = this.next_tmp();
+                this.emit_line("  " + zext_tmp + " = zext i1 " + operand_resolved + " to i8");
+                operand = zext_tmp;
+            }
+            this.emit_line("  " + result_name + " = xor i8 " + operand + ", 1");
             return;
         }
         if (inst.op == "bitnot") {
-            this.emit_line("  " + result_name + " = xor " + llvm_type + " " + operand_resolved + ", -1");
+            let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
+            this.emit_line("  " + result_name + " = xor " + llvm_type + " " + coerced + ", -1");
             return;
         }
         this.emit_line("  ; unknown unaryop " + inst.op);
@@ -2466,7 +2495,7 @@ class LLVMEmitter {
     }
 
     fun emit_br(mut this, inst: IRBr) {
-        _utils.trace_enter("Enter emit_br(inst=" + inst.display() + ")");
+        _utils.trace_enter("Enter emit_br");
         this.emit_line("  br label %" + inst.target_name);
     }
 
@@ -2632,7 +2661,7 @@ class LLVMEmitter {
     }
 
     fun emit_call_virt(mut this, inst: IRCallVirt) {
-        _utils.trace_enter("Enter emit_call_virt(inst=" + inst.display() + ")");
+        _utils.trace_enter("Enter emit_call_virt");
         this.needs_vtable_lookup = true;
         let obj_resolved: string = this.resolve_value(inst.obj);
         let ret_type: string = this.ir_type_to_llvm(inst.ret_type);

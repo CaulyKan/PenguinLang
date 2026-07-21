@@ -259,6 +259,13 @@ class IRGenerator {
 
     fun lower_interface_def(mut this, def: BoundInterfaceDefinition, module: mut IRModule) {
         _utils.trace_enter("Enter lower_interface_def");
+        // Generic interface templates are not emitted directly: their default
+        // methods have unresolved type params (T -> error/ptr). They are
+        // specialized per instantiation (IFoo<u8> -> IFoo__u8) and the
+        // specialized defs (generic_params empty) emit the concrete methods.
+        if (cast<i64>(def.generic_params.size()) > 0) {
+            return;
+        }
         let mi: mut i64 = 0;
         while (mi < cast<i64>(def.methods.size())) {
             let method_def: BoundDefinition = def.methods.at(cast<u64>(mi)).some;
@@ -268,6 +275,27 @@ class IRGenerator {
                 }
             }
             mi = mi + 1;
+        }
+        // Emit nested-impl methods (interface inheritance): this interface
+        // provides bodies for methods of other interfaces it implements. Without
+        // emitting them, the inherited vtable slots reference undefined functions.
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(def.interface_impls.size())) {
+            let impl_def: BoundDefinition = def.interface_impls.at(cast<u64>(ii)).some;
+            if (impl_def is BoundDefinition.impl_def) {
+                let nested_impl: BoundInterfaceImplementation = impl_def.impl_def;
+                let mi2: mut i64 = 0;
+                while (mi2 < cast<i64>(nested_impl.methods.size())) {
+                    let method_def: BoundDefinition = nested_impl.methods.at(cast<u64>(mi2)).some;
+                    if (method_def is BoundDefinition.function_def) {
+                        if (method_def.function_def.body.is_some()) {
+                            this.lower_function_def(method_def.function_def, module);
+                        }
+                    }
+                    mi2 = mi2 + 1;
+                }
+            }
+            ii = ii + 1;
         }
     }
 
@@ -587,6 +615,10 @@ class IRGenerator {
         let has_generic_receiver: mut bool = false;
         let generic_args_list: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let template_class_name: mut string = "";
+        // Whether the callee's first parameter is `this` (set when the callee is
+        // resolved below). Drives whether the receiver is passed / used for the
+        // virtual vtable lookup.
+        let first_param_is_this: mut bool = false;
         if (expr.callee.is_some()) {
             let callee_expr: BoundExpression = expr.callee.some;
             if (callee_expr is BoundExpression.member_access) {
@@ -594,6 +626,14 @@ class IRGenerator {
                 if (ma.base_expr.is_some() && expr.callee_symbol.is_some()) {
                     let sym: BoundSymbol = expr.callee_symbol.some;
                     if (sym is BoundSymbol.function_sym) {
+                        // Whether the callee's first parameter is `this`. If not, the
+                        // receiver is discarded (not passed) -- for interface-typed
+                        // receivers it is still used for vtable lookup (virtual).
+                        if (cast<i64>(sym.function_sym.parameters.size()) > 0) {
+                            if (sym.function_sym.parameters.at(cast<u64>(0)).some.is_this) {
+                                first_param_is_this = true;
+                            }
+                        }
                         // For direct dispatch (boxing optimization), use the original value
                         // expression without boxing
                         let dd_val: IRValue = this.lower_direct_dispatch_this(ma, expr);
@@ -625,11 +665,16 @@ class IRGenerator {
                             }
                         }
                         if (!is_namespace_call) {
-                            if (dd_val.get_ir_type() == "void") {
-                                new_args.push(this.lower_expression(ma.base_expr.some));
-                            } else {
-                                new_args.push(dd_val);
+                            if (first_param_is_this) {
+                                if (dd_val.get_ir_type() == "void") {
+                                    new_args.push(this.lower_expression(ma.base_expr.some));
+                                } else {
+                                    new_args.push(dd_val);
+                                }
                             }
+                            // else: no-`this` method -- discard the receiver (don't
+                            // prepend). For interface-typed receivers it is lowered
+                            // separately as the vtable-lookup object below.
                         }
                         let ai2: mut i64 = 0;
                         while (ai2 < cast<i64>(args.size())) {
@@ -676,7 +721,16 @@ class IRGenerator {
             if (expr.is_virtual) {
                 let interface_id: string = this.resolve_interface_id(expr);
                 let slot: i64 = this.resolve_vtable_slot(expr);
-                let obj: IRValue = args.at(cast<u64>(0)).some;
+                // obj = the receiver for vtable lookup. For `this` methods the
+                // receiver was prepended to args (args[0]); for no-`this` methods
+                // it was discarded from args, so lower the base expression here.
+                // Lowered directly (not via the boxing-elision path) so it carries
+                // the interface metadata _emperor_vtable_lookup needs.
+                let obj: IRValue = if (first_param_is_this && cast<i64>(args.size()) > 0) {
+                    args.at(cast<u64>(0)).some
+                } else {
+                    this.lower_call_receiver(expr)
+                };
                 let result: Option<IRValue> = this.builder.emit_call_virt(obj, interface_id, slot, args, ret_type, loc);
                 if (result.is_some()) { return result.some; }
                 return this.builder.void_value();
@@ -765,51 +819,66 @@ class IRGenerator {
         this.current_module.add_function(ext_func);
     }
 
+    // For an interface-method call `recv.m(...)` where recv has an interface
+    // type, return that (template) interface def — the same logical interface
+    // recorded in the object's interface_map and vtable. Using the template
+    // (rather than the callee's possibly-specialized scope) keeps the
+    // interface_id and slot index consistent with the object's vtable.
+    fun call_base_interface_def(this, expr: BoundFunctionCallExpression) -> Option<BoundInterfaceDefinition> {
+        _utils.trace_enter("Enter call_base_interface_def");
+        if (expr.callee.is_some()) {
+            let callee: BoundExpression = expr.callee.some;
+            if (callee is BoundExpression.member_access) {
+                let ma: BoundMemberAccessExpression = callee.member_access;
+                if (ma.base_expr.is_some()) {
+                    let base_type: BoundType = ma.base_expr.some.get_bound_type();
+                    if (base_type.kind is TypeKind.InterfaceKind) {
+                        if (base_type.type_definition.is_some()) {
+                            let td: BoundDefinition = base_type.type_definition.some;
+                            if (td is BoundDefinition.interface_def) {
+                                return new Option<BoundInterfaceDefinition>.some(td.interface_def);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return new Option<BoundInterfaceDefinition>.none();
+    }
+
     // Try to resolve the vtable slot index for a virtual call.
     // For virtual calls (interface scope): find the method index among the interface's
     // non-constructor methods, which matches the vtable slot ordering.
     // For concrete calls (class scope): walk to find class vtable.
     fun resolve_vtable_slot(this, expr: BoundFunctionCallExpression) -> i64 {
         _utils.trace_enter("Enter resolve_vtable_slot");
+        // Interface-typed receiver: use the base interface's method order (the
+        // template def recorded in the object's vtable), not the callee's
+        // possibly-specialized scope (whose name isn't in the parent scope).
+        let base_iface: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
+        if (base_iface.is_some()) {
+            let iface: BoundInterfaceDefinition = base_iface.some;
+            let callee_name: string = this.call_callee_name(expr);
+            let func_idx: mut i64 = 0;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(iface.methods.size())) {
+                let md: BoundDefinition = iface.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (md.function_def.name == callee_name) {
+                        return func_idx;
+                    }
+                    if (md.function_def.name != "new") {
+                        func_idx = func_idx + 1;
+                    }
+                }
+                mi = mi + 1;
+            }
+            return 0;
+        }
         if (expr.callee_symbol.is_some()) {
             let sym: BoundSymbol = expr.callee_symbol.some;
             let scope: Option<BoundScope> = sym.get_enclosing_scope();
             if (scope.is_some()) {
-                // Virtual call: callee is in interface scope
-                if (scope.some.kind is ScopeKind.InterfaceScope) {
-                    let callee_name: string = sym.get_name();
-                    // Look up the interface definition from the scope's parent
-                    if (scope.some.parent.is_some()) {
-                        let type_sym: Option<BoundSymbol> = scope.some.parent.some.lookup_symbol_local(scope.some.name);
-                        if (type_sym.is_some()) {
-                            if (type_sym.some is BoundSymbol.type_sym) {
-                                let ts: BoundTypeSymbol = type_sym.some.type_sym;
-                                if (ts.type_definition.is_some()) {
-                                    let td: BoundDefinition = ts.type_definition.some;
-                                    if (td is BoundDefinition.interface_def) {
-                                        let iface: BoundInterfaceDefinition = td.interface_def;
-                                        // Count non-constructor methods to find slot index
-                                        let func_idx: mut i64 = 0;
-                                        let mi: mut i64 = 0;
-                                        while (mi < cast<i64>(iface.methods.size())) {
-                                            let md: BoundDefinition = iface.methods.at(cast<u64>(mi)).some;
-                                            if (md is BoundDefinition.function_def) {
-                                                if (md.function_def.name == callee_name) {
-                                                    return func_idx;
-                                                }
-                                                if (md.function_def.name != "new") {
-                                                    func_idx = func_idx + 1;
-                                                }
-                                            }
-                                            mi = mi + 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return 0;
-                }
                 // Concrete call: find in class vtable
                 let class_def: Option<BoundClassDefinition> = this.find_class_def_from_scope(scope.some);
                 if (class_def.is_some()) {
@@ -864,11 +933,47 @@ class IRGenerator {
         return new Option<BoundClassDefinition>.none();
     }
 
+    // Lower the receiver of a member call (e.g. `f` in `f.foo()`) as the
+    // vtable-lookup object. Lowered directly so it keeps the interface metadata.
+    fun lower_call_receiver(mut this, expr: BoundFunctionCallExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_call_receiver");
+        if (expr.callee.is_some()) {
+            let callee: BoundExpression = expr.callee.some;
+            if (callee is BoundExpression.member_access) {
+                if (callee.member_access.base_expr.is_some()) {
+                    return this.lower_expression(callee.member_access.base_expr.some);
+                }
+            }
+        }
+        return this.builder.void_value();
+    }
+
+    // The method name being called on a member-access callee (e.g. "bar" in
+    // f.bar()). Falls back to the callee symbol's name.
+    fun call_callee_name(this, expr: BoundFunctionCallExpression) -> string {
+        _utils.trace_enter("Enter call_callee_name");
+        if (expr.callee.is_some()) {
+            let callee: BoundExpression = expr.callee.some;
+            if (callee is BoundExpression.member_access) {
+                return callee.member_access.member_name;
+            }
+        }
+        if (expr.callee_symbol.is_some()) {
+            return expr.callee_symbol.some.get_name();
+        }
+        return "";
+    }
+
     // Resolve the interface ID for a virtual call.
-    // Looks at the callee symbol's scope to find which interface it belongs to,
-    // then returns the interface type's display name.
+    // Uses the receiver's interface type (the template, e.g. "IFoo") — the same
+    // logical interface recorded in the object's interface_map — rather than the
+    // callee's possibly-specialized scope ("IFoo__u8").
     fun resolve_interface_id(this, expr: BoundFunctionCallExpression) -> string {
         _utils.trace_enter("Enter resolve_interface_id");
+        let base_iface: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
+        if (base_iface.is_some()) {
+            return base_iface.some.name;
+        }
         if (expr.callee_symbol.is_some()) {
             let sym: BoundSymbol = expr.callee_symbol.some;
             let scope: Option<BoundScope> = sym.get_enclosing_scope();
@@ -1158,7 +1263,25 @@ class IRGenerator {
         if (stmt is BoundStatement.return_stmt) {
             let loc: SourceLocation = stmt.return_stmt.location;
             if (stmt.return_stmt.value.is_some()) {
-                let val: IRValue = this.lower_expression(stmt.return_stmt.value.some);
+                let bound_val: BoundExpression = stmt.return_stmt.value.some;
+                let val_raw: IRValue = this.lower_expression(bound_val);
+                // Coerce an integer-literal return value to the function's return
+                // type: literals default to i64, so `return 5` in a u8 function
+                // must be truncated (e.g. i64 -> i8) to match the declared return.
+                // (Guard the `.literal` access via an if-expression: `&&` in
+                // PenguinLang does not short-circuit, so a bare `is && .literal`
+                // would cast non-literal returns — e.g. enum variants — and crash.)
+                let is_int_lit: bool = if (bound_val is BoundExpression.literal) {
+                    bound_val.literal.literal_kind is LiteralKind.IntegerLiteral
+                } else {
+                    false
+                };
+                let func_ret: string = this.builder.func.return_type;
+                let val: IRValue = if (is_int_lit && func_ret != "void" && val_raw.get_ir_type() != func_ret) {
+                    this.builder.emit_cast(val_raw, val_raw.get_ir_type(), func_ret, loc)
+                } else {
+                    val_raw
+                };
                 this.builder.emit_ret(val, loc);
             } else {
                 this.builder.emit_ret_void(loc);

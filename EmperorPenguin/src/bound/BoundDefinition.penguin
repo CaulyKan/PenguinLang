@@ -110,6 +110,14 @@ class BoundInterfaceDefinition {
     bound_type: BoundType = new BoundType();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
     methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    // Nested `impl IOther<T> { ... }` blocks: each is a BoundDefinition.impl_def
+    // whose methods implement another interface (interface inheritance). These
+    // methods are bound/emitted and feed the interface's own vtables.
+    interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    // Vtables this interface provides for OTHER interfaces via its nested impls
+    // (e.g. IBar has an IFoo vtable). Classes implementing this interface inherit
+    // them transitively (see merge_class_vtables).
+    vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     ast_source: Option<Definition> = new Option<Definition>.none();
 

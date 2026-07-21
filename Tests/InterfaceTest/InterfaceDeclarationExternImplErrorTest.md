@@ -41,4 +41,4 @@ Args: ``
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: CONTAINS `E_INTERNAL`
+ExpectedStderr: CONTAINS `E_RESOLVE_SYMBOL`

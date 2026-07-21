@@ -7,8 +7,8 @@ ifeq ($(CROSS),win64)
   CC  ?= /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
   AR  ?= /opt/llvm-mingw/bin/x86_64-w64-mingw32-ar
 else
-  CC  ?= cc
-  AR  ?= ar
+  CC  ?= clang
+  AR  ?= llvm-ar
 endif
 
 CFLAGS ?= -I../include -g

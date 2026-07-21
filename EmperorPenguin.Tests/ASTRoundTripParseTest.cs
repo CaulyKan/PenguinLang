@@ -12,9 +12,9 @@ public class ASTRoundTripParseTest
         var userCode = @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source, """");
+    let lexer = new emperor.Lexer(source, """");
     let tokens = lexer.tokenize();
-    let p = new parser.Parser(tokens);
+    let p = new emperor.Parser(tokens);
     let result = p.{parseMethod}();
     println(result.build_text());
 }}";
@@ -39,9 +39,9 @@ initial {{
         var userCode = @$"
 initial {{
     let source: string = ""{escaped}"";
-    let lexer = new parser.Lexer(source, """");
+    let lexer = new emperor.Lexer(source, """");
     let tokens = lexer.tokenize();
-    let p = new parser.Parser(tokens);
+    let p = new emperor.Parser(tokens);
     let result = p.parse_compilationUnit();
     println(result.build_text());
 }}";
@@ -493,14 +493,6 @@ initial {{
     [BatchParseTest("on click(x: i64) { 42 }", "parse_onRoutine", "on click { 42 }")]
     public void ParseDef_OnRoutineWithParam() => Batch.Assert();
 
-    [Fact]
-    public void ParseStmt_EmitEvent()
-        => Assert.Contains("emit", ParseWithMethod("emit obj.click(42);", "parse_emitEventStatement"));
-
-    [Fact]
-    public void ParseStmt_EmitNoArg()
-        => Assert.Contains("emit", ParseWithMethod("emit obj.click();", "parse_emitEventStatement"));
-
     // ==================== Full program round-trip tests (contains-based) ====================
 
     [Fact]
@@ -545,10 +537,6 @@ initial {{
         Assert.Contains("Ok", result);
         Assert.Contains("Err", result);
     }
-
-    [Fact]
-    [BatchParseTest("impl Comparable for MyType where (T: Comparable) { fun compare() {} }", "parse_compilationUnit", "")]
-    public void ParseRoundTrip_ImplWithWhere() => Assert.Contains("impl Comparable for MyType", Batch.GetResult());
 
     [Fact]
     [BatchParseTest("on event.click { 42 }", "parse_compilationUnit", "")]

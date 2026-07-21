@@ -10,10 +10,10 @@ public class BoundTreeInterfaceImplTest
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface IGreeter { fun greet(); } class Bar { impl IGreeter { fun greet() {} } }"");
     let def1 = result.definitions.at(cast<u64>(1)).some;
-    if (def1 is bound.BoundDefinition.class_def) {
+    if (def1 is emperor.BoundDefinition.class_def) {
         let cls = def1.class_def;
         if (cast<i64>(cls.vtables.size()) >= 1) {
             let vt = cls.vtables.at(cast<u64>(0)).some;
@@ -39,10 +39,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface ISerializable { fun serialize(); } class Data {} impl ISerializable for Data { fun serialize() {} }"");
     let def_impl_for = result.definitions.at(cast<u64>(2)).some;
-    if (def_impl_for is bound.BoundDefinition.impl_for_def) {
+    if (def_impl_for is emperor.BoundDefinition.impl_for_def) {
         let impl_for = def_impl_for.impl_for_def;
         if (impl_for.vtable.is_some()) {
             let vt = impl_for.vtable.some;
@@ -67,10 +67,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface IRunnable { fun run(); } class Worker {} impl IRunnable for Worker { fun run() {} }"");
     let def_impl_for = result.definitions.at(cast<u64>(2)).some;
-    if (def_impl_for is bound.BoundDefinition.impl_for_def) {
+    if (def_impl_for is emperor.BoundDefinition.impl_for_def) {
         let impl_for = def_impl_for.impl_for_def;
         println(""iface_type_kind="" + cast<string>(impl_for.interface_type.kind));
         println(""for_type_kind="" + cast<string>(impl_for.for_type.kind));
@@ -82,10 +82,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Baz {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         println(""vtable_count="" + cast<string>(cast<i64>(cls.vtables.size())));
         println(""impl_count="" + cast<string>(cast<i64>(cls.interface_impls.size())));
@@ -97,10 +97,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface ICombo { fun method_a(); fun method_b(); } class Cls { impl ICombo { fun method_a() {} fun method_b() {} } }"");
     let def1 = result.definitions.at(cast<u64>(1)).some;
-    if (def1 is bound.BoundDefinition.class_def) {
+    if (def1 is emperor.BoundDefinition.class_def) {
         let cls = def1.class_def;
         if (cast<i64>(cls.vtables.size()) >= 1) {
             let vt = cls.vtables.at(cast<u64>(0)).some;
@@ -130,12 +130,12 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""namespace App { interface IFoo { fun do_it(); } class FooImpl {} impl IFoo for FooImpl { fun do_it() {} } }"");
     let ns = result.definitions.at(cast<u64>(0)).some;
-    if (ns is bound.BoundDefinition.namespace_def) {
+    if (ns is emperor.BoundDefinition.namespace_def) {
         let impl_for_def = ns.namespace_def.children.at(cast<u64>(2)).some;
-        if (impl_for_def is bound.BoundDefinition.impl_for_def) {
+        if (impl_for_def is emperor.BoundDefinition.impl_for_def) {
             let impl_for = impl_for_def.impl_for_def;
             if (impl_for.vtable.is_some()) {
                 let vt = impl_for.vtable.some;

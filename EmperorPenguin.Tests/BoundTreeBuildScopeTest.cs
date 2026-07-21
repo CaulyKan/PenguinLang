@@ -10,10 +10,10 @@ public class BoundTreeBuildScopeTest
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun my_func();"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.function_def) {
+    if (def is emperor.BoundDefinition.function_def) {
         let func = def.function_def;
         println(""func_name="" + func.name);
         println(""func_full="" + func.full_name);
@@ -29,12 +29,12 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class MyClass {}"");
     if (cast<i64>(result.definitions.size()) == 1) {
         let def = result.definitions.at(cast<u64>(0)).some;
         println(""def_name="" + def.get_name());
-        if (def is bound.BoundDefinition.class_def) {
+        if (def is emperor.BoundDefinition.class_def) {
             println(""is_class"");
         }
     }
@@ -45,10 +45,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""enum Color { Red; Green; Blue; }"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.enum_def) {
+    if (def is emperor.BoundDefinition.enum_def) {
         let e = def.enum_def;
         println(""enum_name="" + e.name);
         println(""member_count="" + cast<string>(cast<i64>(e.members.size())));
@@ -63,7 +63,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun func_a(); fun func_b();"");
     println(""def_count="" + cast<string>(cast<i64>(result.definitions.size())));
 }
@@ -73,10 +73,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""extern fun external_func();"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.function_def) {
+    if (def is emperor.BoundDefinition.function_def) {
         let func = def.function_def;
         println(""name="" + func.name);
         println(""extern="" + cast<string>(func.is_extern));
@@ -89,10 +89,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Person { name; fun greet(); }"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
         println(""field_count="" + cast<string>(cast<i64>(cls.fields.size())));
         println(""method_count="" + cast<string>(cast<i64>(cls.methods.size())));
@@ -104,10 +104,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""pure fun pure_func();"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.function_def) {
+    if (def is emperor.BoundDefinition.function_def) {
         let func = def.function_def;
         println(""pure="" + cast<string>(func.is_pure));
     }
@@ -118,10 +118,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""type MyInt = i64; initial {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.type_ref_def) {
+    if (def is emperor.BoundDefinition.type_ref_def) {
         println(""type_ref_name="" + def.type_ref_def.name);
     }
 }
@@ -131,7 +131,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class MyClass {}"");
     let type_sym = result.global_scope.lookup_type_in_scope(""MyClass"");
     if (type_sym.is_some()) {
@@ -144,7 +144,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""enum Color { Red; }"");
     let type_sym = result.global_scope.lookup_type_in_scope(""Color"");
     if (type_sym.is_some()) {
@@ -157,7 +157,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface IPrintable { fun print(); }"");
     let type_sym = result.global_scope.lookup_type_in_scope(""IPrintable"");
     if (type_sym.is_some()) {
@@ -170,15 +170,15 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""namespace MyApp { class Widget {} }"");
     let ns_bound = result.definitions.at(cast<u64>(0)).some;
-    if (ns_bound is bound.BoundDefinition.namespace_def) {
+    if (ns_bound is emperor.BoundDefinition.namespace_def) {
         let ns = ns_bound.namespace_def;
         println(""ns_name="" + ns.name);
         if (cast<i64>(ns.children.size()) == 1) {
             let child = ns.children.at(cast<u64>(0)).some;
-            if (child is bound.BoundDefinition.class_def) {
+            if (child is emperor.BoundDefinition.class_def) {
                 println(""child_class="" + child.class_def.name);
             }
         }
@@ -190,7 +190,7 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""namespace Utils { fun helper_a(); } namespace Utils { fun helper_b(); }"");
     let ns_scope = result.global_scope.lookup_namespace(""Utils"");
     if (ns_scope.is_some()) {
@@ -207,10 +207,10 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""initial {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.initial_routine) {
+    if (def is emperor.BoundDefinition.initial_routine) {
         let init = def.initial_routine;
         println(""init_full="" + init.full_name);
         if (init.scope.is_some()) {
@@ -221,18 +221,18 @@ initial {
         }
     }
 }
-", "init_full=<global>.<initial>\nhas_scope\nhas_symbol")]
+", "init_full=<global>.<initial>0\nhas_scope\nhas_symbol")]
     public void BindInitialRoutineTest() => _batch.Value.Assert();
 
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class Foo {}"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.class_def) {
+    if (def is emperor.BoundDefinition.class_def) {
         let cls = def.class_def;
-        if (cls.bound_type.kind is bound.TypeKind.ClassKind) {
+        if (cls.bound_type.kind is emperor.TypeKind.ClassKind) {
             println(""type_kind=class"");
         }
         if (cls.type_symbol.is_some()) {
@@ -246,12 +246,12 @@ initial {
     [Fact]
     [BatchBoundTest(@"
 initial {
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""enum Status { Ok; }"");
     let def = result.definitions.at(cast<u64>(0)).some;
-    if (def is bound.BoundDefinition.enum_def) {
+    if (def is emperor.BoundDefinition.enum_def) {
         let e = def.enum_def;
-        if (e.bound_type.kind is bound.TypeKind.EnumKind) {
+        if (e.bound_type.kind is emperor.TypeKind.EnumKind) {
             println(""type_kind=enum"");
         }
         if (cast<i64>(e.members.size()) == 1) {

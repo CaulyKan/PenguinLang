@@ -13,21 +13,21 @@ public class BoundFunctionTest
     [BatchBoundTest(@"
 initial {
     let source = ""fun callee(x: i64) -> i64 { return x; } fun caller() -> i64 { return callee(42); }"";
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
 
     // Check the 'callee' function return type
     let definitions = result.definitions;
     if (definitions.size() > 0) {
         let def0 = definitions.at(cast<u64>(0)).some;
-        if (def0 is bound.BoundDefinition.function_def) {
+        if (def0 is emperor.BoundDefinition.function_def) {
             let callee_func = def0.function_def;
-            println(""callee return type kind: "" + (if (callee_func.return_type.kind is bound.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
-            if (callee_func.return_type.kind is bound.TypeKind.PrimitiveKind) {
-                if (callee_func.return_type.primitive is bound.PrimitiveType.I64) {
+            println(""callee return type kind: "" + (if (callee_func.return_type.kind is emperor.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
+            if (callee_func.return_type.kind is emperor.TypeKind.PrimitiveKind) {
+                if (callee_func.return_type.primitive is emperor.PrimitiveType.I64) {
                     println(""callee return type: i64"");
                 }
-                if (callee_func.return_type.primitive is bound.PrimitiveType.VoidType) {
+                if (callee_func.return_type.primitive is emperor.PrimitiveType.VoidType) {
                     println(""callee return type: void"");
                 }
             }
@@ -42,43 +42,43 @@ callee return type: i64")]
     [BatchBoundTest(@"
 initial {
     let source = ""fun callee(x: i64) -> i64 { return x; } fun caller() -> i64 { return callee(42); }"";
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
 
     // Get the 'caller' function
     let definitions = result.definitions;
     if (definitions.size() > 1) {
         let caller_def = definitions.at(cast<u64>(1)).some;
-        if (caller_def is bound.BoundDefinition.function_def) {
+        if (caller_def is emperor.BoundDefinition.function_def) {
             let caller_func = caller_def.function_def;
             if (caller_func.body.is_some()) {
                 let body = caller_func.body.some;
-                if (body is bound.BoundExpression.code_block) {
+                if (body is emperor.BoundExpression.code_block) {
                     let cb = body.code_block;
                     if (cb.statements.size() > 0) {
                         let stmt = cb.statements.at(cast<u64>(0)).some;
-                        if (stmt is bound.BoundStatement.return_stmt) {
+                        if (stmt is emperor.BoundStatement.return_stmt) {
                             let ret = stmt.return_stmt;
                             if (ret.value.is_some()) {
                                 let val = ret.value.some;
-                                println(""Return value type kind: "" + (if (val.get_bound_type().kind is bound.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
-                                if (val.get_bound_type().kind is bound.TypeKind.PrimitiveKind) {
-                                    if (val.get_bound_type().primitive is bound.PrimitiveType.I64) {
+                                println(""Return value type kind: "" + (if (val.get_bound_type().kind is emperor.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
+                                if (val.get_bound_type().kind is emperor.TypeKind.PrimitiveKind) {
+                                    if (val.get_bound_type().primitive is emperor.PrimitiveType.I64) {
                                         println(""Return value type: i64"");
                                     }
-                                    if (val.get_bound_type().primitive is bound.PrimitiveType.VoidType) {
+                                    if (val.get_bound_type().primitive is emperor.PrimitiveType.VoidType) {
                                         println(""Return value type: void"");
                                     }
                                 }
-                                if (val is bound.BoundExpression.function_call) {
+                                if (val is emperor.BoundExpression.function_call) {
                                     println(""Return value is function_call"");
                                     let fc = val.function_call;
-                                    println(""Function call return type kind: "" + (if (fc.get_bound_type().kind is bound.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
-                                    if (fc.get_bound_type().kind is bound.TypeKind.PrimitiveKind) {
-                                        if (fc.get_bound_type().primitive is bound.PrimitiveType.I64) {
+                                    println(""Function call return type kind: "" + (if (fc.get_bound_type().kind is emperor.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
+                                    if (fc.get_bound_type().kind is emperor.TypeKind.PrimitiveKind) {
+                                        if (fc.get_bound_type().primitive is emperor.PrimitiveType.I64) {
                                             println(""Function call return type: i64"");
                                         }
-                                        if (fc.get_bound_type().primitive is bound.PrimitiveType.VoidType) {
+                                        if (fc.get_bound_type().primitive is emperor.PrimitiveType.VoidType) {
                                             println(""Function call return type: void"");
                                         }
                                     }
@@ -102,28 +102,28 @@ Function call return type: i64")]
     [BatchBoundTest(@"
 initial {
     let source = ""fun callee(x: i64) -> i64 { return x; }"";
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
 
     let definitions = result.definitions;
     if (definitions.size() > 0) {
         let def = definitions.at(cast<u64>(0)).some;
-        if (def is bound.BoundDefinition.function_def) {
+        if (def is emperor.BoundDefinition.function_def) {
             let func = def.function_def;
             if (func.body.is_some()) {
                 println(""body is some"");
                 let body = func.body.some;
-                if (body is bound.BoundExpression.code_block) {
+                if (body is emperor.BoundExpression.code_block) {
                     let cb = body.code_block;
                     let stmts = cb.statements;
                     if (stmts.size() > 0) {
                         let stmt = stmts.at(cast<u64>(0)).some;
-                        if (stmt is bound.BoundStatement.return_stmt) {
+                        if (stmt is emperor.BoundStatement.return_stmt) {
                             let ret = stmt.return_stmt;
                             if (ret.value.is_some()) {
                                 println(""return value is some"");
                                 let val = ret.value.some;
-                                if (val is bound.BoundExpression.identifier) {
+                                if (val is emperor.BoundExpression.identifier) {
                                     println(""return value is identifier"");
                                 }
                             } else {
@@ -147,20 +147,20 @@ return value is identifier")]
     [BatchBoundTest(@"
 initial {
     let source = ""fun callee(x: i64) -> i64 { return x; }"";
-    let mut compiler = new bound.EmperorPenguinCompiler();
+    let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
 
     let definitions = result.definitions;
     if (definitions.size() > 0) {
         let def = definitions.at(cast<u64>(0)).some;
-        if (def is bound.BoundDefinition.function_def) {
+        if (def is emperor.BoundDefinition.function_def) {
             let func = def.function_def;
             println(""Function full_name: "" + func.full_name);
             println(""Parameters count: "" + cast<string>(cast<i64>(func.parameters.size())));
             if (func.parameters.size() > 0) {
                 let p = func.parameters.at(cast<u64>(0)).some;
                 println(""Param name: "" + p.name);
-                println(""Param type: "" + (if (p.bound_type.kind is bound.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
+                println(""Param type: "" + (if (p.bound_type.kind is emperor.TypeKind.PrimitiveKind) { ""Primitive"" } else { ""Other"" }));
             }
         }
     }

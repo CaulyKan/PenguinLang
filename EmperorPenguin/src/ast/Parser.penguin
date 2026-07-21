@@ -63,14 +63,26 @@ namespace emperor {
             } else if (token.token_type is TokenType.Cast) {
                 this.stream.expect(new TokenType.Cast());
                 this.stream.expect(new TokenType.Less());
-                let type_token: Token = this.stream.advance();
+                // Parse a full type specifier so generic args and qualified names work:
+                //   cast<IFoo<u8>>(x), cast<mut Self>(this), cast<ns.Foo>(x)
+                let target_type: TypeSpecifier = this.parse_typeSpecifier();
                 this.stream.expect(new TokenType.Greater());
                 this.stream.expect(new TokenType.LParen());
                 let cast_inner: Expression = this.parse_expression();
                 this.stream.expect(new TokenType.RParen());
                 let cast_node: CastExpression = new CastExpression();
-                cast_node.type_name = type_token.text;
-                cast_node.location = this.tok_loc(type_token);
+                // Build dotted display name (mirrors the NewExpression parser).
+                let mut sb = new StringBuilder();
+                let qi: mut i64 = 0;
+                while (qi < cast<i64>(target_type.qualified_parts.size())) {
+                    sb.append(target_type.qualified_parts.at(cast<u64>(qi)).some);
+                    sb.append(".");
+                    qi = qi + 1;
+                }
+                sb.append(target_type.name);
+                cast_node.type_name = sb.to_string();
+                cast_node.target_type = new Option<TypeSpecifier>.some(target_type);
+                cast_node.location = target_type.location;
                 cast_node.inner = new Option<Expression>.some(cast_inner);
                 return new Expression.cast_expr(cast_node);
             } else {
@@ -1040,11 +1052,17 @@ namespace emperor {
                 } else if (next.token_type is TokenType.Impl) {
                     node.members.push(this.parse_interfaceImplementation());
                 } else {
-                    // declaration ';'
-                    this.parse_declaration();
-                    this.stream.expect(new TokenType.Semicolon());
-                    let fd = new FunctionDefinition("");
-                    node.members.push(new Definition.function_def(fd));
+                    // Interface field declarations (e.g. `a : u8 = 1;`) are not
+                    // supported in EmperorPenguin (BabyPenguin-VM only). Reject
+                    // with a clear error and skip to the semicolon so parsing of
+                    // the rest of the interface can continue.
+                    this.report_error("Interface field declarations are not supported in EmperorPenguin; declare methods instead");
+                    while (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RBrace)) {
+                        this.stream.advance();
+                    }
+                    if (this.stream.peek_type() is TokenType.Semicolon) {
+                        this.stream.advance();
+                    }
                 }
             }
             this.stream.expect(new TokenType.RBrace());

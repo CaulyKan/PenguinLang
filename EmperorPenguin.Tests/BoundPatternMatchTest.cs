@@ -17,7 +17,7 @@ public class BoundPatternMatchTest
     [BatchBoundTest(@"
         initial {
             let source = ""enum Option { some: i64; none; } fun is_some(o: Option) -> bool { return o is Option.some; }"";
-            let mut compiler = new bound.EmperorPenguinCompiler();
+            let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
             let defs = result.definitions;
             println(""defs="" + cast<string>(cast<i64>(defs.size())));
