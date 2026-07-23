@@ -705,7 +705,19 @@ class IRGenerator {
                 }
             }
         }
-        let ret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        let raw_ret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+        // For virtual calls, if bound_type_to_ir_type returned void, try to recover
+        // the return type from the callee symbol (interface method's return_type).
+        let ret_type: string = if (raw_ret_type == "void" && expr.is_virtual && expr.callee_symbol.is_some()) {
+            let csym: BoundSymbol = expr.callee_symbol.some;
+            if (csym is BoundSymbol.function_sym) {
+                this.bound_type_to_ir_type(csym.function_sym.return_type)
+            } else {
+                raw_ret_type
+            }
+        } else {
+            raw_ret_type
+        };
         let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
         if (expr.callee_symbol.is_some()) {
             let sym: BoundSymbol = expr.callee_symbol.some;
@@ -731,7 +743,15 @@ class IRGenerator {
                 } else {
                     this.lower_call_receiver(expr)
                 };
-                let result: Option<IRValue> = this.builder.emit_call_virt(obj, interface_id, slot, args, ret_type, loc);
+                // For virtual calls on interface types, resolve the return type
+                // from the receiver's interface method definition (the authoritative
+                // source), bypassing expr.get_bound_type() which may be void.
+                let virtual_ret_type: string = if (ret_type == "void") {
+                    this.resolve_virtual_return_type(expr)
+                } else {
+                    ret_type
+                };
+                let result: Option<IRValue> = this.builder.emit_call_virt(obj, interface_id, slot, args, virtual_ret_type, loc);
                 if (result.is_some()) { return result.some; }
                 return this.builder.void_value();
             }
@@ -962,6 +982,88 @@ class IRGenerator {
             return expr.callee_symbol.some.get_name();
         }
         return "";
+    }
+
+    // Resolve the return type for a virtual call from the base interface method
+    // definition. This is more reliable than expr.get_bound_type() which may be
+    // void for calls on interface-typed receivers.
+    fun resolve_virtual_return_type(this, expr: BoundFunctionCallExpression) -> string {
+        _utils.trace_enter("Enter resolve_virtual_return_type");
+        // Look up the return type from the base interface method definition.
+        let callee_name: string = this.call_callee_name(expr);
+        let base_iface: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
+        let raw_rt: string = if (base_iface.is_some()) {
+            let iface: BoundInterfaceDefinition = base_iface.some;
+            let found: mut string = "void";
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(iface.methods.size())) {
+                let md: BoundDefinition = iface.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (md.function_def.name == callee_name) {
+                        found = this.bound_type_to_ir_type(md.function_def.return_type);
+                    }
+                }
+                mi = mi + 1;
+            }
+            found
+        } else {
+            "void"
+        };
+        if (raw_rt == "void") { return "void"; }
+        // If the return type has unresolved generic params, substitute them
+        // with the receiver type's concrete generic args.
+        if (string_find(raw_rt, "__T") >= 0 || string_find(raw_rt, "__E") >= 0) {
+            let recv_type_opt: Option<BoundType> = this.call_receiver_type(expr);
+            if (recv_type_opt.is_some() && cast<i64>(recv_type_opt.some.generic_args.size()) > 0) {
+                let recv_type: BoundType = recv_type_opt.some;
+                let base_iface2: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
+                if (base_iface2.is_some()) {
+                    let iface2: BoundInterfaceDefinition = base_iface2.some;
+                    let mi2: mut i64 = 0;
+                    while (mi2 < cast<i64>(iface2.methods.size())) {
+                        let md2: BoundDefinition = iface2.methods.at(cast<u64>(mi2)).some;
+                        if (md2 is BoundDefinition.function_def) {
+                            if (md2.function_def.name == callee_name) {
+                                let rt: BoundType = md2.function_def.return_type;
+                                if (rt.kind is TypeKind.EnumKind && rt.type_definition.is_some()) {
+                                    let result_sb: mut StringBuilder = new StringBuilder();
+                                    result_sb.append("enum<");
+                                    result_sb.append(rt.type_definition.some.get_name());
+                                    let gi: mut i64 = 0;
+                                    while (gi < cast<i64>(rt.generic_args.size())) {
+                                        result_sb.append("__");
+                                        if (cast<i64>(iface2.generic_params.size()) > gi && cast<i64>(recv_type.generic_args.size()) > gi) {
+                                            result_sb.append(recv_type.generic_args.at(cast<u64>(gi)).some.display_name());
+                                        } else {
+                                            result_sb.append(rt.generic_args.at(cast<u64>(gi)).some.display_name());
+                                        }
+                                        gi = gi + 1;
+                                    }
+                                    result_sb.append(">");
+                                    return result_sb.to_string();
+                                }
+                            }
+                        }
+                        mi2 = mi2 + 1;
+                    }
+                }
+            }
+        }
+        return raw_rt;
+    }
+
+    // Get the concrete receiver type for a virtual call from the callee expression.
+    fun call_receiver_type(this, expr: BoundFunctionCallExpression) -> Option<BoundType> {
+        _utils.trace_enter("Enter call_receiver_type");
+        if (expr.callee.is_some()) {
+            let callee: BoundExpression = expr.callee.some;
+            if (callee is BoundExpression.member_access) {
+                if (callee.member_access.base_expr.is_some()) {
+                    return new Option<BoundType>.some(callee.member_access.base_expr.some.get_bound_type());
+                }
+            }
+        }
+        return new Option<BoundType>.none();
     }
 
     // Resolve the interface ID for a virtual call.

@@ -641,7 +641,41 @@ namespace BabyPenguin.VirtualMachine
                         }
                         break;
 
-                    case IRIsInstanceInst:
+                    case IRIsInstanceInst isInst:
+                        {
+                            var objRtv = Resolve(isInst.Obj);
+                            var typeId = isInst.TypeId;
+                            bool typeCheckResult = false;
+                            if (objRtv != null && !(objRtv is NotInitializedRuntimeValue))
+                            {
+                                var actual = objRtv;
+                                if (actual is InterfaceRuntimeSymbol intfVal)
+                                    actual = intfVal.Value;
+                                if (actual != null && actual.TypeInfo != null)
+                                {
+                                    var ti = actual.TypeInfo;
+                                    // Check type node directly if available
+                                    if (ti.TypeNode is IVTableContainer vtc)
+                                    {
+                                        typeCheckResult = vtc.FullName() == typeId
+                                            || vtc.VTables.Any(v => v.Interface.FullName() == typeId);
+                                    }
+                                    else
+                                    {
+                                        // Fallback: compare by name
+                                        var typeName = ti.FullName();
+                                        if (typeName.StartsWith("!mut ")) typeName = typeName[5..];
+                                        if (typeName.StartsWith("ref<") && typeName.EndsWith(">"))
+                                            typeName = typeName.Substring(4, typeName.Length - 5);
+                                        if (typeName == typeId)
+                                            typeCheckResult = true;
+                                    }
+                                }
+                            }
+                            var boolType = Model.BasicTypeNodes.GetCachedImmutableType("bool")!;
+                            Store(isInst.Result, new BasicRuntimeValue(boolType) { BoolValue = typeCheckResult });
+                        }
+                        break;
                     case IRBoxInst:
                     case IRUnboxInst:
                     case IRCallVirtInst:
@@ -961,7 +995,41 @@ namespace BabyPenguin.VirtualMachine
                         }
                         break;
 
-                    case IRIsInstanceInst:
+                    case IRIsInstanceInst isInst:
+                        {
+                            var objRtv = Resolve(isInst.Obj);
+                            var typeId = isInst.TypeId;
+                            bool typeCheckResult = false;
+                            if (objRtv != null && !(objRtv is NotInitializedRuntimeValue))
+                            {
+                                var actual = objRtv;
+                                if (actual is InterfaceRuntimeSymbol intfVal)
+                                    actual = intfVal.Value;
+                                if (actual != null && actual.TypeInfo != null)
+                                {
+                                    var ti = actual.TypeInfo;
+                                    // Check type node directly if available
+                                    if (ti.TypeNode is IVTableContainer vtc)
+                                    {
+                                        typeCheckResult = vtc.FullName() == typeId
+                                            || vtc.VTables.Any(v => v.Interface.FullName() == typeId);
+                                    }
+                                    else
+                                    {
+                                        // Fallback: compare by name
+                                        var typeName = ti.FullName();
+                                        if (typeName.StartsWith("!mut ")) typeName = typeName[5..];
+                                        if (typeName.StartsWith("ref<") && typeName.EndsWith(">"))
+                                            typeName = typeName.Substring(4, typeName.Length - 5);
+                                        if (typeName == typeId)
+                                            typeCheckResult = true;
+                                    }
+                                }
+                            }
+                            var boolType = Model.BasicTypeNodes.GetCachedImmutableType("bool")!;
+                            Store(isInst.Result, new BasicRuntimeValue(boolType) { BoolValue = typeCheckResult });
+                        }
+                        break;
                     case IRBoxInst:
                     case IRUnboxInst:
                     case IRCallVirtInst:

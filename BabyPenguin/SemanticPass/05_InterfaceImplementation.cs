@@ -174,6 +174,7 @@ namespace BabyPenguin.SemanticPass
                         // from the containing namespace; for inline impls (inside class body),
                         // leave null so VTable constructor falls back to implementingClass scope.
                         IInterfaceNode? preResolvedInterface = null;
+                        INamespace? implNamespace = null;
                         if (implSyntax is PenguinLangParser.SyntaxNodes.InterfaceForImplementation)
                         {
                             foreach (var ns in Model.Namespaces.SelectMany(n => n.Namespaces))
@@ -181,6 +182,7 @@ namespace BabyPenguin.SemanticPass
                                 if (ns.SyntaxNode is PenguinLangParser.SyntaxNodes.NamespaceDefinition nsDef && nsDef.InterfaceImplementations.Contains(implSyntax))
                                 {
                                     preResolvedInterface = Model.ResolveTypeNode(implSyntax.InterfaceType!.Text, s => s is IInterfaceNode, ns) as IInterfaceNode;
+                                    implNamespace = ns;
                                     break;
                                 }
                             }
@@ -202,6 +204,14 @@ namespace BabyPenguin.SemanticPass
 
                             var func = new Function(Model, funcSyntax);
                             (vtable as IRoutineContainer).AddFunction(func);
+                        }
+
+                        if (implNamespace != null)
+                        {
+                            // Add the impl block's containing namespace to the VTable's imported
+                            // namespaces BEFORE CatchUp so that parameter types (like `IFoo` in
+                            // `this: IFoo`) can be resolved correctly during SymbolElaboratePass.
+                            vtable.ImportedNamespaces.Add(new NamespaceImport(implNamespace.Name, PenguinLangParser.SourceLocation.Empty()));
                         }
 
                         Model.CatchUp(vtable);

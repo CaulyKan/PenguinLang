@@ -191,6 +191,10 @@ namespace BabyPenguin.CSharpBackend
                 break;
                 case IRGlobalLoadInst g: Line($"r_{Reg(g.Result)} = G.{_emitter.Mangler.Mangle(g.GlobalName)};"); break;
                 case IRGlobalStoreInst g: Line($"G.{_emitter.Mangler.Mangle(g.GlobalName)} = {_emitter.Operand(g.Value)};"); break;
+                case IRIsInstanceInst i:
+                    var metaVar = $"meta_{Reg(i.Result)}";
+                    Line($"r_{Reg(i.Result)} = ({_emitter.Operand(i.Obj)} is BabyPenguin.CSharpBackend.Runtime.IHasMeta {metaVar} && {metaVar}.__meta.Is(\"{i.TypeId}\"));");
+                    break;
                 default:
                     Line($"throw new System.NotImplementedException(\"cs-lower: {inst.GetType().Name}\");");
                     break;

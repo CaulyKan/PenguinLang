@@ -16,15 +16,17 @@
       "Bash(xxd)",
       "Read(//tmp/claule-1000/-home-cauly-penguinlang/17e84bf0-3172-40e2-b241-da63fdba5b02/tasks/**)",
       "Read(//tmp/m4_debug/**)",
-      "Bash(dotnet script eval ' *)"
+      "Bash(dotnet script eval ' *)",
+      "Read(//home/cauly/.claude/skills/grilling/**)",
+      "Read(//home/cauly/.agents/skills/grilling/**)"
     ],
     "additionalDirectories": [
       "\\tmp",
       "/tmp"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "penguin-debug"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

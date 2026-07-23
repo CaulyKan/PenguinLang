@@ -1248,6 +1248,37 @@ class SemanticModel {
             }
             return this.type_registry.make_function_type(ret, param_types, type_spec.is_async_function_type);
         }
+    // Handle iterable type (e.g., i64[] → __builtin.IIterator<i64>).
+    // Desugar to the specialized (monomorphized) name so the resulting BoundType
+    // has the correct type_definition (specialized interface) with concrete types.
+    if (type_spec.is_iterable) {
+        let elem_name: string = type_spec.name;
+        // Find IIterator in __builtin to get its BoundType
+        let parts3: mut _utils.List<string> = new _utils.List<string>();
+        parts3.push("__builtin");
+        parts3.push("IIterator");
+        let iface_sym3: Option<BoundSymbol> = scope.resolve_qualified(parts3);
+        if (iface_sym3.is_some() && iface_sym3.some is BoundSymbol.type_sym) {
+            let iface_type: mut BoundType = iface_sym3.some.type_sym.bound_type;
+            // Resolve the element type and add as generic arg
+            let elem_ts3: TypeSpecifier = new TypeSpecifier();
+            elem_ts3.name = elem_name;
+            let eqi4: mut i64 = 0;
+            while (eqi4 < cast<i64>(type_spec.qualified_parts.size())) {
+                elem_ts3.qualified_parts.push(type_spec.qualified_parts.at(cast<u64>(eqi4)).some);
+                eqi4 = eqi4 + 1;
+            }
+            let elem_type3: BoundType = this.resolve_type_specifier(elem_ts3, scope);
+            let gen_args3: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            gen_args3.push(elem_type3.with_mutability(new Mutability.Immutable()));
+            iface_type = iface_type.with_generic_args(gen_args3);
+            return this.apply_mutability(iface_type, type_spec.is_mutable);
+        }
+        this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+            "Can't resolve IIterator for iterable type '" + type_spec.build_text() + "'",
+            type_spec.location);
+        return this.type_registry.make_error_type();
+    }
         // Check for Self keyword: resolves to the enclosing class/enum/interface type.
         if (type_spec.name == "Self") {
             let cur: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
@@ -1285,6 +1316,77 @@ class SemanticModel {
         }
         this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
             "Can't resolve type specifier '" + type_spec.build_text() + "'",
+            type_spec.location);
+        return this.type_registry.make_error_type();
+    }
+
+    // Resolve a type specifier WITHOUT handling is_iterable (to avoid recursion
+    // when resolve_type_specifier delegates to this for the element type).
+    fun resolve_type_specifier_no_iterable(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_type_specifier_no_iterable");
+        if (type_spec is TypeSpecifier) {
+            // Skip: just a type guard — always true
+        }
+        if (type_spec.name == "Self") {
+            let cur: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+            while (cur.is_some()) {
+                let s: BoundScope = cur.some;
+                if (s.kind is ScopeKind.ClassScope || s.kind is ScopeKind.EnumScope || s.kind is ScopeKind.InterfaceScope) {
+                    if (s.parent.is_some()) {
+                        let parent_sym: Option<BoundSymbol> = s.parent.some.lookup_type_in_scope(s.name);
+                        if (parent_sym.is_some() && parent_sym.some is BoundSymbol.type_sym) {
+                            return this.apply_mutability(parent_sym.some.type_sym.bound_type, type_spec.is_mutable);
+                        }
+                    }
+                }
+                if (s.parent.is_some()) { cur = new Option<BoundScope>.some(s.parent.some); }
+                else { cur = new Option<BoundScope>.none(); }
+            }
+        }
+        let prim: Option<BoundType> = this.type_registry.resolve_type(type_spec.name);
+        if (prim.is_some()) {
+            return this.apply_mutability(prim.some, type_spec.is_mutable);
+        }
+        let qual_result: Option<BoundType> = this.try_resolve_qualified_type(type_spec, scope);
+        if (qual_result.is_some()) {
+            return this.apply_mutability(qual_result.some, type_spec.is_mutable);
+        }
+        let type_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(type_spec.name);
+        if (type_sym.is_some()) {
+            let result: mut BoundType = type_sym.some.type_sym.bound_type;
+            if (cast<i64>(type_spec.generic_args.size()) > 0) {
+                result = result.with_generic_args(this.resolve_generic_args(type_spec, scope));
+            }
+            return this.apply_mutability(result, type_spec.is_mutable);
+        }
+        this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+            "Can't resolve type specifier '" + type_spec.build_text() + "'",
+            type_spec.location);
+        return this.type_registry.make_error_type();
+    }
+
+    // Resolve an iterable type (e.g., i64[] → IIterator<i64>).
+    fun resolve_iterable_type(this, element_type: BoundType, type_spec: TypeSpecifier, scope: BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_iterable_type");
+        // Try unqualified lookup first (works if __builtin is imported)
+        let iface_sym: Option<BoundSymbol> = if (scope.lookup_type_in_scope("IIterator").is_some()) {
+            scope.lookup_type_in_scope("IIterator")
+        } else {
+            let parts2: mut _utils.List<string> = new _utils.List<string>();
+            parts2.push("__builtin");
+            parts2.push("IIterator");
+            scope.resolve_qualified(parts2)
+        };
+        if (iface_sym.is_some() && iface_sym.some is BoundSymbol.type_sym) {
+            let iface_type: mut BoundType = iface_sym.some.type_sym.bound_type;
+            let gen_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            gen_args.push(element_type.with_mutability(new Mutability.Immutable()));
+            iface_type = iface_type.with_generic_args(gen_args);
+            return this.apply_mutability(iface_type, type_spec.is_mutable);
+        }
+        // If IIterator not found, give a clear error
+        this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+            "Can't resolve IIterator for iterable type '" + type_spec.build_text() + "'",
             type_spec.location);
         return this.type_registry.make_error_type();
     }

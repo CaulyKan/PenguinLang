@@ -62,7 +62,21 @@ namespace BabyPenguin.CSharpBackend
             var sb = new StringBuilder();
             sb.AppendLine($"public sealed class {name} : BabyPenguin.CSharpBackend.Runtime.IHasMeta");
             sb.AppendLine("{");
-            sb.AppendLine($"    public static readonly BabyPenguin.CSharpBackend.Runtime.Meta META = new(\"{cls.FullName()}\", System.Array.Empty<BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry>());");
+            // Build interface map entries so Meta.Is() can check interface implementation
+            var ifaceEntries = new List<string>();
+            foreach (var vt in cls.VTables)
+            {
+                var ifaceId = vt.Interface.FullName();
+                if (ifaceId.StartsWith("!mut ")) ifaceId = ifaceId[5..];
+                ifaceEntries.Add($"new BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry(\"{ifaceId}\", System.Array.Empty<System.Delegate>())");
+            }
+            var ifaceArray = ifaceEntries.Count > 0
+                ? $"new BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry[] {{ {string.Join(", ", ifaceEntries)} }}"
+                : "System.Array.Empty<BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry>()";
+            var typeName = cls.FullName();
+            if (typeName.StartsWith("!mut ")) typeName = typeName[5..];
+            else if (typeName.StartsWith("mut ")) typeName = typeName[4..];
+            sb.AppendLine($"    public static readonly BabyPenguin.CSharpBackend.Runtime.Meta META = new(\"{typeName}\", {ifaceArray});");
             sb.AppendLine("    public BabyPenguin.CSharpBackend.Runtime.Meta __meta => META;");
             foreach (var field in cls.Symbols.Where(s => s.IsVariable && !s.IsFunction))
             {
@@ -85,7 +99,21 @@ namespace BabyPenguin.CSharpBackend
             var sb = new StringBuilder();
             sb.AppendLine($"public struct {name} : BabyPenguin.CSharpBackend.Runtime.IHasMeta");
             sb.AppendLine("{");
-            sb.AppendLine($"    public static readonly BabyPenguin.CSharpBackend.Runtime.Meta META = new(\"{enm.FullName()}\", System.Array.Empty<BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry>());");
+            // Build interface map entries so Meta.Is() can check interface implementation
+            var ifaceEntries = new List<string>();
+            foreach (var vt in enm.VTables)
+            {
+                var ifaceId = vt.Interface.FullName();
+                if (ifaceId.StartsWith("!mut ")) ifaceId = ifaceId[5..];
+                ifaceEntries.Add($"new BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry(\"{ifaceId}\", System.Array.Empty<System.Delegate>())");
+            }
+            var ifaceArray = ifaceEntries.Count > 0
+                ? $"new BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry[] {{ {string.Join(", ", ifaceEntries)} }}"
+                : "System.Array.Empty<BabyPenguin.CSharpBackend.Runtime.InterfaceMapEntry>()";
+            var typeName = enm.FullName();
+            if (typeName.StartsWith("!mut ")) typeName = typeName[5..];
+            else if (typeName.StartsWith("mut ")) typeName = typeName[4..];
+            sb.AppendLine($"    public static readonly BabyPenguin.CSharpBackend.Runtime.Meta META = new(\"{typeName}\", {ifaceArray});");
             sb.AppendLine("    public BabyPenguin.CSharpBackend.Runtime.Meta __meta => META;");
             sb.AppendLine("    public int _value;             // variant tag (matches IR member name)");
             sb.AppendLine("    public object _containing_value; // variant payload (matches IR member name)");

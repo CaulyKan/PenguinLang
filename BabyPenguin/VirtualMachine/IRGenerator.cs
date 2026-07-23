@@ -247,6 +247,21 @@ namespace BabyPenguin.VirtualMachine
                         }
                         break;
 
+                    case TypeCheckInstruction cmd:
+                        {
+                            var operand = ResolveReg(cmd.Operand);
+                            var result = ResolveReg(cmd.Target);
+                            var typeId = cmd.CheckType.FullName();
+                            // Strip mutability prefixes (!mut / mut) for type comparison
+                            if (typeId.StartsWith("!mut "))
+                                typeId = typeId[5..];
+                            else if (typeId.StartsWith("mut "))
+                                typeId = typeId[4..];
+                            builder.EmitIsInstance(result, operand, typeId, loc);
+                            SyncGlobalIfNeeded(cmd.Target.FullName(), result, loc);
+                        }
+                        break;
+
                     case GotoInstruction cmd:
                         {
                             if (cmd.Condition != null)

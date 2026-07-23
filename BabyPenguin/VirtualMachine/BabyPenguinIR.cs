@@ -203,4 +203,16 @@ namespace BabyPenguin.VirtualMachine
         override public string StringOP1 => Enum.ToString() ?? "";
         override public string StringResult => TargetValue.ToString() ?? "";
     }
+
+    public class TypeCheckInstruction(SourceLocation sourceLocation, ISymbol operand, IType checkType, ISymbol target) : BabyPenguinIR
+    {
+        public ISymbol Operand { get; } = operand;
+        public IType CheckType { get; } = checkType;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ISINST";
+        override public string StringOP1 => Operand.ToString() ?? "";
+        override public string StringOP2 => CheckType.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
 }

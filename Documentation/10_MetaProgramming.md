@@ -2,6 +2,14 @@
 
 Penguin-lang provides powerful compile-time meta-programming capabilities through **Meta Functions** and **Compile-Time Evaluation**. This allows you to write code that executes during compilation, enabling zero-cost abstractions and type-level computations.
 
+> **Status (2026-07-25).** This document describes the target design; implementation is in progress (EmperorPenguin Pass3).
+>
+> **v1 surface:** `#fun`, `#if` / `#elif` / `#else`, `#for` / `#while` / `#break` / `#continue`, `#template`, `#typeof`, `#compiler`, `#define` / `#defined` / `#option`, and `cast<T>()` (there is **no** `#cast` — it was a typo for the existing `cast<T>()`).
+>
+> **Deferred to a later version (marked `[v2]` where they appear):** `Map`, collection-iteration `#for (let x : coll)`, the rich reflection API (`MethodInfo` / `FieldInfo` properties, `get_methods_with_attribute`, type-value method chains such as `#typeof(T).as_enum().enum_items()`), and the exact `compiler()` / `type` reflection surface. The API tables below are **provisional** and will be finalized in a separate design pass, after which code and docs will be refactored together.
+>
+> **`#` is the meta-space access prefix.** `#fun()` calls a meta function; `#item` reads a meta-space variable (e.g. a `#for` loop variable); `.` performs member access on the result. (The precise rules for when `#` is optional *inside* meta context are still being finalized.)
+
 ## Overview
 
 | Feature                | Syntax             | Description                                            |
@@ -9,7 +17,7 @@ Penguin-lang provides powerful compile-time meta-programming capabilities throug
 | Meta Function          | `#fun`             | Function executed at compile time via JIT              |
 | Meta Function Call     | `#func_name()`     | Invoke a meta function                                 |
 | Compile-Time Condition | `#if` / `#elif` / `#else` | Conditional code generation                     |
-| Compile-Time Loop      | `#for` / `#while`  | Loop unrolling at compile time                         |
+| Compile-Time Loop      | `#for` / `#while` / `#break` / `#continue` | Loop unrolling at compile time               |
 | Generic Declaration    | `#template`        | Syntactic sugar for type-level meta functions          |
 | Compile-Time Options   | `#define` / `#defined` / `#option` | Built-in meta functions; compile-time key-value store |
 | Compiler Interface     | `#compiler()`      | Built-in meta function; access compiler internals     |
@@ -152,11 +160,11 @@ class A {}
 fun default_value() -> T {
     #if (T == i32) {
         return 0;
-    } else if (T == f32) {
+    } #elif (T == f32) {
         return 0.0;
-    } else if (T == string) {
+    } #elif (T == string) {
         return "";
-    } else {
+    } #else {
         return T.default();
     }
 }
@@ -164,18 +172,20 @@ fun default_value() -> T {
 
 **Important**: `#if` is a hardcoded compiler construct (not a user-defined `#fun`). Its condition is evaluated directly by the compiler in the host process, and only the selected branch survives to subsequent compilation passes. This is more efficient than JIT-compiling an `if` function and avoids bootstrap circularity.
 
+> **Branch tokens are `#`-prefixed.** `#elif` and `#else` are parser keywords, **not** plain `else` / `else if`. A plain `else if` after `#if { … }` would parse as a *runtime* `if` nested inside the compile-time else branch — a different semantics. Always write `#elif` / `#else`.
+
 ```penguin
 // CORRECT: All branches are compile-time
 #if (condition) {
     // ...
-} else {
+} #else {
     // This is also compile-time
 }
 
 // CORRECT: #if at global scope controls entire definitions
 #if (option("PLATFORM") == "linux") {
     extern fun linux_specific() -> i32;
-} else {
+} #else {
     extern fun generic_impl() -> i32;
 }
 ```
@@ -218,6 +228,22 @@ initial {
 ```
 
 **Implementation note**: `#for` and `#while` are hardcoded compiler constructs (same as `#if`), not JIT-compiled. The compiler evaluates loop bounds and conditions directly, unrolling the body accordingly. This avoids the overhead of JIT for simple compile-time iteration.
+
+> **`#for` grammar.** `#for` reuses the standard (non-`#`) for-grammar, prefixed with `#` — e.g. `#for (i in 0..N) { … }`. The loop variable lives in meta space and is read as `#i`. A collection-iteration form `#for (let x : coll)` is planned but **deferred `[v2]`**.
+
+**Compile-time loop control — `#break` / `#continue`.** Inside a meta-loop body, plain `break` / `continue` are *runtime* (emitted into the unrolled code, e.g. inside a runtime loop in the body). `#break` / `#continue` are *compile-time* — they abort or skip the current unrolling iteration. They are `#`-prefixed parser keywords for the same reason as `#else` / `#elif` (to keep compile-time control flow unambiguous and visible), and are rarely needed.
+
+```penguin
+#fun first_matching(start: u32, end: u32) -> u32 {
+    #for (i in start..end) {
+        #if (is_prime(i)) {
+            return i;          // runtime return, emitted in the unrolled body
+        }
+        // (no #break here — the loop fully unrolls)
+    }
+    return 0;
+}
+```
 
 ## Generic Declaration: `#template`
 
@@ -266,6 +292,8 @@ initial {
 ### `#compiler()` — Compiler Context Access
 
 `#compiler()` returns a reference to the current compiler context, giving meta functions access to the compiler's internal state for reflection, code generation, and error reporting.
+
+> ⚠️ **Provisional API.** The exact method surface of the compiler context (and the shapes of `FieldInfo`, `MethodInfo`, `VariantInfo`, `SymbolInfo`) is **not yet finalized** — the table below is illustrative, not a stable contract. It will be defined in a separate design pass, after which the compiler code and this document will be updated together. Treat anything beyond `create_ast` / `create_empty_ast` / `create_function_ast` / `resolve_type` / `error` / `warn` / `set_option` / `get_option` / `has_option` as tentative.
 
 ### Available API Methods
 
@@ -443,6 +471,8 @@ class Point {
 
 **PenguinLang**
 
+> ⚠️ **`[v2]`** — the `enum_to_string` meta function below uses collection-iteration `#for`, a type-value method chain (`#typeof(T).as_enum().enum_items()`), and `#item`, all of which are deferred. A v1 equivalent would use `#while` + an index + `compiler().get_enum_variants(t).at(i)`. (`#cast` was a typo for the existing `cast<int>()`.)
+
 ```penguin
 enum Color {
     Red;
@@ -453,7 +483,7 @@ enum Color {
 #template<T: Type>
 fun enum_to_string(v: T) -> string {
     #for (let item : #typeof(T).as_enum().enum_items()) {
-        if (#item.value == #cast<int>(v)) {
+        if (#item.value == cast<int>(v)) {
             return #item.name;
         }
     }
@@ -621,6 +651,8 @@ function createBuilder<T extends object>(): any { /* ... */ }
 **Problem**: Given an `interface` describing a service's methods, automatically generate an HTTP client that maps method calls to `fetch()` invocations — including URL construction, serialization, and error handling.
 
 **PenguinLang**
+
+> ⚠️ **`[v2]`** — uses the deferred rich reflection API: `compiler().get_methods`, `m.parameters`, `m.return_type`, and `params.to_signature()`.
 
 ```penguin
 interface IUserService {
@@ -900,6 +932,8 @@ function safeEquals<T>(a: T, b: T): boolean {
 **Problem**: Define a state machine by annotating methods with states/transitions, then automatically generate the `transition(event)` dispatch function and validate that all states are reachable and all transitions are handled.
 
 **PenguinLang**
+
+> ⚠️ **`[v2]`** — uses `Map` (not yet in stdlib), `compiler().get_methods_with_attribute`, and `m.get_attribute("state").value`, all deferred.
 
 ```penguin
 // User writes: annotate methods with @state

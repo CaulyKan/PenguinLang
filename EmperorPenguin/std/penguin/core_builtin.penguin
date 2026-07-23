@@ -70,7 +70,11 @@ namespace __builtin {
 
     #template(T: type)
     interface IIterator {
+        impl IReferenceType;
         fun next(mut this) -> Option<T>;
+        fun iter(mut this) -> mut IIterator<T> {
+            return this;
+        }
     }
 
     #template(T: type)
@@ -144,38 +148,52 @@ namespace __builtin {
         first: K;
         second: V;
     }
-}
 
-// Range iterator: a simple numeric range for for-loop support
-class RangeIterator {
-    current: mut i64 = 0;
-    end: i64 = 0;
-    fun new(mut this, start: i64, end: i64) {
-        this.current = start;
-        this.end = end;
-    }
-    fun next(mut this) -> __builtin.Option<i64> {
-        if (this.current < this.end) {
-            let val: i64 = this.current;
-            this.current = this.current + 1;
-            return new __builtin.Option<i64>.some(val);
+    // Range iterator: a simple numeric range for for-loop support
+    class RangeIterator {
+        current: mut i64 = 0;
+        end: i64 = 0;
+        fun new(mut this, start: i64, end: i64) {
+            this.current = start;
+            this.end = end;
         }
-        return new __builtin.Option<i64>.none();
+        fun next(mut this) -> __builtin.Option<i64> {
+            if (this.current < this.end) {
+                let val: i64 = this.current;
+                this.current = this.current + 1;
+                return new __builtin.Option<i64>.some(val);
+            }
+            return new __builtin.Option<i64>.none();
+        }
+        fun iter(mut this) -> mut RangeIterator {
+            return this;
+        }
+        impl IIterator<i64> {
+            fun next(mut this) -> __builtin.Option<i64> {
+                if (this.current < this.end) {
+                    let val: i64 = this.current;
+                    this.current = this.current + 1;
+                    return new __builtin.Option<i64>.some(val);
+                }
+                return new __builtin.Option<i64>.none();
+            }
+        }
     }
-}
 
-class Range {
-    start: i64 = 0;
-    end: i64 = 0;
-    fun new(mut this, start: i64, end: i64) {
-        this.start = start;
-        this.end = end;
+    class Range {
+        start: i64 = 0;
+        end: i64 = 0;
+        fun new(mut this, start: i64, end: i64) {
+            this.start = start;
+            this.end = end;
+        }
+        fun iter(mut this) -> mut RangeIterator {
+            return new RangeIterator(this.start, this.end);
+        }
     }
-    fun iter(mut this) -> mut RangeIterator {
-        return new RangeIterator(this.start, this.end);
-    }
-}
 
-fun range(start: i64, end: i64) -> Range {
-    return new Range(start, end);
+    fun range(start: i64, end: i64) -> mut RangeIterator {
+        return new RangeIterator(start, end);
+    }
+
 }

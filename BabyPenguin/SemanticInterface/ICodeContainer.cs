@@ -1519,19 +1519,29 @@ namespace BabyPenguin.SemanticInterface
                         }
                         else
                         {
+                            // First try to resolve as enum variant check (e.g. `x is Option.some`)
                             var leftVar = AddExpression(exp.SubExpressions[0], false);
                             var rightVar = Model.ResolveSymbol(exp.SubExpressions[1].Text, s => s.IsEnum, scope: this);
-                            if (rightVar == null)
-                                throw new BabyPenguinException($"Cant resolve enum symbol '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
-                            var enumValue = ((rightVar is MutableSymbolProxy proxy ? proxy.Symbol : rightVar) as EnumSymbol)!.Value;
-                            var tempRightVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
-                            var tempLeftVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
-                            var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName() + "._value");
-                            if (enumValueSymbol == null)
-                                throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName()}._value'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
-                            AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar, false));
-                            AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempRightVar, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumValue.ToString()));
-                            AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
+                            if (rightVar != null)
+                            {
+                                var enumValue = ((rightVar is MutableSymbolProxy proxy ? proxy.Symbol : rightVar) as EnumSymbol)!.Value;
+                                var tempRightVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
+                                var tempLeftVar = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), exp.SourceLocation);
+                                var enumValueSymbol = Model.ResolveSymbol(leftVar.TypeInfo.FullName() + "._value");
+                                if (enumValueSymbol == null)
+                                    throw new BabyPenguinException($"Cant resolve symbol '{leftVar.TypeInfo.FullName()}._value'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                                AddInstruction(new ReadMemberInstruction(exp.SourceLocation, enumValueSymbol, leftVar, tempLeftVar, false));
+                                AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, tempRightVar, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumValue.ToString()));
+                                AddInstruction(new BinaryOperationInstruction(exp.SourceLocation, BinaryOperatorEnum.Equal, tempLeftVar, tempRightVar, to));
+                            }
+                            else
+                            {
+                                // Fall back to type check (interface or class type check, e.g. `x is IShow`)
+                                var checkType = Model.ResolveType(exp.SubExpressions[1].Text, scope: this);
+                                if (checkType == null)
+                                    throw new BabyPenguinException($"Cant resolve type '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                                AddInstruction(new TypeCheckInstruction(exp.SourceLocation, leftVar, checkType, to));
+                            }
                         }
                     }
                     else

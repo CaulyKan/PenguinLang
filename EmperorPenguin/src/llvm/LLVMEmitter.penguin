@@ -197,6 +197,7 @@ class LLVMEmitter {
     icmp_results: mut _utils.List<string> = new _utils.List<string>();
     type_id_constants: mut _utils.List<TypeIdConstant> = new _utils.List<TypeIdConstant>();
     emitted_interface_ids: mut _utils.List<string> = new _utils.List<string>();
+    pending_iface_ids: mut StringBuilder = new StringBuilder();
     current_unit: Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     func_param_types: mut _utils.List<FuncParamTypes> = new _utils.List<FuncParamTypes>();
     current_sret_llvm_type: mut string = "";
@@ -480,6 +481,10 @@ class LLVMEmitter {
         // Now build the full output: types + globals + declarations + functions
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Emitting type definitions..."); }
         this.emit_type_definitions();
+        // Flush any interface ID constants that were lazily emitted during
+        // function emission (vtable calls may reference interfaces whose
+        // implementing classes haven't had their metadata emitted yet).
+        this.sb.append(this.pending_iface_ids.to_string());
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Emitting global strings..."); }
         this.emit_global_strings();
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Emitting global variables..."); }
@@ -2148,7 +2153,15 @@ class LLVMEmitter {
         _utils.trace_enter("Enter emit_cast(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let operand_resolved: mut string = this.resolve_value(inst.operand);
-        let from_llvm: string = this.ir_type_to_llvm(inst.from_type);
+        let from_ir_type: string = inst.from_type;
+        // When the IR source type is void (e.g. from RDENUM whose payload_type
+        // was not resolved), fall back to the operand's registered LLVM type.
+        let from_llvm: string = if (from_ir_type == "void") {
+            let reg_type: string = this.get_llvm_type(operand_resolved);
+            if (reg_type != "" && reg_type != "void") { reg_type } else { this.ir_type_to_llvm(from_ir_type) }
+        } else {
+            this.ir_type_to_llvm(from_ir_type)
+        };
         let to_llvm: string = this.ir_type_to_llvm(inst.to_type);
 
         // If operand is an icmp result (i1) and target is string, use bool_to_string
@@ -2165,12 +2178,18 @@ class LLVMEmitter {
             operand_resolved = zext_tmp;
         }
 
-        // int → string: call runtime
-        if (this.is_string_type(inst.to_type) && this.is_int_type(inst.from_type)) {
+        // int → string: call runtime. When inst.from_type is void (from RDENUM),
+        // use the resolved from_llvm type to detect the actual integer type.
+        let effective_from: string = if (inst.from_type == "void" && this.is_int_type(from_llvm)) {
+            from_llvm
+        } else {
+            inst.from_type
+        };
+        if (this.is_string_type(inst.to_type) && this.is_int_type(effective_from)) {
             this.needs_int_to_string = true;
-            if (inst.from_type == "i64") {
+            if (effective_from == "i64") {
                 this.emit_line("  " + result_name + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + operand_resolved + ")");
-            } else if (inst.from_type == "i8" || inst.from_type == "i16") {
+            } else if (effective_from == "i8" || effective_from == "i16") {
                 // Signed i8/i16 must be sign-extended to i32 before calling
                 // _emperor_int_to_string(i32); otherwise LLVM zero-extends,
                 // turning negative values into large positive integers.
@@ -2665,34 +2684,73 @@ class LLVMEmitter {
         _utils.trace_enter("Enter emit_call_virt");
         this.needs_vtable_lookup = true;
         let obj_resolved: string = this.resolve_value(inst.obj);
-        let ret_type: string = this.ir_type_to_llvm(inst.ret_type);
+        let result_name: string = inst.result_value.display();
+
+        // Check if callee returns an aggregate that uses sret (RVO),
+        // mirroring emit_call's sret logic for enum/struct returns.
+        let callee_sret_type: mut string = "";
+        if (this.needs_sret(inst.ret_type)) {
+            callee_sret_type = this.get_sret_llvm_type(inst.ret_type);
+        }
 
         // Enums are now registered as ptr (like value classes), so obj_resolved
         // is already a pointer — no need to materialize enum structs.
 
         // 1. Look up function pointer via C runtime helper
         let func_ptr_name: string = this.next_tmp();
+        // Ensure the interface ID string constant is emitted (the class/enum that
+        // implements this interface may not have its metadata emitted yet).
+        if (!this.list_contains(this.emitted_interface_ids, inst.interface_id)) {
+            this.emitted_interface_ids.push(inst.interface_id);
+            let id_len: i64 = string_length(inst.interface_id);
+            this.pending_iface_ids.append("@." + inst.interface_id + "_interface_id = private unnamed_addr constant [" + cast<string>(id_len + 1) + " x i8] c\"" + inst.interface_id + "\\00\"\n");
+        }
         let iface_id_name: string = "@." + inst.interface_id + "_interface_id";
         this.emit_line("  " + func_ptr_name + " = call ptr @_emperor_vtable_lookup(ptr " + obj_resolved + ", ptr " + iface_id_name + ", i32 " + cast<string>(inst.vtable_slot) + ")");
 
-        // 2. Build args string (prepend obj as first arg)
-        let args_sb: mut StringBuilder = new StringBuilder();
-        let ai: mut i64 = 0;
-        while (ai < cast<i64>(inst.args.size())) {
-            if (ai > 0) { args_sb.append(", "); }
-            let arg: IRValue = inst.args.at(cast<u64>(ai)).some;
-            let resolved: string = this.resolve_value(arg);
-            let arg_type: string = this.ir_type_to_llvm(arg.get_ir_type());
-            args_sb.append(arg_type + " " + resolved);
-            ai = ai + 1;
-        }
+        // 2. Build args string and sret buffer (if needed).
+        // Use if-expression value form (trailing expression, no `;`) — PenguinLang
+        // locals are not reassignable, and an if whose branches are statements is void.
+        let rest_args: string = this.emit_args(inst.args);
+        let sret_tmp: string = if (callee_sret_type != "") {
+            let tmp: string = this.next_tmp();
+            this.emit_entry_alloca(tmp, callee_sret_type);
+            tmp
+        } else {
+            ""
+        };
+        let args_str: string = if (callee_sret_type != "") {
+            if (string_length(rest_args) > 0) {
+                "ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + rest_args
+            } else {
+                "ptr sret(" + callee_sret_type + ") " + sret_tmp
+            }
+        } else {
+            rest_args
+        };
 
         // 3. Indirect call through function pointer
-        if (inst.ret_type != "void") {
-            let result_name: string = inst.result_value.display();
-            this.emit_line("  " + result_name + " = call " + ret_type + " " + func_ptr_name + "(" + args_sb.to_string() + ")");
+        if (callee_sret_type != "") {
+            // sret: call void, then map result to sret buffer
+            this.emit_line("  call void " + func_ptr_name + "(" + args_str + ")");
+            this.reg_map.push(new RegMapping(result_name, sret_tmp));
+            this.register_llvm_type(result_name, "ptr");
+            this.register_llvm_type(sret_tmp, "ptr");
+            // If the result register is mutable, copy sret buffer into its alloca
+            if (this.is_mutable_reg(result_name)) {
+                let dst_alloca: string = this.get_alloca_name(result_name);
+                let loaded: string = this.next_tmp();
+                this.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                this.emit_line("  store " + callee_sret_type + " " + loaded + ", ptr " + dst_alloca);
+            }
+        } else if (inst.ret_type != "void") {
+            let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
+            this.emit_line("  " + result_name + " = call " + ret_llvm + " " + func_ptr_name + "(" + args_str + ")");
+            if (ret_llvm != "void") {
+                this.register_llvm_type(result_name, ret_llvm);
+            }
         } else {
-            this.emit_line("  call void " + func_ptr_name + "(" + args_sb.to_string() + ")");
+            this.emit_line("  call void " + func_ptr_name + "(" + args_str + ")");
         }
     }
 
@@ -2815,7 +2873,20 @@ class LLVMEmitter {
         if (inst.payload.is_some()) {
             if (layout.has_payload) {
                 let pay_val_raw: string = this.resolve_value(inst.payload.some);
-                let pay_type: string = layout.payload_llvm_type;
+                // Find the variant's specific payload type; fall back to layout max-type
+                let pay_type: mut string = layout.payload_llvm_type;
+                let variant_payload_bound_type: mut Option<BoundType> = new Option<BoundType>.none();
+                let vi2: mut i64 = 0;
+                while (vi2 < cast<i64>(layout.variants.size())) {
+                    let var2: EnumVariantLayout = layout.variants.at(cast<u64>(vi2)).some;
+                    if (var2.index == inst.variant_idx) {
+                        if (string_length(var2.payload_llvm_type) > 0) {
+                            pay_type = var2.payload_llvm_type;
+                        }
+                        variant_payload_bound_type = var2.payload_bound_type;
+                    }
+                    vi2 = vi2 + 1;
+                }
                 let pay_val: string = this.coerce_operand(pay_val_raw, pay_type);
                 let pay_ptr: string = this.next_tmp();
                 this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 2");
@@ -2826,43 +2897,53 @@ class LLVMEmitter {
                 // would violate that when the creating function returns.
                 if (pay_type == "ptr") {
                     let heap_copied: mut bool = false;
-                    // Find the variant layout to get the payload bound type
-                    let vi: mut i64 = 0;
-                    while (vi < cast<i64>(layout.variants.size())) {
-                        let variant: EnumVariantLayout = layout.variants.at(cast<u64>(vi)).some;
-                        if (variant.index == inst.variant_idx && variant.payload_bound_type.is_some()) {
-                            let pbt: BoundType = variant.payload_bound_type.some;
-                            // Check if the payload is a class type (not string, not primitive)
-                            if (pbt.kind is TypeKind.ClassKind) {
-                                if (pbt.type_definition.is_some()) {
-                                    let class_full_name: string = pbt.type_definition.some.class_def.full_name;
-                                    let class_name: string = this.strip_global_prefix(class_full_name);
-                                    let payload_class_layout: Option<ClassLayout> = this.find_class_layout(class_name);
-                                    if (payload_class_layout.is_some()) {
-                                        if (payload_class_layout.some.is_value_type) {
-                                            // Heap-allocate a copy of the value type
-                                            this.has_iref_class = true;
-                                            let heap_ptr: string = this.next_tmp();
-                                            this.emit_line("  " + heap_ptr + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(payload_class_layout.some.sizeof_object) + ")");
-                                            let struct_type: string = payload_class_layout.some.llvm_struct_type;
-                                            // Load struct from stack ptr, store to heap ptr
-                                            let loaded: string = this.next_tmp();
-                                            this.emit_line("  " + loaded + " = load " + struct_type + ", ptr " + pay_val);
-                                            this.emit_line("  store " + struct_type + " " + loaded + ", ptr " + heap_ptr);
-                                            this.emit_line("  store ptr " + heap_ptr + ", ptr " + pay_ptr);
-                                            heap_copied = true;
-                                        }
+                    if (variant_payload_bound_type.is_some()) {
+                        let pbt: BoundType = variant_payload_bound_type.some;
+                        // Check if the payload is a class type (not string, not primitive)
+                        if (pbt.kind is TypeKind.ClassKind) {
+                            if (pbt.type_definition.is_some()) {
+                                let class_full_name: string = pbt.type_definition.some.class_def.full_name;
+                                let class_name: string = this.strip_global_prefix(class_full_name);
+                                let payload_class_layout: Option<ClassLayout> = this.find_class_layout(class_name);
+                                if (payload_class_layout.is_some()) {
+                                    if (payload_class_layout.some.is_value_type) {
+                                        // Heap-allocate a copy of the value type
+                                        this.has_iref_class = true;
+                                        let heap_ptr: string = this.next_tmp();
+                                        this.emit_line("  " + heap_ptr + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(payload_class_layout.some.sizeof_object) + ")");
+                                        let struct_type: string = payload_class_layout.some.llvm_struct_type;
+                                        // Load struct from stack ptr, store to heap ptr
+                                        let loaded: string = this.next_tmp();
+                                        this.emit_line("  " + loaded + " = load " + struct_type + ", ptr " + pay_val);
+                                        this.emit_line("  store " + struct_type + " " + loaded + ", ptr " + heap_ptr);
+                                        this.emit_line("  store ptr " + heap_ptr + ", ptr " + pay_ptr);
+                                        heap_copied = true;
                                     }
                                 }
                             }
                         }
-                        vi = vi + 1;
                     }
                     if (!heap_copied) {
                         this.emit_line("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr);
                     }
                 } else {
-                    this.emit_line("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr);
+                    // If the variant's payload type differs from the struct field type
+                    // (e.g. i32 vs ptr for Result<u32,string>.ok), convert via inttoptr
+                    // so the store matches the struct field declaration.
+                    if (pay_type != layout.payload_llvm_type && layout.payload_llvm_type == "ptr") {
+                        let inttoptr_val: string = if (this.is_wider_int("i64", pay_type)) {
+                            let ext_tmp2: string = this.next_tmp();
+                            this.emit_line("  " + ext_tmp2 + " = zext " + pay_type + " " + pay_val + " to i64");
+                            ext_tmp2
+                        } else {
+                            pay_val
+                        };
+                        let as_ptr: string = this.next_tmp();
+                        this.emit_line("  " + as_ptr + " = inttoptr i64 " + inttoptr_val + " to ptr");
+                        this.emit_line("  store ptr " + as_ptr + ", ptr " + pay_ptr);
+                    } else {
+                        this.emit_line("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr);
+                    }
                 }
             }
         }
@@ -3198,13 +3279,13 @@ class LLVMEmitter {
         }
 
         let layout: EnumLayout = found.some;
-        // Use the layout's payload type for correct load (handles enum-as-payload correctly)
+        // Use the IR instruction's payload type for correct load.
+        // llvm_type is derived from inst.payload_type (the variant-specific type);
+        // layout.payload_llvm_type is the max-size union field type and may differ
+        // (e.g. "ptr" vs "i32" for Result<u32,string>.ok).
         let payload_load_type: mut string = llvm_type;
-        if (layout.has_payload) {
-            let payload_len: i64 = string_length(layout.payload_llvm_type);
-            if (payload_len > 0) {
-                payload_load_type = layout.payload_llvm_type;
-            }
+        if (payload_load_type == "void" && layout.has_payload && string_length(layout.payload_llvm_type) > 0) {
+            payload_load_type = layout.payload_llvm_type;
         }
         // enum_resolved may be an enum struct value or a pointer to one (sret alloca).
         // If it is a pointer, GEP the payload directly; otherwise alloca+store first.
@@ -3335,10 +3416,13 @@ class LLVMEmitter {
             let arg: IRValue = args.at(cast<u64>(i)).some;
             let arg_ir_type: string = arg.get_ir_type();
             let resolved: string = this.resolve_value(arg);
-            // Skip void/unknown arguments (can occur from VM enum variant check issues)
+            // Skip void/unknown arguments only if there is no registered LLVM type
+            // (e.g. enum payload access may have void IR type but ptr LLVM type).
             if (arg_ir_type == "void" || resolved == "unknown") {
-                i = i + 1;
-                continue;
+                if (this.get_llvm_type(resolved) == "" || this.get_llvm_type(resolved) == "void") {
+                    i = i + 1;
+                    continue;
+                }
             }
             if (!first) { sb2.append(", "); }
             first = false;
