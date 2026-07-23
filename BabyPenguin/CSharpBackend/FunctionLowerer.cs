@@ -18,13 +18,14 @@ namespace BabyPenguin.CSharpBackend
         private IRFunction _f = null!;
         private string _retCs = "void";
         private readonly Dictionary<int, FunptrSrc> _funptr = new();
+        private readonly IRModule _irModule;
 
         private abstract record FunptrSrc;
         private record MethodRef(IRValue Obj, string MethodCs) : FunptrSrc;
         private record FuncRef(string Name) : FunptrSrc;
         private record VirtualMethodRef(IRValue Obj, string InterfaceMethodMangled) : FunptrSrc;
 
-        public FunctionLowerer(CSharpEmitter emitter) { _emitter = emitter; }
+        public FunctionLowerer(CSharpEmitter emitter, IRModule irModule) { _emitter = emitter; _irModule = irModule; }
 
         public string Lower(IRFunction f)
         {
@@ -231,10 +232,25 @@ namespace BabyPenguin.CSharpBackend
                 if (src is VirtualMethodRef vr)
                 {
                     // Interface virtual dispatch: use the runtime type to find the implementation.
+                    // Determine if the method expects `this` by checking if the interface method's
+                    // IR function has parameters. Static interface methods have 0 parameters;
+                    // non-static methods have 1+ (the `this` parameter).
                     var objExpr = _emitter.Operand(vr.Obj);
-                    var csArgs = args.Count > 0
-                        ? $"new object?[] {{ {string.Join(", ", args.Select(a => _emitter.Operand(a)))} }}"
-                        : "System.Array.Empty<object?>()";
+                    bool hasThis = true;
+                    var ifaceNorm = CSharpEmitter.Normalize(vr.InterfaceMethodMangled);
+                    if (_irModule.Functions.TryGetValue(ifaceNorm, out var ifaceFunc))
+                        // Check if the method has a `this` parameter by looking for IRArgInst
+                        // instructions. Non-static interface methods always have `this` as a
+                        // parameter (ARG instruction); static methods have none.
+                        hasThis = ifaceFunc.Instructions.OfType<IRArgInst>().Any(a => a.ParamName == "this");
+                    // For non-static methods, the `this` receiver is implicit in the funptr and NOT
+                    // in CALL_FUNC_PTR args, so we prepend it. But the CALL_FUNC_PTR may have been
+                    // emitted with the receiver already as the first arg (iterator/future patterns).
+                    bool receiverExplicit = hasThis ? (args.Count > 0 && Reg(args[0]) == Reg(vr.Obj)) : false;
+                    var allArgs = new List<string>();
+                    if (hasThis && !receiverExplicit) allArgs.Add(objExpr);
+                    allArgs.AddRange(args.Select(a => _emitter.Operand(a)));
+                    var csArgs = $"new object?[] {{ {string.Join(", ", allArgs)} }}";
                     if (result != null && retType != "void")
                         Line($"r_{Reg(result)} = ({_emitter.CsType(result.GetIrType())})BabyPenguin.CSharpBackend.Runtime.GlobalState.InvokeVirtual({objExpr}, \"{vr.InterfaceMethodMangled}\", {csArgs});");
                     else if (retType != "void")

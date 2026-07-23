@@ -119,7 +119,22 @@ namespace BabyPenguin.SemanticPass
                             throw new BabyPenguinException($"Could not resolve type {impl.ForType.Text} in namespace {ns.FullName()}", impl.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
 
                         if (forType.TypeNode.FullName() == implementingClass.FullName())
+                        {
+                            // Orphan principle: at least one of (interface, target type) must be defined
+                            // in the same namespace as the impl block, otherwise it's an orphan impl.
+                            var implNsPrefix = ns.FullName() + ".";
+                            bool interfaceLocal = interfaceTypeNode.FullName().StartsWith(implNsPrefix);
+                            bool typeLocal = forType.FullName().StartsWith(implNsPrefix);
+                            if (!interfaceLocal && !typeLocal)
+                            {
+                                throw new BabyPenguinException(
+                                    $"Orphan interface implementation: impl {interfaceTypeNode.FullName()} "
+                                    + $"for {forType.FullName()} in namespace {ns.FullName()} — "
+                                    + $"neither type is local to this namespace.",
+                                    impl.SourceLocation, code: ErrorCode.E_ORPHAN_IMPL);
+                            }
                             yield return impl;
+                        }
                     }
                 }
             }
@@ -144,13 +159,33 @@ namespace BabyPenguin.SemanticPass
                     {
                         interfaceImplementations = interfaceSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>().ToList();
                     }
+                    else if (container.SyntaxNode is EnumDefinition enumSyntax)
+                    {
+                        interfaceImplementations = enumSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>().ToList();
+                    }
                     else interfaceImplementations = [];
 
                     interfaceImplementations.AddRange(CollectInterfaceForImplementation(container));
 
                     foreach (var implSyntax in interfaceImplementations)
                     {
-                        var vtable = new VTable(Model, implSyntax, container);
+                        // Pre-resolve the interface type with the correct namespace scope.
+                        // For namespace-level impl blocks (e.g. `impl IFoo for Bar`), resolve
+                        // from the containing namespace; for inline impls (inside class body),
+                        // leave null so VTable constructor falls back to implementingClass scope.
+                        IInterfaceNode? preResolvedInterface = null;
+                        if (implSyntax is PenguinLangParser.SyntaxNodes.InterfaceForImplementation)
+                        {
+                            foreach (var ns in Model.Namespaces.SelectMany(n => n.Namespaces))
+                            {
+                                if (ns.SyntaxNode is PenguinLangParser.SyntaxNodes.NamespaceDefinition nsDef && nsDef.InterfaceImplementations.Contains(implSyntax))
+                                {
+                                    preResolvedInterface = Model.ResolveTypeNode(implSyntax.InterfaceType!.Text, s => s is IInterfaceNode, ns) as IInterfaceNode;
+                                    break;
+                                }
+                            }
+                        }
+                        var vtable = new VTable(Model, implSyntax, container, preResolvedInterface);
                         if (container.VTables.Find(v => v.Interface.FullName() == vtable.Interface.FullName()) is VTable existingVTable)
                         {
                             vtable = existingVTable;

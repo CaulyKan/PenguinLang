@@ -1188,7 +1188,7 @@ namespace BabyPenguin.SemanticInterface
             if (member == null && ownerSymbol.TypeInfo.TypeNode is IVTableContainer cls)
             {
                 // try implicit conversion to interface
-                var implicitSymbol = cls.ImplementedInterfaces.Select(intf => Model.ResolveShortSymbol(exp.Member.Name, scope: intf)).First(s => s != null);
+                var implicitSymbol = cls.ImplementedInterfaces.Select(intf => Model.ResolveShortSymbol(exp.Member.Name, scope: intf)).FirstOrDefault(s => s != null);
                 var implicitSymbolType = implicitSymbol?.Parent as ITypeNode ?? throw new BabyPenguinException($"can't get parent of symbol {implicitSymbol?.FullName()}", null, code: ErrorCode.E_INTERNAL);
                 var temp = AllocTempSymbol(implicitSymbolType.ToType(Mutability.Mutable), exp.SourceLocation);
                 AddCastExpression(new(ownerSymbol), temp, exp.SourceLocation);

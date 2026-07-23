@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using BabyPenguin.Symbol;
+using BabyPenguin.SemanticInterface;
 using BabyPenguin.VirtualMachine;
 
 namespace BabyPenguin.CSharpBackend
@@ -66,6 +67,17 @@ namespace BabyPenguin.CSharpBackend
                     }
                 }
             }
+            foreach (var enm in model.Enums)
+            {
+                foreach (var vt in enm.VTables)
+                {
+                    foreach (var slot in vt.Slots)
+                    {
+                        var implName = slot.ImplementationSymbol?.FullName()?.Replace(".", "_") ?? "";
+                        if (!string.IsNullOrEmpty(implName)) implSeeds.Add(Norm(implName));
+                    }
+                }
+            }
 
             var nsNews = (mainFunc != null ? ExtractNamespaceConstructors(mainFunc) : new List<string>())
                 .Select(Norm).Where(n => n != "__builtin_new" && n != "_utils_new").ToList();
@@ -97,11 +109,20 @@ namespace BabyPenguin.CSharpBackend
 
             var typeLowerer = new TypeLowerer(model, emitter);
             var typesSrc = typeLowerer.Lower(typeRoots);
-            var funcLowerer = new FunctionLowerer(emitter);
+            var funcLowerer = new FunctionLowerer(emitter, IRModule);
 
             var functionsSrc = new StringBuilder();
+            // Build mapping from normalized IR name to lowered C# method name for vtable registration.
+            // The function lowering uses emitter.MangleName(f.Name) which replaces all unsafe chars
+            // (dots, hyphens, angle brackets) with underscores. We record this mapping so vtable
+            // registration can look up the correct C# method name by matching against funcByNorm keys.
+            var loweredNames = new Dictionary<string, string>();
             foreach (var f in reachableFuncs)
-                functionsSrc.AppendLine(funcLowerer.Lower(f));
+            {
+                var csName = funcLowerer.Lower(f);
+                functionsSrc.AppendLine(csName);
+                loweredNames[Norm(f.Name)] = emitter.MangleName(f.Name);
+            }
 
             // Globals referenced by reachable functions.
             var globals = new Dictionary<string, string>();
@@ -132,7 +153,7 @@ namespace BabyPenguin.CSharpBackend
             foreach (var ext in externLowerer.LowerExterns(externInfos.Values))
                 src.AppendLine("        " + ext);
 
-            // Generate __InitVtables: register all class interface method implementations for virtual dispatch.
+            // Generate __InitVtables: register all class/enum interface method implementations for virtual dispatch.
             var vtableRegs = new List<string>();
             foreach (var cls in model.Classes)
             {
@@ -141,11 +162,52 @@ namespace BabyPenguin.CSharpBackend
                 {
                     foreach (var slot in vt.Slots)
                     {
-                        var ifaceMethodNorm = CSharpEmitter.Normalize(
-                            (slot.InterfaceSymbol.Parent?.FullName()?.Replace(".", "_") ?? "") + "." + slot.InterfaceSymbol.Name);
-                        var ifaceMethodKey = mangler.Mangle(ifaceMethodNorm);
-                        var implNorm = CSharpEmitter.Normalize(slot.ImplementationSymbol.FullName().Replace(".", "_"));
-                        vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implNorm}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
+                        var ifaceFullName = slot.InterfaceSymbol.Parent?.FullName() ?? "";
+                        var ifaceIrType = "ref<" + ifaceFullName + ">";
+                        var ifaceMethodKey = emitter.MethodCsName(ifaceIrType, slot.InterfaceSymbol.Name);
+                        var implName = CSharpEmitter.Normalize(
+                            slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                        if (!loweredNames.TryGetValue(implName, out var implMethodName))
+                        {
+                            var sb = new StringBuilder();
+                            foreach (var ch in implName)
+                                sb.Append((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                          (ch >= '0' && ch <= '9') || ch == '_' ? ch : '_');
+                            implMethodName = sb.ToString();
+                            if (implMethodName.Length > 0 && !((implMethodName[0] >= 'a' && implMethodName[0] <= 'z') ||
+                                                               (implMethodName[0] >= 'A' && implMethodName[0] <= 'Z') ||
+                                                               implMethodName[0] == '_'))
+                                implMethodName = "_" + implMethodName;
+                        }
+                        vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implMethodName}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
+                    }
+                }
+            }
+            foreach (var enm in model.Enums)
+            {
+                var csTypeName = mangler.Mangle(CSharpEmitter.Normalize(enm.FullName()));
+                foreach (var vt in enm.VTables)
+                {
+                    foreach (var slot in vt.Slots)
+                    {
+                        var ifaceFullName = slot.InterfaceSymbol.Parent?.FullName() ?? "";
+                        var ifaceIrType = "ref<" + ifaceFullName + ">";
+                        var ifaceMethodKey = emitter.MethodCsName(ifaceIrType, slot.InterfaceSymbol.Name);
+                        var implName = CSharpEmitter.Normalize(
+                            slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                        if (!loweredNames.TryGetValue(implName, out var implMethodName))
+                        {
+                            var sb = new StringBuilder();
+                            foreach (var ch in implName)
+                                sb.Append((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                          (ch >= '0' && ch <= '9') || ch == '_' ? ch : '_');
+                            implMethodName = sb.ToString();
+                            if (implMethodName.Length > 0 && !((implMethodName[0] >= 'a' && implMethodName[0] <= 'z') ||
+                                                               (implMethodName[0] >= 'A' && implMethodName[0] <= 'Z') ||
+                                                               implMethodName[0] == '_'))
+                                implMethodName = "_" + implMethodName;
+                        }
+                        vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implMethodName}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
                     }
                 }
             }
@@ -198,7 +260,7 @@ namespace BabyPenguin.CSharpBackend
             var cs = src.ToString();
             prog.Sources.Add(("Generated.cs", cs));
             try { System.IO.File.WriteAllText("/tmp/bp_cs_dump.cs", cs); } catch { }
-            try { System.IO.File.WriteAllText("/tmp/bp_cs_dump.cs", cs); } catch { }
+            try { System.IO.File.WriteAllText("/home/cauly/Workspace/penguinlang/tmp/bp_cs_dump.cs", cs); } catch { }
             return prog;
         }
 

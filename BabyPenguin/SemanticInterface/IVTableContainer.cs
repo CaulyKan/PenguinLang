@@ -18,15 +18,23 @@ namespace BabyPenguin.SemanticInterface
             Interface = interfaceType;
         }
 
-        public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass) : base(model, syntaxNode as SyntaxNode)
+        public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass, IInterfaceNode? preResolvedInterface) : base(model, syntaxNode as SyntaxNode)
         {
-            var type = Model.ResolveTypeNode(syntaxNode.InterfaceType!.Text, s => s is IInterfaceNode, implementingClass);
-            if (type is not IInterfaceNode interfaceType)
+            var interfaceType = preResolvedInterface;
+            if (interfaceType == null)
+            {
+                // Fallback: try resolving from the implementing class's scope.
+                var type = Model.ResolveTypeNode(syntaxNode.InterfaceType!.Text, s => s is IInterfaceNode, implementingClass);
+                interfaceType = type as IInterfaceNode;
+            }
+            if (interfaceType == null)
                 throw new BabyPenguinException($"Could not resolve interface type {syntaxNode.InterfaceType.Text} in class {implementingClass.Name}", null, code: ErrorCode.E_INTERFACE_IMPL);
             Name = "vtable-" + interfaceType.FullName().Replace(".", "-");
             Parent = implementingClass;
             Interface = interfaceType;
         }
+
+        public VTable(SemanticModel model, IInterfaceImplementation syntaxNode, IVTableContainer implementingClass) : this(model, syntaxNode, implementingClass, null) { }
 
         public IInterfaceNode Interface { get; }
 
