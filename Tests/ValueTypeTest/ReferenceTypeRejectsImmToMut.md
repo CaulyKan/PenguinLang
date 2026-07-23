@@ -27,15 +27,14 @@ A class implementing IReferenceType must reject imm→mut assignment. EmperorPen
 ## Compile
 Args: ``
 Env: ``
-ExpectedExitCode: 0
+ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
+ExpectedStderr: CONTAINS E_MUTABILITY
 
 ## Run
 Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `error_expected
-`
+ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

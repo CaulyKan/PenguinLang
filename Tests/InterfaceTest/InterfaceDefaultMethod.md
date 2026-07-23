@@ -12,7 +12,6 @@ Interface with default method using `fun new` in interface (EmperorPenguin-only 
 ## Test Code
 ```
     interface IGreet {
-        fun new(mut this) {}
         fun greet(this) -> string {
             return "hello";
         }

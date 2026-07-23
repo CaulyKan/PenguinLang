@@ -12,7 +12,6 @@ Interface identity check via `is ClassType` after casting to interface.
 ## Test Code
 ```
     interface IAnimal {
-        fun new(mut this) {}
         fun speak(this) -> string;
     }
     class Dog {

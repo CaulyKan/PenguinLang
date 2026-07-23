@@ -175,9 +175,12 @@ namespace BabyPenguin.SemanticPass
                         {
                             if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is IFunction implFunc)
                             {
-                                if (implFunc.ReturnTypeInfo.FullName() != interfaceFunc.ReturnTypeInfo.FullName()
+                                if (implFunc.ReturnTypeInfo.TypeNode.FullName() != interfaceFunc.ReturnTypeInfo.TypeNode.FullName()
                                         || implFunc.Parameters.Count != interfaceFunc.Parameters.Count
-                                        || implFunc.Parameters.Zip(interfaceFunc.Parameters, (p1, p2) => p1.Type.FullName() != p2.Type.FullName()).Any(b => b))
+                                        || implFunc.Parameters
+                                            .Zip(interfaceFunc.Parameters, (p1, p2) => (impl: p1, intf: p2))
+                                            .Where(pair => pair.impl.Name != "this")
+                                            .Any(pair => pair.impl.Type.TypeNode.FullName() != pair.intf.Type.TypeNode.FullName()))
                                 {
                                     throw new BabyPenguinException($"Function {interfaceFunc.Name} in interface {vtable.Interface.Name} does not match the implementation in class {container.Name}", null, code: ErrorCode.E_TYPE_MISMATCH);
                                 }

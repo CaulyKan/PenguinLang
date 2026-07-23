@@ -22,6 +22,7 @@ namespace BabyPenguin.CSharpBackend
         private abstract record FunptrSrc;
         private record MethodRef(IRValue Obj, string MethodCs) : FunptrSrc;
         private record FuncRef(string Name) : FunptrSrc;
+        private record VirtualMethodRef(IRValue Obj, string InterfaceMethodMangled) : FunptrSrc;
 
         public FunctionLowerer(CSharpEmitter emitter) { _emitter = emitter; }
 
@@ -45,7 +46,10 @@ namespace BabyPenguin.CSharpBackend
             _sb.AppendLine("{");
 
             foreach (var (index, irType) in CollectRegisters(f).OrderBy(kv => kv.Key))
-                _sb.AppendLine($"    {_emitter.CsType(irType)} r_{index} = default;");
+            {
+                var csType = _emitter.CsType(irType);
+                _sb.AppendLine($"    {(csType == "void" ? "object" : csType)} r_{index} = default;");
+            }
 
             foreach (var kv in paramByIndex)
                 _sb.AppendLine($"    r_{kv.Value.RegIndex} = p_{kv.Key};");
@@ -139,15 +143,29 @@ namespace BabyPenguin.CSharpBackend
                 case IRRdmbrInst r:
                     if (IsFunptrType(r.Result))
                     {
-                        _funptr[Reg(r.Result)] = new MethodRef(r.Obj, _emitter.MethodCsName(r.Obj.GetIrType(), r.FieldName));
-                        break; // virtual method reference
+                        var irType = r.Obj.GetIrType();
+                        if (_emitter.IsInterfaceType(irType))
+                        {
+                            var ifaceMangled = _emitter.MethodCsName(irType, r.FieldName);
+                            _funptr[Reg(r.Result)] = new VirtualMethodRef(r.Obj, ifaceMangled);
+                        }
+                        else
+                        {
+                            _funptr[Reg(r.Result)] = new MethodRef(r.Obj, _emitter.MethodCsName(irType, r.FieldName));
+                        }
+                        break;
                     }
                     Line($"r_{Reg(r.Result)} = {_emitter.Operand(r.Obj)}.{_emitter.Mangler.Mangle(r.FieldName)};");
                     break;
                 case IRWrmbrInst w: Line($"{_emitter.Operand(w.Obj)}.{_emitter.Mangler.Mangle(w.FieldName)} = {_emitter.Operand(w.Value)};"); break;
                 case IRBrInst b: Line($"goto L_{_emitter.Mangler.Mangle(b.Target.Name)};"); break;
                 case IRBrCondInst b: Line($"if ({_emitter.Operand(b.Cond)}) goto L_{_emitter.Mangler.Mangle(b.TrueLabel.Name)}; else goto L_{_emitter.Mangler.Mangle(b.FalseLabel.Name)};"); break;
-                case IRRetInst r: Line($"return {_emitter.Operand(r.Value)};"); break;
+                case IRRetInst r:
+                    if (_retCs == "void")
+                        Line("return;");
+                    else
+                        Line($"return {_emitter.Operand(r.Value)};");
+                    break;
                 case IRRetVoidInst: Line(_retCs == "void" ? "return;" : "return default;"); break;
                 case IRCallInst c: EmitCall(c.FuncName, c.Args, c.RetType == "void" ? null : c.ResultValue, c.RetType, Line); break;
                 case IRCallVoidInst c: EmitCall(c.FuncName, c.Args, null, "void", Line); break;
@@ -161,7 +179,15 @@ namespace BabyPenguin.CSharpBackend
                     if (n.Payload != null) Line($"r_{Reg(n.Result)}._containing_value = (object){_emitter.Operand(n.Payload)};");
                     break;
                 case IRIsEnumInst i: Line($"r_{Reg(i.Result)} = ({_emitter.Operand(i.EnumValue)}._value == {_emitter.Operand(i.VariantIdx)});"); break;
-                case IRRdenumInst r: Line($"r_{Reg(r.Result)} = ({_emitter.CsType(r.Result.GetIrType())})(object){_emitter.Operand(r.EnumValue)}._containing_value;"); break;
+                case IRRdenumInst r:
+                {
+                    var __rdt = _emitter.CsType(r.Result.GetIrType());
+                    if (__rdt == "void")
+                        Line("// RDENUM void payload (skip)");
+                    else
+                        Line($"r_{Reg(r.Result)} = ({__rdt})(object){_emitter.Operand(r.EnumValue)}._containing_value;");
+                }
+                break;
                 case IRGlobalLoadInst g: Line($"r_{Reg(g.Result)} = G.{_emitter.Mangler.Mangle(g.GlobalName)};"); break;
                 case IRGlobalStoreInst g: Line($"G.{_emitter.Mangler.Mangle(g.GlobalName)} = {_emitter.Operand(g.Value)};"); break;
                 default:
@@ -200,6 +226,21 @@ namespace BabyPenguin.CSharpBackend
                         Line($"r_{Reg(result)} = ({_emitter.CsType(result.GetIrType())}){mr.MethodCs}({csArgs});");
                     else if (retType != "void") Line($"return {mr.MethodCs}({csArgs});");
                     else Line($"{mr.MethodCs}({csArgs});");
+                    return;
+                }
+                if (src is VirtualMethodRef vr)
+                {
+                    // Interface virtual dispatch: use the runtime type to find the implementation.
+                    var objExpr = _emitter.Operand(vr.Obj);
+                    var csArgs = args.Count > 0
+                        ? $"new object?[] {{ {string.Join(", ", args.Select(a => _emitter.Operand(a)))} }}"
+                        : "System.Array.Empty<object?>()";
+                    if (result != null && retType != "void")
+                        Line($"r_{Reg(result)} = ({_emitter.CsType(result.GetIrType())})BabyPenguin.CSharpBackend.Runtime.GlobalState.InvokeVirtual({objExpr}, \"{vr.InterfaceMethodMangled}\", {csArgs});");
+                    else if (retType != "void")
+                        Line($"var __ret = BabyPenguin.CSharpBackend.Runtime.GlobalState.InvokeVirtual({objExpr}, \"{vr.InterfaceMethodMangled}\", {csArgs});");
+                    else
+                        Line($"BabyPenguin.CSharpBackend.Runtime.GlobalState.InvokeVirtual({objExpr}, \"{vr.InterfaceMethodMangled}\", {csArgs});");
                     return;
                 }
                 if (src is FuncRef fr)

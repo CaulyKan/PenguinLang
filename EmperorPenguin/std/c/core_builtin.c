@@ -598,6 +598,17 @@ void _emperor_stringbuilder_append(void* vsb, const char* s) {
     }
 }
 
+// Copy a value-type (ICopy) class instance. The metadata stores the instance
+// size at offset 8 (after the name pointer). This is used when the LLVM backend
+// emits a call to __builtin_ICopy_copy for value-type copies.
+void* _emperor_icopy_copy(void* this_ptr) {
+    void* meta = *(void**)this_ptr;
+    int size = *(int*)(meta + 8);
+    void* new_obj = _emperor_alloc_impl(size);
+    if (new_obj) { memcpy(new_obj, this_ptr, size); }
+    return new_obj;
+}
+
 char* _emperor_stringbuilder_to_string(void* vsb) {
     if (!vsb) {
         char* r = (char*)_emperor_gc_alloc(1, 1);

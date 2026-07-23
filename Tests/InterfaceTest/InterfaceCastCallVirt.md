@@ -12,7 +12,6 @@ Cast object to interface and call virtual method.
 ## Test Code
 ```
     interface IAnimal {
-        fun new(mut this) {}
         fun speak(this) -> string;
     }
     class Dog {

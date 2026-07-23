@@ -53,11 +53,23 @@ namespace BabyPenguin.CSharpBackend
             foreach (var kv in IRModule.Functions)
                 funcByNorm[Norm(kv.Key)] = kv.Value;
 
-            // Stdlib runtime namespace constructors build the scheduler/collections (NEW + classes) and
-            // are unnecessary for non-concurrent programs' output — exclude them from the entry set.
+            // Include concrete interface implementation methods so vtables can dispatch to them.
+            var implSeeds = new List<string>();
+            foreach (var cls in model.Classes)
+            {
+                foreach (var vt in cls.VTables)
+                {
+                    foreach (var slot in vt.Slots)
+                    {
+                        var implName = slot.ImplementationSymbol?.FullName()?.Replace(".", "_") ?? "";
+                        if (!string.IsNullOrEmpty(implName)) implSeeds.Add(Norm(implName));
+                    }
+                }
+            }
+
             var nsNews = (mainFunc != null ? ExtractNamespaceConstructors(mainFunc) : new List<string>())
                 .Select(Norm).Where(n => n != "__builtin_new" && n != "_utils_new").ToList();
-            var entryPoints = nsNews.Concat(IRModule.EntryFunctions.Select(Norm)).ToList();
+            var entryPoints = nsNews.Concat(IRModule.EntryFunctions.Select(Norm)).Concat(implSeeds).Distinct().ToList();
 
             var reachable = ReachableFunctions(entryPoints, externSet, funcByNorm);
             var reachableFuncs = reachable.Where(n => !externSet.Contains(n) && funcByNorm.ContainsKey(n))
@@ -119,10 +131,40 @@ namespace BabyPenguin.CSharpBackend
             var externLowerer = new ExternLowerer(emitter);
             foreach (var ext in externLowerer.LowerExterns(externInfos.Values))
                 src.AppendLine("        " + ext);
+
+            // Generate __InitVtables: register all class interface method implementations for virtual dispatch.
+            var vtableRegs = new List<string>();
+            foreach (var cls in model.Classes)
+            {
+                var csTypeName = mangler.Mangle(CSharpEmitter.Normalize(cls.FullName()));
+                foreach (var vt in cls.VTables)
+                {
+                    foreach (var slot in vt.Slots)
+                    {
+                        var ifaceMethodNorm = CSharpEmitter.Normalize(
+                            (slot.InterfaceSymbol.Parent?.FullName()?.Replace(".", "_") ?? "") + "." + slot.InterfaceSymbol.Name);
+                        var ifaceMethodKey = mangler.Mangle(ifaceMethodNorm);
+                        var implNorm = CSharpEmitter.Normalize(slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                        vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implNorm}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
+                    }
+                }
+            }
+            if (vtableRegs.Count > 0)
+            {
+                src.AppendLine();
+                src.AppendLine("        public static void __InitVtables()");
+                src.AppendLine("        {");
+                foreach (var reg in vtableRegs)
+                    src.AppendLine(reg);
+                src.AppendLine("        }");
+            }
+
             src.AppendLine();
             src.AppendLine("        // Fast-path entry: namespace init then initial routines (synchronous, no scheduler).");
             src.AppendLine("        public static void __builtin__main()");
             src.AppendLine("        {");
+            if (vtableRegs.Count > 0)
+                src.AppendLine("            __InitVtables();");
             foreach (var n in nsNews)
                 src.AppendLine($"            {emitter.MangleName(n)}();");
             foreach (var ir in IRModule.EntryFunctions)
@@ -153,7 +195,10 @@ namespace BabyPenguin.CSharpBackend
             src.AppendLine("}");
 
             var prog = new CSharpProgram();
-            prog.Sources.Add(("Generated.cs", src.ToString()));
+            var cs = src.ToString();
+            prog.Sources.Add(("Generated.cs", cs));
+            try { System.IO.File.WriteAllText("/tmp/bp_cs_dump.cs", cs); } catch { }
+            try { System.IO.File.WriteAllText("/tmp/bp_cs_dump.cs", cs); } catch { }
             return prog;
         }
 

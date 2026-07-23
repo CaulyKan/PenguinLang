@@ -32,7 +32,6 @@ class SemanticModel {
         _utils.trace_enter("Enter register_builtin_interfaces");
         this.register_builtin_interface("IValueType");
         this.register_builtin_interface("IReferenceType");
-        this.register_builtin_interface("ICopy");
     }
 
     fun make_primitive_type(this, name: string) -> mut BoundType {
@@ -1248,6 +1247,25 @@ class SemanticModel {
                 ret = this.resolve_type_specifier(type_spec.return_type.some, scope);
             }
             return this.type_registry.make_function_type(ret, param_types, type_spec.is_async_function_type);
+        }
+        // Check for Self keyword: resolves to the enclosing class/enum/interface type.
+        if (type_spec.name == "Self") {
+            let cur: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+            while (cur.is_some()) {
+                let s: BoundScope = cur.some;
+                if (s.kind is ScopeKind.ClassScope || s.kind is ScopeKind.EnumScope || s.kind is ScopeKind.InterfaceScope) {
+                    // Look up the type symbol in the parent scope by this scope's name.
+                    if (s.parent.is_some()) {
+                        let parent_sym: Option<BoundSymbol> = s.parent.some.lookup_type_in_scope(s.name);
+                        if (parent_sym.is_some() && parent_sym.some is BoundSymbol.type_sym) {
+                            return this.apply_mutability(parent_sym.some.type_sym.bound_type, type_spec.is_mutable);
+                        }
+                    }
+                }
+                if (s.parent.is_some()) { cur = new Option<BoundScope>.some(s.parent.some); }
+                else { cur = new Option<BoundScope>.none(); }
+            }
+            // If Self resolution fails, fall through to normal error handling.
         }
         let prim: Option<BoundType> = this.type_registry.resolve_type(type_spec.name);
         if (prim.is_some()) {
@@ -2642,7 +2660,14 @@ class SemanticModel {
                         let def_sym: Option<BoundSymbol> = spec_iface.scope.some.lookup_symbol(mname);
                         if (def_sym.is_some()) {
                             if (def_sym.some is BoundSymbol.function_sym) {
-                                slot.implementation_method = new Option<BoundFunctionSymbol>.some(def_sym.some.function_sym);
+                                // Skip extern interface methods with no user override
+                                // (e.g. ICopy.copy) — the LLVM backend handles these
+                                // natively (e.g. value-type struct copy) and the extern
+                                // function body is never generated, so the vtable entry
+                                // would reference an undefined symbol.
+                                if (!def_sym.some.function_sym.is_extern) {
+                                    slot.implementation_method = new Option<BoundFunctionSymbol>.some(def_sym.some.function_sym);
+                                }
                             }
                         }
                     }

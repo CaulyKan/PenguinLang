@@ -12,7 +12,6 @@ Interface with default method overridden in implementation class (EmperorPenguin
 ## Test Code
 ```
     interface IGreet {
-        fun new(mut this) {}
         fun greet(this) -> string {
             return "hello";
         }

@@ -790,6 +790,15 @@ namespace BabyPenguin.SemanticInterface
                                     _ => type
                                 };
                             case UnaryOperatorEnum.Plus:
+                                {
+                                    var opType = ResolveExpressionType(exp.SubExpression!);
+                                    if (opType.IsStringType)
+                                        throw new BabyPenguinException(
+                                            "Cannot apply unary '+' to string type",
+                                            exp.SubExpression!.SourceLocation,
+                                            code: ErrorCode.E_TYPE_MISMATCH);
+                                    return opType;
+                                }
                             case UnaryOperatorEnum.BitwiseNot:
                                 return ResolveExpressionType(exp.SubExpression!);
                             case UnaryOperatorEnum.LogicalNot:

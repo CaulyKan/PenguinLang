@@ -9,6 +9,8 @@ namespace BabyPenguin.CSharpBackend
     {
         public NameMangler Mangler { get; }
         private readonly HashSet<string> _interfaceNames;
+        public bool IsInterfaceType(string irType) =>
+            _interfaceNames.Contains(Normalize(InnerTypeName(irType) ?? ""));
         public CSharpEmitter(NameMangler mangler, HashSet<string> interfaceNames)
         {
             Mangler = mangler;

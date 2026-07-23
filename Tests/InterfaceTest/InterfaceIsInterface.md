@@ -12,10 +12,8 @@ Test `is InterfaceType` between derived and base interfaces. Requires EmperorPen
 ## Test Code
 ```
     interface IBase {
-        fun new(mut this) {}
     }
     interface IDerived {
-        fun new(mut this) {}
     }
     class Impl {
         fun new(mut this) {}

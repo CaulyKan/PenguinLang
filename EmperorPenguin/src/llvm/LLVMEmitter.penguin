@@ -664,6 +664,7 @@ class LLVMEmitter {
         }
         if (this.needs_check_class) {
             target.append("declare i32 @_emperor_check_class(ptr, ptr)\n");
+        target.append("declare ptr @_emperor_icopy_copy(ptr)\n");
         }
         if (this.has_main) {
             target.append("declare void @_emperor_gc_init(ptr)\n");
@@ -3766,6 +3767,7 @@ class LLVMEmitter {
         if (sanitized == "lshift" || sanitized == "__builtin_lshift") { return "@_emperor_lshift"; }
         if (sanitized == "rshift" || sanitized == "__builtin_rshift") { return "@_emperor_rshift"; }
         if (sanitized == "string_length" || sanitized == "__builtin_string_length") { return "@_emperor_string_length"; }
+        if (sanitized == "__builtin_ICopy_copy") { return "@_emperor_icopy_copy"; }
         if (sanitized == "string_find" || sanitized == "__builtin_string_find") { return "@_emperor_string_find"; }
         if (sanitized == "string_find_from" || sanitized == "__builtin_string_find_from") { return "@_emperor_string_find_from"; }
         if (sanitized == "string_substring" || sanitized == "__builtin_string_substring") { return "@_emperor_string_substring"; }
