@@ -12,6 +12,22 @@ namespace __builtin {
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
 
+    // JIT compilation API — backed by libpenguin_jit / LLVM ORC JIT.
+    // These are only available when the final binary is linked with --enable-meta;
+    // BabyPenguin's SemanticCompiler accepts them for type-checking but the
+    // runtime will fail if any of these are actually called (they aren't in tests).
+    extern fun penguin_jit_create() -> u64;
+    extern fun penguin_jit_add_module(ctx: u64, name: string, ir_text: string) -> i32;
+    extern fun penguin_jit_lookup(ctx: u64, name: string) -> u64;
+    extern fun penguin_jit_destroy(ctx: u64);
+    extern fun penguin_jit_get_error() -> string;
+    extern fun penguin_jit_call_i64_0(fn: u64) -> i64;
+    extern fun penguin_jit_call_i64_i64(fn: u64, a: i64) -> i64;
+    extern fun penguin_jit_call_i64_i64_i64(fn: u64, a: i64, b: i64) -> i64;
+    extern fun penguin_jit_call_i64_i64_i64_i64(fn: u64, a: i64, b: i64, c: i64) -> i64;
+    extern fun penguin_jit_call_ptr_ptr(fn: u64, a: u64) -> u64;
+    extern fun penguin_jit_call_ptr_ptr_ptr(fn: u64, a: u64, b: u64) -> u64;
+
     fun hello_world() {
         println("hello world!");
     }

@@ -207,6 +207,94 @@ class BoundType {
         if (this.kind is TypeKind.InterfaceKind) { return true; }
         return false;
     }
+
+    fun is_class(this) -> bool {
+        return this.kind is TypeKind.ClassKind;
+    }
+
+    fun is_enum(this) -> bool {
+        return this.kind is TypeKind.EnumKind;
+    }
+
+    fun is_interface(this) -> bool {
+        return this.kind is TypeKind.InterfaceKind;
+    }
+
+    fun is_primitive(this) -> bool {
+        return this.kind is TypeKind.PrimitiveKind;
+    }
+
+    fun class_def(this) -> Option<BoundClassDefinition> {
+        if (this.type_definition.is_some()) {
+            let def: BoundDefinition = this.type_definition.some;
+            if (def is BoundDefinition.class_def) {
+                return new Option<BoundClassDefinition>.some(def.class_def);
+            }
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    fun enum_def(this) -> Option<BoundEnumDefinition> {
+        if (this.type_definition.is_some()) {
+            let def: BoundDefinition = this.type_definition.some;
+            if (def is BoundDefinition.enum_def) {
+                return new Option<BoundEnumDefinition>.some(def.enum_def);
+            }
+        }
+        return new Option<BoundEnumDefinition>.none();
+    }
+
+    fun interface_def(this) -> Option<BoundInterfaceDefinition> {
+        if (this.type_definition.is_some()) {
+            let def: BoundDefinition = this.type_definition.some;
+            if (def is BoundDefinition.interface_def) {
+                return new Option<BoundInterfaceDefinition>.some(def.interface_def);
+            }
+        }
+        return new Option<BoundInterfaceDefinition>.none();
+    }
+
+    fun fields(this) -> _utils.List<BoundClassFieldDefinition> {
+        let cd_opt: Option<BoundClassDefinition> = this.class_def();
+        if (cd_opt.is_some()) {
+            return cd_opt.some.typed_fields();
+        }
+        return new _utils.List<BoundClassFieldDefinition>();
+    }
+
+    fun methods(this) -> _utils.List<BoundFunctionDefinition> {
+        if (this.kind is TypeKind.ClassKind) {
+            let cd_opt: Option<BoundClassDefinition> = this.class_def();
+            if (cd_opt.is_some()) {
+                return cd_opt.some.typed_methods();
+            }
+        }
+        if (this.kind is TypeKind.InterfaceKind) {
+            let id_opt: Option<BoundInterfaceDefinition> = this.interface_def();
+            if (id_opt.is_some()) {
+                let iface: BoundInterfaceDefinition = id_opt.some;
+                let result: mut _utils.List<BoundFunctionDefinition> = new _utils.List<BoundFunctionDefinition>();
+                let i: mut i64 = 0;
+                while (i < cast<i64>(iface.methods.size())) {
+                    let d: BoundDefinition = iface.methods.at(cast<u64>(i)).some;
+                    if (d is BoundDefinition.function_def) {
+                        result.push(d.function_def);
+                    }
+                    i = i + 1;
+                }
+                return result;
+            }
+        }
+        return new _utils.List<BoundFunctionDefinition>();
+    }
+
+    fun variants(this) -> _utils.List<BoundEnumMemberDefinition> {
+        let ed_opt: Option<BoundEnumDefinition> = this.enum_def();
+        if (ed_opt.is_some()) {
+            return ed_opt.some.members;
+        }
+        return new _utils.List<BoundEnumMemberDefinition>();
+    }
 }
 
 }

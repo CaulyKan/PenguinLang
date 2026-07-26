@@ -2,11 +2,13 @@
 
 Penguin-lang provides powerful compile-time meta-programming capabilities through **Meta Functions** and **Compile-Time Evaluation**. This allows you to write code that executes during compilation, enabling zero-cost abstractions and type-level computations.
 
-> **Status (2026-07-25).** This document describes the target design; implementation is in progress (EmperorPenguin Pass3).
+> **Status (2026-08-01).** This document describes the target design. **Reflection Round 1 shipped (2026-07-29)** as an interim — opaque type-tokens + per-op host callbacks (`#field_count(t)` etc.); **Phase 6 v2** (real-pointer reuse: `type = BoundType`, `t.fields()` direct; per-call-site caller-stub `#fun` ABI; `#class`) is the current implementation direction — see `.claude/plans/meta_plan.md` §0.4. Where this doc shows `t.fields()` / `t.methods()` / `t.variants()` (the v2 form), Round 1 used the procedural `#field_count(t)` / `#field_name(t,i)` equivalents; v2 replaces them.
 >
-> **v1 surface:** `#fun`, `#if` / `#elif` / `#else`, `#for` / `#while` / `#break` / `#continue`, `#template`, `#typeof`, `#compiler`, `#define` / `#defined` / `#option`, and `cast<T>()` (there is **no** `#cast` — it was a typo for the existing `cast<T>()`).
+> **v1 surface:** `#fun`, `#if` / `#elif` / `#else`, `#for` / `#while` / `#break` / `#continue`, `#template`, `#typeof`, `#compiler`, `#define` / `#defined` / `#option`, `#class` (meta-only data structures — see [Meta Classes](#meta-classes-class)), and `cast<T>()` (there is **no** `#cast` — it was a typo for the existing `cast<T>()`).
 >
-> **Deferred to a later version (marked `[v2]` where they appear):** `Map`, collection-iteration `#for (let x : coll)`, the rich reflection API (`MethodInfo` / `FieldInfo` properties, `get_methods_with_attribute`, type-value method chains such as `#typeof(T).as_enum().enum_items()`), and the exact `compiler()` / `type` reflection surface. The API tables below are **provisional** and will be finalized in a separate design pass, after which code and docs will be refactored together.
+> **Reflection API — defined (reuse-based, see [Reflection API](#reflection-api) below).** `type` carries reflection methods (`t.fields()` / `t.methods()` / `t.variants()` / `t.display_name()` / `t.is_class()` / …); the objects those return are **the compiler's own bound types** surfaced under the aliases `Field` / `Method` / `Variant` / `Param` / `Symbol`; `compiler()` exposes context operations (`resolve_type`, `create_ast`, `can_compile_expression`, `error`, options). Meta code and the compiler read the **same live objects** — there is no parallel `FieldInfo`/`MethodInfo` hierarchy.
+>
+> **Deferred to a later version (marked `[v2]` where they appear):** `Map`, collection-iteration `#for (let x : coll)`, type-value method chains such as `#typeof(T).as_enum().enum_items()`, and annotations / `get_methods_with_attribute` (PenguinLang has **no annotation system** — do attribute-like generation with `#fun + ast`, passing a description explicitly).
 >
 > **`#` is the meta-space access prefix.** `#fun()` calls a meta function; `#item` reads a meta-space variable (e.g. a `#for` loop variable); `.` performs member access on the result. (The precise rules for when `#` is optional *inside* meta context are still being finalized.)
 
@@ -99,6 +101,46 @@ fun abs(v: T) -> #signed_to_unsigned(T) {
 }
 ```
 
+## Meta Classes: `#class`
+
+`#class` declares a **meta-only** data structure — a class that exists only in the meta compilation (unit B), usable by `#fun`s to hold compile-time intermediate data, and **not emitted to the runtime program**. It is the meta-space counterpart of `#fun`, and (like `#fun`) is declared in unit A source and routed into unit B.
+
+`#class` has **full class capabilities** — fields, methods, generics, mutability — compiled as a normal class inside unit B. The `#` prefix carries only two responsibilities: mark it meta-only and route it into unit B.
+
+```penguin
+#class FieldSpec {
+    name: string;
+    type_name: string;
+    fun new(mut this, name: string, type_name: string) {
+        this.name = name;
+        this.type_name = type_name;
+    }
+    fun render(this) -> string {
+        return this.name + ": " + this.type_name;
+    }
+}
+
+#fun summarize(t: type) -> string {
+    // Build a list of #class instances from the type's fields, then serialize.
+    let fs = t.fields();
+    let mut acc = new StringBuilder();
+    let i = 0;
+    while (i < cast<i64>(fs.size())) {
+        let f = fs.at(cast<u64>(i)).some;
+        let spec = new FieldSpec(f.name, f.bound_type.display_name());
+        acc.append(spec.render());
+        acc.append("; ");
+        i = i + 1;
+    }
+    return acc.to_string();
+}
+```
+
+**Rules:**
+- `#class` is allowed wherever `#fun` is (global / namespace / class-member scope).
+- It is **meta-only**: instances cannot be returned from a `#fun` into runtime code (a `#fun`'s return type must be a runtime-compatible type — `i64`/`bool`/`type`/`ast`/`string`). Use `#class` for compile-time bookkeeping inside the meta compilation.
+- It may use the reflection types directly (`BoundType` via `type`, `BoundClassFieldDefinition` via `t.fields().at(i).some`, etc.) since unit B compiles the real bound types.
+
 ## Built-in Meta Functions
 
 PenguinLang provides several **built-in meta functions** that are automatically available without being declared. They use the standard meta function call syntax (`#name(args)`) — they are NOT separate parser keywords. Users can shadow them by defining a `#fun` of the same name.
@@ -126,8 +168,8 @@ initial {
 For cases where the type name is computed at meta-execution time (e.g., from a string), use `compiler().resolve_type(name)`:
 
 ```penguin
-#fun lookup_type(name: string) -> type {
-    return compiler().resolve_type(name);
+#fun lookup_type(name: string) -> Option<type> {
+    return compiler().resolve_type(name);   # None if the name is unknown
 }
 ```
 
@@ -291,26 +333,69 @@ initial {
 
 ### `#compiler()` — Compiler Context Access
 
-`#compiler()` returns a reference to the current compiler context, giving meta functions access to the compiler's internal state for reflection, code generation, and error reporting.
+`#compiler()` returns the current compiler context (an `ICompiler`), giving meta functions access to **context operations**: type/symbol resolution, text→AST parsing, expression probing, diagnostics, and the compile-time option store. **Structural reflection is not on `compiler()` — it lives on `type`** (see [Reflection API](#reflection-api) below).
 
-> ⚠️ **Provisional API.** The exact method surface of the compiler context (and the shapes of `FieldInfo`, `MethodInfo`, `VariantInfo`, `SymbolInfo`) is **not yet finalized** — the table below is illustrative, not a stable contract. It will be defined in a separate design pass, after which the compiler code and this document will be updated together. Treat anything beyond `create_ast` / `create_empty_ast` / `create_function_ast` / `resolve_type` / `error` / `warn` / `set_option` / `get_option` / `has_option` as tentative.
-
-### Available API Methods
+**`ICompiler` methods:**
 
 | Method | Signature | Description |
 |---|---|---|
-| `create_ast` | `(code: string) -> ast` | Parse a string into a structured AST node |
+| `resolve_type` | `(name: string) -> Option<type>` | Resolve a (qualified) type name; `None` if unknown |
+| `resolve_symbol` | `(name: string) -> Option<Symbol>` | Look up a symbol; `None` if unknown |
+| `has_type` | `(name: string) -> bool` | Whether a type name is visible |
+| `create_ast` | `(code: string) -> ast` | Parse source text into a structured AST node |
 | `create_empty_ast` | `() -> ast` | Return an empty no-op AST |
-| `create_function_ast` | `(name: string, return_type: type, body: string) -> ast` | Generate a complete function AST |
-| `can_compile_expression` | `(expr: string) -> bool` | Probe whether an expression compiles (side-effect-free) |
-| `resolve_type` | `(name: string) -> type` | Resolve a type by qualified name |
-| `resolve_symbol` | `(name: string) -> SymbolInfo` | Look up a symbol and get its metadata |
-| `get_fields` | `(t: type) -> List<FieldInfo>` | Get all fields of a class type |
-| `error` | `(msg: string)` | Emit a compile error with source location |
-| `warn` | `(msg: string)` | Emit a compile warning with source location |
-| `set_option` | `(key: string, value: string)` | Set a compile-time option |
-| `get_option` | `(key: string) -> string` | Get a compile-time option |
-| `has_option` | `(key: string) -> bool` | Check if a compile-time option is defined |
+| `create_function_ast` | `(name: string, return_type: type, body: string) -> ast` | Build a function AST |
+| `can_compile_expression` | `(expr: string) -> bool` | Probe whether an expression type-checks (side-effect-free; see [Probing Type Capabilities](#probing-type-capabilities)) |
+| `error` / `warn` | `(msg: string)` | Emit a diagnostic at the current source location |
+| `set_option` / `get_option` / `has_option` | `(key, value?)` | Compile-time key-value option store (also exposed as `#define` / `#option` / `#defined`) |
+
+### Reflection API
+
+Reflection reads the compiler's **own bound types directly** — there is no separate `FieldInfo` / `MethodInfo` hierarchy. `type` *is* the compiler's `BoundType`; the objects returned by `t.fields()` / `t.methods()` / `t.variants()` are the compiler's `BoundClassFieldDefinition` / `BoundFunctionDefinition` / `BoundEnumMemberDefinition`, surfaced under short aliases. Meta code and the compiler manipulate the **same live objects** (read-only views over current bound state).
+
+**Aliases** (declared in the meta runtime stdlib):
+
+| Meta name | Compiler type it reuses |
+|---|---|
+| `type` | `BoundType` |
+| `Field` | `BoundClassFieldDefinition` |
+| `Method` | `BoundFunctionDefinition` |
+| `Param` | `BoundFunctionParameter` |
+| `Variant` | `BoundEnumMemberDefinition` |
+| `Symbol` | `BoundSymbol` |
+| `ast` | AST `Expression` / `Statement` / `Definition` |
+
+**`type` methods** (the structural reflection surface):
+
+| Method | Description |
+|---|---|
+| `display_name() -> string` | Full source spelling, e.g. `Option<i32>` (alias: `to_string()`) |
+| `kind() -> TypeKind` | `Primitive` / `Class` / `Enum` / `Interface` / `Function` / `TypeReference` / `Error` |
+| `is_class()` / `is_enum()` / `is_interface()` / `is_primitive()` | Kind predicates |
+| `is_value_type()` / `is_reference_type()` | ICopy (stack) vs IRef (heap) classification |
+| `fields() -> List<Field>` | Class fields (empty for non-class) |
+| `methods() -> List<Method>` | Class / interface methods |
+| `variants() -> List<Variant>` | Enum variants (empty for non-enum) |
+| `generic_args() -> List<type>` | Instantiated generic arguments, e.g. `Option<i32>` → `[i32]` |
+
+The returned `Field` / `Method` / `Variant` objects expose their data as ordinary fields — read them directly: `f.name`, `f.bound_type`, `m.parameters`, `m.return_type`, `m.signature()`, `v.name`, `v.value`.
+
+```penguin
+#fun derive_clone(t: type) -> ast {
+    let fs = t.fields();                              # List<Field>
+    let mut body = "return new " + t.display_name() + "(";
+    let i = 0;
+    #while (i < fs.size()) {
+        #if (i > 0) { body = body + ", "; }
+        body = body + "this." + fs.at(i).some.name;   # read Field.name directly
+        i = i + 1;
+    }
+    body = body + ");";
+    return compiler().create_function_ast("clone", t, body);
+}
+```
+
+> **No annotation system.** PenguinLang has no `@attr` syntax. Patterns like "scan methods for an annotation" are done with `#fun + ast`: the caller passes a description explicitly (e.g. a `List` of transition specs), and the meta function generates code from it. There is no `get_methods_with_attribute` / `get_attribute` API.
 
 > **Design note**: `#compiler()`, `#typeof(T)`, `#define(key,val)`, `#defined(key)`, and `#option(key)` are **built-in meta functions** — not parser keywords. The compiler provides their implementations directly (no JIT needed). They use the exact same `#identifier(args)` syntax as user-defined meta functions, and users can shadow them by defining a `#fun` of the same name. In the future `#compiler()`'s return value may be abstracted behind an `interface ICompiler` for API stability.
 
@@ -337,11 +422,11 @@ You can build custom constraint functions similar to C++ concepts:
 
 ```penguin
 #fun Addable(t: type) -> bool {
-    return compiler().can_compile_expression("let a: t; let b: t; a + b;");
+    return compiler().can_compile_expression("let a: " + t.display_name() + "; let b: " + t.display_name() + "; a + b;");
 }
 
 #fun Comparable(t: type) -> bool {
-    return compiler().can_compile_expression("let a: t; let b: t; a < b;");
+    return compiler().can_compile_expression("let a: " + t.display_name() + "; let b: " + t.display_name() + "; a < b;");
 }
 
 #template(T: type)
@@ -433,7 +518,7 @@ When a `#fun` returns `ast`, the result is spliced into the source at the call s
 
 ```penguin
 #fun derive_clone(t: type) -> ast {
-    let fields = compiler().get_fields(t);
+    let fields = t.fields();
     let mut clone_body = "return new " + t.to_string() + "(";
 
     let i: u64 = 0;
@@ -545,7 +630,7 @@ function enumFromString<T extends string>(e: Record<string, T>, str: string): T 
 
 ```penguin
 #fun derive_builder(t: type) -> ast {
-    let fields = compiler().get_fields(t);
+    let fields = t.fields();
     let class_name = t.to_string();
     let builder_name = class_name + "Builder";
 
@@ -557,10 +642,10 @@ function enumFromString<T extends string>(e: Record<string, T>, str: string): T 
     let i: u64 = 0;
     while (i < fields.size()) {
         let f = fields.at(i).some;
-        builder_fields = builder_fields + "    _" + f.name + ": Option<" + f.type_name + "> = Option.none();\n";
+        builder_fields = builder_fields + "    _" + f.name + ": Option<" + f.bound_type.display_name() + "> = Option.none();\n";
 
         setter_methods = setter_methods +
-            "    fun " + f.name + "(mut this, value: " + f.type_name + ") -> mut " + builder_name + " {\n" +
+            "    fun " + f.name + "(mut this, value: " + f.bound_type.display_name() + ") -> mut " + builder_name + " {\n" +
             "        this._" + f.name + " = Option.some(value);\n" +
             "        return this;\n" +
             "    }\n";
@@ -741,6 +826,8 @@ const userRouter = t.router({
 
 **PenguinLang**
 
+> ⚠️ **Partly `[v2]`.** The enum-variant count (`e.variants().size()`) is v1. The fixed-array-size check (`resolve_symbol(...).get_array_size()`) needs array-type reflection, which is **deferred** — v1 would pass the expected count as an explicit argument instead.
+
 ```penguin
 enum HttpError {
     NotFound;          // 404
@@ -750,7 +837,7 @@ enum HttpError {
 }
 
 #fun assert_enum_coverage(e: type, array_name: string) {
-    let variant_count = compiler().get_enum_variants(e).size();
+    let variant_count = e.variants().size();
     // The array is sized at compile time; we can check it in a meta function
     let array_type = compiler().resolve_symbol(array_name).get_bound_type();
     let array_size = array_type.get_array_size();
@@ -1051,7 +1138,7 @@ const doorMachine = createMachine({
 | Capability | PenguinLang | C++ | TypeScript |
 |---|---|---|---|
 | Compile-time computation | `#fun` + JIT (native speed) | `constexpr` / template metaprogramming | Limited (conditional types only) |
-| Type reflection | `compiler().get_fields()` etc. | None (until C++26 proposals) | `keyof`, `typeof` (type-level only) |
+| Type reflection | `t.fields()` / `t.methods()` / `t.variants()` (reuse compiler's bound types) | None (until C++26 proposals) | `keyof`, `typeof` (type-level only) |
 | AST-level code generation | `#fun -> ast` (structured) | External code generators / macros | Compiler plugins / transformers |
 | Compile-time conditionals | `#if` (simple, readable) | `if constexpr` + preprocessor `#if` | Conditional types |
 | Custom type constraints | `#fun` + `can_compile_expression` | C++20 `concept` + `requires` | Conditional types + `extends` |

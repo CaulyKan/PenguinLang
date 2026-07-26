@@ -115,6 +115,49 @@ class BoundBlockStatement {
     }
 }
 
+class BoundMetaIfStatement {
+    ast_source: !mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Statement>) {
+        this.ast_source = ast_source;
+    }
+}
+
+class BoundMetaWhileStatement {
+    ast_source: !mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Statement>) {
+        this.ast_source = ast_source;
+    }
+}
+
+class BoundMetaForStatement {
+    ast_source: !mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Statement>) {
+        this.ast_source = ast_source;
+    }
+}
+
+class BoundMetaBreakStatement {
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, location: SourceLocation) {
+        this.location = location;
+    }
+}
+
+class BoundMetaContinueStatement {
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, location: SourceLocation) {
+        this.location = location;
+    }
+}
+
 enum BoundStatement {
     expression: BoundExpressionStatement;
     assignment: BoundAssignmentStatement;
@@ -126,6 +169,11 @@ enum BoundStatement {
     continue_stmt: BoundContinueStatement;
     let_decl: BoundLetDeclarationStatement;
     block: BoundBlockStatement;
+    meta_if_stmt: BoundMetaIfStatement;
+    meta_while_stmt: BoundMetaWhileStatement;
+    meta_for_stmt: BoundMetaForStatement;
+    meta_break_stmt: BoundMetaBreakStatement;
+    meta_continue_stmt: BoundMetaContinueStatement;
 }
 
 }

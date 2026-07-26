@@ -1,12 +1,12 @@
 # EmperorPenguin Meta Programming — Implementation Plan
 
-> Target: EmperorPenguin Pass3  
-> Status: Design Phase (grilled 2026-07-25; authoritative decisions in §0)  
-> Last Updated: 2026-07-25  
+> Target: EmperorPenguin Pass3
+> Status: Implementation in progress. **Round 1 shipped** (opaque-token + host-callback reflection, 2026-07-29); **Phase 6 v2** (real-pointer reuse + caller-stub ABI + `#class`) grilled & planned 2026-08-01 — see §0.4.
+> Last Updated: 2026-08-01
 
-## 0. Design Decisions — Grill Outcome (2026-07-25)
+## 0. Design Decisions — Grill Outcome (2026-07-25; v2 addendum §0.4)
 
-> This section is the **authoritative** record of the decisions reached in the 2026-07-25 design review (codebase-grounded: parser/lexer/SemanticModel/LLVMEmitter/gc.c were inspected). Where it conflicts with §1–§9 below, **§0 wins**; the older sections are retained as historical rationale and are being updated for consistency. Mismatches are known debt, not open questions.
+> This section is the **authoritative** record of the decisions reached in the 2026-07-25 design review (codebase-grounded: parser/lexer/SemanticModel/LLVMEmitter/gc.c were inspected). Where it conflicts with §1–§9 below, **§0 wins**; the older sections are retained as historical rationale and are being updated for consistency. Mismatches are known debt, not open questions. **The 2026-08-01 v2 addendum (§0.4) supersedes D5/F and adds ABI/`#class`/base-module decisions for the real-pointer-reuse path.**
 
 ### 0.1 Decision log
 
@@ -26,7 +26,7 @@
 
 ### 0.2 Deferred / loose ends
 
-- **Reflection API design** (`CompilerContext` / `type` / `FieldInfo` / `MethodInfo` method surfaces) — separate design round; the tables in §4.5 and `Documentation/10_MetaProgramming.md` are provisional.
+- ~~**Reflection API design** (`CompilerContext` / `type` / `FieldInfo` / `MethodInfo` method surfaces) — separate design round; the tables in §4.5 and `Documentation/10_MetaProgramming.md` are provisional.~~ **RESOLVED (2026-07-26) — see §10.** Reflection is the compiler's own bound/AST types reused via aliases + additive nav helpers (W1) + a `CompilerContext` facade (W2); no parallel `FieldInfo`/`MethodInfo` hierarchy. The §4.5 table is superseded by §10.5.
 - **Full library/DLL + embedded-metadata artifact** — parallel roadmap, not a meta prerequisite.
 - **`Map`, collection-iteration `#for (let x : coll)`, rich `MethodInfo` API** — v2.
 - **`#` rules inside meta context** (D7 loose end).
@@ -41,6 +41,23 @@
 - **§5.1 / §5.2** — meta call sites in `pass_build_scopes` are deferred until B is ready; the combined fixpoint gains a cap + memoization (D9).
 - **§8** — EP source is meta-free; pass2 has no JIT; JIT is pass3+ only, via `--enable-meta`.
 - **New prerequisites:** the binding-purity refactor (D6) gates `can_compile_expression`; the export surface (D3) gates every JIT→host call.
+
+### 0.4 Phase 6 v2 addendum (2026-08-01) — real-pointer reuse
+
+> Round 1 (2026-07-29) shipped an **interim** reflection design — opaque i64 type-tokens + per-op host callbacks (`#field_count(t)` → `penguin_meta_field_count`), proven end-to-end (dotnet 474/474; MetaProgramming markdown 46/46 on pass2+pass3; bootstrap pass3). It works but is procedural (`#field_count(t)` not `t.fields()`), limited to i64/ptr `#fun` returns (fixed-arity trampolines, no string return), and hops the host on every reflection access. **v2 supersedes it** with the real-pointer-reuse path below. Decisions **D5** and **F** are revised here.
+
+**v2 decisions (grilled 2026-08-01):**
+
+| # | Decision | Resolution |
+|---|---|---|
+| **A1** | Reflection type reuse | **Real reuse.** Unit B compiles the real `emperor.*` bound types (`src/bound/` type layer, ~1788 self-contained lines, no SemanticModel/IR deps) so `t` is a real `BoundType` reference and `t.fields()` is a direct method call. Layout trusted (same source + same compiler ⇒ byte-identical — D5). `t.fields()` resolves via weak-dedup (`penguin_jit.cpp` marks every unit-B def `WeakAnyLinkage`) to the host's strong `emperor_BoundType_fields`. |
+| **D5′** (supersedes D5) | `type` representation & identity | **`type = emperor.BoundType`** (a reference type — confirmed: its `generic_args: List<BoundType>` field makes it reference). A `type` value is a pointer to the host's **live** `BoundType`. **No `Box` needed.** `==` is **reference equality on interned objects** (`#typeof(T)` resolves to the one registry/scope object per type), so `t == #typeof(i32)` is correct with no custom equality. (`ast` **stays an opaque token** this round — real ast-reuse deferred.) |
+| **F′** (supersedes F) | `#typeof` materialization | The host `BoundType`'s address is **not** baked as an `inttoptr` constant (PenguinLang has no address-of; the §F `inttoptr`-constant was never implemented). Instead `#typeof(T)` assigns a compile-time **token** (as Round 1); at each call site the **caller-stub** (see ABI) bakes the token and calls a thin host bridge `penguin_meta_get_type(token) -> BoundType` that returns the **live** reference. One host hop per type arg, at the stub — not per field access. |
+| **ABI** | `#fun` call mechanism | **Caller-stub.** The host invokes a JIT'd `#fun` of arbitrary signature via a **per-call-site stub** — a nullary (or sret) JIT'd function whose body is `call @<fun>(<constant args>)`; LLVM emits the full Emperor ABI call (handles byval/sret/any arity/value-type return). The host calls the stub via the existing `penguin_jit_call_i64_0` (scalar return) or one new `penguin_jit_call_sret(stub, buf)` (value-type return). Args are baked as constants (i64 literal / `get_type(token)` for type args / token for ast). **No per-signature C trampolines; full ABI; no arity/type limits.** Memoized by `(fun, args)`. (Replaces the fixed `penguin_jit_call_i64_{0,i64,…}` trampolines for `#fun` calls.) |
+| **BASE** | unit B compilation cost | core_builtin + bound types compiled into ONE **shared base JIT module** added once (lazy, first `#fun`); each `#fun` is a small module on top, referencing the base module's symbols (same JITDylib; cross-module resolution + weak-dedup already the operating mode). Amortizes the ~2000-line compile. |
+| **CLS** | `#class` | **Meta-only, full-capability class** declared in unit A source, routed into unit B (parallel to `#fun`: `Hash`+`Class` → new `meta_class_def` Definition variant + `parse_metaDeclaration` branch + `collect_meta_class_defs` + `<meta_classes>` unit-B SourceInput). Fields + methods + generics + mutability (compiled as a normal class). **Not emitted to runtime** unit A — lives in unit B only; `#fun`s use it for compile-time data. |
+
+**Round 1 → v2 migration:** the Round 1 host-callback reflection layer is **removed** (`MetaHost.penguin` per-op responders, the reflection externs in `meta_extern_decls`, `is_meta_reflection_op` + the reflection lowering branch, the `__builtin_penguin_meta_{field_count,…}` LLVMEmitter mapping rows), replaced by direct `t.<method>()` calls on real `BoundType` pointers. **Reused/kept:** the W1 accessors (`BoundType.fields()/methods()/variants()/is_*()` — now called directly), `resolve_type_by_name` + user-type resolution, `#typeof`/`#create_expression`/`#create_definition` (token; ast stays token), `#if`/`#while`/`#define`/…, `active_meta` + `penguin_meta_get_type` (the token→ptr bridge). Phased implementation + risks in `~/.claude/plans/mighty-painting-wolf.md`.
 
 ---
 
@@ -429,6 +446,8 @@ Returns the current `CompilerContext` object reference. All compiler reflection 
 
 **CompilerContext API (initial):**
 
+> ⚠️ **Superseded by §10 (2026-07-26).** The `get_fields` / `get_methods` / `get_enum_variants` rows below moved to **`type` methods** (`t.fields()` / `t.methods()` / `t.variants()`) per the reuse-based design; `resolve_type` returns `Option<type>`; and the `FieldInfo` / `MethodInfo` / `VariantInfo` / `SymbolInfo` types are the compiler's own `BoundClassFieldDefinition` / `BoundFunctionDefinition` / `BoundEnumMemberDefinition` / `BoundSymbol` (surfaced via aliases in `meta_builtin.penguin`). Treat the table below as the historical provisional sketch; §10.5 is authoritative.
+
 | Method | Signature | Description |
 |---|---|---|
 | `create_ast` | `(code: string) -> ast` | Parse text into AST node |
@@ -758,10 +777,155 @@ Because EmperorPenguin's own source stays **meta-free** through the bootstrap ch
 
 | Issue | Priority | Notes |
 |---|---|---|
-| `#compiler()` interface abstraction | Medium | After API surface stabilizes, wrap behind `interface ICompiler` |
-| `can_compile` full statement/definition support | Low | After re-entrancy safety is proven |
+| `#compiler()` interface abstraction | Medium → **`ICompiler` defined (§10.5)**; remaining work is W6: curate reflection object types behind `IType`/`IField`/… once the concrete-type surface is proven. |
+| `can_compile` full statement/definition support | Low | After re-entrancy safety is proven. `can_compile_expression` itself is W3 (§10.6): minimal = fresh SemanticModel + errors snapshot; strong = the D6 purity refactor. |
 | Meta function debugging support | Low | DAP integration for stepping into JIT'd meta functions |
 | Meta function cross-compilation cache | Low | Serialize compiled meta function results for faster rebuilds |
 | `#template` refactor to true `#fun` sugar | Low | Internally transform after JIT is stable |
 | Iteration limit for `#while` | Medium | Pragmatic: default limit 10000, configurable via `#compiler().set_option` |
-| Source location for spliced AST | Medium | Spliced AST nodes should carry a "generated by `#f` at `location`" annotation |
+| Source location for spliced AST | Medium | Spliced AST nodes should carry a "generated by `#f` at `location`" annotation | Resolved (I). |
+
+---
+
+## 10. Reflection API Design — Reuse-Based (2026-07-26)
+
+> Resolves the D5 / §0.2 "reflection API — separate design round" deferral. The reflection API **is the compiler's own bound/AST types**, surfaced to meta code via aliases plus a small set of additive navigation methods. **No parallel `FieldInfo`/`MethodInfo` hierarchy.** Grounded in a full inventory of `EmperorPenguin/src/bound/` and `ast/` (BoundType, BoundSymbol, BoundDefinition, BoundTypeRegistry, BoundScope, AST enums, SemanticModel, BoundTreePrinter).
+>
+> **Implementation note (2026-08-01, §0.4 v2):** this reuse design is realized by compiling the real bound types into unit B (`A1`) so `type = emperor.BoundType` (a reference — `D5′`) and `t.fields()` is a direct method call (weak-dedup → host export). `#typeof` materializes the live pointer via the `penguin_meta_get_type(token)` bridge (`F′`), not an `inttoptr` constant. The additive W1 accessors below (`fields()/methods()/variants()/is_*()`) are already implemented and reused as-is.
+
+### 10.1 Principle
+
+Meta reflection reuses `emperor.*` types verbatim — meta code and the compiler operate on the **same objects** (zero representation drift, zero copy). The "reflection API" is exactly three things: (a) aliases surfacing the bound/AST types into meta space, (b) a few additive navigation helper methods on those types (which the compiler itself also adopts), and (c) a `CompilerContext` facade wiring existing Lexer / Parser / SemanticModel / registry entry points. **Six of the eight wrapper types in earlier drafts were redundant** — the compiler already has them.
+
+### 10.2 Type-by-type mapping (draft → existing)
+
+| Draft type | Existing compiler type (file:line) | Disposition |
+|---|---|---|
+| `type` | `emperor.BoundType` (`bound/BoundType.penguin:61`) | **reuse directly**; add nav helpers (§10.4) |
+| `FieldInfo` | `emperor.BoundClassFieldDefinition` (`bound/BoundDefinition.penguin:199`) | **drop — use directly** (has name/bound_type/mutability/is_static/initializer) |
+| `MethodInfo` | `emperor.BoundFunctionDefinition` (`bound/BoundDefinition.penguin:26`) | **drop — use directly** (parameters/return_type/is_extern/is_static/is_new/is_pure/is_async/generic_params) |
+| `ParameterInfo` | `emperor.BoundFunctionParameter` (`bound/BoundSymbol.penguin:120`) | **drop — use directly** |
+| `VariantInfo` | `emperor.BoundEnumMemberDefinition` (`bound/BoundDefinition.penguin:13`) | **drop — use directly** (name/value/member_type) |
+| `SymbolInfo` | `emperor.BoundSymbol` (enum, `bound/BoundSymbol.penguin:85`) | **drop — use directly** (get_name/get_full_name/get_enclosing_scope) |
+| `ast` | `emperor.Expression` / `Statement` / `Definition` (AST enums) | **reuse directly**; `to_string` = existing `build_text()` |
+| `TypeKind` | `emperor.TypeKind` (`bound/BoundType.penguin:26`) | **reuse** |
+| `ICompiler` / `compiler()` | **new** `CompilerContext` | new facade (§10.6 W2) |
+
+### 10.3 Free-reuse capabilities (already on the bound types — zero work)
+
+- `BoundType.display_name()` — full spelling incl. generics / function-type / `mut` prefix (this *is* `type.to_string()`).
+- `BoundType.is_value_type()` / `is_reference_type()` (`BoundType.penguin:170/190`).
+- `BoundType.kind` / `generic_args` / `mutability` — public fields.
+- `BoundSymbol.get_name()` / `get_full_name()` / `get_enclosing_scope()`.
+- `BoundDefinition.get_name()`.
+- `BoundTypeRegistry.resolve_type(name) -> Option<BoundType>` (`BoundTypeRegistry.penguin:58`) — **already returns `Option`, matching the chosen failure semantics** → backs `compiler().resolve_type`.
+- `BoundScope.resolve_qualified` / `lookup_symbol` (`BoundScope.penguin:109/35`) → backs `compiler().resolve_symbol`.
+- `Parser.parse_compilationUnit` / `parse_functionDefinition` / `parse_expression` (`ast/Parser.penguin:1550/1733/736`) → back `create_ast` / `create_function_ast` / expression probes.
+- `SemanticModel.bind_expression(expr, scope) -> Option<BoundExpression>` (`SemanticModel.penguin:3589`) → backs `can_compile_expression`.
+- Every AST node's `build_text()` (`ast/AST.penguin:404/683/1255`) = `ast.to_string()`.
+- `BoundCompilationUnit.add_error` (`bound/BoundCompilationUnit.penguin:32`) → backs `compiler().error`.
+
+### 10.4 Additive helpers (W1 — low risk, pure additions; compiler self-benefits)
+
+Today members are stored as `List<BoundDefinition>` requiring variant pattern-match. Add typed accessors used by **both** the compiler and meta:
+
+```penguin
+# emperor.BoundClassDefinition
+fun typed_fields(this)       -> _utils.List<BoundClassFieldDefinition>;   # filter class_field variants
+fun typed_methods(this)      -> _utils.List<BoundFunctionDefinition>;
+fun typed_constructors(this) -> _utils.List<BoundFunctionDefinition>;
+# emperor.BoundEnumDefinition
+fun typed_variants(this)     -> _utils.List<BoundEnumMemberDefinition>;   # alias over members
+# emperor.BoundInterfaceDefinition
+fun typed_methods(this)      -> _utils.List<BoundFunctionDefinition>;
+# emperor.BoundType (navigate type_definition + predicates)
+fun fields(this)        -> _utils.List<BoundClassFieldDefinition>;
+fun methods(this)       -> _utils.List<BoundFunctionDefinition>;
+fun variants(this)      -> _utils.List<BoundEnumMemberDefinition>;
+fun is_class(this)      -> bool;   fun is_enum(this)      -> bool;
+fun is_interface(this)  -> bool;   fun is_primitive(this) -> bool;
+fun generic_params(this)-> _utils.List<string>;     # bridge the generic-args / generic-params split
+# emperor.BoundFunctionDefinition  (Q5 — precomputed signature for codegen + diagnostics)
+fun signature(this)     -> string;                   # e.g. "(mut this, x: i32) -> bool"
+```
+
+These replace the `List<BoundDefinition>` + pattern-match idiom; the compiler's own member-enumeration sites (`SemanticModel`, `IRGenerator`, `LLVMEmitter`) migrate to them incrementally.
+
+### 10.5 Revised reflection API (= aliases + `ICompiler` + nav)
+
+`meta_builtin.penguin` (shipped with the compiler, auto-included like `core_builtin.penguin`):
+
+```penguin
+using emperor;
+type Type    = BoundType;            # the meta `type` value
+type Field   = BoundClassFieldDefinition;
+type Method  = BoundFunctionDefinition;
+type Param   = BoundFunctionParameter;
+type Variant = BoundEnumMemberDefinition;
+type Symbol  = BoundSymbol;
+type AstExpr = Expression;           # trailing `{ }` code block
+type AstDef  = Definition;           # trailing definition block
+# emperor.TypeKind reused as-is.
+
+interface ICompiler {
+    fun resolve_type(name: string)   -> Option<Type>;       # -> BoundTypeRegistry.resolve_type
+    fun resolve_symbol(name: string) -> Option<Symbol>;     # -> BoundScope.resolve_qualified
+    fun has_type(name: string)       -> bool;
+    fun create_ast(code: string)     -> AstDef;             # -> Lexer + Parser.parse_compilationUnit
+    fun create_empty_ast()           -> AstDef;
+    fun create_function_ast(name: string, ret: Type, body: string) -> AstDef;
+    fun can_compile_expression(expr: string) -> bool;        # -> bind_expression + errors snapshot (W3)
+    fun error(msg: string);  fun warn(msg: string);
+    fun set_option(k: string, v: string);
+    fun get_option(k: string) -> string;
+    fun has_option(k: string) -> bool;
+}
+# `compiler()` returns ICompiler, implemented by CompilerContext (W2).
+# `Type.fields()/methods()/variants()/is_class()/...` come from W1.
+```
+
+Worked example (note: no `FieldInfo` — `Field = BoundClassFieldDefinition`):
+
+```penguin
+#fun derive_clone(t: Type) -> AstDef {
+    let fs = t.fields();                       # List<BoundClassFieldDefinition>
+    let mut body = "return new " + t.display_name() + "(";
+    let i = 0;
+    #while (i < fs.size()) {
+        #if (i > 0) { body = body + ", "; }
+        let f = fs.at(i).some;                 # BoundClassFieldDefinition
+        body = body + "this." + f.name;        # direct field read
+        i = i + 1;
+    }
+    body = body + ");";
+    return compiler().create_function_ast("clone", t, body);
+}
+```
+
+### 10.6 Refactor work items
+
+| ID | Work | Effort / risk | Notes |
+|---|---|---|---|
+| **W1** | Additive typed accessors + `BoundType` nav (§10.4) | **Low / additive** | Compiler self-adopts; replaces pattern-match idiom |
+| **W2** | `CompilerContext` facade implementing `ICompiler` | **Low–Med / wiring** | Delegates to existing registry/scope/parser (mirrors `EmperorPenguinCompiler` shape) |
+| **W3** | `can_compile_expression` probe isolation | **Med–High — the real work** | **Minimal (do first):** fresh `SemanticModel` seeded with host-visible types + `errors.size()` snapshot (note: `Option<BoundExpression>` return alone is insufficient — binders push errors and still return recovery values). **Strong (D6):** factor `errors` + `current_unit` out of `this` as explicit params. `_current_validating_func` is already single-pass; `global_scope` recursion already takes `scope` param. |
+| **W4** | Surface `emperor.*` to meta via `meta_builtin.penguin` aliases | **Low–Med / packaging** | **One declaration, no drift** (D5). Verify B-time visibility + JIT host-symbol resolution. |
+| **W5** | Migrate compiler member-enumeration call sites to W1 accessors | **Low / incremental** | Optional; the actual self-reuse win |
+| **W6** | (Later) interface curation (`IType`/`IField`/…) | **Med / hardening** | Only if a stable public surface is needed; concrete types first |
+
+These map onto Phase 6 (W1/W2/W4) and a new prerequisite task for `can_compile_expression` (W3).
+
+### 10.7 Reconciles with prior decisions
+
+- **D5** unchanged — `type`/`ast` are still opaque host pointers; "reuse" means the host-side object they reference is `BoundType` / an AST node, surfaced via aliases.
+- **Q3 revised** — reuse means meta reads the compiler's **live** bound objects, not snapshot value classes. Consistent with D6 (reads inline, see current state). (The earlier "FieldInfo value class" premise dissolves.)
+- **Q4 confirmed** — `BoundType.fields()` etc. are ordinary methods on an existing class (host-implemented, resolved via export surface), same mechanism as `StringBuilder.append`. No vtable needed on `BoundType`.
+- **Q5** — add `BoundFunctionDefinition.signature()` (§10.4); benefits codegen and diagnostics.
+- **No annotation system** — `get_methods_with_attribute` / `get_attribute` are **out of scope** (PenguinLang has no annotations). Attribute-like generation uses `#fun + ast` (caller passes a description, e.g. a `List` of transition specs).
+
+### 10.8 Open packaging decisions (carried from review; none block W1/W2)
+
+- Confirm meta reads **live** bound objects (Q3 revised).
+- Confirm **concrete types + aliases first**, interface curation (W6) deferred.
+- Confirm `can_compile_expression` **minimal-first**, strong purity refactor (D6) deferred.
+- Confirm `meta_builtin.penguin` `using emperor` + aliases = **one declaration** (no re-declaration, no drift).

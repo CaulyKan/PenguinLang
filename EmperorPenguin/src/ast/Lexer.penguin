@@ -208,6 +208,12 @@ namespace emperor {
                     this.advance_chars(4);
                     continue;
                 }
+                if (this.match_keyword("elif")) {
+                    tokens.push(new Token(new TokenType.ElifKw(), "elif", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
                 if (this.match_keyword("wait")) {
                     tokens.push(new Token(new TokenType.Wait(), "wait", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;

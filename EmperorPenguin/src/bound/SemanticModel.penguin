@@ -18,6 +18,23 @@ class SemanticModel {
     current_unit: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     _current_validating_func: mut string = "";
     ast_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
+    // Host-side compile-time option store for #define / #defined / #option used
+    // outside #fun bodies (e.g. #if (#defined("DEBUG")) conditional compilation).
+    // #fun bodies keep their own store in MetaEngine (unit B). Parallel-list map,
+    // matching MetaEngine's option_keys/option_values shape.
+    meta_option_keys: mut _utils.List<string> = new _utils.List<string>();
+    meta_option_values: mut _utils.List<string> = new _utils.List<string>();
+    // Phase 5b: registry of #fun meta functions (collected in pass_build_scopes)
+    // and a lazily-used JIT engine for executing #fun calls at compile time and
+    // splicing the result. The JIT path only runs in a native pass2+ binary
+    // built with --enable-meta; in BabyPenguin-VM/dotnet-test builds it is never
+    // reached (no user-code #fun calls), so libpenguin_jit need not be linked.
+    meta_function_defs: mut _utils.List<BoundMetaFunctionDefinition> = new _utils.List<BoundMetaFunctionDefinition>();
+    // Phase 6 v2: `#class` definitions collected from unit A, fed into unit B so
+    // #funs can use them as meta-only data structures (not emitted to runtime).
+    meta_class_defs: mut _utils.List<ClassDefinition> = new _utils.List<ClassDefinition>();
+    meta_engine: mut MetaEngine = new MetaEngine();
+    meta_engine_seeded: mut bool = false;
     verbose: mut i64 = 0;
 
     fun new(mut this) {
@@ -100,12 +117,661 @@ class SemanticModel {
         this.global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
     }
 
+    // ------------------------------------------------------------------
+    // Compile-time meta rewrite (Phase 5a).
+    //
+    // Resolves top-level (and, via recursion, nested) meta constructs in a
+    // definition list into plain definitions BEFORE the 9 parallel-indexed
+    // passes run. This keeps unit.definitions[i] <-> result.definitions[i]
+    // alignment intact, so all existing passes work unchanged.
+    //
+    // Currently resolves: #define("K","V") (records a compile-time option and
+    //   drops the definition) and #if / #elif / #else (conditional inclusion
+    //   of definitions; condition folded by eval_meta_bool). #for / #while and
+    //   meta inside function/class/enum bodies pass through unchanged (later
+    //   sub-phases 5a.2 / 5a.3 / 5a.4).
+    // ------------------------------------------------------------------
+
+    fun meta_has_option(this, key: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_keys.at(cast<u64>(i)).some == key) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun meta_get_option(this, key: string) -> Option<string> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_keys.at(cast<u64>(i)).some == key) {
+                return new Option<string>.some(this.meta_option_values.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<string>.none();
+    }
+
+    fun meta_set_option(mut this, key: string, value: string) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_keys.at(cast<u64>(i)).some == key) {
+                this.meta_option_values.set(cast<u64>(i), value);
+                return;
+            }
+            i = i + 1;
+        }
+        this.meta_option_keys.push(key);
+        this.meta_option_values.push(value);
+    }
+
+    fun meta_strip_quotes(this, quoted: string) -> string {
+        if (string_length(quoted) >= 2) {
+            return string_substring(quoted, 1, string_length(quoted) - 2);
+        }
+        return quoted;
+    }
+
+    // Fold a compile-time boolean condition for #if. Returns none when the
+    // expression is not a constant we can evaluate (caller reports an error
+    // and takes no branch). Supports bool literals, #defined("K"), !e,
+    // parenthesization, and && / || / == / != of foldable sub-expressions.
+    // Fold a compile-time string expression for #if conditions: string literals
+    // and #option("K") (the value of a compile-time option). Returns none if the
+    // option is undefined or the expression isn't a foldable string.
+    fun eval_meta_string(this, expr: Expression) -> Option<string> {
+        if (expr is Expression.string_literal) {
+            return new Option<string>.some(this.meta_strip_quotes(expr.string_literal.value));
+        }
+        if (expr is Expression.meta_call) {
+            let mc: MetaCallExpression = expr.meta_call;
+            if (mc.func_name == "option") {
+                if (cast<i64>(mc.arguments.size()) == 1) {
+                    let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                    if (arg is Expression.string_literal) {
+                        let key: string = this.meta_strip_quotes(arg.string_literal.value);
+                        return this.meta_get_option(key);
+                    }
+                }
+            }
+            return new Option<string>.none();
+        }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                return this.eval_meta_string(expr.parenthesized.inner.some);
+            }
+        }
+        return new Option<string>.none();
+    }
+
+    fun eval_meta_bool(this, expr: Expression) -> Option<bool> {
+        if (expr is Expression.bool_literal) {
+            if (expr.bool_literal.value == "true") { return new Option<bool>.some(true); }
+            if (expr.bool_literal.value == "false") { return new Option<bool>.some(false); }
+            return new Option<bool>.none();
+        }
+        if (expr is Expression.meta_call) {
+            let mc: MetaCallExpression = expr.meta_call;
+            if (mc.func_name == "defined") {
+                if (cast<i64>(mc.arguments.size()) == 1) {
+                    let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                    if (arg is Expression.string_literal) {
+                        let key: string = this.meta_strip_quotes(arg.string_literal.value);
+                        return new Option<bool>.some(this.meta_has_option(key));
+                    }
+                }
+            }
+            return new Option<bool>.none();
+        }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                return this.eval_meta_bool(expr.parenthesized.inner.some);
+            }
+            return new Option<bool>.none();
+        }
+        if (expr is Expression.unary) {
+            let u: UnaryExpression = expr.unary;
+            if (u.operator_value is UnaryOperator.Not) {
+                if (u.operand.is_some()) {
+                    let inner: Option<bool> = this.eval_meta_bool(u.operand.some);
+                    if (inner.is_some()) {
+                        if (inner.some) { return new Option<bool>.some(false); }
+                        return new Option<bool>.some(true);
+                    }
+                }
+            }
+            return new Option<bool>.none();
+        }
+        if (expr is Expression.binary) {
+            let b: BinaryExpression = expr.binary;
+            if (cast<i64>(b.operands.size()) != 2) { return new Option<bool>.none(); }
+            let op: BinaryOperator = b.operators.at(cast<u64>(0)).some;
+            // String equality first: #option("K") == "literal" (and !=).
+            if (op is BinaryOperator.Equal || op is BinaryOperator.NotEqual) {
+                let ls: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(0)).some);
+                let rs: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(1)).some);
+                if (ls.is_some()) {
+                    if (rs.is_some()) {
+                        if (ls.some == rs.some) {
+                            if (op is BinaryOperator.Equal) { return new Option<bool>.some(true); }
+                            return new Option<bool>.some(false);
+                        }
+                        if (op is BinaryOperator.Equal) { return new Option<bool>.some(false); }
+                        return new Option<bool>.some(true);
+                    }
+                    return new Option<bool>.none();
+                }
+            }
+            let lhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(0)).some);
+            let rhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(1)).some);
+            if (lhs_opt.is_some()) {
+                if (rhs_opt.is_some()) {
+                    let lhs: bool = lhs_opt.some;
+                    let rhs: bool = rhs_opt.some;
+                    if (op is BinaryOperator.LogicalAnd) {
+                        if (lhs) { if (rhs) { return new Option<bool>.some(true); } }
+                        return new Option<bool>.some(false);
+                    }
+                    if (op is BinaryOperator.LogicalOr) {
+                        if (lhs) { return new Option<bool>.some(true); }
+                        if (rhs) { return new Option<bool>.some(true); }
+                        return new Option<bool>.some(false);
+                    }
+                    if (op is BinaryOperator.Equal) {
+                        if (lhs == rhs) { return new Option<bool>.some(true); }
+                        return new Option<bool>.some(false);
+                    }
+                    if (op is BinaryOperator.NotEqual) {
+                        if (lhs == rhs) { return new Option<bool>.some(false); }
+                        return new Option<bool>.some(true);
+                    }
+                }
+            }
+            return new Option<bool>.none();
+        }
+        return new Option<bool>.none();
+    }
+
+    // If this top-level meta call is #define("K","V"), record the option and
+    // return true (consume it). Otherwise return false (keep it as-is).
+    fun try_consume_meta_define(mut this, d: MetaCallDefinition) -> bool {
+        if (d.call.is_some()) {
+            let call: Expression = d.call.some;
+            if (call is Expression.meta_call) {
+                let mc: MetaCallExpression = call.meta_call;
+                if (mc.func_name == "define") {
+                    if (cast<i64>(mc.arguments.size()) == 2) {
+                        let arg_k: Expression = mc.arguments.at(cast<u64>(0)).some;
+                        let arg_v: Expression = mc.arguments.at(cast<u64>(1)).some;
+                        if (arg_k is Expression.string_literal) {
+                            if (arg_v is Expression.string_literal) {
+                                let key: string = this.meta_strip_quotes(arg_k.string_literal.value);
+                                let val: string = this.meta_strip_quotes(arg_v.string_literal.value);
+                                this.meta_set_option(key, val);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // Resolve a #if definition: fold the condition, splice the taken branch's
+    // definitions (recursively resolving nested meta) into `out`.
+    fun splice_meta_if(mut this, d: MetaIfDefinition, out: mut _utils.List<Definition>) {
+        let picked: mut _utils.List<Definition> = new _utils.List<Definition>();
+        let decided: mut bool = false;
+        if (d.condition.is_some()) {
+            let c: Option<bool> = this.eval_meta_bool(d.condition.some);
+            if (c.is_some()) {
+                decided = true;
+                if (c.some) {
+                    let k: mut i64 = 0;
+                    while (k < cast<i64>(d.then_definitions.size())) {
+                        picked.push(d.then_definitions.at(cast<u64>(k)).some);
+                        k = k + 1;
+                    }
+                } else {
+                    let elif_taken: mut bool = false;
+                    let ei: mut i64 = 0;
+                    while (ei < cast<i64>(d.elif_branches.size())) {
+                        if (!elif_taken) {
+                            let br: MetaElifBranch = d.elif_branches.at(cast<u64>(ei)).some;
+                            if (br.condition.is_some()) {
+                                let ec: Option<bool> = this.eval_meta_bool(br.condition.some);
+                                if (ec.is_some()) {
+                                    if (ec.some) {
+                                        let ek: mut i64 = 0;
+                                        while (ek < cast<i64>(br.body_definitions.size())) {
+                                            picked.push(br.body_definitions.at(cast<u64>(ek)).some);
+                                            ek = ek + 1;
+                                        }
+                                        elif_taken = true;
+                                    }
+                                }
+                            }
+                        }
+                        ei = ei + 1;
+                    }
+                    if (!elif_taken) {
+                        let ek2: mut i64 = 0;
+                        while (ek2 < cast<i64>(d.else_definitions.size())) {
+                            picked.push(d.else_definitions.at(cast<u64>(ek2)).some);
+                            ek2 = ek2 + 1;
+                        }
+                    }
+                }
+            }
+        }
+        if (!decided) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #if condition is not a compile-time constant", d.location);
+        }
+        this.collect_resolved_definitions(picked, out);
+    }
+
+    // Resolve a #while definition: repeatedly evaluate the condition and
+    // splice body definitions until the condition becomes false.
+    // A safety cap prevents infinite compile-time loops.
+    fun splice_meta_while(mut this, d: MetaWhileDefinition, out: mut _utils.List<Definition>) {
+        let max_iterations: i64 = 10000;
+        let iteration: mut i64 = 0;
+        while (iteration < max_iterations) {
+            if (d.condition.is_some()) {
+                let c: Option<bool> = this.eval_meta_bool(d.condition.some);
+                if (c.is_some()) {
+                    if (c.some) {
+                        // Emit body definitions (resolving nested meta recursively)
+                        let body_copy: mut _utils.List<Definition> = new _utils.List<Definition>();
+                        let k: mut i64 = 0;
+                        while (k < cast<i64>(d.body.size())) {
+                            body_copy.push(d.body.at(cast<u64>(k)).some);
+                            k = k + 1;
+                        }
+                        this.collect_resolved_definitions(body_copy, out);
+                        iteration = iteration + 1;
+                    } else {
+                        return; // condition false, exit loop
+                    }
+                } else {
+                    this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #while condition is not a compile-time constant", d.location);
+                    return;
+                }
+            } else {
+                return; // no condition
+            }
+        }
+        if (iteration >= max_iterations) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #while did not converge (exceeded " + cast<string>(max_iterations) + " iterations)", d.location);
+        }
+    }
+
+    // Walk `src` definitions; resolve meta constructs, appending plain defs to `out`.
+    fun collect_resolved_definitions(mut this, src: _utils.List<Definition>, out: mut _utils.List<Definition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(src.size())) {
+            let d: Definition = src.at(cast<u64>(i)).some;
+            if (d is Definition.meta_call_def) {
+                if (!this.try_consume_meta_define(d.meta_call_def)) {
+                    if (!this.try_splice_meta_fun_def(d.meta_call_def, out)) {
+                        out.push(d);
+                    }
+                }
+            } else if (d is Definition.meta_if_def) {
+                this.splice_meta_if(d.meta_if_def, out);
+            } else if (d is Definition.meta_while_def) {
+                this.splice_meta_while(d.meta_while_def, out);
+            } else {
+                this.rewrite_meta_in_def_container(d);
+                out.push(d);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Recurse into container definitions (namespace/class/impl) so def-level
+    // meta (#if/#define) nested inside them is resolved too.
+    fun rewrite_meta_in_def_container(mut this, d: Definition) {
+        if (d is Definition.namespace_def) {
+            this.rewrite_meta_definitions(d.namespace_def.children);
+        } else if (d is Definition.class_def) {
+            this.rewrite_meta_definitions(d.class_def.members);
+        } else if (d is Definition.impl_def) {
+            this.rewrite_meta_definitions(d.impl_def.functions);
+        }
+    }
+
+    // Top-level entry: resolve meta constructs in `defs` IN PLACE so downstream
+    // parallel-indexed passes see a flattened, meta-free definition list.
+    fun rewrite_meta_definitions(mut this, defs: mut _utils.List<Definition>) {
+        let resolved: mut _utils.List<Definition> = new _utils.List<Definition>();
+        this.collect_resolved_definitions(defs, resolved);
+        while (cast<i64>(defs.size()) > 0) { defs.pop(); }
+        let k: mut i64 = 0;
+        while (k < cast<i64>(resolved.size())) {
+            defs.push(resolved.at(cast<u64>(k)).some);
+            k = k + 1;
+        }
+    }
+
+    // Phase 5c: recursively register every #fun (MetaFunctionDefinition) into
+    // meta_function_defs before the 5a meta rewrite, so definition-position
+    // #fun calls can be JIT-spliced in collect_resolved_definitions. Builds a
+    // BoundMetaFunctionDefinition carrying only what compile_meta_function needs
+    // (name/parameters/return_type/body/location); pass_build_scopes registers
+    // them again later (duplicates harmless — find_meta_function returns first,
+    // JIT compile cached by name).
+    fun collect_meta_function_defs(mut this, defs: _utils.List<Definition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: Definition = defs.at(cast<u64>(i)).some;
+            if (d is Definition.meta_function_def) {
+                let mfd: MetaFunctionDefinition = d.meta_function_def;
+                if (this.find_meta_function(mfd.name).is_none()) {
+                    let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(mfd.name, mfd.name);
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(mfd.parameters.size())) {
+                        bmf.parameters.push(mfd.parameters.at(cast<u64>(pi)).some);
+                        pi = pi + 1;
+                    }
+                    bmf.return_type = mfd.return_type;
+                    bmf.body = mfd.body;
+                    bmf.location = mfd.location;
+                    this.meta_function_defs.push(bmf);
+                }
+            } else if (d is Definition.namespace_def) {
+                this.collect_meta_function_defs(d.namespace_def.children);
+            } else if (d is Definition.class_def) {
+                this.collect_meta_function_defs(d.class_def.members);
+            } else if (d is Definition.impl_def) {
+                this.collect_meta_function_defs(d.impl_def.functions);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Phase 6 v2: collect `#class` definitions (meta-only data structures) from
+    // unit A so they can be fed into unit B as a <meta_classes> source input.
+    // Recurses into namespace/class/impl exactly like collect_meta_function_defs.
+    fun collect_meta_class_defs(mut this, defs: _utils.List<Definition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: Definition = defs.at(cast<u64>(i)).some;
+            if (d is Definition.meta_class_def) {
+                this.meta_class_defs.push(d.meta_class_def);
+            } else if (d is Definition.namespace_def) {
+                this.collect_meta_class_defs(d.namespace_def.children);
+            } else if (d is Definition.class_def) {
+                this.collect_meta_class_defs(d.class_def.members);
+            } else if (d is Definition.impl_def) {
+                this.collect_meta_class_defs(d.impl_def.functions);
+            }
+            i = i + 1;
+        }
+    }
+    // After def-level meta is flattened (rewrite_meta_definitions), walk every
+    // function/initial body and resolve statement-level meta: #if conditional
+    // inclusion of statements and #define option sets. Recurses into namespaces
+    // and into nested regular control-flow blocks (if/while/for/{...}) so meta
+    // works anywhere inside a function body. Statement-level #for/#while
+    // unrolling (needs loop-variable AST substitution) is a follow-up.
+    // ------------------------------------------------------------------
+
+    fun rewrite_meta_in_function_bodies(mut this, defs: _utils.List<Definition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: Definition = defs.at(cast<u64>(i)).some;
+            if (d is Definition.function_def) {
+                this.rewrite_meta_in_body_expr(d.function_def.body);
+            } else if (d is Definition.initial_routine) {
+                this.rewrite_meta_in_body_expr(d.initial_routine.body);
+            } else if (d is Definition.namespace_def) {
+                this.rewrite_meta_in_function_bodies(d.namespace_def.children);
+            } else if (d is Definition.class_def) {
+                this.rewrite_meta_in_function_bodies(d.class_def.members);
+            } else if (d is Definition.impl_def) {
+                this.rewrite_meta_in_function_bodies(d.impl_def.functions);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun rewrite_meta_in_body_expr(mut this, body: Option<Expression>) {
+        if (body.is_some()) {
+            let body_expr: Expression = body.some;
+            if (body_expr is Expression.code_block) {
+                this.rewrite_meta_statements_inplace(body_expr.code_block.statements);
+            }
+        }
+    }
+
+    // Resolve meta constructs in a statement list, replacing its contents in
+    // place (empties via pop, then repushes resolved).
+    fun rewrite_meta_statements_inplace(mut this, stmts: mut _utils.List<Statement>) {
+        let resolved: mut _utils.List<Statement> = new _utils.List<Statement>();
+        this.collect_resolved_statements(stmts, resolved);
+        while (cast<i64>(stmts.size()) > 0) { stmts.pop(); }
+        let k: mut i64 = 0;
+        while (k < cast<i64>(resolved.size())) {
+            stmts.push(resolved.at(cast<u64>(k)).some);
+            k = k + 1;
+        }
+    }
+
+    fun collect_resolved_statements(mut this, src: _utils.List<Statement>, out: mut _utils.List<Statement>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(src.size())) {
+            let s: Statement = src.at(cast<u64>(i)).some;
+            if (s is Statement.meta_if_stmt) {
+                this.splice_meta_if_stmt(s.meta_if_stmt, out);
+            } else if (s is Statement.meta_while_stmt) {
+                this.splice_meta_while_stmt(s.meta_while_stmt, out);
+            } else if (this.try_consume_meta_define_stmt(s)) {
+                // consumed #define("K","V"); statement -> drop
+            } else {
+                out.push(this.rewrite_one_statement(s));
+            }
+            i = i + 1;
+        }
+    }
+
+    // If this statement is #define("K","V"); (a meta-call-as-statement), record
+    // the option and return true (consume). Otherwise return false.
+    fun try_consume_meta_define_stmt(mut this, s: Statement) -> bool {
+        if (s is Statement.expression) {
+            if (s.expression.expression.is_some()) {
+                let inner: Expression = s.expression.expression.some;
+                if (inner is Expression.meta_call) {
+                    let mc: MetaCallExpression = inner.meta_call;
+                    if (mc.func_name == "define") {
+                        if (cast<i64>(mc.arguments.size()) == 2) {
+                            let arg_k: Expression = mc.arguments.at(cast<u64>(0)).some;
+                            let arg_v: Expression = mc.arguments.at(cast<u64>(1)).some;
+                            if (arg_k is Expression.string_literal) {
+                                if (arg_v is Expression.string_literal) {
+                                    let key: string = this.meta_strip_quotes(arg_k.string_literal.value);
+                                    let val: string = this.meta_strip_quotes(arg_v.string_literal.value);
+                                    this.meta_set_option(key, val);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // Resolve a #while statement: repeatedly evaluate the condition and
+    // splice body statements until the condition becomes false.
+    // A safety cap prevents infinite compile-time loops.
+    fun splice_meta_while_stmt(mut this, s: MetaWhileStatement, out: mut _utils.List<Statement>) {
+        let max_iterations: i64 = 10000;
+        let iteration: mut i64 = 0;
+        while (iteration < max_iterations) {
+            if (s.condition.is_some()) {
+                let c: Option<bool> = this.eval_meta_bool(s.condition.some);
+                if (c.is_some()) {
+                    if (c.some) {
+                        if (s.body.is_some()) {
+                            this.flatten_statement_into(s.body.some, out);
+                        }
+                        iteration = iteration + 1;
+                    } else {
+                        return; // condition false, exit loop
+                    }
+                } else {
+                    this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #while condition is not a compile-time constant", s.location);
+                    return;
+                }
+            } else {
+                return; // no condition
+            }
+        }
+        if (iteration >= max_iterations) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #while did not converge (exceeded " + cast<string>(max_iterations) + " iterations)", s.location);
+        }
+    }
+
+    // Resolve a #if statement: fold the condition, splice the taken branch's
+    // statements (flattening a braced block; recursively resolving nested meta).
+    fun splice_meta_if_stmt(mut this, s: MetaIfStatement, out: mut _utils.List<Statement>) {
+        let picked: mut Option<Statement> = new Option<Statement>.none();
+        let decided: mut bool = false;
+        if (s.condition.is_some()) {
+            let c: Option<bool> = this.eval_meta_bool(s.condition.some);
+            if (c.is_some()) {
+                decided = true;
+                if (c.some) {
+                    picked = s.then_statement;
+                } else {
+                    let elif_taken: mut bool = false;
+                    let ei: mut i64 = 0;
+                    while (ei < cast<i64>(s.elif_branches.size())) {
+                        if (!elif_taken) {
+                            let br: MetaElifBranch = s.elif_branches.at(cast<u64>(ei)).some;
+                            if (br.condition.is_some()) {
+                                let ec: Option<bool> = this.eval_meta_bool(br.condition.some);
+                                if (ec.is_some()) {
+                                    if (ec.some) {
+                                        picked = br.body_statement;
+                                        elif_taken = true;
+                                    }
+                                }
+                            }
+                        }
+                        ei = ei + 1;
+                    }
+                    if (!elif_taken) {
+                        picked = s.else_statement;
+                    }
+                }
+            }
+        }
+        if (!decided) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #if condition is not a compile-time constant", s.location);
+        }
+        if (picked.is_some()) {
+            this.flatten_statement_into(picked.some, out);
+        }
+    }
+
+    // Append `stmt` to `out`. If it wraps a braced code block, flatten the
+    // block's statements (recursively resolved); otherwise rewrite+push as one.
+    fun flatten_statement_into(mut this, stmt: Statement, out: mut _utils.List<Statement>) {
+        let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
+        if (blk_opt.is_some()) {
+            this.collect_resolved_statements(blk_opt.some, out);
+            return;
+        }
+        out.push(this.rewrite_one_statement(stmt));
+    }
+
+    // If `stmt` wraps a code_block (Statement.block_expr, or Statement.expression
+    // wrapping an ExpressionStatement(code_block)), return its statements list.
+    fun stmt_inner_code_block(this, stmt: Statement) -> Option<_utils.List<Statement>> {
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                let inner: Expression = stmt.block_expr.expression.some;
+                if (inner is Expression.code_block) {
+                    return new Option<_utils.List<Statement>>.some(inner.code_block.statements);
+                }
+            }
+        }
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                let inner: Expression = stmt.expression.expression.some;
+                if (inner is Expression.code_block) {
+                    return new Option<_utils.List<Statement>>.some(inner.code_block.statements);
+                }
+            }
+        }
+        return new Option<_utils.List<Statement>>.none();
+    }
+
+    // Recurse into a kept (non-meta) statement's nested control-flow bodies so
+    // meta inside regular if/while/for/{...} is resolved. Returns the same
+    // statement object (sub-contents mutated in place).
+    fun rewrite_one_statement(mut this, stmt: Statement) -> Statement {
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.rewrite_meta_in_substatement(stmt.if_stmt.then_statement.some);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.rewrite_meta_in_substatement(stmt.if_stmt.else_statement.some);
+            }
+            return stmt;
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.body.is_some()) {
+                this.rewrite_meta_in_substatement(stmt.while_stmt.body.some);
+            }
+            return stmt;
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.body.is_some()) {
+                this.rewrite_meta_in_substatement(stmt.for_stmt.body.some);
+            }
+            return stmt;
+        }
+        let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
+        if (blk_opt.is_some()) {
+            this.rewrite_meta_statements_inplace(blk_opt.some);
+        }
+        return stmt;
+    }
+
+    // Rewrite meta inside a single sub-statement (the body/then/else of regular
+    // control flow): if it wraps a code block, resolve that block in place.
+    fun rewrite_meta_in_substatement(mut this, stmt: Statement) {
+        let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
+        if (blk_opt.is_some()) {
+            this.rewrite_meta_statements_inplace(blk_opt.some);
+        }
+    }
+
     fun bind(mut this, unit: CompilationUnit, location: SourceLocation) -> BoundCompilationUnit {
         _utils.trace_enter("Enter bind");
         let result: mut BoundCompilationUnit = new BoundCompilationUnit(location);
         result.type_registry = this.type_registry;
         result.global_scope = this.global_scope;
         this.ast_definitions = unit.definitions;
+        // Phase 5c: pre-register all #fun meta functions (recursively) and seed
+        // the JIT engine BEFORE the 5a meta rewrite, so that definition-position
+        // #fun calls can be JIT-spliced during rewrite_meta_definitions. (JIT is
+        // only actually reached in native pass2+; pass_build_scopes re-registers
+        // #funs later — duplicates are harmless, JIT compile is cached by name.)
+        this.collect_meta_function_defs(unit.definitions);
+        this.collect_meta_class_defs(unit.definitions);
+        this.seed_meta_engine();
+        // Phase 5a: flatten compile-time meta (#define / #if / ...) into plain
+        // definitions before any pass runs. Done in place on unit.definitions so
+        // every downstream parallel-indexed pass stays aligned.
+        this.rewrite_meta_definitions(unit.definitions);
+        // Phase 5a.3: resolve statement-level meta inside function/initial bodies.
+        this.rewrite_meta_in_function_bodies(unit.definitions);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 1/9: Building scopes..."); }
         this.pass_build_scopes(unit, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 2/9: Resolving types..."); }
@@ -175,6 +841,38 @@ class SemanticModel {
         if (def is Definition.global_var) {
             return this.bind_global_var_def(def.global_var, scope);
         }
+        if (def is Definition.meta_function_def) {
+            return this.bind_meta_function_def(def.meta_function_def, scope);
+        }
+        if (def is Definition.meta_class_def) {
+            // Phase 6 v2: `#class` is meta-only — collected into unit B by
+            // collect_meta_class_defs (so #funs can use it); not emitted to runtime.
+            // Bind a placeholder slot (reusing the meta_function_def bound variant,
+            // which IRGenerator/LLVMEmitter skip) so pass_bind_expressions's parallel
+            // unit.definitions[i] <-> result.definitions[i] iteration stays aligned.
+            let placeholder: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.meta_class_def.name, def.meta_class_def.name);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(placeholder));
+        }
+        if (def is Definition.meta_if_def) {
+            let r: mut BoundMetaIfDefinition = new BoundMetaIfDefinition(new Option<Definition>.some(new Definition.meta_if_def(def.meta_if_def)), def.meta_if_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_if_def(r));
+        }
+        if (def is Definition.meta_for_def) {
+            let r: mut BoundMetaForDefinition = new BoundMetaForDefinition(new Option<Definition>.some(new Definition.meta_for_def(def.meta_for_def)), def.meta_for_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_for_def(r));
+        }
+        if (def is Definition.meta_while_def) {
+            let r: mut BoundMetaWhileDefinition = new BoundMetaWhileDefinition(new Option<Definition>.some(new Definition.meta_while_def(def.meta_while_def)), def.meta_while_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_while_def(r));
+        }
+        if (def is Definition.meta_call_def) {
+            if (def.meta_call_def.call.is_some()) {
+                let r: mut BoundMetaCallDefinition = new BoundMetaCallDefinition(this.bind_expression(def.meta_call_def.call.some, scope), def.meta_call_def.location);
+                return new Option<BoundDefinition>.some(new BoundDefinition.meta_call_def(r));
+            }
+            let r: mut BoundMetaCallDefinition = new BoundMetaCallDefinition(new Option<BoundExpression>.none(), def.meta_call_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_call_def(r));
+        }
         return new Option<BoundDefinition>.none();
     }
 
@@ -229,6 +927,27 @@ class SemanticModel {
         }
         scope.add_symbol(new BoundSymbol.function_sym(sym));
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
+    }
+
+    fun bind_meta_function_def(mut this, def: MetaFunctionDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_meta_function_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.name, full_name);
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(def.parameters.size())) {
+            result.parameters.push(def.parameters.at(cast<u64>(pi)).some);
+            pi = pi + 1;
+        }
+        result.return_type = def.return_type;
+        result.body = def.body;
+        result.location = def.location;
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(def.name, full_name);
+        sym.is_meta = true;
+        sym.location = def.location;
+        result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        scope.add_symbol(new BoundSymbol.function_sym(sym));
+        this.meta_function_defs.push(result);
+        return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(result));
     }
 
     fun bind_class_def(mut this, def: ClassDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
@@ -1232,8 +1951,101 @@ class SemanticModel {
         return bt;
     }
 
+    // Phase 5c (type-return splice): if `type_spec` is a #fun() meta call in a
+    // type-specifier position (e.g. `let x: #int_by_bits(32) = 5;`), JIT-execute
+    // the #fun (it returns a type token as i64) and resolve the token to a
+    // BoundType via MetaEngine. Returns none when type_spec is not a meta-call
+    // type so the caller falls through to normal resolution.
+    fun try_resolve_meta_type_specifier(this, type_spec: TypeSpecifier, scope: BoundScope) -> Option<BoundType> {
+        if (type_spec.meta_call.is_none()) {
+            return new Option<BoundType>.none();
+        }
+        let mc: MetaCallExpression = type_spec.meta_call.some;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
+        if (bmf_opt.is_none()) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type call '#" + mc.func_name + "' is not a #fun", mc.location);
+            return new Option<BoundType>.none();
+        }
+        let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+        // meta_engine is a `mut` field seeded once in bind(); its JIT methods
+        // mutate the engine, not the (immutable) SemanticModel `this`. Args are
+        // evaluated directly (literal/type/ast) instead of via the mut-this
+        // bind_expression path, so this stays callable from immutable type resolution.
+        let args_opt: Option<_utils.List<i64>> = this.eval_meta_type_call_args(mc, bmf, scope);
+        if (args_opt.is_none()) {
+            return new Option<BoundType>.none();
+        }
+        let args: _utils.List<i64> = args_opt.some;
+        // Phase 5: `#fun -> type` returns a real BoundType; the caller-stub stored
+        // it into the host global active_type_result (returning i64 0 to the
+        // arity-0 trampoline). Read it back here. (The host can't recover a non-i64
+        // reference from the trampoline return, hence the global return channel.)
+        let _ignored: i64 = this.meta_engine.call_meta_function_stub(bmf, args);
+        let bt: BoundType = penguin_meta_get_type_result();
+        if (bt.type_definition.is_none() && (bt.kind is TypeKind.PrimitiveKind) && (bt.primitive is PrimitiveType.VoidType)) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta '#" + mc.func_name + "' did not return a known type", mc.location);
+            return new Option<BoundType>.none();
+        }
+        return new Option<BoundType>.some(bt);
+    }
+
+    // Immutable-`this` argument evaluation for a type-position meta call (see
+    // try_resolve_meta_type_specifier). Handles type/ast/integer-literal args.
+    fun eval_meta_type_call_args(this, mc: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: BoundScope) -> Option<_utils.List<i64>> {
+        let result: mut _utils.List<i64> = new _utils.List<i64>();
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(mc.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs) {
+            if (pi >= nparams) {
+                this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " has too many arguments", mc.location);
+                return new Option<_utils.List<i64>>.none();
+            }
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            let arg: Expression = mc.arguments.at(cast<u64>(pi)).some;
+            let v: Option<i64> = this.eval_meta_arg_i64(arg, kind, mc.location);
+            if (v.is_none()) {
+                return new Option<_utils.List<i64>>.none();
+            }
+            result.push(v.some);
+            pi = pi + 1;
+        }
+        return new Option<_utils.List<i64>>.some(result);
+    }
+
+    fun eval_meta_arg_i64(this, arg: Expression, kind: string, loc: SourceLocation) -> Option<i64> {
+        if (kind == "type") {
+            if (arg is Expression.identifier) {
+                let type_name: string = arg.identifier.name;
+                let bt_opt: Option<BoundType> = this.type_registry.resolve_type(type_name);
+                if (bt_opt.is_some()) {
+                    let token: u64 = this.meta_engine.get_or_assign_type_token(type_name);
+                    return new Option<i64>.some(cast<i64>(token));
+                }
+                this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument '" + type_name + "' is not a known type", loc);
+                return new Option<i64>.none();
+            }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument must be a type name", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "ast") {
+            let token: u64 = this.meta_engine.register_ast_expression(arg);
+            return new Option<i64>.some(cast<i64>(token));
+        }
+        // integer literal arg (ConstantExpression holds the raw token text).
+        if (arg is Expression.constant) {
+            return new Option<i64>.some(string_to_int(arg.constant.value));
+        }
+        this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type-call argument must be a compile-time integer literal, type, or ast", loc);
+        return new Option<i64>.none();
+    }
+
     fun resolve_type_specifier(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut BoundType {
         _utils.trace_enter("Enter resolve_type_specifier");
+        let mt: Option<BoundType> = this.try_resolve_meta_type_specifier(type_spec, scope);
+        if (mt.is_some()) {
+            return this.apply_mutability(mt.some, type_spec.is_mutable);
+        }
         if (type_spec.is_function_type || type_spec.is_async_function_type) {
             let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let i: mut i64 = 0;
@@ -1324,6 +2136,10 @@ class SemanticModel {
     // when resolve_type_specifier delegates to this for the element type).
     fun resolve_type_specifier_no_iterable(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut BoundType {
         _utils.trace_enter("Enter resolve_type_specifier_no_iterable");
+        let mt: Option<BoundType> = this.try_resolve_meta_type_specifier(type_spec, scope);
+        if (mt.is_some()) {
+            return this.apply_mutability(mt.some, type_spec.is_mutable);
+        }
         if (type_spec is TypeSpecifier) {
             // Skip: just a type guard — always true
         }
@@ -3635,6 +4451,9 @@ class SemanticModel {
         if (expr is Expression.new_expr) {
             return this.bind_new_expr(expr.new_expr, scope);
         }
+        if (expr is Expression.meta_call) {
+            return this.bind_meta_call(expr.meta_call, scope);
+        }
         return new Option<BoundExpression>.none();
     }
 
@@ -4510,6 +5329,253 @@ class SemanticModel {
         return result;
     }
 
+    fun bind_meta_call(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_meta_call");
+        // Phase 5c: if this is a call to a registered #fun, JIT-execute it at
+        // compile time and splice the result (integer literal, or a returned ast
+        // re-bound at the call site). Only the JIT is reached in native pass2+
+        // (--enable-meta); #funs are registered in collect_meta_function_defs
+        // (pre-rewrite) and pass_build_scopes. If func_name is not a #fun, fall
+        // through to a plain BoundMetaCallExpression (e.g. unknown #attribute, or
+        // built-in meta like #defined/#option which are resolved elsewhere).
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(expr.func_name);
+        if (bmf_opt.is_some()) {
+            let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf_opt.some, expr, scope);
+            if (spliced.is_some()) {
+                return spliced;
+            }
+            return new Option<BoundExpression>.none();
+        }
+        let bound_args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments, scope);
+        let result: mut BoundMetaCallExpression = new BoundMetaCallExpression(expr.func_name, bound_args, expr.trailing_block, expr.trailing_definition, expr.location);
+        return new Option<BoundExpression>.some(new BoundExpression.meta_call(result));
+    }
+
+    // Phase 5c: JIT-execute a #fun meta call (expression/statement position) and
+    // return the spliced result. Arity 0..3 via the i64 trampolines. By return
+    // kind: ast -> resolve token -> rebind the AST Expression at the call site;
+    // i64/bool -> integer literal; type -> not yet supported (error). `expr` is
+    // the original MetaCallExpression (carries args + trailing_block + location).
+    fun try_splice_meta_fun_call(mut this, bmf: BoundMetaFunctionDefinition, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        this.seed_meta_engine();
+        let args_opt: Option<_utils.List<i64>> = this.bind_meta_args(expr, bmf, scope);
+        if (args_opt.is_none()) {
+            return new Option<BoundExpression>.none();
+        }
+        let args: _utils.List<i64> = args_opt.some;
+        let result_i64: mut i64 = this.meta_engine.call_meta_function_stub(bmf, args);
+        let ret_kind: mut string = "";
+        if (bmf.return_type.is_some()) {
+            ret_kind = bmf.return_type.some.name;
+        }
+        if (ret_kind == "ast") {
+            let node_opt: Option<Expression> = this.meta_engine.get_ast_expression(cast<u64>(result_i64));
+            if (node_opt.is_some()) {
+                return this.bind_expression(node_opt.some, scope);
+            }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return an expression ast in expression position", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        if (ret_kind == "string") {
+            // Phase 5: the caller-stub stored the #fun's returned string into the
+            // host global active_string_result (returning i64 0). Splice it as a
+            // string literal. (Simple strings only — no quote/escape handling.)
+            let s: string = penguin_meta_get_string_result();
+            let bt: BoundType = this.type_registry.resolve_type("string").some;
+            let lit: BoundLiteralExpression = new BoundLiteralExpression("\"" + s + "\"", bt, new LiteralKind.StringLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+        }
+        if (ret_kind == "type") {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " type-return splice is not supported in expression position (use a type-specifier position)", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let ret_type: BoundType = this.resolve_meta_return_type(bmf);
+        let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(result_i64), ret_type, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+    }
+
+    // Phase 5c: JIT-execute a definition-position #fun call (a top-level/member
+    // `#gen()` whose MetaCallDefinition wraps a #fun returning ast) and inject
+    // the returned Definition into `out` so it flows through the normal passes as
+    // if originally in source. Returns true if handled (caller skips the default
+    // push); false to fall through and push the raw def.
+    fun try_splice_meta_fun_def(mut this, d: MetaCallDefinition, out: mut _utils.List<Definition>) -> bool {
+        if (d.call.is_some()) {
+            let call: Expression = d.call.some;
+            if (call is Expression.meta_call) {
+                let mc: MetaCallExpression = call.meta_call;
+                let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
+                if (bmf_opt.is_some()) {
+                    let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+                    this.seed_meta_engine();
+                    let args_opt: Option<_utils.List<i64>> = this.bind_meta_args(mc, bmf, this.global_scope);
+                    if (args_opt.is_none()) {
+                        return true;
+                    }
+                    let args: _utils.List<i64> = args_opt.some;
+                    let result_i64: mut i64 = this.meta_engine.call_meta_function_stub(bmf, args);
+                    let def_opt: Option<Definition> = this.meta_engine.get_ast_definition(cast<u64>(result_i64));
+                    if (def_opt.is_some()) {
+                        let single: mut _utils.List<Definition> = new _utils.List<Definition>();
+                        single.push(def_opt.some);
+                        this.collect_resolved_definitions(single, out);
+                        return true;
+                    }
+                    this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return a definition ast in definition position", mc.location);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Phase 5c: build the i64 argument list for a #fun JIT call, binding each
+    // argument per its parameter kind. type/ast args become opaque tokens (small
+    // i64); integer args must be compile-time integer constants. A trailing code
+    // block supplies the last ast-typed parameter when not given positionally.
+    // Returns none (error reported) if an argument cannot be converted.
+    fun bind_meta_args(mut this, expr: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: mut BoundScope) -> Option<_utils.List<i64>> {
+        this.seed_meta_engine();
+        let result: mut _utils.List<i64> = new _utils.List<i64>();
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(expr.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs) {
+            if (pi >= nparams) {
+                this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " has too many arguments", expr.location);
+                return new Option<_utils.List<i64>>.none();
+            }
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            let arg: Expression = expr.arguments.at(cast<u64>(pi)).some;
+            let v: Option<i64> = this.bind_meta_arg_value(arg, kind, expr.location, scope);
+            if (v.is_none()) {
+                return new Option<_utils.List<i64>>.none();
+            }
+            result.push(v.some);
+            pi = pi + 1;
+        }
+        if (expr.trailing_block.is_some()) {
+            if (nparams >= 1) {
+                if (nargs < nparams) {
+                    let last_kind: string = bmf.parameters.at(cast<u64>(nparams - 1)).some.kind;
+                    if (last_kind == "ast") {
+                        let v: Option<i64> = this.bind_meta_arg_value(expr.trailing_block.some, "ast", expr.location, scope);
+                        if (v.is_none()) {
+                            return new Option<_utils.List<i64>>.none();
+                        }
+                        result.push(v.some);
+                    }
+                }
+            }
+        }
+        return new Option<_utils.List<i64>>.some(result);
+    }
+
+    // Convert one meta argument to its i64 token/value according to param kind.
+    fun bind_meta_arg_value(mut this, arg: Expression, kind: string, loc: SourceLocation, scope: mut BoundScope) -> Option<i64> {
+        if (kind == "type") {
+            // Accept either a bare type name (Point) or #typeof(Point). Resolve via
+            // the MetaEngine (which consults the global scope for user types, not
+            // just the primitive-only type_registry).
+            let type_name: mut string = "";
+            if (arg is Expression.identifier) {
+                type_name = arg.identifier.name;
+            } else if (arg is Expression.meta_call) {
+                if (arg.meta_call.func_name == "typeof") {
+                    if (cast<i64>(arg.meta_call.arguments.size()) >= 1) {
+                        let inner: Expression = arg.meta_call.arguments.at(cast<u64>(0)).some;
+                        if (inner is Expression.identifier) {
+                            type_name = inner.identifier.name;
+                        }
+                    }
+                }
+            }
+            if (type_name != "") {
+                let bt_opt: Option<BoundType> = this.meta_engine.resolve_type_by_name(type_name);
+                if (bt_opt.is_some()) {
+                    let token: u64 = this.meta_engine.get_or_assign_type_token(type_name);
+                    return new Option<i64>.some(cast<i64>(token));
+                }
+                this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument '" + type_name + "' is not a known type", loc);
+                return new Option<i64>.none();
+            }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument must be a type name", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "ast") {
+            let token: u64 = this.meta_engine.register_ast_expression(arg);
+            return new Option<i64>.some(cast<i64>(token));
+        }
+        let bound_opt: Option<BoundExpression> = this.bind_expression(arg, scope);
+        if (bound_opt.is_some()) {
+            let iv: Option<i64> = this.bound_literal_i64_value(bound_opt.some);
+            if (iv.is_some()) {
+                return iv;
+            }
+        }
+        this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta argument must be a compile-time integer constant", loc);
+        return new Option<i64>.none();
+    }
+
+    // Resolve a #fun's declared return type to a BoundType for the spliced
+    // literal; falls back to an empty BoundType if it can't be resolved.
+    fun resolve_meta_return_type(this, bmf: BoundMetaFunctionDefinition) -> BoundType {
+        if (bmf.return_type.is_some()) {
+            let rt_name: string = bmf.return_type.some.name;
+            let rt_opt: Option<BoundType> = this.type_registry.resolve_type(rt_name);
+            if (rt_opt.is_some()) {
+                return rt_opt.some;
+            }
+        }
+        return new BoundType();
+    }
+
+    fun find_meta_function(this, name: string) -> Option<BoundMetaFunctionDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_function_defs.size())) {
+            if (this.meta_function_defs.at(cast<u64>(i)).some.name == name) {
+                return new Option<BoundMetaFunctionDefinition>.some(this.meta_function_defs.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundMetaFunctionDefinition>.none();
+    }
+
+    // Extract an i64 from a bound integer literal, or none if not a constant int.
+    fun bound_literal_i64_value(this, bexpr: BoundExpression) -> Option<i64> {
+        if (bexpr is BoundExpression.literal) {
+            if (bexpr.literal.literal_kind is LiteralKind.IntegerLiteral) {
+                return new Option<i64>.some(string_to_int(bexpr.literal.value));
+            }
+        }
+        return new Option<i64>.none();
+    }
+
+    fun seed_meta_engine(mut this) {
+        if (!this.meta_engine_seeded) {
+            this.meta_engine_seeded = true;
+            this.meta_engine.verbose = this.verbose;
+            this.meta_engine.host_type_registry = this.type_registry;
+            // Phase 6: give MetaEngine access to the global scope so it can resolve
+            // user-defined types (BoundTypeRegistry only knows primitives). It's a
+            // reference, populated by pass_build_scopes before reflection runs.
+            this.meta_engine.global_scope = new Option<BoundScope>.some(this.global_scope);
+            // Phase 6 v2: feed collected `#class` definitions (build_text) into unit B
+            // as the <meta_classes> source input, so #funs can use them.
+            let class_src: mut StringBuilder = new StringBuilder();
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(this.meta_class_defs.size())) {
+                class_src.append(this.meta_class_defs.at(cast<u64>(ci)).some.build_text());
+                class_src.append("\n");
+                ci = ci + 1;
+            }
+            this.meta_engine.meta_class_source = class_src.to_string();
+            // Phase 6: register MetaEngine in the module-global active_meta slot so
+            // JIT'd #fun code can call back into the host via penguin_meta_* functions.
+            penguin_meta_set_active(this.meta_engine);
+        }
+    }
+
     fun bind_if_expr(mut this, expr: IfExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_if_expr");
         let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, scope);
@@ -5283,6 +6349,27 @@ class SemanticModel {
             let result: mut BoundBlockStatement = new BoundBlockStatement(final_stmts, new Option<BoundScope>.some(for_scope));
             result.location = loc;
             return new Option<BoundStatement>.some(new BoundStatement.block(result));
+        }
+        if (stmt is Statement.meta_if_stmt) {
+            let r: mut BoundMetaIfStatement = new BoundMetaIfStatement(new Option<Statement>.some(new Statement.meta_if_stmt(stmt.meta_if_stmt)));
+            r.location = stmt.meta_if_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_if_stmt(r));
+        }
+        if (stmt is Statement.meta_while_stmt) {
+            let r: mut BoundMetaWhileStatement = new BoundMetaWhileStatement(new Option<Statement>.some(new Statement.meta_while_stmt(stmt.meta_while_stmt)));
+            r.location = stmt.meta_while_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_while_stmt(r));
+        }
+        if (stmt is Statement.meta_for_stmt) {
+            let r: mut BoundMetaForStatement = new BoundMetaForStatement(new Option<Statement>.some(new Statement.meta_for_stmt(stmt.meta_for_stmt)));
+            r.location = stmt.meta_for_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_for_stmt(r));
+        }
+        if (stmt is Statement.meta_break_stmt) {
+            return new Option<BoundStatement>.some(new BoundStatement.meta_break_stmt(new BoundMetaBreakStatement(stmt.meta_break_stmt.location)));
+        }
+        if (stmt is Statement.meta_continue_stmt) {
+            return new Option<BoundStatement>.some(new BoundStatement.meta_continue_stmt(new BoundMetaContinueStatement(stmt.meta_continue_stmt.location)));
         }
         return new Option<BoundStatement>.none();
     }

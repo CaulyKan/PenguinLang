@@ -85,9 +85,47 @@ namespace emperor {
                 cast_node.location = target_type.location;
                 cast_node.inner = new Option<Expression>.some(cast_inner);
                 return new Expression.cast_expr(cast_node);
+            } else if (token.token_type is TokenType.Hash) {
+                this.stream.expect(new TokenType.Hash());
+                let name_token: Token = this.stream.advance();
+                let mc: mut MetaCallExpression = new MetaCallExpression();
+                mc.func_name = name_token.text;
+                mc.location = this.tok_loc(name_token);
+                this.stream.expect(new TokenType.LParen());
+                while (!(this.stream.peek_type() is TokenType.RParen)) {
+                    let arg = this.parse_meta_argument();
+                    mc.arguments.push(arg);
+                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+                }
+                this.stream.expect(new TokenType.RParen());
+                if (this.stream.peek_type() is TokenType.LBrace) {
+                    let block = this.parse_codeBlockExpression();
+                    mc.trailing_block = new Option<Expression>.some(block);
+                }
+                return new Expression.meta_call(mc);
             } else {
                 return new Expression.constant(new ConstantExpression(""));
             }
+        }
+
+        // Meta-call arguments may be type names (e.g. #typeof(i32)). Primitive
+        // type keywords (i32, u64, string, ...) are not valid expressions, so in
+        // a meta-call argument position we wrap the keyword token's text as an
+        // IdentifierExpression — the meta engine resolves the name later. Without
+        // this, parse_primaryExpression's fallback returns a constant WITHOUT
+        // consuming the keyword token, and the argument loop above spins forever
+        // (this was the smoke_4c2 `return #typeof(i32);` hang / SIGKILL 137).
+        fun parse_meta_argument(this) -> Expression {
+            let t: Token = this.stream.peek();
+            let tt: TokenType = t.token_type;
+            if (tt is TokenType.I8 || tt is TokenType.I16 || tt is TokenType.I32 || tt is TokenType.I64
+                || tt is TokenType.U8 || tt is TokenType.U16 || tt is TokenType.U32 || tt is TokenType.U64
+                || tt is TokenType.Float || tt is TokenType.Double
+                || tt is TokenType.Bool || tt is TokenType.StringKw || tt is TokenType.Char || tt is TokenType.Void) {
+                let tok: Token = this.stream.advance();
+                return new Expression.identifier(new IdentifierExpression(tok.text));
+            }
+            return this.parse_expression();
         }
 
         // ifExpression: 'if' '(' expression ')' codeBlockExpression ('else' (codeBlockExpression | ifExpression))?;
@@ -169,7 +207,7 @@ namespace emperor {
                     let bs: BlockExpressionStatement = new BlockExpressionStatement();
                     bs.expression = new Option<Expression>.some(expr);
                     node.statements.push(new Statement.block_expr(bs));
-                } else if (next.token_type is TokenType.Let || next.token_type is TokenType.For || next.token_type is TokenType.Return || next.token_type is TokenType.Break || next.token_type is TokenType.Continue || next.token_type is TokenType.Emit || next.token_type is TokenType.Yield || next.token_type is TokenType.InternalSignal || next.token_type is TokenType.Semicolon) {
+                } else if (next.token_type is TokenType.Hash || next.token_type is TokenType.Let || next.token_type is TokenType.For || next.token_type is TokenType.Return || next.token_type is TokenType.Break || next.token_type is TokenType.Continue || next.token_type is TokenType.Emit || next.token_type is TokenType.Yield || next.token_type is TokenType.InternalSignal || next.token_type is TokenType.Semicolon) {
                     let stmt = this.parse_statement();
                     node.statements.push(stmt);
                 } else {
@@ -812,6 +850,31 @@ namespace emperor {
                 this.stream.advance();
                 node.is_auto_mutability = true;
             }
+            // Phase 5c (type-return splice): a type specifier may be a compile-time
+            // #fun() call returning `type` (e.g. `let x: #int_by_bits(32) = 5;`).
+            let hash_tok: Token = this.stream.peek();
+            if (hash_tok.token_type is TokenType.Hash) {
+                this.stream.advance(); // consume '#'
+                let name_token: Token = this.stream.advance();
+                let mc: mut MetaCallExpression = new MetaCallExpression();
+                mc.func_name = name_token.text;
+                mc.location = this.tok_loc(name_token);
+                node.location = this.tok_loc(name_token);
+                node.name = name_token.text;
+                this.stream.expect(new TokenType.LParen());
+                while (!(this.stream.peek_type() is TokenType.RParen)) {
+                    let arg = this.parse_meta_argument();
+                    mc.arguments.push(arg);
+                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+                }
+                this.stream.expect(new TokenType.RParen());
+                if (this.stream.peek_type() is TokenType.LBrace) {
+                    let block = this.parse_codeBlockExpression();
+                    mc.trailing_block = new Option<Expression>.some(block);
+                }
+                node.meta_call = new Option<MetaCallExpression>.some(mc);
+                return node;
+            }
             let type_next: Token = this.stream.peek();
             if (type_next.token_type is TokenType.Fun) {
                 this.stream.advance();
@@ -1178,7 +1241,9 @@ namespace emperor {
                 }
                 _loop_guard_pos = this.stream.pos;
                 let next: Token = this.stream.peek();
-                if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync || next.token_type is TokenType.Hash) {
+                if (next.token_type is TokenType.Hash) {
+                    node.members.push(this.parse_metaDeclaration(true));
+                } else if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync) {
                     node.members.push(this.parse_functionDefinition());
                 } else if (next.token_type is TokenType.On) {
                     node.members.push(this.parse_onRoutine());
@@ -1219,7 +1284,9 @@ namespace emperor {
                 }
                 _loop_guard_pos = this.stream.pos;
                 let next: Token = this.stream.peek();
-                if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync || next.token_type is TokenType.Hash) {
+                if (next.token_type is TokenType.Hash) {
+                    node.members.push(this.parse_metaDeclaration(true));
+                } else if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync) {
                     node.members.push(this.parse_functionDefinition());
                 } else if (next.token_type is TokenType.On) {
                     node.members.push(this.parse_onRoutine());
@@ -1276,6 +1343,9 @@ namespace emperor {
         fun parse_statement(this) -> Statement {
             let next: Token = this.stream.peek();
             let start_loc: SourceLocation = this.cur_loc();
+            if (next.token_type is TokenType.Hash) {
+                return this.parse_metaStatement();
+            }
             if (next.token_type is TokenType.Let) {
                 this.stream.advance();
                 let is_mut: mut bool = false;
@@ -1580,26 +1650,7 @@ namespace emperor {
                 return this.parse_functionDefinition();
             }
             if (next.token_type is TokenType.Hash) {
-                let saved_pos: i64 = this.stream.pos;
-                this.stream.advance(); // skip #
-                if (this.stream.peek_type() is TokenType.TemplateKw) {
-                    this.stream.advance(); // skip template
-                    this.stream.expect(new TokenType.LParen());
-                    let depth: mut i64 = 1;
-                    while (depth > 0 && !(this.stream.is_at_end())) {
-                        let t: Token = this.stream.advance();
-                        if (t.token_type is TokenType.LParen) { depth = depth + 1; }
-                        if (t.token_type is TokenType.RParen) { depth = depth - 1; }
-                    }
-                    let after_tpl: Token = this.stream.peek();
-                    this.stream.pos = saved_pos;
-                    if (after_tpl.token_type is TokenType.Class) { return this.parse_classDefinition(); }
-                    if (after_tpl.token_type is TokenType.Enum) { return this.parse_enumDefinition(); }
-                    if (after_tpl.token_type is TokenType.Interface) { return this.parse_interfaceDefinition(); }
-                    if (after_tpl.token_type is TokenType.Fun) { return this.parse_functionDefinition(); }
-                } else {
-                    this.stream.pos = saved_pos;
-                }
+                return this.parse_metaDeclaration(true);
             }
             if (next.token_type is TokenType.Class) {
                 return this.parse_classDefinition();
@@ -1653,6 +1704,411 @@ namespace emperor {
             // fallback
             let fallback3 = new FunctionDefinition("");
             return new Definition.function_def(fallback3);
+        }
+
+        // metaDeclaration: '#' ('template' | 'fun' | 'if' | 'for' | 'while' | identifier) ...
+        // Classification: Dispatcher
+        fun parse_metaDeclaration(this, body_is_definition: bool) -> Definition {
+            let saved_pos: i64 = this.stream.pos;
+            this.stream.advance(); // skip #
+            let next: Token = this.stream.peek();
+            this.stream.pos = saved_pos;
+            if (next.token_type is TokenType.TemplateKw) {
+                this.stream.advance(); // skip #
+                this.stream.advance(); // skip template
+                this.stream.expect(new TokenType.LParen());
+                let depth: mut i64 = 1;
+                while (depth > 0 && !(this.stream.is_at_end())) {
+                    let t: Token = this.stream.advance();
+                    if (t.token_type is TokenType.LParen) { depth = depth + 1; }
+                    if (t.token_type is TokenType.RParen) { depth = depth - 1; }
+                }
+                let after_tpl: Token = this.stream.peek();
+                this.stream.pos = saved_pos;
+                if (after_tpl.token_type is TokenType.Class) { return this.parse_classDefinition(); }
+                if (after_tpl.token_type is TokenType.Enum) { return this.parse_enumDefinition(); }
+                if (after_tpl.token_type is TokenType.Interface) { return this.parse_interfaceDefinition(); }
+                if (after_tpl.token_type is TokenType.Fun) { return this.parse_functionDefinition(); }
+                print("error: #template not followed by class/enum/interface/fun\n");
+                return new Definition.function_def(new FunctionDefinition(""));
+            }
+            if (next.token_type is TokenType.Fun) { return this.parse_metaFunctionDefinition(); }
+            if (next.token_type is TokenType.If) { return this.parse_metaIfDefinition(); }
+            if (next.token_type is TokenType.For) { return this.parse_metaForDefinition(); }
+            if (next.token_type is TokenType.While) { return this.parse_metaWhileDefinition(); }
+            if (next.token_type is TokenType.Class) { return this.parse_metaClassDefinition(); }
+            if (next.token_type is TokenType.Identifier) { return this.parse_metaCallDefinition(); }
+            print("error: unexpected token after # in meta declaration: " + next.to_string() + "\n");
+            return new Definition.function_def(new FunctionDefinition(""));
+        }
+
+        // metaStatement: '#' ('if' | 'for' | 'while' | 'break' | 'continue' | identifier) ...
+        // Classification: Dispatcher
+        fun parse_metaStatement(this) -> Statement {
+            let saved_pos: i64 = this.stream.pos;
+            this.stream.advance(); // skip #
+            let next: Token = this.stream.peek();
+            this.stream.pos = saved_pos;
+            if (next.token_type is TokenType.If) { return this.parse_metaIfStatement(); }
+            if (next.token_type is TokenType.For) { return this.parse_metaForStatement(); }
+            if (next.token_type is TokenType.While) { return this.parse_metaWhileStatement(); }
+            if (next.token_type is TokenType.Break) { return this.parse_metaBreakStatement(); }
+            if (next.token_type is TokenType.Continue) { return this.parse_metaContinueStatement(); }
+            if (next.token_type is TokenType.Identifier) {
+                let expr: Expression = this.parse_expression();
+                if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); }
+                let es: mut ExpressionStatement = new ExpressionStatement();
+                es.expression = new Option<Expression>.some(expr);
+                return new Statement.expression(es);
+            }
+            print("error: unexpected token after # in meta statement: " + next.to_string() + "\n");
+            return new Statement.expression(new ExpressionStatement());
+        }
+
+        // metaFunctionDefinition: '#' 'fun' identifier '(' metaParameterList? ')' ('->' typeSpecifier)? (codeBlockExpression | ';');
+        // Classification: Sequence
+        fun parse_metaFunctionDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.Fun());
+            let name_token: Token = this.stream.advance();
+            let node: mut MetaFunctionDefinition = new MetaFunctionDefinition(name_token.text);
+            node.location = start_loc;
+            if (this.stream.match(new TokenType.LParen())) {
+                while (!(this.stream.peek_type() is TokenType.RParen)) {
+                    let mp = this.parse_metaParameter();
+                    node.parameters.push(mp);
+                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+                }
+                this.stream.expect(new TokenType.RParen());
+            }
+            if (this.stream.match(new TokenType.Arrow())) {
+                let ret_type = this.parse_typeSpecifier();
+                node.return_type = new Option<TypeSpecifier>.some(ret_type);
+            }
+            if (this.stream.peek_type() is TokenType.LBrace) {
+                let body_expr = this.parse_codeBlockExpression();
+                node.body = new Option<Expression>.some(body_expr);
+            } else {
+                this.stream.expect(new TokenType.Semicolon());
+            }
+            return new Definition.meta_function_def(node);
+        }
+
+        // Phase 6 v2 `#class`: a meta-only, full-capability class. The `#` prefix
+        // marks it meta (collected into unit B, not emitted to runtime); the body is
+        // an ordinary class — reuses parse_classDefinition. Returns a meta_class_def
+        // wrapping the parsed ClassDefinition.
+        fun parse_metaClassDefinition(this) -> Definition {
+            this.stream.advance(); // skip '#'
+            let d: Definition = this.parse_classDefinition();
+            if (d is Definition.class_def) {
+                return new Definition.meta_class_def(d.class_def);
+            }
+            return d;
+        }
+
+        // metaParameter: identifier (':' identifier)?;
+        // Classification: Sequence
+        fun parse_metaParameter(this) -> MetaParameter {
+            let name_token: Token = this.stream.advance();
+            let node: mut MetaParameter = new MetaParameter();
+            node.name = name_token.text;
+            if (this.stream.match(new TokenType.Colon())) {
+                let kind_token: Token = this.stream.advance();
+                node.kind = kind_token.text;
+            }
+            return node;
+        }
+
+        // metaIfDefinition: '#' 'if' '(' expression ')' '{' definition* '}' ('#' 'elif' '(' expression ')' '{' definition* '}')* ('#' 'else' '{' definition* '}')?;
+        // Classification: Sequence
+        fun parse_metaIfDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.If());
+            this.stream.expect(new TokenType.LParen());
+            let condition = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let node: mut MetaIfDefinition = new MetaIfDefinition();
+            node.condition = new Option<Expression>.some(condition);
+            node.location = start_loc;
+            this.stream.expect(new TokenType.LBrace());
+            {
+                let _loop_guard_pos_b: mut i64 = -1;
+                while (!(this.stream.peek_type() is TokenType.RBrace)) {
+                    if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); continue; }
+                    if (this.stream.pos == _loop_guard_pos_b) {
+                        print("ERROR: parser stuck at pos " + cast<string>(this.stream.pos) + " token: " + this.stream.peek().to_string());
+                        break;
+                    }
+                    _loop_guard_pos_b = this.stream.pos;
+                    node.then_definitions.push(this.parse_namespaceDeclaration());
+                }
+            }
+            this.stream.expect(new TokenType.RBrace());
+            // parse #elif and #else branches
+            while (true) {
+                let branch_saved_pos: i64 = this.stream.pos;
+                if (!(this.stream.peek_type() is TokenType.Hash)) { break; }
+                this.stream.advance(); // skip #
+                let branch_next: Token = this.stream.peek();
+                if (branch_next.token_type is TokenType.ElifKw) {
+                    this.stream.advance(); // skip elif
+                    let elif_branch: mut MetaElifBranch = new MetaElifBranch();
+                    this.stream.expect(new TokenType.LParen());
+                    elif_branch.condition = new Option<Expression>.some(this.parse_expression());
+                    this.stream.expect(new TokenType.RParen());
+                    this.stream.expect(new TokenType.LBrace());
+                    {
+                        let _loop_guard_pos_c: mut i64 = -1;
+                        while (!(this.stream.peek_type() is TokenType.RBrace)) {
+                            if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); continue; }
+                            if (this.stream.pos == _loop_guard_pos_c) {
+                                print("ERROR: parser stuck at pos " + cast<string>(this.stream.pos) + " token: " + this.stream.peek().to_string());
+                                break;
+                            }
+                            _loop_guard_pos_c = this.stream.pos;
+                            elif_branch.body_definitions.push(this.parse_namespaceDeclaration());
+                        }
+                    }
+                    this.stream.expect(new TokenType.RBrace());
+                    node.elif_branches.push(elif_branch);
+                } else if (branch_next.token_type is TokenType.Else) {
+                    this.stream.advance(); // skip else
+                    this.stream.expect(new TokenType.LBrace());
+                    {
+                        let _loop_guard_pos_d: mut i64 = -1;
+                        while (!(this.stream.peek_type() is TokenType.RBrace)) {
+                            if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); continue; }
+                            if (this.stream.pos == _loop_guard_pos_d) {
+                                print("ERROR: parser stuck at pos " + cast<string>(this.stream.pos) + " token: " + this.stream.peek().to_string());
+                                break;
+                            }
+                            _loop_guard_pos_d = this.stream.pos;
+                            node.else_definitions.push(this.parse_namespaceDeclaration());
+                        }
+                    }
+                    this.stream.expect(new TokenType.RBrace());
+                    break;
+                } else {
+                    this.stream.pos = branch_saved_pos;
+                    break;
+                }
+            }
+            return new Definition.meta_if_def(node);
+        }
+
+        // metaIfStatement: '#' 'if' '(' expression ')' statement ('#' 'elif' '(' expression ')' statement)* ('#' 'else' statement)?;
+        // Classification: Sequence
+        fun parse_metaIfStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.If());
+            this.stream.expect(new TokenType.LParen());
+            let condition = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let node: mut MetaIfStatement = new MetaIfStatement();
+            node.condition = new Option<Expression>.some(condition);
+            node.location = start_loc;
+            node.then_statement = new Option<Statement>.some(this.parse_statement());
+            // parse #elif and #else branches
+            while (true) {
+                let branch_saved_pos: i64 = this.stream.pos;
+                if (!(this.stream.peek_type() is TokenType.Hash)) { break; }
+                this.stream.advance(); // skip #
+                let branch_next: Token = this.stream.peek();
+                if (branch_next.token_type is TokenType.ElifKw) {
+                    this.stream.advance(); // skip elif
+                    let elif_branch: mut MetaElifBranch = new MetaElifBranch();
+                    this.stream.expect(new TokenType.LParen());
+                    elif_branch.condition = new Option<Expression>.some(this.parse_expression());
+                    this.stream.expect(new TokenType.RParen());
+                    elif_branch.body_statement = new Option<Statement>.some(this.parse_statement());
+                    node.elif_branches.push(elif_branch);
+                } else if (branch_next.token_type is TokenType.Else) {
+                    this.stream.advance(); // skip else
+                    node.else_statement = new Option<Statement>.some(this.parse_statement());
+                    break;
+                } else {
+                    this.stream.pos = branch_saved_pos;
+                    break;
+                }
+            }
+            return new Statement.meta_if_stmt(node);
+        }
+
+        // metaForDefinition: '#' 'for' '(' 'let' ('mut')? identifier (':' identifier)? 'in' expression ')' '{' definition* '}';
+        // Classification: Sequence
+        fun parse_metaForDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.For());
+            this.stream.expect(new TokenType.LParen());
+            this.stream.expect(new TokenType.Let());
+            let is_mut: mut bool = false;
+            if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
+            let name_token: Token = this.stream.advance();
+            let var_type: mut string = "";
+            if (this.stream.match(new TokenType.Colon())) {
+                let type_token: Token = this.stream.advance();
+                var_type = type_token.text;
+            }
+            this.stream.expect(new TokenType.In());
+            let iterable = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let node: mut MetaForDefinition = new MetaForDefinition();
+            node.is_mutable = is_mut;
+            node.variable_name = name_token.text;
+            node.variable_type = var_type;
+            node.iterable = new Option<Expression>.some(iterable);
+            node.location = start_loc;
+            this.stream.expect(new TokenType.LBrace());
+            {
+                let _loop_guard_pos_g: mut i64 = -1;
+                while (!(this.stream.peek_type() is TokenType.RBrace)) {
+                    if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); continue; }
+                    if (this.stream.pos == _loop_guard_pos_g) {
+                        print("ERROR: parser stuck at pos " + cast<string>(this.stream.pos) + " token: " + this.stream.peek().to_string());
+                        break;
+                    }
+                    _loop_guard_pos_g = this.stream.pos;
+                    node.body.push(this.parse_namespaceDeclaration());
+                }
+            }
+            this.stream.expect(new TokenType.RBrace());
+            return new Definition.meta_for_def(node);
+        }
+
+        // metaForStatement: '#' 'for' '(' 'let' ('mut')? identifier (':' identifier)? 'in' expression ')' statement;
+        // Classification: Sequence
+        fun parse_metaForStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.For());
+            this.stream.expect(new TokenType.LParen());
+            this.stream.expect(new TokenType.Let());
+            let is_mut: mut bool = false;
+            if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
+            let name_token: Token = this.stream.advance();
+            let var_type: mut string = "";
+            if (this.stream.match(new TokenType.Colon())) {
+                let type_token: Token = this.stream.advance();
+                var_type = type_token.text;
+            }
+            this.stream.expect(new TokenType.In());
+            let iterable = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let body = this.parse_statement();
+            let node: mut MetaForStatement = new MetaForStatement();
+            node.is_mutable = is_mut;
+            node.variable_name = name_token.text;
+            node.variable_type = var_type;
+            node.iterable = new Option<Expression>.some(iterable);
+            node.body = new Option<Statement>.some(body);
+            node.location = start_loc;
+            return new Statement.meta_for_stmt(node);
+        }
+
+        // metaWhileDefinition: '#' 'while' '(' expression ')' '{' definition* '}';
+        // Classification: Sequence
+        fun parse_metaWhileDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.While());
+            this.stream.expect(new TokenType.LParen());
+            let condition = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let node: mut MetaWhileDefinition = new MetaWhileDefinition();
+            node.condition = new Option<Expression>.some(condition);
+            node.location = start_loc;
+            this.stream.expect(new TokenType.LBrace());
+            {
+                let _loop_guard_pos_h: mut i64 = -1;
+                while (!(this.stream.peek_type() is TokenType.RBrace)) {
+                    if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); continue; }
+                    if (this.stream.pos == _loop_guard_pos_h) {
+                        print("ERROR: parser stuck at pos " + cast<string>(this.stream.pos) + " token: " + this.stream.peek().to_string());
+                        break;
+                    }
+                    _loop_guard_pos_h = this.stream.pos;
+                    node.body.push(this.parse_namespaceDeclaration());
+                }
+            }
+            this.stream.expect(new TokenType.RBrace());
+            return new Definition.meta_while_def(node);
+        }
+
+        // metaWhileStatement: '#' 'while' '(' expression ')' statement;
+        // Classification: Sequence
+        fun parse_metaWhileStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.While());
+            this.stream.expect(new TokenType.LParen());
+            let condition = this.parse_expression();
+            this.stream.expect(new TokenType.RParen());
+            let body = this.parse_statement();
+            let node: mut MetaWhileStatement = new MetaWhileStatement();
+            node.condition = new Option<Expression>.some(condition);
+            node.body = new Option<Statement>.some(body);
+            node.location = start_loc;
+            return new Statement.meta_while_stmt(node);
+        }
+
+        // metaBreakStatement: '#' 'break' expression? ';';
+        // Classification: Sequence
+        fun parse_metaBreakStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.Break());
+            let node: mut MetaBreakStatement = new MetaBreakStatement();
+            if (!(this.stream.peek_type() is TokenType.Semicolon)) {
+                let val: Expression = this.parse_expression();
+                node.value = new Option<Expression>.some(val);
+            }
+            this.stream.expect(new TokenType.Semicolon());
+            node.location = start_loc;
+            return new Statement.meta_break_stmt(node);
+        }
+
+        // metaContinueStatement: '#' 'continue' ';';
+        // Classification: Sequence
+        fun parse_metaContinueStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.Continue());
+            this.stream.expect(new TokenType.Semicolon());
+            let node: mut MetaContinueStatement = new MetaContinueStatement();
+            node.location = start_loc;
+            return new Statement.meta_continue_stmt(node);
+        }
+
+        // metaCallDefinition: '#' identifier '(' expression? (',' expression)* ')' ';';
+        // Classification: Sequence
+        fun parse_metaCallDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            let name_token: Token = this.stream.advance();
+            let node: mut MetaCallDefinition = new MetaCallDefinition();
+            node.location = start_loc;
+            let mc: mut MetaCallExpression = new MetaCallExpression();
+            mc.func_name = name_token.text;
+            mc.location = start_loc;
+            this.stream.expect(new TokenType.LParen());
+            while (!(this.stream.peek_type() is TokenType.RParen)) {
+                let arg = this.parse_expression();
+                mc.arguments.push(arg);
+                if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+            }
+            this.stream.expect(new TokenType.RParen());
+            if (this.stream.peek_type() is TokenType.LBrace) {
+                let block = this.parse_codeBlockExpression();
+                mc.trailing_block = new Option<Expression>.some(block);
+            }
+            this.stream.expect(new TokenType.Semicolon());
+            node.call = new Option<Expression>.some(new Expression.meta_call(mc));
+            return new Definition.meta_call_def(node);
         }
 
         // thisParameter: 'mut'? 'this';

@@ -381,6 +381,36 @@ class VoidLiteralExpression {
     }
 }
 
+class MetaCallExpression {
+    func_name: mut string = "";
+    arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
+    trailing_block: mut Option<Expression> = new Option<Expression>.none();
+    trailing_definition: mut Option<Definition> = new Option<Definition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaCallExpression>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#");
+            sb.append(self.func_name);
+            sb.append("(");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.arguments.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(self.arguments.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(")");
+            if (self.trailing_block.is_some()) {
+                sb.append(" ");
+                sb.append(self.trailing_block.some.build_text());
+            }
+            return sb.to_string();
+        }
+    }
+}
+
 enum Expression {
     constant: ConstantExpression;
     identifier: IdentifierExpression;
@@ -400,6 +430,7 @@ enum Expression {
     spawn_async: SpawnAsyncExpression;
     wait_expr: WaitExpression;
     void_literal: VoidLiteralExpression;
+    meta_call: MetaCallExpression;
 
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
@@ -421,6 +452,7 @@ enum Expression {
         if (this is Expression.spawn_async) { return this.spawn_async.build_text(); }
         if (this is Expression.wait_expr) { return this.wait_expr.build_text(); }
         if (this is Expression.void_literal) { return this.void_literal.build_text(); }
+        if (this is Expression.meta_call) { return this.meta_call.build_text(); }
         return "";
     }
 }
@@ -665,6 +697,123 @@ class SignalStatement {
     }
 }
 
+class MetaElifBranch {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    body_statement: mut Option<Statement> = new Option<Statement>.none();
+    body_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
+    fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
+        if (this.body_statement.is_some()) {
+            return "#elif (" + this.condition.some.build_text() + ") " + this.body_statement.some.build_text();
+        }
+        let mut sb = new StringBuilder();
+        sb.append("#elif (");
+        sb.append(this.condition.some.build_text());
+        sb.append(") {");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.body_definitions.size())) {
+            sb.append(" ");
+            sb.append(this.body_definitions.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+        sb.append(" }");
+        return sb.to_string();
+    }
+}
+
+class MetaIfStatement {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    then_statement: mut Option<Statement> = new Option<Statement>.none();
+    elif_branches: mut _utils.List<MetaElifBranch> = new _utils.List<MetaElifBranch>();
+    else_statement: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaIfStatement>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#if (");
+            sb.append(self.condition.some.build_text());
+            sb.append(") ");
+            sb.append(self.then_statement.some.build_text());
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.elif_branches.size())) {
+                sb.append(" ");
+                sb.append(self.elif_branches.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            if (self.else_statement.is_some()) {
+                sb.append(" #else ");
+                sb.append(self.else_statement.some.build_text());
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaWhileStatement {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    body: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaWhileStatement>(this);
+            return "#while (" + self.condition.some.build_text() + ") " + self.body.some.build_text();
+        }
+    }
+}
+
+class MetaForStatement {
+    variable_name: mut string = "";
+    variable_type: mut string = "";
+    is_mutable: mut bool = false;
+    iterable: mut Option<Expression> = new Option<Expression>.none();
+    body: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaForStatement>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#for (let ");
+            if (self.is_mutable) { sb.append("mut "); }
+            sb.append(self.variable_name);
+            if (string_length(self.variable_type) > 0) { sb.append(": "); sb.append(self.variable_type); }
+            sb.append(" in ");
+            sb.append(self.iterable.some.build_text());
+            sb.append(") ");
+            sb.append(self.body.some.build_text());
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaBreakStatement {
+    value: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaBreakStatement>(this);
+            if (self.value.is_some()) {
+                return "#break " + self.value.some.build_text() + ";";
+            }
+            return "#break;";
+        }
+    }
+}
+
+class MetaContinueStatement {
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            return "#continue;";
+        }
+    }
+}
+
 enum Statement {
     expression: ExpressionStatement;
     block_expr: BlockExpressionStatement;
@@ -679,6 +828,11 @@ enum Statement {
     emit_event: EmitEventStatement;
     yield_stmt: YieldStatement;
     signal_stmt: SignalStatement;
+    meta_if_stmt: MetaIfStatement;
+    meta_while_stmt: MetaWhileStatement;
+    meta_for_stmt: MetaForStatement;
+    meta_break_stmt: MetaBreakStatement;
+    meta_continue_stmt: MetaContinueStatement;
 
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
@@ -695,6 +849,11 @@ enum Statement {
         if (this is Statement.emit_event) { return this.emit_event.build_text(); }
         if (this is Statement.yield_stmt) { return this.yield_stmt.build_text(); }
         if (this is Statement.signal_stmt) { return this.signal_stmt.build_text(); }
+        if (this is Statement.meta_if_stmt) { return this.meta_if_stmt.build_text(); }
+        if (this is Statement.meta_while_stmt) { return this.meta_while_stmt.build_text(); }
+        if (this is Statement.meta_for_stmt) { return this.meta_for_stmt.build_text(); }
+        if (this is Statement.meta_break_stmt) { return this.meta_break_stmt.build_text(); }
+        if (this is Statement.meta_continue_stmt) { return this.meta_continue_stmt.build_text(); }
         return "";
     }
 }
@@ -712,8 +871,18 @@ class TypeSpecifier {
     function_params: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     qualified_parts: mut _utils.List<string> = new _utils.List<string>();
+    // Phase 5c (type-return splice): a type specifier may be a compile-time
+    // #fun() call returning `type` (e.g. `let x: #int_by_bits(32) = ...`).
+    // resolve_type_specifier JIT-executes it and substitutes the returned type.
+    meta_call: mut Option<MetaCallExpression> = new Option<MetaCallExpression>.none();
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
+        if (this.meta_call.is_some()) {
+            let mp: mut string = "";
+            if (this.is_mutable) { mp = "mut "; }
+            if (this.is_not_mutable) { mp = "!mut "; }
+            return mp + "#" + this.meta_call.some.func_name + "(<meta type>)";
+        }
         let prefix: mut string = "";
         if (this.is_mutable) { prefix = "mut "; }
         if (this.is_not_mutable) { prefix = "!mut "; }
@@ -1236,6 +1405,161 @@ class GlobalVariableDefinition {
     }
 }
 
+class MetaParameter {
+    name: mut string = "";
+    kind: mut string = "";
+    fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
+        if (string_length(this.kind) > 0) {
+            return this.name + ": " + this.kind;
+        }
+        return this.name;
+    }
+}
+
+class MetaFunctionDefinition {
+    name: mut string = "";
+    parameters: mut _utils.List<MetaParameter> = new _utils.List<MetaParameter>();
+    return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    body: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, name: string) {
+        this.name = name;
+    }
+
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaFunctionDefinition>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#fun ");
+            sb.append(self.name);
+            sb.append("(");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.parameters.size())) {
+                if (i > 0) { sb.append(", "); }
+                sb.append(self.parameters.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(")");
+            if (self.return_type.is_some()) { sb.append(" -> "); sb.append(self.return_type.some.build_text()); }
+            if (self.body.is_some()) { sb.append(" "); sb.append(self.body.some.build_text()); }
+            else { sb.append(";"); }
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaIfDefinition {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    then_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
+    elif_branches: mut _utils.List<MetaElifBranch> = new _utils.List<MetaElifBranch>();
+    else_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaIfDefinition>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#if (");
+            sb.append(self.condition.some.build_text());
+            sb.append(") {");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.then_definitions.size())) {
+                sb.append(" ");
+                sb.append(self.then_definitions.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.elif_branches.size())) {
+                sb.append(" ");
+                sb.append(self.elif_branches.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            if (cast<i64>(self.else_definitions.size()) > 0) {
+                sb.append(" #else {");
+                let j: mut i64 = 0;
+                while (j < cast<i64>(self.else_definitions.size())) {
+                    sb.append(" ");
+                    sb.append(self.else_definitions.at(cast<u64>(j)).some.build_text());
+                    j = j + 1;
+                }
+                sb.append(" }");
+            }
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaForDefinition {
+    variable_name: mut string = "";
+    variable_type: mut string = "";
+    is_mutable: mut bool = false;
+    iterable: mut Option<Expression> = new Option<Expression>.none();
+    body: mut _utils.List<Definition> = new _utils.List<Definition>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaForDefinition>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#for (let ");
+            if (self.is_mutable) { sb.append("mut "); }
+            sb.append(self.variable_name);
+            if (string_length(self.variable_type) > 0) { sb.append(": "); sb.append(self.variable_type); }
+            sb.append(" in ");
+            sb.append(self.iterable.some.build_text());
+            sb.append(") {");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.body.size())) {
+                sb.append(" ");
+                sb.append(self.body.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaWhileDefinition {
+    condition: mut Option<Expression> = new Option<Expression>.none();
+    body: mut _utils.List<Definition> = new _utils.List<Definition>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaWhileDefinition>(this);
+            let mut sb = new StringBuilder();
+            sb.append("#while (");
+            sb.append(self.condition.some.build_text());
+            sb.append(") {");
+            let i: mut i64 = 0;
+            while (i < cast<i64>(self.body.size())) {
+                sb.append(" ");
+                sb.append(self.body.at(cast<u64>(i)).some.build_text());
+                i = i + 1;
+            }
+            sb.append(" }");
+            return sb.to_string();
+        }
+    }
+}
+
+class MetaCallDefinition {
+    call: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<MetaCallDefinition>(this);
+            return self.call.some.build_text() + ";";
+        }
+    }
+}
+
 enum Definition {
     function_def: FunctionDefinition;
     class_def: ClassDefinition;
@@ -1251,6 +1575,12 @@ enum Definition {
     enum_member: EnumMemberDefinition;
     class_field: ClassFieldDefinition;
     global_var: GlobalVariableDefinition;
+    meta_function_def: MetaFunctionDefinition;
+    meta_class_def: ClassDefinition;
+    meta_if_def: MetaIfDefinition;
+    meta_for_def: MetaForDefinition;
+    meta_while_def: MetaWhileDefinition;
+    meta_call_def: MetaCallDefinition;
 
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
@@ -1268,6 +1598,12 @@ enum Definition {
         if (this is Definition.enum_member) { return this.enum_member.build_text(); }
         if (this is Definition.class_field) { return this.class_field.build_text(); }
         if (this is Definition.global_var) { return this.global_var.build_text(); }
+        if (this is Definition.meta_function_def) { return this.meta_function_def.build_text(); }
+        if (this is Definition.meta_class_def) { return this.meta_class_def.build_text(); }
+        if (this is Definition.meta_if_def) { return this.meta_if_def.build_text(); }
+        if (this is Definition.meta_for_def) { return this.meta_for_def.build_text(); }
+        if (this is Definition.meta_while_def) { return this.meta_while_def.build_text(); }
+        if (this is Definition.meta_call_def) { return this.meta_call_def.build_text(); }
         return "";
     }
 }

@@ -80,6 +80,10 @@ public static class BatchCompiler
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
                       "EmperorPenguin", "src", "project"));
 
+    public static string MetaDir => Path.GetFullPath(
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+                      "EmperorPenguin", "src", "meta"));
+
     public static BatchResults InitBatch<T>()
     {
         var testData = CollectMethods<T, BatchTestAttribute>(
@@ -353,6 +357,10 @@ public static class BatchCompiler
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
             compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(LLVMDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(MetaDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 
         var model = compiler.Compile();
@@ -388,6 +396,8 @@ public static class BatchCompiler
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
             compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(MetaDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 
         var model = compiler.Compile();
@@ -421,6 +431,15 @@ public static class BatchCompiler
         foreach (var f in Directory.GetFiles(AstDir, "*.penguin"))
             compiler.AddFile(f);
         foreach (var f in Directory.GetFiles(ProjectDir, "*.penguin"))
+            compiler.AddFile(f);
+        // SemanticModel references MetaEngine (Phase 5b #fun splice), which in turn
+        // uses IRGenerator + LLVMEmitter for unit-B compilation — so the full EP
+        // source set (IR + LLVM + meta) must be part of the bound test compilation.
+        foreach (var f in Directory.GetFiles(IRDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(LLVMDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(MetaDir, "*.penguin"))
             compiler.AddFile(f);
         compiler.AddSource(combinedCode.ToString());
 

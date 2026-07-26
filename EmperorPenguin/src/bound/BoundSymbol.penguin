@@ -26,6 +26,7 @@ class BoundFunctionSymbol {
     is_pure: bool = false;
     is_new: bool = false;
     is_async: bool = false;
+    is_meta: bool = false;
     enclosing_scope: mut Option<BoundScope> = new Option<BoundScope>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 

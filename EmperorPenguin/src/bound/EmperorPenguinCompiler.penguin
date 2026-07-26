@@ -14,6 +14,11 @@ class SourceInput {
 class EmperorPenguinCompiler {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     verbose: mut i64 = 0;
+    // Command-line --define A=B seed (Phase 5a): pre-seeds the SemanticModel's
+    // compile-time option store before binding. Code-level #define has higher
+    // priority (it runs during bind and overwrites these via meta_set_option).
+    cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
+    cli_define_values: mut _utils.List<string> = new _utils.List<string>();
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -57,6 +62,14 @@ class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        // Seed command-line --define options before binding. Code-level #define
+        // (processed during bind) overwrites these, so code has higher priority.
+        let cdi: mut i64 = 0;
+        while (cdi < cast<i64>(this.cli_define_keys.size())) {
+            model.meta_option_keys.push(this.cli_define_keys.at(cast<u64>(cdi)).some);
+            model.meta_option_values.push(this.cli_define_values.at(cast<u64>(cdi)).some);
+            cdi = cdi + 1;
+        }
         // Propagate parser errors into model errors
         let pei: mut i64 = 0;
         while (pei < cast<i64>(parser_errors.size())) {

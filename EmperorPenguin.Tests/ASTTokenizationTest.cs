@@ -163,4 +163,13 @@ public class ASTTokenizationTest
         var lines = Batch.GetResult().Split('\n');
         Assert.Equal("Constant: '\\n'", lines[0]);
     }
+
+    [Fact]
+    [BatchTokenizeTest("#elif")]
+    public void TokenizeElif()
+    {
+        var lines = Batch.GetResult().Split('\n');
+        Assert.Equal("Hash: #", lines[0]);
+        Assert.Equal("ElifKw: elif", lines[1]);
+    }
 }

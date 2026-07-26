@@ -378,5 +378,5 @@ All bound types live in the `bound` namespace. In test code (outside the namespa
 ### Known Limitations (from README)
 
 - **Concurrency/Coroutines**: Parser supports `event`, `emit`, `on`, `wait`, `async`, `folk` but LLVM emitter doesn't generate state machines for stackless coroutines yet
-- **Metaprogramming**: Parser supports `#fun`, `const if`, `const for` but semantic model skips metaprogramming execution
+- **Metaprogramming**: Implemented. `#if`/`#elif`/`#else`/`#while`/`#break`/`#continue` (hardcoded compile-time control flow); `#fun` JIT-executed via LLVM ORC (native pass2+); `#typeof`, `#create_expression`/`#create_definition`, `#define`/`#defined`/`#option`. **Reflection Phase 6 Round 1 shipped** (opaque type-tokens + host callbacks: `#field_count(t)`, `#field_name(t,i)`, `#type_name(t)`, `#is_class(t)`, …). **Phase 6 v2 in progress** (real-pointer reuse: `type = emperor.BoundType`, `t.fields()`/`t.methods()`/`t.variants()` direct; per-call-site caller-stub `#fun` ABI; `#class` meta-only data structures). See `Documentation/10_MetaProgramming.md` and `.claude/plans/meta_plan.md` §0.4. Meta JIT runs only in native pass2/pass3 (`./penguin -b`); `dotnet test` verifies `.penguin` compiles but not the JIT path.
 - **Attributes/Indexers**: Not yet implemented at the Bound layer

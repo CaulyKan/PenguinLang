@@ -76,11 +76,15 @@ namespace BabyPenguin.CSharpBackend
             {
                 switch (inst)
                 {
-                    case IRNewInst n: regs[((IRNamedRegister)n.Result).Index] = n.TypeName; break;
-                    case IRNewEnumInst n: regs[((IRNamedRegister)n.Result).Index] = $"enum<{n.TypeName}>"; break;
+                    // The result may be a named or a temp register (e.g. a NEW whose
+                    // result is consumed inline / assigned to a field or global).
+                    case IRNewInst n: regs[RegisterIndex(n.Result)] = n.TypeName; break;
+                    case IRNewEnumInst n: regs[RegisterIndex(n.Result)] = $"enum<{n.TypeName}>"; break;
                 }
             }
             return regs;
+
+            static int RegisterIndex(IRValue v) => v is IRNamedRegister nr ? nr.Index : ((IRTempRegister)v).Index;
         }
 
         private static IEnumerable<IRValue> OperandsOf(IRInstruction inst)

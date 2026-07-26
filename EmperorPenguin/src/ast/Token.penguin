@@ -62,6 +62,7 @@ namespace emperor {
         Continue;
         Double;
         Else;
+        ElifKw;
         Emit;
         Enum;
         EventKw;

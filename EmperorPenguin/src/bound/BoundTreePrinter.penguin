@@ -102,6 +102,24 @@ fun print_definition(def: BoundDefinition, level: i64) {
         if (gv.is_mutable) { mut_str = "mut "; }
         __builtin.println(indent(level) + "global let " + mut_str + gv.name + ": " + gv.bound_type.display_name());
     }
+    if (def is BoundDefinition.meta_function_def) {
+        __builtin.println(indent(level) + "#fun " + def.meta_function_def.name + " (meta)");
+    }
+    if (def is BoundDefinition.meta_if_def) {
+        __builtin.println(indent(level) + "#if <meta>");
+    }
+    if (def is BoundDefinition.meta_for_def) {
+        __builtin.println(indent(level) + "#for <meta>");
+    }
+    if (def is BoundDefinition.meta_while_def) {
+        __builtin.println(indent(level) + "#while <meta>");
+    }
+    if (def is BoundDefinition.meta_call_def) {
+        __builtin.println(indent(level) + "#<meta_call_def>");
+        if (def.meta_call_def.call.is_some()) {
+            print_expression(def.meta_call_def.call.some, level + 1);
+        }
+    }
 }
 
 fun print_expression(expr: BoundExpression, level: i64) {
@@ -191,6 +209,14 @@ fun print_expression(expr: BoundExpression, level: i64) {
         __builtin.println(indent(level) + "lambda(" + expr.lambda_expr.get_bound_type().display_name() + ")");
         if (expr.lambda_expr.body.is_some()) { print_expression(expr.lambda_expr.body.some, level + 1); }
     }
+    if (expr is BoundExpression.meta_call) {
+        __builtin.println(indent(level) + "#meta_call(" + expr.meta_call.func_name + ")");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(expr.meta_call.arguments.size())) {
+            print_expression(expr.meta_call.arguments.at(cast<u64>(i)).some, level + 1);
+            i = i + 1;
+        }
+    }
 }
 
 fun print_statement(stmt: BoundStatement, level: i64) {
@@ -244,6 +270,21 @@ fun print_statement(stmt: BoundStatement, level: i64) {
     }
     if (stmt is BoundStatement.continue_stmt) {
         __builtin.println(indent(level) + "continue");
+    }
+    if (stmt is BoundStatement.meta_if_stmt) {
+        __builtin.println(indent(level) + "#if_stmt <meta>");
+    }
+    if (stmt is BoundStatement.meta_while_stmt) {
+        __builtin.println(indent(level) + "#while_stmt <meta>");
+    }
+    if (stmt is BoundStatement.meta_for_stmt) {
+        __builtin.println(indent(level) + "#for_stmt <meta>");
+    }
+    if (stmt is BoundStatement.meta_break_stmt) {
+        __builtin.println(indent(level) + "#break");
+    }
+    if (stmt is BoundStatement.meta_continue_stmt) {
+        __builtin.println(indent(level) + "#continue");
     }
 }
 
@@ -342,6 +383,24 @@ fun print_definition_to(def: BoundDefinition, sb: mut StringBuilder, level: i64)
             print_expression_to(gv.initializer.some, sb, level + 1);
         }
     }
+    if (def is BoundDefinition.meta_function_def) {
+        sb.append(indent(level) + "#fun " + def.meta_function_def.name + " (meta)\n");
+    }
+    if (def is BoundDefinition.meta_if_def) {
+        sb.append(indent(level) + "#if <meta>\n");
+    }
+    if (def is BoundDefinition.meta_for_def) {
+        sb.append(indent(level) + "#for <meta>\n");
+    }
+    if (def is BoundDefinition.meta_while_def) {
+        sb.append(indent(level) + "#while <meta>\n");
+    }
+    if (def is BoundDefinition.meta_call_def) {
+        sb.append(indent(level) + "#<meta_call_def>\n");
+        if (def.meta_call_def.call.is_some()) {
+            print_expression_to(def.meta_call_def.call.some, sb, level + 1);
+        }
+    }
 }
 
 fun print_expression_to(expr: BoundExpression, sb: mut StringBuilder, level: i64) {
@@ -431,6 +490,14 @@ fun print_expression_to(expr: BoundExpression, sb: mut StringBuilder, level: i64
         sb.append(indent(level) + "lambda(" + expr.lambda_expr.get_bound_type().display_name() + ")\n");
         if (expr.lambda_expr.body.is_some()) { print_expression_to(expr.lambda_expr.body.some, sb, level + 1); }
     }
+    if (expr is BoundExpression.meta_call) {
+        sb.append(indent(level) + "#meta_call(" + expr.meta_call.func_name + ")\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(expr.meta_call.arguments.size())) {
+            print_expression_to(expr.meta_call.arguments.at(cast<u64>(i)).some, sb, level + 1);
+            i = i + 1;
+        }
+    }
 }
 
 fun print_statement_to(stmt: BoundStatement, sb: mut StringBuilder, level: i64) {
@@ -484,6 +551,21 @@ fun print_statement_to(stmt: BoundStatement, sb: mut StringBuilder, level: i64) 
     }
     if (stmt is BoundStatement.continue_stmt) {
         sb.append(indent(level) + "continue\n");
+    }
+    if (stmt is BoundStatement.meta_if_stmt) {
+        sb.append(indent(level) + "#if_stmt <meta>\n");
+    }
+    if (stmt is BoundStatement.meta_while_stmt) {
+        sb.append(indent(level) + "#while_stmt <meta>\n");
+    }
+    if (stmt is BoundStatement.meta_for_stmt) {
+        sb.append(indent(level) + "#for_stmt <meta>\n");
+    }
+    if (stmt is BoundStatement.meta_break_stmt) {
+        sb.append(indent(level) + "#break\n");
+    }
+    if (stmt is BoundStatement.meta_continue_stmt) {
+        sb.append(indent(level) + "#continue\n");
     }
 }
 

@@ -246,6 +246,27 @@ class BoundLambdaExpression {
     }
 }
 
+class BoundMetaCallExpression {
+    bound_type: !mut BoundType = new BoundType();
+    func_name: !mut string = "";
+    arguments: !mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+    trailing_block_ast: !mut Option<Expression> = new Option<Expression>.none();
+    trailing_definition_ast: !mut Option<Definition> = new Option<Definition>.none();
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, func_name: string, arguments: _utils.List<BoundExpression>, trailing_block_ast: Option<Expression>, trailing_definition_ast: Option<Definition>, location: SourceLocation) {
+        this.func_name = func_name;
+        this.arguments = arguments;
+        this.trailing_block_ast = trailing_block_ast;
+        this.trailing_definition_ast = trailing_definition_ast;
+        this.location = location;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
 enum BoundExpression {
     literal: BoundLiteralExpression;
     identifier: BoundIdentifierExpression;
@@ -260,6 +281,7 @@ enum BoundExpression {
     new_expr: BoundNewExpression;
     enum_variant: BoundEnumVariantExpression;
     lambda_expr: BoundLambdaExpression;
+    meta_call: BoundMetaCallExpression;
 
     fun get_bound_type(this) -> BoundType {
         if (this is BoundExpression.literal) { return this.literal.get_bound_type(); }
@@ -275,6 +297,7 @@ enum BoundExpression {
         if (this is BoundExpression.new_expr) { return this.new_expr.get_bound_type(); }
         if (this is BoundExpression.enum_variant) { return this.enum_variant.get_bound_type(); }
         if (this is BoundExpression.lambda_expr) { return this.lambda_expr.get_bound_type(); }
+        if (this is BoundExpression.meta_call) { return this.meta_call.get_bound_type(); }
         return new BoundType();
     }
 }

@@ -1222,4 +1222,46 @@ initial {
 }
 ", "x: i64 = 42")]
     public void AST_Parameter_WithDefaultValue_BuildText() => Batch.Assert();
+
+    [Fact]
+    [BatchTest(@"
+initial {
+    let mc = new emperor.MetaCallExpression();
+    mc.func_name = ""derive_clone"";
+    let arg = new emperor.IdentifierExpression("""");
+    arg.name = ""T"";
+    mc.arguments.push(new emperor.Expression.identifier(arg));
+    let result = new emperor.Expression.meta_call(mc);
+    println(result.build_text());
+}
+", "#derive_clone(T)")]
+    public void AST_MetaCallExpression_BuildText() => Batch.Assert();
+
+    [Fact]
+    [BatchTest(@"
+initial {
+    let cond = new emperor.IdentifierExpression("""");
+    cond.name = ""Debug"";
+    let then_val = new emperor.ConstantExpression("""");
+    then_val.value = ""1"";
+    let then_es = new emperor.ExpressionStatement();
+    then_es.expression = new Option<emperor.Expression>.some(new emperor.Expression.constant(then_val));
+    let stmt = new emperor.MetaIfStatement();
+    stmt.condition = new Option<emperor.Expression>.some(new emperor.Expression.identifier(cond));
+    stmt.then_statement = new Option<emperor.Statement>.some(new emperor.Statement.expression(then_es));
+    let result = new emperor.Statement.meta_if_stmt(stmt);
+    println(result.build_text());
+}
+", "#if (Debug) 1;")]
+    public void AST_MetaIfStatement_BuildText() => Batch.Assert();
+
+    [Fact]
+    [BatchTest(@"
+initial {
+    let stmt = new emperor.MetaBreakStatement();
+    let result = new emperor.Statement.meta_break_stmt(stmt);
+    println(result.build_text());
+}
+", "#break;")]
+    public void AST_MetaBreakStatement_BuildText() => Batch.Assert();
 }

@@ -92,8 +92,13 @@ initial {
     let output_name: mut string = "";
     let verbose: mut i64 = 0;
     let source_start: mut i64 = 0;
+    let enable_meta: mut bool = false;
     // Determine source files
     let source_files: mut _utils.List<string> = new _utils.List<string>();
+    // Command-line --define A=B / --define A seeds the compile-time option store
+    // (equivalent to a top-level #define("A","B"); code-level #define wins).
+    let cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
+    let cli_define_values: mut _utils.List<string> = new _utils.List<string>();
 
     let i: mut i64 = 0;
     while (i < cast<i64>(args.size())) {
@@ -108,6 +113,21 @@ initial {
             i = i + 1;
             if (i < cast<i64>(args.size())) {
                 output_name = args.at(cast<u64>(i)).some;
+            }
+        } else if (arg == "-enable-meta" || arg == "--enable-meta") {
+            enable_meta = true;
+        } else if (arg == "-define" || arg == "--define") {
+            i = i + 1;
+            if (i < cast<i64>(args.size())) {
+                let spec: string = args.at(cast<u64>(i)).some;
+                let eq: i64 = string_find(spec, "=");
+                if (eq >= 0) {
+                    cli_define_keys.push(string_substring(spec, 0, eq));
+                    cli_define_values.push(string_substring(spec, eq + 1, string_length(spec) - eq - 1));
+                } else {
+                    cli_define_keys.push(spec);
+                    cli_define_values.push("1");
+                }
             }
         } else {
             source_files.push(args.at(cast<u64>(i)).some);
@@ -173,7 +193,13 @@ initial {
     _utils.trace_set_verbose(verbose);
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = verbose;
+    compiler.cli_define_keys = cli_define_keys;
+    compiler.cli_define_values = cli_define_values;
     let result = compiler.compile_sources(inputs);
+
+    // Meta #fun calls in user code are JIT-executed and spliced at compile time
+    // inside SemanticModel.bind_meta_call (Phase 5b) — no special driver hook needed.
+
 
     if (result.has_errors()) {
         __builtin.eprintln("[EmperorPenguin] Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
@@ -219,6 +245,49 @@ initial {
         let clang_args: mut _utils.List<string> = new _utils.List<string>();
         clang_args.push(ll_path);
         clang_args.push(lib_path);
+
+        // When --enable-meta is active, link libpenguin_jit.a and LLVM
+        // so that the produced binary can JIT-compile #fun meta functions
+        // at runtime via the ORC JIT C API (penguin_jit_*).
+        if (enable_meta) {
+            // Capture llvm-config link flags (e.g. "-L/usr/lib -lLLVM-22").
+            // _exec_cmd uses system(3) so we redirect stdout to a file.
+            let ldflags_file: string = tmp_dir + "/llvm_ldflags.txt";
+            let cfg_exit: i64 = __builtin._exec_cmd(
+                "llvm-config --ldflags --libs core orcjit native > "
+                + ldflags_file + " 2>/dev/null");
+            if (cfg_exit == 0) {
+                let ldflags: string = _utils.file_read_text(ldflags_file);
+                // llvm-config emits flags newline-separated (e.g. "-L/usr/lib \n-lLLVM-22\n");
+                // split on BOTH space and newline so no token contains a newline — a newline
+                // inside a clang arg would be parsed by the shell (which _utils.exec uses) as
+                // a command separator, producing "-lLLVM-22: command not found".
+                let pos: mut i64 = 0;
+                let len: i64 = string_length(ldflags);
+                while (pos < len) {
+                    while (pos < len && (string_char_at(ldflags, pos) == " " || string_char_at(ldflags, pos) == "\n")) {
+                        pos = pos + 1;
+                    }
+                    if (pos >= len) { break; }
+                    let next_space: i64 = string_find_from(ldflags, " ", pos);
+                    let next_nl: i64 = string_find_from(ldflags, "\n", pos);
+                    let end_pos: mut i64 = next_space;
+                    if (next_nl >= 0 && (end_pos < 0 || next_nl < end_pos)) { end_pos = next_nl; }
+                    if (end_pos < 0) { end_pos = len; }
+                    if (end_pos > pos) {
+                        clang_args.push(string_substring(ldflags, pos, end_pos - pos));
+                    }
+                    pos = end_pos + 1;
+                }
+            }
+
+            let jit_lib_path: string = tmp_dir + "/libpenguin_jit.a";
+            clang_args.push(jit_lib_path);
+            clang_args.push("-rdynamic");
+            clang_args.push("-Wl,--export-dynamic");
+            clang_args.push("-lstdc++");
+        }
+
         // Request a 32 MB stack so deep recursion in the self-hosted compiler
         // (especially SemanticModel pass_build_scopes) doesn't overflow the
         // default 8 MB stack and cause intermittent SIGSEGV.

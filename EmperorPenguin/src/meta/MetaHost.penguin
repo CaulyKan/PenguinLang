@@ -1,0 +1,81 @@
+namespace emperor {
+
+// Phase 6 v2: module-global pointer to the active MetaEngine, set by
+// SemanticModel.seed_meta_engine before any JIT'd #fun runs. Single-threaded
+// compile, so one global is safe. Read by the single host-callback bridge
+// `penguin_meta_get_type`, which the caller-stub (and #typeof inside #fun
+// bodies) use to turn a compile-time type token into the LIVE BoundType pointer.
+//
+// v2 removed the Round 1 per-op reflection responders (penguin_meta_field_count/
+// field_name/type_name/…): reflection is now real-pointer reuse — unit B compiles
+// the real emperor.BoundType, so t.fields()/methods()/variants() are direct method
+// calls (weak-dedup → host's emperor_BoundType_* exports), no host callback per op.
+//
+// NOTE: held as a plain `mut MetaEngine` reference (not Option<MetaEngine>) so that
+// a method call on it lowers to a direct ptr `this` argument. A value-type (Option)
+// global is currently typed `i64` by the LLVM emitter, which would mis-lower `.some`.
+// seed_meta_engine always sets this before any reflection runs, so the default
+// empty MetaEngine() is never observed by the bridge.
+let active_meta: mut MetaEngine = new MetaEngine();
+
+fun penguin_meta_set_active(me: mut MetaEngine) {
+    active_meta = me;
+}
+
+// Phase 6 v2 token→pointer bridge: resolve a compile-time type token back to the
+// host's LIVE BoundType object (the one #typeof assigned the token for). Called
+// from (a) the per-call-site caller-stub, to materialize each `type` argument as a
+// real BoundType pointer before invoking the #fun; and (b) #typeof(T) inside a
+// #fun body (so `t == #typeof(i32)` compares two interned BoundType pointers).
+// Returns an empty BoundType() on any failure (caller treats as "unknown").
+fun penguin_meta_get_type(token: i64) -> BoundType {
+    let bt_opt: Option<BoundType> = active_meta.resolve_type_token(cast<u64>(token));
+    if (bt_opt.is_some()) {
+        return bt_opt.some;
+    }
+    return new BoundType();
+}
+
+// Phase 6 codegen bridge (kept from Round 1, NOT reflection): a #fun builds a
+// code string at meta-runtime and #create_expression / #create_definition parse
+// it (computed string → ast token). The literal-string fast path is compile-time
+// (in MetaEngine.rewrite_meta_call_dispatch); this is the computed-string runtime
+// path. Returns 0 on parse failure. (Reflection itself is real-reuse: t.fields()
+// etc. are direct method calls — no host bridge.)
+fun penguin_meta_create_expression(code: string) -> i64 {
+    let lex: Lexer = new Lexer(code, "<meta_create_expression>");
+    let toks: _utils.List<Token> = lex.tokenize();
+    let p: Parser = new Parser(toks);
+    let node: Expression = p.parse_expression();
+    if (!p.has_errors()) {
+        return cast<i64>(active_meta.register_ast_expression(node));
+    }
+    return 0;
+}
+
+fun penguin_meta_create_definition(code: string) -> i64 {
+    let lex: Lexer = new Lexer(code, "<meta_create_definition>");
+    let toks: _utils.List<Token> = lex.tokenize();
+    let p: Parser = new Parser(toks);
+    let unit: CompilationUnit = p.parse_compilationUnit();
+    if (!p.has_errors()) {
+        if (cast<i64>(unit.definitions.size()) == 1) {
+            let def: Definition = unit.definitions.at(cast<u64>(0)).some;
+            return cast<i64>(active_meta.register_ast_definition(def));
+        }
+    }
+    return 0;
+}
+
+// Phase 6 v2 Phase 5: return channels for `#fun -> type` and `#fun -> string`.
+// The caller-stub stores the #fun's returned BoundType / string pointer into
+// these globals (the stub returns i64 0 to the host's arity-0 trampoline); the
+// host reads the value here — it can't recover a non-i64 reference from the i64
+// trampoline return. Single-threaded compile ⇒ one slot each is safe.
+let active_type_result: mut BoundType = new BoundType();
+let active_string_result: mut string = "";
+
+fun penguin_meta_get_type_result() -> BoundType { return active_type_result; }
+fun penguin_meta_get_string_result() -> string { return active_string_result; }
+
+}

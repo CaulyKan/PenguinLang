@@ -3873,6 +3873,26 @@ class LLVMEmitter {
         if (sanitized == "__builtin_StringBuilder_new") { return "@_emperor_stringbuilder_new"; }
         if (sanitized == "__builtin_StringBuilder_append") { return "@_emperor_stringbuilder_append"; }
         if (sanitized == "__builtin_StringBuilder_to_string") { return "@_emperor_stringbuilder_to_string"; }
+        // PenguinJIT extern functions (backed by libpenguin_jit, linked with --enable-meta)
+        if (sanitized == "__builtin_penguin_jit_create")     { return "@penguin_jit_create"; }
+        if (sanitized == "__builtin_penguin_jit_add_module") { return "@penguin_jit_add_module"; }
+        if (sanitized == "__builtin_penguin_jit_lookup")     { return "@penguin_jit_lookup"; }
+        if (sanitized == "__builtin_penguin_jit_destroy")    { return "@penguin_jit_destroy"; }
+        if (sanitized == "__builtin_penguin_jit_get_error")  { return "@penguin_jit_get_error"; }
+        if (sanitized == "__builtin_penguin_jit_call_i64_0")           { return "@penguin_jit_call_i64_0"; }
+        if (sanitized == "__builtin_penguin_jit_call_i64_i64")         { return "@penguin_jit_call_i64_i64"; }
+        if (sanitized == "__builtin_penguin_jit_call_i64_i64_i64")     { return "@penguin_jit_call_i64_i64_i64"; }
+        if (sanitized == "__builtin_penguin_jit_call_i64_i64_i64_i64") { return "@penguin_jit_call_i64_i64_i64_i64"; }
+        if (sanitized == "__builtin_penguin_jit_call_ptr_ptr")         { return "@penguin_jit_call_ptr_ptr"; }
+        if (sanitized == "__builtin_penguin_jit_call_ptr_ptr_ptr")     { return "@penguin_jit_call_ptr_ptr_ptr"; }
+        // Phase 6 v2: the only reflection host-callback is the token→pointer bridge
+        // (real-reuse: t.fields()/methods()/variants() are direct method calls on the
+        // real emperor.BoundType in unit B, resolved to the host's emperor_BoundType_*
+        // exports by weak-dedup). #typeof + the caller-stub call this from JIT'd code.
+        // The create_* bridges are codegen (computed-string → ast token), not reflection.
+        if (sanitized == "__builtin_penguin_meta_get_type") { return "@emperor_penguin_meta_get_type"; }
+        if (sanitized == "__builtin_penguin_meta_create_expression") { return "@emperor_penguin_meta_create_expression"; }
+        if (sanitized == "__builtin_penguin_meta_create_definition") { return "@emperor_penguin_meta_create_definition"; }
         return "@" + sanitized;
     }
 

@@ -1,0 +1,1099 @@
+namespace emperor {
+
+// MetaEngine — JIT compilation and execution engine for #fun meta functions.
+//
+// Phase 4a scope: top-level #fun with integer primitive parameters/returns.
+// Uses LLVM ORC JIT via the __builtin.penguin_jit_* C API (backed by libpenguin_jit,
+// linked via --enable-meta). These externs are declared in BabyPenguin/Builtin.penguin
+// (for BabyPenguin SemanticCompiler type-checking) and in core_builtin.penguin
+// (for EmperorPenguin compilation with full stdlib).
+//
+// Supports a seed set of trampoline signatures (i64->i64, i64,i64->i64)
+// for calling JIT-compiled code.
+class MetaEngine {
+    jit_ctx: mut u64 = 0;
+    verbose: mut i64 = 0;
+    // Internal registry mapping function name -> native pointer, so we
+    // don't need mutable access to BoundMetaFunctionDefinition to store it.
+    compiled_names: mut _utils.List<string> = new _utils.List<string>();
+    compiled_ptrs: mut _utils.List<u64> = new _utils.List<u64>();
+    // Phase 6 v2: caller-stub registry. Each distinct (fun, arg-tuple) call
+    // site gets a dedicated nullary stub (arguments baked in as i64 constants)
+    // JIT-compiled once and cached here, then invoked via the arity-0
+    // trampoline penguin_jit_call_i64_0 — no fixed-arity C trampoline needed.
+    stub_keys: mut _utils.List<string> = new _utils.List<string>();
+    stub_ptrs: mut _utils.List<u64> = new _utils.List<u64>();
+    option_keys: mut _utils.List<string> = new _utils.List<string>();
+    option_values: mut _utils.List<string> = new _utils.List<string>();
+    host_type_registry: mut BoundTypeRegistry = new BoundTypeRegistry();
+    global_scope: Option<BoundScope> = new Option<BoundScope>.none();
+    // Phase 6 v2: collected `#class` source (build_text of each), fed into unit B
+    // as a <meta_classes> input so #funs can use these meta-only data structures.
+    meta_class_source: mut string = "";
+    type_token_keys: mut _utils.List<string> = new _utils.List<string>();
+    type_token_values: mut _utils.List<u64> = new _utils.List<u64>();
+    next_type_token: mut u64 = 0;
+    // Phase 5c: AST registry. #create_expression / #create_definition parse a
+    // literal code fragment into a structured AST node and store it here under a
+    // 1-based token (shared counter, so tokens are globally unique). A #fun
+    // returns that token (as i64 via the i64 trampolines); the host resolves
+    // token -> node at the splice site and checks the kind matches the position
+    // (expression vs definition). See class AstToken below.
+    ast_tokens: mut _utils.List<AstToken> = new _utils.List<AstToken>();
+
+    fun new(mut this) {
+    }
+
+    // Initialise the JIT session (lazy, first call to init).
+    // Prints an error and exits if JIT creation fails.
+    fun init(mut this) {
+        if (this.jit_ctx == 0) {
+            this.jit_ctx = __builtin.penguin_jit_create();
+            if (this.jit_ctx == 0) {
+                let err: string = __builtin.penguin_jit_get_error();
+                __builtin.eprintln("MetaEngine ERROR: penguin_jit_create failed: " + err);
+                __builtin.exit(1);
+            }
+        }
+    }
+
+    // Destroy the JIT session and release all LLJIT resources.
+    fun shutdown(mut this) {
+        if (this.jit_ctx != 0) {
+            __builtin.penguin_jit_destroy(this.jit_ctx);
+            this.jit_ctx = 0;
+        }
+    }
+
+    // Phase 6 v2: extern declarations injected into unit B (only). The reflection
+    // layer is now real-pointer reuse (unit B compiles the real emperor.BoundType,
+    // so t.fields() is a direct method call) — the only host-callback left is the
+    // token→pointer bridge `penguin_meta_get_type`, used by #typeof inside #fun
+    // bodies (so `t == #typeof(i32)` compares two live BoundType pointers). The
+    // caller-stub declares @emperor_penguin_meta_get_type itself for type args.
+    // NOT in core_builtin.penguin: that file is also compiled into the host,
+    // where an extern decl would suppress MetaHost.penguin's definition.
+    fun meta_extern_decls(this) -> string {
+        return "namespace __builtin {\n"
+            + "    extern fun penguin_meta_get_type(token: i64) -> emperor.BoundType;\n"
+            + "    extern fun penguin_meta_create_expression(code: string) -> i64;\n"
+            + "    extern fun penguin_meta_create_definition(code: string) -> i64;\n"
+            + "}\n";
+    }
+
+    // Phase 6 v2: the "base sources" compiled into unit B so a #fun sees the real
+    // emperor types (BoundType etc.) and can call their methods directly. Verified
+    // self-contained (~4271 lines: core_builtin + utils + bound type layer + AST
+    // type layer + ErrorCode). Weak-dedup in penguin_jit means re-emitted defs
+    // resolve to the host's strong exports (emperor_BoundType_fields, …).
+    fun base_meta_sources(this) -> _utils.List<SourceInput> {
+        let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+        result.push(new SourceInput("core_builtin.penguin", _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin")));
+        result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
+        let bound_files: mut _utils.List<string> = new _utils.List<string>();
+        bound_files.push("BoundType"); bound_files.push("BoundDefinition"); bound_files.push("BoundSymbol");
+        bound_files.push("BoundScope"); bound_files.push("BoundExpression"); bound_files.push("BoundStatement");
+        bound_files.push("BoundTypeRegistry"); bound_files.push("BoundCompilationUnit");
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(bound_files.size())) {
+            let bn: string = bound_files.at(cast<u64>(bi)).some;
+            result.push(new SourceInput(bn + ".penguin", _utils.file_read_text("EmperorPenguin/src/bound/" + bn + ".penguin")));
+            bi = bi + 1;
+        }
+        let ast_files: mut _utils.List<string> = new _utils.List<string>();
+        ast_files.push("AST"); ast_files.push("Token"); ast_files.push("SourceLocation");
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(ast_files.size())) {
+            let an: string = ast_files.at(cast<u64>(ai)).some;
+            result.push(new SourceInput(an + ".penguin", _utils.file_read_text("EmperorPenguin/src/ast/" + an + ".penguin")));
+            ai = ai + 1;
+        }
+        result.push(new SourceInput("ErrorCode.penguin", _utils.file_read_text("EmperorPenguin/src/project/ErrorCode.penguin")));
+        return result;
+    }
+
+    // -----------------------------------------------------------------
+    // compile_meta_function
+    //
+    // Converts a BoundMetaFunctionDefinition into a JIT-compiled native
+    // function through a "unit B" compilation pipeline:
+    //
+    //   1. Synthesize a plain AST FunctionDefinition from bmf
+    //   2. build_text() it to PenguinLang source
+    //   3. Parse + bind + IR-generate + LLVM-emit as a second unit
+    //   4. Add the LLVM IR module to the JIT session
+    //   5. Look up the function by name and store its address internally
+    //
+    // Returns true on success, false on failure (errors are eprintln'd).
+    // On success, the function can be called via call_meta_function_*.
+    // -----------------------------------------------------------------
+    fun compile_meta_function(mut this, bmf: BoundMetaFunctionDefinition) -> bool {
+        // ---- Step (a): synthesize a plain FunctionDefinition from bmf ----
+        let synth: FunctionDefinition = new FunctionDefinition(bmf.name);
+
+        // Convert each MetaParameter to a Parameter (the kind string becomes
+        // the type-specifier name; if kind is empty, the parameter is untyped).
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(bmf.parameters.size())) {
+            let mp: MetaParameter = bmf.parameters.at(cast<u64>(pi)).some;
+            let p: Parameter = new Parameter(mp.name);
+            if (string_length(mp.kind) > 0) {
+                let ts: TypeSpecifier = new TypeSpecifier();
+                if (mp.kind == "type") {
+                    // Phase 6 v2: `type` is the real emperor.BoundType (a reference).
+                    // Unit B compiles the bound types, so the #fun receives a live
+                    // BoundType pointer and can call t.fields()/methods()/variants()
+                    // directly (weak-dedup → host's emperor_BoundType_* exports).
+                    ts.name = "BoundType";
+                    ts.qualified_parts.push("emperor");
+                } else if (mp.kind == "ast") {
+                    ts.name = "i64";
+                } else {
+                    ts.name = mp.kind;
+                }
+                p.type_spec = new Option<TypeSpecifier>.some(ts);
+            }
+            synth.parameters.push(p);
+            pi = pi + 1;
+        }
+
+        // Copy return type and body from the meta function definition.
+        // Substitute 'type'/'ast' return types to 'i64': unit B does not
+        // recognize them as PenguinLang types, and the opaque token (a small
+        // counter) fits in i64, so every meta call reuses the i64 trampolines.
+        if (bmf.return_type.is_some()) {
+            let rt: TypeSpecifier = bmf.return_type.some;
+            if (rt.name == "type") {
+                // Phase 6 v2 Phase 5: `#fun -> type` returns the real
+                // emperor.BoundType (a reference). The caller-stub stores the
+                // returned pointer into the host global active_type_result and
+                // returns i64 0 to the arity-0 trampoline; the host reads it back.
+                let rt_sub: mut TypeSpecifier = new TypeSpecifier();
+                rt_sub.name = "BoundType";
+                rt_sub.qualified_parts.push("emperor");
+                synth.return_type = new Option<TypeSpecifier>.some(rt_sub);
+            } else if (rt.name == "ast") {
+                let rt_sub: mut TypeSpecifier = new TypeSpecifier();
+                rt_sub.name = "i64";
+                synth.return_type = new Option<TypeSpecifier>.some(rt_sub);
+            } else {
+                // Phase 5: string (and any other real type) returns as-is —
+                // the caller-stub stores a non-i64 return into the matching
+                // host global (active_string_result for string).
+                synth.return_type = bmf.return_type;
+            }
+        } else {
+            synth.return_type = bmf.return_type;
+        }
+        synth.body = bmf.body;
+        if (synth.body.is_some()) {
+            synth.body = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(synth.body.some));
+        }
+        synth.location = bmf.location;
+
+        // ---- Step (b): build the unit B source text ----
+        let unit_b_source: string = synth.build_text();
+
+        // Phase 6 v2: unit B sees the real emperor types (base_meta_sources:
+        // core_builtin + utils + bound type layer + AST type layer + ErrorCode),
+        // the token→ptr bridge extern, and the synthesized #fun.
+        let inputs: mut _utils.List<SourceInput> = this.base_meta_sources();
+        inputs.push(new SourceInput("<meta_externs>", this.meta_extern_decls()));
+        if (string_length(this.meta_class_source) > 0) {
+            inputs.push(new SourceInput("<meta_classes>", this.meta_class_source));
+        }
+        inputs.push(new SourceInput("<unit_b>", unit_b_source));
+
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[MetaEngine] Unit B source for '" + bmf.name + "': " + unit_b_source);
+        }
+
+        // ---- Step (c): compile unit B (parse → bind) ----
+        let compiler: mut EmperorPenguinCompiler = new EmperorPenguinCompiler();
+        compiler.verbose = this.verbose;
+        let unit_b: BoundCompilationUnit = compiler.compile_sources(inputs);
+
+        if (unit_b.has_errors()) {
+            __builtin.eprintln("MetaEngine ERROR: unit B compilation failed for '" + bmf.name + "':");
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(unit_b.errors.size())) {
+                let err: SemanticError = unit_b.errors.at(cast<u64>(ei)).some;
+                __builtin.eprintln("  " + err.message);
+                ei = ei + 1;
+            }
+            return false;
+        }
+
+        // ---- Step (d): IR generation and LLVM IR emission ----
+        let generator: mut IRGenerator = new IRGenerator();
+        generator.verbose = this.verbose;
+        let module: IRModule = generator.generate(unit_b);
+
+        let emitter: mut LLVMEmitter = new LLVMEmitter();
+        emitter.verbose = this.verbose;
+        let llvm_ir: string = emitter.lower(module, unit_b);
+
+        // Debug output: write the emitted LLVM IR to /tmp/unit_b.ll when
+        // verbose >= 2 so we can inspect what the JIT receives.
+        if (this.verbose >= 2) {
+            _utils.file_write_text("/tmp/unit_b.ll", llvm_ir);
+        }
+
+        // ---- Step (e): JIT compile the module and look up the function ----
+        this.init();
+        let module_name: string = "unit_b_" + bmf.name;
+        let add_result: i32 = __builtin.penguin_jit_add_module(this.jit_ctx, module_name, llvm_ir);
+        if (add_result != 0) {
+            let err: string = __builtin.penguin_jit_get_error();
+            __builtin.eprintln("MetaEngine ERROR: penguin_jit_add_module('" + module_name + "') failed: " + err);
+            return false;
+        }
+
+        let fn_ptr: u64 = __builtin.penguin_jit_lookup(this.jit_ctx, bmf.name);
+        if (fn_ptr == 0) {
+            let err: string = __builtin.penguin_jit_get_error();
+            __builtin.eprintln("MetaEngine ERROR: penguin_jit_lookup('" + bmf.name + "') failed: " + err);
+            return false;
+        }
+
+        // Store the pointer internally.
+        this.compiled_names.push(bmf.name);
+        this.compiled_ptrs.push(fn_ptr);
+
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[MetaEngine] JIT compiled '" + bmf.name + "' -> ptr " + cast<string>(fn_ptr));
+        }
+        // Unit B was compiled above via a NESTED EmperorPenguinCompiler, whose own
+        // SemanticModel.seed_meta_engine called penguin_meta_set_active with ITS
+        // (empty) meta_engine — clobbering the global. Restore active_meta to this
+        // MetaEngine so the upcoming JIT invoke resolves tokens against the right
+        // registry (the one that assigned the call-site type tokens).
+        active_meta = this;
+        return true;
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_i64_i64
+    //
+    // Calls a previously compiled #fun with signature (i64) -> i64.
+    // Lazily compiles the function if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // call_meta_function_i64_0
+    //
+    // Calls a previously compiled #fun with signature () -> i64 (used for
+    // arity-0 meta functions, e.g. a #fun returning a #create_expression /
+    // #create_definition token). Lazily compiles if not yet JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_i64_0(mut this, bmf: BoundMetaFunctionDefinition) -> i64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_i64_0(ptr);
+    }
+
+    fun call_meta_function_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, arg: i64) -> i64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_i64_i64(ptr, arg);
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_i64_i64_i64
+    //
+    // Calls a previously compiled #fun with signature (i64, i64) -> i64.
+    // Lazily compiles the function if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_i64_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, a: i64, b: i64) -> i64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_i64_i64_i64(ptr, a, b);
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_i64_i64_i64_i64
+    //
+    // Calls a previously compiled #fun with signature (i64, i64, i64) -> i64
+    // (arity 3). Lazily compiles the function if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_i64_i64_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, a: i64, b: i64, c: i64) -> i64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_i64_i64_i64_i64(ptr, a, b, c);
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_ptr_ptr
+    //
+    // Calls a previously compiled #fun with signature (u64) -> u64.
+    // Used for meta functions whose parameters are 'type' or 'ast'
+    // (opaque pointers substituted to u64 during unit B compilation).
+    // Lazily compiles the function if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_ptr_ptr(mut this, bmf: BoundMetaFunctionDefinition, arg: u64) -> u64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_ptr_ptr(ptr, arg);
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_ptr_ptr_ptr
+    //
+    // Calls a previously compiled #fun with signature (u64, u64) -> u64.
+    // Used for meta functions with two 'type'/'ast' parameters.
+    // Lazily compiles the function if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_ptr_ptr_ptr(mut this, bmf: BoundMetaFunctionDefinition, a: u64, b: u64) -> u64 {
+        let ptr: mut u64 = this.find_ptr(bmf.name);
+        if (ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+            ptr = this.find_ptr(bmf.name);
+        }
+        return __builtin.penguin_jit_call_ptr_ptr_ptr(ptr, a, b);
+    }
+
+    // -----------------------------------------------------------------
+    // call_meta_function_stub
+    //
+    // Phase 6 v2: calls a previously compiled #fun through a per-call-site
+    // caller-stub instead of a fixed-arity C trampoline. The arguments are
+    // baked into the stub as i64 constants; the stub calls the #fun under the
+    // full ABI and returns its i64 result, so the host only ever needs the
+    // arity-0 trampoline (penguin_jit_call_i64_0). Stubs are memoized per
+    // (function, argument tuple) so repeated calls reuse the same stub.
+    // Lazily compiles the #fun if not already JIT-compiled.
+    // -----------------------------------------------------------------
+    fun call_meta_function_stub(mut this, bmf: BoundMetaFunctionDefinition, args: _utils.List<i64>) -> i64 {
+        let fn_ptr: mut u64 = this.find_ptr(bmf.name);
+        if (fn_ptr == 0) {
+            let ok: bool = this.compile_meta_function(bmf);
+            if (!ok) {
+                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
+                __builtin.exit(1);
+            }
+        }
+        // Memoize key: "<fun name>:<arg0>,<arg1>,..." — unique per (fun, args).
+        let key: mut string = bmf.name + ":";
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(args.size())) {
+            if (ai > 0) { key = key + ","; }
+            key = key + cast<string>(args.at(cast<u64>(ai)).some);
+            ai = ai + 1;
+        }
+        let si: mut i64 = 0;
+        while (si < cast<i64>(this.stub_keys.size())) {
+            if (this.stub_keys.at(cast<u64>(si)).some == key) {
+                return __builtin.penguin_jit_call_i64_0(this.stub_ptrs.at(cast<u64>(si)).some);
+            }
+            si = si + 1;
+        }
+        // The JIT'd #fun lives under "@" + sanitized name (ordinary identifiers
+        // sanitize to themselves; dotted/generic names get their specials replaced).
+        let mangled: string = this.meta_sanitize(bmf.name);
+        let idx: i64 = cast<i64>(this.stub_keys.size());
+        let stub_name: string = "__stub_" + mangled + "_" + cast<string>(idx);
+        // Phase 6 v2: for a `type` param the stub materializes the live BoundType
+        // pointer via the get_type bridge (the token is the baked i64 constant);
+        // other params (ast-token / i64 / bool) are baked directly as i64. The
+        // #fun's real signature is therefore a mix of ptr (type) and i64 (rest);
+        // LLVM emits the call under the full ABI. Return is i64 (type-return is
+        // deferred to a later phase; ast-token/i64/bool all fit in i64 here).
+        let n_params: i64 = cast<i64>(bmf.parameters.size());
+        let sig_params: mut string = "";
+        let prelude: mut string = "";
+        let call_args: mut string = "";
+        let needs_get_type: mut bool = false;
+        let ai2: mut i64 = 0;
+        while (ai2 < cast<i64>(args.size())) {
+            if (ai2 > 0) {
+                sig_params = sig_params + ", ";
+                call_args = call_args + ", ";
+            }
+            let is_type: bool = (ai2 < n_params) && (bmf.parameters.at(cast<u64>(ai2)).some.kind == "type");
+            let arg_val: string = cast<string>(args.at(cast<u64>(ai2)).some);
+            if (is_type) {
+                needs_get_type = true;
+                let bt_reg: string = "%bt" + cast<string>(ai2);
+                prelude = prelude + "  " + bt_reg + " = call ptr @emperor_penguin_meta_get_type(i64 " + arg_val + ") \n";
+                sig_params = sig_params + "ptr";
+                call_args = call_args + "ptr " + bt_reg;
+            } else {
+                sig_params = sig_params + "i64";
+                call_args = call_args + "i64 " + arg_val;
+            }
+            ai2 = ai2 + 1;
+        }
+        let get_type_decl: mut string = "";
+        if (needs_get_type) {
+            get_type_decl = "declare ptr @emperor_penguin_meta_get_type(i64) \n";
+        }
+        // Phase 5: dispatch on the #fun's return kind. type/string return a real
+        // reference (ptr) — the stub stores it into the matching host global and
+        // returns i64 0 (the host reads the global, since it can't recover a non-i64
+        // reference from the arity-0 trampoline). i64/ast/bool return the i64 directly.
+        let ret_kind: mut string = "";
+        if (bmf.return_type.is_some()) { ret_kind = bmf.return_type.some.name; }
+        let foo_ret: mut string = "i64";
+        let result_global: mut string = "";
+        if (ret_kind == "type") {
+            foo_ret = "ptr";
+            result_global = "@emperor_active_type_result";
+        } else if (ret_kind == "string") {
+            foo_ret = "ptr";
+            result_global = "@emperor_active_string_result";
+        }
+        let global_decl: mut string = "";
+        let ret_line: mut string = "  ret i64 %r \n";
+        if (string_length(result_global) > 0) {
+            global_decl = result_global + " = external global ptr \n";
+            ret_line = "  store ptr %r, ptr " + result_global + " \n  ret i64 0 \n";
+        }
+        let stub_ir: string = get_type_decl + global_decl
+            + "declare " + foo_ret + " @" + mangled + "(" + sig_params + ") \n"
+            + "define i64 @" + stub_name + "() { \n"
+            + prelude
+            + "  %r = call " + foo_ret + " @" + mangled + "(" + call_args + ") \n"
+            + ret_line
+            + "} \n";
+        let add_result: i32 = __builtin.penguin_jit_add_module(this.jit_ctx, "stub_module_" + stub_name, stub_ir);
+        if (add_result != 0) {
+            let err: string = __builtin.penguin_jit_get_error();
+            __builtin.eprintln("MetaEngine ERROR: penguin_jit_add_module('" + stub_name + "') failed: " + err);
+            __builtin.exit(1);
+        }
+        let stub_ptr: u64 = __builtin.penguin_jit_lookup(this.jit_ctx, stub_name);
+        if (stub_ptr == 0) {
+            let err: string = __builtin.penguin_jit_get_error();
+            __builtin.eprintln("MetaEngine ERROR: penguin_jit_lookup('" + stub_name + "') failed: " + err);
+            __builtin.exit(1);
+        }
+        this.stub_keys.push(key);
+        this.stub_ptrs.push(stub_ptr);
+        return __builtin.penguin_jit_call_i64_0(stub_ptr);
+    }
+
+    // Sanitize a name for use as an LLVM IR symbol, mirroring
+    // LLVMEmitter.sanitize_name: '<', '>', ' ', ',', '.' all become '_'
+    // (ordinary identifiers pass through unchanged).
+    fun meta_sanitize(this, name: string) -> string {
+        let out: mut StringBuilder = new StringBuilder();
+        let n: i64 = string_length(name);
+        let i: mut i64 = 0;
+        while (i < n) {
+            let ch: string = string_char_at(name, i);
+            if (ch == "." || ch == "<" || ch == ">" || ch == " " || ch == ",") {
+                out.append("_");
+            } else {
+                out.append(ch);
+            }
+            i = i + 1;
+        }
+        return out.to_string();
+    }
+
+    // Internal: look up a compiled function pointer by name.
+    // Returns 0 if not found (caller should compile first).
+    fun find_ptr(this, name: string) -> u64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.compiled_names.size())) {
+            if (this.compiled_names.at(cast<u64>(i)).some == name) {
+                return this.compiled_ptrs.at(cast<u64>(i)).some;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------
+    // Option store: compile-time options (#define / #defined / #option)
+    // -----------------------------------------------------------------
+    fun has_option(this, key: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.option_keys.size())) {
+            if (this.option_keys.at(cast<u64>(i)).some == key) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun get_option(this, key: string) -> Option<string> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.option_keys.size())) {
+            if (this.option_keys.at(cast<u64>(i)).some == key) { return new Option<string>.some(this.option_values.at(cast<u64>(i)).some); }
+            i = i + 1;
+        }
+        return new Option<string>.none();
+    }
+
+    fun set_option(mut this, key: string, value: string) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.option_keys.size())) {
+            if (this.option_keys.at(cast<u64>(i)).some == key) { this.option_values.set(cast<u64>(i), value); return; }
+            i = i + 1;
+        }
+        this.option_keys.push(key);
+        this.option_values.push(value);
+    }
+
+    fun strip_string_quotes(this, quoted: string) -> string {
+        if (string_length(quoted) >= 2) { return string_substring(quoted, 1, string_length(quoted) - 2); }
+        return "";
+    }
+
+    // Resolve backslash escapes in a raw string-literal value. PenguinLang stores
+    // string_literal.value verbatim (with escapes intact), so a #create_expression
+    // / #create_definition fragment that embeds a string literal (e.g.
+    // "println(\"hi\")") would otherwise reach the Lexer as println(\"hi\") and
+    // fail to tokenize. Handles \" \\ \n \t; unknown escapes pass through.
+    fun unescape_meta_string(this, s: string) -> string {
+        let out: mut StringBuilder = new StringBuilder();
+        let n: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < n) {
+            let ch: string = string_char_at(s, i);
+            if (ch == "\\") {
+                if (i + 1 < n) {
+                    let nx: string = string_char_at(s, i + 1);
+                    if (nx == "\"") { out.append("\""); }
+                    else if (nx == "\\") { out.append("\\"); }
+                    else if (nx == "n") { out.append("\n"); }
+                    else if (nx == "t") { out.append("\t"); }
+                    else { out.append(ch); out.append(nx); }
+                    i = i + 2;
+                } else {
+                    out.append(ch);
+                    i = i + 1;
+                }
+            } else {
+                out.append(ch);
+                i = i + 1;
+            }
+        }
+        return out.to_string();
+    }
+
+    // Phase 4c2: #typeof wormhole — synthetic u64 token for resolved types.
+    fun get_or_assign_type_token(mut this, name: string) -> u64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.type_token_keys.size())) {
+            if (this.type_token_keys.at(cast<u64>(i)).some == name) {
+                return this.type_token_values.at(cast<u64>(i)).some;
+            }
+            i = i + 1;
+        }
+        this.next_type_token = this.next_type_token + 1;
+        let token: u64 = this.next_type_token;
+        this.type_token_keys.push(name);
+        this.type_token_values.push(token);
+        return token;
+    }
+
+    // Phase 6: resolve a type by name, first checking the host_type_registry
+    // (primitives), then falling back to the global scope for user-defined types.
+    fun resolve_type_by_name(this, name: string) -> Option<BoundType> {
+        let prim: Option<BoundType> = this.host_type_registry.resolve_type(name);
+        if (prim.is_some()) {
+            return prim;
+        }
+        if (this.global_scope.is_some()) {
+            let sym_opt: Option<BoundSymbol> = this.global_scope.some.lookup_type_in_scope(name);
+            if (sym_opt.is_some()) {
+                if (sym_opt.some is BoundSymbol.type_sym) {
+                    return new Option<BoundType>.some(sym_opt.some.type_sym.bound_type);
+                }
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    // Phase 5c (type-return splice): resolve a type token back to its BoundType
+    // via the host registry. Used when a #fun -> type is called in type-specifier
+    // position: the JIT returns the token (i64) and the host substitutes the type.
+    fun resolve_type_token(this, token: u64) -> Option<BoundType> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.type_token_values.size())) {
+            if (this.type_token_values.at(cast<u64>(i)).some == token) {
+                let name: string = this.type_token_keys.at(cast<u64>(i)).some;
+                return this.resolve_type_by_name(name);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundType>.none();
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 5c: AST token registry (single, kind-tagged).
+    //
+    // #create_expression / #create_definition store a parsed AST node here
+    // under a 1-based token; a #fun returns the token (as i64 via the i64
+    // trampolines) and the host resolves token -> node at the splice site.
+    // get_ast_expression / get_ast_definition return none when the stored kind
+    // does not match, so a position mismatch (e.g. a definition returned where
+    // an expression is expected) is detected instead of silently spliced wrong.
+    // -----------------------------------------------------------------
+    fun register_ast_expression(mut this, expr: Expression) -> u64 {
+        let t: mut AstToken = new AstToken();
+        t.kind = "expression";
+        t.expr = new Option<Expression>.some(expr);
+        this.ast_tokens.push(t);
+        return cast<u64>(this.ast_tokens.size());
+    }
+
+    fun get_ast_expression(this, token: u64) -> Option<Expression> {
+        if (token >= 1) {
+            if (token <= cast<u64>(this.ast_tokens.size())) {
+                let t: AstToken = this.ast_tokens.at(token - 1).some;
+                if (t.kind == "expression") {
+                    return t.expr;
+                }
+            }
+        }
+        return new Option<Expression>.none();
+    }
+
+    fun register_ast_definition(mut this, def: Definition) -> u64 {
+        let t: mut AstToken = new AstToken();
+        t.kind = "definition";
+        t.def = new Option<Definition>.some(def);
+        this.ast_tokens.push(t);
+        return cast<u64>(this.ast_tokens.size());
+    }
+
+    fun get_ast_definition(this, token: u64) -> Option<Definition> {
+        if (token >= 1) {
+            if (token <= cast<u64>(this.ast_tokens.size())) {
+                let t: AstToken = this.ast_tokens.at(token - 1).some;
+                if (t.kind == "definition") {
+                    return t.def;
+                }
+            }
+        }
+        return new Option<Definition>.none();
+    }
+
+    // -----------------------------------------------------------------
+    // rewrite_meta_calls_in_expr
+    //
+    // Pre-walk an Expression AST, replacing #defined(K)/#option(K)/#define(K,V)
+    // MetaCallExpression nodes with resolved literals. Container expressions
+    // are rebuilt with rewritten children. Leaves (constant/identifier/
+    // string_literal/bool_literal/void_literal) pass through unchanged.
+    // -----------------------------------------------------------------
+    fun rewrite_meta_calls_in_expr(mut this, expr: Expression) -> Expression {
+        if (expr is Expression.meta_call) { return this.rewrite_meta_call_dispatch(expr.meta_call); }
+        if (expr is Expression.parenthesized) {
+            let e: ParenthesizedExpression = expr.parenthesized;
+            let r: mut ParenthesizedExpression = new ParenthesizedExpression();
+            if (e.inner.is_some()) { r.inner = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(e.inner.some)); }
+            return new Expression.parenthesized(r);
+        }
+        if (expr is Expression.binary) {
+            let b: BinaryExpression = expr.binary;
+            let r: mut BinaryExpression = new BinaryExpression();
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(b.operators.size())) { r.operators.push(b.operators.at(cast<u64>(oi)).some); oi = oi + 1; }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(b.operands.size())) { r.operands.push(this.rewrite_meta_calls_in_expr(b.operands.at(cast<u64>(ai)).some)); ai = ai + 1; }
+            return new Expression.binary(r);
+        }
+        if (expr is Expression.unary) {
+            let u: UnaryExpression = expr.unary;
+            let r: mut UnaryExpression = new UnaryExpression();
+            r.operator_value = u.operator_value;
+            if (u.operand.is_some()) { r.operand = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(u.operand.some)); }
+            return new Expression.unary(r);
+        }
+        if (expr is Expression.member_access) {
+            let m: MemberAccessExpression = expr.member_access;
+            let r: mut MemberAccessExpression = new MemberAccessExpression();
+            if (m.base_expr.is_some()) { r.base_expr = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(m.base_expr.some)); }
+            r.member_name = m.member_name;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(m.generic_args.size())) { r.generic_args.push(m.generic_args.at(cast<u64>(gi)).some); gi = gi + 1; }
+            return new Expression.member_access(r);
+        }
+        if (expr is Expression.function_call) {
+            let f: FunctionCallExpression = expr.function_call;
+            let r: mut FunctionCallExpression = new FunctionCallExpression();
+            if (f.callee.is_some()) { r.callee = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(f.callee.some)); }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(f.arguments.size())) { r.arguments.push(this.rewrite_meta_calls_in_expr(f.arguments.at(cast<u64>(ai)).some)); ai = ai + 1; }
+            return new Expression.function_call(r);
+        }
+        if (expr is Expression.if_expr) {
+            let ie: IfExpression = expr.if_expr;
+            let r: mut IfExpression = new IfExpression();
+            if (ie.condition.is_some()) { r.condition = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ie.condition.some)); }
+            if (ie.then_block.is_some()) { r.then_block = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ie.then_block.some)); }
+            if (ie.else_block.is_some()) { r.else_block = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ie.else_block.some)); }
+            return new Expression.if_expr(r);
+        }
+        if (expr is Expression.while_expr) {
+            let we: WhileExpression = expr.while_expr;
+            let r: mut WhileExpression = new WhileExpression();
+            if (we.condition.is_some()) { r.condition = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(we.condition.some)); }
+            if (we.body.is_some()) { r.body = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(we.body.some)); }
+            return new Expression.while_expr(r);
+        }
+        if (expr is Expression.code_block) {
+            let cb: CodeBlockExpression = expr.code_block;
+            let r: mut CodeBlockExpression = new CodeBlockExpression();
+            let si: mut i64 = 0;
+            while (si < cast<i64>(cb.statements.size())) { r.statements.push(this.rewrite_meta_calls_in_stmt(cb.statements.at(cast<u64>(si)).some)); si = si + 1; }
+            if (cb.trailing_expr.is_some()) { r.trailing_expr = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(cb.trailing_expr.some)); }
+            return new Expression.code_block(r);
+        }
+        if (expr is Expression.cast_expr) {
+            let ce: CastExpression = expr.cast_expr;
+            let r: mut CastExpression = new CastExpression();
+            r.type_name = ce.type_name;
+            if (ce.target_type.is_some()) { r.target_type = new Option<TypeSpecifier>.some(ce.target_type.some); }
+            r.location = ce.location;
+            if (ce.inner.is_some()) { r.inner = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ce.inner.some)); }
+            return new Expression.cast_expr(r);
+        }
+        if (expr is Expression.new_expr) {
+            let ne: NewExpression = expr.new_expr;
+            let r: mut NewExpression = new NewExpression();
+            r.type_name = ne.type_name;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(ne.generic_args.size())) { r.generic_args.push(ne.generic_args.at(cast<u64>(gi)).some); gi = gi + 1; }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(ne.arguments.size())) { r.arguments.push(this.rewrite_meta_calls_in_expr(ne.arguments.at(cast<u64>(ai)).some)); ai = ai + 1; }
+            return new Expression.new_expr(r);
+        }
+        if (expr is Expression.lambda_expr) {
+            let le: LambdaFunctionExpression = expr.lambda_expr;
+            let r: mut LambdaFunctionExpression = new LambdaFunctionExpression();
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(le.parameters.size())) { r.parameters.push(le.parameters.at(cast<u64>(pi)).some); pi = pi + 1; }
+            if (le.return_type.is_some()) { r.return_type = new Option<TypeSpecifier>.some(le.return_type.some); }
+            r.is_async = le.is_async;
+            if (le.body.is_some()) { r.body = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(le.body.some)); }
+            return new Expression.lambda_expr(r);
+        }
+        if (expr is Expression.spawn_async) {
+            let sa: SpawnAsyncExpression = expr.spawn_async;
+            let r: mut SpawnAsyncExpression = new SpawnAsyncExpression();
+            if (sa.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(sa.expression.some)); }
+            return new Expression.spawn_async(r);
+        }
+        if (expr is Expression.wait_expr) {
+            let we: WaitExpression = expr.wait_expr;
+            let r: mut WaitExpression = new WaitExpression();
+            if (we.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(we.expression.some)); }
+            return new Expression.wait_expr(r);
+        }
+        // Leaves: pass through unchanged
+        return expr;
+    }
+
+    // -----------------------------------------------------------------
+    // rewrite_meta_call_dispatch
+    //
+    // Dispatch a MetaCallExpression by func_name. Handles:
+    //   #defined(K)         -> BoolLiteral(true|false)
+    //   #option(K)          -> StringLiteral(value or "")
+    //   #define(K,V)        -> set_option(K,V); VoidLiteral (side effect)
+    //   #typeof / #compiler / unknown -> passthrough (unchanged)
+    // -----------------------------------------------------------------
+    fun rewrite_meta_call_dispatch(mut this, mc: MetaCallExpression) -> Expression {
+        if (mc.func_name == "defined") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.string_literal) {
+                    let key: string = this.strip_string_quotes(arg.string_literal.value);
+                    let bl: mut BoolLiteralExpression = new BoolLiteralExpression();
+                    if (this.has_option(key)) { bl.value = "true"; } else { bl.value = "false"; }
+                    return new Expression.bool_literal(bl);
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        if (mc.func_name == "option") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.string_literal) {
+                    let key: string = this.strip_string_quotes(arg.string_literal.value);
+                    let val_opt: Option<string> = this.get_option(key);
+                    if (val_opt.is_some()) {
+                        let sl: StringLiteralExpression = new StringLiteralExpression("\"" + val_opt.some + "\"");
+                        return new Expression.string_literal(sl);
+                    }
+                    let sl: StringLiteralExpression = new StringLiteralExpression("\"\"");
+                    return new Expression.string_literal(sl);
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        if (mc.func_name == "define") {
+            if (cast<i64>(mc.arguments.size()) >= 2) {
+                let arg_k: Expression = mc.arguments.at(cast<u64>(0)).some;
+                let arg_v: Expression = mc.arguments.at(cast<u64>(1)).some;
+                if (arg_k is Expression.string_literal) {
+                    if (arg_v is Expression.string_literal) {
+                        let key: string = this.strip_string_quotes(arg_k.string_literal.value);
+                        let val: string = this.strip_string_quotes(arg_v.string_literal.value);
+                        this.set_option(key, val);
+                        let vl: mut VoidLiteralExpression = new VoidLiteralExpression();
+                        vl.value = "";
+                        return new Expression.void_literal(vl);
+                    }
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        // Phase 5c: #create_expression("code") / #create_definition("code") —
+        // parse a LITERAL code fragment into a structured AST node, store it in
+        // the matching registry, and embed a 1-based i64 token. The enclosing
+        // #fun returns the token; the host resolves token -> node at the splice
+        // site. Literal strings only (resolved here, at unit-B compile time);
+        // computed strings would need the Phase-6 host-callback API.
+        if (mc.func_name == "create_expression") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.string_literal) {
+                    let code: string = this.unescape_meta_string(this.strip_string_quotes(arg.string_literal.value));
+                    let lex: Lexer = new Lexer(code, "<create_expression>");
+                    let toks: _utils.List<Token> = lex.tokenize();
+                    let p: Parser = new Parser(toks);
+                    let node: Expression = p.parse_expression();
+                    if (!p.has_errors()) {
+                        let token: u64 = this.register_ast_expression(node);
+                        let ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
+                        return new Expression.constant(ce);
+                    }
+                    if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_expression: parse failed for '" + code + "'; passthrough"); }
+                } else {
+                    // Computed string argument: route to runtime host-callback.
+                    let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(arg);
+                    let base_id: mut IdentifierExpression = new IdentifierExpression("__builtin");
+                    let ma: mut MemberAccessExpression = new MemberAccessExpression();
+                    ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
+                    ma.member_name = "penguin_meta_create_expression";
+                    let fc: mut FunctionCallExpression = new FunctionCallExpression();
+                    fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
+                    fc.arguments.push(rewritten_arg);
+                    return new Expression.function_call(fc);
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        if (mc.func_name == "create_definition") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.string_literal) {
+                    let code: string = this.unescape_meta_string(this.strip_string_quotes(arg.string_literal.value));
+                    let lex: Lexer = new Lexer(code, "<create_definition>");
+                    let toks: _utils.List<Token> = lex.tokenize();
+                    let p: Parser = new Parser(toks);
+                    let unit: CompilationUnit = p.parse_compilationUnit();
+                    if (!p.has_errors()) {
+                        if (cast<i64>(unit.definitions.size()) == 1) {
+                            let def: Definition = unit.definitions.at(cast<u64>(0)).some;
+                            let token: u64 = this.register_ast_definition(def);
+                            let ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
+                            return new Expression.constant(ce);
+                        }
+                        if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_definition: expected exactly 1 definition, got " + cast<string>(unit.definitions.size()) + "; passthrough"); }
+                    } else {
+                        if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_definition: parse failed for '" + code + "'; passthrough"); }
+                    }
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        // #typeof(T) — Phase 6 v2: resolve T to a compile-time token, then emit a
+        // call to the token→pointer bridge __builtin.penguin_meta_get_type so the
+        // #fun receives the LIVE BoundType pointer (not an opaque token). This makes
+        // `t == #typeof(i32)` a reference comparison between two interned pointers.
+        // (Reflection itself is now real-reuse: t.fields()/methods()/variants() are
+        // direct method calls on the real emperor.BoundType — no per-op host callback.)
+        if (mc.func_name == "typeof") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.identifier) {
+                    let type_name: string = arg.identifier.name;
+                    let bt_opt: Option<BoundType> = this.resolve_type_by_name(type_name);
+                    if (bt_opt.is_some()) {
+                        let token: u64 = this.get_or_assign_type_token(type_name);
+                        // __builtin.penguin_meta_get_type(<token>)  -> emperor.BoundType
+                        let token_ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
+                        let base_id: mut IdentifierExpression = new IdentifierExpression("__builtin");
+                        let ma: mut MemberAccessExpression = new MemberAccessExpression();
+                        ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
+                        ma.member_name = "penguin_meta_get_type";
+                        let fc: mut FunctionCallExpression = new FunctionCallExpression();
+                        fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
+                        fc.arguments.push(new Expression.constant(token_ce));
+                        return new Expression.function_call(fc);
+                    }
+                    if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #typeof: type '" + type_name + "' not resolved; passthrough"); }
+                }
+            }
+            return new Expression.meta_call(mc);
+        }
+        // #compiler / unknown -> passthrough
+        return new Expression.meta_call(mc);
+    }
+
+    // -----------------------------------------------------------------
+    // rewrite_meta_calls_in_stmt
+    //
+    // Pre-walk a Statement AST, rewriting Expression-bearing sub-nodes.
+    // Meta control statements (#if/#while/#for/#break/#continue) and
+    // plain continue pass through unchanged.
+    // -----------------------------------------------------------------
+    fun rewrite_meta_calls_in_stmt(mut this, stmt: Statement) -> Statement {
+        if (stmt is Statement.expression) {
+            let es: ExpressionStatement = stmt.expression;
+            let r: mut ExpressionStatement = new ExpressionStatement();
+            if (es.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(es.expression.some)); }
+            r.location = es.location;
+            return new Statement.expression(r);
+        }
+        if (stmt is Statement.block_expr) {
+            let bs: BlockExpressionStatement = stmt.block_expr;
+            let r: mut BlockExpressionStatement = new BlockExpressionStatement();
+            if (bs.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(bs.expression.some)); }
+            r.location = bs.location;
+            return new Statement.block_expr(r);
+        }
+        if (stmt is Statement.assignment) {
+            let as: AssignmentStatement = stmt.assignment;
+            let r: mut AssignmentStatement = new AssignmentStatement();
+            if (as.target.is_some()) { r.target = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(as.target.some)); }
+            r.operator_value = as.operator_value;
+            if (as.value.is_some()) { r.value = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(as.value.some)); }
+            r.location = as.location;
+            return new Statement.assignment(r);
+        }
+        if (stmt is Statement.if_stmt) {
+            let ifs: IfStatement = stmt.if_stmt;
+            let r: mut IfStatement = new IfStatement();
+            r.location = ifs.location;
+            if (ifs.condition.is_some()) { r.condition = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ifs.condition.some)); }
+            if (ifs.then_statement.is_some()) { r.then_statement = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(ifs.then_statement.some)); }
+            if (ifs.else_statement.is_some()) { r.else_statement = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(ifs.else_statement.some)); }
+            return new Statement.if_stmt(r);
+        }
+        if (stmt is Statement.while_stmt) {
+            let ws: WhileStatement = stmt.while_stmt;
+            let r: mut WhileStatement = new WhileStatement();
+            r.location = ws.location;
+            if (ws.condition.is_some()) { r.condition = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ws.condition.some)); }
+            if (ws.body.is_some()) { r.body = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(ws.body.some)); }
+            return new Statement.while_stmt(r);
+        }
+        if (stmt is Statement.for_stmt) {
+            let fs: ForStatement = stmt.for_stmt;
+            let r: mut ForStatement = new ForStatement();
+            r.variable_name = fs.variable_name;
+            r.variable_type = fs.variable_type;
+            r.is_mutable = fs.is_mutable;
+            r.location = fs.location;
+            if (fs.iterable.is_some()) { r.iterable = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(fs.iterable.some)); }
+            if (fs.body.is_some()) { r.body = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(fs.body.some)); }
+            return new Statement.for_stmt(r);
+        }
+        if (stmt is Statement.return_stmt) {
+            let rs: ReturnStatement = stmt.return_stmt;
+            let r: mut ReturnStatement = new ReturnStatement();
+            r.location = rs.location;
+            if (rs.value.is_some()) { r.value = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(rs.value.some)); }
+            return new Statement.return_stmt(r);
+        }
+        if (stmt is Statement.break_stmt) {
+            let bs: BreakStatement = stmt.break_stmt;
+            let r: mut BreakStatement = new BreakStatement();
+            r.location = bs.location;
+            if (bs.value.is_some()) { r.value = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(bs.value.some)); }
+            return new Statement.break_stmt(r);
+        }
+        if (stmt is Statement.let_decl) {
+            let ld: LetDeclarationStatement = stmt.let_decl;
+            let r: mut LetDeclarationStatement = new LetDeclarationStatement();
+            r.is_mutable = ld.is_mutable;
+            r.variable_name = ld.variable_name;
+            r.variable_type = ld.variable_type;
+            if (ld.type_spec.is_some()) { r.type_spec = new Option<TypeSpecifier>.some(ld.type_spec.some); }
+            r.location = ld.location;
+            if (ld.initializer.is_some()) { r.initializer = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ld.initializer.some)); }
+            return new Statement.let_decl(r);
+        }
+        if (stmt is Statement.emit_event) {
+            let ee: EmitEventStatement = stmt.emit_event;
+            let r: mut EmitEventStatement = new EmitEventStatement();
+            r.location = ee.location;
+            if (ee.event_expr.is_some()) { r.event_expr = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ee.event_expr.some)); }
+            if (ee.argument.is_some()) { r.argument = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ee.argument.some)); }
+            return new Statement.emit_event(r);
+        }
+        if (stmt is Statement.yield_stmt) {
+            let ys: YieldStatement = stmt.yield_stmt;
+            let r: mut YieldStatement = new YieldStatement();
+            r.location = ys.location;
+            if (ys.value.is_some()) { r.value = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ys.value.some)); }
+            return new Statement.yield_stmt(r);
+        }
+        if (stmt is Statement.signal_stmt) {
+            let ss: SignalStatement = stmt.signal_stmt;
+            let r: mut SignalStatement = new SignalStatement();
+            r.location = ss.location;
+            if (ss.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ss.expression.some)); }
+            return new Statement.signal_stmt(r);
+        }
+        // Meta control statements and continue_stmt: passthrough
+        return stmt;
+    }
+}
+
+// Phase 5c: a kind-tagged slot in MetaEngine's AST registry. Exactly one of
+// expr / def is some, identified by kind ("expression" | "definition"). The
+// shared registry gives globally-unique tokens so a splice-position mismatch
+// is detectable (the kind check fails) rather than silently wrong.
+class AstToken {
+    kind: mut string = "";
+    expr: mut Option<Expression> = new Option<Expression>.none();
+    def: mut Option<Definition> = new Option<Definition>.none();
+}
+
+}

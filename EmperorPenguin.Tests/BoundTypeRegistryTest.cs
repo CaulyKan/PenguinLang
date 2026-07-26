@@ -40,6 +40,14 @@ public class BoundTypeRegistryTest
         // Add project source files (needed by ErrorCode, etc.)
         foreach (var f in Directory.GetFiles(BatchCompiler.ProjectDir, "*.penguin"))
             compiler.AddFile(f);
+        // SemanticModel references MetaEngine (Phase 5b #fun splice), which uses
+        // IRGenerator + LLVMEmitter — include the full EP source closure.
+        foreach (var f in Directory.GetFiles(BatchCompiler.IRDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(BatchCompiler.LLVMDir, "*.penguin"))
+            compiler.AddFile(f);
+        foreach (var f in Directory.GetFiles(BatchCompiler.MetaDir, "*.penguin"))
+            compiler.AddFile(f);
         compiler.AddSource(userCode);
         var model = compiler.Compile();
         vm = new BabyPenguinVM(model);

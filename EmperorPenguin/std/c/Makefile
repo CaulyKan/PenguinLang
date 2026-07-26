@@ -14,21 +14,36 @@ endif
 CFLAGS ?= -I../include -g
 CFLAGS += $(OPT)
 
+CXX ?= clang++
+CXXFLAGS ?= -I../include -g -std=c++17
+LLVM_CONFIG ?= llvm-config
+LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags 2>/dev/null)
+LLVM_LDFLAGS  := $(shell $(LLVM_CONFIG) --ldflags --libs core orcjit native 2>/dev/null)
+
 SRC = core_builtin.c gc.c penguinlang_interop.c
 OBJ = $(SRC:.c=.o)
 
 OUTPUT_DIR ?= .
 LIB = $(OUTPUT_DIR)/libcore_builtin.a
 
-all: $(LIB)
+# Only build libpenguin_jit.a when LLVM is detected
+ifneq ($(strip $(LLVM_CXXFLAGS)),)
+  JIT_LIB = $(OUTPUT_DIR)/libpenguin_jit.a
+endif
+
+all: $(LIB) $(JIT_LIB)
 
 $(LIB): $(OBJ)
 	$(AR) rcs $@ $^
+
+$(JIT_LIB): penguin_jit.cpp penguin_jit.h
+	$(CXX) $(CXXFLAGS) $(LLVM_CXXFLAGS) -c penguin_jit.cpp -o penguin_jit.o
+	$(AR) rcs $@ penguin_jit.o
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) $(LIB)
+	rm -f $(OBJ) $(LIB) penguin_jit.o $(JIT_LIB)
 
 .PHONY: all clean

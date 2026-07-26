@@ -77,6 +77,32 @@ class BoundClassDefinition {
     fun get_name(this) -> string {
         return this.name;
     }
+
+    fun typed_fields(this) -> _utils.List<BoundClassFieldDefinition> {
+        let result: mut _utils.List<BoundClassFieldDefinition> = new _utils.List<BoundClassFieldDefinition>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.fields.size())) {
+            let d: BoundDefinition = this.fields.at(cast<u64>(i)).some;
+            if (d is BoundDefinition.class_field) {
+                result.push(d.class_field);
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    fun typed_methods(this) -> _utils.List<BoundFunctionDefinition> {
+        let result: mut _utils.List<BoundFunctionDefinition> = new _utils.List<BoundFunctionDefinition>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.methods.size())) {
+            let d: BoundDefinition = this.methods.at(cast<u64>(i)).some;
+            if (d is BoundDefinition.function_def) {
+                result.push(d.function_def);
+            }
+            i = i + 1;
+        }
+        return result;
+    }
 }
 
 class BoundEnumDefinition {
@@ -224,6 +250,83 @@ class BoundGlobalVariableDefinition {
     ast_source: Option<Definition> = new Option<Definition>.none();
 }
 
+class BoundMetaFunctionDefinition {
+    name: string = "";
+    full_name: string = "";
+    symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    parameters: mut _utils.List<MetaParameter> = new _utils.List<MetaParameter>();
+    return_type: Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    body: Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    native_ptr: mut u64 = 0;
+    is_compiled: mut bool = false;
+
+    fun new(mut this, name: string, full_name: string) {
+        this.name = name;
+        this.full_name = full_name;
+    }
+
+    fun get_name(this) -> string {
+        return this.name;
+    }
+}
+
+class BoundMetaIfDefinition {
+    ast_source: !mut Option<Definition> = new Option<Definition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Definition>, location: SourceLocation) {
+        this.ast_source = ast_source;
+        this.location = location;
+    }
+
+    fun get_name(this) -> string {
+        return "<meta_if>";
+    }
+}
+
+class BoundMetaForDefinition {
+    ast_source: !mut Option<Definition> = new Option<Definition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Definition>, location: SourceLocation) {
+        this.ast_source = ast_source;
+        this.location = location;
+    }
+
+    fun get_name(this) -> string {
+        return "<meta_for>";
+    }
+}
+
+class BoundMetaWhileDefinition {
+    ast_source: !mut Option<Definition> = new Option<Definition>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, ast_source: Option<Definition>, location: SourceLocation) {
+        this.ast_source = ast_source;
+        this.location = location;
+    }
+
+    fun get_name(this) -> string {
+        return "<meta_while>";
+    }
+}
+
+class BoundMetaCallDefinition {
+    call: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, call: Option<BoundExpression>, location: SourceLocation) {
+        this.call = call;
+        this.location = location;
+    }
+
+    fun get_name(this) -> string {
+        return "<meta_call>";
+    }
+}
+
 enum BoundDefinition {
     function_def: BoundFunctionDefinition;
     class_def: BoundClassDefinition;
@@ -236,6 +339,11 @@ enum BoundDefinition {
     type_ref_def: BoundTypeReferenceDefinition;
     class_field: BoundClassFieldDefinition;
     global_var_def: BoundGlobalVariableDefinition;
+    meta_function_def: BoundMetaFunctionDefinition;
+    meta_if_def: BoundMetaIfDefinition;
+    meta_for_def: BoundMetaForDefinition;
+    meta_while_def: BoundMetaWhileDefinition;
+    meta_call_def: BoundMetaCallDefinition;
 
     fun get_name(this) -> string {
         if (this is BoundDefinition.function_def) { return this.function_def.get_name(); }
@@ -249,6 +357,11 @@ enum BoundDefinition {
         if (this is BoundDefinition.type_ref_def) { return this.type_ref_def.get_name(); }
         if (this is BoundDefinition.class_field) { return this.class_field.get_name(); }
         if (this is BoundDefinition.global_var_def) { return this.global_var_def.name; }
+        if (this is BoundDefinition.meta_function_def) { return this.meta_function_def.get_name(); }
+        if (this is BoundDefinition.meta_if_def) { return this.meta_if_def.get_name(); }
+        if (this is BoundDefinition.meta_for_def) { return this.meta_for_def.get_name(); }
+        if (this is BoundDefinition.meta_while_def) { return this.meta_while_def.get_name(); }
+        if (this is BoundDefinition.meta_call_def) { return this.meta_call_def.get_name(); }
         return "";
     }
 }
