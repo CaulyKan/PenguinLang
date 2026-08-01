@@ -9,8 +9,8 @@ namespace __builtin {
     extern fun lshift(value: i64, shift: i64) -> i64;
     extern fun rshift(value: i64, shift: i64) -> i64;
 
-    extern fun _emperor_gc_collect();
-    extern fun _emperor_gc_info() -> i64;
+    extern fun gc_collect();
+    extern fun gc_info() -> i64;
 
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;

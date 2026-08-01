@@ -192,7 +192,7 @@ initial {
     let anchor = new Node(999);
     let i: mut i64 = 0;
     while (i < 1000) { let tmp = new Node(i); i = i + 1; }
-    _emperor_gc_collect();
+    gc_collect();
     println(cast<string>(anchor.val));
 }
 ```

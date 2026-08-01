@@ -74,8 +74,13 @@ class MetaEngine {
     // NOT in core_builtin.penguin: that file is also compiled into the host,
     // where an extern decl would suppress MetaHost.penguin's definition.
     fun meta_extern_decls(this) -> string {
-        return "namespace __builtin {\n"
-            + "    extern fun penguin_meta_get_type(token: i64) -> emperor.BoundType;\n"
+        // Declared in namespace `emperor` (NOT __builtin) so the LLJMEmitter's
+        // extern convention maps them LITERAL to @emperor_penguin_meta_* — matching
+        // the host's MetaHost.penguin free functions (namespace emperor → emperor_*).
+        // (__builtin/_utils externs get the @_emperor_ C-runtime prefix, which would
+        // not match the PenguinLang host responders.)
+        return "namespace emperor {\n"
+            + "    extern fun penguin_meta_get_type(token: i64) -> BoundType;\n"
             + "    extern fun penguin_meta_create_expression(code: string) -> i64;\n"
             + "    extern fun penguin_meta_create_definition(code: string) -> i64;\n"
             + "}\n";
@@ -905,7 +910,7 @@ class MetaEngine {
                 } else {
                     // Computed string argument: route to runtime host-callback.
                     let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(arg);
-                    let base_id: mut IdentifierExpression = new IdentifierExpression("__builtin");
+                    let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
                     let ma: mut MemberAccessExpression = new MemberAccessExpression();
                     ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
                     ma.member_name = "penguin_meta_create_expression";
@@ -955,9 +960,9 @@ class MetaEngine {
                     let bt_opt: Option<BoundType> = this.resolve_type_by_name(type_name);
                     if (bt_opt.is_some()) {
                         let token: u64 = this.get_or_assign_type_token(type_name);
-                        // __builtin.penguin_meta_get_type(<token>)  -> emperor.BoundType
+                        // emperor.penguin_meta_get_type(<token>)  -> BoundType
                         let token_ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
-                        let base_id: mut IdentifierExpression = new IdentifierExpression("__builtin");
+                        let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
                         let ma: mut MemberAccessExpression = new MemberAccessExpression();
                         ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
                         ma.member_name = "penguin_meta_get_type";

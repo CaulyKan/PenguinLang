@@ -97,8 +97,8 @@ class SemanticModel {
         this.register_builtin_extern_fun("print", string_params, "void");
         this.register_builtin_extern_fun("println", string_params, "void");
         let no_params: mut _utils.List<string> = new _utils.List<string>();
-        this.register_builtin_extern_fun("_emperor_gc_collect", no_params, "void");
-        this.register_builtin_extern_fun("_emperor_gc_info", no_params, "i64");
+        this.register_builtin_extern_fun("gc_collect", no_params, "void");
+        this.register_builtin_extern_fun("gc_info", no_params, "i64");
     }
 
     fun register_builtin_interface(mut this, name: string) {
@@ -4845,8 +4845,8 @@ class SemanticModel {
                 if (pt is PrimitiveType.VoidType) {
                     // The def search yielded void — either the function genuinely
                     // returns void, or (for builtin-registered externs whose
-                    // declaration lives in a namespace, e.g. _emperor_gc_info at
-                    // <global>._emperor_gc_info vs its <global>.__builtin._emperor_gc_info
+                    // declaration lives in a namespace, e.g. gc_info at
+                    // <global>.gc_info vs its <global>.__builtin.gc_info
                     // def) no matching def was found. The symbol's own return_type is
                     // authoritative in both cases, so prefer it (returning `found`
                     // here would wrongly make every such call void-typed).

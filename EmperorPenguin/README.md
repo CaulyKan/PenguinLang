@@ -387,8 +387,8 @@ SemanticModel 的构造函数注册了编译器本身需要的函数：
 |------|------|------|
 | `print` | `(string) -> void` | 标准输出打印 |
 | `println` | `(string) -> void` | 标准输出打印并换行 |
-| `_emperor_gc_collect` | `() -> void` | 强制 GC 运行 |
-| `_emperor_gc_info` | `() -> i64` | 获取 GC 堆统计信息 |
+| `gc_collect` | `() -> void` | 强制 GC 运行 |
+| `gc_info` | `() -> i64` | 获取 GC 堆统计信息 |
 
 内建接口 `ICopy` 和 `IRef` 被注册为空的接口类型占位符。
 

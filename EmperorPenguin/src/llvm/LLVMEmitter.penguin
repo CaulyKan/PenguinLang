@@ -173,6 +173,12 @@ class LLVMEmitter {
     reg_type_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
     mutable_regs: mut _utils.List<string> = new _utils.List<string>();
     alloca_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    // Maps each extern function's penguin name -> its C-runtime LLVM symbol
+    // ("@_emperor_<tail>"), built once per lower() from module.functions.
+    // Discriminating on is_extern (not namespace) is essential: __builtin/_utils
+    // also hold real functions (List.push, Option.is_some, ...) that must NOT be
+    // rewritten as externs.
+    extern_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
     sb: mut StringBuilder = new StringBuilder();
     // During function emission, body_sb receives instruction output
     // and entry_allocas collects alloca instructions for the entry block.
@@ -462,6 +468,29 @@ class LLVMEmitter {
         this.emitted_interface_ids = new _utils.List<string>();
         this.func_param_types = new _utils.List<FuncParamTypes>();
         this.current_unit = new Option<BoundCompilationUnit>.some(unit);
+        // Build the runtime-extern -> C-runtime-symbol map. Only externs in the
+        // __builtin / _utils runtime namespaces get the "_emperor_" prefix (via
+        // compute_extern_tail). User-declared externs (e.g. linking to a real libc
+        // symbol like `puts`) are intentionally NOT mapped here: they fall through
+        // to the default "@<sanitized>" path in llvm_func_name, preserving their
+        // literal external symbol name.
+        this.extern_map = new _utils.List<RegMapping>();
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(module.functions.size())) {
+            let ef: IRFunction = module.functions.at(cast<u64>(ei)).some;
+            if (ef.is_extern) {
+                let ekey: string = this.strip_global_prefix(ef.name);
+                if (this.string_starts_with(ekey, "__builtin.") || this.string_starts_with(ekey, "_utils.")) {
+                    // Key by the normalized tail so that ANY call-site form
+                    // resolves: builtin calls may use the short form ("println")
+                    // or the qualified form ("__builtin.println"), and both map
+                    // to the same tail via compute_extern_tail.
+                    let etail: string = this.compute_extern_tail(ef.name);
+                    this.extern_map.push(new RegMapping(etail, "@_emperor_" + this.sanitize_name(etail)));
+                }
+            }
+            ei = ei + 1;
+        }
         // Disable debug info due to compiler codegen bug affecting
         // SourceLocation field access (filename/line/col offsets).
         this.debug_enabled = false;
@@ -669,7 +698,7 @@ class LLVMEmitter {
         }
         if (this.needs_check_class) {
             target.append("declare i32 @_emperor_check_class(ptr, ptr)\n");
-        target.append("declare ptr @_emperor_icopy_copy(ptr)\n");
+        target.append("declare ptr @_emperor_ICopy_copy(ptr)\n");
         }
         if (this.has_main) {
             target.append("declare void @_emperor_gc_init(ptr)\n");
@@ -3840,60 +3869,48 @@ class LLVMEmitter {
 
     fun llvm_func_name(this, name: string) -> string {
         _utils.trace_enter("Enter llvm_func_name(name=" + cast<string>(name) + ")");
-        let cleaned: string = this.strip_global_prefix(name);
-        let sanitized: string = this.sanitize_name(cleaned);
-        // Map __builtin.* functions to C runtime @_emperor_* functions
-        if (sanitized == "println" || sanitized == "__builtin_println") { return "@_emperor_println"; }
-        if (sanitized == "print" || sanitized == "__builtin_print") { return "@_emperor_print"; }
-        if (sanitized == "eprintln" || sanitized == "__builtin_eprintln") { return "@_emperor_eprintln"; }
-        if (sanitized == "eprint" || sanitized == "__builtin_eprint") { return "@_emperor_eprint"; }
-        if (sanitized == "exit" || sanitized == "__builtin_exit") { return "@_emperor_exit"; }
-        if (sanitized == "lshift" || sanitized == "__builtin_lshift") { return "@_emperor_lshift"; }
-        if (sanitized == "rshift" || sanitized == "__builtin_rshift") { return "@_emperor_rshift"; }
-        if (sanitized == "string_length" || sanitized == "__builtin_string_length") { return "@_emperor_string_length"; }
-        if (sanitized == "__builtin_ICopy_copy") { return "@_emperor_icopy_copy"; }
-        if (sanitized == "string_find" || sanitized == "__builtin_string_find") { return "@_emperor_string_find"; }
-        if (sanitized == "string_find_from" || sanitized == "__builtin_string_find_from") { return "@_emperor_string_find_from"; }
-        if (sanitized == "string_substring" || sanitized == "__builtin_string_substring") { return "@_emperor_string_substring"; }
-        if (sanitized == "string_char_at" || sanitized == "__builtin_string_char_at") { return "@_emperor_string_char_at"; }
-        if (sanitized == "string_char_code" || sanitized == "__builtin_string_char_code") { return "@_emperor_string_char_code"; }
-        if (sanitized == "string_to_int" || sanitized == "__builtin_string_to_int") { return "@_emperor_string_to_int"; }
-        if (sanitized == "__builtin___args_count") { return "@_emperor_args_count"; }
-        if (sanitized == "__builtin___args_get") { return "@_emperor_args_get"; }
-        if (sanitized == "__builtin__exec_cmd") { return "@_emperor_exec_cmd"; }
-        // Map _utils.* extern functions to C runtime
-        if (sanitized == "_utils_file_read_text") { return "@_emperor_file_read_text"; }
-        if (sanitized == "_utils_file_write_text") { return "@_emperor_file_write_text"; }
-        if (sanitized == "_utils_mkdir") { return "@_emperor_mkdir"; }
-        if (sanitized == "_utils_file_exists") { return "@_emperor_file_exists"; }
-        if (sanitized == "_utils_dir_exists") { return "@_emperor_dir_exists"; }
-        if (sanitized == "_utils_dir_get_entries") { return "@_emperor_dir_get_entries"; }
-        if (sanitized == "_utils_create_temp_dir") { return "@_emperor_create_temp_dir"; }
-        // StringBuilder methods
-        if (sanitized == "__builtin_StringBuilder_new") { return "@_emperor_stringbuilder_new"; }
-        if (sanitized == "__builtin_StringBuilder_append") { return "@_emperor_stringbuilder_append"; }
-        if (sanitized == "__builtin_StringBuilder_to_string") { return "@_emperor_stringbuilder_to_string"; }
-        // PenguinJIT extern functions (backed by libpenguin_jit, linked with --enable-meta)
-        if (sanitized == "__builtin_penguin_jit_create")     { return "@penguin_jit_create"; }
-        if (sanitized == "__builtin_penguin_jit_add_module") { return "@penguin_jit_add_module"; }
-        if (sanitized == "__builtin_penguin_jit_lookup")     { return "@penguin_jit_lookup"; }
-        if (sanitized == "__builtin_penguin_jit_destroy")    { return "@penguin_jit_destroy"; }
-        if (sanitized == "__builtin_penguin_jit_get_error")  { return "@penguin_jit_get_error"; }
-        if (sanitized == "__builtin_penguin_jit_call_i64_0")           { return "@penguin_jit_call_i64_0"; }
-        if (sanitized == "__builtin_penguin_jit_call_i64_i64")         { return "@penguin_jit_call_i64_i64"; }
-        if (sanitized == "__builtin_penguin_jit_call_i64_i64_i64")     { return "@penguin_jit_call_i64_i64_i64"; }
-        if (sanitized == "__builtin_penguin_jit_call_i64_i64_i64_i64") { return "@penguin_jit_call_i64_i64_i64_i64"; }
-        if (sanitized == "__builtin_penguin_jit_call_ptr_ptr")         { return "@penguin_jit_call_ptr_ptr"; }
-        if (sanitized == "__builtin_penguin_jit_call_ptr_ptr_ptr")     { return "@penguin_jit_call_ptr_ptr_ptr"; }
-        // Phase 6 v2: the only reflection host-callback is the token→pointer bridge
-        // (real-reuse: t.fields()/methods()/variants() are direct method calls on the
-        // real emperor.BoundType in unit B, resolved to the host's emperor_BoundType_*
-        // exports by weak-dedup). #typeof + the caller-stub call this from JIT'd code.
-        // The create_* bridges are codegen (computed-string → ast token), not reflection.
-        if (sanitized == "__builtin_penguin_meta_get_type") { return "@emperor_penguin_meta_get_type"; }
-        if (sanitized == "__builtin_penguin_meta_create_expression") { return "@emperor_penguin_meta_create_expression"; }
-        if (sanitized == "__builtin_penguin_meta_create_definition") { return "@emperor_penguin_meta_create_definition"; }
-        return "@" + sanitized;
+        let key: string = this.strip_global_prefix(name);
+        // Externs (precomputed in lower()) map to their C-runtime symbol; every
+        // other name (user functions/methods/ctors/vtable slots) is plain
+        // "@<sanitized>". Discriminating via the extern map (built from
+        // is_extern) — not by namespace — is what keeps real functions that live
+        // in __builtin/_utils (List.push, Option.is_some, ...) untouched.
+        // The probe is the normalized tail, so a builtin call reaches the same
+        // entry whether the call-site emitted the short form ("println") or the
+        // qualified form ("__builtin.println").
+        let tail: string = this.compute_extern_tail(name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.extern_map.size())) {
+            let e: RegMapping = this.extern_map.at(cast<u64>(i)).some;
+            if (e.ir_name == tail) {
+                return e.llvm_value;
+            }
+            i = i + 1;
+        }
+        return "@" + this.sanitize_name(key);
+    }
+
+    // Compute the <tail> of an extern's C-runtime symbol: strip the <global>.,
+    // __builtin., _utils. prefixes and any leading underscores, preserving case.
+    // The LLVM symbol is then "@_emperor_" + sanitize_name(tail).
+    fun compute_extern_tail(this, name: string) -> string {
+        _utils.trace_enter("Enter compute_extern_tail(name=" + cast<string>(name) + ")");
+        let s: string = this.strip_global_prefix(name);
+        let bp: string = "__builtin.";
+        let up: string = "_utils.";
+        let ns_len: mut i64 = 0;
+        if (this.string_starts_with(s, bp)) {
+            ns_len = string_length(bp);
+        } else {
+            if (this.string_starts_with(s, up)) {
+                ns_len = string_length(up);
+            }
+        }
+        let start: mut i64 = ns_len;
+        while (start < string_length(s) && string_char_at(s, start) == "_") {
+            start = start + 1;
+        }
+        return string_substring(s, start, string_length(s) - start);
     }
 
     fun strip_global_prefix(this, name: string) -> string {

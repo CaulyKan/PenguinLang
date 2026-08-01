@@ -18,9 +18,9 @@ extern "C" int host_test_fn(int x) {
 
 int main() {
   /* 1. Create JIT context */
-  auto ctx = penguin_jit_create();
+  auto ctx = _emperor_penguin_jit_create();
   if (!ctx) {
-    std::printf("FAIL create: %s\n", penguin_jit_get_error());
+    std::printf("FAIL create: %s\n", _emperor_penguin_jit_get_error());
     return 1;
   }
 
@@ -33,16 +33,16 @@ int main() {
     "define i32 @test_host() { %r = call i32 @host_test_fn(i32 5)\n"
     "  ret i32 %r }\n";
 
-  if (penguin_jit_add_module(ctx, "test", ir) != 0) {
-    std::printf("FAIL add_module: %s\n", penguin_jit_get_error());
+  if (_emperor_penguin_jit_add_module(ctx, "test", ir) != 0) {
+    std::printf("FAIL add_module: %s\n", _emperor_penguin_jit_get_error());
     return 1;
   }
 
   /* 3. Look up and call test_fn — expect 42 */
   using int_fn = int (*)();
-  auto fn = reinterpret_cast<int_fn>(penguin_jit_lookup(ctx, "test_fn"));
+  auto fn = reinterpret_cast<int_fn>(_emperor_penguin_jit_lookup(ctx, "test_fn"));
   if (!fn) {
-    std::printf("FAIL lookup test_fn: %s\n", penguin_jit_get_error());
+    std::printf("FAIL lookup test_fn: %s\n", _emperor_penguin_jit_get_error());
     return 1;
   }
   int r1 = fn();
@@ -52,9 +52,9 @@ int main() {
   }
 
   /* 4. Look up and call test_host — expect 105 */
-  auto fh = reinterpret_cast<int_fn>(penguin_jit_lookup(ctx, "test_host"));
+  auto fh = reinterpret_cast<int_fn>(_emperor_penguin_jit_lookup(ctx, "test_host"));
   if (!fh) {
-    std::printf("FAIL lookup test_host: %s\n", penguin_jit_get_error());
+    std::printf("FAIL lookup test_host: %s\n", _emperor_penguin_jit_get_error());
     return 1;
   }
   int r2 = fh();
@@ -64,7 +64,7 @@ int main() {
   }
 
   /* 5. Cleanup */
-  penguin_jit_destroy(ctx);
+  _emperor_penguin_jit_destroy(ctx);
   std::printf("PASS jit-smoke\n");
   return 0;
 }

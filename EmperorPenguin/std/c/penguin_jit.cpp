@@ -53,7 +53,7 @@ static bool init_llvm_once() {
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
-penguin_jit_ctx_t penguin_jit_create(void) {
+penguin_jit_ctx_t _emperor_penguin_jit_create(void) {
   init_llvm_once();
 
   auto J = LLJITBuilder().create();
@@ -84,7 +84,7 @@ penguin_jit_ctx_t penguin_jit_create(void) {
   return ctx.release();
 }
 
-int penguin_jit_add_module(penguin_jit_ctx_t ctx,
+int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx,
                            const char *name,
                            const char *ir_text) {
   if (!ctx) {
@@ -129,7 +129,7 @@ int penguin_jit_add_module(penguin_jit_ctx_t ctx,
   return 0;
 }
 
-void *penguin_jit_lookup(penguin_jit_ctx_t ctx, const char *name) {
+void *_emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const char *name) {
   if (!ctx) {
     last_error = "penguin_jit_lookup: null context";
     return nullptr;
@@ -147,11 +147,11 @@ void *penguin_jit_lookup(penguin_jit_ctx_t ctx, const char *name) {
       static_cast<uintptr_t>(S->getValue()));
 }
 
-void penguin_jit_destroy(penguin_jit_ctx_t ctx) {
+void _emperor_penguin_jit_destroy(penguin_jit_ctx_t ctx) {
   delete ctx;
 }
 
-const char *penguin_jit_get_error(void) {
+const char *_emperor_penguin_jit_get_error(void) {
   return last_error.c_str();
 }
 
@@ -159,31 +159,31 @@ const char *penguin_jit_get_error(void) {
 /* Trampolines                                                         */
 /* ------------------------------------------------------------------ */
 
-extern "C" int64_t penguin_jit_call_i64_0(void *fn) {
+extern "C" int64_t _emperor_penguin_jit_call_i64_0(void *fn) {
   return reinterpret_cast<int64_t (*)()>(fn)();
 }
 
-extern "C" int64_t penguin_jit_call_i64_i64(void *fn, int64_t a) {
+extern "C" int64_t _emperor_penguin_jit_call_i64_i64(void *fn, int64_t a) {
   return reinterpret_cast<int64_t (*)(int64_t)>(fn)(a);
 }
 
-extern "C" int64_t penguin_jit_call_i64_i64_i64(void *fn,
+extern "C" int64_t _emperor_penguin_jit_call_i64_i64_i64(void *fn,
                                                 int64_t a,
                                                 int64_t b) {
   return reinterpret_cast<int64_t (*)(int64_t, int64_t)>(fn)(a, b);
 }
 
-extern "C" int64_t penguin_jit_call_i64_i64_i64_i64(void *fn,
+extern "C" int64_t _emperor_penguin_jit_call_i64_i64_i64_i64(void *fn,
                                                     int64_t a,
                                                     int64_t b,
                                                     int64_t c) {
   return reinterpret_cast<int64_t (*)(int64_t, int64_t, int64_t)>(fn)(a, b, c);
 }
 
-extern "C" void *penguin_jit_call_ptr_ptr(void *fn, void *a) {
+extern "C" void *_emperor_penguin_jit_call_ptr_ptr(void *fn, void *a) {
   return reinterpret_cast<void *(*)(void *)>(fn)(a);
 }
 
-extern "C" void *penguin_jit_call_ptr_ptr_ptr(void *fn, void *a, void *b) {
+extern "C" void *_emperor_penguin_jit_call_ptr_ptr_ptr(void *fn, void *a, void *b) {
   return reinterpret_cast<void *(*)(void *, void *)>(fn)(a, b);
 }

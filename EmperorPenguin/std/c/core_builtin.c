@@ -564,12 +564,12 @@ typedef struct StringBuilder {
 } StringBuilder;
 
 /* Initializes the already-allocated object (`this`) in place. EmperorPenguin
- * calls this as `call void @_emperor_stringbuilder_new(ptr %this)` — it does
+ * calls this as `call void @_emperor_StringBuilder_new(ptr %this)` — it does
  * NOT use a return value (the PenguinLang `new` is `mut this`, void return) —
  * so we must fill in the fields of the passed-in object, not allocate a new
  * one (the old `void* ...(void)` factory form was ignored by the caller and
  * left `this` uninitialized). */
-void _emperor_stringbuilder_new(void* vsb) {
+void _emperor_StringBuilder_new(void* vsb) {
     if (!vsb) return;
     StringBuilder* sb = (StringBuilder*)vsb;
     sb->cap = 256;
@@ -578,7 +578,7 @@ void _emperor_stringbuilder_new(void* vsb) {
     if (sb->data) sb->data[0] = '\0';
 }
 
-void _emperor_stringbuilder_append(void* vsb, const char* s) {
+void _emperor_StringBuilder_append(void* vsb, const char* s) {
     if (!vsb || !s) return;
     StringBuilder* sb = (StringBuilder*)vsb;
     int slen = (int)strlen(s);
@@ -601,7 +601,7 @@ void _emperor_stringbuilder_append(void* vsb, const char* s) {
 // Copy a value-type (ICopy) class instance. The metadata stores the instance
 // size at offset 8 (after the name pointer). This is used when the LLVM backend
 // emits a call to __builtin_ICopy_copy for value-type copies.
-void* _emperor_icopy_copy(void* this_ptr) {
+void* _emperor_ICopy_copy(void* this_ptr) {
     void* meta = *(void**)this_ptr;
     int size = *(int*)(meta + 8);
     void* new_obj = _emperor_alloc_impl(size);
@@ -609,7 +609,7 @@ void* _emperor_icopy_copy(void* this_ptr) {
     return new_obj;
 }
 
-char* _emperor_stringbuilder_to_string(void* vsb) {
+char* _emperor_StringBuilder_to_string(void* vsb) {
     if (!vsb) {
         char* r = (char*)_emperor_gc_alloc(1, 1);
         if (r) r[0] = '\0';

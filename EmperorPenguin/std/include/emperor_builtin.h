@@ -70,8 +70,8 @@ char* _emperor_create_temp_dir(const char* prefix);
 void _emperor_boost_stack(void);
 
 /* StringBuilder */
-void _emperor_stringbuilder_new(void* sb);
-void _emperor_stringbuilder_append(void* sb, const char* s);
-char* _emperor_stringbuilder_to_string(void* sb);
+void _emperor_StringBuilder_new(void* sb);
+void _emperor_StringBuilder_append(void* sb, const char* s);
+char* _emperor_StringBuilder_to_string(void* sb);
 
 #endif
