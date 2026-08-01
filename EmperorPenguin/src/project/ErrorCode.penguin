@@ -67,6 +67,7 @@ enum ErrorCode {
     E_BUILTIN_MISSING;
     E_UNSUPPORTED;
     E_INTERNAL;
+    E_META;
 
     // Runtime errors
     E_RUNTIME_TYPE;
@@ -113,6 +114,7 @@ fun error_code_name(code: ErrorCode) -> string {
     if (code is ErrorCode.E_BUILTIN_MISSING) { return "E_BUILTIN_MISSING"; }
     if (code is ErrorCode.E_UNSUPPORTED) { return "E_UNSUPPORTED"; }
     if (code is ErrorCode.E_INTERNAL) { return "E_INTERNAL"; }
+    if (code is ErrorCode.E_META) { return "E_META"; }
     if (code is ErrorCode.E_RUNTIME_TYPE) { return "E_RUNTIME_TYPE"; }
     if (code is ErrorCode.E_RUNTIME_LOOKUP) { return "E_RUNTIME_LOOKUP"; }
     if (code is ErrorCode.E_RUNTIME_INVALID_OP) { return "E_RUNTIME_INVALID_OP"; }

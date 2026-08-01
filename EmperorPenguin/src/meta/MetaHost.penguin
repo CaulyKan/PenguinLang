@@ -67,6 +67,29 @@ fun penguin_meta_create_definition(code: string) -> i64 {
     return 0;
 }
 
+// R3c: parse a comma-separated argument list — e.g. the raw text of an
+// `unstructured_ast` trailing block (`{ a, b }` → "a , b") — into a
+// FunctionCallArguments AST node and register it as an ast token, so a #fun can
+// introspect the arguments as a real node (unit B real-reuse, like type/ast).
+// Returns 0 on parse failure (mirrors penguin_meta_create_expression).
+fun penguin_meta_parse_arguments(code: string) -> i64 {
+    let lex: Lexer = new Lexer(code, "<meta_parse_arguments>");
+    let toks: _utils.List<Token> = lex.tokenize();
+    let p: Parser = new Parser(toks);
+    let fca: mut FunctionCallArguments = new FunctionCallArguments();
+    while (!(p.stream.is_at_end())) {
+        let before: i64 = p.stream.pos;
+        let expr = p.parse_expression();
+        fca.items.push(expr);
+        if (p.stream.peek_type() is TokenType.Comma) { p.stream.advance(); }
+        if (p.stream.pos == before) { break; }
+    }
+    if (!p.has_errors()) {
+        return cast<i64>(active_meta.register_ast_expression(new Expression.function_call_arguments(fca)));
+    }
+    return 0;
+}
+
 // Phase 6 v2 Phase 5: return channels for `#fun -> type` and `#fun -> string`.
 // The caller-stub stores the #fun's returned BoundType / string pointer into
 // these globals (the stub returns i64 0 to the host's arity-0 trampoline); the
@@ -77,5 +100,59 @@ let active_string_result: mut string = "";
 
 fun penguin_meta_get_type_result() -> BoundType { return active_type_result; }
 fun penguin_meta_get_string_result() -> string { return active_string_result; }
+
+// R1: compile-time diagnostics channel. active_model is the owning SemanticModel
+// (set by seed_meta_engine, restored after unit-B clobber via owner_model back-ref).
+// #error(msg) / #warn(msg) / #info(msg) in a #fun body route here → report_error/
+// warning/info with a synthetic location. #error fails compilation; #warn/#info don't
+// (has_errors filters to Error-severity only).
+let active_model: mut SemanticModel = new SemanticModel();
+
+fun penguin_meta_set_active_model(m: mut SemanticModel) {
+    active_model = m;
+}
+
+fun penguin_meta_error(msg: string) {
+    active_model.report_error(new ErrorCode.E_META(), msg, new SourceLocation("<meta>", 0, 0));
+}
+
+fun penguin_meta_warn(msg: string) {
+    active_model.report_warning(new ErrorCode.E_META(), msg, new SourceLocation("<meta>", 0, 0));
+}
+
+fun penguin_meta_info(msg: string) {
+    active_model.report_info(new ErrorCode.E_META(), msg, new SourceLocation("<meta>", 0, 0));
+}
+
+// String-value bridge: a compile-time string literal passed as a #fun arg is
+// stored in the MetaEngine string registry; the caller-stub calls this to
+// materialize the live string pointer.
+fun penguin_meta_get_string_value(token: i64) -> string {
+    let s_opt: Option<string> = active_meta.get_string_value(cast<u64>(token));
+    if (s_opt.is_some()) {
+        return s_opt.some;
+    }
+    return "";
+}
+
+// R2: ast real-reuse bridge — resolve a compile-time ast token to the live
+// emperor.Expression node. Called by the caller-stub for `ast`-typed args
+// (so the #fun receives a real Expression it can introspect) and for the
+// ast-return conversion (stub: call @foo → token → get_ast_expression → store
+// to active_ast_result).
+fun penguin_meta_get_ast_expression(token: i64) -> Expression {
+    let opt: Option<Expression> = active_meta.get_ast_expression(cast<u64>(token));
+    if (opt.is_some()) {
+        return opt.some;
+    }
+    return new Expression.constant(new ConstantExpression("0"));
+}
+
+// R2: ast-return channel — the caller-stub converts the #fun's returned token
+// to an Expression via get_ast_expression, stores it here; the host reads it
+// for splice (try_splice_meta_fun_call ast-return).
+let active_ast_result: mut Expression = new Expression.constant(new ConstantExpression("0"));
+
+fun penguin_meta_get_ast_result() -> Expression { return active_ast_result; }
 
 }

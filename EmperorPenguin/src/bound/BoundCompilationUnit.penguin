@@ -3,13 +3,14 @@ namespace emperor {
 enum ErrorSeverity {
     Error;
     Warning;
+    Info;
 }
 
 class SemanticError {
     code: ErrorCode = new ErrorCode.E_INTERNAL();
     message: string = "";
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
-    severity: ErrorSeverity = new ErrorSeverity.Error();
+    severity: mut ErrorSeverity = new ErrorSeverity.Error();
 
     fun new(mut this, code: ErrorCode, message: string, location: SourceLocation) {
         this.code = code;
@@ -34,7 +35,14 @@ class BoundCompilationUnit {
     }
 
     fun has_errors(this) -> bool {
-        return cast<i64>(this.errors.size()) > 0;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.errors.size())) {
+            if (this.errors.at(cast<u64>(i)).some.severity is ErrorSeverity.Error) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 }
 

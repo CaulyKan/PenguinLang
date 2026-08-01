@@ -21,9 +21,15 @@ LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags 2>/dev/null)
 LLVM_LDFLAGS  := $(shell $(LLVM_CONFIG) --ldflags --libs core orcjit native 2>/dev/null)
 
 SRC = core_builtin.c gc.c penguinlang_interop.c
-OBJ = $(SRC:.c=.o)
 
 OUTPUT_DIR ?= .
+# Compile every object into $(OUTPUT_DIR), never the shared source directory:
+# each compiler invocation runs `make -C <src> OUTPUT_DIR=<its own temp dir>`
+# (EmperorPenguin/main.penguin), and parallel test compiles would otherwise race
+# on the shared *.o files in the source dir (clang++'s unlink-then-write window
+# makes a concurrent `ar` fail with "no such file"). With per-invocation OUTPUT_DIR
+# the objects are private to that compile, so concurrent makes cannot collide.
+OBJ = $(addprefix $(OUTPUT_DIR)/, $(SRC:.c=.o))
 LIB = $(OUTPUT_DIR)/libcore_builtin.a
 
 # Only build libpenguin_jit.a when LLVM is detected
@@ -36,14 +42,16 @@ all: $(LIB) $(JIT_LIB)
 $(LIB): $(OBJ)
 	$(AR) rcs $@ $^
 
-$(JIT_LIB): penguin_jit.cpp penguin_jit.h
-	$(CXX) $(CXXFLAGS) $(LLVM_CXXFLAGS) -c penguin_jit.cpp -o penguin_jit.o
-	$(AR) rcs $@ penguin_jit.o
+$(OUTPUT_DIR)/penguin_jit.o: penguin_jit.cpp penguin_jit.h
+	$(CXX) $(CXXFLAGS) $(LLVM_CXXFLAGS) -c penguin_jit.cpp -o $@
 
-%.o: %.c
+$(JIT_LIB): $(OUTPUT_DIR)/penguin_jit.o
+	$(AR) rcs $@ $^
+
+$(OUTPUT_DIR)/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) $(LIB) penguin_jit.o $(JIT_LIB)
+	rm -f $(OBJ) $(LIB) $(OUTPUT_DIR)/penguin_jit.o $(JIT_LIB)
 
 .PHONY: all clean

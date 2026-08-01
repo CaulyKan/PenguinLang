@@ -192,9 +192,34 @@ class MemberAccessExpression {
     }
 }
 
+// A function-call argument list, as a distinct AST node (not a bare
+// List<Expression>). `FunctionCallExpression.arguments` is one of these, and the
+// meta engine can parse a raw argument string (e.g. an `unstructured_ast`
+// trailing block `{ a, b }`) into one at meta-runtime so a #fun can introspect
+// the arguments as a real node (unit B real-reuse, like `type`/`ast`).
+class FunctionCallArguments {
+    items: mut _utils.List<Expression> = new _utils.List<Expression>();
+
+    fun size(this) -> u64 { return this.items.size(); }
+    fun at(this, i: u64) -> Option<Expression> { return this.items.at(i); }
+    fun push(mut this, e: Expression) { this.items.push(e); }
+
+    fun build_text(this) -> string {
+        _utils.trace_enter("Enter build_text");
+        let mut sb = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.items.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.items.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+}
+
 class FunctionCallExpression {
     callee: mut Option<Expression> = new Option<Expression>.none();
-    arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
+    arguments: mut FunctionCallArguments = new FunctionCallArguments();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
@@ -384,7 +409,10 @@ class VoidLiteralExpression {
 class MetaCallExpression {
     func_name: mut string = "";
     arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
-    trailing_block: mut Option<Expression> = new Option<Expression>.none();
+    // Raw-captured trailing block `{ ... }` (only supported when the #fun's last
+    // parameter is `unstructured_ast`): the text is the faithful source (e.g.
+    // `{ a, b }`), emitted verbatim and delivered to the #fun as a string.
+    trailing_block_raw: mut Option<string> = new Option<string>.none();
     trailing_definition: mut Option<Definition> = new Option<Definition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IExpression {
@@ -402,9 +430,10 @@ class MetaCallExpression {
                 i = i + 1;
             }
             sb.append(")");
-            if (self.trailing_block.is_some()) {
-                sb.append(" ");
-                sb.append(self.trailing_block.some.build_text());
+            if (self.trailing_block_raw.is_some()) {
+                sb.append(" { ");
+                sb.append(self.trailing_block_raw.some);
+                sb.append(" }");
             }
             return sb.to_string();
         }
@@ -421,6 +450,7 @@ enum Expression {
     unary: UnaryExpression;
     member_access: MemberAccessExpression;
     function_call: FunctionCallExpression;
+    function_call_arguments: FunctionCallArguments;
     if_expr: IfExpression;
     while_expr: WhileExpression;
     code_block: CodeBlockExpression;
@@ -443,6 +473,7 @@ enum Expression {
         if (this is Expression.unary) { return this.unary.build_text(); }
         if (this is Expression.member_access) { return this.member_access.build_text(); }
         if (this is Expression.function_call) { return this.function_call.build_text(); }
+        if (this is Expression.function_call_arguments) { return this.function_call_arguments.build_text(); }
         if (this is Expression.if_expr) { return this.if_expr.build_text(); }
         if (this is Expression.while_expr) { return this.while_expr.build_text(); }
         if (this is Expression.code_block) { return this.code_block.build_text(); }

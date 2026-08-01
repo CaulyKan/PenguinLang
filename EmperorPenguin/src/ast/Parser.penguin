@@ -99,8 +99,7 @@ namespace emperor {
                 }
                 this.stream.expect(new TokenType.RParen());
                 if (this.stream.peek_type() is TokenType.LBrace) {
-                    let block = this.parse_codeBlockExpression();
-                    mc.trailing_block = new Option<Expression>.some(block);
+                    this.capture_meta_trailing_block(mc);
                 }
                 return new Expression.meta_call(mc);
             } else {
@@ -126,6 +125,39 @@ namespace emperor {
                 return new Expression.identifier(new IdentifierExpression(tok.text));
             }
             return this.parse_expression();
+        }
+
+        // Meta-call trailing block `{ ... }`: capture it two ways. (1) Raw inner
+        // text (brace-match `{ ... }`, join inner token texts with spaces) for
+        // `unstructured_ast` params — no syntax assumptions. (2) When the block
+        // is standard PenguinLang syntax, a parsed code block for `ast` params.
+        // Sets both fields on mc. A top-level comma (e.g. `{ a, b }`) is not a
+        // valid statement separator, so such blocks skip the standard parse
+        // entirely — the raw text is authoritative, and a failed standard parse
+        // would poison the token stream (expect() does not roll back and error
+        // recovery can overrun the block / EOF).
+        fun capture_meta_trailing_block(this, mc: mut MetaCallExpression) {
+            // Brace-match `{ ... }`, join the inner token texts with spaces into a
+            // raw string. Trailing blocks are ONLY for `unstructured_ast` meta
+            // params, which receive this text verbatim (e.g. `{ a, b }` → "a , b")
+            // and parse it themselves at meta-runtime — no syntax assumptions here,
+            // and never a standard code-block parse.
+            this.stream.expect(new TokenType.LBrace());
+            let depth: mut i64 = 1;
+            let raw_sb: mut StringBuilder = new StringBuilder();
+            let raw_first: mut bool = true;
+            while (depth > 0 && !(this.stream.is_at_end())) {
+                let t: Token = this.stream.peek();
+                if (t.token_type is TokenType.LBrace) { depth = depth + 1; }
+                if (t.token_type is TokenType.RBrace) { depth = depth - 1; }
+                if (depth > 0) {
+                    if (!raw_first) { raw_sb.append(" "); }
+                    raw_sb.append(t.text);
+                    raw_first = false;
+                }
+                this.stream.advance();
+            }
+            mc.trailing_block_raw = new Option<string>.some(raw_sb.to_string());
         }
 
         // ifExpression: 'if' '(' expression ')' codeBlockExpression ('else' (codeBlockExpression | ifExpression))?;
@@ -468,17 +500,17 @@ namespace emperor {
             results.push(new Expression.member_access(ma_expr));
                 } else if (next.token_type is TokenType.LParen) {
             this.stream.expect(new TokenType.LParen());
-            let args = new _utils.List<Expression>();
+            let fca: mut FunctionCallArguments = new FunctionCallArguments();
             if (!(this.stream.peek_type() is TokenType.RParen)) {
-                args.push(this.parse_expression());
+                fca.items.push(this.parse_expression());
                 while (this.stream.match(new TokenType.Comma())) {
-                    args.push(this.parse_expression());
+                    fca.items.push(this.parse_expression());
                 }
             }
             this.stream.expect(new TokenType.RParen());
             let fc_expr: FunctionCallExpression = new FunctionCallExpression();
             fc_expr.callee = new Option<Expression>.some(results.at(cast<u64>(results.size() - 1)).some);
-            fc_expr.arguments = args;
+            fc_expr.arguments = fca;
             results.push(new Expression.function_call(fc_expr));
                 } else {
                     break;
@@ -869,8 +901,7 @@ namespace emperor {
                 }
                 this.stream.expect(new TokenType.RParen());
                 if (this.stream.peek_type() is TokenType.LBrace) {
-                    let block = this.parse_codeBlockExpression();
-                    mc.trailing_block = new Option<Expression>.some(block);
+                    this.capture_meta_trailing_block(mc);
                 }
                 node.meta_call = new Option<MetaCallExpression>.some(mc);
                 return node;
@@ -2103,8 +2134,7 @@ namespace emperor {
             }
             this.stream.expect(new TokenType.RParen());
             if (this.stream.peek_type() is TokenType.LBrace) {
-                let block = this.parse_codeBlockExpression();
-                mc.trailing_block = new Option<Expression>.some(block);
+                this.capture_meta_trailing_block(mc);
             }
             this.stream.expect(new TokenType.Semicolon());
             node.call = new Option<Expression>.some(new Expression.meta_call(mc));

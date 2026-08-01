@@ -30,9 +30,24 @@ class MetaEngine {
     // Phase 6 v2: collected `#class` source (build_text of each), fed into unit B
     // as a <meta_classes> input so #funs can use these meta-only data structures.
     meta_class_source: mut string = "";
+    // R1: back-reference to the owning SemanticModel, set by seed_meta_engine.
+    // MetaHost diagnostic responders (penguin_meta_error/warn/info) reach the
+    // active SemanticModel through active_meta.owner_model so a #fun can emit
+    // compile-time diagnostics. Restored after the unit-B nested compile clobbers it.
+    owner_model: Option<SemanticModel> = new Option<SemanticModel>.none();
+    // R3b: AST definitions (from unit.definitions), set by seed_meta_engine. Used as
+    // a fallback in resolve_type_by_name when the type isn't in global_scope yet
+    // (because def-splice runs in the early pre-rewrite, before pass_build_scopes).
+    // Builds a BoundType from the AST ClassDefinition so t.fields() works for
+    // reflection-based code generation (e.g. #derive_clone).
+    ast_definitions: Option<_utils.List<Definition>> = new Option<_utils.List<Definition>>.none();
     type_token_keys: mut _utils.List<string> = new _utils.List<string>();
     type_token_values: mut _utils.List<u64> = new _utils.List<u64>();
     next_type_token: mut u64 = 0;
+    // String-value registry: compile-time string literals passed as #fun args are
+    // stored here under a 1-based token; the caller-stub materializes each via
+    // penguin_meta_get_string_value(token) -> ptr (like type tokens via get_type).
+    string_token_values: mut _utils.List<string> = new _utils.List<string>();
     // Phase 5c: AST registry. #create_expression / #create_definition parse a
     // literal code fragment into a structured AST node and store it here under a
     // 1-based token (shared counter, so tokens are globally unique). A #fun
@@ -83,6 +98,12 @@ class MetaEngine {
             + "    extern fun penguin_meta_get_type(token: i64) -> BoundType;\n"
             + "    extern fun penguin_meta_create_expression(code: string) -> i64;\n"
             + "    extern fun penguin_meta_create_definition(code: string) -> i64;\n"
+            + "    extern fun penguin_meta_parse_arguments(code: string) -> i64;\n"
+            + "    extern fun penguin_meta_error(msg: string);\n"
+            + "    extern fun penguin_meta_warn(msg: string);\n"
+            + "    extern fun penguin_meta_info(msg: string);\n"
+            + "    extern fun penguin_meta_get_string_value(token: i64) -> string;\n"
+            + "    extern fun penguin_meta_get_ast_expression(token: i64) -> emperor.Expression;\n"
             + "}\n";
     }
 
@@ -153,6 +174,8 @@ class MetaEngine {
                     ts.qualified_parts.push("emperor");
                 } else if (mp.kind == "ast") {
                     ts.name = "i64";
+                } else if (mp.kind == "unstructured_ast") {
+                    ts.name = "string";
                 } else {
                     ts.name = mp.kind;
                 }
@@ -274,6 +297,12 @@ class MetaEngine {
         // MetaEngine so the upcoming JIT invoke resolves tokens against the right
         // registry (the one that assigned the call-site type tokens).
         active_meta = this;
+        // R1: also restore active_model (the unit-B nested compile's seed_meta_engine
+        // clobbered it with unit B's SemanticModel). owner_model is the back-ref to
+        // unit A's model, set by seed_meta_engine.
+        if (this.owner_model.is_some()) {
+            penguin_meta_set_active_model(this.owner_model.some);
+        }
         return true;
     }
 
@@ -446,18 +475,26 @@ class MetaEngine {
         let prelude: mut string = "";
         let call_args: mut string = "";
         let needs_get_type: mut bool = false;
+        let needs_get_string: mut bool = false;
         let ai2: mut i64 = 0;
         while (ai2 < cast<i64>(args.size())) {
             if (ai2 > 0) {
                 sig_params = sig_params + ", ";
                 call_args = call_args + ", ";
             }
-            let is_type: bool = (ai2 < n_params) && (bmf.parameters.at(cast<u64>(ai2)).some.kind == "type");
+            let param_kind: mut string = "";
+            if (ai2 < n_params) { param_kind = bmf.parameters.at(cast<u64>(ai2)).some.kind; }
             let arg_val: string = cast<string>(args.at(cast<u64>(ai2)).some);
-            if (is_type) {
+            if (param_kind == "type") {
                 needs_get_type = true;
                 let bt_reg: string = "%bt" + cast<string>(ai2);
                 prelude = prelude + "  " + bt_reg + " = call ptr @emperor_penguin_meta_get_type(i64 " + arg_val + ") \n";
+                sig_params = sig_params + "ptr";
+                call_args = call_args + "ptr " + bt_reg;
+            } else if (param_kind == "string" || param_kind == "unstructured_ast") {
+                needs_get_string = true;
+                let bt_reg: string = "%bt" + cast<string>(ai2);
+                prelude = prelude + "  " + bt_reg + " = call ptr @emperor_penguin_meta_get_string_value(i64 " + arg_val + ") \n";
                 sig_params = sig_params + "ptr";
                 call_args = call_args + "ptr " + bt_reg;
             } else {
@@ -470,10 +507,13 @@ class MetaEngine {
         if (needs_get_type) {
             get_type_decl = "declare ptr @emperor_penguin_meta_get_type(i64) \n";
         }
+        if (needs_get_string) {
+            get_type_decl = get_type_decl + "declare ptr @emperor_penguin_meta_get_string_value(i64) \n";
+        }
         // Phase 5: dispatch on the #fun's return kind. type/string return a real
         // reference (ptr) — the stub stores it into the matching host global and
-        // returns i64 0 (the host reads the global, since it can't recover a non-i64
-        // reference from the arity-0 trampoline). i64/ast/bool return the i64 directly.
+        // returns i64 0. i64/ast/bool return the i64 directly (ast token resolved
+        // by the host via get_ast_expression).
         let ret_kind: mut string = "";
         if (bmf.return_type.is_some()) { ret_kind = bmf.return_type.some.name; }
         let foo_ret: mut string = "i64";
@@ -646,6 +686,51 @@ class MetaEngine {
                 }
             }
         }
+        // R3b: AST fallback — if the type isn't in global_scope yet (def-splice
+        // runs in the early pre-rewrite, before pass_build_scopes binds it),
+        // scan the AST definitions for a matching class. Build a BoundType from
+        // the AST ClassDefinition so t.fields() works for reflection-based
+        // code generation (e.g. #derive_clone at definition position).
+        if (this.ast_definitions.is_some()) {
+            let found: Option<BoundType> = this.resolve_type_from_ast(this.ast_definitions.some, name);
+            if (found.is_some()) {
+                return found;
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    // R3b: scan AST definitions for a class/enum/interface by name → build a
+    // partial BoundType (fields from AST members). Used by resolve_type_by_name
+    // when the type isn't bound yet. Recurses into namespaces.
+    fun resolve_type_from_ast(this, defs: _utils.List<Definition>, name: string) -> Option<BoundType> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: Definition = defs.at(cast<u64>(i)).some;
+            if (d is Definition.class_def) {
+                if (d.class_def.name == name) {
+                    let bt: mut BoundType = new BoundType();
+                    bt.kind = new TypeKind.ClassKind();
+                    let bcd: mut BoundClassDefinition = new BoundClassDefinition(name, name);
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(d.class_def.members.size())) {
+                        let m: Definition = d.class_def.members.at(cast<u64>(mi)).some;
+                        if (m is Definition.class_field) {
+                            let field_name: string = m.class_field.name;
+                            let bcf: BoundClassFieldDefinition = new BoundClassFieldDefinition(field_name);
+                            bcd.fields.push(new BoundDefinition.class_field(bcf));
+                        }
+                        mi = mi + 1;
+                    }
+                    bt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(bcd));
+                    return new Option<BoundType>.some(bt);
+                }
+            } else if (d is Definition.namespace_def) {
+                let inner: Option<BoundType> = this.resolve_type_from_ast(d.namespace_def.children, name);
+                if (inner.is_some()) { return inner; }
+            }
+            i = i + 1;
+        }
         return new Option<BoundType>.none();
     }
 
@@ -662,6 +747,23 @@ class MetaEngine {
             i = i + 1;
         }
         return new Option<BoundType>.none();
+    }
+
+    // String-value registry: a compile-time string literal passed as a #fun arg
+    // is stored here; the caller-stub calls penguin_meta_get_string_value(token)
+    // to materialize the live string pointer.
+    fun register_string_value(mut this, val: string) -> u64 {
+        this.string_token_values.push(val);
+        return cast<u64>(this.string_token_values.size());
+    }
+
+    fun get_string_value(this, token: u64) -> Option<string> {
+        if (token >= 1) {
+            if (token <= cast<u64>(this.string_token_values.size())) {
+                return new Option<string>.some(this.string_token_values.at(token - 1).some);
+            }
+        }
+        return new Option<string>.none();
     }
 
     // -----------------------------------------------------------------
@@ -942,7 +1044,36 @@ class MetaEngine {
                     } else {
                         if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_definition: parse failed for '" + code + "'; passthrough"); }
                     }
+                } else {
+                    // R3a: Computed string argument — route to runtime host-callback
+                    // (mirror #create_expression computed path).
+                    let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(arg);
+                    let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
+                    let ma: mut MemberAccessExpression = new MemberAccessExpression();
+                    ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
+                    ma.member_name = "penguin_meta_create_definition";
+                    let fc: mut FunctionCallExpression = new FunctionCallExpression();
+                    fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
+                    fc.arguments.push(rewritten_arg);
+                    return new Expression.function_call(fc);
                 }
+            }
+            return new Expression.meta_call(mc);
+        }
+        // R1: #error(msg) / #warn(msg) / #info(msg) — rewrite to a host-callback
+        // call that routes to the active SemanticModel's report_error/warning/info.
+        if (mc.func_name == "error" || mc.func_name == "warn" || mc.func_name == "info") {
+            if (cast<i64>(mc.arguments.size()) >= 1) {
+                let host_name: string = "penguin_meta_" + mc.func_name;
+                let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(mc.arguments.at(cast<u64>(0)).some);
+                let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
+                let ma: mut MemberAccessExpression = new MemberAccessExpression();
+                ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
+                ma.member_name = host_name;
+                let fc: mut FunctionCallExpression = new FunctionCallExpression();
+                fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
+                fc.arguments.push(rewritten_arg);
+                return new Expression.function_call(fc);
             }
             return new Expression.meta_call(mc);
         }
