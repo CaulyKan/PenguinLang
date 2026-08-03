@@ -4470,7 +4470,15 @@ class SemanticModel {
         }
         if (expr is Expression.parenthesized) {
             if (expr.parenthesized.inner.is_some()) {
-                return this.bind_expression(expr.parenthesized.inner.some, scope);
+                if (scope.is_region) {
+                    // Already inside a try-bind region: parens are transparent.
+                    return this.bind_expression(expr.parenthesized.inner.some, scope);
+                }
+                // A parenthesized expression is a try-bind region boundary:
+                // pattern variables bound inside die with the parens.
+                let paren_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<paren>", scope.full_name + ".<paren>", new Option<BoundScope>.some(scope));
+                paren_scope.is_region = true;
+                return this.bind_expression(expr.parenthesized.inner.some, paren_scope);
             }
         }
         if (expr is Expression.identifier) {
@@ -4505,6 +4513,12 @@ class SemanticModel {
         }
         if (expr is Expression.meta_call) {
             return this.bind_meta_call(expr.meta_call, scope);
+        }
+        if (expr is Expression.try_bind) {
+            // P2: general try-bind expression — bind the RHS, register the
+            // pattern variable into the current region scope, return a bool
+            // expression that writes the payload when the check succeeds.
+            return this.bind_try_bind(expr.try_bind, scope);
         }
         return new Option<BoundExpression>.none();
     }
@@ -4587,8 +4601,93 @@ class SemanticModel {
         return new BoundType();
     }
 
+    fun expr_contains_try_bind(mut this, expr: Expression) -> bool {
+        if (expr is Expression.try_bind) { return true; }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                return this.expr_contains_try_bind(expr.parenthesized.inner.some);
+            }
+        }
+        if (expr is Expression.binary) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(expr.binary.operands.size())) {
+                if (this.expr_contains_try_bind(expr.binary.operands.at(cast<u64>(i)).some)) { return true; }
+                i = i + 1;
+            }
+        }
+        return false;
+    }
+
+    // P2: bind a logical chain (&& or ||) that contains try-binds with region
+    // scoping. `&&` operands share one region (left-to-right: an earlier
+    // try-bind's variable is visible to later operands, and — inside an
+    // if/while condition region — promotes into the then-branch). `||` operands
+    // are isolated: a variable bound in one operand is invisible to the others.
+    fun bind_logical_chain(mut this, expr: BinaryExpression, scope: mut BoundScope, is_and: bool) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_logical_chain");
+        let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+        let j: mut i64 = 0;
+        while (j < cast<i64>(expr.operators.size())) {
+            operators.push(expr.operators.at(cast<u64>(j)).some);
+            j = j + 1;
+        }
+        let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        if (is_and) {
+            if (scope.is_condition_region) {
+                // Whole if/while condition is the region: bind operands directly
+                // so bindings promote into the then-branch.
+                let i: mut i64 = 0;
+                while (i < cast<i64>(expr.operands.size())) {
+                    let bound_op: Option<BoundExpression> = this.bind_expression(expr.operands.at(cast<u64>(i)).some, scope);
+                    if (bound_op.is_some()) { operands.push(bound_op.some); }
+                    i = i + 1;
+                }
+            } else {
+                let chain_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<logical-and>", scope.full_name + ".<logical-and>", new Option<BoundScope>.some(scope));
+                chain_scope.is_region = true;
+                let i: mut i64 = 0;
+                while (i < cast<i64>(expr.operands.size())) {
+                    let bound_op: Option<BoundExpression> = this.bind_expression(expr.operands.at(cast<u64>(i)).some, chain_scope);
+                    if (bound_op.is_some()) { operands.push(bound_op.some); }
+                    i = i + 1;
+                }
+            }
+        } else {
+            let chain_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<logical-or>", scope.full_name + ".<logical-or>", new Option<BoundScope>.some(scope));
+            chain_scope.is_region = true;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(expr.operands.size())) {
+                let op_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<logical-or-operand>", scope.full_name + ".<logical-or-operand>", new Option<BoundScope>.some(chain_scope));
+                op_scope.is_region = true;
+                let bound_op: Option<BoundExpression> = this.bind_expression(expr.operands.at(cast<u64>(i)).some, op_scope);
+                if (bound_op.is_some()) { operands.push(bound_op.some); }
+                i = i + 1;
+            }
+        }
+        let result: mut BoundBinaryExpression = new BoundBinaryExpression(this.type_registry.bool_type, operators, operands);
+        return new Option<BoundExpression>.some(new BoundExpression.binary(result));
+    }
+
     fun bind_binary(mut this, expr: BinaryExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_binary");
+        // P2: a logical chain containing try-binds needs region scoping.
+        if (cast<i64>(expr.operators.size()) > 0 && this.expr_contains_try_bind(new Expression.binary(expr))) {
+            let all_and: mut bool = true;
+            let all_or: mut bool = true;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(expr.operators.size())) {
+                let op: BinaryOperator = expr.operators.at(cast<u64>(oi)).some;
+                if (!(op is BinaryOperator.LogicalAnd)) { all_and = false; }
+                if (!(op is BinaryOperator.LogicalOr)) { all_or = false; }
+                oi = oi + 1;
+            }
+            if (all_and) { return this.bind_logical_chain(expr, scope, true); }
+            if (all_or) { return this.bind_logical_chain(expr, scope, false); }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(),
+                "try-bind in a mixed && / || chain is not supported yet",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
+        }
         let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
         let i: mut i64 = 0;
         while (i < cast<i64>(expr.operands.size())) {
@@ -4849,7 +4948,16 @@ class SemanticModel {
                                 let sym: BoundSymbol = found.some;
                                 let bt: mut BoundType = this.resolve_symbol_type(sym);
                                 if (sym is BoundSymbol.enum_member) {
+                                    // Prefer the enum definition's member_type, which
+                                    // resolve_enum_types updates (pass 2). The scope
+                                    // symbol's member_type can be stale (void) on the
+                                    // BabyPenguin VM (pass1) because the value-copy
+                                    // there does not propagate the mutation.
                                     bt = sym.enum_member.member_type;
+                                    let midx: i64 = sym.enum_member.enum_value;
+                                    if (midx >= 0 && midx < cast<i64>(e.members.size())) {
+                                        bt = e.members.at(cast<u64>(midx)).some.member_type;
+                                    }
                                     bt = this.substitute_generic_args(bt, base_type, new BoundDefinition.enum_def(e));
                                 }
                                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
@@ -5818,8 +5926,17 @@ class SemanticModel {
 
     fun bind_if_expr(mut this, expr: IfExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_if_expr");
-        let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, scope);
-        let then_block: Option<BoundExpression> = this.bind_optional_expr(expr.then_block, scope);
+        if (expr.condition.is_some() && expr.condition.some is Expression.try_bind) {
+            return this.bind_try_bind_if_expr(expr, scope);
+        }
+        // P2: bind the condition in a fresh condition-region so try-bind pattern
+        // variables from `&&` chains are visible in the then-branch (definitely
+        // assigned when the condition is true) but not in else or after.
+        let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+        cond_region.is_region = true;
+        cond_region.is_condition_region = true;
+        let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, cond_region);
+        let then_block: Option<BoundExpression> = this.bind_optional_expr(expr.then_block, cond_region);
         let else_block: Option<BoundExpression> = this.bind_optional_expr(expr.else_block, scope);
         if (then_block.is_some()) {
             let bt: BoundType = then_block.some.get_bound_type();
@@ -5832,9 +5949,84 @@ class SemanticModel {
 
     fun bind_while_expr(mut this, expr: WhileExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_while_expr");
-        let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, scope);
-        let body: Option<BoundExpression> = this.bind_optional_expr(expr.body, scope);
+        if (expr.condition.is_some() && expr.condition.some is Expression.try_bind) {
+            return this.bind_try_bind_while_expr(expr, scope);
+        }
+        // P2: same condition-region promotion as bind_if_expr.
+        let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+        cond_region.is_region = true;
+        cond_region.is_condition_region = true;
+        let condition: Option<BoundExpression> = this.bind_optional_expr(expr.condition, cond_region);
+        let body: Option<BoundExpression> = this.bind_optional_expr(expr.body, cond_region);
         let result: mut BoundWhileExpression = new BoundWhileExpression(this.type_registry.void_type, condition, body);
+        return new Option<BoundExpression>.some(new BoundExpression.while_expr(result));
+    }
+
+    // Prepend a `let a = EXT` statement into a bound code block (or wrap a
+    // non-block expression) so the try-bind payload write executes before the
+    // then/body statements. The variable is registered in `new_scope`.
+    fun prepend_try_bind_let(mut this, block: Option<BoundExpression>, let_stmt: BoundLetDeclarationStatement, new_scope: BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter prepend_try_bind_let");
+        if (block.is_none()) { return new Option<BoundExpression>.none(); }
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        stmts.push(new BoundStatement.let_decl(let_stmt));
+        if (block.some is BoundExpression.code_block) {
+            let cb: BoundCodeBlockExpression = block.some.code_block;
+            let si: mut i64 = 0;
+            while (si < cast<i64>(cb.statements.size())) {
+                stmts.push(cb.statements.at(cast<u64>(si)).some);
+                si = si + 1;
+            }
+            let new_cb: mut BoundCodeBlockExpression = new BoundCodeBlockExpression(cb.bound_type, stmts, cb.trailing_expr, new Option<BoundScope>.some(new_scope));
+            return new Option<BoundExpression>.some(new BoundExpression.code_block(new_cb));
+        }
+        let new_cb2: mut BoundCodeBlockExpression = new BoundCodeBlockExpression(block.some.get_bound_type(), stmts, block, new Option<BoundScope>.some(new_scope));
+        return new Option<BoundExpression>.some(new BoundExpression.code_block(new_cb2));
+    }
+
+    // Expression-level `if (let a [: T] := b) then else` (code blocks parse `if`
+    // as an expression) → `if (CHK) { let a = EXT; then } else`.
+    fun bind_try_bind_if_expr(mut this, expr: IfExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_try_bind_if_expr");
+        let tb: TryBindExpression = expr.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = this.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundExpression>.none(); }
+        let analysis: Option<TryBindAnalysis> = this.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundExpression>.none(); }
+        let then_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        then_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_then: Option<BoundExpression> = this.bind_optional_expr(expr.then_block, then_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(then_scope));
+        let_stmt.location = tb.location;
+        let then_expr: Option<BoundExpression> = this.prepend_try_bind_let(bound_then, let_stmt, then_scope);
+        let else_block: Option<BoundExpression> = this.bind_optional_expr(expr.else_block, scope);
+        if (then_expr.is_some()) {
+            let r1: mut BoundIfExpression = new BoundIfExpression(then_expr.some.get_bound_type(), analysis.some.check, then_expr, else_block);
+            return new Option<BoundExpression>.some(new BoundExpression.if_expr(r1));
+        }
+        let r2: mut BoundIfExpression = new BoundIfExpression(this.type_registry.void_type, analysis.some.check, then_expr, else_block);
+        return new Option<BoundExpression>.some(new BoundExpression.if_expr(r2));
+    }
+
+    // Expression-level `while (let a [: T] := b) body` → `while (CHK) { let a = EXT; body }`.
+    fun bind_try_bind_while_expr(mut this, expr: WhileExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_try_bind_while_expr");
+        let tb: TryBindExpression = expr.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = this.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundExpression>.none(); }
+        let analysis: Option<TryBindAnalysis> = this.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundExpression>.none(); }
+        let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        body_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_body: Option<BoundExpression> = this.bind_optional_expr(expr.body, body_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(body_scope));
+        let_stmt.location = tb.location;
+        let body_expr: Option<BoundExpression> = this.prepend_try_bind_let(bound_body, let_stmt, body_scope);
+        let result: mut BoundWhileExpression = new BoundWhileExpression(this.type_registry.void_type, analysis.some.check, body_expr);
         return new Option<BoundExpression>.some(new BoundExpression.while_expr(result));
     }
 
@@ -5852,6 +6044,280 @@ class SemanticModel {
             return this.bind_statement(opt.some, scope);
         }
         return new Option<BoundStatement>.none();
+    }
+
+    // Analyze a `let a [: T] := b` try-bind. Returns the bound variable, the
+    // boolean check expression, and the guarded extract expression. v1 supports
+    // enum variant member access (`let x := opt.some`); other shapes report an
+    // error. The variable is NOT registered here — the caller registers it into
+    // the true-branch scope so it is visible only where the check holds.
+    fun analyze_try_bind(mut this, tb: TryBindExpression, bound_rhs: BoundExpression, scope: mut BoundScope) -> Option<TryBindAnalysis> {
+        _utils.trace_enter("Enter analyze_try_bind");
+        // Enum variant member access: `let x := opt.some`
+        if (bound_rhs is BoundExpression.member_access) {
+            let ma: BoundMemberAccessExpression = bound_rhs.member_access;
+            if (ma.member_symbol.is_some() && ma.base_expr.is_some()) {
+                let sym: BoundSymbol = ma.member_symbol.some;
+                if (sym is BoundSymbol.enum_member) {
+                    let enum_type: BoundType = ma.base_expr.some.get_bound_type();
+                    let payload_type: mut BoundType = ma.bound_type;
+                    // Tag-only variants store the enum type itself as payload
+                    // (SemanticModel resolve_enum_types); a payload equal to the
+                    // enum type has nothing to bind. (Recursive enum payloads are
+                    // a documented limitation of this discriminator.)
+                    if (payload_type.is_same_type(enum_type)) {
+                        this.report_error(new ErrorCode.E_UNSUPPORTED(),
+                            "enum variant '" + ma.member_name + "' has no payload to bind",
+                            tb.location);
+                        return new Option<TryBindAnalysis>.none();
+                    }
+                    let bind_type: mut BoundType = payload_type;
+                    if (tb.type_spec.is_some()) {
+                        let ann_type: mut BoundType = this.resolve_type_specifier(tb.type_spec.some, scope);
+                        if (!ann_type.is_same_type(payload_type)) {
+                            this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                                "try-bind type '" + ann_type.display_name() + "' does not match payload type '" + payload_type.display_name() + "'",
+                                tb.location);
+                            return new Option<TryBindAnalysis>.none();
+                        }
+                        bind_type = ann_type;
+                    }
+                    let var_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                    var_sym.name = tb.variable_name;
+                    var_sym.full_name = scope.full_name + "." + tb.variable_name;
+                    var_sym.is_mutable = false;
+                    var_sym.bound_type = bind_type;
+                    var_sym.location = tb.location;
+                    // check = `base is EnumType.variant`, RHS is a BoundEnumVariant
+                    // reference carrying the variant index (lowered to ISENUM).
+                    let ev: mut BoundEnumVariantExpression = new BoundEnumVariantExpression(
+                        enum_type, enum_type, ma.member_name, sym.enum_member.enum_value,
+                        new Option<BoundEnumMemberSymbol>.some(sym.enum_member),
+                        new Option<BoundExpression>.none());
+                    let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+                    operands.push(ma.base_expr.some);
+                    operands.push(new BoundExpression.enum_variant(ev));
+                    let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+                    operators.push(new BinaryOperator.Is());
+                    let check: mut BoundBinaryExpression = new BoundBinaryExpression(this.type_registry.bool_type, operators, operands);
+                    let analysis: mut TryBindAnalysis = new TryBindAnalysis();
+                    analysis.variable_symbol = new Option<BoundVariableSymbol>.some(var_sym);
+                    analysis.check = new Option<BoundExpression>.some(new BoundExpression.binary(check));
+                    analysis.extract = new Option<BoundExpression>.some(bound_rhs);
+                    analysis.bound_type = bind_type;
+                    return new Option<TryBindAnalysis>.some(analysis);
+                }
+            }
+        }
+        // Type-cast form: `let a : TO := from` — whether `cast<TO>(from)` is valid.
+        // Compile-time foldable when the static types decide it; otherwise a
+        // runtime ISINSTANCE check.
+        if (tb.type_spec.is_some()) {
+            let ann_type: mut BoundType = this.resolve_type_specifier(tb.type_spec.some, scope);
+            let rhs_type: BoundType = bound_rhs.get_bound_type();
+            // Same type: always a valid (identity) cast.
+            if (rhs_type.is_same_type(ann_type)) {
+                return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 1);
+            }
+            // Primitive (incl. string) conversion: compile-time fold.
+            if (ann_type.kind is TypeKind.PrimitiveKind && rhs_type.kind is TypeKind.PrimitiveKind) {
+                let fold: bool = this.type_registry.can_widen_primitive(rhs_type.primitive, ann_type.primitive);
+                if (fold) { return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 1); }
+                return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 0);
+            }
+            // Interface target: `let a : IFoo := bar`
+            if (ann_type.kind is TypeKind.InterfaceKind) {
+                if (rhs_type.kind is TypeKind.PrimitiveKind) {
+                    this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                        "try-bind: cannot cast primitive '" + rhs_type.display_name() + "' to interface '" + ann_type.display_name() + "'",
+                        tb.location);
+                    return new Option<TryBindAnalysis>.none();
+                }
+                if (this.is_concrete_type(rhs_type)) {
+                    if (this.type_registry.can_implicitly_cast(rhs_type, ann_type)) {
+                        return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 1);
+                    }
+                    return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 0);
+                }
+                // interface / generic rhs → runtime ISINSTANCE
+                return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, -1);
+            }
+            // Class target: `let a : Foo := bar` (no class inheritance, exact check)
+            if (ann_type.kind is TypeKind.ClassKind) {
+                if (rhs_type.kind is TypeKind.ClassKind) {
+                    if (this.is_concrete_type(rhs_type)) {
+                        return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, 0);
+                    }
+                    return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, -1);
+                }
+                if (rhs_type.kind is TypeKind.InterfaceKind) {
+                    return this.make_cast_try_bind_analysis(tb, bound_rhs, ann_type, scope, -1);
+                }
+                this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                    "try-bind: cannot cast '" + rhs_type.display_name() + "' to class '" + ann_type.display_name() + "'",
+                    tb.location);
+                return new Option<TryBindAnalysis>.none();
+            }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(),
+                "try-bind target '" + ann_type.display_name() + "' is not a supported matchable",
+                tb.location);
+            return new Option<TryBindAnalysis>.none();
+        }
+        this.report_error(new ErrorCode.E_UNSUPPORTED(),
+            "try-bind RHS is not a supported matchable (add a ': TO' type annotation for cast checks)",
+            tb.location);
+        return new Option<TryBindAnalysis>.none();
+    }
+
+    // A "concrete" class/enum has an AST source; a generic-parameter placeholder
+    // does not. When uncertain, callers fall back to a runtime ISINSTANCE check.
+    fun is_concrete_type(this, bt: BoundType) -> bool {
+        if (bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                return td.class_def.scope.is_some() && !td.class_def.is_generic_template;
+            }
+            if (td is BoundDefinition.enum_def) { return td.enum_def.scope.is_some(); }
+        }
+        return false;
+    }
+
+    // Build the cast expression for `cast<TO>(from)`, mirroring bind_cast's
+    // boxing/unboxing decisions (value type → interface needs boxing).
+    fun build_cast_bound(mut this, inner: BoundExpression, target_type: BoundType) -> BoundCastExpression {
+        let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, new Option<BoundExpression>.some(inner), false);
+        let inner_type: BoundType = inner.get_bound_type();
+        if (target_type.kind is TypeKind.InterfaceKind) {
+            if (inner_type.is_value_type()) {
+                result.needs_boxing = true;
+                result.source_type_name = this.get_concrete_type_name(inner_type);
+            }
+        }
+        if (inner_type.kind is TypeKind.InterfaceKind) {
+            if (target_type.is_value_type()) {
+                result.needs_unboxing = true;
+                result.source_type_name = this.get_concrete_type_name(target_type);
+            }
+        }
+        return result;
+    }
+
+    // Build a TryBindAnalysis for the cast form. fold: 1 = compile-time true,
+    // 0 = compile-time false, -1 = runtime `from is TO` (ISINSTANCE).
+    fun make_cast_try_bind_analysis(mut this, tb: TryBindExpression, bound_rhs: BoundExpression, ann_type: mut BoundType, scope: mut BoundScope, fold: i64) -> Option<TryBindAnalysis> {
+        _utils.trace_enter("Enter make_cast_try_bind_analysis");
+        let var_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+        var_sym.name = tb.variable_name;
+        var_sym.full_name = scope.full_name + "." + tb.variable_name;
+        var_sym.is_mutable = false;
+        var_sym.bound_type = ann_type;
+        var_sym.location = tb.location;
+        let cast_expr: BoundCastExpression = this.build_cast_bound(bound_rhs, ann_type);
+        let extract: BoundExpression = new BoundExpression.cast_expr(cast_expr);
+        let check: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+        if (fold == 1) {
+            let true_lit: mut BoundLiteralExpression = new BoundLiteralExpression("true", this.type_registry.bool_type, new LiteralKind.BoolLiteral());
+            check = new Option<BoundExpression>.some(new BoundExpression.literal(true_lit));
+        } else if (fold == 0) {
+            let false_lit: mut BoundLiteralExpression = new BoundLiteralExpression("false", this.type_registry.bool_type, new LiteralKind.BoolLiteral());
+            check = new Option<BoundExpression>.some(new BoundExpression.literal(false_lit));
+        } else {
+            // Runtime: `from is TO` via a type-symbol identifier on the Is RHS.
+            let type_sym: Option<BoundSymbol> = scope.lookup_symbol(tb.type_spec.some.name);
+            if (type_sym.is_some() && type_sym.some is BoundSymbol.type_sym) {
+                let id: mut BoundIdentifierExpression = new BoundIdentifierExpression(ann_type, type_sym);
+                let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+                operands.push(bound_rhs);
+                operands.push(new BoundExpression.identifier(id));
+                let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+                operators.push(new BinaryOperator.Is());
+                let chk: mut BoundBinaryExpression = new BoundBinaryExpression(this.type_registry.bool_type, operators, operands);
+                check = new Option<BoundExpression>.some(new BoundExpression.binary(chk));
+            } else {
+                this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+                    "try-bind type check: cannot resolve type symbol for '" + tb.type_spec.some.name + "'",
+                    tb.location);
+                return new Option<TryBindAnalysis>.none();
+            }
+        }
+        let analysis: mut TryBindAnalysis = new TryBindAnalysis();
+        analysis.variable_symbol = new Option<BoundVariableSymbol>.some(var_sym);
+        analysis.check = check;
+        analysis.extract = new Option<BoundExpression>.some(extract);
+        analysis.bound_type = ann_type;
+        return new Option<TryBindAnalysis>.some(analysis);
+    }
+
+    // P2 general try-bind expression: `let a [: T] := b` as a boolean value.
+    // The RHS is bound first (so `a` is not visible to its own RHS), then the
+    // pattern variable is registered into the CURRENT region scope (paren /
+    // &&-chain / if-condition), making it visible to the enclosing boolean
+    // expression's later operands and (for if-conditions) the then-branch.
+    fun bind_try_bind(mut this, tb: TryBindExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_try_bind");
+        let bound_rhs: Option<BoundExpression> = this.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundExpression>.none(); }
+        let analysis: Option<TryBindAnalysis> = this.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundExpression>.none(); }
+        scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let result: mut BoundTryBindExpression = new BoundTryBindExpression(
+            this.type_registry.bool_type, analysis.some.variable_symbol, analysis.some.check, analysis.some.extract);
+        return new Option<BoundExpression>.some(new BoundExpression.try_bind(result));
+    }
+
+    // Desugar `if (let a [: T] := b) T else E` into
+    //   `if (CHK) { let a = EXT; T } else E`
+    // so `a` is an ordinary block-scoped let — visible in the then-branch only,
+    // re-bound per `while` iteration, never read when the check failed.
+    fun bind_try_bind_if_stmt(mut this, if_stmt: IfStatement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_try_bind_if_stmt");
+        let tb: TryBindExpression = if_stmt.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = this.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundStatement>.none(); }
+        let analysis: Option<TryBindAnalysis> = this.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundStatement>.none(); }
+        let then_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        then_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_then: Option<BoundStatement> = this.bind_optional_stmt(if_stmt.then_statement, then_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(then_scope));
+        let_stmt.location = tb.location;
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        stmts.push(new BoundStatement.let_decl(let_stmt));
+        if (bound_then.is_some()) { stmts.push(bound_then.some); }
+        let block: mut BoundBlockStatement = new BoundBlockStatement(stmts, new Option<BoundScope>.some(then_scope));
+        block.location = if_stmt.location;
+        let else_stmt: Option<BoundStatement> = this.bind_optional_stmt(if_stmt.else_statement, scope);
+        let result: mut BoundIfStatement = new BoundIfStatement(analysis.some.check, new Option<BoundStatement>.some(new BoundStatement.block(block)), else_stmt);
+        result.location = if_stmt.location;
+        return new Option<BoundStatement>.some(new BoundStatement.if_stmt(result));
+    }
+
+    // Desugar `while (let a [: T] := b) body` into
+    //   `while (CHK) { let a = EXT; body }`
+    fun bind_try_bind_while_stmt(mut this, while_stmt: WhileStatement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_try_bind_while_stmt");
+        let tb: TryBindExpression = while_stmt.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = this.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundStatement>.none(); }
+        let analysis: Option<TryBindAnalysis> = this.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundStatement>.none(); }
+        let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        body_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_body: Option<BoundStatement> = this.bind_optional_stmt(while_stmt.body, body_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(body_scope));
+        let_stmt.location = tb.location;
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        stmts.push(new BoundStatement.let_decl(let_stmt));
+        if (bound_body.is_some()) { stmts.push(bound_body.some); }
+        let block: mut BoundBlockStatement = new BoundBlockStatement(stmts, new Option<BoundScope>.some(body_scope));
+        block.location = while_stmt.location;
+        let result: mut BoundWhileStatement = new BoundWhileStatement(analysis.some.check, new Option<BoundStatement>.some(new BoundStatement.block(block)));
+        result.location = while_stmt.location;
+        return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));
     }
 
     fun bind_code_block(mut this, expr: CodeBlockExpression, scope: mut BoundScope) -> Option<BoundExpression> {
@@ -6337,16 +6803,30 @@ class SemanticModel {
             return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
         }
         if (stmt is Statement.if_stmt) {
-            let condition: Option<BoundExpression> = this.bind_optional_expr(stmt.if_stmt.condition, scope);
-            let then_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.then_statement, scope);
+            if (stmt.if_stmt.condition.is_some() && stmt.if_stmt.condition.some is Expression.try_bind) {
+                return this.bind_try_bind_if_stmt(stmt.if_stmt, scope);
+            }
+            // P2 condition-region: pattern variables from `&&` chains in the
+            // condition are visible in the then-branch only.
+            let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+            cond_region.is_region = true;
+            cond_region.is_condition_region = true;
+            let condition: Option<BoundExpression> = this.bind_optional_expr(stmt.if_stmt.condition, cond_region);
+            let then_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.then_statement, cond_region);
             let else_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.else_statement, scope);
             let result: mut BoundIfStatement = new BoundIfStatement(condition, then_stmt, else_stmt);
             result.location = stmt.if_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.if_stmt(result));
         }
         if (stmt is Statement.while_stmt) {
-            let condition: Option<BoundExpression> = this.bind_optional_expr(stmt.while_stmt.condition, scope);
-            let body: Option<BoundStatement> = this.bind_optional_stmt(stmt.while_stmt.body, scope);
+            if (stmt.while_stmt.condition.is_some() && stmt.while_stmt.condition.some is Expression.try_bind) {
+                return this.bind_try_bind_while_stmt(stmt.while_stmt, scope);
+            }
+            let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+            cond_region.is_region = true;
+            cond_region.is_condition_region = true;
+            let condition: Option<BoundExpression> = this.bind_optional_expr(stmt.while_stmt.condition, cond_region);
+            let body: Option<BoundStatement> = this.bind_optional_stmt(stmt.while_stmt.body, cond_region);
             let result: mut BoundWhileStatement = new BoundWhileStatement(condition, body);
             result.location = stmt.while_stmt.location;
             return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));

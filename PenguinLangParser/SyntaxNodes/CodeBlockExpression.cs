@@ -15,6 +15,7 @@ namespace PenguinLangParser.SyntaxNodes
             if (ctx is CodeBlockExpressionContext context)
             {
                 walker.PushScope(SyntaxScopeType.CodeBlock, this);
+                BlockScopeId = walker.CurrentScopeId;
 
                 // Build block items (statements and declarations)
                 BlockItems = context.codeBlockItem()
@@ -46,6 +47,13 @@ namespace PenguinLangParser.SyntaxNodes
 
         [SexpValue]
         public SyntaxScopeType ScopeType => SyntaxScopeType.CodeBlock;
+
+        /// <summary>
+        /// The scope ID of the block's OWN scope (the one pushed for its body),
+        /// distinct from <see cref="SyntaxNode.ScopeId"/> which is the scope the
+        /// block was built in. Used to scope try-bind pattern variables.
+        /// </summary>
+        public uint BlockScopeId { get; set; }
 
         public List<SyntaxSymbol> Symbols { get; set; } = [];
 

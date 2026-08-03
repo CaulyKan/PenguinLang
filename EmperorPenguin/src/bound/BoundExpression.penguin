@@ -226,6 +226,39 @@ class BoundEnumVariantExpression {
     }
 }
 
+// Result of analyzing a `let a [: T] := b` try-bind expression: the bound
+// variable to inject into the true-branch scope, the boolean check expression
+// (ISENUM / ISINSTANCE / const-folded literal), and the payload-extract
+// expression (RDENUM / CAST) that is only evaluated when the check succeeds.
+class TryBindAnalysis {
+    variable_symbol: mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    check: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    extract: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    bound_type: mut BoundType = new BoundType();
+}
+
+// P2: a general try-bind used as a boolean EXPRESSION (not a whole if/while
+// condition). Evaluates to the bool check result AND, when true, writes the
+// extracted payload into the bound variable's register. The variable is scoped
+// to the enclosing paren/&&-chain region.
+class BoundTryBindExpression {
+    bound_type: !mut BoundType = new BoundType();
+    variable_symbol: !mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    check: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+    extract: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
+
+    fun new(mut this, bound_type: BoundType, variable_symbol: Option<BoundVariableSymbol>, check: Option<BoundExpression>, extract: Option<BoundExpression>) {
+        this.bound_type = bound_type;
+        this.variable_symbol = variable_symbol;
+        this.check = check;
+        this.extract = extract;
+    }
+
+    fun get_bound_type(this) -> BoundType {
+        return this.bound_type;
+    }
+}
+
 class BoundLambdaExpression {
     bound_type: !mut BoundType = new BoundType();
     parameters: !mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
@@ -282,6 +315,7 @@ enum BoundExpression {
     enum_variant: BoundEnumVariantExpression;
     lambda_expr: BoundLambdaExpression;
     meta_call: BoundMetaCallExpression;
+    try_bind: BoundTryBindExpression;
 
     fun get_bound_type(this) -> BoundType {
         if (this is BoundExpression.literal) { return this.literal.get_bound_type(); }
@@ -298,6 +332,7 @@ enum BoundExpression {
         if (this is BoundExpression.enum_variant) { return this.enum_variant.get_bound_type(); }
         if (this is BoundExpression.lambda_expr) { return this.lambda_expr.get_bound_type(); }
         if (this is BoundExpression.meta_call) { return this.meta_call.get_bound_type(); }
+        if (this is BoundExpression.try_bind) { return this.try_bind.get_bound_type(); }
         return new BoundType();
     }
 }

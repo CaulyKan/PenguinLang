@@ -85,6 +85,8 @@ namespace emperor {
                 cast_node.location = target_type.location;
                 cast_node.inner = new Option<Expression>.some(cast_inner);
                 return new Expression.cast_expr(cast_node);
+            } else if (token.token_type is TokenType.Let) {
+                return this.parse_tryBindExpression();
             } else if (token.token_type is TokenType.Hash) {
                 this.stream.expect(new TokenType.Hash());
                 let name_token: Token = this.stream.advance();
@@ -105,6 +107,29 @@ namespace emperor {
             } else {
                 return new Expression.constant(new ConstantExpression(""));
             }
+        }
+
+        // `let a [: T] := b` — try-bind expression. Parsed as a primary so the
+        // trailing `&&`/`||` bind outside it; the RHS stops at bitwiseOr level.
+        fun parse_tryBindExpression(this) -> Expression {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Let());
+            if (this.stream.match(new TokenType.Mut())) {
+                this.report_error("E_PARSE: `let mut` is not supported in try-bind yet");
+            }
+            let name_token: Token = this.stream.advance();
+            let type_spec_val: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+            if (this.stream.match(new TokenType.Colon())) {
+                type_spec_val = new Option<TypeSpecifier>.some(this.parse_typeSpecifier());
+            }
+            this.stream.expect(new TokenType.ColonAssign());
+            let rhs: Expression = this.parse_bitwiseOrExpression();
+            let node: mut TryBindExpression = new TryBindExpression();
+            node.variable_name = name_token.text;
+            node.type_spec = type_spec_val;
+            node.rhs = new Option<Expression>.some(rhs);
+            node.location = start_loc;
+            return new Expression.try_bind(node);
         }
 
         // Meta-call arguments may be type names (e.g. #typeof(i32)). Primitive
@@ -1384,6 +1409,7 @@ namespace emperor {
                 return this.parse_metaStatement();
             }
             if (next.token_type is TokenType.Let) {
+                let saved_pos: i64 = this.stream.pos;
                 this.stream.advance();
                 let is_mut: mut bool = false;
                 if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
@@ -1395,19 +1421,27 @@ namespace emperor {
                     var_type = ts.build_text();
                     type_spec_val = new Option<TypeSpecifier>.some(ts);
                 }
-                let init_val: mut Option<Expression> = new Option<Expression>.none();
-                if (this.stream.match(new TokenType.Assign())) {
-                    init_val = new Option<Expression>.some(this.parse_expression());
+                // `let a := b` / `let a : T := b` is a try-bind EXPRESSION, not a
+                // declaration. Backtrack so the expression/assignment path below
+                // re-parses it as a primary tryBindExpression.
+                if (this.stream.peek_type() is TokenType.ColonAssign) {
+                    this.stream.pos = saved_pos;
+                    // fall through to the expression statement path below
+                } else {
+                    let init_val: mut Option<Expression> = new Option<Expression>.none();
+                    if (this.stream.match(new TokenType.Assign())) {
+                        init_val = new Option<Expression>.some(this.parse_expression());
+                    }
+                    this.stream.expect(new TokenType.Semicolon());
+                    let let_stmt: mut LetDeclarationStatement = new LetDeclarationStatement();
+                    let_stmt.is_mutable = is_mut;
+                    let_stmt.variable_name = var_name.text;
+                    let_stmt.variable_type = var_type;
+                    let_stmt.type_spec = type_spec_val;
+                    let_stmt.initializer = init_val;
+                    let_stmt.location = start_loc;
+                    return new Statement.let_decl(let_stmt);
                 }
-                this.stream.expect(new TokenType.Semicolon());
-                let let_stmt: mut LetDeclarationStatement = new LetDeclarationStatement();
-                let_stmt.is_mutable = is_mut;
-                let_stmt.variable_name = var_name.text;
-                let_stmt.variable_type = var_type;
-                let_stmt.type_spec = type_spec_val;
-                let_stmt.initializer = init_val;
-                let_stmt.location = start_loc;
-                return new Statement.let_decl(let_stmt);
             }
             if (next.token_type is TokenType.If) {
                 return this.parse_ifStatement();

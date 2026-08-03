@@ -311,6 +311,24 @@ class CastExpression {
     }
 }
 
+class TryBindExpression {
+    variable_name: mut string = "";
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    rhs: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<TryBindExpression>(this);
+            let text: mut string = "let " + self.variable_name;
+            if (self.type_spec.is_some()) {
+                text = text + ": " + self.type_spec.some.build_text();
+            }
+            return text + " := " + self.rhs.some.build_text();
+        }
+    }
+}
+
 class NewExpression {
     type_name: mut string = "";
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
@@ -461,6 +479,7 @@ enum Expression {
     wait_expr: WaitExpression;
     void_literal: VoidLiteralExpression;
     meta_call: MetaCallExpression;
+    try_bind: TryBindExpression;
 
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
@@ -484,6 +503,7 @@ enum Expression {
         if (this is Expression.wait_expr) { return this.wait_expr.build_text(); }
         if (this is Expression.void_literal) { return this.void_literal.build_text(); }
         if (this is Expression.meta_call) { return this.meta_call.build_text(); }
+        if (this is Expression.try_bind) { return this.try_bind.build_text(); }
         return "";
     }
 }

@@ -86,6 +86,10 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
   --parallel <n>             # default cores-1
   --timeout-compile <s>      # default 600   --timeout-run <s>   default 60
   --baseline latest|none|<path>              # default tmp/testruns/latest.json
+                                             # passing --baseline RECORDS this run as the
+                                             # new baseline: writes tmp/testruns/baseline-<ts>.json
+                                             # and copies it to latest.json; plain runs never
+                                             # overwrite latest.json
   --time-regression-pct <pct>  --mem-regression-pct <pct>   # both default 50
 ```
 

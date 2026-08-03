@@ -15,6 +15,7 @@ namespace emperor {
         Comma;
         Semicolon;
         Colon;
+        ColonAssign;
         Bang;
         BangEqual;
         NotAsync;

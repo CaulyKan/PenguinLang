@@ -11,7 +11,14 @@ primaryExpression:
 	| codeBlockExpression
 	| ifExpression
 	| whileExpression
-	| 'cast' '<' typeSpecifier '>' '(' expression ')';
+	| 'cast' '<' typeSpecifier '>' '(' expression ')'
+	| tryBindExpression;
+
+// try-bind: `let a [: T] := b` — a boolean expression that, when true, binds `a`.
+// RHS is parsed at bitwiseOrExpression level (tighter than && / ||) so that
+// `let a := b && c` parses as `(let a := b) && (c)`.
+tryBindExpression:
+	'let' identifier (':' typeSpecifier)? ':=' bitwiseOrExpression;
 
 // if as expression - returns the value of the executed branch
 ifExpression:

@@ -162,10 +162,19 @@ public static class Program
 
         SummaryReporter.WriteHtml(summaryPath, list, sw.Elapsed, diff, repoRoot, runDir, specs, commit);
         SummaryReporter.WriteJson(jsonPath, list, sw.Elapsed, diff);
-        // Only update the baseline (latest.json) on a full run (no filter),
-        // so subsequent filtered runs always compare against a complete baseline.
-        if (opts.Filter == null)
-            File.Copy(jsonPath, Path.Combine(repoRoot, "tmp", "testruns", "latest.json"), overwrite: true);
+        // latest.json is only ever overwritten when --baseline is passed explicitly:
+        // that run is recorded as the new baseline (a dated snapshot is kept in
+        // tmp/testruns/, same format as latest.json, and latest.json is refreshed).
+        // Without --baseline, latest.json is left untouched so plain runs only ever
+        // compare against the last recorded baseline.
+        if (opts.BaselineSet)
+        {
+            var testrunsDir = Path.Combine(repoRoot, "tmp", "testruns");
+            var baselineSnapshot = Path.Combine(testrunsDir, $"baseline-{stamp}.json");
+            File.Copy(jsonPath, baselineSnapshot, overwrite: true);
+            File.Copy(jsonPath, Path.Combine(testrunsDir, "latest.json"), overwrite: true);
+            Console.WriteLine($"Baseline recorded: {Path.GetRelativePath(repoRoot, baselineSnapshot)} (copied to latest.json)");
+        }
 
         int failCount = list.Count(r => r.Status != Status.Pass && r.Status != Status.Skip);
         var totals = SummaryReporter.Totals(list);
@@ -174,10 +183,14 @@ public static class Program
                           $"PASS {totals.Pass}, FAIL {totals.Fail}, ERROR {totals.Error}, SKIP {totals.Skip} " +
                           $"(of {list.Count} combos).");
         if (diff != null && (diff.NewFailures.Count > 0 || diff.NewPasses.Count > 0 ||
+                             diff.NewSkips.Count > 0 ||
                              diff.TimeRegressions.Count > 0 || diff.MemoryRegressions.Count > 0))
         {
-            Console.WriteLine($"vs baseline: +{diff.NewFailures.Count} new fail, +{diff.NewPasses.Count} new pass, " +
-                              $"{diff.TimeRegressions.Count} time regressions, {diff.MemoryRegressions.Count} memory regressions.");
+            int nf = diff.NewFailures.Count(r => r.Cur.Status == Status.Fail);
+            int ne = diff.NewFailures.Count(r => r.Cur.Status == Status.Error);
+            Console.WriteLine($"vs baseline: +{diff.NewPasses.Count} new pass, +{nf} new fail, +{ne} new error, " +
+                              $"+{diff.NewSkips.Count} new SKIP, {diff.TimeRegressions.Count} time regr, " +
+                              $"{diff.MemoryRegressions.Count} memory regr.");
         }
         Console.WriteLine($"Summary: {Path.GetRelativePath(repoRoot, summaryPath)}");
         Console.WriteLine($"Artifacts: {Path.GetRelativePath(repoRoot, runDir)}/");
@@ -323,6 +336,7 @@ public sealed class Options
     public int TimeoutCompileSec = 600;
     public int TimeoutRunSec = 60;
     public string? Baseline; // null/"latest" => latest.json, "none" => disabled, else path
+    public bool BaselineSet; // true iff --baseline was passed explicitly
     public int TimeRegressionPct = 50;
     public int MemRegressionPct = 50;
     public string? Migrate;
@@ -354,7 +368,7 @@ public sealed class Options
                 case "--parallel": { var v = Val(); if (v == null || !int.TryParse(v, out o.Parallel)) { Console.Error.WriteLine("bad --parallel"); return null; } break; }
                 case "--timeout-compile": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutCompileSec)) { Console.Error.WriteLine("bad --timeout-compile"); return null; } break; }
                 case "--timeout-run": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutRunSec)) { Console.Error.WriteLine("bad --timeout-run"); return null; } break; }
-                case "--baseline": o.Baseline = Val(); if (o.Baseline == null) return null; break;
+                case "--baseline": o.Baseline = Val(); o.BaselineSet = true; if (o.Baseline == null) return null; break;
                 case "--time-regression-pct": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeRegressionPct)) { Console.Error.WriteLine("bad --time-regression-pct"); return null; } break; }
                 case "--mem-regression-pct": { var v = Val(); if (v == null || !int.TryParse(v, out o.MemRegressionPct)) { Console.Error.WriteLine("bad --mem-regression-pct"); return null; } break; }
                 case "--migrate": o.Migrate = Val(); if (o.Migrate == null) return null; break;
@@ -404,6 +418,11 @@ public sealed class Options
           --timeout-run <s>       Per-case run timeout (default 60).
           --baseline latest|none|<path>
                                   Baseline for diff (default: tmp/testruns/latest.json).
+                                  Passing --baseline also records THIS run as the new
+                                  baseline: writes tmp/testruns/baseline-<time>.json
+                                  (same format as latest.json) and copies it to
+                                  latest.json. Without --baseline, latest.json is
+                                  never overwritten.
           --time-regression-pct <pct>   Flag duration regressions > pct (default 50).
           --mem-regression-pct <pct>    Flag memory regressions > pct (default 50).
           --migrate ep-e2e|bp-behaviorial|all [--merge-regions]
@@ -432,11 +451,11 @@ public static class CompilerKindExtensions
     };
     public static string Display(this CompilerKind c) => c switch
     {
-        CompilerKind.BabyPenguin => "BabyPenguin VM",
-        CompilerKind.BabyPenguinCs => "BabyPenguin CS",
-        CompilerKind.EmperorPenguinPass1 => "EmperorPenguin Pass1",
-        CompilerKind.EmperorPenguinPass2 => "EmperorPenguin Pass2",
-        CompilerKind.EmperorPenguinPass3 => "EmperorPenguin Pass3",
+        CompilerKind.BabyPenguin => "Baby VM",
+        CompilerKind.BabyPenguinCs => "Baby CS",
+        CompilerKind.EmperorPenguinPass1 => "Emperor Pass1",
+        CompilerKind.EmperorPenguinPass2 => "Emperor Pass2",
+        CompilerKind.EmperorPenguinPass3 => "Emperor Pass3",
         _ => throw new InvalidOperationException(),
     };
 }
@@ -1382,6 +1401,17 @@ public static class BaselineComparer
                 diff.New.Add(c);
                 continue;
             }
+            // A Skip is "not run" (e.g. guarded out by a skip-if-pass condition) —
+            // it carries no result signal, so it must never be classified as a
+            // regression/new failure (or a new pass) even when the baseline entry
+            // was a passing run. It is only tracked as an informational "new SKIP".
+            if (c.Status == Status.Skip)
+            {
+                if (b.Status != Status.Skip) diff.NewSkips.Add((c, b));
+                continue;
+            }
+            if (b.Status == Status.Skip) continue;
+
             bool wasPass = b.Status == Status.Pass;
             bool nowPass = c.Status == Status.Pass;
             if (wasPass && !nowPass) diff.NewFailures.Add((c, b));
@@ -1420,6 +1450,7 @@ public sealed class BaselineDiff
     public List<ComboResult> Removed = new();
     public List<(ComboResult Cur, ComboResult Old)> NewFailures = new();
     public List<(ComboResult Cur, ComboResult Old)> NewPasses = new();
+    public List<(ComboResult Cur, ComboResult Old)> NewSkips = new(); // informational only — never a regression
     public List<(ComboResult Cur, ComboResult Old)> TimeRegressions = new();
     public List<(ComboResult Cur, ComboResult Old)> MemoryRegressions = new();
 }
@@ -1485,6 +1516,9 @@ public static class SummaryReporter
             sb.Append(StatCard(cls, value, label));
         }
         sb.Append("</div>");
+
+        // One-line vs-baseline summary between the stats and the table.
+        if (diff != null) sb.Append(RenderVsBaselineLine(diff));
 
         // Filter controls + tests table.
         sb.Append("<div class='card'><div class='controls'>");
@@ -1735,6 +1769,27 @@ public static class SummaryReporter
         return sb.ToString();
     }
 
+    /// <summary>Compact one-line "vs baseline" summary, rendered between the stats and the table.</summary>
+    private static string RenderVsBaselineLine(BaselineDiff d)
+    {
+        int newFail = d.NewFailures.Count(p => p.Cur.Status == Status.Fail);
+        int newError = d.NewFailures.Count(p => p.Cur.Status == Status.Error);
+        int newSkip = d.NewSkips.Count;
+        var sb = new StringBuilder();
+        sb.Append("<div class='vsbase'><span class='vsbase-l'>vs baseline</span>");
+        sb.Append(VsSeg("np", $"+{d.NewPasses.Count} new pass", d.NewPasses.Count));
+        sb.Append(VsSeg("nf", $"+{newFail} new fail", newFail));
+        sb.Append(VsSeg("ne", $"+{newError} new error", newError));
+        sb.Append(VsSeg("ns", $"+{newSkip} new SKIP", newSkip));
+        sb.Append(VsSeg("tr", $"{d.TimeRegressions.Count} time regr", d.TimeRegressions.Count));
+        sb.Append(VsSeg("mr", $"{d.MemoryRegressions.Count} memory regr", d.MemoryRegressions.Count));
+        sb.Append("</div>");
+        return sb.ToString();
+    }
+
+    private static string VsSeg(string cls, string text, int count)
+        => $"<span class='seg {(count > 0 ? cls : "zero")}'>{HE(text)}</span>";
+
     private static double MsOf(ComboResult r) => (r.Compile?.DurationMs ?? 0) + (r.Run?.DurationMs ?? 0);
     private static string MemOf(ComboResult r) => FmtBytes((r.Compile?.PeakBytes ?? 0) + (r.Run?.PeakBytes ?? 0));
 
@@ -1765,6 +1820,13 @@ h1{font-size:20px;margin:0;font-weight:650}
 .stat .n{font-size:22px;font-weight:750;line-height:1.1}
 .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 .stat.pass .n{color:var(--pass)} .stat.fail .n{color:var(--fail)} .stat.error .n{color:var(--error)} .stat.skip .n{color:var(--skip)}
+.vsbase{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:2px 0 14px}
+.vsbase-l{font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-right:2px}
+.seg{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:650;letter-spacing:.02em;background:var(--card);border:1px solid var(--border);color:var(--muted)}
+.seg.np{color:var(--pass);border-color:rgba(26,127,55,.4)}
+.seg.nf,.seg.ne{color:var(--fail);border-color:rgba(207,34,46,.4)}
+.seg.ns{color:var(--skip)}
+.seg.tr,.seg.mr{color:var(--error);border-color:rgba(188,76,0,.4)}
 .compstats{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
 .crate{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--card)}
 .crate .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
@@ -1774,9 +1836,9 @@ h1{font-size:20px;margin:0;font-weight:650}
 .card h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 h3.blk{margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 h3.blk:first-child{margin-top:0}
-.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
-.controls input{flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px}
-.badges{display:flex;gap:6px;flex-wrap:wrap}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.controls input{width:200px;flex:0 0 auto;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px}
+.badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .btn{padding:5px 12px;border:1px solid var(--border);border-radius:999px;background:var(--card);color:var(--muted);cursor:pointer;font-size:12px;font-weight:600;transition:all .12s}
 .btn:hover{border-color:var(--accent)}
 .btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}

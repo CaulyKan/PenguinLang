@@ -334,6 +334,16 @@ namespace BabyPenguin.SemanticPass
                             var typeName = forStatement.Declaration!.TypeSpecifier!.Name;
                             container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, null, false, forStatement.Declaration, declaringScopeId: forStatement.ScopeId);
                         }
+                        else if (node is TryBindExpression tryBind && tryBind.TypeSpecifier != null)
+                        {
+                            // Try-bind pattern variable (cast form): register early so
+                            // later passes (e.g. async detection) can resolve it when
+                            // used as a member-access base (`let a : IFoo := f` then
+                            // `a.get()`). Enum-form try-binds (no annotation) are
+                            // registered at codegen where the payload type is known.
+                            var typeName = tryBind.TypeSpecifier!.Name;
+                            container.AddVariableSymbol(tryBind.VariableName!.Name, true, typeName, tryBind.SourceLocation, null, false, null, declaringScopeId: tryBind.ScopeId);
+                        }
                         return true;
                     });
                 }

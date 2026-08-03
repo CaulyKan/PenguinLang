@@ -16,6 +16,7 @@ namespace PenguinLangParser.SyntaxNodes
             IfExpression,
             WhileExpression,
             Cast,
+            TryBind,
         }
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
@@ -76,6 +77,11 @@ namespace PenguinLangParser.SyntaxNodes
                     CastExpression = Build<CastExpression>(walker, context);
                     PrimaryExpressionType = Type.Cast;
                 }
+                else if (context.tryBindExpression() != null)
+                {
+                    TryBindExpression = Build<TryBindExpression>(walker, context.tryBindExpression());
+                    PrimaryExpressionType = Type.TryBind;
+                }
                 else if (context.children.OfType<ExpressionContext>().Any())
                 {
                     ParenthesizedExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
@@ -109,6 +115,7 @@ namespace PenguinLangParser.SyntaxNodes
             Type.IfExpression => this,
             Type.WhileExpression => this,
             Type.Cast => CastExpression!,
+            Type.TryBind => TryBindExpression!,
             _ => throw new NotImplementedException(),
         };
 
@@ -141,6 +148,9 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public CastExpression? CastExpression { get; set; }
 
+        [ChildrenNode]
+        public TryBindExpression? TryBindExpression { get; set; }
+
         public bool IsSimple => PrimaryExpressionType switch
         {
             Type.Identifier => true,
@@ -153,6 +163,7 @@ namespace PenguinLangParser.SyntaxNodes
             Type.IfExpression => false,
             Type.WhileExpression => false,
             Type.Cast => false,
+            Type.TryBind => false,
             _ => throw new NotImplementedException("Invalid primary expression type"),
         };
 
@@ -173,6 +184,7 @@ namespace PenguinLangParser.SyntaxNodes
                 Type.IfExpression => IfExpression!.BuildText(),
                 Type.WhileExpression => WhileExpression!.BuildText(),
                 Type.Cast => CastExpression!.BuildText(),
+                Type.TryBind => TryBindExpression!.BuildText(),
                 _ => throw new NotImplementedException($"Unsupported PrimaryExpressionType: {PrimaryExpressionType}")
             };
         }

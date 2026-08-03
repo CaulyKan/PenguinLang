@@ -401,9 +401,46 @@ class IRGenerator {
         if (expr is BoundExpression.enum_variant) {
             return this.lower_enum_variant(expr.enum_variant);
         }
+        if (expr is BoundExpression.try_bind) {
+            return this.lower_try_bind(expr.try_bind);
+        }
         __builtin.eprintln("error[E_INTERNAL]: Unhandled expression type in lower_expression");
         __builtin.exit(1);
         return this.builder.void_value();
+    }
+
+    // P2: lower a general try-bind expression. Produces the bool check result
+    // and, on the matched path only, writes the extracted payload into the
+    // pattern variable's register. The register gets a defensive zero write too
+    // (two definitions) so scan_mutable_regs backs it with an alloca — the
+    // `&&` RHS reads it at the merge point, which the write block does not
+    // dominate, so it must be memory-backed rather than a plain SSA register.
+    fun lower_try_bind(mut this, expr: BoundTryBindExpression) -> IRValue {
+        _utils.trace_enter("Enter lower_try_bind");
+        let loc: SourceLocation = this.make_loc(0, 0);
+        let cond: IRValue = this.lower_expression(expr.check.some);
+        let var_sym: BoundVariableSymbol = expr.variable_symbol.some;
+        let ir_type: string = this.bound_type_to_ir_type(var_sym.bound_type);
+        let a_reg: IRValue = this.builder.func.alloc_named_reg(var_sym.name, ir_type, var_sym.location.line, var_sym.location.col);
+        this.set_symbol_reg(new BoundSymbol.variable(var_sym), a_reg);
+        let then_lbl: IRLabel = this.builder.func.alloc_label("try_bind_then");
+        let done_lbl: IRLabel = this.builder.func.alloc_label("try_bind_done");
+        this.builder.emit_br_cond(cond, then_lbl, done_lbl, loc);
+        this.builder.emit_label(then_lbl);
+        // Defensive zero (2nd def so scan_mutable_regs backs the reg with an
+        // alloca). Use `null` for pointer-typed pattern variables (interface /
+        // reference class, ir_type "ptr" or "ref<...>") — `0` would emit an
+        // invalid `store ptr 0`.
+        let zero_val: mut string = "0";
+        let is_ptr: mut bool = false;
+        if (ir_type == "ptr") { is_ptr = true; }
+        if (string_length(ir_type) >= 4 && string_substring(ir_type, 0, 4) == "ref<") { is_ptr = true; }
+        if (is_ptr) { zero_val = "null"; }
+        this.builder.emit_const_direct(a_reg, zero_val, loc);
+        this.builder.emit_assign(a_reg, this.lower_expression(expr.extract.some), loc);
+        this.builder.emit_br(done_lbl, loc);
+        this.builder.emit_label(done_lbl);
+        return cond;
     }
 
     fun lower_literal(mut this, expr: BoundLiteralExpression) -> IRValue {
@@ -483,6 +520,13 @@ class IRGenerator {
                             return this.builder.emit_isenum(left, idx_const, loc);
                         }
                     }
+                }
+                // Enum variant check via a BoundEnumVariant reference (used by the
+                // try-bind desugar, which carries the variant index directly).
+                if (right is BoundExpression.enum_variant) {
+                    let ev: BoundEnumVariantExpression = right.enum_variant;
+                    let idx_const: IRValue = this.builder.emit_const(cast<string>(ev.variant_idx), "i64", loc);
+                    return this.builder.emit_isenum(left, idx_const, loc);
                 }
                 // Interface/class type check: x is InterfaceType or x is ClassName
                 if (right is BoundExpression.identifier) {

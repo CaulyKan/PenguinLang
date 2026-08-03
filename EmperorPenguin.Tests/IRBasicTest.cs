@@ -1205,7 +1205,7 @@ inst12=RET %t5")]
                 i = i + 1;
             }
         }
-        ", "inst0=%t0:enum<Option> = ARG o 0\ninst1=%t1:void = RDENUM %t0, .some\ninst2=RET %t1")]
+        ", "inst0=%t0:enum<Option> = ARG o 0\ninst1=%t1:i64 = RDENUM %t0, .some\ninst2=RET %t1")]
     public void TestReadEnumPayload() => _batch.Value.Assert();
 
     // Test 2: Read enum payload in expression
@@ -1225,7 +1225,7 @@ inst12=RET %t5")]
                 i = i + 1;
             }
         }
-        ", "inst0=%t0:enum<Option> = ARG o 0\ninst1=%t1:void = RDENUM %t0, .some\ninst2=%t2:i64 = CONST 1\ninst3=%t3:void = BINOP add %t1, %t2\ninst4=RET %t3")]
+        ", "inst0=%t0:enum<Option> = ARG o 0\ninst1=%t1:i64 = RDENUM %t0, .some\ninst2=%t2:i64 = CONST 1\ninst3=%t3:i64 = BINOP add %t1, %t2\ninst4=RET %t3")]
     public void TestReadEnumPayloadInExpression() => _batch.Value.Assert();
 
     #endregion

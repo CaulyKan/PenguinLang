@@ -11,6 +11,11 @@ class BoundScope {
     symbols: mut _utils.List<BoundSymbol> = new _utils.List<BoundSymbol>();
     imported_namespaces: mut _utils.List<string> = new _utils.List<string>();
     init_routine_count: mut i64 = 0;
+    // P2 try-bind scoping: a "region" bounds pattern variables to the nearest
+    // paren / &&-chain. is_condition_region additionally makes a whole if/while
+    // condition the region so &&-chain bindings promote into the then-branch.
+    is_region: mut bool = false;
+    is_condition_region: mut bool = false;
 
     fun new(mut this, kind: mut ScopeKind, name: string, full_name: string, parent: mut Option<BoundScope>) {
 

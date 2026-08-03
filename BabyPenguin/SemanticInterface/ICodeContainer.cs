@@ -320,6 +320,11 @@ namespace BabyPenguin.SemanticInterface
                 case Statement.Type.IfStatement:
                     {
                         var ifStatement = item.IfStatement!;
+                        if (ifStatement.Condition is TryBindExpression tryBindCond)
+                        {
+                            CompileTryBindIf(ifStatement, tryBindCond);
+                            break;
+                        }
                         var conditionVar = AddExpression(ifStatement.Condition!, false);
                         if (!conditionVar.TypeInfo.IsBoolType)
                             throw new BabyPenguinException($"If condition must be bool type, but got '{conditionVar.TypeInfo}'", ifStatement.SourceLocation, code: ErrorCode.E_COND_NOT_BOOL);
@@ -346,6 +351,11 @@ namespace BabyPenguin.SemanticInterface
                 case Statement.Type.WhileStatement:
                     {
                         var whileStatement = item.WhileStatement!;
+                        if (whileStatement.Condition is TryBindExpression tryBindCond2)
+                        {
+                            CompileTryBindWhile(whileStatement, tryBindCond2);
+                            break;
+                        }
                         var beginLabel = CreateLabel();
                         AddInstruction(new NopInstuction(whileStatement.Condition!.SourceLocation).WithLabel(beginLabel));
                         var conditionVar = AddExpression(whileStatement.Condition!, false);
@@ -573,6 +583,194 @@ namespace BabyPenguin.SemanticInterface
             }
         }
 
+        // P1 try-bind: `if (let x := opt.some) { ... }` desugars to
+        //   chk = <enum variant check>
+        //   if (!chk) goto else;  x = payload(opt.some); <then-block>; goto endif; else: <else-block>; endif:
+        // `x` is registered with the then-block's scope id → visible only in the then-branch.
+        // Bind type for a try-bind: enum payload type for `let x := opt.some`,
+        // or the annotation type for the cast form `let a : TO := b`.
+        private IType TryBindBindType(TryBindExpression tb)
+        {
+            if (tb.TypeSpecifier != null)
+            {
+                return Model.ResolveType(tb.TypeSpecifier!.Name, scope: this)
+                    ?? throw new BabyPenguinException($"Cant resolve try-bind type '{tb.TypeSpecifier.Name}'", tb.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+            }
+            return ResolveExpressionType(tb.RHS!);
+        }
+
+        // Detects whether the RHS is an enum variant member access (the enum
+        // form) without emitting any code. Returns the enum symbol if so.
+        private bool TryResolveEnumVariant(MemberAccessExpression ma, out EnumSymbol enumSym)
+        {
+            enumSym = null!;
+            try
+            {
+                var ownerType = ResolveExpressionType(ma.BaseExpression!);
+                var enumTypeName = ownerType.TypeNode.FullName();
+                var member = Model.ResolveSymbol(enumTypeName + "." + ma.Member!.Name, s => s.IsEnum, scope: this);
+                var sym = (member is MutableSymbolProxy p ? p.Symbol : member) as EnumSymbol;
+                if (sym == null) return false;
+                enumSym = sym;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // Emit the enum-variant check for `let x := opt.some` and a guarded write
+        // of the payload into `aVar` (mirrors the `is` lowering).
+        private void EmitTryBindEnumInto(TryBindExpression tb, MemberAccessExpression ma, EnumSymbol enumSym, ISymbol aVar, out ISymbol chkVar)
+        {
+            var loc = tb.SourceLocation;
+            var enumVar = AddExpression(ma.BaseExpression!, false);
+            var enumTypeName = enumVar.TypeInfo.TypeNode.FullName();
+            var tempRight = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), loc);
+            var tempLeft = AllocTempSymbol(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), loc);
+            var enumValueSymbol = Model.ResolveSymbol(enumTypeName + "._value");
+            if (enumValueSymbol == null)
+                throw new BabyPenguinException($"Cant resolve symbol '{enumTypeName}._value'", loc, code: ErrorCode.E_RESOLVE_SYMBOL);
+            AddInstruction(new ReadMemberInstruction(loc, enumValueSymbol, enumVar, tempLeft, false));
+            AddInstruction(new AssignLiteralToSymbolInstruction(loc, tempRight, Model.BasicTypeNodes.I32.ToType(Mutability.Immutable), enumSym.Value.ToString()));
+            chkVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), loc);
+            AddInstruction(new BinaryOperationInstruction(loc, BinaryOperatorEnum.Equal, tempLeft, tempRight, chkVar));
+            var skip = CreateLabel();
+            AddInstruction(new GotoInstruction(loc, skip, chkVar, false));
+            AddExpression(ma, true, aVar);
+            AddInstruction(new NopInstuction(loc).WithLabel(skip));
+        }
+
+        // Emit the cast-form check + binding: `let a : TO := b` — whether
+        // `cast<TO>(b)` is valid. Folded to a bool constant when the static types
+        // decide it; otherwise a runtime TypeCheck + guarded cast.
+        private void EmitTryBindCastInto(TryBindExpression tb, ISymbol aVar, out ISymbol chkVar)
+        {
+            var loc = tb.SourceLocation;
+            var rhsVar = AddExpression(tb.RHS!, false);
+            var annType = Model.ResolveType(tb.TypeSpecifier!.Name, scope: this)
+                ?? throw new BabyPenguinException($"Cant resolve type '{tb.TypeSpecifier.Name}'", tb.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+            chkVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), loc);
+            var fold = ResolveCastFold(rhsVar.TypeInfo, annType, loc);
+            if (fold == true)
+            {
+                AddInstruction(new AssignLiteralToSymbolInstruction(loc, chkVar, Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), "true"));
+                AddCastExpression(new(rhsVar), aVar, loc);
+            }
+            else if (fold == false)
+            {
+                AddInstruction(new AssignLiteralToSymbolInstruction(loc, chkVar, Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), "false"));
+                // dead branch — skip the cast (AddCastExpression would reject an
+                // invalid cast); the then-branch never runs.
+            }
+            else
+            {
+                AddInstruction(new TypeCheckInstruction(loc, rhsVar, annType, chkVar));
+                var skip = CreateLabel();
+                AddInstruction(new GotoInstruction(loc, skip, chkVar, false));
+                AddCastExpression(new(rhsVar), aVar, loc);
+                AddInstruction(new NopInstuction(loc).WithLabel(skip));
+            }
+        }
+
+        // Compile-time fold decision for `let a : TO := b`: true / false / null
+        // (= runtime ISINSTANCE). Mirrors EmperorPenguin's analyze_try_bind.
+        private bool? ResolveCastFold(IType rhs, IType ann, SourceLocation loc)
+        {
+            if (rhs.TypeNode.FullName() == ann.TypeNode.FullName()) return true;
+            bool rhsPrim = rhs.TypeNode is BasicTypeNode;
+            bool annPrim = ann.TypeNode is BasicTypeNode;
+            if (rhsPrim && annPrim) return rhs.CanImplicitlyCastToWithoutMutability(ann);
+            if (ann.IsInterfaceType)
+            {
+                if (rhsPrim)
+                    throw new BabyPenguinException($"try-bind: cannot cast primitive '{rhs.FullName()}' to interface '{ann.FullName()}'", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                if (rhs.IsClassType || rhs.IsEnumType) return rhs.CanImplicitlyCastToWithoutMutability(ann);
+                return null; // interface/generic rhs → runtime
+            }
+            if (ann.IsClassType)
+            {
+                if (rhs.IsClassType) return rhs.CanImplicitlyCastToWithoutMutability(ann);
+                if (rhs.IsInterfaceType) return null; // runtime
+                throw new BabyPenguinException($"try-bind: cannot cast '{rhs.FullName()}' to class '{ann.FullName()}'", loc, code: ErrorCode.E_TYPE_MISMATCH);
+            }
+            return null;
+        }
+
+        // Emit the bool check + (guarded) binding write for a try-bind, dispatching
+        // to the enum-variant or cast form.
+        private void EmitTryBind(TryBindExpression tb, ISymbol aVar, out ISymbol chkVar)
+        {
+            if (tb.RHS is MemberAccessExpression ma && TryResolveEnumVariant(ma, out var enumSym))
+            {
+                EmitTryBindEnumInto(tb, ma, enumSym, aVar, out chkVar);
+                return;
+            }
+            if (tb.TypeSpecifier != null)
+            {
+                EmitTryBindCastInto(tb, aVar, out chkVar);
+                return;
+            }
+            throw new BabyPenguinException("try-bind RHS is not a supported matchable (add a ': TO' type annotation for cast checks)", tb.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+        }
+
+        private void CompileTryBindIf(IfStatement ifStatement, TryBindExpression tb)
+        {
+            var thenBlock = GetTryBindBlock(ifStatement.MainStatement, ifStatement.SourceLocation);
+            var loc = tb.SourceLocation;
+            var bt = TryBindBindType(tb);
+            var aVar = AddVariableSymbol(tb.VariableName!.Name, true, new Or<string, IType>(bt), loc, null, false, null, Mutability.Unspecified, thenBlock.BlockScopeId);
+            EmitTryBind(tb, aVar, out var chkVar);
+
+            var elseLabel = CreateLabel();
+            var endifLabel = CreateLabel();
+            AddInstruction(new GotoInstruction(loc, elseLabel, chkVar, false));
+            AddStatement(ifStatement.MainStatement!);
+            AddInstruction(new GotoInstruction(loc, endifLabel));
+            AddInstruction(new NopInstuction(ifStatement.SourceLocation.EndLocation).WithLabel(elseLabel));
+            if (ifStatement.HasElse) AddStatement(ifStatement.ElseStatement!);
+            AddInstruction(new NopInstuction(ifStatement.SourceLocation.EndLocation).WithLabel(endifLabel));
+        }
+
+        // P1 try-bind while: `while (let x := opt.some) { ... }` re-binds x each iteration.
+        private void CompileTryBindWhile(WhileStatement whileStatement, TryBindExpression tb)
+        {
+            var bodyBlock = GetTryBindBlock(whileStatement.BodyStatement, whileStatement.SourceLocation);
+            var loc = tb.SourceLocation;
+            var aVar = AddVariableSymbol(tb.VariableName!.Name, true, new Or<string, IType>(TryBindBindType(tb)), loc, null, false, null, Mutability.Unspecified, bodyBlock.BlockScopeId);
+            var beginLabel = CreateLabel();
+            var endLabel = CreateLabel();
+            AddInstruction(new NopInstuction(loc).WithLabel(beginLabel));
+            CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
+            EmitTryBind(tb, aVar, out var chkVar);
+            AddInstruction(new GotoInstruction(loc, endLabel, chkVar, false));
+            AddStatement(whileStatement.BodyStatement!);
+            AddInstruction(new GotoInstruction(loc, beginLabel));
+            CodeContainerData.CurrentWhileLoop.Pop();
+            AddInstruction(new NopInstuction(whileStatement.SourceLocation.EndLocation).WithLabel(endLabel));
+        }
+
+        private static CodeBlockExpression GetTryBindBlock(Statement stmt, SourceLocation loc)
+        {
+            if (stmt is { StatementType: Statement.Type.SubBlock, CodeBlockExpression: { } block })
+                return block;
+            throw new BabyPenguinException("try-bind if/while body must be a brace block in this version", loc, code: ErrorCode.E_TYPE_MISMATCH);
+        }
+
+        // P2 general try-bind: `let a := b` used as a boolean VALUE (not a whole
+        // if/while condition). Registers `a` in the enclosing scope and emits the
+        // check + guarded binding write.
+        private void AddGeneralTryBind(TryBindExpression tb, ISymbol? to, bool isVariableInitialize)
+        {
+            var loc = tb.SourceLocation;
+            // The variable was registered during ResolveExpressionType (or pass 03
+            // for the cast form) so the enclosing `&&` chain's later operands can
+            // resolve it; reuse it here.
+            var aVar = Model.ResolveShortSymbol(tb.VariableName!.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: tb.ScopeId)
+                ?? AddVariableSymbol(tb.VariableName!.Name, true, new Or<string, IType>(TryBindBindType(tb)), loc, null, false, null, Mutability.Unspecified, tb.ScopeId);
+            EmitTryBind(tb, aVar, out var chkVar);
+            if (to != null)
+                AddAssignmentExpression(new(chkVar), to, isVariableInitialize, null, loc);
+        }
+
         public IType ResolveBinaryOperationType(BinaryOperatorEnum op, IEnumerable<IType> opType, SourceLocation sourceLocation)
         {
             var types = opType.ToList();
@@ -742,6 +940,14 @@ namespace BabyPenguin.SemanticInterface
 
             switch (expression)
             {
+                case TryBindExpression tb:
+                    // Register the pattern variable during type resolution so that
+                    // later operands in the same `&&` chain (e.g. `x > 10`) can
+                    // resolve it — ResolveExpressionType runs before codegen of
+                    // the operands. AddGeneralTryBind reuses this registration.
+                    if (Model.ResolveShortSymbol(tb.VariableName!.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: tb.ScopeId) == null)
+                        AddVariableSymbol(tb.VariableName!.Name, true, new Or<string, IType>(TryBindBindType(tb)), tb.SourceLocation, null, false, null, Mutability.Unspecified, tb.ScopeId);
+                    return Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable);
                 case Expression exp:
                     return ResolveExpressionType(exp.SubExpression!);
                 case LogicalOrExpression exp:
@@ -1420,6 +1626,9 @@ namespace BabyPenguin.SemanticInterface
 
             switch (expression)
             {
+                case TryBindExpression tb:
+                    AddGeneralTryBind(tb, to, isVariableInitialize);
+                    break;
                 case Expression exp:
                     {
                         AddExpression(exp.SubExpression!, isVariableInitialize, to);
