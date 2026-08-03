@@ -151,6 +151,30 @@ class BoundTypeRegistry {
         if (from.kind is TypeKind.PrimitiveKind && to.kind is TypeKind.PrimitiveKind) {
             return this.can_widen_primitive(from.primitive, to.primitive);
         }
+        // A class or enum implicitly casts to an interface it implements
+        // (e.g. `test(f, f)` where test's param is IFoo and f: Foo, Foo impls IFoo).
+        if (to.kind is TypeKind.InterfaceKind && from.type_definition.is_some()) {
+            let from_def: BoundDefinition = from.type_definition.some;
+            let to_name: string = to.display_name();
+            if (from_def is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = from_def.class_def;
+                let vi: mut i64 = 0;
+                while (vi < cast<i64>(cls.vtables.size())) {
+                    let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+                    if (vtable.interface_type.display_name() == to_name) { return true; }
+                    vi = vi + 1;
+                }
+            }
+            if (from_def is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = from_def.enum_def;
+                let vi: mut i64 = 0;
+                while (vi < cast<i64>(e.vtables.size())) {
+                    let vtable: BoundVTable = e.vtables.at(cast<u64>(vi)).some;
+                    if (vtable.interface_type.display_name() == to_name) { return true; }
+                    vi = vi + 1;
+                }
+            }
+        }
         return false;
     }
 

@@ -239,6 +239,22 @@ namespace BabyPenguin.CSharpBackend
                 }
                 if (src is VirtualMethodRef vr)
                 {
+                    // ICopy<T>.copy on a primitive (u8 etc.) has no class vtable entry —
+                    // primitives aren't in model.Classes/model.Enums, so the virtual
+                    // dispatch would throw "no vtable impl". The extern implementation
+                    // (GlobalState.Clone / value copy) is generated with exactly this
+                    // mangled name, so dispatch directly to it.
+                    if (vr.InterfaceMethodMangled.StartsWith("__builtin_ICopy_") && vr.InterfaceMethodMangled.EndsWith("__copy"))
+                    {
+                        // InterfaceMethodMangled already equals the generated extern's C# name
+                        // (re-mangling would dedup to a `_1` suffix). Dispatch directly.
+                        var copyObj = _emitter.Operand(vr.Obj);
+                        if (result != null && retType != "void")
+                            Line($"r_{Reg(result)} = ({_emitter.CsType(result.GetIrType())}){vr.InterfaceMethodMangled}({copyObj});");
+                        else if (retType != "void") Line($"return ({_emitter.CsType(result.GetIrType())}){vr.InterfaceMethodMangled}({copyObj});");
+                        else Line($"{vr.InterfaceMethodMangled}({copyObj});");
+                        return;
+                    }
                     // Interface virtual dispatch: use the runtime type to find the implementation.
                     // Determine if the method expects `this` by checking if the interface method's
                     // IR function has parameters. Static interface methods have 0 parameters;

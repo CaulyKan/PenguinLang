@@ -2096,7 +2096,10 @@ class SemanticModel {
             let gen_args3: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             gen_args3.push(elem_type3.with_mutability(new Mutability.Immutable()));
             iface_type = iface_type.with_generic_args(gen_args3);
-            return this.apply_mutability(iface_type, type_spec.is_mutable);
+            // An iterable type (`i64[]`) is mutable by default so the resulting
+            // IIterator's `next()` (mut this) can be called on the variable.
+            let want_mut: bool = if (type_spec.is_not_mutable) { false } else { true };
+            return this.apply_mutability(iface_type, want_mut);
         }
         this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
             "Can't resolve IIterator for iterable type '" + type_spec.build_text() + "'",
@@ -2210,7 +2213,10 @@ class SemanticModel {
             let gen_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             gen_args.push(element_type.with_mutability(new Mutability.Immutable()));
             iface_type = iface_type.with_generic_args(gen_args);
-            return this.apply_mutability(iface_type, type_spec.is_mutable);
+            // An iterable type (`i64[]`) is mutable by default so the resulting
+            // IIterator's `next()` (mut this) can be called on the variable.
+            let want_mut: bool = if (type_spec.is_not_mutable) { false } else { true };
+            return this.apply_mutability(iface_type, want_mut);
         }
         // If IIterator not found, give a clear error
         this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
@@ -2908,6 +2914,16 @@ class SemanticModel {
             }
             i = i + 1;
         }
+
+        // Preserve the template's generic params + AST source so member access can
+        // distinguish a generic-param field (`a: T`, implicitly immutable) from a
+        // concrete field (`b: i32`, Auto → follows container mutability).
+        let gpi: mut i64 = 0;
+        while (gpi < cast<i64>(tmpl.generic_params.size())) {
+            result.generic_params.push(tmpl.generic_params.at(cast<u64>(gpi)).some);
+            gpi = gpi + 1;
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.class_def(ast_class));
 
         return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
     }
@@ -3897,6 +3913,30 @@ class SemanticModel {
         return false;
     }
 
+    // True when a type's `.copy()` should lower to the base expression itself
+    // (value semantics — the value copies on assignment anyway): primitives
+    // (all implement ICopy<self>) and auto-classified value classes / enums.
+    // Classes with an EXPLICIT `impl ICopy<Self>` are excluded: their `.copy()`
+    // resolves through the existing interface path (emitting _emperor_ICopy_copy,
+    // a real heap clone), which identity-lowering would wrongly turn into aliasing.
+    fun base_type_has_icopy(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter base_type_has_icopy");
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            return true;
+        }
+        if (bt.kind is TypeKind.ClassKind && bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                if (this.class_has_icopy(td.class_def)) { return false; }
+                if (td.class_def.is_value_class.is_some() && td.class_def.is_value_class.some) { return true; }
+            }
+        }
+        if (bt.kind is TypeKind.EnumKind && bt.type_definition.is_some()) {
+            return true;
+        }
+        return false;
+    }
+
     fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
         _utils.trace_enter("Enter is_in_visiting");
         let ci: mut i64 = 0;
@@ -4617,6 +4657,44 @@ class SemanticModel {
         return new Mutability.Mutable();
     }
 
+    // True when a field's declared type is one of the class's generic params
+    // (e.g. `a: T` in `#template(T: type) class A`). Such fields are implicitly
+    // immutable — you can't know whether T is a value or reference type, so
+    // BabyPenguin treats the substituted arg as immutable (`A<!mut i32>.a`).
+    fun field_is_generic_param(this, cls: BoundClassDefinition, field_name: string) -> bool {
+        _utils.trace_enter("Enter field_is_generic_param");
+        if (cls.ast_source.is_some()) {
+            let ast_def: Definition = cls.ast_source.some;
+            if (ast_def is Definition.class_def) {
+                let ast_cls: ClassDefinition = ast_def.class_def;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ast_cls.members.size())) {
+                    let member: Definition = ast_cls.members.at(cast<u64>(mi)).some;
+                    if (member is Definition.class_field) {
+                        if (member.class_field.name == field_name) {
+                            if (member.class_field.type_spec.is_some()) {
+                                let ts: TypeSpecifier = member.class_field.type_spec.some;
+                                // `auto T` explicitly follows container mutability,
+                                // so it is not implicitly immutable.
+                                if (ts.is_auto_mutability) { return false; }
+                                let ts_name: string = ts.name;
+                                let gi: mut i64 = 0;
+                                while (gi < cast<i64>(cls.generic_params.size())) {
+                                    if (cls.generic_params.at(cast<u64>(gi)).some == ts_name) {
+                                        return true;
+                                    }
+                                    gi = gi + 1;
+                                }
+                            }
+                        }
+                    }
+                    mi = mi + 1;
+                }
+            }
+        }
+        return false;
+    }
+
     fun resolve_field_type_from_class(this, base_type: BoundType, cls: BoundClassDefinition, field_name: string, scope: BoundScope) -> mut BoundType {
         _utils.trace_enter("Enter resolve_field_type_from_class");
         // If base type has generic args, look up the field in the specialized class
@@ -4681,10 +4759,20 @@ class SemanticModel {
                                         if (field_mut is Mutability.Auto) {
                                             // For Auto fields, use container's mutability
                                             // UNLESS the field type already has explicit Mutable
-                                            // (from generic specialization like A<mut i32>).
-                                            if (!(bt.mutability is Mutability.Mutable)) {
+                                            // (from generic specialization like A<mut i32>), or the
+                                            // field's type is a generic param (implicitly immutable).
+                                            // A generic-param field is only immutable when the
+                                            // substituted arg is NOT explicitly mutable (A<mut i32>
+                                            // stays mutable — the field's own type carries it).
+                                            if (this.field_is_generic_param(cls, expr.member_name)) {
+                                                if (!(bt.mutability is Mutability.Mutable)) {
+                                                    bt = bt.with_mutability(new Mutability.Immutable());
+                                                }
+                                            } else if (!(bt.mutability is Mutability.Mutable)) {
                                                 bt = bt.with_mutability(base_type.mutability);
                                             }
+                                        } else if (field_mut is Mutability.Mutable) {
+                                            bt = bt.with_mutability(new Mutability.Mutable());
                                         } else if (field_mut is Mutability.Immutable) {
                                             bt = bt.with_mutability(new Mutability.Immutable());
                                         }
@@ -4829,7 +4917,10 @@ class SemanticModel {
                 // Member not found: if base is a concrete type (class, enum),
                 // report E_RESOLVE_SYMBOL instead of silently creating an empty
                 // member access (which causes E_INTERNAL in the IR generator).
-                if (base_type.type_definition.is_some()) {
+                // `.copy()` on a value type is auto-generated ICopy and is resolved
+                // by bind_function_call, so don't report it here.
+                let is_value_copy: bool = expr.member_name == "copy" && this.base_type_has_icopy(base_type);
+                if (base_type.type_definition.is_some() && !is_value_copy) {
                     let td: BoundDefinition = base_type.type_definition.some;
                     if (td is BoundDefinition.class_def || td is BoundDefinition.enum_def) {
                         this.report_error(new ErrorCode.E_RESOLVE_SYMBOL(),
@@ -4926,6 +5017,98 @@ class SemanticModel {
         return false;
     }
 
+    // Single-letter uppercase names are the generic template param convention
+    // (T, K, E, V). Used to skip arg-type checks against unsubstituted template
+    // params, which would otherwise produce cascading false positives.
+    // True when `bt`'s type_definition is a template-param dummy — a
+    // BoundClassDefinition created solely when a generic parameter is declared in
+    // a scope (`#template(T: type)` registers T as a dummy class with no AST
+    // source, fields, methods, or vtables). Real types always go through
+    // bind_class_def / specialize_class_def, which set ast_source, so they never
+    // match. This is strictly "is this the scope-registered template param",
+    // not a name guess — a real type named `T` is not a template param.
+    fun is_template_param_type(this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.ClassKind && bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = td.class_def;
+                if (cls.ast_source.is_none()
+                    && cast<i64>(cls.fields.size()) == 0
+                    && cast<i64>(cls.methods.size()) == 0
+                    && cast<i64>(cls.vtables.size()) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // True when a type (or a generic arg nested in it) is an unsubstituted
+    // template param (e.g. `T` or `Option<T>`). Such params can't be checked
+    // against call args until the callee is monomorphized.
+    fun param_type_is_template(this, param_type: BoundType) -> bool {
+        if (this.is_template_param_type(param_type)) {
+            return true;
+        }
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(param_type.generic_args.size())) {
+            if (this.param_type_is_template(param_type.generic_args.at(cast<u64>(gi)).some)) {
+                return true;
+            }
+            gi = gi + 1;
+        }
+        return false;
+    }
+
+    // Check each call argument against the callee's parameter type, reporting
+    // E_CAST_INVALID on a non-implicitly-castable mismatch (BabyPenguin: convertParams).
+    // Integer literals coerce to any integer param type; args whose bound type is
+    // void/error (from a prior diagnostic) and generic template params (T unsubstituted)
+    // are skipped to avoid cascading false positives.
+    fun check_argument_types(mut this, sym: BoundFunctionSymbol, args: mut _utils.List<BoundExpression>) {
+        _utils.trace_enter("Enter check_argument_types");
+        let arg_i: mut i64 = 0;
+        while (arg_i < cast<i64>(args.size())) {
+            let param_idx: mut i64 = arg_i;
+            if (this.function_is_method(sym)) {
+                param_idx = arg_i + 1;
+            }
+            if (param_idx < cast<i64>(sym.parameters.size())) {
+                let param_type: BoundType = sym.parameters.at(cast<u64>(param_idx)).some.bound_type;
+                let arg_expr: BoundExpression = args.at(cast<u64>(arg_i)).some;
+                let arg_type: BoundType = arg_expr.get_bound_type();
+                if (this.type_registry.is_void(param_type) || this.type_registry.is_void(arg_type)
+                    || param_type.kind is TypeKind.ErrorKind || arg_type.kind is TypeKind.ErrorKind) {
+                    arg_i = arg_i + 1;
+                    continue;
+                }
+                if (this.param_type_is_template(param_type)) {
+                    arg_i = arg_i + 1;
+                    continue;
+                }
+                let is_int_lit: bool = if (arg_expr is BoundExpression.literal) {
+                    arg_expr.literal.literal_kind is LiteralKind.IntegerLiteral
+                } else if (arg_expr is BoundExpression.unary) {
+                    // Negative integer literal: `-1` binds as a unary negation of a
+                    // literal, which should coerce to an integer param like `0` does.
+                    arg_expr.unary.operator_value is UnaryOperator.Negate
+                    && arg_expr.unary.operand.is_some()
+                    && arg_expr.unary.operand.some is BoundExpression.literal
+                    && arg_expr.unary.operand.some.literal.literal_kind is LiteralKind.IntegerLiteral
+                } else {
+                    false
+                };
+                let int_literal_coercion: bool = is_int_lit && this.type_registry.is_integer(param_type);
+                if (!this.type_registry.can_implicitly_cast(arg_type, param_type) && !int_literal_coercion) {
+                    this.report_error(new ErrorCode.E_CAST_INVALID(),
+                        "Argument " + cast<string>(arg_i + 1) + " type mismatch in '" + sym.name + "': expected " + param_type.display_name() + " but got " + arg_type.display_name(),
+                        sym.location);
+                }
+            }
+            arg_i = arg_i + 1;
+        }
+    }
+
     fun bind_function_call(mut this, expr: FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_function_call");
         let args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments.items, scope);
@@ -4985,6 +5168,7 @@ class SemanticModel {
                                     + " arguments but " + cast<string>(arg_count) + " were provided",
                                     sym.function_sym.location);
                             }
+                            this.check_argument_types(sym.function_sym, args);
                             let bt: mut BoundType = this.find_function_return_type(sym.function_sym);
                             let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, id_expr.symbol, args, false, resolved_generic_args, false);
                             return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
@@ -4993,6 +5177,16 @@ class SemanticModel {
                 }
                 if (callee.some is BoundExpression.member_access) {
                     let ma_expr: BoundMemberAccessExpression = callee.some.member_access;
+                    // `.copy()` on a value type (primitive with ICopy, value-class,
+                    // or enum) is an auto-generated ICopy copy. Value types copy on
+                    // assignment anyway, so lower the call to the base expression
+                    // itself — no runtime function call is needed.
+                    if (ma_expr.member_name == "copy" && ma_expr.base_expr.is_some()) {
+                        let base_type: BoundType = ma_expr.base_expr.some.get_bound_type();
+                        if (this.base_type_has_icopy(base_type)) {
+                            return new Option<BoundExpression>.some(ma_expr.base_expr.some);
+                        }
+                    }
                     if (ma_expr.member_symbol.is_some()) {
                         let sym: BoundSymbol = ma_expr.member_symbol.some;
                         if (sym is BoundSymbol.function_sym) {
@@ -5002,27 +5196,20 @@ class SemanticModel {
                             // passed). For interface-typed receivers the receiver is
                             // still used for vtable lookup (virtual dispatch), set in
                             // the dispatch-decision block below.
-                            // Mutability check: calling `mut this` method on an immutable
-                            // binding must fail (E_TYPE_MISMATCH). The first parameter
-                            // of a method is `this`; if it's `mut this`, the receiver
-                            // must provide a mutable reference.
+                            // Mutability check: calling `mut this` method on a receiver
+                            // whose TYPE is immutable must fail (E_TYPE_MISMATCH), e.g.
+                            // `let a : A = new A(); a.mutable()`. BabyPenguin compares
+                            // the receiver's TYPE mutability against the `mut this` param
+                            // ("Cant use !mut A as 'this' param of type mut A"), so an
+                            // inferred `let a = new A()` (type is mutable) is allowed.
                             if (this.function_is_method(sym.function_sym) && ma_expr.base_expr.is_some()) {
                                 let this_param: BoundFunctionParameter = sym.function_sym.parameters.at(cast<u64>(0)).some;
                                 if (this_param.is_mutable) {
-                                    // Check the binding's mutability (not the type's)
-                                    let base_expr: BoundExpression = ma_expr.base_expr.some;
-                                    if (base_expr is BoundExpression.identifier) {
-                                        let id_expr: BoundIdentifierExpression = base_expr.identifier;
-                                        if (id_expr.symbol.is_some()) {
-                                            let sym2: BoundSymbol = id_expr.symbol.some;
-                                            if (sym2 is BoundSymbol.variable) {
-                                                if (!sym2.variable.is_mutable) {
-                                                    this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
-                                                        "Cannot call method '" + sym.function_sym.name + "' with 'mut this' on an immutable binding",
-                                                        new SourceLocation("", 0, 0));
-                                                }
-                                            }
-                                        }
+                                    let base_type: BoundType = ma_expr.base_expr.some.get_bound_type();
+                                    if (base_type.mutability is Mutability.Immutable) {
+                                        this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                                            "Cannot call method '" + sym.function_sym.name + "' with 'mut this' on an immutable binding",
+                                            new SourceLocation("", 0, 0));
                                     }
                                 }
                             }
@@ -5128,12 +5315,20 @@ class SemanticModel {
                                     }
                                     if (td is BoundDefinition.class_def) {
                                         let cls: BoundClassDefinition = td.class_def;
+                                        // Only apply the vtable default-method fallback below if the
+                                        // class does not define the method itself (own methods or
+                                        // interface_impls). Otherwise the interface's default return
+                                        // type (e.g. IIterator<T>.iter -> IIterator<T>) wrongly
+                                        // overrides the class's own method return type
+                                        // (e.g. RangeIterator.iter -> mut RangeIterator).
+                                        let cls_defines_method: mut bool = false;
                                         let mi: mut i64 = 0;
                                         while (mi < cast<i64>(cls.methods.size())) {
                                             let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
                                             if (md is BoundDefinition.function_def) {
                                                 if (md.function_def.name == sym.function_sym.name) {
                                                     bt = md.function_def.return_type;
+                                                    cls_defines_method = true;
                                                 }
                                             }
                                             mi = mi + 1;
@@ -5149,6 +5344,7 @@ class SemanticModel {
                                                     if (md is BoundDefinition.function_def) {
                                                         if (md.function_def.name == sym.function_sym.name) {
                                                             bt = md.function_def.return_type;
+                                                            cls_defines_method = true;
                                                         }
                                                     }
                                                     imi = imi + 1;
@@ -5170,7 +5366,9 @@ class SemanticModel {
                                                         let md: BoundDefinition = iface.methods.at(cast<u64>(imi)).some;
                                                         if (md is BoundDefinition.function_def) {
                                                             if (md.function_def.name == sym.function_sym.name) {
-                                                                bt = md.function_def.return_type;
+                                                                if (!cls_defines_method) {
+                                                                    bt = md.function_def.return_type;
+                                                                }
                                                             }
                                                         }
                                                         imi = imi + 1;
@@ -5311,6 +5509,7 @@ class SemanticModel {
                                     }
                                 }
                             }
+                            this.check_argument_types(sym.function_sym, args);
                             let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, direct_sym, args, is_virt, empty_generic_args, false);
                             if (direct_disp) {
                                 result.direct_dispatch = true;
@@ -6087,11 +6286,26 @@ class SemanticModel {
                         if (target.some.identifier.symbol.is_some()) {
                             // Reference type mutability compatibility: for explicit
                             // IReferenceType types, the value's mutability must match
-                            // the target's binding mutability.
+                            // the target's binding mutability. When the value is a
+                            // variable reference, its BINDING mutability is
+                            // authoritative (BabyPenguin: `let a = new Ref(1)` is an
+                            // immutable binding even though the new-expression's type
+                            // is mutable), so an immutable binding assigned to a
+                            // mutable target fails E_MUTABILITY.
                             if (value.is_some() && this.is_iref_type(value_type)) {
                                 let val_type: BoundType = value.some.get_bound_type();
                                 let target_mut: Mutability = value_type.mutability;
-                                let val_mut: Mutability = val_type.mutability;
+                                let val_mut: mut Mutability = val_type.mutability;
+                                if (value.some is BoundExpression.identifier) {
+                                    let v_id: BoundIdentifierExpression = value.some.identifier;
+                                    if (v_id.symbol.is_some()) {
+                                        if (v_id.symbol.some is BoundSymbol.variable) {
+                                            if (!v_id.symbol.some.variable.is_mutable) {
+                                                val_mut = new Mutability.Immutable();
+                                            }
+                                        }
+                                    }
+                                }
                                 if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
                                     this.report_error(new ErrorCode.E_MUTABILITY(),
                                         "Cannot assign immutable value to mutable variable",
@@ -6186,9 +6400,12 @@ class SemanticModel {
                     let init_type: BoundType = initializer.some.get_bound_type();
                     // When type is inferred (no type_spec), propagate mutability
                     // from the initializer's type to the binding (BabyPenguin
-                    // conflates binding and type mutability).
+                    // conflates binding and type mutability). Reference types
+                    // (IReferenceType) are exempt: BabyPenguin keeps `let a = new Ref(1)`
+                    // an immutable binding even though the new-expression's type is
+                    // mutable, so assigning it to a `mut` binding must fail E_MUTABILITY.
                     if (stmt.let_decl.type_spec.is_none()) {
-                        if (init_type.mutability is Mutability.Mutable) {
+                        if (init_type.mutability is Mutability.Mutable && !this.is_iref_type(init_type)) {
                             var_sym.is_mutable = true;
                         }
                     }
@@ -6196,6 +6413,30 @@ class SemanticModel {
                     if (stmt.let_decl.type_spec.is_some()) {
                         let resolved: mut BoundType = this.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
                         decl_type = resolved;
+                    }
+                    // Reference type mutability compatibility: `let b: mut Ref = a`
+                    // where `a` is an immutable binding must fail E_MUTABILITY (an
+                    // IReferenceType value aliases, so imm→mut would allow mutating
+                    // shared state). A fresh mutable expression (`new Ref(...)`) is
+                    // allowed, and value types (ICopy) copy so they are exempt.
+                    if (this.is_iref_type(decl_type)) {
+                        let target_mut: Mutability = decl_type.mutability;
+                        let val_mut: mut Mutability = init_type.mutability;
+                        if (initializer.some is BoundExpression.identifier) {
+                            let v_id: BoundIdentifierExpression = initializer.some.identifier;
+                            if (v_id.symbol.is_some()) {
+                                if (v_id.symbol.some is BoundSymbol.variable) {
+                                    if (!v_id.symbol.some.variable.is_mutable) {
+                                        val_mut = new Mutability.Immutable();
+                                    }
+                                }
+                            }
+                        }
+                        if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
+                            this.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot assign immutable value to mutable variable",
+                                new SourceLocation("", 0, 0));
+                        }
                     }
                     var_sym.bound_type = decl_type;
                     let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(

@@ -628,6 +628,14 @@ namespace emperor {
                     this.advance_char();
                     continue;
                 }
+                // Array/iterable type suffix: `i64[]`. The parser expects a single
+                // ArrayBracket token for `[]`.
+                if (ch == "[" && this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "]") {
+                    tokens.push(new Token(new TokenType.ArrayBracket(), "[]", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 2;
+                    this.advance_chars(2);
+                    continue;
+                }
 
                 // Check for encoding prefix (u8/u/U/L) for string/char constants
                 if (ch == "u" || ch == "U" || ch == "L") {

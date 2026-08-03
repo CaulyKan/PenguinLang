@@ -2341,11 +2341,13 @@ class LLVMEmitter {
         if (inst.op == "neg") {
             let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
             this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + coerced);
+            this.register_llvm_type(result_name, llvm_type);
             return;
         }
         if (inst.op == "plus") {
             let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
             this.emit_line("  " + result_name + " = freeze " + llvm_type + " " + coerced);
+            this.register_llvm_type(result_name, llvm_type);
             return;
         }
         if (inst.op == "not") {
@@ -2358,11 +2360,13 @@ class LLVMEmitter {
                 operand = zext_tmp;
             }
             this.emit_line("  " + result_name + " = xor i8 " + operand + ", 1");
+            this.register_llvm_type(result_name, "i8");
             return;
         }
         if (inst.op == "bitnot") {
             let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
             this.emit_line("  " + result_name + " = xor " + llvm_type + " " + coerced + ", -1");
+            this.register_llvm_type(result_name, llvm_type);
             return;
         }
         this.emit_line("  ; unknown unaryop " + inst.op);

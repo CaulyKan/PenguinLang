@@ -1005,6 +1005,12 @@ namespace emperor {
             if (this.stream.peek_type() is TokenType.Mut) {
                 this.stream.advance();
                 ts.is_mutable = true;
+            } else if (this.stream.peek().text == "!mut") {
+                this.stream.advance();
+                ts.is_not_mutable = true;
+            } else if (this.stream.peek_type() is TokenType.AutoKw) {
+                this.stream.advance();
+                ts.is_auto_mutability = true;
             }
             let t: Token = this.stream.advance();
             ts.location = this.tok_loc(t);

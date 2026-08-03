@@ -281,7 +281,7 @@ lambdaFunctionExpression:
 	)? codeBlockExpression;
 
 functionDefinition:
-	functionSpecifier* 'fun' (identifier | 'new') (
+	(templateDeclaration)? functionSpecifier* 'fun' (identifier | 'new') (
 		'(' parameterList ')'
 	)? ('->' typeSpecifier)? (codeBlockExpression | ';');
 

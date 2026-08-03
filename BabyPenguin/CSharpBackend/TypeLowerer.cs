@@ -117,13 +117,14 @@ namespace BabyPenguin.CSharpBackend
             sb.AppendLine("    public BabyPenguin.CSharpBackend.Runtime.Meta __meta => META;");
             sb.AppendLine("    public int _value;             // variant tag (matches IR member name)");
             sb.AppendLine("    public object _containing_value; // variant payload (matches IR member name)");
-            // enum -> string yields the variant NAME (matches interpreter StaticToString), not the C# type name.
-            // TokenStream.match/expect compare TokenType cast to string, so this must distinguish variants.
-            sb.Append($"    public static string __ToName({name} v) {{ switch (v._value) {{");
-            foreach (var d in enm.EnumDeclarations)
-                sb.Append($" case {d.Value}: return \"{d.Name}\";");
-            sb.Append(" default: return v._value.ToString(); } }");
-            sb.AppendLine();
+            // enum -> string yields the variant INDEX (matches the EmperorPenguin
+            // LLVM backend and the cross-compiler tests, e.g. cast<string>(Color.red)
+            // -> "0"). The interpreter's StaticToString yields the name, but the
+            // test suite (and the native compilers) expect the index. TokenStream
+            // match/expect compare TokenType via cast-to-string; index comparison
+            // distinguishes variants just as well (distinct variants have distinct
+            // declaration indexes), so this is safe for the pass1 bootstrap.
+            sb.AppendLine($"    public static string __ToName({name} v) => v._value.ToString();");
             sb.AppendLine("}");
             return sb.ToString();
         }

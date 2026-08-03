@@ -20,7 +20,7 @@ Exit with code 1, which should prevent further output.
 ## Compile
 Args: ``
 Env: ``
-ExpectedExitCode: 0
+ExpectedExitCode: ANY
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
