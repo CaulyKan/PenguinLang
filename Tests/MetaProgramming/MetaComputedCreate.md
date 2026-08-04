@@ -13,8 +13,8 @@ class Point {
     y: i32;
 }
 #fun count_expr(t: type) -> ast {
-    let mut s: string = "0";
-    let mut i: i64 = 0;
+    let mut s = "0";
+    let mut i = 0;
     let n: i64 = cast<i64>(t.fields().size());
     while (i < n) {
         s = s + " + 1";

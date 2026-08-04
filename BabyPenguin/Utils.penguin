@@ -54,18 +54,21 @@ namespace _utils {
         extern fun set(mut this, index: u64, value: T);
 
         impl __builtin.IIterable<T> {
-            fun iter(this: mut __builtin.IIterable<T>) -> mut __builtin.IIterator<T> {
-                return cast<mut __builtin.IIterator<T>>(new _utils.ListIterator<T>(cast<mut _utils.List<T>>(this)));
+            fun iter(this: __builtin.IIterable<T>) -> __builtin.IIterator<T> {
+                return cast<__builtin.IIterator<T>>(new _utils.ListIterator<T>(cast<_utils.List<T>>(this)));
+            }
+            fun iter_mut(this: __builtin.IIterable<T>) -> mut __builtin.IIterator<T> {
+                return cast<mut __builtin.IIterator<T>>(new _utils.ListIterator<T>(cast<_utils.List<T>>(this)));
             }
         }
     }
 
     #template(T: type)
     class ListIterator {
-        list: mut _utils.List<T>;
+        list: !mut _utils.List<T>;
         current: mut u64;
 
-        fun new(mut this, list: mut _utils.List<T>) {
+        fun new(mut this, list: !mut _utils.List<T>) {
             this.list = list;
             this.current = 0;
         }

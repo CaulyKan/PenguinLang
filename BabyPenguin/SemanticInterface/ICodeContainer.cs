@@ -100,6 +100,12 @@ namespace BabyPenguin.SemanticInterface
                     if (type != null)
                     {
                         variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
+                        // `let mut v = new Foo()`: make the binding reassignable.
+                        // Plain `let v = new Foo()` keeps an immutable binding to a
+                        // mutable value (IsMutable stays Auto -> MutableSymbolProxy
+                        // resolves it as immutable, matching EmperorPenguin).
+                        if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
+                            variableSymbol.IsMutable = Mutability.Mutable;
                         variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
                         return variableSymbol.TypeInfo;
                     }
@@ -114,6 +120,11 @@ namespace BabyPenguin.SemanticInterface
                     if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
                     {
                         variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
+                        // `let mut x = <expr>` makes the binding reassignable; without
+                        // this, IsMutable stays Auto and ResolveShortSymbol wraps the
+                        // symbol in an immutable MutableSymbolProxy, so any later
+                        // assignment fails E_MUTABILITY.
+                        variableSymbol.IsMutable = Mutability.Mutable;
                     }
                     else
                     {
@@ -377,31 +388,94 @@ namespace BabyPenguin.SemanticInterface
                 case Statement.Type.ForStatement:
                     {
                         var forStatement = item.ForStatement!;
-                        var iteratorSymbol = AddExpression(forStatement.Expression!, false);
-                        var iteratorSymbolType = iteratorSymbol.TypeInfo;
+                        var decl = forStatement.Declaration!;
+                        var iterableSymbol = AddExpression(forStatement.Expression!, false);
+                        var iterableSymbolType = iterableSymbol.TypeInfo;
 
-                        // expecting an iterator symbol
-                        if (iteratorSymbolType.GenericArguments.FirstOrDefault() is IType iterType)
+                        // The `in` expression must be either an IIterator<T> (used as-is) or an
+                        // iterable implementing IIterable<T> (desugared to iter()/iter_mut()). The
+                        // iteration method is chosen from the loop variable's mutability:
+                        //   let x           -> iter()      (read-only path)
+                        //   let x : mut T   -> iter_mut()  (mutable path)
+                        //   let mut x       -> iter_mut()
+                        bool loopVarMutable = decl.SuggestMutableTypeInfer
+                            || (decl.TypeSpecifier?.IsMutable ?? Mutability.Unspecified) == Mutability.Mutable;
+
+                        ISymbol iteratorSymbol;
+                        IType iteratorSymbolType;
+                        IType elementType;
+
+                        var iterableBaseName = iterableSymbolType.WithMutability(Mutability.Auto).FullName();
+                        if (iterableBaseName.StartsWith("__builtin.IIterator<") &&
+                            iterableSymbolType.GenericArguments.FirstOrDefault() is IType existingElem)
                         {
-                            var iteratorType = Model.ResolveType($"mut __builtin.IIterator<{iterType.FullName()}>");
-                            if (iteratorSymbolType.FullName() == iteratorType!.FullName())
-                            {
-                                // OK
-                            }
-                            else if (iteratorSymbolType.FullName() != iteratorType!.FullName() && iteratorSymbolType.CanImplicitlyCastTo(iteratorType))
-                            {
-                                var temp = AllocTempSymbol(iteratorType, forStatement.Declaration!.SourceLocation);
-                                AddCastExpression(new(iteratorSymbol), temp, forStatement.Declaration!.SourceLocation);
-                                iteratorSymbolType = iteratorType;
-                                iteratorSymbol = temp;
-                            }
-                            else
-                                throw new BabyPenguinException($"For loop requires an iterator of type {iteratorType!.FullName()}, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation, code: ErrorCode.E_ITERATOR_INVALID);
+                            // Already an iterator — use it directly.
+                            iteratorSymbol = iterableSymbol;
+                            iteratorSymbolType = iterableSymbolType;
+                            elementType = existingElem;
+                        }
+                        else if (iterableSymbolType.GenericArguments.FirstOrDefault() is IType castElem &&
+                            Model.ResolveType($"__builtin.IIterator<{castElem.WithMutability(Mutability.Auto).FullName()}>") is IType castIface &&
+                            iterableSymbolType.CanImplicitlyCastTo(castIface))
+                        {
+                            // Implicitly convertible to an iterator (e.g. IGenerator<T> which
+                            // implements IIterator<T>) — cast to a mutable iterator and use it.
+                            var mutIterType = castIface.WithMutability(Mutability.Mutable);
+                            var temp = AllocTempSymbol(mutIterType, forStatement.SourceLocation, Mutability.Mutable);
+                            AddCastExpression(new(iterableSymbol), temp, forStatement.SourceLocation);
+                            iteratorSymbol = temp;
+                            iteratorSymbolType = mutIterType;
+                            elementType = castElem;
                         }
                         else
-                            throw new BabyPenguinException($"For loop requires an iterator of type __builtin.IIterator<?>, but got '{iteratorSymbol.TypeInfo}'", forStatement.SourceLocation, code: ErrorCode.E_ITERATOR_INVALID);
+                        {
+                            // Not an iterator: must be iterable. Synthesize `<expr>.iter()` /
+                            // `<expr>.iter_mut()` and evaluate it through the normal member-call
+                            // path so the concrete method (incl. interface dispatch) is resolved.
+                            var methodName = loopVarMutable ? "iter_mut" : "iter";
+                            var memberAccess = new ReadMemberAccessExpression
+                            {
+                                BaseExpression = forStatement.Expression!,
+                                Member = new SymbolIdentifier { LiteralName = methodName },
+                                SourceLocation = forStatement.SourceLocation,
+                            };
+                            var iterCall = new FunctionCallExpression { Callee = memberAccess };
+                            var iterSym = AddExpression(iterCall, false);
+                            var iterType = iterSym.TypeInfo;
+                            if (!iterType.WithMutability(Mutability.Auto).FullName().StartsWith("__builtin.IIterator<") ||
+                                iterType.GenericArguments.FirstOrDefault() is not IType yieldedElem)
+                                throw new BabyPenguinException($"For loop requires an iterable type (__builtin.IIterable<?>) or an iterator (__builtin.IIterator<?>), but got '{iterableSymbolType}'", forStatement.SourceLocation, code: ErrorCode.E_ITERATOR_INVALID);
+                            iteratorSymbol = iterSym;
+                            iteratorSymbolType = iterType;
+                            elementType = yieldedElem;
+                        }
 
-                        var iterItemSymbol = AddLocalDeclaration(forStatement.Declaration!);
+                        // Loop variable symbol.
+                        ISymbol iterItemSymbol;
+                        if (decl.TypeSpecifier == null)
+                        {
+                            // Untyped loop var: infer the type from the iterator's element type.
+                            iterItemSymbol = Model.ResolveShortSymbol(decl.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: decl.ScopeId)
+                                ?? throw new BabyPenguinException($"Cant resolve symbol '{decl.Name}'", decl.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                            if (iterItemSymbol.WithoutMutability() is VariableSymbol loopVar)
+                            {
+                                loopVar.TypeInfo = elementType;
+                                loopVar.TypeInferStatus = TypeInferStatus.ExplicitTyped;
+                                // `let mut x` in a for-loop: mutable binding (reassignable).
+                                if (decl.SuggestMutableTypeInfer)
+                                    loopVar.IsMutable = Mutability.Mutable;
+                            }
+                        }
+                        else
+                        {
+                            // The declared loop-var type is authoritative for the binding. It may
+                            // legally differ from the iterator element type in base type (e.g.
+                            // `for (let i : u64 in range(...))` over i64) and in mutability (e.g.
+                            // `let x : mut T` over immutable-typed elements — the Event.receivers
+                            // pattern). Element-mutability enforcement is left to the receiver
+                            // checks on the declared type.
+                            iterItemSymbol = AddLocalDeclaration(decl);
+                        }
 
                         // prepare begin label
                         var beginLabel = CreateLabel();
@@ -409,8 +483,8 @@ namespace BabyPenguin.SemanticInterface
                         AddInstruction(new NopInstuction(forStatement.Declaration!.SourceLocation).WithLabel(beginLabel));
                         CodeContainerData.CurrentWhileLoop.Push(new CurrentWhileLoopInfo(beginLabel, endLabel));
 
-                        // call .next on IIterator 
-                        var nextMethodSymbol = Model.ResolveSymbol(iteratorSymbol.TypeInfo.FullName() + ".next", scope: this) as FunctionSymbol;
+                        // call .next on IIterator
+                        var nextMethodSymbol = Model.ResolveSymbol(iteratorSymbol.TypeInfo.WithMutability(Mutability.Auto).FullName() + ".next", scope: this) as FunctionSymbol;
                         if (nextMethodSymbol == null)
                             throw new BabyPenguinException($"Can't resolve 'next' method of iterator type '{iteratorSymbol.TypeInfo.FullName()}'", forStatement.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                         var nextMethodImplSymbol = AllocTempSymbol(nextMethodSymbol.TypeInfo, forStatement.Expression!.SourceLocation);

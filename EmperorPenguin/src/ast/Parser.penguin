@@ -1428,6 +1428,12 @@ namespace emperor {
                     this.stream.pos = saved_pos;
                     // fall through to the expression statement path below
                 } else {
+                    // Canonical syntax: `let x : mut T = v` or the inferred shorthand
+                    // `let mut x = v`. `let mut x : T = v` (mut on the binding AND an
+                    // explicit type) is rejected — matches BabyPenguin's declaration rule.
+                    if (is_mut && type_spec_val.is_some()) {
+                        this.report_error("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.");
+                    }
                     let init_val: mut Option<Expression> = new Option<Expression>.none();
                     if (this.stream.match(new TokenType.Assign())) {
                         init_val = new Option<Expression>.some(this.parse_expression());
@@ -1581,9 +1587,16 @@ namespace emperor {
             if (this.stream.match(new TokenType.Mut())) { is_mut = true; }
             let name_token: Token = this.stream.advance();
             let var_type: mut string = "";
+            let type_spec_val: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
             if (this.stream.match(new TokenType.Colon())) {
-                let type_token: Token = this.stream.advance();
-                var_type = type_token.text;
+                let ts = this.parse_typeSpecifier();
+                var_type = ts.build_text();
+                type_spec_val = new Option<TypeSpecifier>.some(ts);
+                // Same rule as ordinary declarations: `let mut x : T` is not allowed
+                // (use `let x : mut T` or the untyped `let mut x`).
+                if (is_mut) {
+                    this.report_error("Cannot use 'let mut' with an explicit type specifier. Use 'let' instead.");
+                }
             }
             this.stream.expect(new TokenType.In());
             let iterable = this.parse_expression();
@@ -1593,6 +1606,7 @@ namespace emperor {
             node.is_mutable = is_mut;
             node.variable_name = name_token.text;
             node.variable_type = var_type;
+            node.type_spec = type_spec_val;
             node.iterable = new Option<Expression>.some(iterable);
             node.body = new Option<Statement>.some(body);
             node.location = start_loc;

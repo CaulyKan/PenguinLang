@@ -3900,6 +3900,44 @@ class SemanticModel {
         return false;
     }
 
+    // A type is an iterator if it names IIterator<?>, implements it (a vtable for
+    // IIterator<...> on the class/interface definition), or declares a structural
+    // `next` method (EmperorPenguin iterators such as _ListIterator are concrete
+    // classes exposing `next(mut this)`). for-loop desugaring uses this to decide
+    // whether to consume an `in` expression as-is or to call iter()/iter_mut().
+    fun is_iterator_type(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter is_iterator_type");
+        if (string_find(bt.display_name(), "IIterator<") >= 0) { return true; }
+        if (bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = td.class_def;
+                let vi: mut i64 = 0;
+                while (vi < cast<i64>(cls.vtables.size())) {
+                    let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+                    if (string_find(vtable.interface_type.display_name(), "IIterator<") >= 0) { return true; }
+                    vi = vi + 1;
+                }
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(cls.methods.size())) {
+                    let m: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                    if (m is BoundDefinition.function_def && m.function_def.name == "next") { return true; }
+                    mi = mi + 1;
+                }
+            }
+            if (td is BoundDefinition.interface_def) {
+                let iface: BoundInterfaceDefinition = td.interface_def;
+                let vi: mut i64 = 0;
+                while (vi < cast<i64>(iface.vtables.size())) {
+                    let vtable: BoundVTable = iface.vtables.at(cast<u64>(vi)).some;
+                    if (string_find(vtable.interface_type.display_name(), "IIterator<") >= 0) { return true; }
+                    vi = vi + 1;
+                }
+            }
+        }
+        return false;
+    }
+
     fun class_has_icopy(this, cls: BoundClassDefinition) -> bool {
         _utils.trace_enter("Enter class_has_icopy");
         let vi: mut i64 = 0;
@@ -6947,24 +6985,53 @@ class SemanticModel {
             // Create for scope
             let for_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for>", scope.full_name + ".<for>", new Option<BoundScope>.some(scope));
 
-            // 1. Build iterable.iter() call
-            let ast_iter_ma: Expression = new Expression.member_access(new MemberAccessExpression());
-            ast_iter_ma.member_access.base_expr = fs.iterable;
-            ast_iter_ma.member_access.member_name = "iter";
-            let ast_iter_call: Expression = new Expression.function_call(new FunctionCallExpression());
-            ast_iter_call.function_call.callee = new Option<Expression>.some(ast_iter_ma);
-            let bound_iter_call: Option<BoundExpression> = this.bind_expression(ast_iter_call, for_scope);
+            // The iteration method is chosen from the loop variable's mutability:
+            //   let x         -> iter()      (read-only path)
+            //   let x : mut T -> iter_mut()  (mutable path)
+            //   let mut x     -> iter_mut()
+            let loop_mutable: bool = fs.is_mutable || (fs.type_spec.is_some() && fs.type_spec.some.is_mutable);
 
-            if (bound_iter_call.is_none()) {
+            // 1. Bind the iterable expression to learn its type.
+            let bound_iterable: mut Option<BoundExpression> = this.bind_expression(fs.iterable.some, for_scope);
+            if (bound_iterable.is_none()) {
                 return new Option<BoundStatement>.none();
             }
-            let iter_type: mut BoundType = bound_iter_call.some.get_bound_type();
+            let iterable_type: mut BoundType = bound_iterable.some.get_bound_type();
 
-            // 2. Declare __iter
+            let bound_iter_call: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+            let iter_type: mut BoundType = this.type_registry.make_error_type();
+            if (this.is_iterator_type(iterable_type)) {
+                // Already an iterator — use it directly (no extra .iter() wrap).
+                bound_iter_call = bound_iterable;
+                iter_type = iterable_type;
+            } else {
+                // A genuine iterable: desugar to iter()/iter_mut(). The iterable must
+                // provide the chosen method, otherwise the type is not iterable.
+                let method_name: string = if (loop_mutable) { "iter_mut" } else { "iter" };
+                let ast_iter_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+                ast_iter_ma.member_access.base_expr = fs.iterable;
+                ast_iter_ma.member_access.member_name = method_name;
+                let ast_iter_call: Expression = new Expression.function_call(new FunctionCallExpression());
+                ast_iter_call.function_call.callee = new Option<Expression>.some(ast_iter_ma);
+                let b: mut Option<BoundExpression> = this.bind_expression(ast_iter_call, for_scope);
+                if (b.is_none()) {
+                    this.report_error(new ErrorCode.E_ITERATOR_INVALID(),
+                        "Type '" + iterable_type.display_name() + "' is not iterable (missing '" + method_name + "' method)",
+                        loc);
+                    return new Option<BoundStatement>.none();
+                }
+                bound_iter_call = b;
+                let it_tmp: mut BoundType = bound_iter_call.some.get_bound_type();
+                iter_type = it_tmp;
+            }
+
+            // 2. Declare __iter. The iterator is ALWAYS held by a mutable binding so
+            // that next(mut this) is callable even when iter() returns a non-mut-typed
+            // IIterator (the read-only path).
             let iter_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
             iter_sym.name = "__iter";
             iter_sym.full_name = for_scope.full_name + ".__iter";
-            iter_sym.bound_type = iter_type;
+            iter_sym.bound_type = iter_type.with_mutability(new Mutability.Mutable());
             iter_sym.is_mutable = true;
             iter_sym.variable_kind = new VariableSymbolKind.Local();
             iter_sym.location = loc;
@@ -7021,11 +7088,18 @@ class SemanticModel {
             // 8. Create body scope for loop variable
             let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for_body>", for_scope.full_name + ".<for_body>", new Option<BoundScope>.some(for_scope));
 
-            // 9. Create loop variable
+            // 9. Create loop variable. The declared type (if any) is authoritative for
+            // the binding — including its mutability (`let x : mut Foo`); otherwise the
+            // iterator's element type is inferred. `let mut x` makes the binding
+            // reassignable.
+            let loop_var_type: mut BoundType = elem_type;
+            if (fs.type_spec.is_some()) {
+                loop_var_type = this.resolve_type_specifier(fs.type_spec.some, body_scope);
+            }
             let loop_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
             loop_sym.name = fs.variable_name;
             loop_sym.full_name = body_scope.full_name + "." + fs.variable_name;
-            loop_sym.bound_type = elem_type;
+            loop_sym.bound_type = loop_var_type;
             loop_sym.is_mutable = fs.is_mutable;
             loop_sym.variable_kind = new VariableSymbolKind.Local();
             loop_sym.location = loc;
@@ -7054,7 +7128,7 @@ class SemanticModel {
             let loop_let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                 new Option<BoundVariableSymbol>.some(loop_sym),
                 bound_opt_some,
-                elem_type,
+                loop_var_type,
                 new Option<BoundScope>.some(body_scope));
             loop_let_stmt.location = loc;
             inner_stmts.push(new BoundStatement.let_decl(loop_let_stmt));
@@ -7093,7 +7167,7 @@ class SemanticModel {
             let iter_decl: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                 new Option<BoundVariableSymbol>.some(iter_sym),
                 bound_iter_call,
-                iter_type,
+                iter_sym.bound_type,
                 new Option<BoundScope>.some(for_scope));
             iter_decl.location = loc;
             final_stmts.push(new BoundStatement.let_decl(iter_decl));

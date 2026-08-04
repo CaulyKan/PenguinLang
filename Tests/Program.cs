@@ -122,12 +122,17 @@ public static class Program
         var runDir = Path.Combine(repoRoot, "tmp", "testruns", stamp);
         Directory.CreateDirectory(runDir);
 
-        // Load baseline.
-        var baselinePath = opts.Baseline == "none"
-            ? null
-            : (opts.Baseline == "latest" || opts.Baseline == null
-                ? Path.Combine(repoRoot, "tmp", "testruns", "latest.json")
-                : opts.Baseline);
+        // Baseline to diff against: --compare-with latest|none|<path>, default
+        // tmp/testruns/latest.json. The --baseline flag additionally records
+        // THIS run as the new baseline.
+        string? baselinePath;
+        if (opts.CompareWith == null ||
+            opts.CompareWith.Equals("latest", StringComparison.OrdinalIgnoreCase))
+            baselinePath = Path.Combine(repoRoot, "tmp", "testruns", "latest.json");
+        else if (opts.CompareWith.Equals("none", StringComparison.OrdinalIgnoreCase))
+            baselinePath = null;
+        else
+            baselinePath = opts.CompareWith;
         Dictionary<string, ComboResult>? baseline = null;
         if (baselinePath != null && File.Exists(baselinePath))
         {
@@ -335,8 +340,8 @@ public sealed class Options
     public int Parallel = Math.Max(1, Environment.ProcessorCount - 1);
     public int TimeoutCompileSec = 600;
     public int TimeoutRunSec = 60;
-    public string? Baseline; // null/"latest" => latest.json, "none" => disabled, else path
     public bool BaselineSet; // true iff --baseline was passed explicitly
+    public string? CompareWith; // baseline to diff against; null => tmp/testruns/latest.json
     public int TimeRegressionPct = 50;
     public int MemRegressionPct = 50;
     public string? Migrate;
@@ -368,7 +373,14 @@ public sealed class Options
                 case "--parallel": { var v = Val(); if (v == null || !int.TryParse(v, out o.Parallel)) { Console.Error.WriteLine("bad --parallel"); return null; } break; }
                 case "--timeout-compile": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutCompileSec)) { Console.Error.WriteLine("bad --timeout-compile"); return null; } break; }
                 case "--timeout-run": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutRunSec)) { Console.Error.WriteLine("bad --timeout-run"); return null; } break; }
-                case "--baseline": o.Baseline = Val(); o.BaselineSet = true; if (o.Baseline == null) return null; break;
+                case "--baseline":
+                    // Pure flag: record this run as the new baseline. The baseline
+                    // written is timestamped (tmp/testruns/baseline-<stamp>.json) and
+                    // copied to latest.json. Takes no value; the diff still compares
+                    // against the --compare-with baseline (default latest.json).
+                    o.BaselineSet = true;
+                    break;
+                case "--compare-with": o.CompareWith = Val(); if (o.CompareWith == null) return null; break;
                 case "--time-regression-pct": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeRegressionPct)) { Console.Error.WriteLine("bad --time-regression-pct"); return null; } break; }
                 case "--mem-regression-pct": { var v = Val(); if (v == null || !int.TryParse(v, out o.MemRegressionPct)) { Console.Error.WriteLine("bad --mem-regression-pct"); return null; } break; }
                 case "--migrate": o.Migrate = Val(); if (o.Migrate == null) return null; break;
@@ -416,13 +428,14 @@ public sealed class Options
           --parallel <n>          Max concurrent combos (default: cores-1).
           --timeout-compile <s>   Per-case compile timeout (default 600).
           --timeout-run <s>       Per-case run timeout (default 60).
-          --baseline latest|none|<path>
-                                  Baseline for diff (default: tmp/testruns/latest.json).
-                                  Passing --baseline also records THIS run as the new
-                                  baseline: writes tmp/testruns/baseline-<time>.json
-                                  (same format as latest.json) and copies it to
-                                  latest.json. Without --baseline, latest.json is
-                                  never overwritten.
+          --compare-with <path>   Baseline to diff against: latest, none, or a .json path.
+                                  Default: tmp/testruns/latest.json.
+          --baseline              Flag (no value): record THIS run as the new baseline.
+                                  Writes tmp/testruns/baseline-<time>.json (same format
+                                  as latest.json) and copies it to latest.json. The diff
+                                  still compares against --compare-with (default
+                                  latest.json); without --baseline, latest.json is never
+                                  overwritten.
           --time-regression-pct <pct>   Flag duration regressions > pct (default 50).
           --mem-regression-pct <pct>    Flag memory regressions > pct (default 50).
           --migrate ep-e2e|bp-behaviorial|all [--merge-regions]

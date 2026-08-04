@@ -59,15 +59,14 @@ namespace _utils {
 
         fun next(mut this) -> __builtin.Option<T> {
             if (this.current.is_some()) {
-                let node: mut _ListNode<T> = this.current.some;
-                let val: T = node.value.some;
-                this.current = node.next;
-                return new __builtin.Option<T>.some(val);
+                let result: __builtin.Option<T> = this.current.some.value;
+                this.current = this.current.some.next;
+                return result;
             }
             return new __builtin.Option<T>.none();
         }
 
-        fun iter(mut this) -> mut _ListIterator<T> {
+        fun iter(this) -> _ListIterator<T> {
             return new _ListIterator<T>(this.current);
         }
     }
@@ -237,7 +236,11 @@ namespace _utils {
             return this.count;
         }
 
-        fun iter(mut this) -> mut _ListIterator<T> {
+        fun iter(this) -> _ListIterator<T> {
+            return new _ListIterator<T>(this.head);
+        }
+
+        fun iter_mut(this) -> mut _ListIterator<T> {
             return new _ListIterator<T>(this.head);
         }
     }

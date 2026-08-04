@@ -85,11 +85,13 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
   --probe                    # ignore Apply To; run selected compilers on every test
   --parallel <n>             # default cores-1
   --timeout-compile <s>      # default 600   --timeout-run <s>   default 60
-  --baseline latest|none|<path>              # default tmp/testruns/latest.json
-                                             # passing --baseline RECORDS this run as the
-                                             # new baseline: writes tmp/testruns/baseline-<ts>.json
-                                             # and copies it to latest.json; plain runs never
-                                             # overwrite latest.json
+  --compare-with <path>                    # baseline to diff against: latest|none|<.json path>
+                                           # default tmp/testruns/latest.json
+  --baseline                               # flag (no value): record this run as the new
+                                           # baseline — writes tmp/testruns/baseline-<ts>.json
+                                           # and copies it to latest.json. The diff compares
+                                           # against --compare-with (default latest.json);
+                                           # plain runs (no --baseline) never overwrite it
   --time-regression-pct <pct>  --mem-regression-pct <pct>   # both default 50
 ```
 
@@ -209,7 +211,7 @@ BabyPenguin emits a register-based IR with 25+ instruction types:
 - `StringBuilder`: `append()`, `to_string()`
 - `Box<T>`: Simple wrapper class
 - `ICopy<T>`: Interface for value-type copy semantics (implemented for all primitives)
-- `IIterator<T>`, `IIterable<T>`: Iterator interfaces
+- `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`: Iterator interfaces. `IIterable.iter()` is the read-only path (element type T as stored, callable on immutable containers); `iter_mut()` is the mutable path. For-loop desugaring picks `iter()`/`iter_mut()` by the loop variable's mutability (`let x` → `iter`, `let x : mut T`/`let mut x` → `iter_mut`); an `in` expression that is already an iterator is used as-is.
 - `Pair<K,V>`: Key-value pair class
 
 ## EmperorPenguin Architecture
@@ -319,7 +321,7 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 
 | File | Contents |
 |------|----------|
-| `core_builtin.penguin` (129 lines) | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IIterator<T>`, `IIterable<T>`, `Pair<K,V>` |
+| `core_builtin.penguin` (129 lines) | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>` |
 | `utils.penguin` (188 lines) | `_utils` namespace: `List<T>` (linked list), `Queue<T>` (linked queue), file I/O externs, `exec()` helper, `dir_get_entries()` |
 
 ### Project Handling (`src/project/`)

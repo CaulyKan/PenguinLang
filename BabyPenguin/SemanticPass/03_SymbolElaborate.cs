@@ -331,7 +331,9 @@ namespace BabyPenguin.SemanticPass
                         }
                         else if (node is ForStatement forStatement)
                         {
-                            var typeName = forStatement.Declaration!.TypeSpecifier!.Name;
+                            // Untyped for-loop variables (let x in ...) have no TypeSpecifier;
+                            // the type is inferred from the iterator element at codegen time.
+                            var typeName = forStatement.Declaration!.TypeSpecifier?.Name ?? "";
                             container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, null, false, forStatement.Declaration, declaringScopeId: forStatement.ScopeId);
                         }
                         else if (node is TryBindExpression tryBind && tryBind.TypeSpecifier != null)

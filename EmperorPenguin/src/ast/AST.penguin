@@ -624,6 +624,9 @@ class WhileStatement {
 class ForStatement {
     variable_name: mut string = "";
     variable_type: mut string = "";
+    // The parsed loop-var type specifier (may carry 'mut', e.g. `let x : mut Foo`).
+    // `is_mutable` mirrors `let mut x`; `type_spec.is_mutable` mirrors `let x : mut T`.
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     is_mutable: mut bool = false;
     iterable: mut Option<Expression> = new Option<Expression>.none();
     body: mut Option<Statement> = new Option<Statement>.none();

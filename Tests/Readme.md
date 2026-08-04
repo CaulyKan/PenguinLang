@@ -253,7 +253,8 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 | `--parallel <n>` | cores−1 | Max concurrent (test × compiler) combinations. |
 | `--timeout-compile <s>` | 600 | Per-case compile timeout. |
 | `--timeout-run <s>` | 60 | Per-case run timeout. |
-| `--baseline latest\|none\|<path>` | `tmp/testruns/latest.json` | Baseline for the diff. Passing `--baseline` also **records this run as the new baseline** (see below). |
+| `--compare-with latest\|none\|<path>` | `tmp/testruns/latest.json` | Baseline to diff against. `none` disables the diff; a path selects a specific `summary.json`/`baseline-*.json` file. |
+| `--baseline` | off | Flag (no value): record this run as the new baseline (see below). |
 | `--time-regression-pct <pct>` | 50 | Flag duration regressions above this %. |
 | `--mem-regression-pct <pct>` | 50 | Flag peak-memory regressions above this %. |
 | `--help` | | Show help. |
@@ -295,10 +296,9 @@ tmp/testruns/baseline-<ts>.json # dated snapshot of a run that recorded a baseli
 ```
 
 **Recording a baseline:** `latest.json` is never overwritten by a plain run. To (re)baseline,
-pass `--baseline` explicitly (`--baseline none` to start fresh, `--baseline latest` to
-re-baseline against the previous one). Such a run writes `baseline-<ts>.json` (same format
-as `latest.json`) and copies it to `latest.json`. `baseline-<ts>.json` files are only
-removed manually.
+pass the `--baseline` flag (it takes no value). The run writes `baseline-<ts>.json` (same
+format as `latest.json`, timestamped) and copies it to `latest.json`. `baseline-<ts>.json`
+files are only removed manually.
 
 **Skipped combos and the diff:** a combo with status `SKIP` (e.g. a `(SKIP if 'X' PASS)`
 guard that matched) carries no result signal, so it is **never** reported as a new failure

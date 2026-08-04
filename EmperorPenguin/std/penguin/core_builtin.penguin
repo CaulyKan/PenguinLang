@@ -88,14 +88,23 @@ namespace __builtin {
     interface IIterator {
         impl IReferenceType;
         fun next(mut this) -> Option<T>;
-        fun iter(mut this) -> mut IIterator<T> {
+        fun iter(this) -> IIterator<T> {
             return this;
         }
     }
 
     #template(T: type)
     interface IIterable {
-        fun iter(mut this) -> mut IIterator<T>;
+        // `iter()` is the read-only iteration path (non-mut-typed IIterator); `iter_mut()` is
+        // the mutable path. Both are callable on immutable containers — creating an iterator
+        // never mutates the container. The element type T is preserved as stored.
+        fun iter(this) -> IIterator<T>;
+        fun iter_mut(this) -> mut IIterator<T>;
+    }
+
+    #template(T: type)
+    interface IMutIterator {
+        fun iter_mut(this) -> mut IIterator<T>;
     }
 
     impl __builtin.ICopy<i64> for i64;
@@ -181,7 +190,7 @@ namespace __builtin {
             }
             return new __builtin.Option<i64>.none();
         }
-        fun iter(mut this) -> mut RangeIterator {
+        fun iter(this) -> RangeIterator {
             return this;
         }
         impl IIterator<i64> {
@@ -203,7 +212,7 @@ namespace __builtin {
             this.start = start;
             this.end = end;
         }
-        fun iter(mut this) -> mut RangeIterator {
+        fun iter(this) -> RangeIterator {
             return new RangeIterator(this.start, this.end);
         }
     }

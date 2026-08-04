@@ -12,8 +12,8 @@ R4 composite: `#printf("a={}, b={}") { a, b }` — a `#fun` that takes a format 
     if (expr is emperor.Expression.function_call_arguments) {
         let args = expr.function_call_arguments;
         let n = cast<i64>(args.size());
-        let mut fmt_idx: mut i64 = 0;
-        let mut arg_idx: mut i64 = 0;
+        let mut fmt_idx = 0;
+        let mut arg_idx = 0;
         let fmt_len = string_length(fmt);
         let mut result = "println(\"";
         while (fmt_idx < fmt_len) {

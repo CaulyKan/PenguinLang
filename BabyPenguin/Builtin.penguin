@@ -146,7 +146,17 @@ namespace __builtin {
 
     #template(T: type)
     interface IIterable {
-        fun iter(mut this) -> mut IIterator<T>;
+        // `iter()` is the read-only iteration path: it returns a non-mut-typed IIterator
+        // over the container's elements (element type T as stored). `iter_mut()` returns a
+        // mut-typed IIterator (same element type) for the mutable iteration path. Both are
+        // callable on immutable containers — creating an iterator never mutates the container.
+        fun iter(this) -> IIterator<T>;
+        fun iter_mut(this) -> mut IIterator<T>;
+    }
+
+    #template(T: type)
+    interface IMutIterator {
+        fun iter_mut(this) -> mut IIterator<T>;
     }
 
     class RangeIterator {
