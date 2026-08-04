@@ -39,7 +39,7 @@ initial {
 
             var mangler = new NameMangler();
             var emitter = new CSharpEmitter(mangler, new System.Collections.Generic.HashSet<string>());
-            var lowered = new FunctionLowerer(emitter).Lower(fibFunc);
+            var lowered = new FunctionLowerer(emitter, ir).Lower(fibFunc);
             var mangledName = mangler.Mangle(fibFunc.Name);
             var source = $$"""
 namespace BabyPenguinCompiled

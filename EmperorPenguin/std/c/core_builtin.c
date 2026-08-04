@@ -5,13 +5,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/resource.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include <process.h>
 #else
 #include <dirent.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #endif
 
 /* Debug asserts (Phase 3.4). Compile the C runtime with -DEMPEROR_DEBUG (e.g.
@@ -25,13 +26,21 @@
  * compiler uses deep recursion in the semantic analysis passes (especially
  * pass_build_scopes), which can overflow the default 8 MB stack limit on
  * Linux and cause intermittent SIGSEGV. 32 MB gives a generous safety margin
- * without consuming significant memory (stack pages are committed on demand). */
+ * without consuming significant memory (stack pages are committed on demand).
+ *
+ * Windows has no POSIX rlimits: the runtime stack size is fixed by the PE
+ * header (set at link time with `-Wl,--stack,N` — see main.penguin), so on
+ * Windows this function is a no-op. `__attribute__((constructor))` is accepted
+ * by clang on all targets (llvm-mingw) but not by MSVC, hence the guard. */
+#if !defined(_WIN32) || defined(__clang__)
 __attribute__((constructor))
 static void emperor_boost_stack_ctor(void) {
     _emperor_boost_stack();
 }
+#endif
 
 void _emperor_boost_stack(void) {
+#ifndef _WIN32
     struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) == 0) {
         if (rl.rlim_cur < 32 * 1024 * 1024) {
@@ -41,6 +50,7 @@ void _emperor_boost_stack(void) {
             setrlimit(RLIMIT_STACK, &rl);
         }
     }
+#endif
 }
 #ifdef EMPEROR_DEBUG
 #include <assert.h>

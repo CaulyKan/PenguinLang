@@ -96,7 +96,7 @@ if [ $PUBLISH -eq 1 ]; then
     echo "Building Linux EmperorPenguin (tmp/linux/emperor_penguin) ..."
     mkdir -p tmp/linux
     OPT=-O2 tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -o tmp/linux/emperor_penguin -vv 2>&1 | ts "%F %T" | tee tmp/publish-linux.log
+        -enable-meta -o tmp/linux/emperor_penguin -vv 2>&1 | ts "%F %T" | tee tmp/publish-linux.log
     if [ $? -ne 0 ]; then
         echo "Publish FAILED: Linux EmperorPenguin build" >&2
         exit 1
@@ -104,13 +104,31 @@ if [ $PUBLISH -eq 1 ]; then
 
     echo "Building Windows EmperorPenguin (tmp/win64/emperor_penguin.exe) ..."
     mkdir -p tmp/win64
+    # CC/AR/CXX drive the libcore_builtin.a + (optionally) libpenguin_jit.a cross
+    # builds; CLANG selects the link-time cross-compiler; -target=win64 tells
+    # main.penguin to link for PE/COFF (`-Wl,--stack` for the 32 MB PE stack).
+    # When a Windows LLVM is available — either $LLVM_WIN_PREFIX or the in-repo
+    # thirdparty/mingw-w64-x86_64-llvm-libs (see its README) — the win64 build
+    # also gets -enable-meta: the Makefile builds libpenguin_jit.a for mingw and
+    # main.penguin links it against the DLL import lib (with --export-all-symbols
+    # so the ORC JIT can resolve host functions). Without it the binary links
+    # no-op JIT stubs. lld-link infers the console subsystem from the `main`
+    # entry point, so no explicit subsystem flag is needed.
+    if [ -z "$LLVM_WIN_PREFIX" ] && [ -f "thirdparty/mingw-w64-x86_64-llvm-libs/lib/libLLVM-22.dll.a" ]; then
+        LLVM_WIN_PREFIX="$PWD/thirdparty/mingw-w64-x86_64-llvm-libs"
+    fi
+    WIN_META=""
+    if [ -n "$LLVM_WIN_PREFIX" ]; then
+        WIN_META="-enable-meta -llvm-win $LLVM_WIN_PREFIX"
+    fi
     CC=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
+    CXX=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++ \
     AR=/opt/llvm-mingw/bin/x86_64-w64-mingw32-ar \
     CLANG=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
-    CLANG_FLAGS="-Wl,-subsystem:console" \
+    LLVM_WIN_PREFIX="$LLVM_WIN_PREFIX" \
     OPT=-O2 \
     tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -o tmp/win64/emperor_penguin.exe -vv 2>&1 | ts "%F %T" | tee tmp/publish-win64.log
+        -o tmp/win64/emperor_penguin.exe -target=win64 $WIN_META -vv 2>&1 | ts "%F %T" | tee tmp/publish-win64.log
     if [ $? -ne 0 ]; then
         echo "Publish FAILED: Windows EmperorPenguin cross-compile" >&2
         exit 1
@@ -119,6 +137,13 @@ if [ $PUBLISH -eq 1 ]; then
     # --- Copy emperor_penguin binaries to vscode server directories ---
     cp tmp/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/emperor_penguin
     cp tmp/win64/emperor_penguin.exe MagellanicPenguin/vscode/server/windows/emperor_penguin.exe
+    # Windows meta JIT runtime DLLs ride along in the vscode windows server dir
+    # (only the three LLVM DLLs are vendored in thirdparty/mingw-w64-x86_64-llvm-libs/bin;
+    # their own deps — libc++/libffi/zlib/zstd/libxml2/winpthread — must be staged
+    # from the MSYS2 clang64 bin for the meta exe to actually run).
+    if [ -d "thirdparty/mingw-w64-x86_64-llvm-libs/bin" ]; then
+        cp thirdparty/mingw-w64-x86_64-llvm-libs/bin/*.dll MagellanicPenguin/vscode/server/windows/
+    fi
 
     # Publish native, self-contained executables for both targets.
     dotnet publish -r win-x64 --self-contained
