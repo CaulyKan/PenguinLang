@@ -250,9 +250,9 @@ class SemanticModel {
             if (op is BinaryOperator.Equal || op is BinaryOperator.NotEqual) {
                 let ls: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(0)).some);
                 let rs: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(1)).some);
-                if (ls.is_some()) {
-                    if (rs.is_some()) {
-                        if (ls.some == rs.some) {
+                if (let l := ls.some) {
+                    if (let r := rs.some) {
+                        if (l == r) {
                             if (op is BinaryOperator.Equal) { return new Option<bool>.some(true); }
                             return new Option<bool>.some(false);
                         }
@@ -264,10 +264,8 @@ class SemanticModel {
             }
             let lhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(0)).some);
             let rhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(1)).some);
-            if (lhs_opt.is_some()) {
-                if (rhs_opt.is_some()) {
-                    let lhs: bool = lhs_opt.some;
-                    let rhs: bool = rhs_opt.some;
+            if (let lhs := lhs_opt.some) {
+                if (let rhs := rhs_opt.some) {
                     if (op is BinaryOperator.LogicalAnd) {
                         if (lhs) { if (rhs) { return new Option<bool>.some(true); } }
                         return new Option<bool>.some(false);
@@ -295,8 +293,7 @@ class SemanticModel {
     // If this top-level meta call is #define("K","V"), record the option and
     // return true (consume it). Otherwise return false (keep it as-is).
     fun try_consume_meta_define(mut this, d: MetaCallDefinition) -> bool {
-        if (d.call.is_some()) {
-            let call: Expression = d.call.some;
+        if (let call := d.call.some) {
             if (call is Expression.meta_call) {
                 let mc: MetaCallExpression = call.meta_call;
                 if (mc.func_name == "define") {
@@ -323,43 +320,33 @@ class SemanticModel {
     fun splice_meta_if(mut this, d: MetaIfDefinition, out: mut _utils.List<Definition>) {
         let picked: mut _utils.List<Definition> = new _utils.List<Definition>();
         let decided: mut bool = false;
-        if (d.condition.is_some()) {
-            let c: Option<bool> = this.eval_meta_bool(d.condition.some);
-            if (c.is_some()) {
+        if (let cond := d.condition.some) {
+            let c: Option<bool> = this.eval_meta_bool(cond);
+            if (let cv := c.some) {
                 decided = true;
-                if (c.some) {
-                    let k: mut i64 = 0;
-                    while (k < cast<i64>(d.then_definitions.size())) {
-                        picked.push(d.then_definitions.at(cast<u64>(k)).some);
-                        k = k + 1;
+                if (cv) {
+                    for (let def : Definition in d.then_definitions) {
+                        picked.push(def);
                     }
                 } else {
                     let elif_taken: mut bool = false;
-                    let ei: mut i64 = 0;
-                    while (ei < cast<i64>(d.elif_branches.size())) {
-                        if (!elif_taken) {
-                            let br: MetaElifBranch = d.elif_branches.at(cast<u64>(ei)).some;
-                            if (br.condition.is_some()) {
-                                let ec: Option<bool> = this.eval_meta_bool(br.condition.some);
-                                if (ec.is_some()) {
-                                    if (ec.some) {
-                                        let ek: mut i64 = 0;
-                                        while (ek < cast<i64>(br.body_definitions.size())) {
-                                            picked.push(br.body_definitions.at(cast<u64>(ek)).some);
-                                            ek = ek + 1;
-                                        }
-                                        elif_taken = true;
+                    for (let br : MetaElifBranch in d.elif_branches) {
+                        if (let bc := br.condition.some) {
+                            let ec: Option<bool> = this.eval_meta_bool(bc);
+                            if (let ecv := ec.some) {
+                                if (ecv) {
+                                    for (let def : Definition in br.body_definitions) {
+                                        picked.push(def);
                                     }
+                                    elif_taken = true;
+                                    break;
                                 }
                             }
                         }
-                        ei = ei + 1;
                     }
                     if (!elif_taken) {
-                        let ek2: mut i64 = 0;
-                        while (ek2 < cast<i64>(d.else_definitions.size())) {
-                            picked.push(d.else_definitions.at(cast<u64>(ek2)).some);
-                            ek2 = ek2 + 1;
+                        for (let def : Definition in d.else_definitions) {
+                            picked.push(def);
                         }
                     }
                 }
@@ -378,16 +365,14 @@ class SemanticModel {
         let max_iterations: i64 = 10000;
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
-            if (d.condition.is_some()) {
-                let c: Option<bool> = this.eval_meta_bool(d.condition.some);
-                if (c.is_some()) {
-                    if (c.some) {
+            if (let cond := d.condition.some) {
+                let c: Option<bool> = this.eval_meta_bool(cond);
+                if (let cv := c.some) {
+                    if (cv) {
                         // Emit body definitions (resolving nested meta recursively)
                         let body_copy: mut _utils.List<Definition> = new _utils.List<Definition>();
-                        let k: mut i64 = 0;
-                        while (k < cast<i64>(d.body.size())) {
-                            body_copy.push(d.body.at(cast<u64>(k)).some);
-                            k = k + 1;
+                        for (let def : Definition in d.body) {
+                            body_copy.push(def);
                         }
                         this.collect_resolved_definitions(body_copy, out);
                         iteration = iteration + 1;
@@ -409,9 +394,7 @@ class SemanticModel {
 
     // Walk `src` definitions; resolve meta constructs, appending plain defs to `out`.
     fun collect_resolved_definitions(mut this, src: _utils.List<Definition>, out: mut _utils.List<Definition>) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(src.size())) {
-            let d: Definition = src.at(cast<u64>(i)).some;
+        for (let d : Definition in src) {
             if (d is Definition.meta_call_def) {
                 if (!this.try_consume_meta_define(d.meta_call_def)) {
                     if (!this.try_splice_meta_fun_def(d.meta_call_def, out)) {
@@ -426,7 +409,6 @@ class SemanticModel {
                 this.rewrite_meta_in_def_container(d);
                 out.push(d);
             }
-            i = i + 1;
         }
     }
 
@@ -463,17 +445,13 @@ class SemanticModel {
     // them again later (duplicates harmless — find_meta_function returns first,
     // JIT compile cached by name).
     fun collect_meta_function_defs(mut this, defs: _utils.List<Definition>) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
-            let d: Definition = defs.at(cast<u64>(i)).some;
+        for (let d : Definition in defs) {
             if (d is Definition.meta_function_def) {
                 let mfd: MetaFunctionDefinition = d.meta_function_def;
                 if (this.find_meta_function(mfd.name).is_none()) {
                     let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(mfd.name, mfd.name);
-                    let pi: mut i64 = 0;
-                    while (pi < cast<i64>(mfd.parameters.size())) {
-                        bmf.parameters.push(mfd.parameters.at(cast<u64>(pi)).some);
-                        pi = pi + 1;
+                    for (let p : MetaParameter in mfd.parameters) {
+                        bmf.parameters.push(p);
                     }
                     bmf.return_type = mfd.return_type;
                     bmf.body = mfd.body;
@@ -487,7 +465,6 @@ class SemanticModel {
             } else if (d is Definition.impl_def) {
                 this.collect_meta_function_defs(d.impl_def.functions);
             }
-            i = i + 1;
         }
     }
 
@@ -495,9 +472,7 @@ class SemanticModel {
     // unit A so they can be fed into unit B as a <meta_classes> source input.
     // Recurses into namespace/class/impl exactly like collect_meta_function_defs.
     fun collect_meta_class_defs(mut this, defs: _utils.List<Definition>) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
-            let d: Definition = defs.at(cast<u64>(i)).some;
+        for (let d : Definition in defs) {
             if (d is Definition.meta_class_def) {
                 this.meta_class_defs.push(d.meta_class_def);
             } else if (d is Definition.namespace_def) {
@@ -507,7 +482,6 @@ class SemanticModel {
             } else if (d is Definition.impl_def) {
                 this.collect_meta_class_defs(d.impl_def.functions);
             }
-            i = i + 1;
         }
     }
     // After def-level meta is flattened (rewrite_meta_definitions), walk every
@@ -519,9 +493,7 @@ class SemanticModel {
     // ------------------------------------------------------------------
 
     fun rewrite_meta_in_function_bodies(mut this, defs: _utils.List<Definition>) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
-            let d: Definition = defs.at(cast<u64>(i)).some;
+        for (let d : Definition in defs) {
             if (d is Definition.function_def) {
                 this.rewrite_meta_in_body_expr(d.function_def.body);
             } else if (d is Definition.initial_routine) {
@@ -533,13 +505,11 @@ class SemanticModel {
             } else if (d is Definition.impl_def) {
                 this.rewrite_meta_in_function_bodies(d.impl_def.functions);
             }
-            i = i + 1;
         }
     }
 
     fun rewrite_meta_in_body_expr(mut this, body: Option<Expression>) {
-        if (body.is_some()) {
-            let body_expr: Expression = body.some;
+        if (let body_expr := body.some) {
             if (body_expr is Expression.code_block) {
                 this.rewrite_meta_statements_inplace(body_expr.code_block.statements);
             }
@@ -580,8 +550,7 @@ class SemanticModel {
     // the option and return true (consume). Otherwise return false.
     fun try_consume_meta_define_stmt(mut this, s: Statement) -> bool {
         if (s is Statement.expression) {
-            if (s.expression.expression.is_some()) {
-                let inner: Expression = s.expression.expression.some;
+            if (let inner := s.expression.expression.some) {
                 if (inner is Expression.meta_call) {
                     let mc: MetaCallExpression = inner.meta_call;
                     if (mc.func_name == "define") {
@@ -611,10 +580,10 @@ class SemanticModel {
         let max_iterations: i64 = 10000;
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
-            if (s.condition.is_some()) {
-                let c: Option<bool> = this.eval_meta_bool(s.condition.some);
-                if (c.is_some()) {
-                    if (c.some) {
+            if (let cond := s.condition.some) {
+                let c: Option<bool> = this.eval_meta_bool(cond);
+                if (let cv := c.some) {
+                    if (cv) {
                         if (s.body.is_some()) {
                             this.flatten_statement_into(s.body.some, out);
                         }
@@ -640,29 +609,25 @@ class SemanticModel {
     fun splice_meta_if_stmt(mut this, s: MetaIfStatement, out: mut _utils.List<Statement>) {
         let picked: mut Option<Statement> = new Option<Statement>.none();
         let decided: mut bool = false;
-        if (s.condition.is_some()) {
-            let c: Option<bool> = this.eval_meta_bool(s.condition.some);
-            if (c.is_some()) {
+        if (let cond := s.condition.some) {
+            let c: Option<bool> = this.eval_meta_bool(cond);
+            if (let cv := c.some) {
                 decided = true;
-                if (c.some) {
+                if (cv) {
                     picked = s.then_statement;
                 } else {
                     let elif_taken: mut bool = false;
-                    let ei: mut i64 = 0;
-                    while (ei < cast<i64>(s.elif_branches.size())) {
-                        if (!elif_taken) {
-                            let br: MetaElifBranch = s.elif_branches.at(cast<u64>(ei)).some;
-                            if (br.condition.is_some()) {
-                                let ec: Option<bool> = this.eval_meta_bool(br.condition.some);
-                                if (ec.is_some()) {
-                                    if (ec.some) {
-                                        picked = br.body_statement;
-                                        elif_taken = true;
-                                    }
+                    for (let br : MetaElifBranch in s.elif_branches) {
+                        if (let bc := br.condition.some) {
+                            let ec: Option<bool> = this.eval_meta_bool(bc);
+                            if (let ecv := ec.some) {
+                                if (ecv) {
+                                    picked = br.body_statement;
+                                    elif_taken = true;
+                                    break;
                                 }
                             }
                         }
-                        ei = ei + 1;
                     }
                     if (!elif_taken) {
                         picked = s.else_statement;
@@ -693,16 +658,14 @@ class SemanticModel {
     // wrapping an ExpressionStatement(code_block)), return its statements list.
     fun stmt_inner_code_block(this, stmt: Statement) -> Option<_utils.List<Statement>> {
         if (stmt is Statement.block_expr) {
-            if (stmt.block_expr.expression.is_some()) {
-                let inner: Expression = stmt.block_expr.expression.some;
+            if (let inner := stmt.block_expr.expression.some) {
                 if (inner is Expression.code_block) {
                     return new Option<_utils.List<Statement>>.some(inner.code_block.statements);
                 }
             }
         }
         if (stmt is Statement.expression) {
-            if (stmt.expression.expression.is_some()) {
-                let inner: Expression = stmt.expression.expression.some;
+            if (let inner := stmt.expression.expression.some) {
                 if (inner is Expression.code_block) {
                     return new Option<_utils.List<Statement>>.some(inner.code_block.statements);
                 }
@@ -716,29 +679,29 @@ class SemanticModel {
     // statement object (sub-contents mutated in place).
     fun rewrite_one_statement(mut this, stmt: Statement) -> Statement {
         if (stmt is Statement.if_stmt) {
-            if (stmt.if_stmt.then_statement.is_some()) {
-                this.rewrite_meta_in_substatement(stmt.if_stmt.then_statement.some);
+            if (let then := stmt.if_stmt.then_statement.some) {
+                this.rewrite_meta_in_substatement(then);
             }
-            if (stmt.if_stmt.else_statement.is_some()) {
-                this.rewrite_meta_in_substatement(stmt.if_stmt.else_statement.some);
+            if (let el := stmt.if_stmt.else_statement.some) {
+                this.rewrite_meta_in_substatement(el);
             }
             return stmt;
         }
         if (stmt is Statement.while_stmt) {
-            if (stmt.while_stmt.body.is_some()) {
-                this.rewrite_meta_in_substatement(stmt.while_stmt.body.some);
+            if (let body := stmt.while_stmt.body.some) {
+                this.rewrite_meta_in_substatement(body);
             }
             return stmt;
         }
         if (stmt is Statement.for_stmt) {
-            if (stmt.for_stmt.body.is_some()) {
-                this.rewrite_meta_in_substatement(stmt.for_stmt.body.some);
+            if (let body := stmt.for_stmt.body.some) {
+                this.rewrite_meta_in_substatement(body);
             }
             return stmt;
         }
         let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
-        if (blk_opt.is_some()) {
-            this.rewrite_meta_statements_inplace(blk_opt.some);
+        if (let blk := blk_opt.some) {
+            this.rewrite_meta_statements_inplace(blk);
         }
         return stmt;
     }
@@ -747,8 +710,8 @@ class SemanticModel {
     // control flow): if it wraps a code block, resolve that block in place.
     fun rewrite_meta_in_substatement(mut this, stmt: Statement) {
         let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
-        if (blk_opt.is_some()) {
-            this.rewrite_meta_statements_inplace(blk_opt.some);
+        if (let blk := blk_opt.some) {
+            this.rewrite_meta_statements_inplace(blk);
         }
     }
 
@@ -798,14 +761,11 @@ class SemanticModel {
 
     fun pass_build_scopes(mut this, unit: CompilationUnit, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_build_scopes");
-        let i: mut i64 = 0;
-        while (i < cast<i64>(unit.definitions.size())) {
-            let def: Definition = unit.definitions.at(cast<u64>(i)).some;
+        for (let def : Definition in unit.definitions) {
             let bound: Option<BoundDefinition> = this.bind_definition(def, result.global_scope);
-            if (bound.is_some()) {
-                result.definitions.push(bound.some);
+            if (let b := bound.some) {
+                result.definitions.push(b);
             }
-            i = i + 1;
         }
     }
 
@@ -878,8 +838,7 @@ class SemanticModel {
 
     fun extract_template_params(this, template_decl: Option<TemplateDeclaration>, generic_params: mut _utils.List<string>) {
         _utils.trace_enter("Enter extract_template_params");
-        if (template_decl.is_some()) {
-            let td: TemplateDeclaration = template_decl.some;
+        if (let td := template_decl.some) {
             let j: mut i64 = 0;
             while (j < cast<i64>(td.parameters.size())) {
                 let param: TemplateParameter = td.parameters.at(cast<u64>(j)).some;
@@ -988,9 +947,7 @@ class SemanticModel {
                 gi = gi + 1;
             }
         }
-        let i: mut i64 = 0;
-        while (i < cast<i64>(def.members.size())) {
-            let member: Definition = def.members.at(cast<u64>(i)).some;
+        for (let member : Definition in def.members) {
             if (member is Definition.class_field) {
                 let ast_field: ClassFieldDefinition = member.class_field;
                 let field: mut BoundClassFieldDefinition = new BoundClassFieldDefinition(ast_field.name);
@@ -1001,8 +958,7 @@ class SemanticModel {
                 fsym.variable_kind = new VariableSymbolKind.Field();
                 fsym.location = ast_field.location;
                 // Read mutability from AST type_spec
-                if (ast_field.type_spec.is_some()) {
-                    let ts: TypeSpecifier = ast_field.type_spec.some;
+                if (let ts := ast_field.type_spec.some) {
                     if (ts.is_not_mutable) {
                         fsym.is_mutable = false;
                         field.mutability = new Mutability.Immutable();
@@ -1030,17 +986,16 @@ class SemanticModel {
             }
             if (member is Definition.function_def) {
                 let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, class_scope);
-                if (bound_member.is_some()) {
-                    result.methods.push(bound_member.some);
+                if (let bm := bound_member.some) {
+                    result.methods.push(bm);
                 }
             }
             if (member is Definition.impl_def) {
                 let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, class_scope);
-                if (bound_impl.is_some()) {
-                    result.interface_impls.push(bound_impl.some);
+                if (let bi := bound_impl.some) {
+                    result.interface_impls.push(bi);
                 }
             }
-            i = i + 1;
         }
         result.ast_source = new Option<Definition>.some(new Definition.class_def(def));
         return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
@@ -1079,9 +1034,7 @@ class SemanticModel {
             }
         }
         let member_idx: mut i64 = 0;
-        let i: mut i64 = 0;
-        while (i < cast<i64>(def.members.size())) {
-            let member: Definition = def.members.at(cast<u64>(i)).some;
+        for (let member : Definition in def.members) {
             if (member is Definition.enum_member) {
                 // Defer payload type resolution to pass 2 (resolve_enum_types)
                 // so that forward-referenced types (e.g. class A defined after
@@ -1102,11 +1055,10 @@ class SemanticModel {
             }
             if (member is Definition.function_def) {
                 let bound_method: Option<BoundDefinition> = this.bind_function_def(member.function_def, enum_scope);
-                if (bound_method.is_some()) {
-                    result.methods.push(bound_method.some);
+                if (let bm := bound_method.some) {
+                    result.methods.push(bm);
                 }
             }
-            i = i + 1;
         }
         result.ast_source = new Option<Definition>.some(new Definition.enum_def(def));
         return new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
@@ -1147,13 +1099,11 @@ class SemanticModel {
                 gi = gi + 1;
             }
         }
-        let i: mut i64 = 0;
-        while (i < cast<i64>(def.members.size())) {
-            let member: Definition = def.members.at(cast<u64>(i)).some;
+        for (let member : Definition in def.members) {
             if (member is Definition.function_def) {
                 let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, iface_scope);
-                if (bound_member.is_some()) {
-                    result.methods.push(bound_member.some);
+                if (let bm := bound_member.some) {
+                    result.methods.push(bm);
                 }
             }
             if (member is Definition.impl_def) {
@@ -1161,11 +1111,10 @@ class SemanticModel {
                 // impl's methods in this interface's scope so they can be emitted and
                 // referenced by the interface's own vtables.
                 let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, iface_scope);
-                if (bound_impl.is_some()) {
-                    result.interface_impls.push(bound_impl.some);
+                if (let bi := bound_impl.some) {
+                    result.interface_impls.push(bi);
                 }
             }
-            i = i + 1;
         }
         result.ast_source = new Option<Definition>.some(new Definition.interface_def(def));
         return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
@@ -1302,19 +1251,19 @@ class SemanticModel {
     // recorded location, or an empty location when the symbol is absent (avoids
     // emitting useless ":0:0" when a real source span is available).
     fun var_sym_loc(this, sym: Option<BoundVariableSymbol>) -> SourceLocation {
-        if (sym.is_some()) { return sym.some.location; }
+        if (let s := sym.some) { return s.location; }
         return new SourceLocation("", 0, 0);
     }
     fun type_sym_loc(this, sym: Option<BoundTypeSymbol>) -> SourceLocation {
-        if (sym.is_some()) { return sym.some.location; }
+        if (let s := sym.some) { return s.location; }
         return new SourceLocation("", 0, 0);
     }
     fun func_sym_loc(this, sym: Option<BoundFunctionSymbol>) -> SourceLocation {
-        if (sym.is_some()) { return sym.some.location; }
+        if (let s := sym.some) { return s.location; }
         return new SourceLocation("", 0, 0);
     }
     fun enum_member_sym_loc(this, sym: Option<BoundEnumMemberSymbol>) -> SourceLocation {
-        if (sym.is_some()) { return sym.some.location; }
+        if (let s := sym.some) { return s.location; }
         return new SourceLocation("", 0, 0);
     }
 
@@ -1430,10 +1379,8 @@ class SemanticModel {
         // for externs.
         if (func.symbol.is_some()) {
             let sym: mut BoundFunctionSymbol = func.symbol.some;
-            let pi0: mut i64 = 0;
-            while (pi0 < cast<i64>(func.parameters.size())) {
-                sym.parameters.push(func.parameters.at(cast<u64>(pi0)).some);
-                pi0 = pi0 + 1;
+            for (let param : BoundFunctionParameter in func.parameters) {
+                sym.parameters.push(param);
             }
         }
         if (func.scope.is_none()) { return; }
@@ -1542,8 +1489,8 @@ class SemanticModel {
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
             let gv: mut BoundGlobalVariableDefinition = bound_def.global_var_def;
-            if (ast_def.global_var.type_spec.is_some()) {
-                gv.bound_type = this.resolve_type_specifier(ast_def.global_var.type_spec.some, scope);
+            if (let ts := ast_def.global_var.type_spec.some) {
+                gv.bound_type = this.resolve_type_specifier(ts, scope);
                 if (gv.variable_symbol.is_some()) {
                     let sym: mut BoundVariableSymbol = gv.variable_symbol.some;
                     sym.bound_type = gv.bound_type;
@@ -1578,8 +1525,8 @@ class SemanticModel {
         } else {
             scope
         };
-        if (ast_func.return_type.is_some()) {
-            ret = this.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
+        if (let rt := ast_func.return_type.some) {
+            ret = this.resolve_type_specifier(rt, resolve_scope);
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
@@ -1588,8 +1535,8 @@ class SemanticModel {
         while (pi < cast<i64>(ast_func.parameters.size())) {
             let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
             let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
-            if (p.type_spec.is_some()) {
-                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, resolve_scope);
+            if (let ts := p.type_spec.some) {
+                bp.bound_type = this.resolve_type_specifier(ts, resolve_scope);
                 if (bp.bound_type.mutability is Mutability.Mutable) {
                     bp.is_mutable = true;
                 }
@@ -2302,8 +2249,7 @@ class SemanticModel {
             let i: mut i64 = 0;
             while (i < cast<i64>(instantiations.size())) {
                 let inst: BoundType = instantiations.at(cast<u64>(i)).some;
-                if (inst.type_definition.is_some()) {
-                    let template_def: BoundDefinition = inst.type_definition.some;
+                if (let template_def := inst.type_definition.some) {
                     if (template_def is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = template_def.class_def;
                         if (cast<i64>(cls.generic_params.size()) > 0) {
@@ -2737,8 +2683,7 @@ class SemanticModel {
             // A cast to a generic interface (e.g. cast<IFoo<u8>>(x)) must register
             // the instantiation so its default methods get monomorphized with the
             // concrete type args (otherwise their T-typed returns stay unresolved).
-            if (ce.target_type.is_some()) {
-                let ts: TypeSpecifier = ce.target_type.some;
+            if (let ts := ce.target_type.some) {
                 if (cast<i64>(ts.generic_args.size()) > 0) {
                     let base_name: mut string = ts.name;
                     if (cast<i64>(ts.qualified_parts.size()) > 0) {
@@ -2874,8 +2819,7 @@ class SemanticModel {
                 fsym.full_name = field_full_name;
                 fsym.variable_kind = new VariableSymbolKind.Field();
                 // Read mutability from AST type_spec
-                if (ast_field.type_spec.is_some()) {
-                    let ts: TypeSpecifier = ast_field.type_spec.some;
+                if (let ts := ast_field.type_spec.some) {
                     if (ts.is_not_mutable) {
                         fsym.is_mutable = false;
                         field.mutability = new Mutability.Immutable();
@@ -3327,8 +3271,7 @@ class SemanticModel {
             let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
             if (spec_sym.is_some()) {
                 if (spec_sym.some is BoundSymbol.type_sym) {
-                    if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
-                        let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                    if (let spec_td := spec_sym.some.type_sym.bound_type.type_definition.some) {
                         if (spec_td is BoundDefinition.interface_def) {
                             return new Option<BoundInterfaceDefinition>.some(spec_td.interface_def);
                         }
@@ -3560,8 +3503,7 @@ class SemanticModel {
                 let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
                 if (spec_sym.is_some()) {
                     if (spec_sym.some is BoundSymbol.type_sym) {
-                        if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
-                            let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                        if (let spec_td := spec_sym.some.type_sym.bound_type.type_definition.some) {
                             if (spec_td is BoundDefinition.interface_def) {
                                 return spec_td.interface_def;
                             }
@@ -3908,8 +3850,7 @@ class SemanticModel {
     fun is_iterator_type(this, bt: BoundType) -> bool {
         _utils.trace_enter("Enter is_iterator_type");
         if (string_find(bt.display_name(), "IIterator<") >= 0) { return true; }
-        if (bt.type_definition.is_some()) {
-            let td: BoundDefinition = bt.type_definition.some;
+        if (let td := bt.type_definition.some) {
             if (td is BoundDefinition.class_def) {
                 let cls: BoundClassDefinition = td.class_def;
                 let vi: mut i64 = 0;
@@ -4032,8 +3973,7 @@ class SemanticModel {
             return true;
         }
         if (bt.kind is TypeKind.ClassKind) {
-            if (bt.type_definition.is_some()) {
-                let def: BoundDefinition = bt.type_definition.some;
+            if (let def := bt.type_definition.some) {
                 if (def is BoundDefinition.class_def) {
                     return this.classify_class(def.class_def, visiting);
                 }
@@ -4244,8 +4184,7 @@ class SemanticModel {
             // the field is left at its memset-zero state (null for reference-typed
             // fields, empty for value-typed) — which crashes as soon as a method
             // dereferences it.
-            if (bound_cls.constructor.is_some()) {
-                let ctor: BoundFunctionDefinition = bound_cls.constructor.some;
+            if (let ctor := bound_cls.constructor.some) {
                 if (ctor.scope.is_some()) {
                     let ctor_scope: mut BoundScope = ctor.scope.some;
                     let fi: mut i64 = 0;
@@ -4800,8 +4739,7 @@ class SemanticModel {
     // BabyPenguin treats the substituted arg as immutable (`A<!mut i32>.a`).
     fun field_is_generic_param(this, cls: BoundClassDefinition, field_name: string) -> bool {
         _utils.trace_enter("Enter field_is_generic_param");
-        if (cls.ast_source.is_some()) {
-            let ast_def: Definition = cls.ast_source.some;
+        if (let ast_def := cls.ast_source.some) {
             if (ast_def is Definition.class_def) {
                 let ast_cls: ClassDefinition = ast_def.class_def;
                 let mi: mut i64 = 0;
@@ -4809,8 +4747,7 @@ class SemanticModel {
                     let member: Definition = ast_cls.members.at(cast<u64>(mi)).some;
                     if (member is Definition.class_field) {
                         if (member.class_field.name == field_name) {
-                            if (member.class_field.type_spec.is_some()) {
-                                let ts: TypeSpecifier = member.class_field.type_spec.some;
+                            if (let ts := member.class_field.type_spec.some) {
                                 // `auto T` explicitly follows container mutability,
                                 // so it is not implicitly immutable.
                                 if (ts.is_auto_mutability) { return false; }
@@ -4840,8 +4777,7 @@ class SemanticModel {
             let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
             if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
                 let spec_bt: BoundType = spec_sym.some.type_sym.bound_type;
-                if (spec_bt.type_definition.is_some()) {
-                    let spec_td: BoundDefinition = spec_bt.type_definition.some;
+                if (let spec_td := spec_bt.type_definition.some) {
                     if (spec_td is BoundDefinition.class_def) {
                         let spec_cls: BoundClassDefinition = spec_td.class_def;
                         let fi: mut i64 = 0;
@@ -4878,8 +4814,7 @@ class SemanticModel {
             let bound_base: Option<BoundExpression> = this.bind_expression(expr.base_expr.some, scope);
             if (bound_base.is_some()) {
                 let base_type: BoundType = bound_base.some.get_bound_type();
-                if (base_type.type_definition.is_some()) {
-                    let td: BoundDefinition = base_type.type_definition.some;
+                if (let td := base_type.type_definition.some) {
                     if (td is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = td.class_def;
                         if (cls.scope.is_some()) {
@@ -4929,8 +4864,7 @@ class SemanticModel {
                             while (vi < cast<i64>(cls.vtables.size())) {
                                 let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
                                 let iface_type: BoundType = vtable.interface_type;
-                                if (iface_type.type_definition.is_some()) {
-                                    let iface_def: BoundDefinition = iface_type.type_definition.some;
+                                if (let iface_def := iface_type.type_definition.some) {
                                     if (iface_def is BoundDefinition.interface_def) {
                                         let iface: BoundInterfaceDefinition = iface_def.interface_def;
                                         if (iface.scope.is_some()) {
@@ -4959,8 +4893,7 @@ class SemanticModel {
                                 while (vi2 < cast<i64>(cls.vtables.size())) {
                                     let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi2)).some;
                                     let iface_type: BoundType = vtable.interface_type;
-                                    if (iface_type.type_definition.is_some()) {
-                                        let iface_def: BoundDefinition = iface_type.type_definition.some;
+                                    if (let iface_def := iface_type.type_definition.some) {
                                         if (iface_def is BoundDefinition.interface_def) {
                                             let iface: BoundInterfaceDefinition = iface_def.interface_def;
                                             if (iface.scope.is_some()) {
@@ -4982,8 +4915,7 @@ class SemanticModel {
                         let e: BoundEnumDefinition = td.enum_def;
                         if (e.scope.is_some()) {
                             let found: Option<BoundSymbol> = e.scope.some.lookup_symbol(expr.member_name);
-                            if (found.is_some()) {
-                                let sym: BoundSymbol = found.some;
+                            if (let sym := found.some) {
                                 let bt: mut BoundType = this.resolve_symbol_type(sym);
                                 if (sym is BoundSymbol.enum_member) {
                                     // Prefer the enum definition's member_type, which
@@ -5007,8 +4939,7 @@ class SemanticModel {
                         while (vi < cast<i64>(e.vtables.size())) {
                             let vtable: BoundVTable = e.vtables.at(cast<u64>(vi)).some;
                             let iface_type: BoundType = vtable.interface_type;
-                            if (iface_type.type_definition.is_some()) {
-                                let iface_def: BoundDefinition = iface_type.type_definition.some;
+                            if (let iface_def := iface_type.type_definition.some) {
                                 if (iface_def is BoundDefinition.interface_def) {
                                     let iface: BoundInterfaceDefinition = iface_def.interface_def;
                                     if (iface.scope.is_some()) {
@@ -5045,8 +4976,7 @@ class SemanticModel {
                 // Handle namespace-qualified access (e.g., Foo.msg where Foo is a namespace)
                 if (bound_base.some is BoundExpression.identifier) {
                     let base_id: BoundIdentifierExpression = bound_base.some.identifier;
-                    if (base_id.symbol.is_some()) {
-                        let base_sym: BoundSymbol = base_id.symbol.some;
+                    if (let base_sym := base_id.symbol.some) {
                         if (base_sym is BoundSymbol.namespace_sym) {
                             let ns_scope: Option<BoundScope> = base_sym.namespace_sym.namespace_scope;
                             if (ns_scope.is_some()) {
@@ -5264,8 +5194,7 @@ class SemanticModel {
             if (callee.is_some()) {
                 if (callee.some is BoundExpression.identifier) {
                     let id_expr: BoundIdentifierExpression = callee.some.identifier;
-                    if (id_expr.symbol.is_some()) {
-                        let sym: BoundSymbol = id_expr.symbol.some;
+                    if (let sym := id_expr.symbol.some) {
                         if (sym is BoundSymbol.function_sym) {
                             // Converse mismatch: a method (has `this`) called bare
                             // (no receiver) would emit no `this` argument, so the
@@ -5277,8 +5206,7 @@ class SemanticModel {
                             // Resolve generic args from AST callee
                             let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_call: mut bool = false;
-                            if (expr.callee.is_some()) {
-                                let ast_callee: Expression = expr.callee.some;
+                            if (let ast_callee := expr.callee.some) {
                                 if (ast_callee is Expression.identifier) {
                                     if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
                                         is_generic_call = true;
@@ -5333,8 +5261,7 @@ class SemanticModel {
                             return new Option<BoundExpression>.some(ma_expr.base_expr.some);
                         }
                     }
-                    if (ma_expr.member_symbol.is_some()) {
-                        let sym: BoundSymbol = ma_expr.member_symbol.some;
+                    if (let sym := ma_expr.member_symbol.some) {
                         if (sym is BoundSymbol.function_sym) {
                             // A member function whose first parameter is not `this`
                             // may still be called via `receiver.foo(...)` -- the
@@ -5362,8 +5289,7 @@ class SemanticModel {
                             // Resolve generic args from AST callee (member access with <T>)
                             let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_method_call: mut bool = false;
-                            if (expr.callee.is_some()) {
-                                let ast_callee: Expression = expr.callee.some;
+                            if (let ast_callee := expr.callee.some) {
                                 if (ast_callee is Expression.member_access) {
                                     if (cast<i64>(ast_callee.member_access.generic_args.size()) > 0) {
                                         is_generic_method_call = true;
@@ -5399,8 +5325,7 @@ class SemanticModel {
                                         if (spec_sym.is_some()) {
                                             if (spec_sym.some is BoundSymbol.type_sym) {
                                                 let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
-                                                if (spec_type.type_definition.is_some()) {
-                                                    let spec_def: BoundDefinition = spec_type.type_definition.some;
+                                                if (let spec_def := spec_type.type_definition.some) {
                                                     if (spec_def is BoundDefinition.enum_def) {
                                                         let spec_enum: BoundEnumDefinition = spec_def.enum_def;
                                                         let mi: mut i64 = 0;
@@ -5424,8 +5349,7 @@ class SemanticModel {
                                         if (spec_sym.is_some()) {
                                             if (spec_sym.some is BoundSymbol.type_sym) {
                                                 let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
-                                                if (spec_type.type_definition.is_some()) {
-                                                    let spec_def: BoundDefinition = spec_type.type_definition.some;
+                                                if (let spec_def := spec_type.type_definition.some) {
                                                     if (spec_def is BoundDefinition.class_def) {
                                                         let spec_cls: BoundClassDefinition = spec_def.class_def;
                                                         let mi: mut i64 = 0;
@@ -5503,8 +5427,7 @@ class SemanticModel {
                                         while (vi < cast<i64>(cls.vtables.size())) {
                                             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
                                             let iface_type: BoundType = vtable.interface_type;
-                                            if (iface_type.type_definition.is_some()) {
-                                                let iface_def: BoundDefinition = iface_type.type_definition.some;
+                                            if (let iface_def := iface_type.type_definition.some) {
                                                 if (iface_def is BoundDefinition.interface_def) {
                                                     let iface: BoundInterfaceDefinition = iface_def.interface_def;
                                                     let imi: mut i64 = 0;
@@ -5561,8 +5484,7 @@ class SemanticModel {
                                         while (evi < cast<i64>(enum_d.vtables.size())) {
                                             let vtable: BoundVTable = enum_d.vtables.at(cast<u64>(evi)).some;
                                             let iface_type: BoundType = vtable.interface_type;
-                                            if (iface_type.type_definition.is_some()) {
-                                                let iface_def: BoundDefinition = iface_type.type_definition.some;
+                                            if (let iface_def := iface_type.type_definition.some) {
                                                 if (iface_def is BoundDefinition.interface_def) {
                                                     let iface: BoundInterfaceDefinition = iface_def.interface_def;
                                                     let eimi: mut i64 = 0;
@@ -5760,13 +5682,11 @@ class SemanticModel {
     // if originally in source. Returns true if handled (caller skips the default
     // push); false to fall through and push the raw def.
     fun try_splice_meta_fun_def(mut this, d: MetaCallDefinition, out: mut _utils.List<Definition>) -> bool {
-        if (d.call.is_some()) {
-            let call: Expression = d.call.some;
+        if (let call := d.call.some) {
             if (call is Expression.meta_call) {
                 let mc: MetaCallExpression = call.meta_call;
                 let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
-                if (bmf_opt.is_some()) {
-                    let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+                if (let bmf := bmf_opt.some) {
                     this.seed_meta_engine();
                     let args_opt: Option<_utils.List<i64>> = this.bind_meta_args(mc, bmf, this.global_scope);
                     if (args_opt.is_none()) {
@@ -6210,8 +6130,7 @@ class SemanticModel {
     // A "concrete" class/enum has an AST source; a generic-parameter placeholder
     // does not. When uncertain, callers fall back to a runtime ISINSTANCE check.
     fun is_concrete_type(this, bt: BoundType) -> bool {
-        if (bt.type_definition.is_some()) {
-            let td: BoundDefinition = bt.type_definition.some;
+        if (let td := bt.type_definition.some) {
             if (td is BoundDefinition.class_def) {
                 return td.class_def.scope.is_some() && !td.class_def.is_generic_template;
             }
@@ -6416,8 +6335,7 @@ class SemanticModel {
         _utils.trace_enter("Enter resolve_implementation_method");
         if (iface_method_sym is BoundSymbol.function_sym) {
             let method_name: string = iface_method_sym.function_sym.name;
-            if (inner_type.type_definition.is_some()) {
-                let def: BoundDefinition = inner_type.type_definition.some;
+            if (let def := inner_type.type_definition.some) {
                 // Class value type
                 if (def is BoundDefinition.class_def) {
                     let class_def: BoundClassDefinition = def.class_def;
@@ -6527,8 +6445,7 @@ class SemanticModel {
             let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
             if (spec_sym.is_some()) {
                 if (spec_sym.some is BoundSymbol.type_sym) {
-                    if (spec_sym.some.type_sym.bound_type.type_definition.is_some()) {
-                        let spec_td: BoundDefinition = spec_sym.some.type_sym.bound_type.type_definition.some;
+                    if (let spec_td := spec_sym.some.type_sym.bound_type.type_definition.some) {
                         if (spec_td is BoundDefinition.interface_def) {
                             return spec_td.interface_def.scope;
                         }
@@ -6582,15 +6499,13 @@ class SemanticModel {
         _utils.trace_enter("Enter check_orphan_impl");
         let ns_prefix: string = impl_scope.full_name + ".";
         let iface_ns: mut string = "";
-        if (iface_type.type_definition.is_some()) {
-            let def: BoundDefinition = iface_type.type_definition.some;
+        if (let def := iface_type.type_definition.some) {
             if (def is BoundDefinition.interface_def) {
                 iface_ns = def.interface_def.full_name;
             }
         }
         let for_ns: mut string = "";
-        if (for_type.type_definition.is_some()) {
-            let def: BoundDefinition = for_type.type_definition.some;
+        if (let def := for_type.type_definition.some) {
             if (def is BoundDefinition.class_def) { for_ns = def.class_def.full_name; }
             if (def is BoundDefinition.enum_def) { for_ns = def.enum_def.full_name; }
         }
@@ -6743,8 +6658,7 @@ class SemanticModel {
                     // binding and type mutability), so reassignment is allowed.
                     if (target.some is BoundExpression.identifier) {
                         let id_expr: BoundIdentifierExpression = target.some.identifier;
-                        if (id_expr.symbol.is_some()) {
-                            let sym: BoundSymbol = id_expr.symbol.some;
+                        if (let sym := id_expr.symbol.some) {
                             if (sym is BoundSymbol.variable) {
                                 if (!sym.variable.is_mutable) {
                                     this.report_error(new ErrorCode.E_MUTABILITY(),
@@ -7425,8 +7339,7 @@ class SemanticModel {
         _utils.trace_enter("Enter stmt_always_returns");
         if (stmt is BoundStatement.return_stmt) { return true; }
         if (stmt is BoundStatement.expression) {
-            if (stmt.expression.expression.is_some()) {
-                let expr: BoundExpression = stmt.expression.expression.some;
+            if (let expr := stmt.expression.expression.some) {
                 if (expr is BoundExpression.if_expr) {
                     let if_e: BoundIfExpression = expr.if_expr;
                     if (if_e.then_block.is_some() && if_e.else_block.is_some()) {
@@ -7468,8 +7381,7 @@ class SemanticModel {
             let ms: BoundSymbol = ma.member_symbol.some;
             if (ms is BoundSymbol.variable && ms.variable.variable_kind is VariableSymbolKind.Field) {
                 let base_type: BoundType = ma.base_expr.some.get_bound_type();
-                if (base_type.type_definition.is_some()) {
-                    let td: BoundDefinition = base_type.type_definition.some;
+                if (let td := base_type.type_definition.some) {
                     if (td is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = td.class_def;
                         let fi: mut i64 = 0;
@@ -7547,8 +7459,7 @@ class SemanticModel {
         _utils.trace_enter("Enter collect_func_inst_from_expr");
         if (expr is Expression.function_call) {
             let fc: FunctionCallExpression = expr.function_call;
-            if (fc.callee.is_some()) {
-                let ast_callee: Expression = fc.callee.some;
+            if (let ast_callee := fc.callee.some) {
                 if (ast_callee is Expression.identifier) {
                     if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
                         let func_name: string = ast_callee.identifier.name;

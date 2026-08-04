@@ -189,8 +189,7 @@ class MetaEngine {
         // Substitute 'type'/'ast' return types to 'i64': unit B does not
         // recognize them as PenguinLang types, and the opaque token (a small
         // counter) fits in i64, so every meta call reuses the i64 trampolines.
-        if (bmf.return_type.is_some()) {
-            let rt: TypeSpecifier = bmf.return_type.some;
+        if (let rt := bmf.return_type.some) {
             if (rt.name == "type") {
                 // Phase 6 v2 Phase 5: `#fun -> type` returns the real
                 // emperor.BoundType (a reference). The caller-stub stores the

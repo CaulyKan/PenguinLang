@@ -59,13 +59,10 @@ class BoundTypeRegistry {
         _utils.trace_enter("Enter resolve_type");
         let prim: Option<BoundType> = this.try_primitive(name);
         if (prim.is_some()) { return prim; }
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.registered_types.size())) {
-            let entry: NamedTypeEntry = this.registered_types.at(cast<u64>(i)).some;
+        for (let entry in this.registered_types) {
             if (entry.name == name) {
                 return new Option<BoundType>.some(entry.bound_type);
             }
-            i = i + 1;
         }
         return new Option<BoundType>.none();
     }

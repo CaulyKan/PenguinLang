@@ -38,8 +38,7 @@ class IRGenerator {
     // Extract source location from a bound symbol (if available)
     fun sym_loc(this, sym: Option<BoundSymbol>) -> SourceLocation {
         _utils.trace_enter("Enter sym_loc");
-        if (sym.is_some()) {
-            let s: BoundSymbol = sym.some;
+        if (let s := sym.some) {
             if (s is BoundSymbol.variable) {
                 let l: SourceLocation = s.variable.location;
                 return new SourceLocation(l.filename, l.line, l.col);
@@ -149,12 +148,10 @@ class IRGenerator {
         // before the user body. The initializers were bound in the constructor
         // scope during pass_bind_expressions and stored on each bound field.
         if (def.is_new) {
-            if (this_reg.is_some()) {
-                let this_val: IRValue = this_reg.some;
+            if (let this_val := this_reg.some) {
                 if (cast<i64>(def.parameters.size()) > 0) {
                     let this_param: BoundFunctionParameter = def.parameters.at(cast<u64>(0)).some;
-                    if (this_param.bound_type.type_definition.is_some()) {
-                        let cls_def: BoundDefinition = this_param.bound_type.type_definition.some;
+                    if (let cls_def := this_param.bound_type.type_definition.some) {
                         if (cls_def is BoundDefinition.class_def) {
                             let cls: BoundClassDefinition = cls_def.class_def;
                             let fi: mut i64 = 0;
@@ -325,8 +322,7 @@ class IRGenerator {
         if (ir_type == "ref<string>") {
             init_value = "null";
         }
-        if (def.initializer.is_some()) {
-            let init_expr: BoundExpression = def.initializer.some;
+        if (let init_expr := def.initializer.some) {
             if (init_expr is BoundExpression.literal) {
                 init_value = init_expr.literal.value;
             }
@@ -336,8 +332,7 @@ class IRGenerator {
         module.add_global_variable(gv);
 
         // If the initializer is non-trivial (not a literal), emit a runtime init function
-        if (def.initializer.is_some()) {
-            let init_expr: BoundExpression = def.initializer.some;
+        if (let init_expr := def.initializer.some) {
             if (!(init_expr is BoundExpression.literal)) {
                 let init_name: string = def.full_name + ".<init>";
                 let loc: SourceLocation = this.make_loc(0, 0);
@@ -454,8 +449,7 @@ class IRGenerator {
         _utils.trace_enter("Enter lower_identifier");
         if (expr.symbol.is_some()) {
             let reg: Option<IRValue> = this.get_symbol_reg(expr.symbol.some);
-            if (reg.is_some()) {
-                let val: IRValue = reg.some;
+            if (let val := reg.some) {
                 // If this is a global reference, emit a load
                 if (val is IRValue.global_ref) {
                     let ir_type: string = val.global_ref.ir_type;
@@ -513,8 +507,7 @@ class IRGenerator {
                 // Enum variant check: x is EnumType.Variant
                 if (right is BoundExpression.member_access) {
                     let ma: BoundMemberAccessExpression = right.member_access;
-                    if (ma.member_symbol.is_some()) {
-                        let sym: BoundSymbol = ma.member_symbol.some;
+                    if (let sym := ma.member_symbol.some) {
                         if (sym is BoundSymbol.enum_member) {
                             let idx_const: IRValue = this.builder.emit_const(cast<string>(sym.enum_member.enum_value), "i64", loc);
                             return this.builder.emit_isenum(left, idx_const, loc);
@@ -531,8 +524,7 @@ class IRGenerator {
                 // Interface/class type check: x is InterfaceType or x is ClassName
                 if (right is BoundExpression.identifier) {
                     let id_expr: BoundIdentifierExpression = right.identifier;
-                    if (id_expr.symbol.is_some()) {
-                        let sym: BoundSymbol = id_expr.symbol.some;
+                    if (let sym := id_expr.symbol.some) {
                         if (sym is BoundSymbol.type_sym) {
                             let type_id: string = sym.type_sym.full_name;
                             return this.builder.emit_isinstance(left, type_id, loc);
@@ -663,8 +655,7 @@ class IRGenerator {
         // resolved below). Drives whether the receiver is passed / used for the
         // virtual vtable lookup.
         let first_param_is_this: mut bool = false;
-        if (expr.callee.is_some()) {
-            let callee_expr: BoundExpression = expr.callee.some;
+        if (let callee_expr := expr.callee.some) {
             if (callee_expr is BoundExpression.member_access) {
                 let ma: BoundMemberAccessExpression = callee_expr.member_access;
                 if (ma.base_expr.is_some() && expr.callee_symbol.is_some()) {
@@ -763,8 +754,7 @@ class IRGenerator {
             raw_ret_type
         };
         let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
-        if (expr.callee_symbol.is_some()) {
-            let sym: BoundSymbol = expr.callee_symbol.some;
+        if (let sym := expr.callee_symbol.some) {
             let func_name: mut string = this.clean_function_name(sym.get_full_name());
             if (has_generic_receiver) {
                 let mangled_class: string = this.mangle_generic_name(template_class_name, generic_args_list);
@@ -820,8 +810,7 @@ class IRGenerator {
         if (!call_expr.direct_dispatch) {
             return this.builder.void_value();
         }
-        if (ma.base_expr.is_some()) {
-            let base: BoundExpression = ma.base_expr.some;
+        if (let base := ma.base_expr.some) {
             if (base is BoundExpression.cast_expr) {
                 let cast_e: BoundCastExpression = base.cast_expr;
                 if (cast_e.needs_boxing) {
@@ -890,15 +879,13 @@ class IRGenerator {
     // interface_id and slot index consistent with the object's vtable.
     fun call_base_interface_def(this, expr: BoundFunctionCallExpression) -> Option<BoundInterfaceDefinition> {
         _utils.trace_enter("Enter call_base_interface_def");
-        if (expr.callee.is_some()) {
-            let callee: BoundExpression = expr.callee.some;
+        if (let callee := expr.callee.some) {
             if (callee is BoundExpression.member_access) {
                 let ma: BoundMemberAccessExpression = callee.member_access;
                 if (ma.base_expr.is_some()) {
                     let base_type: BoundType = ma.base_expr.some.get_bound_type();
                     if (base_type.kind is TypeKind.InterfaceKind) {
-                        if (base_type.type_definition.is_some()) {
-                            let td: BoundDefinition = base_type.type_definition.some;
+                        if (let td := base_type.type_definition.some) {
                             if (td is BoundDefinition.interface_def) {
                                 return new Option<BoundInterfaceDefinition>.some(td.interface_def);
                             }
@@ -920,8 +907,7 @@ class IRGenerator {
         // template def recorded in the object's vtable), not the callee's
         // possibly-specialized scope (whose name isn't in the parent scope).
         let base_iface: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
-        if (base_iface.is_some()) {
-            let iface: BoundInterfaceDefinition = base_iface.some;
+        if (let iface := base_iface.some) {
             let callee_name: string = this.call_callee_name(expr);
             let func_idx: mut i64 = 0;
             let mi: mut i64 = 0;
@@ -939,8 +925,7 @@ class IRGenerator {
             }
             return 0;
         }
-        if (expr.callee_symbol.is_some()) {
-            let sym: BoundSymbol = expr.callee_symbol.some;
+        if (let sym := expr.callee_symbol.some) {
             let scope: Option<BoundScope> = sym.get_enclosing_scope();
             if (scope.is_some()) {
                 // Concrete call: find in class vtable
@@ -1001,8 +986,7 @@ class IRGenerator {
     // vtable-lookup object. Lowered directly so it keeps the interface metadata.
     fun lower_call_receiver(mut this, expr: BoundFunctionCallExpression) -> IRValue {
         _utils.trace_enter("Enter lower_call_receiver");
-        if (expr.callee.is_some()) {
-            let callee: BoundExpression = expr.callee.some;
+        if (let callee := expr.callee.some) {
             if (callee is BoundExpression.member_access) {
                 if (callee.member_access.base_expr.is_some()) {
                     return this.lower_expression(callee.member_access.base_expr.some);
@@ -1016,8 +1000,7 @@ class IRGenerator {
     // f.bar()). Falls back to the callee symbol's name.
     fun call_callee_name(this, expr: BoundFunctionCallExpression) -> string {
         _utils.trace_enter("Enter call_callee_name");
-        if (expr.callee.is_some()) {
-            let callee: BoundExpression = expr.callee.some;
+        if (let callee := expr.callee.some) {
             if (callee is BoundExpression.member_access) {
                 return callee.member_access.member_name;
             }
@@ -1061,8 +1044,7 @@ class IRGenerator {
             if (recv_type_opt.is_some() && cast<i64>(recv_type_opt.some.generic_args.size()) > 0) {
                 let recv_type: BoundType = recv_type_opt.some;
                 let base_iface2: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
-                if (base_iface2.is_some()) {
-                    let iface2: BoundInterfaceDefinition = base_iface2.some;
+                if (let iface2 := base_iface2.some) {
                     let mi2: mut i64 = 0;
                     while (mi2 < cast<i64>(iface2.methods.size())) {
                         let md2: BoundDefinition = iface2.methods.at(cast<u64>(mi2)).some;
@@ -1099,8 +1081,7 @@ class IRGenerator {
     // Get the concrete receiver type for a virtual call from the callee expression.
     fun call_receiver_type(this, expr: BoundFunctionCallExpression) -> Option<BoundType> {
         _utils.trace_enter("Enter call_receiver_type");
-        if (expr.callee.is_some()) {
-            let callee: BoundExpression = expr.callee.some;
+        if (let callee := expr.callee.some) {
             if (callee is BoundExpression.member_access) {
                 if (callee.member_access.base_expr.is_some()) {
                     return new Option<BoundType>.some(callee.member_access.base_expr.some.get_bound_type());
@@ -1120,8 +1101,7 @@ class IRGenerator {
         if (base_iface.is_some()) {
             return base_iface.some.name;
         }
-        if (expr.callee_symbol.is_some()) {
-            let sym: BoundSymbol = expr.callee_symbol.some;
+        if (let sym := expr.callee_symbol.some) {
             let scope: Option<BoundScope> = sym.get_enclosing_scope();
             if (scope.is_some()) {
                 if (scope.some.kind is ScopeKind.InterfaceScope) {
@@ -1253,8 +1233,7 @@ class IRGenerator {
         let loc: SourceLocation = this.sym_loc(expr.member_symbol);
 
         // Handle namespace-qualified global variable access (e.g., Foo.msg)
-        if (expr.member_symbol.is_some()) {
-            let sym: BoundSymbol = expr.member_symbol.some;
+        if (let sym := expr.member_symbol.some) {
             if (sym is BoundSymbol.variable) {
                 if (sym.variable.variable_kind is VariableSymbolKind.Global) {
                     // Look up the global_ref from symbol_regs (registered by lower_global_var_def)
@@ -1278,8 +1257,7 @@ class IRGenerator {
             let obj: IRValue = this.lower_expression(expr.base_expr.some);
 
             // Check if this is enum payload access (e.g., a.some where a is Option<i64>)
-            if (expr.member_symbol.is_some()) {
-                let sym: BoundSymbol = expr.member_symbol.some;
+            if (let sym := expr.member_symbol.some) {
                 if (sym is BoundSymbol.enum_member) {
                     // Use the (already generic-substituted) bound type of the expression,
                     // not the enum member symbol's member_type — the symbol keeps the
@@ -1408,8 +1386,7 @@ class IRGenerator {
         }
         if (stmt is BoundStatement.return_stmt) {
             let loc: SourceLocation = stmt.return_stmt.location;
-            if (stmt.return_stmt.value.is_some()) {
-                let bound_val: BoundExpression = stmt.return_stmt.value.some;
+            if (let bound_val := stmt.return_stmt.value.some) {
                 let val_raw: IRValue = this.lower_expression(bound_val);
                 // Coerce an integer-literal return value to the function's return
                 // type: literals default to i64, so `return 5` in a u8 function
@@ -1464,14 +1441,12 @@ class IRGenerator {
 
     fun lower_let_decl(mut this, stmt: BoundLetDeclarationStatement) {
         _utils.trace_enter("Enter lower_let_decl");
-        if (stmt.variable_symbol.is_some()) {
-            let sym: BoundVariableSymbol = stmt.variable_symbol.some;
+        if (let sym := stmt.variable_symbol.some) {
             let ir_type: string = this.bound_type_to_ir_type(sym.bound_type);
             let loc: SourceLocation = this.make_loc(sym.location.line, sym.location.col);
             let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, ir_type, loc.line, loc.col);
             this.set_symbol_reg(new BoundSymbol.variable(sym), reg);
-            if (stmt.initializer.is_some()) {
-                let init_expr: BoundExpression = stmt.initializer.some;
+            if (let init_expr := stmt.initializer.some) {
                 if (init_expr is BoundExpression.literal) {
                     let lit: BoundLiteralExpression = init_expr.literal;
                     this.builder.emit_const_direct(reg, lit.value, loc);
@@ -1494,8 +1469,7 @@ class IRGenerator {
                 let member_expr: BoundMemberAccessExpression = stmt.target.some.member_access;
 
                 // Check if this is enum payload assignment (a.some = 2)
-                if (member_expr.member_symbol.is_some()) {
-                    let sym: BoundSymbol = member_expr.member_symbol.some;
+                if (let sym := member_expr.member_symbol.some) {
                     if (sym is BoundSymbol.variable) {
                         if (sym.variable.variable_kind is VariableSymbolKind.Global) {
                             // Namespace-qualified global variable assignment (e.g., Foo.msg = value)

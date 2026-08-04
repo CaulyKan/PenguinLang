@@ -174,23 +174,33 @@ namespace BabyPenguin.SemanticPass
             {
                 if (node is FunctionCallExpression exp)
                 {
+                    // Best-effort wait detection: skip calls whose callee can't be
+                    // resolved yet (e.g. a try-bind pattern variable registered at
+                    // codegen). Real resolution happens in the CodeGeneration pass.
                     ISymbol? symbol;
-                    var callee = exp.Callee!.GetEffectiveExpression();
-                    if (callee is MemberAccessExpression memberAccess)
+                    try
                     {
-                        codeContainer.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                        var callee = exp.Callee!.GetEffectiveExpression();
+                        if (callee is MemberAccessExpression memberAccess)
+                        {
+                            codeContainer.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                        }
+                        else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                        {
+                            symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
+                                s => !s.IsClassMember, scope: codeContainer);
+                        }
+                        else
+                        {
+                            return true;
+                        }
                     }
-                    else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                    catch (BabyPenguinException)
                     {
-                        symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
-                            s => !s.IsClassMember, scope: codeContainer);
-                    }
-                    else
-                    {
-                        throw new NotImplementedException(); // TODO: Handle other types of expressions
+                        return true;
                     }
 
-                    if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                    if (symbol == null || !symbol.IsFunction) return true;
 
                     var isAsync = false;
                     if (symbol is FunctionSymbol callingFunc)
@@ -365,23 +375,34 @@ namespace BabyPenguin.SemanticPass
                     }
                     else if (node is FunctionCallExpression exp && !isAsyncKnown)
                     {
+                        // Async detection is best-effort: skip calls whose callee
+                        // can't be resolved yet (e.g. a try-bind pattern variable
+                        // that is only registered at codegen). The real callee
+                        // resolution happens in the CodeGeneration pass.
                         ISymbol? symbol;
-                        var callee = exp.Callee!.GetEffectiveExpression();
-                        if (callee is MemberAccessExpression memberAccess)
+                        try
                         {
-                            func.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                            var callee = exp.Callee!.GetEffectiveExpression();
+                            if (callee is MemberAccessExpression memberAccess)
+                            {
+                                func.ResolveMemberAccessExpressionSymbol(memberAccess, out _, out symbol);
+                            }
+                            else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                            {
+                                symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
+                                    s => !s.IsClassMember, scope: func);
+                            }
+                            else
+                            {
+                                return true; // unknown callee shape — skip
+                            }
                         }
-                        else if (callee is PrimaryExpression primaryExp && primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier)
+                        catch (BabyPenguinException)
                         {
-                            symbol = Model.ResolveShortSymbol(primaryExp.Identifier!.Name,
-                                s => !s.IsClassMember, scope: func);
-                        }
-                        else
-                        {
-                            throw new NotImplementedException(); // TODO: Handle other types of expressions
+                            return true; // unresolvable callee — skip async detection for it
                         }
 
-                        if (symbol == null || !symbol.IsFunction) throw new BabyPenguinException($"Can't resolve function symbol {exp}", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                        if (symbol == null || !symbol.IsFunction) return true; // skip non-function callees
 
                         if (symbol is MutableSymbolProxy proxy)
                             symbol = proxy.Symbol;

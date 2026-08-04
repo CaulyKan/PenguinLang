@@ -80,26 +80,20 @@ class BoundClassDefinition {
 
     fun typed_fields(this) -> _utils.List<BoundClassFieldDefinition> {
         let result: mut _utils.List<BoundClassFieldDefinition> = new _utils.List<BoundClassFieldDefinition>();
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.fields.size())) {
-            let d: BoundDefinition = this.fields.at(cast<u64>(i)).some;
+        for (let d in this.fields) {
             if (d is BoundDefinition.class_field) {
                 result.push(d.class_field);
             }
-            i = i + 1;
         }
         return result;
     }
 
     fun typed_methods(this) -> _utils.List<BoundFunctionDefinition> {
         let result: mut _utils.List<BoundFunctionDefinition> = new _utils.List<BoundFunctionDefinition>();
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.methods.size())) {
-            let d: BoundDefinition = this.methods.at(cast<u64>(i)).some;
+        for (let d in this.methods) {
             if (d is BoundDefinition.function_def) {
                 result.push(d.function_def);
             }
-            i = i + 1;
         }
         return result;
     }

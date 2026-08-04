@@ -58,9 +58,9 @@ namespace _utils {
         }
 
         fun next(mut this) -> __builtin.Option<T> {
-            if (this.current.is_some()) {
-                let result: __builtin.Option<T> = this.current.some.value;
-                this.current = this.current.some.next;
+            if (let cur := this.current.some) {
+                let result: __builtin.Option<T> = cur.value;
+                this.current = cur.next;
                 return result;
             }
             return new __builtin.Option<T>.none();

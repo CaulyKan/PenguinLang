@@ -32,9 +32,7 @@ class EmperorPenguinCompiler {
         let combined_defs: mut _utils.List<Definition> = new _utils.List<Definition>();
         let total_defs: mut i64 = 0;
         let parser_errors: mut _utils.List<string> = new _utils.List<string>();
-        let i: mut i64 = 0;
-        while (i < cast<i64>(inputs.size())) {
-            let input: SourceInput = inputs.at(cast<u64>(i)).some;
+        for (let input in inputs) {
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
             let lexer = new Lexer(input.source, input.filename);
             let tokens = lexer.tokenize();
@@ -54,7 +52,6 @@ class EmperorPenguinCompiler {
                 j = j + 1;
             }
             total_defs = total_defs + cast<i64>(unit.definitions.size());
-            i = i + 1;
         }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
         let combined_unit: CompilationUnit = new CompilationUnit();

@@ -1625,8 +1625,7 @@ class LLVMEmitter {
 
     fun resolve_type_layout_name(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter resolve_type_layout_name");
-        if (bt.type_definition.is_some()) {
-            let def: BoundDefinition = bt.type_definition.some;
+        if (let def := bt.type_definition.some) {
             if (def is BoundDefinition.class_def) {
                 let cls: BoundClassDefinition = def.class_def;
                 if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(cls.generic_params.size()) > 0) {
@@ -2438,12 +2437,10 @@ class LLVMEmitter {
         let type_name: string = this.extract_type_name(obj_ir_type);
         let found_class: Option<ClassLayout> = this.find_class_layout(type_name);
 
-        if (found_class.is_some()) {
-            let layout: ClassLayout = found_class.some;
+        if (let layout := found_class.some) {
             let found_field: Option<FieldLayout> = this.find_class_field_layout(type_name, field_name);
 
-            if (found_field.is_some()) {
-                let fl: FieldLayout = found_field.some;
+            if (let fl := found_field.some) {
                 // Member access needs a POINTER to the object storage; a mutable reg
                 // holding a value-class struct resolves to a loaded struct value, so
                 // gep its alloca instead.
@@ -2484,11 +2481,9 @@ class LLVMEmitter {
             this.register_llvm_type(payload_val, payload_type);
             // Now try class layout lookup on the payload for the field
             let payload_class_found: Option<ClassLayout> = this.find_class_layout_by_llvm(payload_type);
-            if (payload_class_found.is_some()) {
-                let cls_layout: ClassLayout = payload_class_found.some;
+            if (let cls_layout := payload_class_found.some) {
                 let cls_field: Option<FieldLayout> = this.find_class_field_layout_llvm(cls_layout, field_name);
-                if (cls_field.is_some()) {
-                    let fl: FieldLayout = cls_field.some;
+                if (let fl := cls_field.some) {
                     if (cls_layout.is_value_type) {
                         let field_ptr: string = this.next_tmp();
                         this.emit_line("  " + field_ptr + " = getelementptr " + cls_layout.llvm_struct_type + ", ptr " + payload_val + ", i32 0, i32 " + cast<string>(fl.field_index));
@@ -2525,12 +2520,10 @@ class LLVMEmitter {
         let type_name: string = this.extract_type_name(obj_ir_type);
         let found_class: Option<ClassLayout> = this.find_class_layout(type_name);
 
-        if (found_class.is_some()) {
-            let layout: ClassLayout = found_class.some;
+        if (let layout := found_class.some) {
             let found_field: Option<FieldLayout> = this.find_class_field_layout(type_name, field_name);
 
-            if (found_field.is_some()) {
-                let fl: FieldLayout = found_field.some;
+            if (let fl := found_field.some) {
                 let store_type: string = fl.llvm_type;
                 let coerced_value: string = this.coerce_operand(value_resolved, store_type);
                 // Field store needs a POINTER to the object storage; a mutable reg
@@ -2930,8 +2923,7 @@ class LLVMEmitter {
                 // would violate that when the creating function returns.
                 if (pay_type == "ptr") {
                     let heap_copied: mut bool = false;
-                    if (variant_payload_bound_type.is_some()) {
-                        let pbt: BoundType = variant_payload_bound_type.some;
+                    if (let pbt := variant_payload_bound_type.some) {
                         // Check if the payload is a class type (not string, not primitive)
                         if (pbt.kind is TypeKind.ClassKind) {
                             if (pbt.type_definition.is_some()) {
@@ -3109,8 +3101,7 @@ class LLVMEmitter {
 
         // Try class layout first, then enum layout
         let found_cls: Option<ClassLayout> = this.find_class_layout(type_name);
-        if (found_cls.is_some()) {
-            let layout: ClassLayout = found_cls.some;
+        if (let layout := found_cls.some) {
             this.emit_line("  " + result_name + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(layout.sizeof_object) + ")");
             this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + operand_resolved + ", i32 " + cast<string>(layout.sizeof_object) + ", i1 false)");
             this.register_llvm_type(result_name, "ptr");
@@ -3118,8 +3109,7 @@ class LLVMEmitter {
         }
 
         let found_enum: Option<EnumLayout> = this.find_enum_layout(type_name);
-        if (found_enum.is_some()) {
-            let layout: EnumLayout = found_enum.some;
+        if (let layout := found_enum.some) {
             let enum_size: i64 = this.compute_enum_struct_size(layout);
             let alloca_tmp: string = this.next_tmp();
             this.emit_entry_alloca(alloca_tmp, layout.llvm_struct_type);
@@ -3140,8 +3130,7 @@ class LLVMEmitter {
 
         // Try class layout first, then enum layout
         let found_cls: Option<ClassLayout> = this.find_class_layout(type_name);
-        if (found_cls.is_some()) {
-            let layout: ClassLayout = found_cls.some;
+        if (let layout := found_cls.some) {
             this.emit_entry_alloca(result_name, layout.llvm_struct_type);
             this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + operand_resolved + ", i32 " + cast<string>(layout.sizeof_object) + ", i1 false)");
             this.register_llvm_type(result_name, "ptr");
@@ -3149,8 +3138,7 @@ class LLVMEmitter {
         }
 
         let found_enum: Option<EnumLayout> = this.find_enum_layout(type_name);
-        if (found_enum.is_some()) {
-            let layout: EnumLayout = found_enum.some;
+        if (let layout := found_enum.some) {
             this.emit_line("  " + result_name + " = load " + layout.llvm_struct_type + ", ptr " + operand_resolved);
             this.register_llvm_type(result_name, layout.llvm_struct_type);
             return;
@@ -4055,8 +4043,7 @@ class LLVMEmitter {
         _utils.trace_enter("Enter get_enum_payload_type(llvm_struct_type=" + cast<string>(llvm_struct_type) + ")");
         let type_name: string = string_substring(llvm_struct_type, 6, string_length(llvm_struct_type) - 6);
         let found: Option<EnumLayout> = this.find_enum_layout(type_name);
-        if (found.is_some()) {
-            let layout: EnumLayout = found.some;
+        if (let layout := found.some) {
             if (layout.has_payload) {
                 if (string_length(layout.payload_llvm_type) > 0) {
                     return layout.payload_llvm_type;
