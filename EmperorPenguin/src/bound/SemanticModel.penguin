@@ -848,6 +848,21 @@ class SemanticModel {
         }
     }
 
+    // req5: collect the names of non-type (value) template params (e.g. N in
+    // #template<N:i32> class A) so specialization can substitute them -> constants.
+    fun extract_value_param_names(this, template_decl: Option<TemplateDeclaration>, names: mut _utils.List<string>) {
+        if (let td := template_decl.some) {
+            let j: mut i64 = 0;
+            while (j < cast<i64>(td.parameters.size())) {
+                let param: TemplateParameter = td.parameters.at(cast<u64>(j)).some;
+                if (param.is_value_param) {
+                    names.push(param.name);
+                }
+                j = j + 1;
+            }
+        }
+    }
+
     fun bind_function_def(mut this, def: FunctionDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_function_def");
         let full_name: string = scope.full_name + "." + def.name;
@@ -914,6 +929,8 @@ class SemanticModel {
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundClassDefinition = new BoundClassDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
+        // req5: record value (non-type) template param names for specialization substitution.
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
         }
@@ -1896,7 +1913,16 @@ class SemanticModel {
         let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let k: mut i64 = 0;
         while (k < cast<i64>(type_spec.generic_args.size())) {
-            args.push(this.resolve_type_specifier(type_spec.generic_args.at(cast<u64>(k)).some, scope));
+            let arg_ts: TypeSpecifier = type_spec.generic_args.at(cast<u64>(k)).some;
+            // req5: a value generic arg (A<5>) -> synthetic BoundType riding generic_args.
+            if (arg_ts.is_value_arg) {
+                let vbt: mut BoundType = new BoundType();
+                vbt.is_template_value_arg = true;
+                vbt.template_value = string_to_int(arg_ts.value_arg_text);
+                args.push(vbt);
+            } else {
+                args.push(this.resolve_type_specifier(arg_ts, scope));
+            }
             k = k + 1;
         }
         return args;
@@ -1908,6 +1934,64 @@ class SemanticModel {
             return bt.with_mutability(new Mutability.Mutable());
         }
         return bt;
+    }
+
+    // req5: substitute non-type (value) template params (N) with their concrete
+    // constant values (5) inside an expression. Used when binding the members of
+    // a specialized value-template class so `foo: i32 = N` becomes `= 5`. Returns
+    // a new expression; the original (shared template) AST is not mutated.
+    fun substitute_value_params(mut this, expr: Expression, names: _utils.List<string>, values: _utils.List<i64>) -> Expression {
+        if (cast<i64>(names.size()) == 0) { return expr; }
+        if (expr is Expression.identifier) {
+            let id: IdentifierExpression = expr.identifier;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(names.size())) {
+                if (names.at(cast<u64>(i)).some == id.name) {
+                    let ce: mut ConstantExpression = new ConstantExpression(cast<string>(values.at(cast<u64>(i)).some));
+                    return new Expression.constant(ce);
+                }
+                i = i + 1;
+            }
+            return expr;
+        }
+        if (expr is Expression.binary) {
+            let b: BinaryExpression = expr.binary;
+            let r: mut BinaryExpression = new BinaryExpression();
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(b.operators.size())) { r.operators.push(b.operators.at(cast<u64>(oi)).some); oi = oi + 1; }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(b.operands.size())) { r.operands.push(this.substitute_value_params(b.operands.at(cast<u64>(ai)).some, names, values)); ai = ai + 1; }
+            return new Expression.binary(r);
+        }
+        if (expr is Expression.unary) {
+            let u: UnaryExpression = expr.unary;
+            let r: mut UnaryExpression = new UnaryExpression();
+            r.operator_value = u.operator_value;
+            if (u.operand.is_some()) { r.operand = new Option<Expression>.some(this.substitute_value_params(u.operand.some, names, values)); }
+            return new Expression.unary(r);
+        }
+        if (expr is Expression.parenthesized) {
+            let e: ParenthesizedExpression = expr.parenthesized;
+            let r: mut ParenthesizedExpression = new ParenthesizedExpression();
+            if (e.inner.is_some()) { r.inner = new Option<Expression>.some(this.substitute_value_params(e.inner.some, names, values)); }
+            return new Expression.parenthesized(r);
+        }
+        if (expr is Expression.function_call) {
+            let f: FunctionCallExpression = expr.function_call;
+            let r: mut FunctionCallExpression = new FunctionCallExpression();
+            if (f.callee.is_some()) { r.callee = new Option<Expression>.some(this.substitute_value_params(f.callee.some, names, values)); }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(f.arguments.size())) { r.arguments.push(this.substitute_value_params(f.arguments.at(cast<u64>(ai)).some, names, values)); ai = ai + 1; }
+            return new Expression.function_call(r);
+        }
+        if (expr is Expression.member_access) {
+            let m: MemberAccessExpression = expr.member_access;
+            let r: mut MemberAccessExpression = new MemberAccessExpression();
+            if (m.base_expr.is_some()) { r.base_expr = new Option<Expression>.some(this.substitute_value_params(m.base_expr.some, names, values)); }
+            r.member_name = m.member_name;
+            return new Expression.member_access(r);
+        }
+        return expr;
     }
 
     // Phase 5c (type-return splice): if `type_spec` is a #fun() meta call in a
@@ -2726,8 +2810,16 @@ class SemanticModel {
         let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let k: mut i64 = 0;
         while (k < cast<i64>(generic_args.size())) {
-            let resolved_arg: BoundType = this.resolve_type_specifier(generic_args.at(cast<u64>(k)).some, scope);
-            args.push(resolved_arg);
+            let arg_ts: TypeSpecifier = generic_args.at(cast<u64>(k)).some;
+            // req5: a value generic arg (A<5>) -> synthetic BoundType.
+            if (arg_ts.is_value_arg) {
+                let vbt: mut BoundType = new BoundType();
+                vbt.is_template_value_arg = true;
+                vbt.template_value = string_to_int(arg_ts.value_arg_text);
+                args.push(vbt);
+            } else {
+                args.push(this.resolve_type_specifier(arg_ts, scope));
+            }
             k = k + 1;
         }
         return new Option<BoundType>.some(base_type.some.with_generic_args(args));
@@ -2795,6 +2887,26 @@ class SemanticModel {
             param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
             class_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
             pi = pi + 1;
+        }
+
+        // req5: copy value-param names and bind their concrete values (the synthetic
+        // value BoundTypes ride type_args) so member binding can substitute N -> constant.
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl.value_param_names.size())) {
+            let vpname: string = tmpl.value_param_names.at(cast<u64>(vni)).some;
+            result.value_param_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gpi: mut i64 = 0;
+            while (gpi < cast<i64>(tmpl.generic_params.size())) {
+                if (tmpl.generic_params.at(cast<u64>(gpi)).some == vpname) { idx = gpi; }
+                gpi = gpi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                result.value_param_values.push(type_args.at(cast<u64>(idx)).some.template_value);
+            } else {
+                result.value_param_values.push(0);
+            }
+            vni = vni + 1;
         }
 
         result.scope = new Option<BoundScope>.some(class_scope);
@@ -4199,7 +4311,9 @@ class SemanticModel {
                                 if (am is Definition.class_field) {
                                     if (am.class_field.name == bound_field.name) {
                                         if (am.class_field.initializer.is_some()) {
-                                            ast_init = am.class_field.initializer;
+                                            // req5: substitute value-template params (N) -> their concrete
+                                            // constants before binding the field default initializer.
+                                            ast_init = new Option<Expression>.some(this.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values));
                                         }
                                     }
                                 }
@@ -5187,6 +5301,43 @@ class SemanticModel {
 
     fun bind_function_call(mut this, expr: FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_function_call");
+        // req3+4: a value-template call — the callee identifier carries
+        // value_generic_args (fab<5>(), fab<N-1>()). At a host call site the callee
+        // is a #fun (meta function), so splice as a meta call. Inside a #fun body
+        // (compiled as unit B) the callee is an ordinary function, so the value args
+        // become ordinary call arguments: fab<N-1>() -> fab(N-1).
+        if (expr.callee.is_some()) {
+            if (expr.callee.some is Expression.identifier) {
+                let vid: IdentifierExpression = expr.callee.some.identifier;
+                if (cast<i64>(vid.value_generic_args.size()) > 0) {
+                    if (this.find_meta_function(vid.name).is_some()) {
+                        let mc: mut MetaCallExpression = new MetaCallExpression();
+                        mc.func_name = vid.name;
+                        mc.location = new SourceLocation("", 0, 0);
+                        let vi: mut i64 = 0;
+                        while (vi < cast<i64>(vid.value_generic_args.size())) {
+                            mc.arguments.push(vid.value_generic_args.at(cast<u64>(vi)).some);
+                            vi = vi + 1;
+                        }
+                        return this.bind_meta_call(mc, scope);
+                    }
+                    let rewritten: mut FunctionCallExpression = new FunctionCallExpression();
+                    let clean_callee: mut IdentifierExpression = new IdentifierExpression(vid.name);
+                    rewritten.callee = new Option<Expression>.some(new Expression.identifier(clean_callee));
+                    let vi2: mut i64 = 0;
+                    while (vi2 < cast<i64>(vid.value_generic_args.size())) {
+                        rewritten.arguments.push(vid.value_generic_args.at(cast<u64>(vi2)).some);
+                        vi2 = vi2 + 1;
+                    }
+                    let oi: mut i64 = 0;
+                    while (oi < cast<i64>(expr.arguments.items.size())) {
+                        rewritten.arguments.push(expr.arguments.items.at(cast<u64>(oi)).some);
+                        oi = oi + 1;
+                    }
+                    return this.bind_function_call(rewritten, scope);
+                }
+            }
+        }
         let args: mut _utils.List<BoundExpression> = this.bind_arguments(expr.arguments.items, scope);
         let mut empty_generic_args = new _utils.List<BoundType>();
         if (expr.callee.is_some()) {
@@ -5619,7 +5770,17 @@ class SemanticModel {
         // built-in meta like #defined/#option which are resolved elsewhere).
         let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(expr.func_name);
         if (bmf_opt.is_some()) {
-            let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf_opt.some, expr, scope);
+            let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+            // req1: if a type-typed argument is a template type parameter that is not
+            // yet specialized (it resolves in scope to its dummy placeholder), the call
+            // cannot be JIT-evaluated in this — still generic — body. Defer it: emit a
+            // zero placeholder so the (never-mononmorphized) generic body binds without
+            // error. The specialized body, where T is concrete, re-binds and splices the
+            // real result.
+            if (this.meta_call_has_deferred_type_arg(expr, bmf, scope)) {
+                return this.deferred_meta_call_placeholder(bmf);
+            }
+            let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf, expr, scope);
             if (spliced.is_some()) {
                 return spliced;
             }
@@ -5759,23 +5920,21 @@ class SemanticModel {
             // Accept either a bare type name (Point) or #typeof(Point). Resolve via
             // the MetaEngine (which consults the global scope for user types, not
             // just the primitive-only type_registry).
-            let type_name: mut string = "";
-            if (arg is Expression.identifier) {
-                type_name = arg.identifier.name;
-            } else if (arg is Expression.meta_call) {
-                if (arg.meta_call.func_name == "typeof") {
-                    if (cast<i64>(arg.meta_call.arguments.size()) >= 1) {
-                        let inner: Expression = arg.meta_call.arguments.at(cast<u64>(0)).some;
-                        if (inner is Expression.identifier) {
-                            type_name = inner.identifier.name;
-                        }
-                    }
-                }
-            }
+            let type_name: string = this.meta_type_arg_name(arg);
             if (type_name != "") {
-                let bt_opt: Option<BoundType> = this.meta_engine.resolve_type_by_name(type_name);
+                // req1: if type_name is a template type parameter specialized to a
+                // concrete type (visible in the local scope chain), resolve it to that
+                // concrete type's name so the assigned token is identical to
+                // #typeof(ConcreteType). Falls back to the bare name for ordinary
+                // (global) types.
+                let resolve_name: mut string = type_name;
+                let concrete_opt: Option<string> = this.meta_type_arg_concrete_name(type_name, scope);
+                if (concrete_opt.is_some()) {
+                    resolve_name = concrete_opt.some;
+                }
+                let bt_opt: Option<BoundType> = this.meta_engine.resolve_type_by_name(resolve_name);
                 if (bt_opt.is_some()) {
-                    let token: u64 = this.meta_engine.get_or_assign_type_token(type_name);
+                    let token: u64 = this.meta_engine.get_or_assign_type_token(resolve_name);
                     return new Option<i64>.some(cast<i64>(token));
                 }
                 this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument '" + type_name + "' is not a known type", loc);
@@ -5814,6 +5973,121 @@ class SemanticModel {
         }
         this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta argument of kind '" + kind + "' must be a compile-time constant (integer, bool, string, type, or ast)", loc);
         return new Option<i64>.none();
+    }
+
+    // req1: extract the type name carried by a meta type-argument expression —
+    // either a bare identifier (Point) or #typeof(Point).
+    fun meta_type_arg_name(this, arg: Expression) -> string {
+        if (arg is Expression.identifier) {
+            return arg.identifier.name;
+        }
+        if (arg is Expression.meta_call) {
+            if (arg.meta_call.func_name == "typeof") {
+                if (cast<i64>(arg.meta_call.arguments.size()) >= 1) {
+                    let inner: Expression = arg.meta_call.arguments.at(cast<u64>(0)).some;
+                    if (inner is Expression.identifier) {
+                        return inner.identifier.name;
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    // req1: resolve a meta type-argument name through the scope chain. If `name`
+    // is a template type parameter that has been specialized to a concrete type
+    // (its scope symbol's bound_type is a real primitive or a user type whose own
+    // name differs from `name`), return that concrete type's display name so the
+    // assigned token is identical to #typeof(ConcreteType). Returns none when
+    // `name` is not a scope-visible template param bound to a concrete type (the
+    // caller then falls back to ordinary global resolution).
+    fun meta_type_arg_concrete_name(this, name: string, scope: BoundScope) -> Option<string> {
+        let sym_opt: Option<BoundSymbol> = this.resolve_type_by_name(name, scope);
+        if (sym_opt.is_none()) { return new Option<string>.none(); }
+        if (sym_opt.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym_opt.some.type_sym.bound_type;
+            if (bt.kind is TypeKind.PrimitiveKind && !(bt.primitive is PrimitiveType.VoidType)) {
+                return new Option<string>.some(primitive_type_to_string(bt.primitive));
+            }
+            if (bt.type_definition.is_some()) {
+                let td_name: string = bt.type_definition.some.get_name();
+                // If the resolved type's own name equals the queried name, this is the
+                // unspecialized dummy placeholder (T -> dummy "T"), not a concrete type.
+                if (td_name != name) {
+                    return new Option<string>.some(td_name);
+                }
+            }
+        }
+        return new Option<string>.none();
+    }
+
+    // req1: true if a type-typed meta argument is a template type parameter still
+    // in its unspecialized (dummy) form — visible in the local scope but not yet
+    // bound to a concrete type. Such a call cannot be JIT-evaluated yet and must be
+    // deferred until specialization re-binds the body.
+    fun meta_type_arg_is_deferred(this, name: string, scope: BoundScope) -> bool {
+        let sym_opt: Option<BoundSymbol> = this.resolve_type_by_name(name, scope);
+        if (sym_opt.is_none()) { return false; }
+        if (sym_opt.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym_opt.some.type_sym.bound_type;
+            if (bt.kind is TypeKind.PrimitiveKind && !(bt.primitive is PrimitiveType.VoidType)) {
+                return false;
+            }
+            if (bt.type_definition.is_some() && bt.type_definition.some.get_name() == name) {
+                // `name` resolves locally to a type whose own name equals `name`. This
+                // is either a real global type (e.g. Point) or an unspecialized
+                // template-param placeholder (T). The placeholder is NOT present in the
+                // global scope — only the real type is — so that distinguishes them.
+                let g: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(name);
+                if (g.is_some()) {
+                    return false;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // req1: does this meta call have any type-typed argument that is an
+    // unspecialized template type parameter? Used to defer splicing in generic
+    // template bodies (where T is still the dummy placeholder).
+    fun meta_call_has_deferred_type_arg(this, expr: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: BoundScope) -> bool {
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(expr.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs && pi < nparams) {
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            if (kind == "type") {
+                let arg: Expression = expr.arguments.at(cast<u64>(pi)).some;
+                let name: string = this.meta_type_arg_name(arg);
+                if (name != "") {
+                    if (this.meta_type_arg_is_deferred(name, scope)) {
+                        return true;
+                    }
+                }
+            }
+            pi = pi + 1;
+        }
+        return false;
+    }
+
+    // req1: a zero/empty placeholder for a meta call whose type arguments are not
+    // yet specialized. The generic template body is never monomorphized, so this
+    // value is never executed — it only lets the body bind without error. Typed to
+    // match the #fun's declared return type where possible.
+    fun deferred_meta_call_placeholder(this, bmf: BoundMetaFunctionDefinition) -> Option<BoundExpression> {
+        let rt: BoundType = this.resolve_meta_return_type(bmf);
+        if (rt.kind is TypeKind.PrimitiveKind) {
+            if (rt.primitive is PrimitiveType.StringType) {
+                let lit: BoundLiteralExpression = new BoundLiteralExpression("\"\"", rt, new LiteralKind.StringLiteral());
+                return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+            }
+            let ilit: BoundLiteralExpression = new BoundLiteralExpression("0", rt, new LiteralKind.IntegerLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(ilit));
+        }
+        let i64t: BoundType = this.type_registry.i64_type;
+        let ilit2: BoundLiteralExpression = new BoundLiteralExpression("0", i64t, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(ilit2));
     }
 
     // Resolve a #fun's declared return type to a BoundType for the spliced
@@ -5862,6 +6136,13 @@ class SemanticModel {
             // R3b: AST definitions fallback — for reflection at def-splice time
             // (before types are bound in global_scope).
             this.meta_engine.ast_definitions = new Option<_utils.List<Definition>>.some(this.ast_definitions);
+            // req3+4: give the MetaEngine the full #fun set so a JIT-compiled #fun
+            // can synthesize the other #funs it calls into its unit B.
+            let mfi: mut i64 = 0;
+            while (mfi < cast<i64>(this.meta_function_defs.size())) {
+                this.meta_engine.all_meta_function_defs.push(this.meta_function_defs.at(cast<u64>(mfi)).some);
+                mfi = mfi + 1;
+            }
             // Phase 6 v2: feed collected `#class` definitions (build_text) into unit B
             // as the <meta_classes> source input, so #funs can use them.
             let class_src: mut StringBuilder = new StringBuilder();
@@ -6427,7 +6708,16 @@ class SemanticModel {
             let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             let k: mut i64 = 0;
             while (k < cast<i64>(expr.generic_args.size())) {
-                args.push(this.resolve_type_specifier(expr.generic_args.at(cast<u64>(k)).some, scope));
+                let arg_ts: TypeSpecifier = expr.generic_args.at(cast<u64>(k)).some;
+                // req5: a value generic arg (A<5>) -> synthetic BoundType.
+                if (arg_ts.is_value_arg) {
+                    let vbt: mut BoundType = new BoundType();
+                    vbt.is_template_value_arg = true;
+                    vbt.template_value = string_to_int(arg_ts.value_arg_text);
+                    args.push(vbt);
+                } else {
+                    args.push(this.resolve_type_specifier(arg_ts, scope));
+                }
                 k = k + 1;
             }
             return bt.with_generic_args(args);

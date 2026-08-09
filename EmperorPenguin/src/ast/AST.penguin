@@ -72,6 +72,11 @@ class ConstantExpression {
 class IdentifierExpression {
     name: mut string = "";
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+    // req3+4: value-expression generic args for value-template call sites and
+    // recursive value-template calls (e.g. fab<5>(), fab<N-1>()). Populated by the
+    // parser's value-generic backtracking; the SemanticModel desugar rewrites these
+    // into plain calls (inside a value-template body) or meta calls (at call sites).
+    value_generic_args: mut _utils.List<Expression> = new _utils.List<Expression>();
 
     fun new(mut this, name: string) {
 
@@ -91,8 +96,20 @@ class IdentifierExpression {
                 while (i < self.generic_args.size()) {
                     sb.append(self.generic_args.at(i).some.build_text());
                     i=i+1;
-                    if (i != self.generic_args.size()) 
+                    if (i != self.generic_args.size())
                         sb.append(", ");
+                }
+                sb.append(">");
+            } else if (self.value_generic_args.size() > 0) {
+                // req3+4: value-expression generic args (fab<5>(), fab<N-1>()).
+                sb.append("<");
+                let vi: mut u64 = 0;
+                while (vi < self.value_generic_args.size()) {
+                    sb.append(self.value_generic_args.at(vi).some.build_text());
+                    vi = vi + 1;
+                    if (vi != self.value_generic_args.size()) {
+                        sb.append(", ");
+                    }
                 }
                 sb.append(">");
             }
@@ -919,6 +936,10 @@ class TypeSpecifier {
     is_mutable: mut bool = false;
     is_not_mutable: mut bool = false;
     is_auto_mutability: mut bool = false;
+    // req5: a non-type (value) generic argument in type position, e.g. the `5` in
+    // A<5>. Carried through parsing/resolve_generic_args to a synthetic BoundType.
+    is_value_arg: mut bool = false;
+    value_arg_text: mut string = "";
     is_iterable: mut bool = false;
     is_function_type: mut bool = false;
     is_async_function_type: mut bool = false;
@@ -1030,6 +1051,10 @@ class Parameter {
 class TemplateParameter {
     name: mut string = "";
     type_constraint: mut string = "";
+    // req3+4: true for non-type (value) template params like `N: i32`. For such
+    // params, type_constraint holds the value type name (e.g. "i32"); for type
+    // params (`T: type`) type_constraint is "type".
+    is_value_param: mut bool = false;
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
         if (string_length(this.type_constraint) > 0) {

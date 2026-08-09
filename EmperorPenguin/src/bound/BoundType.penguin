@@ -65,8 +65,17 @@ class BoundType {
     generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
     mutability: Mutability = new Mutability.Immutable();
     is_async_function: bool = false;
+    // req5: a non-type (value) template argument, e.g. the `5` in A<5> where
+    // #template<N:i32> class A. Rides the existing generic_args plumbing: its
+    // display_name is the value text so mangling yields A__5, and specialize_*
+    // substitutes the matching value param identifier -> this constant.
+    is_template_value_arg: mut bool = false;
+    template_value: mut i64 = 0;
 
     fun display_name(this) -> string {
+        if (this.is_template_value_arg) {
+            return cast<string>(this.template_value);
+        }
         if (this.kind is TypeKind.PrimitiveKind) {
             return primitive_type_to_string(this.primitive);
         }

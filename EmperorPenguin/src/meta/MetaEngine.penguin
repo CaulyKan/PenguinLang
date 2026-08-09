@@ -30,6 +30,10 @@ class MetaEngine {
     // Phase 6 v2: collected `#class` source (build_text of each), fed into unit B
     // as a <meta_classes> input so #funs can use these meta-only data structures.
     meta_class_source: mut string = "";
+    // req3+4: every registered #fun, so that when one #fun is JIT-compiled into
+    // unit B, the others it calls are synthesized into unit B too (a #fun body
+    // calls other #funs by plain name; they must be present as regular functions).
+    all_meta_function_defs: mut _utils.List<BoundMetaFunctionDefinition> = new _utils.List<BoundMetaFunctionDefinition>();
     // R1: back-reference to the owning SemanticModel, set by seed_meta_engine.
     // MetaHost diagnostic responders (penguin_meta_error/warn/info) reach the
     // active SemanticModel through active_meta.owner_model so a #fun can emit
@@ -153,6 +157,57 @@ class MetaEngine {
     // Returns true on success, false on failure (errors are eprintln'd).
     // On success, the function can be called via call_meta_function_*.
     // -----------------------------------------------------------------
+    // req3+4: synthesize a #fun into a plain FunctionDefinition (the same transform
+    // as the primary synth in compile_meta_function) and return its source text.
+    // Used to include OTHER #funs into unit B so a #fun body can call them.
+    fun synthesize_meta_function_text(mut this, mf: BoundMetaFunctionDefinition) -> string {
+        let synth: FunctionDefinition = new FunctionDefinition(mf.name);
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(mf.parameters.size())) {
+            let mp: MetaParameter = mf.parameters.at(cast<u64>(pi)).some;
+            let p: Parameter = new Parameter(mp.name);
+            if (string_length(mp.kind) > 0) {
+                let ts: TypeSpecifier = new TypeSpecifier();
+                if (mp.kind == "type") {
+                    ts.name = "BoundType";
+                    ts.qualified_parts.push("emperor");
+                } else if (mp.kind == "ast") {
+                    ts.name = "i64";
+                } else if (mp.kind == "unstructured_ast") {
+                    ts.name = "string";
+                } else {
+                    ts.name = mp.kind;
+                }
+                p.type_spec = new Option<TypeSpecifier>.some(ts);
+            }
+            synth.parameters.push(p);
+            pi = pi + 1;
+        }
+        if (mf.return_type.is_some()) {
+            let rt: TypeSpecifier = mf.return_type.some;
+            if (rt.name == "type") {
+                let s: mut TypeSpecifier = new TypeSpecifier();
+                s.name = "BoundType";
+                s.qualified_parts.push("emperor");
+                synth.return_type = new Option<TypeSpecifier>.some(s);
+            } else if (rt.name == "ast") {
+                let s: mut TypeSpecifier = new TypeSpecifier();
+                s.name = "i64";
+                synth.return_type = new Option<TypeSpecifier>.some(s);
+            } else {
+                synth.return_type = mf.return_type;
+            }
+        } else {
+            synth.return_type = mf.return_type;
+        }
+        synth.body = mf.body;
+        if (synth.body.is_some()) {
+            synth.body = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(synth.body.some));
+        }
+        synth.location = mf.location;
+        return synth.build_text();
+    }
+
     fun compile_meta_function(mut this, bmf: BoundMetaFunctionDefinition) -> bool {
         // ---- Step (a): synthesize a plain FunctionDefinition from bmf ----
         let synth: FunctionDefinition = new FunctionDefinition(bmf.name);
@@ -219,7 +274,19 @@ class MetaEngine {
         synth.location = bmf.location;
 
         // ---- Step (b): build the unit B source text ----
-        let unit_b_source: string = synth.build_text();
+        let unit_b_source: mut string = synth.build_text();
+        // req3+4: include every other #fun as a synthesized regular function so a
+        // #fun body can call it by plain name (e.g. a value-template #fun foo
+        // whose body calls #test — after rewrite_meta_calls_in_expr the body has
+        // a plain `test(...)` call, which resolves only if `test` is in unit B).
+        let oi: mut i64 = 0;
+        while (oi < cast<i64>(this.all_meta_function_defs.size())) {
+            let other: BoundMetaFunctionDefinition = this.all_meta_function_defs.at(cast<u64>(oi)).some;
+            if (other.name != bmf.name) {
+                unit_b_source = unit_b_source + "\n" + this.synthesize_meta_function_text(other);
+            }
+            oi = oi + 1;
+        }
 
         // Phase 6 v2: unit B sees the real emperor types (base_meta_sources:
         // core_builtin + utils + bound type layer + AST type layer + ErrorCode),
@@ -942,6 +1009,25 @@ class MetaEngine {
     //   #typeof / #compiler / unknown -> passthrough (unchanged)
     // -----------------------------------------------------------------
     fun rewrite_meta_call_dispatch(mut this, mc: MetaCallExpression) -> Expression {
+        // req3+4: a meta call to another user #fun, inside a #fun body — rewrite it
+        // to a plain function call so it resolves to the synthesized regular
+        // function in unit B (every user #fun is synthesized into unit B). This
+        // lets a value-template #fun call other #funs (#test(N) -> test(N)).
+        let umi: mut i64 = 0;
+        while (umi < cast<i64>(this.all_meta_function_defs.size())) {
+            if (this.all_meta_function_defs.at(cast<u64>(umi)).some.name == mc.func_name) {
+                let id: mut IdentifierExpression = new IdentifierExpression(mc.func_name);
+                let fc: mut FunctionCallExpression = new FunctionCallExpression();
+                fc.callee = new Option<Expression>.some(new Expression.identifier(id));
+                let ai: mut i64 = 0;
+                while (ai < cast<i64>(mc.arguments.size())) {
+                    fc.arguments.push(this.rewrite_meta_calls_in_expr(mc.arguments.at(cast<u64>(ai)).some));
+                    ai = ai + 1;
+                }
+                return new Expression.function_call(fc);
+            }
+            umi = umi + 1;
+        }
         if (mc.func_name == "defined") {
             if (cast<i64>(mc.arguments.size()) >= 1) {
                 let arg: Expression = mc.arguments.at(cast<u64>(0)).some;

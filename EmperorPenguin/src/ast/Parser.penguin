@@ -385,6 +385,7 @@ namespace emperor {
                         }
                     }
                 }
+                let type_generic_accepted: mut bool = false;
                 if (parse_ok) {
                     // Check what follows — accept for certain tokens, backtrack for operators
                     let next: Token = this.stream.peek();
@@ -393,14 +394,66 @@ namespace emperor {
                         next.token_type is TokenType.Comma || next.token_type is TokenType.LBrace ||
                         next.token_type is TokenType.Greater || next.token_type is TokenType.RBrace) {
                         id_expr.generic_args = generic_args;
-                    } else {
-                        this.stream.pos = saved_pos;
+                        type_generic_accepted = true;
                     }
-                } else {
+                }
+                if (!type_generic_accepted) {
+                    // req3+4: type-generic args did not apply — restore and try
+                    // value-expression generic args (fab<5>(), fab<N-1>()).
+                    // parse_additiveExpression stops at '>' so the closing '>' is not
+                    // misread as a comparison operator.
                     this.stream.pos = saved_pos;
+                    this.try_parse_value_generic_args(id_expr);
                 }
             }
             return new Expression.identifier(id_expr);
+        }
+
+        // req3+4: try to parse value-expression generic args at a call site
+        // (fab<5>(), fab<N-1>()). Assumes peek is '<'. Uses parse_additiveExpression
+        // for each arg (stops at '>'), then requires a call-terminator after '>'.
+        // On success populates id_expr.value_generic_args and returns true; on any
+        // failure restores the stream and returns false.
+        fun try_parse_value_generic_args(this, id_expr: IdentifierExpression) -> bool {
+            let saved_pos: i64 = this.stream.pos;
+            this.stream.advance(); // consume '<'
+            if (this.stream.peek_type() is TokenType.Greater) {
+                // empty <> — not a value-generic call
+                this.stream.pos = saved_pos;
+                return false;
+            }
+            let args: mut _utils.List<Expression> = new _utils.List<Expression>();
+            let ok: mut bool = true;
+            while (true) {
+                let arg: Expression = this.parse_additiveExpression();
+                args.push(arg);
+                if (this.stream.peek_type() is TokenType.Comma) {
+                    this.stream.advance();
+                    if (this.stream.peek_type() is TokenType.Greater) { break; }
+                    continue;
+                }
+                break;
+            }
+            if (ok) {
+                if (this.stream.peek_type() is TokenType.Greater) {
+                    this.stream.advance(); // consume >
+                } else {
+                    ok = false;
+                }
+            }
+            if (ok) {
+                let next: Token = this.stream.peek();
+                if (next.token_type is TokenType.LParen || next.token_type is TokenType.RParen ||
+                    next.token_type is TokenType.Semicolon || next.token_type is TokenType.Comma ||
+                    next.token_type is TokenType.LBrace || next.token_type is TokenType.RBrace ||
+                    next.token_type is TokenType.Greater || next.token_type is TokenType.EOF) {
+                    id_expr.value_generic_args = args;
+                    return true;
+                }
+                ok = false;
+            }
+            this.stream.pos = saved_pos;
+            return false;
         }
 
         // postfixExpression: primaryExpression | postfixExpression '.' identifierWithGeneric | postfixExpression '(' expression? (',' expression)* ')' | 'new' typeSpecifier '(' expression? (',' expression)* ')' | 'async' expression | 'wait' expression?;
@@ -1037,6 +1090,44 @@ namespace emperor {
                 this.stream.advance();
                 ts.is_auto_mutability = true;
             }
+            // req5: a non-type (value) generic argument in type position, e.g.
+            // the `5` in A<5> for #template<N:i32> class A. An integer literal
+            // becomes a value TypeSpecifier carried through to a synthetic BoundType.
+            if (this.stream.peek_type() is TokenType.Constant) {
+                let val_token: Token = this.stream.advance();
+                ts.is_value_arg = true;
+                ts.value_arg_text = val_token.text;
+                ts.name = val_token.text;
+                ts.location = this.tok_loc(val_token);
+                return ts;
+            }
+            // req2: a generic type argument may itself be a compile-time #fun()
+            // call returning `type` (e.g. Foo<#get_type()>). Mirror the top-level
+            // parse_typeSpecifier '#' handling so such a meta-call type spec parses
+            // inside generic angle brackets (resolution already JIT-splices the
+            // returned type via try_resolve_meta_type_specifier).
+            let hash_tok: Token = this.stream.peek();
+            if (hash_tok.token_type is TokenType.Hash) {
+                this.stream.advance(); // consume '#'
+                let name_token: Token = this.stream.advance();
+                let mc: mut MetaCallExpression = new MetaCallExpression();
+                mc.func_name = name_token.text;
+                mc.location = this.tok_loc(name_token);
+                ts.location = this.tok_loc(name_token);
+                ts.name = name_token.text;
+                this.stream.expect(new TokenType.LParen());
+                while (!(this.stream.peek_type() is TokenType.RParen)) {
+                    let arg = this.parse_meta_argument();
+                    mc.arguments.push(arg);
+                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+                }
+                this.stream.expect(new TokenType.RParen());
+                if (this.stream.peek_type() is TokenType.LBrace) {
+                    this.capture_meta_trailing_block(mc);
+                }
+                ts.meta_call = new Option<MetaCallExpression>.some(mc);
+                return ts;
+            }
             let t: Token = this.stream.advance();
             ts.location = this.tok_loc(t);
             ts.name = t.text;
@@ -1121,9 +1212,14 @@ namespace emperor {
             if (constraint_token.text == "type") {
                 this.stream.advance();
                 node.type_constraint = "type";
+                node.is_value_param = false;
             } else {
+                // req3+4: a non-type (value) template parameter, e.g. `N: i32`.
+                // Capture its value type so the desugar can turn the function into
+                // a #fun with this as a meta parameter.
                 let ts = this.parse_typeSpecifier();
-                node.type_constraint = "";
+                node.type_constraint = ts.name;
+                node.is_value_param = true;
             }
             return node;
         }
@@ -2316,7 +2412,63 @@ namespace emperor {
             } else {
                 this.stream.expect(new TokenType.Semicolon());
             }
+            // req3+4: a value-template function — #template(N:i32,...) fun f() with
+            // ALL value (non-type) params and NO regular parameters — desugars to a
+            // #fun meta function: each value param becomes a meta parameter (integers
+            // map to i64). Call sites fab<5>() and recursive body calls fab<N-1>()
+            // carry value_generic_args on the callee identifier and are resolved at
+            // bind time (meta call at a host call site, plain call inside a #fun body).
+            if (this.is_value_template_function(node)) {
+                return new Definition.meta_function_def(this.value_template_function_to_meta(node));
+            }
             return new Definition.function_def(node);
+        }
+
+        // req3+4: is `node` a value-template function? template_decl present, every
+        // template param is a value (non-type) param, and there are no regular
+        // parameters (so it is a pure compile-time function — excludes methods/ctors
+        // which carry a `this`/`new` parameter).
+        fun is_value_template_function(this, node: FunctionDefinition) -> bool {
+            if (node.template_decl.is_none()) { return false; }
+            let tpl: TemplateDeclaration = node.template_decl.some;
+            if (cast<i64>(tpl.parameters.size()) == 0) { return false; }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(tpl.parameters.size())) {
+                if (!(tpl.parameters.at(cast<u64>(i)).some.is_value_param)) { return false; }
+                i = i + 1;
+            }
+            if (cast<i64>(node.parameters.size()) > 0) { return false; }
+            return true;
+        }
+
+        // req3+4: build the #fun MetaFunctionDefinition desugared from a value-template
+        // FunctionDefinition. Value params become meta parameters; the body is kept
+        // as-is (its value_generic_args calls are resolved at bind time).
+        fun value_template_function_to_meta(this, node: FunctionDefinition) -> MetaFunctionDefinition {
+            let mfd: mut MetaFunctionDefinition = new MetaFunctionDefinition(node.name);
+            mfd.location = node.location;
+            let tpl: TemplateDeclaration = node.template_decl.some;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(tpl.parameters.size())) {
+                let tp: TemplateParameter = tpl.parameters.at(cast<u64>(i)).some;
+                let mp: mut MetaParameter = new MetaParameter();
+                mp.name = tp.name;
+                mp.kind = this.value_type_to_meta_kind(tp.type_constraint);
+                mfd.parameters.push(mp);
+                i = i + 1;
+            }
+            mfd.return_type = node.return_type;
+            mfd.body = node.body;
+            return mfd;
+        }
+
+        // req3+4: map a value-template param's type to a #fun meta parameter kind.
+        // The meta integer convention is i64 (the JIT trampolines are i64); bool and
+        // string pass through.
+        fun value_type_to_meta_kind(this, type_name: string) -> string {
+            if (type_name == "bool") { return "bool"; }
+            if (type_name == "string") { return "string"; }
+            return "i64";
         }
 
         // eventDefinition: 'event' identifier (':' typeSpecifier)? ';';

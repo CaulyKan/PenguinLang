@@ -64,6 +64,12 @@ class BoundClassDefinition {
     interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
+    // req5: non-type (value) template params (e.g. N in #template<N:i32> class A),
+    // and the concrete values bound at specialization (parallel lists). Used to
+    // substitute the param identifier -> a constant literal in field initializers
+    // and method bodies of the specialized class.
+    value_param_names: mut _utils.List<string> = new _utils.List<string>();
+    value_param_values: mut _utils.List<i64> = new _utils.List<i64>();
     is_value_class: mut Option<bool> = new Option<bool>.none();
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
     ast_source: Option<Definition> = new Option<Definition>.none();
