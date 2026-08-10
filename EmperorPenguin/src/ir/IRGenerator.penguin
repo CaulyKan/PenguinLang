@@ -106,8 +106,26 @@ class IRGenerator {
         if (def is BoundDefinition.global_var_def) {
             this.lower_global_var_def(def.global_var_def, module);
         }
-        // impl_def, impl_for_def, type_ref_def, class_field
+        if (def is BoundDefinition.impl_for_def) {
+            this.lower_impl_for_def(def.impl_for_def, module);
+        }
+        // impl_def, type_ref_def, class_field
         // do not generate IR code
+    }
+
+    fun lower_impl_for_def(mut this, def: BoundInterfaceForImplementation, module: mut IRModule) {
+        _utils.trace_enter("Enter lower_impl_for_def");
+        // Primitive interface impls (`impl IHash for i64 { ... }`): lower each
+        // mangled method (`hash$$i64`) as a plain function — call sites resolve
+        // to direct calls (no vtable dispatch for primitives).
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(def.methods.size())) {
+            let method_def: BoundDefinition = def.methods.at(cast<u64>(mi)).some;
+            if (method_def is BoundDefinition.function_def) {
+                this.lower_function_def(method_def.function_def, module);
+            }
+            mi = mi + 1;
+        }
     }
 
     fun lower_namespace(mut this, def: BoundNamespaceDefinition, module: mut IRModule) {
@@ -641,6 +659,32 @@ class IRGenerator {
 
     fun lower_function_call(mut this, expr: BoundFunctionCallExpression) -> IRValue {
         _utils.trace_enter("Enter lower_function_call");
+        // Pointer intrinsics: dispatched by the synthetic callee full_name set in
+        // SemanticModel.bind_meta_call (#__address_of / #__load / #__store).
+        if (expr.callee_symbol.is_some()) {
+            let sym: BoundSymbol = expr.callee_symbol.some;
+            if (sym is BoundSymbol.function_sym) {
+                let iname: string = sym.function_sym.full_name;
+                if (iname == "<intrinsic>.address_of") {
+                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                    let operand: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
+                    return this.builder.emit_address_of(operand, loc);
+                }
+                if (iname == "<intrinsic>.load") {
+                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                    let addr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
+                    let elem_ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+                    return this.builder.emit_load_ptr(addr, elem_ir_type, loc);
+                }
+                if (iname == "<intrinsic>.store") {
+                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                    let addr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
+                    let v: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(1)).some);
+                    this.builder.emit_store_ptr(addr, v, v.get_ir_type(), loc);
+                    return this.builder.void_value();
+                }
+            }
+        }
         let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
         let ai: mut i64 = 0;
         while (ai < cast<i64>(expr.arguments.size())) {

@@ -1,0 +1,123 @@
+// Stdlib growable Vector, built with meta-programming (the pointer IR + #sizeof
+// intrinsics). NOT auto-loaded — compile it explicitly (e.g. via a markdown
+// test's Compile.Args). Grows by doubling (initial capacity 8); element storage
+// is one contiguous _malloc'd buffer. Manual memory management via
+// _malloc/_mfree; release with dispose_mem(). Iteration goes through the
+// independent _VectorIterator<T> (not Self).
+namespace penguin {
+
+#template(T: type)
+class Vector {
+    impl __builtin.IReferenceType;
+    impl __builtin.IMemoryDispose;
+    buf: mut u64;
+    len: mut u64 = 0;
+    cap: mut u64 = 0;
+
+    fun new(mut this) {
+        this.buf = 0;
+        this.len = 0;
+        this.cap = 0;
+    }
+
+    // Grow to new_cap, copying existing elements element-by-element.
+    fun _grow(mut this, new_cap: u64) {
+        let new_buf: u64 = __builtin._malloc(new_cap * cast<u64>(#sizeof(T)));
+        let i: mut u64 = 0;
+        while (i < this.len) {
+            let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));
+            #__store(T, new_buf + i * cast<u64>(#sizeof(T)), v);
+            i = i + 1;
+        }
+        if (this.buf != 0) { __builtin._mfree(this.buf); }
+        this.buf = new_buf;
+        this.cap = new_cap;
+    }
+
+    fun push(mut this, v: T) {
+        if (this.len == this.cap) {
+            let new_cap: u64 = if (this.cap == 0) { 8 } else { this.cap * 2 };
+            this._grow(new_cap);
+        }
+        #__store(T, this.buf + this.len * cast<u64>(#sizeof(T)), v);
+        this.len = this.len + 1;
+    }
+
+    // Grow the vector to hold at least n elements. Elements in [old_len, n)
+    // are UNINITIALIZED (garbage) — callers must gate reads on their own
+    // validity flags (HashMap uses this to pre-size its slot vectors).
+    fun resize_to(mut this, n: u64) {
+        if (n > this.cap) {
+            this._grow(n);
+        }
+        if (n > this.len) {
+            this.len = n;
+        }
+    }
+
+    fun at(this, i: u64) -> __builtin.Option<T> {
+        if (i >= this.len) {
+            return new __builtin.Option<T>.none();
+        }
+        let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));
+        return new __builtin.Option<T>.some(v);
+    }
+
+    fun set(mut this, i: u64, v: T) {
+        if (i >= this.len) { return; }
+        #__store(T, this.buf + i * cast<u64>(#sizeof(T)), v);
+    }
+
+    fun size(this) -> u64 {
+        return this.len;
+    }
+
+    fun capacity(this) -> u64 {
+        return this.cap;
+    }
+
+    fun iter(this) -> _VectorIterator<T> {
+        return new _VectorIterator<T>(this.buf, this.len);
+    }
+
+    fun iter_mut(mut this) -> mut _VectorIterator<T> {
+        return new _VectorIterator<T>(this.buf, this.len);
+    }
+
+    fun dispose_mem(mut this) {
+        if (this.buf != 0) {
+            __builtin._mfree(this.buf);
+            this.buf = 0;
+        }
+    }
+}
+
+// Independent iterator for Vector<T>.
+#template(T: type)
+class _VectorIterator {
+    impl __builtin.IReferenceType;
+    base: u64;
+    cursor: mut u64 = 0;
+    end: u64;
+
+    fun new(mut this, base: u64, end: u64) {
+        this.base = base;
+        this.end = end;
+        this.cursor = 0;
+    }
+
+    fun next(mut this) -> __builtin.Option<T> {
+        if (this.cursor >= this.end) {
+            return new __builtin.Option<T>.none();
+        }
+        let v: T = #__load(T, this.base + this.cursor * cast<u64>(#sizeof(T)));
+        this.cursor = this.cursor + 1;
+        return new __builtin.Option<T>.some(v);
+    }
+
+    fun iter(this) -> _VectorIterator<T> {
+        return this;
+    }
+}
+
+} // namespace penguin

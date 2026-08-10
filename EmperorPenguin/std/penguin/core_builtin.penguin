@@ -12,6 +12,18 @@ namespace __builtin {
     extern fun gc_collect();
     extern fun gc_info() -> i64;
 
+    // Raw heap allocation for manually-managed buffers (Array<T,N>, _ptr<T>).
+    // Routed to @_emperor_malloc / @_emperor_mfree in core_builtin.c (libc
+    // malloc/free, NOT the GC arena). Unreferenced externs are free.
+    extern fun _malloc(size: u64) -> u64;
+    extern fun _mfree(addr: u64);
+
+    // Byte-level helpers for generic HashMap<K,V>: hash and equality over the raw
+    // bytes of a value-type key (address + #sizeof). Routed to @_emperor_hash_bytes
+    // / @_emperor_bytes_equal in core_builtin.c.
+    extern fun _hash_bytes(addr: u64, len: u64) -> u64;
+    extern fun _bytes_equal(addr1: u64, addr2: u64, len: u64) -> i64;
+
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
 
@@ -75,6 +87,14 @@ namespace __builtin {
         extern fun copy(this: T) -> T;
     }
 
+    // IHash: hashes a value to a 64-bit hash code. Implemented for every
+    // primitive via `impl IHash for <type>`; calls like `k.hash()` on a
+    // primitive resolve to the impl's method as a direct call (primitive
+    // interface-method dispatch).
+    interface IHash {
+        fun hash(this) -> i64;
+    }
+
     // IReferenceType marks a class as a heap-allocated reference type, overriding
     // the all-value-fields heuristic in classify_class. Without it, a class whose
     // fields are all value-like (e.g. StringBuilder: string/i32/i32, where string
@@ -82,6 +102,13 @@ namespace __builtin {
     // semantics then break aliasing (the LLVMEmitter this.sb buffer swap copies the
     // 24B struct instead of aliasing, so the buffer is never written).
     interface IReferenceType {
+    }
+
+    // Marker for manually-managed types that own raw memory (Array<T,N>,
+    // HashMap<K,V>, ...). Call dispose_mem() explicitly; automatic finalization
+    // (GC sweep / value-type scope-exit) is not wired up yet.
+    interface IMemoryDispose {
+        fun dispose_mem();
     }
 
     #template(T: type)
@@ -120,6 +147,85 @@ namespace __builtin {
     impl __builtin.ICopy<string> for string;
     impl __builtin.ICopy<float> for float;
     impl __builtin.ICopy<double> for double;
+
+    // IHash implementations for every primitive (primitive interface-method
+    // dispatch: `k.hash()` lowers to a direct call of the mangled method).
+    impl IHash<i64> for i64 {
+        fun hash(this) -> i64 {
+            return this;
+        }
+    }
+    impl IHash<i32> for i32 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<i16> for i16 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<i8> for i8 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<u64> for u64 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<u32> for u32 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<u16> for u16 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<u8> for u8 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<char> for char {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<f32> for f32 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<f64> for f64 {
+        fun hash(this) -> i64 {
+            return cast<i64>(this);
+        }
+    }
+    impl IHash<bool> for bool {
+        fun hash(this) -> i64 {
+            if (this) { return 1; }
+            return 0;
+        }
+    }
+    impl IHash<string> for string {
+        fun hash(this) -> i64 {
+            // FNV-1a 64-bit: h ^= byte; h *= prime. The standard offset basis
+            // 0xCBF29CE484222325 overflows i64 literals, so its low 63 bits
+            // (0x4BF29CE484222325) are used — hash distribution is unchanged.
+            let h: mut i64 = 5472609002491880229;
+            let i: mut i64 = 0;
+            while (i < string_length(this)) {
+                h = h ^ string_char_code(string_char_at(this, i));
+                h = h * 1099511628211;
+                i = i + 1;
+            }
+            return h;
+        }
+    }
 
     // StringBuilder is backed by the C struct in core_builtin.c. Its PenguinLang
     // field layout MUST match that C struct (EmperorPenguin always prepends a

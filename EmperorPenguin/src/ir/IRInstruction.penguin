@@ -600,6 +600,70 @@ class IRGlobalStore {
     }
 }
 
+// 24. ADDRESS_OF - take the address of a value-backed operand, yield a u64.
+class IRAddressOf {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, operand: IRValue, loc: SourceLocation) {
+        this.result = result;
+        this.operand = operand;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":u64 = ADDRESS_OF " + this.operand.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
+// 25. LOAD_PTR - load a value of type `load_type` from a raw u64 address.
+class IRLoadPtr {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    addr: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    load_type: !mut string = "";
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, addr: IRValue, load_type: string, loc: SourceLocation) {
+        this.result = result;
+        this.addr = addr;
+        this.load_type = load_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.load_type + " = LOAD_PTR " + this.addr.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
+// 26. STORE_PTR - store a value of type `store_type` to a raw u64 address.
+class IRStorePtr {
+    addr: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    store_type: !mut string = "";
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, addr: IRValue, value: IRValue, store_type: string, loc: SourceLocation) {
+        this.addr = addr;
+        this.value = value;
+        this.store_type = store_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "STORE_PTR " + this.addr.display() + ", " + this.value.display() + ":" + this.store_type;
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
 // IRInstruction enum
 enum IRInstruction {
     const_inst: IRConst;
@@ -627,6 +691,9 @@ enum IRInstruction {
     label_inst: IRLabelInst;
     global_load: IRGlobalLoad;
     global_store: IRGlobalStore;
+    address_of: IRAddressOf;
+    load_ptr: IRLoadPtr;
+    store_ptr: IRStorePtr;
 
     fun display(this) -> string {
         if (this is IRInstruction.const_inst) { return this.const_inst.display(); }
@@ -654,6 +721,9 @@ enum IRInstruction {
         if (this is IRInstruction.label_inst) { return this.label_inst.display(); }
         if (this is IRInstruction.global_load) { return this.global_load.display(); }
         if (this is IRInstruction.global_store) { return this.global_store.display(); }
+        if (this is IRInstruction.address_of) { return this.address_of.display(); }
+        if (this is IRInstruction.load_ptr) { return this.load_ptr.display(); }
+        if (this is IRInstruction.store_ptr) { return this.store_ptr.display(); }
         return "unknown_instruction";
     }
 

@@ -33,6 +33,17 @@ class SemanticModel {
     // Phase 6 v2: `#class` definitions collected from unit A, fed into unit B so
     // #funs can use them as meta-only data structures (not emitted to runtime).
     meta_class_defs: mut _utils.List<ClassDefinition> = new _utils.List<ClassDefinition>();
+    // Primitive interface-method dispatch registry: `impl IHash for i64 { ... }`
+    // methods are mangled to `<name>$$<primitive>` (e.g. hash$$i64) at bind time
+    // and recorded here in four parallel lists (target primitive display name,
+    // interface display name, original method name, mangled BoundFunctionSymbol).
+    // bind_member_access resolves `k.hash()` on a primitive base to the mangled
+    // symbol, which lowers to a direct call (no vtable). The symbol instances are
+    // the scope-registered ones, so pass 2/4 populate return_type/parameters.
+    primitive_impl_for_type: mut _utils.List<string> = new _utils.List<string>();
+    primitive_impl_iface: mut _utils.List<string> = new _utils.List<string>();
+    primitive_impl_method_name: mut _utils.List<string> = new _utils.List<string>();
+    primitive_impl_method_sym: mut _utils.List<BoundFunctionSymbol> = new _utils.List<BoundFunctionSymbol>();
     meta_engine: mut MetaEngine = new MetaEngine();
     meta_engine_seeded: mut bool = false;
     verbose: mut i64 = 0;
@@ -1199,13 +1210,49 @@ class SemanticModel {
     fun bind_impl_for_def(mut this, def: InterfaceForImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_impl_for_def");
         let result: mut BoundInterfaceForImplementation = new BoundInterfaceForImplementation();
+        // Primitive impls (`impl IHash for i64 { ... }`): each method name is
+        // mangled to `<name>$$<primitive>` (e.g. hash$$i64) so every primitive's
+        // implementation is a distinct symbol in the enclosing scope; the mangled
+        // symbol is recorded in the primitive_impl registry for bind_member_access.
+        // `$$` can never appear in a user identifier (lexer forbids it), so the
+        // mangling cannot collide. Non-primitive `impl ... for ...` is unchanged.
+        // The for_type is probed via type_registry.resolve_type (no error emitted)
+        // — legacy empty impls like `impl ICopy<float> for float;` name non-types
+        // and must stay on the unchanged path.
+        let for_type_opt: Option<BoundType> = this.type_registry.resolve_type(def.for_type_name);
+        let is_primitive_for: mut bool = false;
+        let prim_display: mut string = "";
+        if (let ft := for_type_opt.some) {
+            if (ft.kind is TypeKind.PrimitiveKind && !(ft.primitive is PrimitiveType.VoidType)) {
+                is_primitive_for = true;
+                prim_display = ft.display_name();
+            }
+        }
         let i: mut i64 = 0;
         while (i < cast<i64>(def.functions.size())) {
             let func: Definition = def.functions.at(cast<u64>(i)).some;
             if (func is Definition.function_def) {
-                let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
-                if (bound.is_some()) {
-                    result.methods.push(bound.some);
+                if (is_primitive_for) {
+                    let orig_name: string = func.function_def.name;
+                    func.function_def.name = orig_name + "$$" + prim_display;
+                    let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
+                    func.function_def.name = orig_name;
+                    if (bound.is_some()) {
+                        result.methods.push(bound.some);
+                        if (bound.some is BoundDefinition.function_def) {
+                            if (bound.some.function_def.symbol.is_some()) {
+                                this.primitive_impl_for_type.push(prim_display);
+                                this.primitive_impl_iface.push(def.type_name);
+                                this.primitive_impl_method_name.push(orig_name);
+                                this.primitive_impl_method_sym.push(bound.some.function_def.symbol.some);
+                            }
+                        }
+                    }
+                } else {
+                    let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
+                    if (bound.is_some()) {
+                        result.methods.push(bound.some);
+                    }
                 }
             }
             i = i + 1;
@@ -1382,6 +1429,20 @@ class SemanticModel {
                 i = i + 1;
             }
         }
+        // Primitive interface impls: mirror resolved parameters onto each mangled
+        // method's symbol (so function_is_method / IRGenerator receiver handling
+        // see the `this` parameter) and register param symbols in the method scope.
+        if (def is BoundDefinition.impl_for_def) {
+            let impl_for: BoundInterfaceForImplementation = def.impl_for_def;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(impl_for.methods.size())) {
+                let md: BoundDefinition = impl_for.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.bind_function_symbols(md.function_def);
+                }
+                mi = mi + 1;
+            }
+        }
         if (def is BoundDefinition.initial_routine) {
             this.bind_function_symbols_for_init(def.initial_routine);
         }
@@ -1494,6 +1555,36 @@ class SemanticModel {
             this.resolve_namespace_pair(ast_def.namespace_def, bn, scope);
             return new BoundDefinition.namespace_def(bn);
         }
+        // Primitive interface impls: resolve each mangled method's parameter and
+        // return types (`this` -> the primitive for_type). Bound methods and AST
+        // functions are index-aligned (both loops skip non-function entries).
+        // for_type is probed without emitting an error — legacy empty impls like
+        // `impl ICopy<float> for float;` name non-types and are left as-is.
+        if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
+            let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            let ast_impl: InterfaceForImplementation = ast_def.impl_for_def;
+            let for_type_opt: Option<BoundType> = this.type_registry.resolve_type(ast_impl.for_type_name);
+            if (let ft := for_type_opt.some) {
+                if (ft.kind is TypeKind.PrimitiveKind && !(ft.primitive is PrimitiveType.VoidType)) {
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(impl_for.methods.size())) {
+                        let md: BoundDefinition = impl_for.methods.at(cast<u64>(mi)).some;
+                        if (md is BoundDefinition.function_def) {
+                            if (mi < cast<i64>(ast_impl.functions.size())) {
+                                let ast_func: Definition = ast_impl.functions.at(cast<u64>(mi)).some;
+                                if (ast_func is Definition.function_def) {
+                                    this.resolve_impl_for_method(ast_func.function_def, md.function_def, ft, scope);
+                                }
+                            }
+                            impl_for.methods.set(cast<u64>(mi), new BoundDefinition.function_def(md.function_def));
+                        }
+                        mi = mi + 1;
+                    }
+                    return new BoundDefinition.impl_for_def(impl_for);
+                }
+            }
+            return new BoundDefinition.impl_for_def(impl_for);
+        }
         if (bound_def is BoundDefinition.initial_routine) {
             let init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
             if (init.scope.is_some() && init.symbol.is_some()) {
@@ -1565,6 +1656,48 @@ class SemanticModel {
         let is_async: bool = ast_func.is_async;
         sym.bound_type = this.type_registry.make_function_type(ret, func_type_params, is_async);
         sym.is_async = is_async;
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    // Resolve an `impl <iface> for <primitive>` method's parameter/return types
+    // (pass 2). `this` without an explicit type spec gets the primitive target
+    // type, mirroring resolve_class_method_pair's class-`this` handling.
+    fun resolve_impl_for_method(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, for_type: BoundType, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_impl_for_method");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.type_registry.void_type;
+        if (ast_func.return_type.is_some()) {
+            ret = this.resolve_type_specifier(ast_func.return_type.some, scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+            if (p.type_spec.is_some()) {
+                bp.bound_type = this.resolve_type_specifier(p.type_spec.some, scope);
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
+            } else if (p.is_this) {
+                // Primitive for_types are always Immutable (make_primitive sets
+                // Mutability.Immutable). The `this` parameter's bound type mirrors
+                // the receiver's declared mutability: Mutable when the parameter is
+                // `mut this`, otherwise the primitive's own (Immutable) mutability,
+                // re-wrapped via with_mutability to yield a mutable-typed value.
+                if (p.is_mutable) {
+                    bp.bound_type = for_type.with_mutability(new Mutability.Mutable());
+                } else {
+                    bp.bound_type = for_type.with_mutability(new Mutability.Immutable());
+                }
+            }
+            bound_func.parameters.push(bp);
+            func_type_params.push(bp.bound_type);
+            pi = pi + 1;
+        }
+        sym.bound_type = this.type_registry.make_function_type(ret, func_type_params, false);
         bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
     }
 
@@ -1889,6 +2022,13 @@ class SemanticModel {
                 }
                 if (ast_child is Definition.interface_def && bound_child is BoundDefinition.interface_def) {
                     if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                    // impl_for_defs have no name to match on; namespace children are
+                    // index-aligned from pass 1 (bind_namespace_def binds in order).
+                    if (i == j) {
                         bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
                     }
                 }
@@ -2602,6 +2742,41 @@ class SemanticModel {
                 }
                 ii = ii + 1;
             }
+            // Transitive specialization: a specialized class's METHOD BODIES may
+            // instantiate OTHER generic classes with this class's (now concrete)
+            // type params, e.g. Holder<i32>.use() { new Wrap<i32>(...) }. Scan the
+            // template AST body (ast_source) with THIS specialized class's scope so
+            // those inner instantiations get collected and specialized in a later
+            // monomorphization iteration. Templates are skipped above; ast_source is
+            // set only for specialized classes, so non-generic classes aren't rescanned.
+            if (cls.ast_source.is_some() && cls.scope.is_some()) {
+                if (cls.ast_source.some is Definition.class_def) {
+                    let ast_cls: ClassDefinition = cls.ast_source.some.class_def;
+                    let body_scope: BoundScope = cls.scope.some;
+                    let bmi: mut i64 = 0;
+                    while (bmi < cast<i64>(ast_cls.members.size())) {
+                        let bm: Definition = ast_cls.members.at(cast<u64>(bmi)).some;
+                        if (bm is Definition.function_def) {
+                            if (bm.function_def.body.is_some()) {
+                                this.collect_from_ast_expr_safe(bm.function_def.body.some, body_scope, instantiations);
+                            }
+                        }
+                        if (bm is Definition.impl_def) {
+                            let ifn: mut i64 = 0;
+                            while (ifn < cast<i64>(bm.impl_def.functions.size())) {
+                                let im: Definition = bm.impl_def.functions.at(cast<u64>(ifn)).some;
+                                if (im is Definition.function_def) {
+                                    if (im.function_def.body.is_some()) {
+                                        this.collect_from_ast_expr_safe(im.function_def.body.some, body_scope, instantiations);
+                                    }
+                                }
+                                ifn = ifn + 1;
+                            }
+                        }
+                        bmi = bmi + 1;
+                    }
+                }
+            }
         }
         if (def is BoundDefinition.function_def) {
             let func: BoundFunctionDefinition = def.function_def;
@@ -2721,6 +2896,68 @@ class SemanticModel {
         }
     }
 
+    // Recurse into a statement's sub-expressions (and nested statements) so that
+    // generic instantiations inside while/if/for bodies are collected. Without this,
+    // `new Foo<X>()` inside a loop body was missed by monomorphization collection
+    // → never specialized → emit_new found no layout → use of undefined value.
+    fun collect_from_ast_statement_safe(this, stmt: Statement, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.expression.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.block_expr.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.target.some, scope, instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.let_decl.initializer.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.return_stmt.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.if_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.then_statement.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.else_statement.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.while_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.while_stmt.body.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.for_stmt.iterable.some, scope, instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.for_stmt.body.some, scope, instantiations);
+            }
+        }
+    }
+
     fun collect_from_ast_expr_safe(this, expr: Expression, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
         _utils.trace_enter("Enter collect_from_ast_expr_safe");
         if (expr is Expression.new_expr) {
@@ -2748,18 +2985,11 @@ class SemanticModel {
             let blk: CodeBlockExpression = expr.code_block;
             let si: mut i64 = 0;
             while (si < cast<i64>(blk.statements.size())) {
-                let stmt: Statement = blk.statements.at(cast<u64>(si)).some;
-                if (stmt is Statement.let_decl) {
-                    if (stmt.let_decl.initializer.is_some()) {
-                        this.collect_from_ast_expr_safe(stmt.let_decl.initializer.some, scope, instantiations);
-                    }
-                }
-                if (stmt is Statement.expression) {
-                    if (stmt.expression.expression.is_some()) {
-                        this.collect_from_ast_expr_safe(stmt.expression.expression.some, scope, instantiations);
-                    }
-                }
+                this.collect_from_ast_statement_safe(blk.statements.at(cast<u64>(si)).some, scope, instantiations);
                 si = si + 1;
+            }
+            if (blk.trailing_expr.is_some()) {
+                this.collect_from_ast_expr_safe(blk.trailing_expr.some, scope, instantiations);
             }
         }
         if (expr is Expression.cast_expr) {
@@ -2795,6 +3025,52 @@ class SemanticModel {
             let ma: MemberAccessExpression = expr.member_access;
             if (ma.base_expr.is_some()) {
                 this.collect_from_ast_expr_safe(ma.base_expr.some, scope, instantiations);
+            }
+        }
+        // if/while parse as *expressions* inside code blocks (wrapped in a
+        // Statement.block_expr by parse_codeBlockExpression), so generic
+        // instantiations inside their bodies (e.g. `new Foo<T>()` in a while
+        // body) were never collected here -> class never specialized -> the
+        // LLVM emitter hit "NEW Foo__T (no layout)" and the object's registers
+        // stayed undefined. Recurse into both branches just like the
+        // statement-level variants above.
+        if (expr is Expression.if_expr) {
+            let ie: IfExpression = expr.if_expr;
+            if (ie.condition.is_some()) {
+                this.collect_from_ast_expr_safe(ie.condition.some, scope, instantiations);
+            }
+            if (ie.then_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.then_block.some, scope, instantiations);
+            }
+            if (ie.else_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.else_block.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.while_expr) {
+            let we: WhileExpression = expr.while_expr;
+            if (we.condition.is_some()) {
+                this.collect_from_ast_expr_safe(we.condition.some, scope, instantiations);
+            }
+            if (we.body.is_some()) {
+                this.collect_from_ast_expr_safe(we.body.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.binary) {
+            let bin: BinaryExpression = expr.binary;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(bin.operands.size())) {
+                this.collect_from_ast_expr_safe(bin.operands.at(cast<u64>(oi)).some, scope, instantiations);
+                oi = oi + 1;
+            }
+        }
+        if (expr is Expression.unary) {
+            if (expr.unary.operand.is_some()) {
+                this.collect_from_ast_expr_safe(expr.unary.operand.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                this.collect_from_ast_expr_safe(expr.parenthesized.inner.some, scope, instantiations);
             }
         }
     }
@@ -4231,6 +4507,35 @@ class SemanticModel {
             }
             return new BoundDefinition.function_def(bound_func);
         }
+        // Primitive interface impls: bind each mangled method's body. AST and
+        // bound methods are index-aligned (both loops skip non-function entries),
+        // and the bound name carries the `$$<primitive>` mangle, so matching by
+        // index (not by name) is required.
+        if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
+            let ast_impl: InterfaceForImplementation = ast_def.impl_for_def;
+            let bound_impl: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(ast_impl.functions.size())) {
+                let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                if (ast_func_def is Definition.function_def) {
+                    if (fi < cast<i64>(bound_impl.methods.size())) {
+                        let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(fi)).some;
+                        if (bound_method is BoundDefinition.function_def) {
+                            let bf: mut BoundFunctionDefinition = bound_method.function_def;
+                            if (bf.scope.is_some() && ast_func_def.function_def.body.is_some()) {
+                                let func_scope: mut BoundScope = bf.scope.some;
+                                this.ensure_params_in_scope(bf);
+                                let bound_body: mut Option<BoundExpression> = this.bind_expression(ast_func_def.function_def.body.some, func_scope);
+                                bf.body = bound_body;
+                            }
+                            bound_impl.methods.set(cast<u64>(fi), new BoundDefinition.function_def(bf));
+                        }
+                    }
+                }
+                fi = fi + 1;
+            }
+            return new BoundDefinition.impl_for_def(bound_impl);
+        }
         if (bound_def is BoundDefinition.initial_routine && ast_def is Definition.initial_routine) {
             let bound_init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
             let ast_init: InitialRoutineDefinition = ast_def.initial_routine;
@@ -4400,6 +4705,13 @@ class SemanticModel {
                     }
                     if (ast_child is Definition.interface_def && bound_child is BoundDefinition.interface_def) {
                         if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                        // impl_for_defs have no name to match on; namespace children are
+                        // index-aligned from pass 1 (bind_namespace_def binds in order).
+                        if (k == m) {
                             bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
                         }
                     }
@@ -4616,9 +4928,77 @@ class SemanticModel {
 
     fun bind_constant(mut this, expr: ConstantExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_constant");
+        // Float literals (value contains '.' or 'e'/'E', optionally after a
+        // leading '-', e.g. "3.5", "1e5", "-2.5") bind as f64 with FloatLiteral
+        // kind; everything else defaults to i64 + IntegerLiteral. Previously
+        // every numeric literal bound as i64, so the operand of `-3.5` was an
+        // i64 literal with value "3.5" — the IR emitted `add i64 0, 3.5`
+        // (float value in an i64 register) which clang rejected. Binding the
+        // float literal as f64 makes unary neg emit `fsub double 0.0, 3.5`
+        // (LLVMEmitter.emit_unaryop already dispatches on is_float_type).
+        let value: string = expr.value;
+        if (string_find(value, ".") >= 0 || string_find(value, "e") >= 0 || string_find(value, "E") >= 0) {
+            let bt: BoundType = this.type_registry.resolve_type("f64").some;
+            let result: mut BoundLiteralExpression = new BoundLiteralExpression(value, bt, new LiteralKind.FloatLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(result));
+        }
         let bt: BoundType = this.type_registry.resolve_type("i64").some;
         let result: mut BoundLiteralExpression = new BoundLiteralExpression(expr.value, bt, new LiteralKind.IntegerLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
+    }
+
+    // True when the bound type is a numeric primitive (signed/unsigned ints or
+    // floats). bool / char / string / void are excluded: numeric casts only
+    // apply between numeric types.
+    fun is_numeric_primitive_type(this, t: BoundType) -> bool {
+        if (t.kind is TypeKind.PrimitiveKind) {
+            if (t.primitive is PrimitiveType.BoolType) { return false; }
+            if (t.primitive is PrimitiveType.CharType) { return false; }
+            if (t.primitive is PrimitiveType.StringType) { return false; }
+            if (t.primitive is PrimitiveType.VoidType) { return false; }
+            return true;
+        }
+        return false;
+    }
+
+    // Mirror of LLVMEmitter.cast_op's supported numeric conversions, in LLVM
+    // type names (u* aliases the corresponding i*). cast_op falls back to
+    // "bitcast" for anything not in its table, which would be invalid IR, so
+    // callers must skip unsupported combinations (e.g. i8/i16 <-> float).
+    fun numeric_cast_supported(this, from: PrimitiveType, to: PrimitiveType) -> bool {
+        let f: string = this.numeric_primitive_llvm_type(from);
+        let t: string = this.numeric_primitive_llvm_type(to);
+        if (f == "void" || t == "void") { return false; }
+        if (f == t) { return true; }
+        let f_int: bool = this.is_int_llvm_type(f);
+        let t_int: bool = this.is_int_llvm_type(t);
+        if (f_int && t_int) { return true; }
+        if (f_int && (t == "float" || t == "double")) { return f == "i32" || f == "i64"; }
+        if ((f == "float" || f == "double") && t_int) { return t == "i32" || t == "i64"; }
+        if ((f == "float" || f == "double") && (t == "float" || t == "double")) { return true; }
+        return false;
+    }
+
+    fun numeric_primitive_llvm_type(this, p: PrimitiveType) -> string {
+        if (p is PrimitiveType.I8) { return "i8"; }
+        if (p is PrimitiveType.I16) { return "i16"; }
+        if (p is PrimitiveType.I32) { return "i32"; }
+        if (p is PrimitiveType.I64) { return "i64"; }
+        if (p is PrimitiveType.U8) { return "i8"; }
+        if (p is PrimitiveType.U16) { return "i16"; }
+        if (p is PrimitiveType.U32) { return "i32"; }
+        if (p is PrimitiveType.U64) { return "i64"; }
+        if (p is PrimitiveType.F32) { return "float"; }
+        if (p is PrimitiveType.F64) { return "double"; }
+        return "void";
+    }
+
+    fun is_int_llvm_type(this, t: string) -> bool {
+        if (t == "i8") { return true; }
+        if (t == "i16") { return true; }
+        if (t == "i32") { return true; }
+        if (t == "i64") { return true; }
+        return false;
     }
 
     fun bind_string_literal(mut this, expr: StringLiteralExpression, scope: mut BoundScope) -> Option<BoundExpression> {
@@ -4928,6 +5308,25 @@ class SemanticModel {
             let bound_base: Option<BoundExpression> = this.bind_expression(expr.base_expr.some, scope);
             if (bound_base.is_some()) {
                 let base_type: BoundType = bound_base.some.get_bound_type();
+                // Primitive interface-method dispatch: `impl IHash for i64 { ... }`
+                // methods are mangled to `<name>$$<primitive>` at bind time and
+                // recorded in the primitive_impl registry. Resolve `k.hash()` on a
+                // primitive base to the mangled symbol (direct call, no vtable).
+                // Unmatched names fall through to the existing paths below.
+                if (base_type.kind is TypeKind.PrimitiveKind) {
+                    let base_name: string = base_type.display_name();
+                    let pi2: mut i64 = 0;
+                    while (pi2 < cast<i64>(this.primitive_impl_for_type.size())) {
+                        if (this.primitive_impl_for_type.at(cast<u64>(pi2)).some == base_name
+                            && this.primitive_impl_method_name.at(cast<u64>(pi2)).some == expr.member_name) {
+                            let impl_sym: mut BoundFunctionSymbol = this.primitive_impl_method_sym.at(cast<u64>(pi2)).some;
+                            let bt: mut BoundType = this.find_function_return_type(impl_sym);
+                            let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, new Option<BoundSymbol>.some(new BoundSymbol.function_sym(impl_sym)));
+                            return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                        }
+                        pi2 = pi2 + 1;
+                    }
+                }
                 if (let td := base_type.type_definition.some) {
                     if (td is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = td.class_def;
@@ -5761,6 +6160,15 @@ class SemanticModel {
 
     fun bind_meta_call(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_meta_call");
+        // Compile-time / runtime pointer intrinsics — dispatched before the #fun
+        // probe so they never enter the meta-JIT path. #sizeof splices an integer
+        // literal (BoundType.byte_size); #__address_of/#__load/#__store lower to
+        // runtime IR via a synthetic BoundFunctionCallExpression whose callee
+        // full_name is a reserved <intrinsic>.* token matched in IRGenerator.
+        if (expr.func_name == "sizeof") { return this.bind_sizeof_intrinsic(expr, scope); }
+        if (expr.func_name == "__address_of") { return this.bind_address_of_intrinsic(expr, scope); }
+        if (expr.func_name == "__load") { return this.bind_load_intrinsic(expr, scope); }
+        if (expr.func_name == "__store") { return this.bind_store_intrinsic(expr, scope); }
         // Phase 5c: if this is a call to a registered #fun, JIT-execute it at
         // compile time and splice the result (integer literal, or a returned ast
         // re-bound at the call site). Only the JIT is reached in native pass2+
@@ -5973,6 +6381,107 @@ class SemanticModel {
         }
         this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta argument of kind '" + kind + "' must be a compile-time constant (integer, bool, string, type, or ast)", loc);
         return new Option<i64>.none();
+    }
+
+    // Resolve a type name (primitive via registry, or user type via scope) to its
+    // BoundType, for use by the #sizeof / #__load / #__store intrinsics.
+    fun resolve_intrinsic_boundtype(mut this, name: string, scope: BoundScope) -> Option<BoundType> {
+        let prim: Option<BoundType> = this.type_registry.resolve_type(name);
+        if (prim.is_some()) { return prim; }
+        let sym_opt: Option<BoundSymbol> = this.resolve_type_by_name(name, scope);
+        if (sym_opt.is_some()) {
+            if (sym_opt.some is BoundSymbol.type_sym) {
+                return new Option<BoundType>.some(sym_opt.some.type_sym.bound_type);
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    fun make_intrinsic_symbol(this, full_name: string) -> BoundFunctionSymbol {
+        return new BoundFunctionSymbol(full_name, full_name);
+    }
+
+    // #sizeof(T) -> i64 integer literal = T.byte_size() (compile-time).
+    fun bind_sizeof_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 1) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof expects 1 type argument", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        if (type_name == "") {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof argument must be a type name", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (bt_opt.is_none()) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let sz: i64 = bt_opt.some.byte_size();
+        let i64_bt: BoundType = this.type_registry.resolve_type("i64").some;
+        let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(sz), i64_bt, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+    }
+
+    // #__address_of(x) -> u64 ; runtime intrinsic -> ADDRESS_OF IR.
+    fun bind_address_of_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) != 1) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#__address_of expects 1 argument", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let arg_opt: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(0)).some, scope);
+        if (arg_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(arg_opt.some);
+        let u64_bt: BoundType = this.type_registry.resolve_type("u64").some;
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.address_of");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(u64_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
+    }
+
+    // #__load(T, addr) -> T ; runtime intrinsic -> LOAD_PTR IR.
+    fun bind_load_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 2) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load expects a type and an address", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (elem_bt_opt.is_none()) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let addr_opt: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
+        if (addr_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(addr_opt.some);
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.load");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(elem_bt_opt.some, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
+    }
+
+    // #__store(T, addr, v) ; runtime intrinsic -> STORE_PTR IR.
+    fun bind_store_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 3) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store expects a type, an address, and a value", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (elem_bt_opt.is_none()) {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let addr_opt: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
+        let val_opt: Option<BoundExpression> = this.bind_expression(expr.arguments.at(cast<u64>(2)).some, scope);
+        if (addr_opt.is_none() || val_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(addr_opt.some);
+        args.push(val_opt.some);
+        let void_bt: BoundType = new BoundType();
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.store");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(void_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
     }
 
     // req1: extract the type name carried by a meta type-argument expression —
@@ -7117,7 +7626,7 @@ class SemanticModel {
             }
             var_sym.location = stmt.let_decl.location;
             if (stmt.let_decl.initializer.is_some()) {
-                let initializer: Option<BoundExpression> = this.bind_expression(stmt.let_decl.initializer.some, scope);
+                let initializer: mut Option<BoundExpression> = this.bind_expression(stmt.let_decl.initializer.some, scope);
                 if (initializer.is_some()) {
                     let init_type: BoundType = initializer.some.get_bound_type();
                     // When type is inferred (no type_spec), propagate mutability
@@ -7158,6 +7667,28 @@ class SemanticModel {
                             this.report_error(new ErrorCode.E_MUTABILITY(),
                                 "Cannot assign immutable value to mutable variable",
                                 new SourceLocation("", 0, 0));
+                        }
+                    }
+                    // Numeric coercion for non-literal initializers: literals
+                    // are already re-typed by the IR layer (emit_const_direct
+                    // emits the constant in the declared register type), but an
+                    // expression like unary `-3.5` binds as f64 — `let x: f32 =
+                    // -3.5` would otherwise ASSIGN a double to a float register
+                    // and LLVMEmitter.coerce_operand would emit an invalid
+                    // `zext double to float`. Wrap it in an explicit numeric
+                    // cast (lowers to fptrunc/fpext/sitofp/fptosi/trunc/zext
+                    // via LLVMEmitter.cast_op). Skip combinations cast_op does
+                    // not support (e.g. i8/i16 <-> float/double) rather than
+                    // risk new invalid IR.
+                    if (stmt.let_decl.type_spec.is_some()) {
+                        if (!(initializer.some is BoundExpression.literal)) {
+                            if (this.is_numeric_primitive_type(init_type)
+                                && this.is_numeric_primitive_type(decl_type)
+                                && !init_type.is_same_type(decl_type)
+                                && this.numeric_cast_supported(init_type.primitive, decl_type.primitive)) {
+                                let num_cast: mut BoundCastExpression = new BoundCastExpression(decl_type, decl_type, initializer, true);
+                                initializer = new Option<BoundExpression>.some(new BoundExpression.cast_expr(num_cast));
+                            }
                         }
                     }
                     var_sym.bound_type = decl_type;
@@ -7798,6 +8329,33 @@ class SemanticModel {
                         this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
                     }
                 }
+                // if/while bodies are wrapped as block_expr statements (see
+                // parse_codeBlockExpression); recurse so generic calls inside
+                // them are collected too.
+                if (stmt is Statement.block_expr) {
+                    if (stmt.block_expr.expression.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.while_stmt) {
+                    if (stmt.while_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.while_stmt.body.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.if_stmt) {
+                    if (stmt.if_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.then_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.else_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+                    }
+                }
                 si = si + 1;
             }
         }
@@ -7841,6 +8399,67 @@ class SemanticModel {
             while (ai < cast<i64>(ne.arguments.size())) {
                 this.collect_func_inst_from_expr(ne.arguments.at(cast<u64>(ai)).some, scope, func_instantiations);
                 ai = ai + 1;
+            }
+        }
+    }
+
+    // Statement-level counterpart of collect_func_inst_from_expr: recurse into a
+    // statement's sub-statements/expressions so generic calls inside if/while
+    // bodies are collected (block-expr statements hold if/while *expressions*).
+    fun collect_func_inst_from_expr_stmt(this, stmt: Statement, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.target.some, scope, func_instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_func_inst_from_expr(stmt.let_decl.initializer.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.return_stmt.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_func_inst_from_expr(stmt.for_stmt.iterable.some, scope, func_instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.for_stmt.body.some, scope, func_instantiations);
             }
         }
     }

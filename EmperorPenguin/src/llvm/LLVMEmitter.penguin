@@ -193,6 +193,7 @@ class LLVMEmitter {
     needs_int_to_string: mut bool = false;
     needs_string_concat: mut bool = false;
     needs_bool_to_string: mut bool = false;
+    needs_double_to_string: mut bool = false;
     needs_string_equal: mut bool = false;
     needs_vtable_lookup: mut bool = false;
     needs_isinstance: mut bool = false;
@@ -457,6 +458,7 @@ class LLVMEmitter {
         this.needs_int_to_string = false;
         this.needs_string_concat = false;
         this.needs_bool_to_string = false;
+        this.needs_double_to_string = false;
         this.needs_string_equal = false;
         this.needs_vtable_lookup = false;
         this.needs_isinstance = false;
@@ -686,6 +688,9 @@ class LLVMEmitter {
         }
         if (this.needs_bool_to_string) {
             target.append("declare ptr @_emperor_bool_to_string(i8)\n");
+        }
+        if (this.needs_double_to_string) {
+            target.append("declare ptr @_emperor_double_to_string(double)\n");
         }
         if (this.needs_string_equal) {
             target.append("declare i32 @_emperor_string_equal(ptr, ptr)\n");
@@ -2029,6 +2034,9 @@ class LLVMEmitter {
         if (inst is IRInstruction.unbox) { return inst.unbox.location; }
         if (inst is IRInstruction.global_load) { return inst.global_load.location; }
         if (inst is IRInstruction.global_store) { return inst.global_store.location; }
+        if (inst is IRInstruction.address_of) { return inst.address_of.location; }
+        if (inst is IRInstruction.load_ptr) { return inst.load_ptr.location; }
+        if (inst is IRInstruction.store_ptr) { return inst.store_ptr.location; }
         return new SourceLocation("", 0, 0);
     }
 
@@ -2069,6 +2077,9 @@ class LLVMEmitter {
         if (inst is IRInstruction.unbox) { this.emit_unbox(inst.unbox); return; }
         if (inst is IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
         if (inst is IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
+        if (inst is IRInstruction.address_of) { this.emit_address_of(inst.address_of); return; }
+        if (inst is IRInstruction.load_ptr) { this.emit_load_ptr(inst.load_ptr); return; }
+        if (inst is IRInstruction.store_ptr) { this.emit_store_ptr(inst.store_ptr); return; }
     }
 
     fun emit_const(mut this, inst: IRConst) {
@@ -2113,6 +2124,22 @@ class LLVMEmitter {
                 this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name);
             } else {
                 this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + coerced);
+            }
+            this.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (this.is_float_type(ir_type)) {
+            // Float/double constants: LLVM requires fadd (not add) and a float
+            // literal with a '.' or exponent (e.g. "3.0", "3.5", "1e5") — a bare
+            // integer like "3" is rejected by clang ("integer constant must have
+            // integer type"). Normalize the literal, then emit fadd 0.0 or store.
+            let llvm_type: string = this.ir_type_to_llvm(ir_type);
+            let normalized: string = this.normalize_float_literal(inst.value);
+            if (this.is_mutable_reg(result_name)) {
+                let alloca_name: string = this.get_alloca_name(result_name);
+                this.emit_line("  store " + llvm_type + " " + normalized + ", ptr " + alloca_name);
+            } else {
+                this.emit_line("  " + result_name + " = fadd " + llvm_type + " 0.0, " + normalized);
             }
             this.register_llvm_type(result_name, llvm_type);
             return;
@@ -2172,7 +2199,13 @@ class LLVMEmitter {
             this.reg_map.push(new RegMapping(dest_name, coerced));
         } else {
             let coerced: string = this.coerce_operand(src_resolved, llvm_type);
-            this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
+            if (llvm_type == "float" || llvm_type == "double") {
+                // Float/double copy: LLVM requires fadd with a float zero
+                // ("0.0"), mirroring emit_const's float branch.
+                this.emit_line("  " + dest_name + " = fadd " + llvm_type + " 0.0, " + coerced);
+            } else {
+                this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
+            }
         }
         this.register_llvm_type(dest_name, llvm_type);
     }
@@ -2226,6 +2259,19 @@ class LLVMEmitter {
                 this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + sext_tmp + ")");
             } else {
                 this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + operand_resolved + ")");
+            }
+            return;
+        }
+
+        // float/double → string: extend float to double, then call runtime
+        if (this.is_string_type(inst.to_type) && (from_llvm == "float" || from_llvm == "double")) {
+            this.needs_double_to_string = true;
+            if (from_llvm == "float") {
+                let fpext_tmp: string = this.next_tmp();
+                this.emit_line("  " + fpext_tmp + " = fpext float " + operand_resolved + " to double");
+                this.emit_line("  " + result_name + " = call ptr @_emperor_double_to_string(double " + fpext_tmp + ")");
+            } else {
+                this.emit_line("  " + result_name + " = call ptr @_emperor_double_to_string(double " + operand_resolved + ")");
             }
             return;
         }
@@ -2339,7 +2385,12 @@ class LLVMEmitter {
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         if (inst.op == "neg") {
             let coerced: string = this.coerce_operand(operand_resolved, llvm_type);
-            this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + coerced);
+            if (this.is_float_type(inst.ir_type)) {
+                // Float negation: LLVM requires fsub with a float zero ("0.0")
+                this.emit_line("  " + result_name + " = fsub " + llvm_type + " 0.0, " + coerced);
+            } else {
+                this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + coerced);
+            }
             this.register_llvm_type(result_name, llvm_type);
             return;
         }
@@ -2538,6 +2589,45 @@ class LLVMEmitter {
 
         // Fallback: plain store
         this.emit_line("  store " + llvm_type + " " + value_resolved + ", ptr " + obj_resolved);
+    }
+
+    // ADDRESS_OF: yield the storage address of a value-backed operand (u64).
+    fun emit_address_of(mut this, inst: IRAddressOf) {
+        _utils.trace_enter("Enter emit_address_of");
+        let result_name: string = inst.result.display();
+        let operand_name: string = inst.operand.display();
+        let base: mut string = "";
+        if (this.is_mutable_reg(operand_name)) {
+            base = this.get_alloca_name(operand_name);
+        } else {
+            let llvm_ty: string = this.ir_type_to_llvm(inst.operand.get_ir_type());
+            base = this.next_tmp();
+            this.emit_line("  " + base + " = alloca " + llvm_ty + ", align 8");
+            this.emit_line("  store " + llvm_ty + " " + this.resolve_value(inst.operand) + ", ptr " + base);
+        }
+        this.emit_line("  " + result_name + " = ptrtoint ptr " + base + " to i64");
+        this.register_llvm_type(result_name, "i64");
+    }
+
+    // LOAD_PTR: inttoptr i64 addr to ptr ; load T, ptr.
+    fun emit_load_ptr(mut this, inst: IRLoadPtr) {
+        _utils.trace_enter("Enter emit_load_ptr");
+        let result_name: string = inst.result.display();
+        let llvm_ty: string = this.ir_type_to_llvm(inst.load_type);
+        let ptr_tmp: string = this.next_tmp();
+        this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
+        this.emit_line("  " + result_name + " = load " + llvm_ty + ", ptr " + ptr_tmp);
+        this.register_llvm_type(result_name, llvm_ty);
+    }
+
+    // STORE_PTR: inttoptr i64 addr to ptr ; store T value, ptr.
+    fun emit_store_ptr(mut this, inst: IRStorePtr) {
+        _utils.trace_enter("Enter emit_store_ptr");
+        let llvm_ty: string = this.ir_type_to_llvm(inst.store_type);
+        let coerced: string = this.coerce_operand(this.resolve_value(inst.value), llvm_ty);
+        let ptr_tmp: string = this.next_tmp();
+        this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
+        this.emit_line("  store " + llvm_ty + " " + coerced + ", ptr " + ptr_tmp);
     }
 
     fun emit_br(mut this, inst: IRBr) {
@@ -4102,6 +4192,30 @@ class LLVMEmitter {
         if (ir_type == "u32") { return true; }
         if (ir_type == "u64") { return true; }
         return false;
+    }
+
+    fun is_float_type(this, ir_type: string) -> bool {
+        _utils.trace_enter("Enter is_float_type(ir_type=" + cast<string>(ir_type) + ")");
+        if (ir_type == "f32") { return true; }
+        if (ir_type == "f64") { return true; }
+        return false;
+    }
+
+    // LLVM float/double constants must contain a '.' or an exponent ('e'/'E')
+    // (e.g. "3.5", "1e5"); a bare integer literal like "3" is invalid and
+    // rejected by clang ("integer constant must have integer type"). Append
+    // ".0" to such literals; negative literals ("-3.5") and scientific
+    // notation ("1e5") are left untouched.
+    fun normalize_float_literal(this, value: string) -> string {
+        _utils.trace_enter("Enter normalize_float_literal(value=" + cast<string>(value) + ")");
+        let len: i64 = string_length(value);
+        let i: mut i64 = 0;
+        while (i < len) {
+            let ch: string = string_char_at(value, i);
+            if (ch == "." || ch == "e" || ch == "E") { return value; }
+            i = i + 1;
+        }
+        return value + ".0";
     }
 
     fun list_contains(this, list: _utils.List<string>, value: string) -> bool {

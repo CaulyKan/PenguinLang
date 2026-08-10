@@ -159,6 +159,14 @@ class BoundType {
         if (this.kind is TypeKind.PrimitiveKind) {
             return cast<string>(this.primitive) == cast<string>(other.primitive);
         }
+        // M1b unification: a template+args type (Foo<X>, type_def = the template,
+        // carries generic_args) and its specialized def (Foo__X, type_def = the
+        // specialized class, no generic_args) are the SAME instantiation but stored
+        // differently. Recognize the equivalence so e.g. `iter() -> _Iter<T>`'s
+        // declared return type (template+args) matches the `new _Iter<T>()` value
+        // (specialized). Without this, is_same_type returns false at the
+        // generic_args-size check below (1 vs 0).
+        if (this._matches_specialization_of(other)) { return true; }
         if (cast<i64>(this.generic_args.size()) != cast<i64>(other.generic_args.size())) {
             return false;
         }
@@ -174,6 +182,54 @@ class BoundType {
             return this.type_definition.some.get_name() == other.type_definition.some.get_name();
         }
         return true;
+    }
+
+    // True if `this` and `other` are the same generic instantiation, one stored as
+    // template+args (Foo<X>) and the other as a specialized def (Foo__X).
+    fun _matches_specialization_of(this, other: BoundType) -> bool {
+        if (this.type_definition.is_none() || other.type_definition.is_none()) { return false; }
+        if (this._is_template_args_of(other)) { return true; }
+        if (other._is_template_args_of(this)) { return true; }
+        return false;
+    }
+
+    // `this` is template+args (Foo<X>, type_def = template, has generic_args) and
+    // `other` is its specialized def (Foo__X, type_def = specialized, no args)?
+    fun _is_template_args_of(this, other: BoundType) -> bool {
+        let td_a: Option<BoundDefinition> = this.type_definition;
+        let td_b: Option<BoundDefinition> = other.type_definition;
+        if (td_a.is_none() || td_b.is_none()) { return false; }
+        if (td_a.some is BoundDefinition.class_def && td_b.some is BoundDefinition.class_def) {
+            let ca: BoundClassDefinition = td_a.some.class_def;
+            let cb: BoundClassDefinition = td_b.some.class_def;
+            if (ca.is_generic_template && !cb.is_generic_template
+                && cast<i64>(this.generic_args.size()) > 0
+                && cast<i64>(other.generic_args.size()) == 0) {
+                // Compute the specialized name (mangle of template name + args) inline
+                // (mangle_generic_name is a SemanticModel method, not callable here) and
+                // compare to the specialized def's name.
+                let mangled: mut string = ca.name;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(this.generic_args.size())) {
+                    let arg_name: string = this.generic_args.at(cast<u64>(mi)).some.display_name();
+                    let sanitized: mut string = "";
+                    let mj: mut i64 = 0;
+                    while (mj < string_length(arg_name)) {
+                        let ch: string = string_char_at(arg_name, mj);
+                        if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
+                            sanitized = sanitized + "_";
+                        } else {
+                            sanitized = sanitized + ch;
+                        }
+                        mj = mj + 1;
+                    }
+                    mangled = mangled + "__" + sanitized;
+                    mi = mi + 1;
+                }
+                return mangled == cb.name;
+            }
+        }
+        return false;
     }
 
     fun is_value_type(this) -> bool {
@@ -297,6 +353,84 @@ class BoundType {
             return ed.members;
         }
         return new _utils.List<BoundEnumMemberDefinition>();
+    }
+
+    // Compile-time byte-size mirroring LLVMEmitter.llvm_type_size /
+    // build_class_layout / build_enum_layout, so #sizeof(T) agrees with the
+    // actual LLVM object size. Keep in sync with the emitter's layout rules.
+    fun byte_size(this) -> i64 {
+        if (this.kind is TypeKind.PrimitiveKind) {
+            if (this.primitive is PrimitiveType.I8) { return 1; }
+            if (this.primitive is PrimitiveType.U8) { return 1; }
+            if (this.primitive is PrimitiveType.BoolType) { return 1; }
+            if (this.primitive is PrimitiveType.I16) { return 2; }
+            if (this.primitive is PrimitiveType.U16) { return 2; }
+            if (this.primitive is PrimitiveType.I32) { return 4; }
+            if (this.primitive is PrimitiveType.U32) { return 4; }
+            if (this.primitive is PrimitiveType.F32) { return 4; }
+            if (this.primitive is PrimitiveType.CharType) { return 4; }
+            return 8;
+        }
+        if (this.kind is TypeKind.InterfaceKind) { return 8; }
+        if (this.kind is TypeKind.ClassKind) {
+            if (this.is_value_type()) {
+                // Value class: metadata ptr (8) + aligned fields, final align_up(.,8).
+                let offset: mut i64 = 8;
+                let flds: _utils.List<BoundClassFieldDefinition> = this.fields();
+                let fi: mut i64 = 0;
+                while (fi < cast<i64>(flds.size())) {
+                    let f: BoundClassFieldDefinition = flds.at(cast<u64>(fi)).some;
+                    let fsize: i64 = f.bound_type.byte_size();
+                    let falign: i64 = this.byte_align(f.bound_type);
+                    offset = this.byte_align_up(offset, falign) + fsize;
+                    fi = fi + 1;
+                }
+                return this.byte_align_up(offset, 8);
+            }
+            return 8;
+        }
+        if (this.kind is TypeKind.EnumKind) {
+            let base: i64 = 16;
+            let largest: mut i64 = 0;
+            let vs: _utils.List<BoundEnumMemberDefinition> = this.variants();
+            let vi: mut i64 = 0;
+            while (vi < cast<i64>(vs.size())) {
+                let vm: BoundEnumMemberDefinition = vs.at(cast<u64>(vi)).some;
+                let mt: BoundType = vm.member_type;
+                let is_void: bool = mt.kind is TypeKind.PrimitiveKind && mt.primitive is PrimitiveType.VoidType;
+                if (!is_void) {
+                    let sz: i64 = mt.byte_size();
+                    if (sz > largest) { largest = sz; }
+                }
+                vi = vi + 1;
+            }
+            if (largest == 0) { return base; }
+            return this.byte_align_up(base, 8) + largest;
+        }
+        return 8;
+    }
+
+    fun byte_align(this, bt: BoundType) -> i64 {
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            if (bt.primitive is PrimitiveType.I8) { return 1; }
+            if (bt.primitive is PrimitiveType.U8) { return 1; }
+            if (bt.primitive is PrimitiveType.BoolType) { return 1; }
+            if (bt.primitive is PrimitiveType.I16) { return 2; }
+            if (bt.primitive is PrimitiveType.U16) { return 2; }
+            if (bt.primitive is PrimitiveType.I32) { return 4; }
+            if (bt.primitive is PrimitiveType.U32) { return 4; }
+            if (bt.primitive is PrimitiveType.F32) { return 4; }
+            if (bt.primitive is PrimitiveType.CharType) { return 4; }
+            return 8;
+        }
+        return 8;
+    }
+
+    fun byte_align_up(this, offset: i64, alignment: i64) -> i64 {
+        if (alignment <= 1) { return offset; }
+        let r: i64 = offset % alignment;
+        if (r == 0) { return offset; }
+        return offset + alignment - r;
     }
 }
 

@@ -232,6 +232,28 @@ class IRBuilder {
         _utils.trace_enter("Enter emit_global_store");
         this.func.add_inst(new IRInstruction.global_store(new IRGlobalStore(global_name, value, loc)));
     }
+
+    // ADDRESS_OF - result is always u64 (raw address).
+    fun emit_address_of(mut this, operand: IRValue, loc: SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_address_of");
+        let result: IRValue = this.alloc_temp("u64");
+        this.func.add_inst(new IRInstruction.address_of(new IRAddressOf(result, operand, loc)));
+        return result;
+    }
+
+    // LOAD_PTR - load `load_type` from a u64 address.
+    fun emit_load_ptr(mut this, addr: IRValue, load_type: string, loc: SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_load_ptr");
+        let result: IRValue = this.alloc_temp(load_type);
+        this.func.add_inst(new IRInstruction.load_ptr(new IRLoadPtr(result, addr, load_type, loc)));
+        return result;
+    }
+
+    // STORE_PTR - store value of `store_type` to a u64 address.
+    fun emit_store_ptr(mut this, addr: IRValue, value: IRValue, store_type: string, loc: SourceLocation) {
+        _utils.trace_enter("Enter emit_store_ptr");
+        this.func.add_inst(new IRInstruction.store_ptr(new IRStorePtr(addr, value, store_type, loc)));
+    }
 }
 
 }

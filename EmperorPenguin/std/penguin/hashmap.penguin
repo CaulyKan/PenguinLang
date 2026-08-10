@@ -1,0 +1,259 @@
+// Stdlib generic HashMap — growable + IHash-based, composed from Vector<T>.
+// NOT auto-loaded — compile it explicitly (e.g. via a markdown test's
+// Compile.Args), along with its dependency vector.penguin. Open-addressing
+// with linear probing and tombstones; grows by doubling when the load factor
+// exceeds 0.75. Keys are hashed via `k.hash()` (IHash: primitives dispatch
+// directly, classes/enums via their IHash vtable) and compared with `==`.
+// Slot storage is three Vectors (occupied flags / keys / values) pre-sized via
+// Vector.resize_to; the uninitialized key/value slots beyond the valid range
+// are gated by the occupied flags (0=empty, 1=used, 2=tombstone) — reads of
+// keys/values only happen when occ == 1. Vector is an IReferenceType, so field
+// assignment is reference semantics; dispose_mem() releases the buffers. No
+// raw _malloc/_mfree/#__load/#__store/#__address_of here.
+namespace penguin {
+
+// Compile-time check (Phase 6 meta): the HashMap key type must implement IHash.
+// Primitives (which all have `impl IHash` in core_builtin.penguin) report no
+// class_def() and are accepted; classes/enums must expose an IHash vtable.
+// Called from HashMap's constructor with #typeof(K); while K is still an
+// unspecialized template parameter the call is deferred (deferred-type-arg
+// mechanism) and re-evaluated at specialization time.
+#fun require_ihash(t: type) -> i64 {
+    if (let cd := t.class_def().some) {
+        let found: mut bool = false;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cd.vtables.size())) {
+            if (cd.vtables.at(cast<u64>(i)).some.interface_type.display_name() == "IHash") { found = true; }
+            i = i + 1;
+        }
+        if (found == false) { #error("HashMap key type " + t.display_name() + " does not implement IHash"); }
+    }
+    return 0;
+}
+
+#template(K: type, V: type)
+class HashMap {
+    impl __builtin.IReferenceType;
+    impl __builtin.IMemoryDispose;
+    occupied: mut Vector<u8>;   // 0 empty, 1 used, 2 tombstone
+    keys: mut Vector<K>;
+    values: mut Vector<V>;
+    cap: mut u64 = 8;
+    count: mut u64 = 0;
+
+    fun new(mut this) {
+        #require_ihash(#typeof(K));
+        this.occupied = new Vector<u8>();
+        this.keys = new Vector<K>();
+        this.values = new Vector<V>();
+        this.cap = 8;
+        this.count = 0;
+        this.occupied.resize_to(this.cap);
+        this.keys.resize_to(this.cap);
+        this.values.resize_to(this.cap);
+        let i: mut u64 = 0;
+        while (i < this.cap) {
+            this.occupied.set(i, cast<u8>(0));   // zero-fill flags (keys/values are gated by occ)
+            i = i + 1;
+        }
+    }
+
+    // IHash-based hash (Stage 1 primitive dispatch / class vtable).
+    fun _hash(this, k: K) -> u64 {
+        return cast<u64>(k.hash());
+    }
+
+    // Hash → table slot in [0, cap). PenguinLang % is signed, so normalize to
+    // non-negative.
+    fun _slot(this, k: K) -> u64 {
+        let m: u64 = this._hash(k) % this.cap;
+        return (m + this.cap) % this.cap;
+    }
+
+    fun _key_equals(this, slot: u64, k: K) -> bool {
+        let stored: K = this.keys.at(slot).some;
+        return stored == k;
+    }
+
+    // Internal insert: no load-factor check, no count bump (used by _resize).
+    fun _insert(mut this, k: K, v: V) {
+        let start: u64 = this._slot(k);
+        let slot: mut u64 = start;
+        let probes: mut u64 = 0;
+        while (probes < this.cap) {
+            let occ: u8 = this.occupied.at(slot).some;
+            if (occ == 0 || occ == 2) { break; }
+            if (occ == 1) {
+                if (this._key_equals(slot, k)) {
+                    this.values.set(slot, v);
+                    return;
+                }
+            }
+            slot = (slot + 1) % this.cap;
+            probes = probes + 1;
+        }
+        this.occupied.set(slot, cast<u8>(1));
+        this.keys.set(slot, k);
+        this.values.set(slot, v);
+    }
+
+    // Grow to new_cap: fresh Vectors, re-insert live entries (dropping
+    // tombstones), then dispose the old Vectors' buffers.
+    fun _resize(mut this, new_cap: u64) {
+        let old_occ: mut Vector<u8> = this.occupied;
+        let old_keys: mut Vector<K> = this.keys;
+        let old_values: mut Vector<V> = this.values;
+        let old_cap: u64 = this.cap;
+        let new_occ: mut Vector<u8> = new Vector<u8>();
+        let new_keys: mut Vector<K> = new Vector<K>();
+        let new_values: mut Vector<V> = new Vector<V>();
+        new_occ.resize_to(new_cap);
+        new_keys.resize_to(new_cap);
+        new_values.resize_to(new_cap);
+        let i: mut u64 = 0;
+        while (i < new_cap) { new_occ.set(i, cast<u8>(0)); i = i + 1; }
+        this.occupied = new_occ;
+        this.keys = new_keys;
+        this.values = new_values;
+        this.cap = new_cap;
+        let si: mut u64 = 0;
+        while (si < old_cap) {
+            let occ: u8 = old_occ.at(si).some;
+            if (occ == 1) {
+                let k: K = old_keys.at(si).some;
+                let v: V = old_values.at(si).some;
+                this._insert(k, v);
+            }
+            si = si + 1;
+        }
+        old_occ.dispose_mem();
+        old_keys.dispose_mem();
+        old_values.dispose_mem();
+    }
+
+    fun put(mut this, k: K, v: V) {
+        // Grow when load factor would exceed 0.75: (count + 1) * 4 > cap * 3.
+        if ((this.count + 1) * 4 > this.cap * 3) {
+            this._resize(this.cap * 2);
+        }
+        let start: u64 = this._slot(k);
+        let slot: mut u64 = start;
+        let first_tomb: mut u64 = this.cap;
+        let probes: mut u64 = 0;
+        while (probes < this.cap) {
+            let occ: u8 = this.occupied.at(slot).some;
+            if (occ == 0) { break; }
+            if (occ == 1) {
+                if (this._key_equals(slot, k)) { this.values.set(slot, v); return; }
+            }
+            if (occ == 2) {
+                if (first_tomb == this.cap) { first_tomb = slot; }
+            }
+            slot = (slot + 1) % this.cap;
+            probes = probes + 1;
+        }
+        let ins: u64 = if (first_tomb != this.cap) { first_tomb } else { slot };
+        this.occupied.set(ins, cast<u8>(1));
+        this.keys.set(ins, k);
+        this.values.set(ins, v);
+        this.count = this.count + 1;
+    }
+
+    fun get(this, k: K) -> __builtin.Option<V> {
+        let start: u64 = this._slot(k);
+        let slot: mut u64 = start;
+        let probes: mut u64 = 0;
+        while (probes < this.cap) {
+            let occ: u8 = this.occupied.at(slot).some;
+            if (occ == 0) { break; }
+            if (occ == 1) {
+                if (this._key_equals(slot, k)) {
+                    let v: V = this.values.at(slot).some;
+                    return new __builtin.Option<V>.some(v);
+                }
+            }
+            slot = (slot + 1) % this.cap;
+            probes = probes + 1;
+        }
+        return new __builtin.Option<V>.none();
+    }
+
+    fun contains(this, k: K) -> bool {
+        return this.get(k).is_some();
+    }
+
+    fun remove(mut this, k: K) {
+        let start: u64 = this._slot(k);
+        let slot: mut u64 = start;
+        let probes: mut u64 = 0;
+        while (probes < this.cap) {
+            let occ: u8 = this.occupied.at(slot).some;
+            if (occ == 0) { break; }
+            if (occ == 1) {
+                if (this._key_equals(slot, k)) {
+                    this.occupied.set(slot, cast<u8>(2));
+                    this.count = this.count - 1;
+                    return;
+                }
+            }
+            slot = (slot + 1) % this.cap;
+            probes = probes + 1;
+        }
+    }
+
+    fun size(this) -> u64 {
+        return this.count;
+    }
+
+    fun iter(mut this) -> _HashMapIterator<V> {
+        return new _HashMapIterator<V>(this.occupied, this.values, this.cap);
+    }
+
+    fun iter_mut(mut this) -> mut _HashMapIterator<V> {
+        return new _HashMapIterator<V>(this.occupied, this.values, this.cap);
+    }
+
+    fun dispose_mem(mut this) {
+        this.occupied.dispose_mem();
+        this.keys.dispose_mem();
+        this.values.dispose_mem();
+    }
+}
+
+// Independent iterator over a HashMap's live values. Holds references to the
+// map's occupied/values Vectors; do not mutate/resize/dispose the map while
+// iterating (the Vector references would point at freed buffers).
+#template(V: type)
+class _HashMapIterator {
+    impl __builtin.IReferenceType;
+    occupied: mut Vector<u8>;
+    values: mut Vector<V>;
+    cap: u64;
+    cursor: mut u64 = 0;
+
+    fun new(mut this, occupied: Vector<u8>, values: Vector<V>, cap: u64) {
+        this.occupied = occupied;
+        this.values = values;
+        this.cap = cap;
+        this.cursor = 0;
+    }
+
+    fun next(mut this) -> __builtin.Option<V> {
+        while (this.cursor < this.cap) {
+            let occ: u8 = this.occupied.at(this.cursor).some;
+            let s: u64 = this.cursor;
+            this.cursor = this.cursor + 1;
+            if (occ == 1) {
+                let v: V = this.values.at(s).some;
+                return new __builtin.Option<V>.some(v);
+            }
+        }
+        return new __builtin.Option<V>.none();
+    }
+
+    fun iter(this) -> _HashMapIterator<V> {
+        return this;
+    }
+}
+
+} // namespace penguin

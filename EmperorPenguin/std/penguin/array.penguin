@@ -1,0 +1,122 @@
+// Stdlib fixed-size contiguous array, built with meta-programming (req1-5 + the
+// pointer IR + #sizeof intrinsics). NOT auto-loaded by the compiler — compile it
+// explicitly (e.g. via a markdown test's Compile.Args). Manual memory management
+// via _malloc/_mfree; release with dispose_mem() (auto-finalize is future work).
+namespace penguin {
+
+// Value-typed wrapper around a raw u64 address, for direct pointer access with a
+// CONCRETE element type (e.g. new _ptr<i32>(addr)). It is a value type (only a
+// u64 field) so construction is stack-cheap.
+#template(T: type)
+class _ptr {
+    addr: mut u64;
+
+    fun new(mut this, a: u64) {
+        this.addr = a;
+    }
+
+    fun read(this) -> T {
+        return #__load(T, this.addr);
+    }
+
+    fun write(this, v: T) {
+        #__store(T, this.addr, v);
+    }
+
+    // Return a new _ptr<T> advanced by element_offset ELEMENTS (bytes computed
+    // via #sizeof(T)).
+    fun offset(this, element_offset: i64) -> _ptr<T> {
+        let byte_delta: u64 = cast<u64>(element_offset) * cast<u64>(#sizeof(T));
+        return new _ptr<T>(this.addr + byte_delta);
+    }
+
+    fun raw(this) -> u64 {
+        return this.addr;
+    }
+}
+
+// Fixed-size contiguous array of N elements of type T, allocated as one raw
+// buffer of N*#sizeof(T) bytes. at()/set() are bounds-checked; size() returns N
+// (stored via the len field, since value param N is usable only in field
+// initializers). dispose_mem() releases the buffer.
+//
+// Iterable: iter()/iter_mut() return the independent _ArrayIterator<T> (not
+// Self), so the container holds no cursor and multiple iterations may overlap.
+// The for-loop desugaring binds the iterator mutably, so next(mut this) is
+// callable on the returned iterator.
+#template(T: type, N: u64)
+class Array {
+    impl __builtin.IReferenceType;
+    buf: mut u64;
+    // N (value param) is usable in field initializers only; stash it here.
+    len: u64 = N;
+
+    fun new(mut this) {
+        this.buf = __builtin._malloc(cast<u64>(#sizeof(T)) * this.len);
+    }
+
+    fun at(this, i: u64) -> __builtin.Option<T> {
+        if (i >= this.len) {
+            return new __builtin.Option<T>.none();
+        }
+        let base: _ptr<T> = new _ptr<T>(this.buf);
+        let p: _ptr<T> = base.offset(cast<i64>(i));
+        return new __builtin.Option<T>.some(p.read());
+    }
+
+    fun set(mut this, i: u64, v: T) {
+        if (i >= this.len) { return; }
+        let base: _ptr<T> = new _ptr<T>(this.buf);
+        let p: _ptr<T> = base.offset(cast<i64>(i));
+        p.write(v);
+    }
+
+    fun size(this) -> u64 {
+        return this.len;
+    }
+
+    fun dispose_mem(mut this) {
+        if (this.buf != 0) {
+            __builtin._mfree(this.buf);
+            this.buf = 0;
+        }
+    }
+
+    fun iter(this) -> _ArrayIterator<T> {
+        return new _ArrayIterator<T>(this.buf, this.len);
+    }
+
+    fun iter_mut(mut this) -> mut _ArrayIterator<T> {
+        return new _ArrayIterator<T>(this.buf, this.len);
+    }
+}
+
+// Independent iterator for Array<T>.
+#template(T: type)
+class _ArrayIterator {
+    impl __builtin.IReferenceType;
+    base: u64;
+    cursor: mut u64 = 0;
+    end: u64;
+
+    fun new(mut this, base: u64, end: u64) {
+        this.base = base;
+        this.end = end;
+        this.cursor = 0;
+    }
+
+    fun next(mut this) -> __builtin.Option<T> {
+        if (this.cursor >= this.end) {
+            return new __builtin.Option<T>.none();
+        }
+        let v: T = #__load(T, this.base + this.cursor * cast<u64>(#sizeof(T)));
+        this.cursor = this.cursor + 1;
+        return new __builtin.Option<T>.some(v);
+    }
+
+    fun iter(this) -> _ArrayIterator<T> {
+        return this;
+    }
+}
+
+} // namespace penguin

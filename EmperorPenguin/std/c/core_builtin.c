@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #ifdef _WIN32
@@ -102,6 +103,41 @@ void* _emperor_alloc_impl(int size) {
     return _emperor_gc_alloc(size, 0);
 }
 
+/* --- Raw heap allocation for manually-managed buffers (Array<T,N>, _ptr<T>).
+ * Wraps libc malloc/free directly (NOT the GC arena) — buffer lifetime is
+ * explicitly controlled by IMemoryDispose.dispose_mem(). The raw address is
+ * returned as an i64 (u64 in PenguinLang); the GC never touches this memory. */
+int64_t _emperor_malloc(int64_t size) {
+    EMPEROR_ASSERT(size > 0, "_emperor_malloc: size must be positive");
+    void* p = malloc((size_t)size);
+    EMPEROR_ASSERT(p != NULL, "_emperor_malloc: allocation failed");
+    return (int64_t)(uintptr_t)p;
+}
+
+void _emperor_mfree(int64_t addr) {
+    if (addr != 0) {
+        free((void*)(uintptr_t)addr);
+    }
+}
+
+/* --- Byte-level helpers for generic HashMap<K,V> (value-type keys).
+ * _hash_bytes: FNV-1a over len bytes at addr. _bytes_equal: memcmp. The address
+ * args come from #__address_of(k) (a copy holding k's value) and buffer arithmetic. */
+int64_t _emperor_hash_bytes(int64_t addr, int64_t len) {
+    const uint8_t* p = (const uint8_t*)(uintptr_t)addr;
+    uint64_t h = 14695981039346656037ULL; /* FNV-1a offset basis */
+    for (int64_t i = 0; i < len; i++) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ULL; /* FNV prime */
+    }
+    return (int64_t)h;
+}
+
+int64_t _emperor_bytes_equal(int64_t addr1, int64_t addr2, int64_t len) {
+    if (len <= 0) { return 1; }
+    return memcmp((const void*)(uintptr_t)addr1, (const void*)(uintptr_t)addr2, (size_t)len) == 0 ? 1 : 0;
+}
+
 /* --- Conversions --- */
 
 char* _emperor_int_to_string(int value) {
@@ -155,6 +191,15 @@ char* _emperor_bool_to_string(char value) {
         strcpy(result, value ? "true" : "false");
     }
     return result;
+}
+
+char* _emperor_double_to_string(double value) {
+    char* buf = (char*)_emperor_gc_alloc(64, 1);
+    EMPEROR_ASSERT(buf != NULL, "_emperor_double_to_string: allocation failed");
+    if (buf) {
+        snprintf(buf, 64, "%g", value);
+    }
+    return buf;
 }
 
 /* --- Bitwise --- */

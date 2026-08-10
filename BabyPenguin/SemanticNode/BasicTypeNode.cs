@@ -60,6 +60,8 @@ namespace BabyPenguin.SemanticNode
             { "bool", Bool },
             { "double", Double },
             { "float", Float },
+            { "f32", Float },
+            { "f64", Double },
             { "string", String },
             { "void", Void },
             { "u8", U8 },

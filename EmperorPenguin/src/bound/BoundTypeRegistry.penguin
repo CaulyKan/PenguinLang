@@ -59,6 +59,10 @@ class BoundTypeRegistry {
         _utils.trace_enter("Enter resolve_type");
         let prim: Option<BoundType> = this.try_primitive(name);
         if (prim.is_some()) { return prim; }
+        // Aliases: EmperorPenguin uses f32/f64 internally; accept float/double
+        // as source-level names too (matches BabyPenguin and core_builtin).
+        if (name == "float") { return new Option<BoundType>.some(this.f32_type); }
+        if (name == "double") { return new Option<BoundType>.some(this.f64_type); }
         for (let entry in this.registered_types) {
             if (entry.name == name) {
                 return new Option<BoundType>.some(entry.bound_type);
