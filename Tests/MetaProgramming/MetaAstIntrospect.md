@@ -1,6 +1,6 @@
 # MetaAstIntrospect
 ## Description
-R2 ast introspection: a `#fun` receives an `ast` arg (i64 token), calls `emperor.penguin_meta_get_ast_expression(token)` to get the **real** `emperor.Expression`, and pattern-matches its variant. `42` → `Expression.constant` → returns 1; `1 + 2` → `Expression.binary` → returns 2. Proves the opt-in introspection bridge works end-to-end (the #fun can read AST structure). Requires native Pass2/Pass3.
+R2 ast introspection: a `#fun` receives an `ast` arg (i64 token), calls `compiler().get_ast(token)` to get the **real** `emperor.Expression`, and pattern-matches its variant. `42` → `Expression.constant` → returns 1; `1 + 2` → `Expression.binary` → returns 2. Proves the opt-in introspection bridge works end-to-end (the #fun can read AST structure). Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -9,7 +9,7 @@ R2 ast introspection: a `#fun` receives an `ast` arg (i64 token), calls `emperor
 ## Test Code
 ```
 #fun ast_kind(a: ast) -> i64 {
-    let expr: emperor.Expression = emperor.penguin_meta_get_ast_expression(a);
+    let expr: emperor.Expression = compiler().get_ast(a);
     if (expr is emperor.Expression.constant) {
         return 1;
     }

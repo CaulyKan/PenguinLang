@@ -333,21 +333,28 @@ initial {
 
 ### `#compiler()` — Compiler Context Access
 
-`#compiler()` returns the current compiler context (an `ICompiler`), giving meta functions access to **context operations**: type/symbol resolution, text→AST parsing, expression probing, diagnostics, and the compile-time option store. **Structural reflection is not on `compiler()` — it lives on `type`** (see [Reflection API](#reflection-api) below).
+`#compiler()` returns a real proxy object (implemented by `class CompilerContext`, declared in the meta runtime and typed as `interface ICompiler`), giving meta functions access to **context operations**: type/symbol resolution, text→AST construction, diagnostics, the compile-time option store, and the enclosing class. `let c = compiler(); c.resolve_type("x")` works — the proxy is a real unit-B object whose methods forward to the host. **Structural reflection is not on `compiler()` — it lives on `type`** (see [Reflection API](#reflection-api) below).
+
+> **`ast` values are opaque i64 tokens this round** (see §0.4 D5′): `create_*` returns a token that a `#fun -> ast` returns and the host re-binds at the splice site; `get_ast(token)` obtains the **real** `Expression` node for introspection. `type` is a real `emperor.BoundType` reference (same as `#typeof`).
 
 **`ICompiler` methods:**
 
 | Method | Signature | Description |
 |---|---|---|
+| `error` / `warn` / `info` | `(msg: string)` | Emit a compile-time diagnostic at the current source location; `error` fails compilation, `warn`/`info` don't. (Same channel as `#error` / `#warn` / `#info`.) |
+| `set_option` / `get_option` / `has_option` | `(key, value?)` | Compile-time key-value option store (also exposed as `#define` / `#option` / `#defined`); `get_option` returns `""` when unset |
 | `resolve_type` | `(name: string) -> Option<type>` | Resolve a (qualified) type name; `None` if unknown |
 | `resolve_symbol` | `(name: string) -> Option<Symbol>` | Look up a symbol; `None` if unknown |
 | `has_type` | `(name: string) -> bool` | Whether a type name is visible |
-| `create_ast` | `(code: string) -> ast` | Parse source text into a structured AST node |
-| `create_empty_ast` | `() -> ast` | Return an empty no-op AST |
-| `create_function_ast` | `(name: string, return_type: type, body: string) -> ast` | Build a function AST |
-| `can_compile_expression` | `(expr: string) -> bool` | Probe whether an expression type-checks (side-effect-free; see [Probing Type Capabilities](#probing-type-capabilities)) |
-| `error` / `warn` | `(msg: string)` | Emit a diagnostic at the current source location |
-| `set_option` / `get_option` / `has_option` | `(key, value?)` | Compile-time key-value option store (also exposed as `#define` / `#option` / `#defined`) |
+| `create_expression` | `(code: string) -> ast` | Parse a code fragment into an expression AST (token). Replaces `#create_expression` |
+| `create_definition` | `(code: string) -> ast` | Parse a code fragment into a single definition AST (token). Replaces `#create_definition` |
+| `create_ast` | `(code: string) -> ast` | Parse a code fragment — as an expression first, else a single definition (token) |
+| `create_empty_ast` | `() -> ast` | Return an empty no-op AST (token) |
+| `create_function_ast` | `(name: string, return_type: type, body: string) -> ast` | Build a function AST from a name, return `BoundType`, and body source (token) |
+| `parse_arguments` | `(code: string) -> ast` | Parse a comma-separated argument list (e.g. an `unstructured_ast` trailing block) into a `FunctionCallArguments` AST (token) |
+| `get_ast` | `(token: i64) -> ast` | Resolve an ast token to the **real** `Expression` node for introspection |
+| `get_current_scope` | `() -> type` | The enclosing class's live `BoundType` while a class-member `#fun` is being spliced; an empty `BoundType` (`display_name() == "void"`) outside a class |
+| `can_compile_expression` | `(expr: string) -> bool` | **Deferred (W3)** — not implemented this round |
 
 ### Reflection API
 
@@ -397,9 +404,11 @@ The returned `Field` / `Method` / `Variant` objects expose their data as ordinar
 
 > **No annotation system.** PenguinLang has no `@attr` syntax. Patterns like "scan methods for an annotation" are done with `#fun + ast`: the caller passes a description explicitly (e.g. a `List` of transition specs), and the meta function generates code from it. There is no `get_methods_with_attribute` / `get_attribute` API.
 
-> **Design note**: `#compiler()`, `#typeof(T)`, `#define(key,val)`, `#defined(key)`, and `#option(key)` are **built-in meta functions** — not parser keywords. The compiler provides their implementations directly (no JIT needed). They use the exact same `#identifier(args)` syntax as user-defined meta functions, and users can shadow them by defining a `#fun` of the same name. In the future `#compiler()`'s return value may be abstracted behind an `interface ICompiler` for API stability.
+> **Design note**: `#compiler()`, `#typeof(T)`, `#define(key,val)`, `#defined(key)`, and `#option(key)` are **built-in meta functions** — not parser keywords. They use the exact same `#identifier(args)` syntax as user-defined meta functions, and users can shadow them by defining a `#fun` of the same name. `#compiler()`'s return value is abstracted behind `interface ICompiler` (implemented by the unit-B `class CompilerContext`, a real proxy whose methods forward to host callbacks) — so `let c = compiler(); c.resolve_type("x")` works and the interface gives API stability.
 
 ### Probing Type Capabilities
+
+> ⚠️ **Deferred (W3).** `can_compile_expression` is specified here but **not implemented this round** (the binding-purity refactor it needs is outstanding). The method below is the target design; do not call it until it ships.
 
 The `can_compile_expression` method allows meta functions to check whether a type supports a particular operation **without side effects** — it probes only expression-level compilation, which is safe to run inside JIT'd code:
 

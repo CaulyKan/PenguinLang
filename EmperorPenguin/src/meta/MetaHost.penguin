@@ -155,4 +155,105 @@ let active_ast_result: mut Expression = new Expression.constant(new ConstantExpr
 
 fun penguin_meta_get_ast_result() -> Expression { return active_ast_result; }
 
+// #compiler() facade responders — the real-proxy host callbacks behind
+// compiler().<member>(). Each is a thin wrapper over the active MetaEngine /
+// SemanticModel channels above (all unit B sees is the <meta_externs> decls).
+// -------------------------------------------------------------------------
+
+// Options: #define / #option / #defined sugar reaches the same store.
+fun penguin_meta_set_option(key: string, value: string) { active_meta.set_option(key, value); }
+
+fun penguin_meta_get_option(key: string) -> string {
+    let o: Option<string> = active_meta.get_option(key);
+    if (o.is_some()) { return o.some; }
+    return "";
+}
+
+fun penguin_meta_has_option(key: string) -> bool { return active_meta.has_option(key); }
+
+// Type / symbol resolution by qualified name. resolve_type_by_name returns
+// Option<BoundType> directly (the AST-fallback path included), so no sentinel
+// conversion needed.
+fun penguin_meta_resolve_type(name: string) -> Option<BoundType> {
+    return active_meta.resolve_type_by_name(name);
+}
+
+fun penguin_meta_has_type(name: string) -> bool {
+    return active_meta.resolve_type_by_name(name).is_some();
+}
+
+fun penguin_meta_resolve_symbol(name: string) -> Option<BoundSymbol> {
+    if (active_meta.global_scope.is_none()) { return new Option<BoundSymbol>.none(); }
+    let parts: mut _utils.List<string> = new _utils.List<string>();
+    let pos: mut i64 = 0;
+    let len: i64 = string_length(name);
+    while (pos < len) {
+        let next_dot: i64 = string_find_from(name, ".", pos);
+        if (next_dot < 0) {
+            parts.push(string_substring(name, pos, len - pos));
+            pos = len;
+        } else {
+            parts.push(string_substring(name, pos, next_dot - pos));
+            pos = next_dot + 1;
+        }
+    }
+    return active_meta.global_scope.some.resolve_qualified(parts);
+}
+
+// AST construction: create_ast parses a single-definition compilation unit
+// first (so "fun foo() {...}" and class/enum/impl fragments work), falling back
+// to an expression only if that fails (so "1+2" works too). NOT expression-first:
+// parse_expression() on a `fun ...` fragment aborts with an E_INTERNAL
+// "Invalid advance of token stream" before has_errors can be checked.
+fun penguin_meta_create_ast(code: string) -> i64 {
+    let lex: Lexer = new Lexer(code, "<meta_create_ast_def>");
+    let toks: _utils.List<Token> = lex.tokenize();
+    let p: Parser = new Parser(toks);
+    let unit: CompilationUnit = p.parse_compilationUnit();
+    if (!p.has_errors()) {
+        if (cast<i64>(unit.definitions.size()) == 1) {
+            return cast<i64>(active_meta.register_ast_definition(unit.definitions.at(cast<u64>(0)).some));
+        }
+    }
+    let lex2: Lexer = new Lexer(code, "<meta_create_ast_expr>");
+    let toks2: _utils.List<Token> = lex2.tokenize();
+    let p2: Parser = new Parser(toks2);
+    let node: Expression = p2.parse_expression();
+    if (!p2.has_errors()) {
+        return cast<i64>(active_meta.register_ast_expression(node));
+    }
+    return 0;
+}
+
+fun penguin_meta_create_empty_ast() -> i64 {
+    let cb: mut CodeBlockExpression = new CodeBlockExpression();
+    return cast<i64>(active_meta.register_ast_expression(new Expression.code_block(cb)));
+}
+
+fun penguin_meta_create_function_ast(name: string, return_type: BoundType, body: string) -> i64 {
+    let src: string = "fun " + name + "() -> " + return_type.display_name() + " { " + body + " }";
+    let lex: Lexer = new Lexer(src, "<meta_create_function_ast>");
+    let toks: _utils.List<Token> = lex.tokenize();
+    let p: Parser = new Parser(toks);
+    let unit: CompilationUnit = p.parse_compilationUnit();
+    if (!p.has_errors()) {
+        if (cast<i64>(unit.definitions.size()) == 1) {
+            return cast<i64>(active_meta.register_ast_definition(unit.definitions.at(cast<u64>(0)).some));
+        }
+    }
+    return 0;
+}
+
+// Context: the enclosing class while the 5a class-member meta rewrite runs.
+// Empty BoundType (display_name() == "void") when not inside a class.
+fun penguin_meta_get_current_scope() -> BoundType {
+    if (string_length(active_meta.current_scope_class_name) > 0) {
+        let bt_opt: Option<BoundType> = active_meta.resolve_type_by_name(active_meta.current_scope_class_name);
+        if (bt_opt.is_some()) {
+            return bt_opt.some;
+        }
+    }
+    return new BoundType();
+}
+
 }

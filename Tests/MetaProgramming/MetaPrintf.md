@@ -1,14 +1,14 @@
 # MetaPrintf
 ## Description
-R4 composite: `#printf("a={}, b={}") { a, b }` — a `#fun` that takes a format string + an `unstructured_ast` trailing block. The raw text `"a , b"` arrives as a string; the #fun parses it into a real `FunctionCallArguments` AST node via `emperor.penguin_meta_parse_arguments`, retrieves it with `penguin_meta_get_ast_expression`, and introspects `expr.function_call_arguments.items`. It iterates the format string's `{}` placeholders, builds a `println` expression that interpolates each argument, and returns it via `#create_expression`. Exercises: `unstructured_ast` raw trailing-block capture + argument-list parsing + real-node introspection (FunctionCallArguments) + string building + format parsing + computed `#create_expression` + statement-position splice. Requires native Pass2/Pass3.
+R4 composite: `#printf("a={}, b={}") { a, b }` — a `#fun` that takes a format string + an `unstructured_ast` trailing block. The raw text `"a , b"` arrives as a string; the #fun parses it into a real `FunctionCallArguments` AST node via `compiler().parse_arguments`, retrieves it with `compiler().get_ast`, and introspects `expr.function_call_arguments.items`. It iterates the format string's `{}` placeholders, builds a `println` expression that interpolates each argument, and returns it via `compiler().create_expression`. Exercises: `unstructured_ast` raw trailing-block capture + argument-list parsing + real-node introspection (FunctionCallArguments) + string building + format parsing + computed `compiler().create_expression` + statement-position splice. Requires native Pass2/Pass3.
 ## Apply To
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 ## Test Code
 ```
 #fun printf(fmt: string, params: unstructured_ast) -> ast {
-    let token = emperor.penguin_meta_parse_arguments(params);
-    let expr = emperor.penguin_meta_get_ast_expression(token);
+    let token = compiler().parse_arguments(params);
+    let expr = compiler().get_ast(token);
     if (expr is emperor.Expression.function_call_arguments) {
         let args = expr.function_call_arguments;
         let n = cast<i64>(args.size());
@@ -31,9 +31,9 @@ R4 composite: `#printf("a={}, b={}") { a, b }` — a `#fun` that takes a format 
             }
         }
         result = result + "\")";
-        return #create_expression(result);
+        return compiler().create_expression(result);
     }
-    return #create_expression("println(\"error\")");
+    return compiler().create_expression("println(\"error\")");
 }
 initial {
     let a: i32 = 10;

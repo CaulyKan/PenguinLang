@@ -459,6 +459,7 @@ namespace emperor {
         // postfixExpression: primaryExpression | postfixExpression '.' identifierWithGeneric | postfixExpression '(' expression? (',' expression)* ')' | 'new' typeSpecifier '(' expression? (',' expression)* ')' | 'async' expression | 'wait' expression?;
         // Classification: LeftRecursive
         fun parse_postfixExpression(this) -> Expression {
+            let results = new _utils.List<Expression>();
             if (this.stream.peek_type() is TokenType.New) {
             this.stream.expect(new TokenType.New());
             let type_token: Token = this.stream.advance();
@@ -490,16 +491,17 @@ namespace emperor {
             new_expr.type_name = sb.to_string();
             new_expr.generic_args = generic_args;
             new_expr.arguments = args;
-            return new Expression.new_expr(new_expr);
-            }
-            if (this.stream.peek_type() is TokenType.Async) {
+            // Fall through to the postfix loop below so `new Foo().method()` and
+            // `new Foo()(args)` chain correctly (the #compiler() proxy rewrite
+            // emits `new emperor.CompilerContext().create_definition(...)`).
+            results.push(new Expression.new_expr(new_expr));
+            } else if (this.stream.peek_type() is TokenType.Async) {
             this.stream.expect(new TokenType.Async());
             let async_inner: Expression = this.parse_expression();
             let spawn_expr: SpawnAsyncExpression = new SpawnAsyncExpression();
             spawn_expr.expression = new Option<Expression>.some(async_inner);
             return new Expression.spawn_async(spawn_expr);
-            }
-            if (this.stream.peek_type() is TokenType.Wait) {
+            } else if (this.stream.peek_type() is TokenType.Wait) {
             this.stream.expect(new TokenType.Wait());
             let wait_inner: mut Option<Expression> = new Option<Expression>.none();
             if (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RParen) && !(this.stream.peek_type() is TokenType.RBrace)) {
@@ -508,9 +510,9 @@ namespace emperor {
             let wait_expr: WaitExpression = new WaitExpression();
             wait_expr.expression = wait_inner;
             return new Expression.wait_expr(wait_expr);
+            } else {
+                results.push(this.parse_primaryExpression());
             }
-            let results = new _utils.List<Expression>();
-            results.push(this.parse_primaryExpression());
             while (true) {
                 let next = this.stream.peek();
                  if (next.token_type is TokenType.Dot) {

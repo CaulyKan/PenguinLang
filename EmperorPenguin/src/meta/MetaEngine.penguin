@@ -59,6 +59,10 @@ class MetaEngine {
     // token -> node at the splice site and checks the kind matches the position
     // (expression vs definition). See class AstToken below.
     ast_tokens: mut _utils.List<AstToken> = new _utils.List<AstToken>();
+    // #compiler() facade: the enclosing class's name while the 5a class-member
+    // meta rewrite runs, read by the penguin_meta_get_current_scope responder.
+    // Set (and save/restored) in SemanticModel.rewrite_meta_in_def_container.
+    current_scope_class_name: mut string = "";
 
     fun new(mut this) {
     }
@@ -108,6 +112,16 @@ class MetaEngine {
             + "    extern fun penguin_meta_info(msg: string);\n"
             + "    extern fun penguin_meta_get_string_value(token: i64) -> string;\n"
             + "    extern fun penguin_meta_get_ast_expression(token: i64) -> emperor.Expression;\n"
+            + "    extern fun penguin_meta_set_option(key: string, value: string);\n"
+            + "    extern fun penguin_meta_get_option(key: string) -> string;\n"
+            + "    extern fun penguin_meta_has_option(key: string) -> bool;\n"
+            + "    extern fun penguin_meta_resolve_type(name: string) -> Option<BoundType>;\n"
+            + "    extern fun penguin_meta_resolve_symbol(name: string) -> Option<BoundSymbol>;\n"
+            + "    extern fun penguin_meta_has_type(name: string) -> bool;\n"
+            + "    extern fun penguin_meta_create_ast(code: string) -> i64;\n"
+            + "    extern fun penguin_meta_create_empty_ast() -> i64;\n"
+            + "    extern fun penguin_meta_create_function_ast(name: string, return_type: BoundType, body: string) -> i64;\n"
+            + "    extern fun penguin_meta_get_current_scope() -> BoundType;\n"
             + "}\n";
     }
 
@@ -120,6 +134,10 @@ class MetaEngine {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
         result.push(new SourceInput("core_builtin.penguin", _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin")));
         result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
+        // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
+        // EmperorPenguin.penguins), so its emperor.penguin_meta_* extern calls
+        // resolve against the <meta_externs> injected in compile_meta_function.
+        result.push(new SourceInput("meta_runtime.penguin", _utils.file_read_text("EmperorPenguin/src/meta/meta_runtime.penguin")));
         let bound_files: mut _utils.List<string> = new _utils.List<string>();
         bound_files.push("BoundType"); bound_files.push("BoundDefinition"); bound_files.push("BoundSymbol");
         bound_files.push("BoundScope"); bound_files.push("BoundExpression"); bound_files.push("BoundStatement");
@@ -925,6 +943,36 @@ class MetaEngine {
         }
         if (expr is Expression.function_call) {
             let f: FunctionCallExpression = expr.function_call;
+            // compiler() — the bare form (no `#`) used in #fun bodies → the real
+            // proxy object. `compiler().member(args)` parses as
+            // function_call(callee=member_access(base=function_call(compiler)));
+            // the recursion below rewrites the inner function_call(compiler) to
+            // new_expr, so the outer member_access becomes a plain method call on
+            // the unit-B CompilerContext class. (#compiler() with `#` is handled
+            // in rewrite_meta_call_dispatch.)
+            if (f.callee.is_some()) {
+                let callee: Expression = f.callee.some;
+                if (callee is Expression.identifier) {
+                    if (callee.identifier.name == "compiler") {
+                        if (cast<i64>(f.arguments.size()) == 0) {
+                            // Honor user shadowing: a user-defined `#fun compiler`
+                            // is synthesized into unit B under that name — don't
+                            // rewrite it to the builtin proxy.
+                            let shadowed: mut bool = false;
+                            let si: mut i64 = 0;
+                            while (si < cast<i64>(this.all_meta_function_defs.size())) {
+                                if (this.all_meta_function_defs.at(cast<u64>(si)).some.name == "compiler") { shadowed = true; }
+                                si = si + 1;
+                            }
+                            if (!shadowed) {
+                                let ne: mut NewExpression = new NewExpression();
+                                ne.type_name = "emperor.CompilerContext";
+                                return new Expression.new_expr(ne);
+                            }
+                        }
+                    }
+                }
+            }
             let r: mut FunctionCallExpression = new FunctionCallExpression();
             if (f.callee.is_some()) { r.callee = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(f.callee.some)); }
             let ai: mut i64 = 0;
@@ -1073,78 +1121,6 @@ class MetaEngine {
             }
             return new Expression.meta_call(mc);
         }
-        // Phase 5c: #create_expression("code") / #create_definition("code") —
-        // parse a LITERAL code fragment into a structured AST node, store it in
-        // the matching registry, and embed a 1-based i64 token. The enclosing
-        // #fun returns the token; the host resolves token -> node at the splice
-        // site. Literal strings only (resolved here, at unit-B compile time);
-        // computed strings would need the Phase-6 host-callback API.
-        if (mc.func_name == "create_expression") {
-            if (cast<i64>(mc.arguments.size()) >= 1) {
-                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
-                if (arg is Expression.string_literal) {
-                    let code: string = this.unescape_meta_string(this.strip_string_quotes(arg.string_literal.value));
-                    let lex: Lexer = new Lexer(code, "<create_expression>");
-                    let toks: _utils.List<Token> = lex.tokenize();
-                    let p: Parser = new Parser(toks);
-                    let node: Expression = p.parse_expression();
-                    if (!p.has_errors()) {
-                        let token: u64 = this.register_ast_expression(node);
-                        let ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
-                        return new Expression.constant(ce);
-                    }
-                    if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_expression: parse failed for '" + code + "'; passthrough"); }
-                } else {
-                    // Computed string argument: route to runtime host-callback.
-                    let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(arg);
-                    let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
-                    let ma: mut MemberAccessExpression = new MemberAccessExpression();
-                    ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
-                    ma.member_name = "penguin_meta_create_expression";
-                    let fc: mut FunctionCallExpression = new FunctionCallExpression();
-                    fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
-                    fc.arguments.push(rewritten_arg);
-                    return new Expression.function_call(fc);
-                }
-            }
-            return new Expression.meta_call(mc);
-        }
-        if (mc.func_name == "create_definition") {
-            if (cast<i64>(mc.arguments.size()) >= 1) {
-                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
-                if (arg is Expression.string_literal) {
-                    let code: string = this.unescape_meta_string(this.strip_string_quotes(arg.string_literal.value));
-                    let lex: Lexer = new Lexer(code, "<create_definition>");
-                    let toks: _utils.List<Token> = lex.tokenize();
-                    let p: Parser = new Parser(toks);
-                    let unit: CompilationUnit = p.parse_compilationUnit();
-                    if (!p.has_errors()) {
-                        if (cast<i64>(unit.definitions.size()) == 1) {
-                            let def: Definition = unit.definitions.at(cast<u64>(0)).some;
-                            let token: u64 = this.register_ast_definition(def);
-                            let ce: mut ConstantExpression = new ConstantExpression(cast<string>(cast<i64>(token)));
-                            return new Expression.constant(ce);
-                        }
-                        if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_definition: expected exactly 1 definition, got " + cast<string>(unit.definitions.size()) + "; passthrough"); }
-                    } else {
-                        if (this.verbose >= 1) { __builtin.eprintln("[MetaEngine] #create_definition: parse failed for '" + code + "'; passthrough"); }
-                    }
-                } else {
-                    // R3a: Computed string argument — route to runtime host-callback
-                    // (mirror #create_expression computed path).
-                    let rewritten_arg: Expression = this.rewrite_meta_calls_in_expr(arg);
-                    let base_id: mut IdentifierExpression = new IdentifierExpression("emperor");
-                    let ma: mut MemberAccessExpression = new MemberAccessExpression();
-                    ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
-                    ma.member_name = "penguin_meta_create_definition";
-                    let fc: mut FunctionCallExpression = new FunctionCallExpression();
-                    fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
-                    fc.arguments.push(rewritten_arg);
-                    return new Expression.function_call(fc);
-                }
-            }
-            return new Expression.meta_call(mc);
-        }
         // R1: #error(msg) / #warn(msg) / #info(msg) — rewrite to a host-callback
         // call that routes to the active SemanticModel's report_error/warning/info.
         if (mc.func_name == "error" || mc.func_name == "warn" || mc.func_name == "info") {
@@ -1192,7 +1168,22 @@ class MetaEngine {
             }
             return new Expression.meta_call(mc);
         }
-        // #compiler / unknown -> passthrough
+        // #compiler() — return a real CompilerContext proxy. Unit B compiles
+        // meta_runtime.penguin (base_meta_sources), so `compiler().member(args)`
+        // becomes member_access(base=new emperor.CompilerContext(), member), which
+        // binds as a method call on the class; each method forwards to an
+        // emperor.penguin_meta_* host responder. `let c = compiler()` works
+        // (stateless instance). Must stay after the user-#fun probe loop above so a
+        // user-defined `#fun compiler` still shadows the builtin.
+        if (mc.func_name == "compiler") {
+            if (cast<i64>(mc.arguments.size()) == 0) {
+                let ne: mut NewExpression = new NewExpression();
+                ne.type_name = "emperor.CompilerContext";
+                return new Expression.new_expr(ne);
+            }
+            return new Expression.meta_call(mc);  // arity != 0: leave for the unit-A diagnostic
+        }
+        // unknown -> passthrough
         return new Expression.meta_call(mc);
     }
 

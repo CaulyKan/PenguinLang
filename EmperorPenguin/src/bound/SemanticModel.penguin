@@ -429,7 +429,13 @@ class SemanticModel {
         if (d is Definition.namespace_def) {
             this.rewrite_meta_definitions(d.namespace_def.children);
         } else if (d is Definition.class_def) {
+            // #compiler().get_current_scope(): let a class-member #fun know its
+            // enclosing class. Save/restore so sibling containers observe the
+            // reset state (seed_meta_engine already ran, so active_meta is set).
+            let saved_scope: string = this.meta_engine.current_scope_class_name;
+            this.meta_engine.current_scope_class_name = d.class_def.name;
             this.rewrite_meta_definitions(d.class_def.members);
+            this.meta_engine.current_scope_class_name = saved_scope;
         } else if (d is Definition.impl_def) {
             this.rewrite_meta_definitions(d.impl_def.functions);
         }
@@ -6169,6 +6175,15 @@ class SemanticModel {
         if (expr.func_name == "__address_of") { return this.bind_address_of_intrinsic(expr, scope); }
         if (expr.func_name == "__load") { return this.bind_load_intrinsic(expr, scope); }
         if (expr.func_name == "__store") { return this.bind_store_intrinsic(expr, scope); }
+        // #compiler() is only meaningful inside a #fun body, where MetaEngine
+        // rewrites it to `new emperor.CompilerContext()` before unit B compiles.
+        // A stray call in unit A (normal source) reaches here — report a clear
+        // diagnostic instead of the silent passthrough that would otherwise end
+        // in an IRGenerator E_INTERNAL + exit(1).
+        if (expr.func_name == "compiler") {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "#compiler() is only available inside a #fun body", expr.location);
+            return new Option<BoundExpression>.none();
+        }
         // Phase 5c: if this is a call to a registered #fun, JIT-execute it at
         // compile time and splice the result (integer literal, or a returned ast
         // re-bound at the call site). Only the JIT is reached in native pass2+

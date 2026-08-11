@@ -1,6 +1,6 @@
 # MetaComputedCreate
 ## Description
-Phase 6 v2: a `#fun` reflects a type's field count via the real `t.fields().size()`, builds the expression string `"0 + 1 + 1"` at compile time (one `+ 1` per field), and `#create_expression` parses that COMPUTED string into an AST spliced at the call site — evaluating to `2` for the 2-field `Point`. Exercises real-reuse reflection (`t.fields()` direct method call) + computed-string codegen + plain `while` at meta-runtime. Requires native Pass2/Pass3.
+Phase 6 v2: a `#fun` reflects a type's field count via the real `t.fields().size()`, builds the expression string `"0 + 1 + 1"` at compile time (one `+ 1` per field), and `compiler().create_expression` parses that COMPUTED string into an AST spliced at the call site — evaluating to `2` for the 2-field `Point`. Exercises real-reuse reflection (`t.fields()` direct method call) + computed-string codegen + plain `while` at meta-runtime. Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -20,7 +20,7 @@ class Point {
         s = s + " + 1";
         i = i + 1;
     }
-    return #create_expression(s);
+    return compiler().create_expression(s);
 }
 initial {
     println(cast<string>(#count_expr(#typeof(Point))));

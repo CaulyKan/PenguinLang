@@ -1,6 +1,6 @@
 # MetaDeriveZero
 ## Description
-R4 composite: `#derive_zero(#typeof(Vec3))` — iterates `t.fields()` (names via AST fallback), builds a function that creates a zeroed instance, `#create_definition(computed)` injects it. Exercises reflection + computed string codegen + def-splice in combination. `zero_v()` creates Vec3(0,0,0). Requires native Pass2/Pass3.
+R4 composite: `#derive_zero(#typeof(Vec3))` — iterates `t.fields()` (names via AST fallback), builds a function that creates a zeroed instance, `compiler().create_definition(computed)` injects it. Exercises reflection + computed string codegen + def-splice in combination. `zero_v()` creates Vec3(0,0,0). Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -19,7 +19,7 @@ class Vec3 { x: mut i32; y: mut i32; z: mut i32; }
         i = i + 1;
     }
     body = body + "return q; }";
-    return #create_definition(body);
+    return compiler().create_definition(body);
 }
 #derive_zero(#typeof(Vec3));
 initial {

@@ -1,0 +1,66 @@
+namespace emperor {
+
+// ICompiler — the compile-time host interface, exposed via #compiler().
+// Compiled only into unit B (base_meta_sources), never the host binary. Each
+// method is implemented by CompilerContext (a thin forwarder) and backed by an
+// `emperor.penguin_meta_*` host responder declared in <meta_externs> and defined
+// in MetaHost.penguin.
+//
+// Semantics:
+//   * `ast` results are opaque i64 tokens this round (D5'); get_ast(token)
+//     returns the real emperor.Expression node for introspection.
+//   * `type` = emperor.BoundType (real-pointer reuse); resolve_type /
+//     resolve_symbol return Option (None = unknown / not found).
+//   * get_current_scope() returns the enclosing class's live BoundType while a
+//     class-member #fun is being spliced; an empty BoundType (display_name() ==
+//     "void") when not inside a class.
+interface ICompiler {
+    fun error(this, msg: string);
+    fun warn(this, msg: string);
+    fun info(this, msg: string);
+    fun set_option(this, key: string, value: string);
+    fun get_option(this, key: string) -> string;              // "" when unset
+    fun has_option(this, key: string) -> bool;
+    fun resolve_type(this, name: string) -> Option<BoundType>;      // None = unknown
+    fun has_type(this, name: string) -> bool;
+    fun resolve_symbol(this, name: string) -> Option<BoundSymbol>;  // None = not found
+    fun create_expression(this, code: string) -> i64;         // ast token
+    fun create_definition(this, code: string) -> i64;         // ast token
+    fun create_ast(this, code: string) -> i64;                // ast token (expr first, else def)
+    fun create_empty_ast(this) -> i64;                        // ast token (empty code block)
+    fun create_function_ast(this, name: string, return_type: BoundType, body: string) -> i64;
+    fun parse_arguments(this, code: string) -> i64;           // FunctionCallArguments ast token
+    fun get_ast(this, token: i64) -> Expression;              // real node (introspection)
+    fun get_current_scope(this) -> BoundType;                 // enclosing class, empty outside
+}
+
+// The real proxy object. Stateless — every `compiler()` call mints a fresh
+// instance; each method is a single-line forwarder to a host responder.
+// IReferenceType forces heap allocation (a zero-field class would otherwise
+// classify as a value type).
+class CompilerContext {
+    impl __builtin.IReferenceType;
+    impl ICompiler {
+        fun error(this, msg: string) { emperor.penguin_meta_error(msg); }
+        fun warn(this, msg: string) { emperor.penguin_meta_warn(msg); }
+        fun info(this, msg: string) { emperor.penguin_meta_info(msg); }
+        fun set_option(this, key: string, value: string) { emperor.penguin_meta_set_option(key, value); }
+        fun get_option(this, key: string) -> string { return emperor.penguin_meta_get_option(key); }
+        fun has_option(this, key: string) -> bool { return emperor.penguin_meta_has_option(key); }
+        fun resolve_type(this, name: string) -> Option<BoundType> { return emperor.penguin_meta_resolve_type(name); }
+        fun has_type(this, name: string) -> bool { return emperor.penguin_meta_has_type(name); }
+        fun resolve_symbol(this, name: string) -> Option<BoundSymbol> { return emperor.penguin_meta_resolve_symbol(name); }
+        fun create_expression(this, code: string) -> i64 { return emperor.penguin_meta_create_expression(code); }
+        fun create_definition(this, code: string) -> i64 { return emperor.penguin_meta_create_definition(code); }
+        fun create_ast(this, code: string) -> i64 { return emperor.penguin_meta_create_ast(code); }
+        fun create_empty_ast(this) -> i64 { return emperor.penguin_meta_create_empty_ast(); }
+        fun create_function_ast(this, name: string, return_type: BoundType, body: string) -> i64 {
+            return emperor.penguin_meta_create_function_ast(name, return_type, body);
+        }
+        fun parse_arguments(this, code: string) -> i64 { return emperor.penguin_meta_parse_arguments(code); }
+        fun get_ast(this, token: i64) -> Expression { return emperor.penguin_meta_get_ast_expression(token); }
+        fun get_current_scope(this) -> BoundType { return emperor.penguin_meta_get_current_scope(); }
+    }
+}
+
+}

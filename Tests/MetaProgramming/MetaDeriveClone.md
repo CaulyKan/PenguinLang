@@ -1,6 +1,6 @@
 # MetaDeriveClone
 ## Description
-R3+R4: `#derive_clone(#typeof(Point))` at top-level — a `#fun` reads `t.fields()` (via the AST fallback, since def-splice runs before types are bound), iterates the field names, builds a clone function source string at compile time, and `#create_definition(computed_string)` generates + injects `fun my_clone(p: mut Point) -> Point { ... }`. The generated function is callable from `initial`. Exercises: AST fallback reflection + computed `#create_definition` + def-splice injection — the full derive- macro pipeline. Requires native Pass2/Pass3.
+R3+R4: `#derive_clone(#typeof(Point))` at top-level — a `#fun` reads `t.fields()` (via the AST fallback, since def-splice runs before types are bound), iterates the field names, builds a clone function source string at compile time, and `compiler().create_definition(computed_string)` generates + injects `fun my_clone(p: mut Point) -> Point { ... }`. The generated function is callable from `initial`. Exercises: AST fallback reflection + computed `compiler().create_definition` + def-splice injection — the full derive- macro pipeline. Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -20,7 +20,7 @@ class Point { x: mut i32; y: mut i32; }
         i = i + 1;
     }
     body = body + "return q; }";
-    return #create_definition(body);
+    return compiler().create_definition(body);
 }
 #derive_clone(#typeof(Point));
 initial {
