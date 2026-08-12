@@ -25,8 +25,15 @@ initial {
     if (m.get(5).is_none()) { println("get5_after_remove=none"); }
     m.put(10, 1000);
     let sum: mut i64 = 0;
-    for (let v in m) { sum = sum + v; }
+    for (let v in m.iter_values()) { sum = sum + v; }
     println("sum=" + cast<string>(sum));
+    // default iter() now yields key/value pairs
+    let psum: mut i64 = 0;
+    for (let p in m) { psum = psum + p.value; }
+    println("psum=" + cast<string>(psum));
+    let kcount: mut i64 = 0;
+    for (let k in m.iter_keys()) { kcount = kcount + 1; }
+    println("kcount=" + cast<string>(kcount));
     m.dispose_mem();
 
     let ms = new penguin.HashMap<string, i64>();
@@ -46,7 +53,7 @@ initial {
     ms.remove("banana");
     println("string_size_after_remove=" + cast<string>(ms.size()));
     let ssum: mut i64 = 0;
-    for (let v in ms) { ssum = ssum + v; }
+    for (let v in ms.iter_values()) { ssum = ssum + v; }
     println("string_sum=" + cast<string>(ssum));
     ms.dispose_mem();
 }
@@ -73,6 +80,8 @@ contains3
 size_after_remove=9
 get5_after_remove=none
 sum=5000
+psum=5000
+kcount=10
 string_size=8
 apple=1
 honeydew=8

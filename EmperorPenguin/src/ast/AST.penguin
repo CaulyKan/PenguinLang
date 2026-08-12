@@ -186,12 +186,15 @@ class UnaryExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
             let self = cast<UnaryExpression>(this);
-            let op_str: string = cast<string>(self.operator_value);
-            if (op_str == "Negate") { return "-" + self.operand.some.build_text(); }
-            if (op_str == "Not") { return "!" + self.operand.some.build_text(); }
-            if (op_str == "BitwiseNot") { return "~" + self.operand.some.build_text(); }
-            if (op_str == "UnaryPlus") { return "+" + self.operand.some.build_text(); }
-            return op_str + self.operand.some.build_text();
+            // Compare with `is` on the enum VALUE, not cast<string>() — cast<string>
+            // of an enum yields its numeric INDEX, so the old name comparisons
+            // never matched and every unary op rendered as its index (e.g. `!x`
+            // became `1x`), breaking #fun-body synthesis (red sentinel).
+            if (self.operator_value is UnaryOperator.Negate) { return "-" + self.operand.some.build_text(); }
+            if (self.operator_value is UnaryOperator.Not) { return "!" + self.operand.some.build_text(); }
+            if (self.operator_value is UnaryOperator.BitwiseNot) { return "~" + self.operand.some.build_text(); }
+            if (self.operator_value is UnaryOperator.UnaryPlus) { return "+" + self.operand.some.build_text(); }
+            return "?" + self.operand.some.build_text();
         }
     }
 }

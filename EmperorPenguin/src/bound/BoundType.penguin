@@ -398,7 +398,14 @@ class BoundType {
                 let vm: BoundEnumMemberDefinition = vs.at(cast<u64>(vi)).some;
                 let mt: BoundType = vm.member_type;
                 let is_void: bool = mt.kind is TypeKind.PrimitiveKind && mt.primitive is PrimitiveType.VoidType;
-                if (!is_void) {
+                // Tag-only variants (like Option.none) carry member_type == the
+                // enum's OWN type — a sentinel set by resolve_enum_types, NOT a
+                // recursive payload. Skip them like void (mirrors the
+                // build_enum_layout is_self_enum check). Without this, #sizeof on
+                // an enum with a tag-only variant infinite-recurses in byte_size
+                // (Vector<Enum> segfault).
+                let is_self: bool = mt.kind is TypeKind.EnumKind && mt.display_name() == this.display_name();
+                if (!is_void && !is_self) {
                     let sz: i64 = mt.byte_size();
                     if (sz > largest) { largest = sz; }
                 }

@@ -205,11 +205,26 @@ class HashMap {
         return this.count;
     }
 
-    fun iter(mut this) -> _HashMapIterator<V> {
-        return new _HashMapIterator<V>(this.occupied, this.values, this.cap);
+    // The default iteration is over KeyValuePair<K,V> entries (key + value).
+    // Use iter_keys() / iter_values() to iterate one side.
+    fun iter(mut this) -> KeyValuePairIterator<K, V> {
+        return new KeyValuePairIterator<K, V>(this.occupied, this.keys, this.values, this.cap);
     }
 
-    fun iter_mut(mut this) -> mut _HashMapIterator<V> {
+    fun iter_mut(mut this) -> mut KeyValuePairIterator<K, V> {
+        return new KeyValuePairIterator<K, V>(this.occupied, this.keys, this.values, this.cap);
+    }
+
+    // Key iteration — needed to serialize a HashMap as a JSON object (and for
+    // generic key-side access). Yields only LIVE keys (occ == 1); independent
+    // cursor, safe to overlap value iteration. Named iter_keys() (not keys()) to
+    // avoid colliding with the `keys` field.
+    fun iter_keys(this) -> _HashMapKeyIterator<K> {
+        return new _HashMapKeyIterator<K>(this.occupied, this.keys, this.cap);
+    }
+
+    // Value iteration (the pre-redesign iter() semantics).
+    fun iter_values(this) -> _HashMapIterator<V> {
         return new _HashMapIterator<V>(this.occupied, this.values, this.cap);
     }
 
@@ -252,6 +267,94 @@ class _HashMapIterator {
     }
 
     fun iter(this) -> _HashMapIterator<V> {
+        return this;
+    }
+}
+
+// Independent iterator over a HashMap's LIVE keys (occ == 1). Holds references
+// to the map's occupied/keys Vectors; do not mutate/resize/dispose the map while
+// iterating (mirrors _HashMapIterator).
+#template(K: type)
+class _HashMapKeyIterator {
+    impl __builtin.IReferenceType;
+    occupied: mut Vector<u8>;
+    keys: mut Vector<K>;
+    cap: u64;
+    cursor: mut u64 = 0;
+
+    fun new(mut this, occupied: Vector<u8>, keys: Vector<K>, cap: u64) {
+        this.occupied = occupied;
+        this.keys = keys;
+        this.cap = cap;
+        this.cursor = 0;
+    }
+
+    fun next(mut this) -> __builtin.Option<K> {
+        while (this.cursor < this.cap) {
+            let occ: u8 = this.occupied.at(this.cursor).some;
+            let s: u64 = this.cursor;
+            this.cursor = this.cursor + 1;
+            if (occ == 1) {
+                let k: K = this.keys.at(s).some;
+                return new __builtin.Option<K>.some(k);
+            }
+        }
+        return new __builtin.Option<K>.none();
+    }
+
+    fun iter(this) -> _HashMapKeyIterator<K> {
+        return this;
+    }
+}
+
+// A key/value entry yielded by KeyValuePairIterator. Its own class (with mutable
+// fields) rather than __builtin.Pair, whose generic fields are immutable.
+#template(K: type, V: type)
+class KeyValuePair {
+    impl __builtin.IReferenceType;
+    key: mut K;
+    value: mut V;
+
+    fun new(mut this, key: K, value: V) {
+        this.key = key;
+        this.value = value;
+    }
+}
+
+// Independent iterator over a HashMap's live (key, value) pairs (occ == 1).
+// Holds references to the map's occupied/keys/values Vectors; do not
+// mutate/resize/dispose the map while iterating.
+#template(K: type, V: type)
+class KeyValuePairIterator {
+    impl __builtin.IReferenceType;
+    occupied: mut Vector<u8>;
+    keys: mut Vector<K>;
+    values: mut Vector<V>;
+    cap: u64;
+    cursor: mut u64 = 0;
+
+    fun new(mut this, occupied: Vector<u8>, keys: Vector<K>, values: Vector<V>, cap: u64) {
+        this.occupied = occupied;
+        this.keys = keys;
+        this.values = values;
+        this.cap = cap;
+        this.cursor = 0;
+    }
+
+    fun next(mut this) -> __builtin.Option<KeyValuePair<K, V>> {
+        while (this.cursor < this.cap) {
+            let occ: u8 = this.occupied.at(this.cursor).some;
+            let s: u64 = this.cursor;
+            this.cursor = this.cursor + 1;
+            if (occ == 1) {
+                let p: mut KeyValuePair<K, V> = new KeyValuePair<K, V>(this.keys.at(s).some, this.values.at(s).some);
+                return new __builtin.Option<KeyValuePair<K, V>>.some(p);
+            }
+        }
+        return new __builtin.Option<KeyValuePair<K, V>>.none();
+    }
+
+    fun iter(this) -> KeyValuePairIterator<K, V> {
         return this;
     }
 }

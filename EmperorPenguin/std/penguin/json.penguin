@@ -1,0 +1,741 @@
+// Stdlib JSON serialize / deserialize, built with meta-programming.
+//
+// Two usage modes:
+//   1. Dynamic API — JsonReader/JsonValue (parse a document into a tree and read
+//      via get()/as_*) and JsonWriter (stream out a document). No per-type code.
+//   2. Auto-impl via meta — `#impl_json_serializable();` inside a class body
+//      expands (at compile time, through compiler().get_current_scope() + field
+//      reflection) to an `impl penguin.IJsonSerializable<Foo> { json_serialize /
+//      json_deserialize }` block. Fields may be primitives, penguin.Vector<T>,
+//      penguin.HashMap<K,V>, or nested IJsonSerializable classes (recursively).
+//
+// NOT auto-loaded — compile it explicitly (e.g. via a markdown test's
+// Compile.Args) along with its dependencies hashmap.penguin + vector.penguin.
+//
+// Known limitations (see Documentation): u64 serializes via %d (truncates above
+// 2^31 — use i64); f64 uses printf %g (6 significant digits — no exact double
+// round-trip); \uXXXX / \b / \f escapes are preserved verbatim (no code->char);
+// concrete top-level classes only (a generic-param field type cannot be
+// dispatched at codegen); avoid class names that collide with auto-loaded
+// builtins (e.g. `__builtin.Box`) — the AST-fallback reflection matches by
+// unqualified name, so a user `class Box` resolves to the builtin's fields.
+//
+// DEFERRED (recorded, not implemented): `IJsonSerializable` for `Option<T>` and
+// `Box<T>` (json null / inner-value). Generic interface impls
+// (`#template impl IJsonSerializable<Option<T>> for Option<T>`) are not
+// supported by the parser, and static impl calls through a generic/primitive
+// type name fail in the LLVM backend (red sentinel MetaStaticImplCall), so an
+// Option/Box field currently hits the "not IJsonSerializable" skip path.
+namespace penguin {
+
+// ---------------------------------------------------------------------------
+// Serialization interface (meta-impl target)
+// ---------------------------------------------------------------------------
+#template(T: type)
+interface IJsonSerializable {
+    fun json_serialize(this) -> string;
+    fun json_deserialize(json: string) -> mut T;
+}
+
+// --- primitive IJsonSerializable impls ------------------------------------
+// Each returns/consumes the JSON fragment: numbers as raw digits, bool as
+// true/false, string as a quoted+escaped literal, char as its integer code.
+// json_deserialize is best-effort (the auto-impl reads via JsonValue.as_*);
+// the static call `<prim>.json_deserialize(...)` is currently broken in the
+// LLVM backend (red sentinel), so these are used via instance json_serialize
+// and by JsonValue accessors.
+impl IJsonSerializable<i64> for i64 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut i64 { return string_to_int(json); }
+}
+impl IJsonSerializable<i32> for i32 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut i32 { return cast<i32>(string_to_int(json)); }
+}
+impl IJsonSerializable<i16> for i16 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut i16 { return cast<i16>(string_to_int(json)); }
+}
+impl IJsonSerializable<i8> for i8 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut i8 { return cast<i8>(string_to_int(json)); }
+}
+impl IJsonSerializable<u64> for u64 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut u64 { return cast<u64>(string_to_int(json)); }
+}
+impl IJsonSerializable<u32> for u32 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut u32 { return cast<u32>(string_to_int(json)); }
+}
+impl IJsonSerializable<u16> for u16 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut u16 { return cast<u16>(string_to_int(json)); }
+}
+impl IJsonSerializable<u8> for u8 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut u8 { return cast<u8>(string_to_int(json)); }
+}
+impl IJsonSerializable<f64> for f64 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut f64 { return _parse_float_text(json); }
+}
+impl IJsonSerializable<f32> for f32 {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut f32 { return cast<f32>(_parse_float_text(json)); }
+}
+impl IJsonSerializable<bool> for bool {
+    fun json_serialize(this) -> string { return cast<string>(this); }
+    fun json_deserialize(json: string) -> mut bool { return json == "true"; }
+}
+impl IJsonSerializable<string> for string {
+    fun json_serialize(this) -> string { return "\"" + _json_escape(this) + "\""; }
+    fun json_deserialize(json: string) -> mut string { return _json_unescape(_json_strip_quotes(json)); }
+}
+impl IJsonSerializable<char> for char {
+    fun json_serialize(this) -> string { return cast<string>(cast<i64>(this)); }
+    fun json_deserialize(json: string) -> mut char { return cast<char>(string_to_int(json)); }
+}
+
+// ---------------------------------------------------------------------------
+// JsonValue — a parsed JSON document tree, as a tagged enum. Number variants
+// carry the VERBATIM number token (string payload) so to_json round-trips the
+// source spelling; as_i64/as_f64 parse on demand. Container variants carry
+// Vector<JsonValue> / HashMap<string, JsonValue> (recursive enum; requires the
+// BoundType.byte_size tag-only-sentinel fix so Vector<Enum> doesn't segfault).
+// ---------------------------------------------------------------------------
+enum JsonValue {
+    json_null;
+    json_bool: bool;
+    json_int: string;
+    json_float: string;
+    json_string: string;
+    json_array: penguin.Vector<JsonValue>;
+    json_object: penguin.HashMap<string, JsonValue>;
+    json_error: string;
+
+    fun is_null(this) -> bool { return this is JsonValue.json_null; }
+    fun is_bool(this) -> bool { return this is JsonValue.json_bool; }
+    fun is_int(this) -> bool { return this is JsonValue.json_int; }
+    fun is_float(this) -> bool { return this is JsonValue.json_float; }
+    fun is_number(this) -> bool { return this is JsonValue.json_int || this is JsonValue.json_float; }
+    fun is_string(this) -> bool { return this is JsonValue.json_string; }
+    fun is_array(this) -> bool { return this is JsonValue.json_array; }
+    fun is_object(this) -> bool { return this is JsonValue.json_object; }
+    fun is_error(this) -> bool { return this is JsonValue.json_error; }
+
+    fun as_bool(this) -> bool {
+        if (this is JsonValue.json_bool) { return this.json_bool; }
+        if (this is JsonValue.json_int) { return string_to_int(this.json_int) != 0; }
+        if (this is JsonValue.json_string) { return this.json_string == "true"; }
+        return false;
+    }
+
+    fun as_i64(this) -> i64 {
+        if (this is JsonValue.json_int) { return string_to_int(this.json_int); }
+        if (this is JsonValue.json_float) { return cast<i64>(_parse_float_text(this.json_float)); }
+        if (this is JsonValue.json_string) { return string_to_int(this.json_string); }
+        if (this is JsonValue.json_bool) { if (this.json_bool) { return 1; } return 0; }
+        return 0;
+    }
+
+    fun as_f64(this) -> f64 {
+        if (this is JsonValue.json_float) { return _parse_float_text(this.json_float); }
+        if (this is JsonValue.json_int) { return cast<f64>(string_to_int(this.json_int)); }
+        if (this is JsonValue.json_string) { return _parse_float_text(this.json_string); }
+        if (this is JsonValue.json_bool) { if (this.json_bool) { return 1.0; } return 0.0; }
+        return 0.0;
+    }
+
+    fun as_string(this) -> string {
+        if (this is JsonValue.json_string) { return this.json_string; }
+        if (this is JsonValue.json_int) { return this.json_int; }
+        if (this is JsonValue.json_float) { return this.json_float; }
+        if (this is JsonValue.json_bool) { if (this.json_bool) { return "true"; } return "false"; }
+        return "";
+    }
+
+    // Defensive: wrong variant -> a fresh empty container (callers gate on is_*).
+    fun as_array(this) -> penguin.Vector<JsonValue> {
+        if (this is JsonValue.json_array) { return this.json_array; }
+        return new penguin.Vector<JsonValue>();
+    }
+
+    fun as_object(this) -> penguin.HashMap<string, JsonValue> {
+        if (this is JsonValue.json_object) { return this.json_object; }
+        return new penguin.HashMap<string, JsonValue>();
+    }
+
+    fun get(this, key: string) -> __builtin.Option<JsonValue> {
+        if (this is JsonValue.json_object) { return this.json_object.get(key); }
+        return new __builtin.Option<JsonValue>.none();
+    }
+
+    fun to_json(this) -> string {
+        let mut w = new penguin.JsonWriter();
+        w.value(this);
+        return w.to_string();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JsonWriter — streaming document builder.
+// ---------------------------------------------------------------------------
+class JsonWriter {
+    impl __builtin.IReferenceType;
+    sb: mut __builtin.StringBuilder;
+    // first[k] = 1 while container level k (0 = outermost) has emitted no value
+    // yet, so no leading comma. depth = number of open containers.
+    first: mut penguin.Vector<u8>;
+    depth: mut i64 = 0;
+    // After key() the next value belongs to that key (no comma emitted).
+    pending_key: mut bool = false;
+
+    fun new(mut this) {
+        this.sb = new __builtin.StringBuilder();
+        this.first = new penguin.Vector<u8>();
+        this.depth = 0;
+        this.pending_key = false;
+    }
+
+    // Emit a comma when the current container already holds a value.
+    fun _before_value(mut this) {
+        if (this.pending_key) { this.pending_key = false; return; }
+        if (this.depth == 0) { return; }
+        let lvl: u64 = cast<u64>(this.depth) - 1;
+        if (this.first.at(lvl).some == 1) {
+            this.first.set(lvl, 0);
+        } else {
+            this.sb.append(",");
+        }
+    }
+
+    // Pop the innermost container level: rebuild `first` without its last entry
+    // (Vector has no pop/remove and resize_to only grows). Depth is small, so the
+    // copy is cheap.
+    fun _pop(mut this) {
+        if (this.depth <= 0) { return; }
+        let n: u64 = cast<u64>(this.depth) - 1;
+        let new_first: mut penguin.Vector<u8> = new penguin.Vector<u8>();
+        let i: mut u64 = 0;
+        while (i < n) {
+            new_first.push(this.first.at(i).some);
+            i = i + 1;
+        }
+        this.first = new_first;
+        this.depth = this.depth - 1;
+    }
+
+    fun _value_text(mut this, text: string) {
+        this._before_value();
+        this.sb.append(text);
+    }
+
+    fun begin_object(mut this) {
+        this._before_value();
+        this.first.push(cast<u8>(1));
+        this.depth = this.depth + 1;
+        this.sb.append("{");
+    }
+
+    fun end_object(mut this) {
+        this._pop();
+        this.sb.append("}");
+    }
+
+    fun begin_array(mut this) {
+        this._before_value();
+        this.first.push(cast<u8>(1));
+        this.depth = this.depth + 1;
+        this.sb.append("[");
+    }
+
+    fun end_array(mut this) {
+        this._pop();
+        this.sb.append("]");
+    }
+
+    fun key(mut this, k: string) {
+        this._before_value();
+        this.sb.append("\"");
+        this.sb.append(_json_escape(k));
+        this.sb.append("\":");
+        this.pending_key = true;
+    }
+
+    fun value_i64(mut this, v: i64) { this._value_text(cast<string>(v)); }
+    fun value_double(mut this, v: f64) { this._value_text(cast<string>(v)); }
+    fun value_bool(mut this, v: bool) { this._value_text(cast<string>(v)); }
+    fun value_null(mut this) { this._value_text("null"); }
+    // Splice pre-serialized JSON (used by the auto-impl for nested objects).
+    fun value_raw(mut this, json: string) { this._value_text(json); }
+
+    fun value_string(mut this, v: string) {
+        this._before_value();
+        this.sb.append("\"");
+        this.sb.append(_json_escape(v));
+        this.sb.append("\"");
+    }
+
+    // Write an arbitrary JsonValue (DOM path). Number variants emit their
+    // verbatim token text so the original spelling round-trips.
+    fun value(mut this, v: JsonValue) {
+        if (v is JsonValue.json_null) { this.value_null(); }
+        else if (v is JsonValue.json_bool) { this.value_bool(v.json_bool); }
+        else if (v is JsonValue.json_int) { this._value_text(v.json_int); }
+        else if (v is JsonValue.json_float) { this._value_text(v.json_float); }
+        else if (v is JsonValue.json_string) { this.value_string(v.json_string); }
+        else if (v is JsonValue.json_array) {
+            this.begin_array();
+            let i: mut u64 = 0;
+            while (i < v.json_array.size()) {
+                this.value(v.json_array.at(i).some);
+                i = i + 1;
+            }
+            this.end_array();
+        } else if (v is JsonValue.json_object) {
+            this.begin_object();
+            for (let _k in v.json_object.iter_keys()) {
+                this.key(_k);
+                this.value(v.json_object.get(_k).some);
+            }
+            this.end_object();
+        } else {
+            this.value_null();
+        }
+    }
+
+    fun to_string(this) -> string { return this.sb.to_string(); }
+}
+
+// Escape a string for a JSON string literal: `"` -> \", `\` -> \\,
+// newline/tab/cr -> \n \t \r, other control chars -> \uXXXX (6 literal
+// chars; there is no code->char to emit the raw byte).
+fun _json_escape(s: string) -> string {
+    let mut sb = new __builtin.StringBuilder();
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        let c: string = string_char_at(s, i);
+        if (c == "\"") { sb.append("\\\""); }
+        else if (c == "\\") { sb.append("\\\\"); }
+        else if (c == "\n") { sb.append("\\n"); }
+        else if (c == "\t") { sb.append("\\t"); }
+        else if (c == "\r") { sb.append("\\r"); }
+        else if (string_char_code(c) < 32) { sb.append(_unicode_escape(string_char_code(c))); }
+        else { sb.append(c); }
+        i = i + 1;
+    }
+    return sb.to_string();
+}
+
+// Strip surrounding double quotes from a JSON string literal (no-op if absent).
+fun _json_strip_quotes(s: string) -> string {
+    if (string_length(s) >= 2) {
+        if (string_char_at(s, 0) == "\"" && string_char_at(s, string_length(s) - 1) == "\"") {
+            return string_substring(s, 1, string_length(s) - 2);
+        }
+    }
+    return s;
+}
+
+// Best-effort unescape of the JSON escapes we produce (\n \t \r \" \\ \/ and
+// \uXXXX preserved verbatim, since there is no code->char).
+fun _json_unescape(s: string) -> string {
+    let mut sb = new __builtin.StringBuilder();
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        let c: string = string_char_at(s, i);
+        if (c == "\\" && i + 1 < string_length(s)) {
+            let e: string = string_char_at(s, i + 1);
+            if (e == "\"") { sb.append("\""); i = i + 2; }
+            else if (e == "\\") { sb.append("\\"); i = i + 2; }
+            else if (e == "/") { sb.append("/"); i = i + 2; }
+            else if (e == "n") { sb.append("\n"); i = i + 2; }
+            else if (e == "t") { sb.append("\t"); i = i + 2; }
+            else if (e == "r") { sb.append("\r"); i = i + 2; }
+            else { sb.append(c); i = i + 1; }
+        } else {
+            sb.append(c);
+            i = i + 1;
+        }
+    }
+    return sb.to_string();
+}
+
+// ---------------------------------------------------------------------------
+// JsonReader — recursive-descent parser producing a JsonValue tree.
+// ---------------------------------------------------------------------------
+class JsonReader {
+    impl __builtin.IReferenceType;
+    text: string;
+    pos: mut i64 = 0;
+    len: i64;
+
+    fun new(mut this, text: string) {
+        this.text = text;
+        this.len = string_length(text);
+        this.pos = 0;
+    }
+
+    fun parse(mut this) -> JsonValue {
+        this._skip_ws();
+        return this._parse_value();
+    }
+
+    fun _peek(this) -> string {
+        if (this.pos < this.len) { return string_char_at(this.text, this.pos); }
+        return "";
+    }
+
+    fun _advance(mut this) {
+        if (this.pos < this.len) { this.pos = this.pos + 1; }
+    }
+
+    fun _skip_ws(mut this) {
+        while (true) {
+            let c: string = this._peek();
+            if (c == " " || c == "\t" || c == "\n" || c == "\r") { this._advance(); }
+            else { return; }
+        }
+    }
+
+    fun _is_digit(this, c: string) -> bool {
+        return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+            || c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+    }
+
+    fun _parse_value(mut this) -> JsonValue {
+        this._skip_ws();
+        let c: string = this._peek();
+        if (c == "{") { return this._parse_object(); }
+        if (c == "[") { return this._parse_array(); }
+        if (c == "\"") { return this._parse_string(); }
+        if (c == "-" || this._is_digit(c)) { return this._parse_number(); }
+        if (c == "t") { return this._parse_literal("true", "bool"); }
+        if (c == "f") { return this._parse_literal("false", "bool"); }
+        if (c == "n") { return this._parse_literal("null", "null"); }
+        return new JsonValue.json_error("invalid json at " + cast<string>(this.pos));
+    }
+
+    // Consume a keyword literal; on success return the matching JsonValue.
+    fun _parse_literal(mut this, lit: string, kind: string) -> JsonValue {
+        if (string_substring(this.text, this.pos, string_length(lit)) == lit) {
+            this.pos = this.pos + string_length(lit);
+            if (kind == "bool") {
+                if (lit == "true") { return new JsonValue.json_bool(true); }
+                return new JsonValue.json_bool(false);
+            }
+            return new JsonValue.json_null();
+        }
+        return new JsonValue.json_error("expected literal " + lit);
+    }
+
+    fun _parse_object(mut this) -> JsonValue {
+        this._advance();  // consume '{'
+        this._skip_ws();
+        let map: mut penguin.HashMap<string, JsonValue> = new penguin.HashMap<string, JsonValue>();
+        if (this._peek() == "}") { this._advance(); return new JsonValue.json_object(map); }
+        while (true) {
+            this._skip_ws();
+            if (this._peek() != "\"") {
+                return new JsonValue.json_error("expected object key");
+            }
+            let key: string = this._parse_string_raw();
+            this._skip_ws();
+            if (this._peek() != ":") { return new JsonValue.json_error("expected ':'"); }
+            this._advance();
+            let val: JsonValue = this._parse_value();
+            map.put(key, val);
+            this._skip_ws();
+            let c: string = this._peek();
+            if (c == ",") { this._advance(); continue; }
+            if (c == "}") { this._advance(); break; }
+            return new JsonValue.json_error("expected ',' or '}'");
+        }
+        return new JsonValue.json_object(map);
+    }
+
+    fun _parse_array(mut this) -> JsonValue {
+        this._advance();  // consume '['
+        this._skip_ws();
+        let vec: mut penguin.Vector<JsonValue> = new penguin.Vector<JsonValue>();
+        if (this._peek() == "]") { this._advance(); return new JsonValue.json_array(vec); }
+        while (true) {
+            let val: JsonValue = this._parse_value();
+            vec.push(val);
+            this._skip_ws();
+            let c: string = this._peek();
+            if (c == ",") { this._advance(); continue; }
+            if (c == "]") { this._advance(); break; }
+            return new JsonValue.json_error("expected ',' or ']'");
+        }
+        return new JsonValue.json_array(vec);
+    }
+
+    fun _parse_string(mut this) -> JsonValue {
+        return new JsonValue.json_string(this._parse_string_raw());
+    }
+
+    // Parse a JSON string starting at the opening quote; returns the decoded
+    // value (unescaped). \n \t \r \" \\ \/ decode to real bytes; \b \f \uXXXX
+    // are preserved verbatim (no code->char primitive).
+    fun _parse_string_raw(mut this) -> string {
+        this._advance();  // consume opening '"'
+        let mut sb = new __builtin.StringBuilder();
+        while (true) {
+            if (this.pos >= this.len) { break; }
+            let c: string = string_char_at(this.text, this.pos);
+            if (c == "\"") { this._advance(); break; }
+            if (c == "\\") {
+                this._advance();
+                if (this.pos >= this.len) { break; }
+                let e: string = string_char_at(this.text, this.pos);
+                if (e == "\"") { sb.append("\""); this._advance(); }
+                else if (e == "\\") { sb.append("\\"); this._advance(); }
+                else if (e == "/") { sb.append("/"); this._advance(); }
+                else if (e == "n") { sb.append("\n"); this._advance(); }
+                else if (e == "t") { sb.append("\t"); this._advance(); }
+                else if (e == "r") { sb.append("\r"); this._advance(); }
+                else if (e == "b") { sb.append("\\b"); this._advance(); }
+                else if (e == "f") { sb.append("\\f"); this._advance(); }
+                else if (e == "u") {
+                    if (this.pos + 4 < this.len) {
+                        sb.append("\\u");
+                        sb.append(string_substring(this.text, this.pos + 1, 4));
+                        this.pos = this.pos + 5;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                sb.append(c);
+                this._advance();
+            }
+        }
+        return sb.to_string();
+    }
+
+    fun _is_number_char(this, c: string) -> bool {
+        return this._is_digit(c) || c == "-" || c == "+" || c == "." || c == "e" || c == "E";
+    }
+
+    fun _parse_number(mut this) -> JsonValue {
+        let start: i64 = this.pos;
+        while (true) {
+            let c: string = this._peek();
+            if (this._is_number_char(c)) { this._advance(); }
+            else { break; }
+        }
+        let token: string = string_substring(this.text, start, this.pos - start);
+        let has_float: bool = string_find(token, ".") >= 0
+            || string_find(token, "e") >= 0
+            || string_find(token, "E") >= 0;
+        if (has_float) {
+            return new JsonValue.json_float(token);
+        }
+        return new JsonValue.json_int(token);
+    }
+}
+
+// Convenience entry point (used by the auto-impl's generated code).
+fun parse_json(text: string) -> JsonValue {
+    return new JsonReader(text).parse();
+}
+
+// --- numeric / escape helpers ----------------------------------------------
+
+// Hand-rolled decimal parse (no string->double extern). Accepts
+// [-](int)[.(frac)][e[+-](exp)]. Approximate but fine for JSON numbers.
+fun _parse_float_text(text: string) -> f64 {
+    let neg: bool = string_char_at(text, 0) == "-";
+    let t2: mut string = text;
+    if (neg) { t2 = string_substring(text, 1, string_length(text) - 1); }
+    let ep: i64 = string_find(t2, "e");
+    let eE: i64 = string_find(t2, "E");
+    let epos: mut i64 = ep;
+    if (ep < 0) { epos = eE; }
+    let mant: mut string = t2;
+    let exp: mut i64 = 0;
+    if (epos >= 0) {
+        mant = string_substring(t2, 0, epos);
+        let exp_txt: string = string_substring(t2, epos + 1, string_length(t2) - epos - 1);
+        exp = string_to_int(exp_txt);
+    }
+    let dp: i64 = string_find(mant, ".");
+    let int_part: mut string = mant;
+    let frac_part: mut string = "";
+    if (dp >= 0) {
+        int_part = string_substring(mant, 0, dp);
+        frac_part = string_substring(mant, dp + 1, string_length(mant) - dp - 1);
+    }
+    let val: mut f64 = cast<f64>(string_to_int(int_part));
+    if (string_length(frac_part) > 0) {
+        val = val + cast<f64>(string_to_int(frac_part)) / _pow10(string_length(frac_part));
+    }
+    let k: mut i64 = 0;
+    if (exp >= 0) {
+        while (k < exp) { val = val * cast<f64>(10); k = k + 1; }
+    } else {
+        while (k > exp) { val = val / cast<f64>(10); k = k - 1; }
+    }
+    if (neg) { val = -val; }
+    return val;
+}
+
+fun _pow10(n: i64) -> f64 {
+    let r: mut f64 = 1.0;
+    let i: mut i64 = 0;
+    while (i < n) { r = r * 10.0; i = i + 1; }
+    return r;
+}
+
+fun _hex_digit(v: i64) -> string {
+    if (v < 10) { return cast<string>(v); }
+    if (v == 10) { return "a"; }
+    if (v == 11) { return "b"; }
+    if (v == 12) { return "c"; }
+    if (v == 13) { return "d"; }
+    if (v == 14) { return "e"; }
+    return "f";
+}
+
+// Emit the 6-character escape text \uXXXX (valid JSON, even though we cannot
+// decode it back to a raw byte).
+fun _unicode_escape(code: i64) -> string {
+    let h1: i64 = code / 4096;
+    let r1: i64 = code % 4096;
+    let h2: i64 = r1 / 256;
+    let r2: i64 = r1 % 256;
+    let h3: i64 = r2 / 16;
+    let h4: i64 = r2 % 16;
+    return "\\u" + _hex_digit(h1) + _hex_digit(h2) + _hex_digit(h3) + _hex_digit(h4);
+}
+
+// ---------------------------------------------------------------------------
+// Meta-driven auto-impl. `#impl_json_serializable();` inside a class body
+// expands to an `impl penguin.IJsonSerializable<Cls> { ... }` block generated
+// by reflecting over the class's fields (compiler().get_current_scope()).
+// ---------------------------------------------------------------------------
+// Whether a field type can be JSON-serialized by the auto-impl. Primitives and
+// containers are handled directly; classes/enums must implement
+// IJsonSerializable (checked via the AST-fallback implemented_interfaces), else
+// the field is SKIPPED (not a compile error).
+#fun json_serializable_type(t: type) -> bool {
+    let dn: string = t.display_name();
+    if (t.is_primitive()) { return true; }
+    if (string_find(dn, "penguin.Vector") >= 0) {
+        if (t.generic_args.size() >= 1) { return json_serializable_type(t.generic_args.at(0).some); }
+        return false;
+    }
+    if (string_find(dn, "penguin.HashMap") >= 0) {
+        if (t.generic_args.size() >= 2) { return json_serializable_type(t.generic_args.at(1).some); }
+        return false;
+    }
+    if (let cd := t.class_def().some) {
+        return cd.has_interface("IJsonSerializable");
+    }
+    return false;
+}
+
+// Returns JsonWriter code that writes runtime expression `arg` (of type t), or
+// "" when the field must be skipped (non-serializable). Values go through the
+// type's json_serialize() (primitives via their IJsonSerializable impl, nested
+// classes via theirs) so codegen is uniform.
+#fun json_write_snippet(t: type, arg: string) -> string {
+    let dn: string = t.display_name();
+    if (string_find(dn, "penguin.Vector") >= 0 && t.generic_args.size() >= 1) {
+        let elem = t.generic_args.at(0).some;
+        if (json_serializable_type(elem) == false) { return ""; }
+        return "w.begin_array(); for (let _v in " + arg + ") { "
+            + json_write_snippet(elem, "_v") + " } w.end_array()";
+    }
+    if (string_find(dn, "penguin.HashMap") >= 0 && t.generic_args.size() >= 2) {
+        let vv = t.generic_args.at(1).some;
+        if (json_serializable_type(vv) == false) { return ""; }
+        return "w.begin_object(); for (let _k in " + arg + ".iter_keys()) { w.key(_k); "
+            + json_write_snippet(vv, "(" + arg + ").get(_k).some") + " } w.end_object()";
+    }
+    if (json_serializable_type(t) == false) { return ""; }
+    return "w.value_raw(" + arg + ".json_serialize())";
+}
+
+// Expression reading a scalar from a JsonValue (`v`) for a primitive-typed value.
+#fun json_read_expr(t: type, v: string) -> string {
+    let dn: string = t.display_name();
+    if (dn == "i64" || dn == "u64") { return v + ".as_i64()"; }
+    if (dn == "i8" || dn == "i16" || dn == "i32" || dn == "u8" || dn == "u16" || dn == "u32") {
+        return "cast<" + dn + ">(" + v + ".as_i64())";
+    }
+    if (dn == "f64" || dn == "double") { return v + ".as_f64()"; }
+    if (dn == "f32" || dn == "float") { return "cast<f32>(" + v + ".as_f64())"; }
+    if (dn == "bool") { return v + ".as_bool()"; }
+    if (dn == "string") { return v + ".as_string()"; }
+    if (dn == "char") { return "cast<char>(" + v + ".as_i64())"; }
+    // nested IJsonSerializable class (re-serialize the subtree to its fragment)
+    return dn + ".json_deserialize(" + v + ".to_json())";
+}
+
+// Statement(s) assigning `target` (an lvalue) from a JsonValue (`v`); "" = skip.
+#fun json_read_stmt(t: type, v: string, target: string) -> string {
+    let dn: string = t.display_name();
+    if (string_find(dn, "penguin.Vector") >= 0 && t.generic_args.size() >= 1) {
+        let elem = t.generic_args.at(0).some;
+        if (json_serializable_type(elem) == false) { return ""; }
+        return "let _arr = " + v + ".as_array(); let _j: mut u64 = 0; "
+            + "while (_j < _arr.size()) { " + target + ".push("
+            + json_read_expr(elem, "_arr.at(_j).some") + "); _j = _j + 1; }";
+    }
+    if (string_find(dn, "penguin.HashMap") >= 0 && t.generic_args.size() >= 2) {
+        let vv = t.generic_args.at(1).some;
+        if (json_serializable_type(vv) == false) { return ""; }
+        return "let mut _map = " + v + ".as_object(); for (let _k in _map.iter_keys()) { "
+            + target + ".put(_k, " + json_read_expr(vv, "_map.get(_k).some") + "); }";
+    }
+    if (json_serializable_type(t) == false) { return ""; }
+    return target + " = " + json_read_expr(t, v) + ";";
+}
+
+#fun impl_json_serializable() -> ast {
+    let t: emperor.BoundType = compiler().get_current_scope();
+    if (t.display_name() == "void") {
+        compiler().error("impl_json_serializable() must be called inside a class body");
+        return compiler().create_definition("fun __json_impl_error() -> i64 { return 0; }");
+    }
+    let cls: string = t.display_name();
+    let fs = t.fields();
+    let n: i64 = cast<i64>(fs.size());
+    let ser: mut string = "let mut w = new penguin.JsonWriter(); w.begin_object(); ";
+    let de: mut string = "let _v: penguin.JsonValue = penguin.parse_json(json); "
+        + "let mut _obj = new " + cls + "(); ";
+    let i: mut i64 = 0;
+    while (i < n) {
+        let f = fs.at(cast<u64>(i)).some;
+        let fname: string = f.name;
+        // Serialize: emit the field only when its type is JSON-serializable.
+        let write_snip: string = json_write_snippet(f.bound_type, "this." + fname);
+        if (string_length(write_snip) > 0) {
+            ser = ser + "w.key(\"" + fname + "\"); " + write_snip + "; ";
+        }
+        // Deserialize: skip immutable and non-serializable fields.
+        let read_snip: string = json_read_stmt(f.bound_type, "_f", "_obj." + fname);
+        if (string_length(read_snip) > 0) {
+            if (f.mutability is emperor.Mutability.Immutable) {
+                de = de + "// skip immutable field " + fname + "; ";
+            } else {
+                de = de + "if (let _f := _v.get(\"" + fname + "\").some) { " + read_snip + " } ";
+            }
+        }
+        i = i + 1;
+    }
+    ser = ser + "w.end_object(); return w.to_string();";
+    de = de + "return _obj;";
+    return compiler().create_definition(
+        "impl penguin.IJsonSerializable<" + cls + "> { "
+        + "fun json_serialize(this) -> string { " + ser + " } "
+        + "fun json_deserialize(json: string) -> mut " + cls + " { " + de + " } "
+        + "}");
+}
+
+} // namespace penguin

@@ -787,6 +787,13 @@ class MetaEngine {
     // R3b: scan AST definitions for a class/enum/interface by name → build a
     // partial BoundType (fields from AST members). Used by resolve_type_by_name
     // when the type isn't bound yet. Recurses into namespaces.
+    //
+    // Each field's bound_type is populated from its AST type_spec (via
+    // spec_to_bound_type) so reflection-based code generation at def-splice time
+    // — json.penguin's #impl_json_serializable — can dispatch on field types
+    // (display_name / generic_args) before types are bound in global_scope.
+    // mutability mirrors bind_class_def's field-mutability rules so codegen can
+    // skip !mut fields on deserialize.
     fun resolve_type_from_ast(this, defs: _utils.List<Definition>, name: string) -> Option<BoundType> {
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
@@ -801,7 +808,18 @@ class MetaEngine {
                         let m: Definition = d.class_def.members.at(cast<u64>(mi)).some;
                         if (m is Definition.class_field) {
                             let field_name: string = m.class_field.name;
-                            let bcf: BoundClassFieldDefinition = new BoundClassFieldDefinition(field_name);
+                            let bcf: mut BoundClassFieldDefinition = new BoundClassFieldDefinition(field_name);
+                            if (let ts := m.class_field.type_spec.some) {
+                                let bt2: mut BoundType = this.spec_to_bound_type(ts);
+                                bcf.bound_type = bt2;
+                                if (ts.is_not_mutable) {
+                                    bcf.mutability = new Mutability.Immutable();
+                                } else if (ts.is_mutable) {
+                                    bcf.mutability = new Mutability.Mutable();
+                                } else {
+                                    bcf.mutability = new Mutability.Auto();
+                                }
+                            }
                             bcd.fields.push(new BoundDefinition.class_field(bcf));
                         }
                         mi = mi + 1;
@@ -816,6 +834,90 @@ class MetaEngine {
             i = i + 1;
         }
         return new Option<BoundType>.none();
+    }
+
+    // Build a BoundType from an AST TypeSpecifier WITHOUT binding: primitives
+    // resolve via the host registry; user classes / generics become a ClassKind
+    // BoundType whose display_name reconstructs the source spelling (e.g.
+    // "penguin.Vector<i32>") and whose generic_args are recursively resolved.
+    // Used by resolve_type_from_ast so t.fields().at(i).some.bound_type is
+    // usable at def-splice time.
+    fun spec_to_bound_type(this, ts: TypeSpecifier) -> BoundType {
+        let base: mut string = "";
+        let qi: mut i64 = 0;
+        while (qi < cast<i64>(ts.qualified_parts.size())) {
+            if (qi > 0) { base = base + "."; }
+            base = base + ts.qualified_parts.at(cast<u64>(qi)).some;
+            qi = qi + 1;
+        }
+        if (string_length(base) > 0) { base = base + "."; }
+        base = base + ts.name;
+        let prim: Option<BoundType> = this.host_type_registry.resolve_type(base);
+        if (prim.is_some()) {
+            return prim.some;
+        }
+        let bt: mut BoundType = new BoundType();
+        bt.kind = new TypeKind.ClassKind();
+        let dummy: mut BoundClassDefinition = new BoundClassDefinition(base, base);
+        // Record which interfaces the class implements (from its AST `impl`
+        // members) so meta codegen can check e.g. IJsonSerializable at
+        // def-splice time (json.penguin skips class/enum fields that don't).
+        if (this.ast_definitions.is_some()) {
+            this.fill_class_impls(dummy, this.ast_definitions.some, this.last_name_segment(base));
+        }
+        bt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy));
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(ts.generic_args.size())) {
+            bt.generic_args.push(this.spec_to_bound_type(ts.generic_args.at(cast<u64>(ai)).some));
+            ai = ai + 1;
+        }
+        return bt;
+    }
+
+    // Last dot-separated segment of a (possibly qualified) type name.
+    fun last_name_segment(this, name: string) -> string {
+        let i: mut i64 = string_length(name) - 1;
+        while (i >= 0) {
+            if (string_char_at(name, i) == ".") {
+                return string_substring(name, i + 1, string_length(name) - i - 1);
+            }
+            i = i - 1;
+        }
+        return name;
+    }
+
+    // Fill `bcd.implemented_interfaces` with the interface names this class
+    // implements (from its AST `impl` members), scanning ast_definitions by the
+    // class's SIMPLE name. Mirrors resolve_type_from_ast's name matching.
+    fun fill_class_impls(this, bcd: mut BoundClassDefinition, defs: _utils.List<Definition>, simple_name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: Definition = defs.at(cast<u64>(i)).some;
+            if (d is Definition.class_def) {
+                if (d.class_def.name == simple_name) {
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(d.class_def.members.size())) {
+                        let m: Definition = d.class_def.members.at(cast<u64>(mi)).some;
+                        if (m is Definition.impl_def) {
+                            if (let ts := m.impl_def.type_spec.some) {
+                                bcd.implemented_interfaces.push(ts.name);
+                            }
+                        } else if (m is Definition.impl_for_def) {
+                            if (let ts := m.impl_for_def.type_spec.some) {
+                                bcd.implemented_interfaces.push(ts.name);
+                            }
+                        }
+                        mi = mi + 1;
+                    }
+                    return true;
+                }
+            } else if (d is Definition.namespace_def) {
+                let found: bool = this.fill_class_impls(bcd, d.namespace_def.children, simple_name);
+                if (found) { return true; }
+            }
+            i = i + 1;
+        }
+        return false;
     }
 
     // Phase 5c (type-return splice): resolve a type token back to its BoundType

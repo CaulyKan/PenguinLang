@@ -74,10 +74,28 @@ class BoundClassDefinition {
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_generic_template: bool = false;
+    // Interface names this class implements (from its `impl ...` members), populated
+    // by the AST-fallback reflection (MetaEngine.spec_to_bound_type) so meta codegen
+    // can check e.g. whether a field's type implements IJsonSerializable at
+    // def-splice time. Only filled on the AST-fallback dummies, not the bound defs.
+    implemented_interfaces: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
         this.full_name = full_name;
+    }
+
+    // True if this class has an `impl <iface>` / `impl <iface> for ...` member
+    // named `iface_name` (compared on the interface's simple name).
+    fun has_interface(this, iface_name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.implemented_interfaces.size())) {
+            if (this.implemented_interfaces.at(cast<u64>(i)).some == iface_name) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
     }
 
     fun get_name(this) -> string {
