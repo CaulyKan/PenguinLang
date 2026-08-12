@@ -1,6 +1,6 @@
 # MetaJsonCustomImpl
 ## Description
-Req 7 + req 3: a class `Wrapped` implements `penguin.IJsonSerializable<Wrapped>` MANUALLY (no `#impl_json_serializable`), and `Holder` (via `#impl_json_serializable`) has a `w: Wrapped` field AND a `ns: NotSerializable` field whose class does NOT implement IJsonSerializable. The auto-impl reflects over Holder's fields, checks each class field type's implemented interfaces (`compiler().get_current_scope()` -> `t.fields()` -> `f.bound_type.class_def().has_interface("IJsonSerializable")` via the AST-fallback `implemented_interfaces`), serializes `w` via its impl (`value_raw(this.w.json_serialize())`) and SKIPS `ns` entirely (both directions). Requires native Pass2/Pass3.
+Req 7 + req 3: a class `Wrapped` implements `std.IJsonSerializable<Wrapped>` MANUALLY (no `#impl_json_serializable`), and `Holder` (via `#impl_json_serializable`) has a `w: Wrapped` field AND a `ns: NotSerializable` field whose class does NOT implement IJsonSerializable. The auto-impl reflects over Holder's fields, checks each class field type's implemented interfaces (`compiler().get_current_scope()` -> `t.fields()` -> `f.bound_type.class_def().has_interface("IJsonSerializable")` via the AST-fallback `implemented_interfaces`), serializes `w` via its impl (`value_raw(this.w.json_serialize())`) and SKIPS `ns` entirely (both directions). Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -9,7 +9,7 @@ Req 7 + req 3: a class `Wrapped` implements `penguin.IJsonSerializable<Wrapped>`
 ```
 class Wrapped {
     n: i64;
-    impl penguin.IJsonSerializable<Wrapped> {
+    impl std.IJsonSerializable<Wrapped> {
         fun json_serialize(this) -> string {
             return "{\"wrapped\":" + cast<string>(this.n) + "}";
         }

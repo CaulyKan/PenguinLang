@@ -1,6 +1,6 @@
 # StdHashMapTest
 ## Description
-End-to-end test of the stdlib `penguin.HashMap<K,V>` from `EmperorPenguin/std/penguin/hashmap.penguin` (NOT auto-loaded; passed via Compile.Args). Growable open-addressing hash map with linear probing + tombstones: starts at cap 8 and doubles when the load factor would exceed 0.75. Keys are hashed via the IHash interface (`k.hash()` — primitive direct dispatch for i64/string) and compared with `==`. Putting 10 entries forces the 8→16 resize; a `HashMap<string, i64>` sub-case exercises the string IHash (FNV-1a) path. Exercises put/get/contains/remove/size, for-loop iteration via the independent `_HashMapIterator<V>`, and `dispose_mem()`. Pass3-only (meta `#fun require_ihash` compile-time key check + pointer IR intrinsics; EmperorPenguin-native).
+End-to-end test of the stdlib `std.HashMap<K,V>` from `EmperorPenguin/std/penguin/hashmap.penguin` (NOT auto-loaded; passed via Compile.Args). Growable open-addressing hash map with linear probing + tombstones: starts at cap 8 and doubles when the load factor would exceed 0.75. Keys are hashed via the IHash interface (`k.hash()` — primitive direct dispatch for i64/string) and compared with `==`. Putting 10 entries forces the 8→16 resize; a `HashMap<string, i64>` sub-case exercises the string IHash (FNV-1a) path. Exercises put/get/contains/remove/size, for-loop iteration via the independent `_HashMapIterator<V>`, and `dispose_mem()`. Pass3-only (meta `#fun require_ihash` compile-time key check + pointer IR intrinsics; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -8,7 +8,7 @@ End-to-end test of the stdlib `penguin.HashMap<K,V>` from `EmperorPenguin/std/pe
 ## Test Code
 ```
 initial {
-    let m = new penguin.HashMap<i64, i64>();
+    let m = new std.HashMap<i64, i64>();
     let i: mut i64 = 0;
     while (i < 10) {
         m.put(i, i * 100);
@@ -36,7 +36,7 @@ initial {
     println("kcount=" + cast<string>(kcount));
     m.dispose_mem();
 
-    let ms = new penguin.HashMap<string, i64>();
+    let ms = new std.HashMap<string, i64>();
     ms.put("apple", 1);
     ms.put("banana", 2);
     ms.put("cherry", 3);

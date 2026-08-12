@@ -1,6 +1,6 @@
 # StdVectorTest
 ## Description
-End-to-end test of the stdlib `penguin.Vector<T>` from `EmperorPenguin/std/penguin/vector.penguin` (NOT auto-loaded; passed via Compile.Args). Growable contiguous buffer: starts empty, first `push` allocates cap 8, then doubles (8→16→32). Pushing 17 elements forces both resize steps. Exercises push/at (bounds-checked, out-of-range → Option.none)/set/size/capacity, for-loop iteration via the independent `_VectorIterator<T>` (sum), and `dispose_mem()`. Pass3-only (pointer IR intrinsics; EmperorPenguin-native).
+End-to-end test of the stdlib `std.Vector<T>` from `EmperorPenguin/std/penguin/vector.penguin` (NOT auto-loaded; passed via Compile.Args). Growable contiguous buffer: starts empty, first `push` allocates cap 8, then doubles (8→16→32). Pushing 17 elements forces both resize steps. Exercises push/at (bounds-checked, out-of-range → Option.none)/set/size/capacity, for-loop iteration via the independent `_VectorIterator<T>` (sum), and `dispose_mem()`. Pass3-only (pointer IR intrinsics; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -8,7 +8,7 @@ End-to-end test of the stdlib `penguin.Vector<T>` from `EmperorPenguin/std/pengu
 ## Test Code
 ```
 initial {
-    let v = new penguin.Vector<i64>();
+    let v = new std.Vector<i64>();
     let i: mut u64 = 0;
     while (i < 17) { v.push(cast<i64>(i) * 10); i = i + 1; }
     println("size=" + cast<string>(v.size()));

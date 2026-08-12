@@ -349,6 +349,49 @@ namespace BabyPenguin.VirtualMachine
                 System.IO.File.WriteAllText(path, content);
             });
 
+            // Binary-mode file I/O for .penguin-lib metadata (read paths MUST be
+            // binary so a .so/.dll tail + appended JSON survive; metadata is ASCII).
+            vm.Global.RegisterExternFunction("_utils.file_size", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                long size = -1;
+                try { size = new System.IO.FileInfo(path).Length; } catch { }
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = size;
+            });
+
+            vm.Global.RegisterExternFunction("_utils.file_read_range", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                var offset = args[1].As<BasicRuntimeValue>().I64Value;
+                var size = args[2].As<BasicRuntimeValue>().I64Value;
+                var text = "";
+                if (offset >= 0 && size >= 0)
+                {
+                    try
+                    {
+                        using var fs = System.IO.File.OpenRead(path);
+                        fs.Seek(offset, System.IO.SeekOrigin.Begin);
+                        var buf = new byte[size];
+                        int n = fs.Read(buf, 0, (int)size);
+                        text = System.Text.Encoding.UTF8.GetString(buf, 0, n);
+                    }
+                    catch { }
+                }
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = text;
+            });
+
+            vm.Global.RegisterExternFunction("_utils.file_append", (result, args) =>
+            {
+                var path = args[0].As<BasicRuntimeValue>().StringValue;
+                var text = args[1].As<BasicRuntimeValue>().StringValue;
+                try { System.IO.File.AppendAllText(path, text); } catch { }
+            });
+
+            vm.Global.RegisterExternFunction("_utils.exe_path", (result, args) =>
+            {
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = System.Environment.ProcessPath ?? "";
+            });
+
             vm.Global.RegisterExternFunction("_utils.mkdir", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;

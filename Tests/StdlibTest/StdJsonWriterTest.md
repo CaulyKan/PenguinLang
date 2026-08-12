@@ -1,6 +1,6 @@
 # StdJsonWriterTest
 ## Description
-End-to-end test of the stdlib `penguin.JsonWriter` from `EmperorPenguin/std/penguin/json.penguin` (NOT auto-loaded; passed via Compile.Args). Streaming builder: an object with an escaped string (`"`/`\`/`\n`/`\t`), an i64, a double, a bool, an array, and a null — asserted byte-exact. Also a nested array-of-object. The writer emits no whitespace and preserves insertion order (unlike HashMap-backed object serialization). Pass3-only (pointer-IR deps Vector/HashMap; EmperorPenguin-native).
+End-to-end test of the stdlib `std.JsonWriter` from `EmperorPenguin/std/penguin/json.penguin` (NOT auto-loaded; passed via Compile.Args). Streaming builder: an object with an escaped string (`"`/`\`/`\n`/`\t`), an i64, a double, a bool, an array, and a null — asserted byte-exact. Also a nested array-of-object. The writer emits no whitespace and preserves insertion order (unlike HashMap-backed object serialization). Pass3-only (pointer-IR deps Vector/HashMap; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -8,7 +8,7 @@ End-to-end test of the stdlib `penguin.JsonWriter` from `EmperorPenguin/std/peng
 ## Test Code
 ```
 initial {
-    let mut w = new penguin.JsonWriter();
+    let mut w = new std.JsonWriter();
     w.begin_object();
     w.key("name"); w.value_string("a\"b\\c\nd\te");
     w.key("n"); w.value_i64(42);
@@ -23,7 +23,7 @@ initial {
     w.end_object();
     println("out=" + w.to_string());
 
-    let mut a = new penguin.JsonWriter();
+    let mut a = new std.JsonWriter();
     a.begin_array();
     a.begin_object();
     a.key("z"); a.value_string("x");

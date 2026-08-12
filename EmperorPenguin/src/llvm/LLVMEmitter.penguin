@@ -480,7 +480,11 @@ class LLVMEmitter {
         let ei: mut i64 = 0;
         while (ei < cast<i64>(module.functions.size())) {
             let ef: IRFunction = module.functions.at(cast<u64>(ei)).some;
-            if (ef.is_extern) {
+            // Dyn-lib lib-export declares are penguin functions (bodies in a
+            // .penguin-lib), NOT C-runtime externs: skip them here so their symbol
+            // stays the plain mangled name (matching the lib's definition) instead
+            // of the _emperor_<tail> runtime name.
+            if (ef.is_extern && !ef.is_lib_export_decl) {
                 let ekey: string = this.strip_global_prefix(ef.name);
                 if (this.string_starts_with(ekey, "__builtin.") || this.string_starts_with(ekey, "_utils.")) {
                     // Key by the normalized tail so that ANY call-site form
@@ -653,12 +657,35 @@ class LLVMEmitter {
                 }
                 if (!already) {
                     emitted.push(llvm_name);
-                    target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + llvm_name + "(");
+                    // Dyn-lib declare ABI: a lib-export extern must match the
+                    // callee's real signature as emit_function defines it.
+                    // Aggregate returns are passed via sret (void + hidden ptr
+                    // first arg) — ONLY when needs_sret (value-type classes /
+                    // enums), matching emit_function and the call site; reference
+                    // types map to ptr and must stay `declare ptr` (get_sret_
+                    // llvm_type alone would wrongly sret an IRef class whose
+                    // struct type is never emitted). >16-byte aggregate params
+                    // use byval. Existing C-runtime externs never return/accept
+                    // aggregates, so this only changes lib-export declarations.
+                    let decl_sret_type: mut string = "";
+                    if (this.needs_sret(func.return_type)) {
+                        decl_sret_type = this.get_sret_llvm_type(func.return_type);
+                    }
+                    if (string_length(decl_sret_type) > 0) {
+                        target.append("declare void " + llvm_name + "(ptr sret(" + decl_sret_type + ")");
+                    } else {
+                        target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + llvm_name + "(");
+                    }
                     let pi: mut i64 = 0;
                     while (pi < cast<i64>(func.parameters.size())) {
-                        if (pi > 0) { target.append(", "); }
+                        if (pi > 0 || string_length(decl_sret_type) > 0) { target.append(", "); }
                         let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
-                        target.append(this.ir_type_to_llvm(p.ir_type));
+                        let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+                        if (this.llvm_type_size(p_llvm_type) > 16) {
+                            target.append("ptr byval(" + p_llvm_type + ")");
+                        } else {
+                            target.append(p_llvm_type);
+                        }
                         pi = pi + 1;
                     }
                     target.append(")\n");

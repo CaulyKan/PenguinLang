@@ -1,6 +1,6 @@
 # MetaJsonDeserialize
 ## Description
-Auto-impl deserialize path: `#impl_json_serializable();` inside `class Point` generates `json_deserialize(json) -> mut Point` — parses via `penguin.parse_json`, then assigns each field from `_v.get("<name>").some` (try-bind `:=`), with `cast` for narrow integers. The static `Point.json_deserialize(...)` call (interface-impl method with no `this`) works like `Foo.foo()` in InterfaceStaticFunctionTest. Round-trip: serialize -> deserialize -> reserialize is byte-identical. Requires native Pass2/Pass3.
+Auto-impl deserialize path: `#impl_json_serializable();` inside `class Point` generates `json_deserialize(json) -> mut Point` — parses via `std.parse_json`, then assigns each field from `_v.get("<name>").some` (try-bind `:=`), with `cast` for narrow integers. The static `Point.json_deserialize(...)` call (interface-impl method with no `this`) works like `Foo.foo()` in InterfaceStaticFunctionTest. Round-trip: serialize -> deserialize -> reserialize is byte-identical. Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass3

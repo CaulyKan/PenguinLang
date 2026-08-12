@@ -2,13 +2,13 @@
 // pointer IR + #sizeof intrinsics). NOT auto-loaded by the compiler — compile it
 // explicitly (e.g. via a markdown test's Compile.Args). Manual memory management
 // via _malloc/_mfree; release with dispose_mem() (auto-finalize is future work).
-namespace penguin {
+namespace std {
 
 // Value-typed wrapper around a raw u64 address, for direct pointer access with a
 // CONCRETE element type (e.g. new _ptr<i32>(addr)). It is a value type (only a
 // u64 field) so construction is stack-cheap.
 #template(T: type)
-class _ptr {
+export class _ptr {
     addr: mut u64;
 
     fun new(mut this, a: u64) {
@@ -45,7 +45,7 @@ class _ptr {
 // The for-loop desugaring binds the iterator mutably, so next(mut this) is
 // callable on the returned iterator.
 #template(T: type, N: u64)
-class Array {
+export class Array {
     impl __builtin.IReferenceType;
     buf: mut u64;
     // N (value param) is usable in field initializers only; stash it here.
@@ -93,7 +93,7 @@ class Array {
 
 // Independent iterator for Array<T>.
 #template(T: type)
-class _ArrayIterator {
+export class _ArrayIterator {
     impl __builtin.IReferenceType;
     base: u64;
     cursor: mut u64 = 0;
@@ -119,4 +119,4 @@ class _ArrayIterator {
     }
 }
 
-} // namespace penguin
+} // namespace std

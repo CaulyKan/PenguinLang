@@ -1,0 +1,190 @@
+namespace emperor {
+
+// The output pipeline: IR generation + LLVM lowering + C-runtime build + clang
+// link, plus the dyn-lib link modes. Formerly inlined in main.penguin; extracted
+// so the driver stays thin and the lib-build (link_lib) and consumer
+// (link_exe) paths share the IR/lowering half.
+class LLVMCompiler {
+    verbose: mut i64 = 0;
+
+    fun new(mut this) {}
+
+    // IR-generate + LLVM-lower + write combined.ll. Shared by link_exe/link_lib.
+    fun build_ll(mut this, result: BoundCompilationUnit, tmp_dir: string) -> bool {
+        let generator = new IRGenerator();
+        generator.verbose = this.verbose;
+        let module = generator.generate(result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] IR generation done"); }
+
+        let emitter = new LLVMEmitter();
+        emitter.verbose = this.verbose;
+        let llvm_ir: string = emitter.lower(module, result);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
+
+        let ll_path: string = tmp_dir + "/combined.ll";
+        _utils.file_write_text(ll_path, llvm_ir);
+        return true;
+    }
+
+    // Append the C runtime to the link. Shared by both modes (libs skip this:
+    // their _emperor_*/__builtin.* refs stay undefined and bind at runtime from
+    // the consumer exe).
+    fun build_runtime(mut this, tmp_dir: string) -> bool {
+        let make_args: mut _utils.List<string> = new _utils.List<string>();
+        make_args.push("--silent");
+        make_args.push("-C");
+        make_args.push("EmperorPenguin/std/c");
+        make_args.push("OUTPUT_DIR=" + tmp_dir);
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make --silent -C EmperorPenguin/std/c OUTPUT_DIR=" + tmp_dir); }
+        let make_exit: i64 = _utils.exec("make", make_args);
+        if (make_exit != 0) {
+            __builtin.eprintln("[EmperorPenguin Link] make failed with exit code " + cast<string>(make_exit));
+            return false;
+        }
+        return true;
+    }
+
+    // Link a native executable, optionally against loaded .penguin-lib shared
+    // objects (clang_libs). When any lib is linked, the exe exports its own
+    // runtime symbols so the lib's undefined _emperor_*/__builtin.* refs resolve.
+    fun link_exe(mut this, result: BoundCompilationUnit, config: mut CompilerConfig, tmp_dir: string, exe_path: string, clang_libs: _utils.List<string>) -> bool {
+        if (!this.build_ll(result, tmp_dir)) { return false; }
+        if (!this.build_runtime(tmp_dir)) { return false; }
+        let is_windows: bool = config.is_windows_target();
+        let ll_path: string = tmp_dir + "/combined.ll";
+        let lib_path: string = tmp_dir + "/libcore_builtin.a";
+
+        let clang_args: mut _utils.List<string> = new _utils.List<string>();
+        clang_args.push(ll_path);
+        clang_args.push(lib_path);
+
+        // When --enable-meta is active, link libpenguin_jit.a and LLVM so the
+        // produced binary can JIT-compile #fun meta functions at runtime.
+        if (config.enable_meta && !is_windows) {
+            let ldflags_file: string = tmp_dir + "/llvm_ldflags.txt";
+            let cfg_exit: i64 = __builtin._exec_cmd(
+                "llvm-config --ldflags --libs core orcjit native > "
+                + ldflags_file + " 2>/dev/null");
+            if (cfg_exit == 0) {
+                let ldflags: string = _utils.file_read_text(ldflags_file);
+                let pos: mut i64 = 0;
+                let len: i64 = string_length(ldflags);
+                while (pos < len) {
+                    while (pos < len && (string_char_at(ldflags, pos) == " " || string_char_at(ldflags, pos) == "\n")) {
+                        pos = pos + 1;
+                    }
+                    if (pos >= len) { break; }
+                    let next_space: i64 = string_find_from(ldflags, " ", pos);
+                    let next_nl: i64 = string_find_from(ldflags, "\n", pos);
+                    let end_pos: mut i64 = next_space;
+                    if (next_nl >= 0 && (end_pos < 0 || next_nl < end_pos)) { end_pos = next_nl; }
+                    if (end_pos < 0) { end_pos = len; }
+                    if (end_pos > pos) {
+                        clang_args.push(string_substring(ldflags, pos, end_pos - pos));
+                    }
+                    pos = end_pos + 1;
+                }
+            }
+            clang_args.push(tmp_dir + "/libpenguin_jit.a");
+            clang_args.push("-rdynamic");
+            clang_args.push("-Wl,--export-dynamic");
+            clang_args.push("-lstdc++");
+        } else if (config.enable_meta && is_windows && string_length(config.llvm_win) > 0) {
+            clang_args.push(tmp_dir + "/libpenguin_jit.a");
+            clang_args.push(config.llvm_win + "/lib/libLLVM-22.dll.a");
+            clang_args.push("-Wl,--export-all-symbols");
+            clang_args.push("-lc++");
+            clang_args.push("-lwinpthread");
+        } else {
+            if (config.enable_meta) {
+                __builtin.eprintln("[EmperorPenguin Link] warning: --enable-meta requested but no Windows LLVM (-llvm-win) is available; linking no-op JIT stubs");
+            }
+            clang_args.push(tmp_dir + "/meta_stubs.o");
+        }
+
+        // Dyn-lib consumer: link the loaded .penguin-lib shared objects and
+        // export this exe's runtime symbols so the lib's undefined refs bind.
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(clang_libs.size())) {
+            clang_args.push(clang_libs.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+        if (cast<i64>(clang_libs.size()) > 0) {
+            if (is_windows) {
+                clang_args.push("-Wl,--export-all-symbols");
+            } else {
+                clang_args.push("-rdynamic");
+                clang_args.push("-Wl,--export-dynamic");
+            }
+        }
+
+        if (is_windows) {
+            clang_args.push("-Wl,--stack,33554432");
+        } else {
+            clang_args.push("-Wl,-z,stack-size=33554432");
+        }
+        clang_args.push("-o");
+        clang_args.push(exe_path);
+
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -> " + exe_path); }
+        let exit_code: i64 = _utils.exec("${CLANG:-clang}", clang_args);
+        if (exit_code == 0) {
+            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Output: " + exe_path); }
+            return true;
+        }
+        __builtin.eprintln("[EmperorPenguin Link] clang failed with exit code " + cast<string>(exit_code));
+        return false;
+    }
+
+    // Link a shared-object .penguin-lib from the compiled result and append the
+    // JSON metadata blob + PENGUINLIB footer. No C runtime / JIT / stack flags:
+    // the lib's _emperor_*/__builtin.* refs stay undefined and bind at runtime
+    // from a consumer exe that exports them.
+    fun link_lib(mut this, result: BoundCompilationUnit, config: mut CompilerConfig, tmp_dir: string, lib_path: string, lib_meta: string) -> bool {
+        // The metadata blob must be a real JSON document (never empty): a stub
+        // build's build_metadata returns "" and must not produce a corrupt lib.
+        if (string_length(lib_meta) == 0) {
+            __builtin.eprintln("[EmperorPenguin Link] Error: no metadata produced (dynamic linking unavailable in this compiler build)");
+            return false;
+        }
+        if (!this.build_ll(result, tmp_dir)) { return false; }
+        let is_windows: bool = config.is_windows_target();
+        let ll_path: string = tmp_dir + "/combined.ll";
+
+        let clang_args: mut _utils.List<string> = new _utils.List<string>();
+        clang_args.push(ll_path);
+        if (is_windows) {
+            // PE DLL with exported penguin symbols; skip the exe-only --stack flag.
+            clang_args.push("-shared");
+            clang_args.push("-Wl,--export-all-symbols");
+        } else {
+            clang_args.push("-shared");
+            clang_args.push("-fPIC");
+        }
+        clang_args.push("-o");
+        clang_args.push(lib_path);
+
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -shared -> " + lib_path); }
+        let exit_code: i64 = _utils.exec("${CLANG:-clang}", clang_args);
+        if (exit_code != 0) {
+            __builtin.eprintln("[EmperorPenguin Link] clang -shared failed with exit code " + cast<string>(exit_code));
+            return false;
+        }
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Output: " + lib_path); }
+
+        // Append the JSON metadata + ASCII footer. The footer offset is the .so
+        // length measured BEFORE appending; both appends are binary-mode.
+        let lib_size: i64 = _utils.file_size(lib_path);
+        if (lib_size < 0) {
+            __builtin.eprintln("[EmperorPenguin Link] Failed to measure " + lib_path);
+            return false;
+        }
+        _utils.file_append(lib_path, lib_meta);
+        let meta_size: i64 = string_length(lib_meta);
+        _utils.file_append(lib_path, "PENGUINLIB:" + cast<string>(lib_size) + ":" + cast<string>(meta_size) + "\n");
+        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Appended metadata (" + cast<string>(meta_size) + " bytes) to " + lib_path); }
+        return true;
+    }
+}
+
+} // namespace emperor

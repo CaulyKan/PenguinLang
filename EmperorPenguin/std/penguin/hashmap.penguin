@@ -10,7 +10,7 @@
 // keys/values only happen when occ == 1. Vector is an IReferenceType, so field
 // assignment is reference semantics; dispose_mem() releases the buffers. No
 // raw _malloc/_mfree/#__load/#__store/#__address_of here.
-namespace penguin {
+namespace std {
 
 // Compile-time check (Phase 6 meta): the HashMap key type must implement IHash.
 // Primitives (which all have `impl IHash` in core_builtin.penguin) report no
@@ -32,7 +32,7 @@ namespace penguin {
 }
 
 #template(K: type, V: type)
-class HashMap {
+export class HashMap {
     impl __builtin.IReferenceType;
     impl __builtin.IMemoryDispose;
     occupied: mut Vector<u8>;   // 0 empty, 1 used, 2 tombstone
@@ -239,7 +239,7 @@ class HashMap {
 // map's occupied/values Vectors; do not mutate/resize/dispose the map while
 // iterating (the Vector references would point at freed buffers).
 #template(V: type)
-class _HashMapIterator {
+export class _HashMapIterator {
     impl __builtin.IReferenceType;
     occupied: mut Vector<u8>;
     values: mut Vector<V>;
@@ -359,4 +359,4 @@ class KeyValuePairIterator {
     }
 }
 
-} // namespace penguin
+} // namespace std

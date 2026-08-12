@@ -140,6 +140,13 @@ class IRGenerator {
     fun lower_function_def(mut this, def: BoundFunctionDefinition, module: mut IRModule) {
         _utils.trace_enter("Enter lower_function_def");
         if (def.is_generic_template) { return; }
+        // Dyn-lib: the compiled symbol lives in a loaded .penguin-lib — emit a
+        // declaration (with the def's real signature) so callers agree on the ABI
+        // and link against the lib symbol instead of a local body.
+        if (def.is_lib_export) {
+            this.ensure_extern_decl_from_def(def, module);
+            return;
+        }
         if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin IR]   Lowering function " + def.full_name); }
         let ret_type: string = this.bound_type_to_ir_type(def.return_type);
         let func_loc: SourceLocation = this.sym_loc_func(def.symbol);
@@ -914,6 +921,33 @@ class IRGenerator {
             pi = pi + 1;
         }
         this.current_module.add_function(ext_func);
+    }
+
+    // Build an extern (declaration) for a lib-export function def, so callers
+    // see its real signature (param/return IR types) and precompute_function
+    // _signatures / emit_args_coerced agree with the .penguin-lib's compiled
+    // symbol. Mirrors ensure_extern_decl but takes the bound def directly.
+    fun ensure_extern_decl_from_def(mut this, def: BoundFunctionDefinition, module: mut IRModule) {
+        _utils.trace_enter("Enter ensure_extern_decl_from_def");
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let existing: IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (existing.name == def.full_name) {
+                return;
+            }
+            fi = fi + 1;
+        }
+        let ext_func: mut IRFunction = new IRFunction(def.full_name, this.bound_type_to_ir_type(def.return_type), new SourceLocation("", 0, 0));
+        ext_func.is_extern = true;
+        ext_func.is_lib_export_decl = true;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(def.parameters.size())) {
+            let p: BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
+            let ir_param: mut IRParameter = new IRParameter(p.name, this.bound_type_to_ir_type(p.bound_type), pi, new SourceLocation("", 0, 0));
+            ext_func.parameters.push(ir_param);
+            pi = pi + 1;
+        }
+        module.add_function(ext_func);
     }
 
     // For an interface-method call `recv.m(...)` where recv has an interface

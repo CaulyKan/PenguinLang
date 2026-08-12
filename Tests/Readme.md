@@ -67,6 +67,13 @@ Recognized names (matched case-insensitively, by substring):
 | `EmperorPenguin Pass1` | EmperorPenguin compiler source run on the BabyPenguin VM (slow) |
 | `EmperorPenguin Pass2` | Native `tmp/pass2` (built by `./penguin -b`) |
 | `EmperorPenguin Pass3` | Native `tmp/pass3` (built by `./penguin -b`) |
+| `EmperorPenguin Pass4` | Native `tmp/pass4` (built by `./penguin -b`) |
+
+> Pass2/Pass3/Pass4 require bootstrapped native binaries (built by `./penguin -b`).
+> Pass3 and pass4 are the first dyn-lib-capable compilers (built from
+> `EmperorPenguinFull.penguins`, which compiles the json-backed Dynlib module +
+> json/vector/hashmap into the compiler). Dynamic-linking tests
+> (`Tests/DynamicLinkTest/*.md`) run against Pass4.
 
 Set **Apply To** to only the compilers a test is verified on. Expand it later
 once more compilers agree (use `--probe` to discover agreement; see *Running*).
@@ -118,6 +125,63 @@ Each stage is a list of `Key: value` lines. Values may be wrapped in backticks
 | `ExpectedExitCode` | both | `0`, any integer, `NONZERO` (any non-zero), or `ANY`. Default `0`. |
 | `ExpectedStdout` | both | `DISCARD`, or `EQUALS \`literal\``. |
 | `ExpectedStderr` | both | Same as `ExpectedStdout`. |
+| `Kind` | Build only | `exe` (default) or `lib` (→ `*.penguin-lib`). |
+| `Name` | Build only | Output artifact filename (default `out.exe`; `lib` builds must set it). |
+
+### Multi-stage builds (`## Build N`)
+
+A test may run **several compilations** before the run stage — e.g. build a
+`.penguin-lib` first, then an executable against it. **Each `## Build N` has its
+OWN `## Test Code` block** immediately before it (the code block compiles for
+that build only; there are no helper files outside the md):
+
+```
+## Test Code
+```
+fun __force_std_exports() {
+    let _v = new std.Vector<i64>();   // seed: forces the shipped instance
+}
+```
+## Build 1
+Kind: lib
+Name: std.penguin-lib
+Args: `EmperorPenguin/std/penguin/vector.penguin`
+ExpectedExitCode: 0
+ExpectedStdout: DISCARD
+ExpectedStderr: DISCARD
+
+## Test Code
+```
+initial {
+    let v = new std.Vector<i64>();
+    v.push(10);
+    println(cast<string>(v.at(0).some));
+}
+```
+## Build 2
+Args: `--lib ${WORKDIR}/std.penguin-lib`
+ExpectedExitCode: 0
+ExpectedStdout: DISCARD
+ExpectedStderr: DISCARD
+
+## Run
+Args: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `...`
+ExpectedStderr: DISCARD
+```
+
+- Each `## Build N` is a `StageSpec` like `## Compile` (same keys) plus `Kind`/`Name`.
+- The `## Test Code` block that precedes `## Build N` is that build's source. A
+  `Kind: lib` build's Test Code is the lib source (no `initial{}`).
+- Libs SHIP generic instances via a **seed** in the lib's Test Code (a function
+  that instantiates the instance, e.g. `let _v = new std.Vector<i64>();`).
+- `${WORKDIR}` in any stage's `Args`/`Env` expands to the per-combo work directory
+  (also the per-combo `TMPDIR`), so later stages reference earlier artifacts
+  (`--lib ${WORKDIR}/std.penguin-lib`).
+- The `## Run` stage runs the **last** build's artifact.
+- Multi-stage tests may **only** Apply To `EmperorPenguin Pass2/Pass3/Pass4`
+  (BabyPenguin is single-process; Pass1 is VM/cs-driven and cannot dyn-link).
 
 #### Match modes
 

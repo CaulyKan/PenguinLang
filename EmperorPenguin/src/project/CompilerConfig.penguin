@@ -1,0 +1,135 @@
+namespace emperor {
+
+fun _get_base_name(path: string) -> string {
+    let pos: mut i64 = string_find(path, "/");
+    while (pos >= 0) {
+        let next: i64 = string_find_from(path, "/", pos + 1);
+        if (next < 0) {
+            return string_substring(path, pos + 1, string_length(path) - pos - 1);
+        }
+        pos = next;
+    }
+    return path;
+}
+
+fun _get_stem(path: string) -> string {
+    let base: string = _get_base_name(path);
+    let dot: i64 = string_find(base, ".");
+    if (dot < 0) { return base; }
+    return string_substring(base, 0, dot);
+}
+
+// Parsed CLI state for a compiler invocation. Owns the argument loop (formerly
+// in main.penguin) plus the dyn-lib flags --enable-dl/--disable-dl, --lib, and
+// --lib-export. dl_enabled is a plain bool (default on) checked with ordinary
+// `if` in the driver — no meta/#option anywhere in the compiler's own code.
+// Whether the compiler BINARY actually has the json-backed Dynlib code is a
+// build-time property (DynlibStub in the default project vs the json-backed
+// Dynlib in EmperorPenguinFull.penguins, see ./penguin -b).
+class CompilerConfig {
+    output_name: mut string = "";
+    verbose: mut i64 = 0;
+    enable_meta: bool = false;
+    // Cross-compile target. "" = native host; "win64"/"windows" = PE/COFF via
+    // llvm-mingw (`./penguin -p` sets -target=win64). The linker flags and
+    // clang selection differ per target; this is the only reliable signal (the
+    // default output path is always "<tmp>/out.exe", so the .exe suffix alone
+    // cannot be used to detect Windows).
+    target: mut string = "";
+    // For a Windows target WITH -enable-meta: dir containing a Windows LLVM
+    // (include/ + lib/libLLVM-22.dll.a) so the ORC JIT can be linked against
+    // the DLL. Empty = no Windows LLVM available -> meta silently unavailable
+    // in the produced binary.
+    llvm_win: mut string = "";
+    source_files: mut _utils.List<string> = new _utils.List<string>();
+    // Command-line --define A=B / --define A seeds the compile-time option store
+    // (equivalent to a top-level #define("A","B"); code-level #define wins).
+    cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
+    cli_define_values: mut _utils.List<string> = new _utils.List<string>();
+    // Dyn-lib: --lib <file.penguin-lib> (repeatable) are dependency libs whose
+    // embedded sources are merged + whose .so files are linked. What a lib SHIPS
+    // is marked by the `export` keyword in its source (instances the lib's own
+    // code instantiates are shipped); no --lib-export CLI flag.
+    lib_paths: mut _utils.List<string> = new _utils.List<string>();
+    // --enable-dl (default on) / --disable-dl: only a compiler built WITH
+    // json/vector/hashmap loaded (pass3+) can build/consume .penguin-lib files.
+    // Bootstrap pass1/pass2 build with --disable-dl.
+    dl_enabled: bool = true;
+
+    fun new(mut this) {}
+
+    // True when the output is a .penguin-lib (shared-object dyn-lib) build.
+    fun is_lib_mode(this) -> bool {
+        return string_ends_with(this.output_name, ".penguin-lib");
+    }
+
+    fun is_windows_target(this) -> bool {
+        return this.target == "win64" || this.target == "windows" || this.target == "windows-gnu" || this.target == "mingw";
+    }
+
+    fun parse(mut this, args: _utils.List<string>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: string = args.at(cast<u64>(i)).some;
+            if (arg == "-vvv") {
+                this.verbose = 3;
+            } else if (arg == "-vv") {
+                this.verbose = 2;
+            } else if (arg == "-v") {
+                this.verbose = 1;
+            } else if (arg == "-o") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    this.output_name = args.at(cast<u64>(i)).some;
+                }
+            } else if (arg == "-enable-meta" || arg == "--enable-meta") {
+                this.enable_meta = true;
+            } else if (arg == "-target" || arg == "--target") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    this.target = args.at(cast<u64>(i)).some;
+                }
+            } else if (string_length(arg) >= 8 && string_substring(arg, 0, 8) == "-target=") {
+                this.target = string_substring(arg, 8, string_length(arg) - 8);
+            } else if (string_length(arg) >= 9 && string_substring(arg, 0, 9) == "--target=") {
+                this.target = string_substring(arg, 9, string_length(arg) - 9);
+            } else if (arg == "-llvm-win" || arg == "--llvm-win") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    this.llvm_win = args.at(cast<u64>(i)).some;
+                }
+            } else if (string_length(arg) >= 10 && string_substring(arg, 0, 10) == "-llvm-win=") {
+                this.llvm_win = string_substring(arg, 10, string_length(arg) - 10);
+            } else if (string_length(arg) >= 11 && string_substring(arg, 0, 11) == "--llvm-win=") {
+                this.llvm_win = string_substring(arg, 11, string_length(arg) - 11);
+            } else if (arg == "-define" || arg == "--define") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    let spec: string = args.at(cast<u64>(i)).some;
+                    let eq: i64 = string_find(spec, "=");
+                    if (eq >= 0) {
+                        this.cli_define_keys.push(string_substring(spec, 0, eq));
+                        this.cli_define_values.push(string_substring(spec, eq + 1, string_length(spec) - eq - 1));
+                    } else {
+                        this.cli_define_keys.push(spec);
+                        this.cli_define_values.push("1");
+                    }
+                }
+            } else if (arg == "--enable-dl" || arg == "-enable-dl") {
+                this.dl_enabled = true;
+            } else if (arg == "--disable-dl" || arg == "-disable-dl") {
+                this.dl_enabled = false;
+            } else if (arg == "--lib" || arg == "-lib") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    this.lib_paths.push(args.at(cast<u64>(i)).some);
+                }
+            } else {
+                this.source_files.push(args.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+    }
+}
+
+} // namespace emperor

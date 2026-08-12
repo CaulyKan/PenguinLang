@@ -4,10 +4,10 @@
 // is one contiguous _malloc'd buffer. Manual memory management via
 // _malloc/_mfree; release with dispose_mem(). Iteration goes through the
 // independent _VectorIterator<T> (not Self).
-namespace penguin {
+namespace std {
 
 #template(T: type)
-class Vector {
+export class Vector {
     impl __builtin.IReferenceType;
     impl __builtin.IMemoryDispose;
     buf: mut u64;
@@ -94,7 +94,7 @@ class Vector {
 
 // Independent iterator for Vector<T>.
 #template(T: type)
-class _VectorIterator {
+export class _VectorIterator {
     impl __builtin.IReferenceType;
     base: u64;
     cursor: mut u64 = 0;
@@ -120,4 +120,4 @@ class _VectorIterator {
     }
 }
 
-} // namespace penguin
+} // namespace std

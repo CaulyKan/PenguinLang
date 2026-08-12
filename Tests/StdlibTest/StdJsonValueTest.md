@@ -1,6 +1,6 @@
 # StdJsonValueTest
 ## Description
-End-to-end test of the stdlib JSON DOM from `EmperorPenguin/std/penguin/json.penguin` (NOT auto-loaded; passed via Compile.Args): `penguin.parse_json` builds a `JsonValue` tree; `get()/as_*()` read primitives, arrays, and nested objects; kind predicates (`is_int`/`is_null`/`is_object`); ordered `to_json` on arrays. Exercises the recursive-descent `JsonReader` (numbers, strings, booleans, null, nesting). Pass3-only (pointer-IR deps Vector/HashMap; EmperorPenguin-native).
+End-to-end test of the stdlib JSON DOM from `EmperorPenguin/std/penguin/json.penguin` (NOT auto-loaded; passed via Compile.Args): `std.parse_json` builds a `JsonValue` tree; `get()/as_*()` read primitives, arrays, and nested objects; kind predicates (`is_int`/`is_null`/`is_object`); ordered `to_json` on arrays. Exercises the recursive-descent `JsonReader` (numbers, strings, booleans, null, nesting). Pass3-only (pointer-IR deps Vector/HashMap; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -8,7 +8,7 @@ End-to-end test of the stdlib JSON DOM from `EmperorPenguin/std/penguin/json.pen
 ## Test Code
 ```
 initial {
-    let v = penguin.parse_json("{\"a\":1,\"b\":[true,\"x\"],\"c\":{\"d\":2.5},\"s\":\"hi\",\"n\":null}");
+    let v = std.parse_json("{\"a\":1,\"b\":[true,\"x\"],\"c\":{\"d\":2.5},\"s\":\"hi\",\"n\":null}");
     println("a=" + cast<string>(v.get("a").some.as_i64()));
     println("s=" + v.get("s").some.as_string());
     let b = v.get("b").some.as_array();
@@ -18,14 +18,14 @@ initial {
     println("is_obj=" + cast<string>(v.is_object()));
     println("arr=" + v.get("b").some.to_json());
 
-    let num = penguin.parse_json("42");
+    let num = std.parse_json("42");
     println("num_is_int=" + cast<string>(num.is_int()));
     println("num=" + cast<string>(num.as_i64()));
-    let fl = penguin.parse_json("3.25");
+    let fl = std.parse_json("3.25");
     println("fl=" + cast<string>(fl.as_f64()));
-    let tr = penguin.parse_json("true");
+    let tr = std.parse_json("true");
     println("tr=" + cast<string>(tr.as_bool()));
-    let nl = penguin.parse_json("null");
+    let nl = std.parse_json("null");
     println("nl_is_null=" + cast<string>(nl.is_null()));
 }
 ```

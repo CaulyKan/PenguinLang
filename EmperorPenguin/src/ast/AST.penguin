@@ -1108,6 +1108,7 @@ class FunctionDefinition {
     is_new: mut bool = false;
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1149,6 +1150,7 @@ class ClassDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1182,6 +1184,7 @@ class EnumDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1215,6 +1218,7 @@ class InterfaceDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1347,6 +1351,7 @@ class NamespaceDefinition {
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1399,6 +1404,7 @@ class OnRoutineDefinition {
 class TypeReferenceDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    is_exported: bool = false;
 
     fun new(mut this, name: string) {
 

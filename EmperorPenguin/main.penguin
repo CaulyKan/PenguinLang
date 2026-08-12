@@ -1,86 +1,9 @@
 namespace emperor {
 
-fun get_base_name(path: string) -> string {
-    let pos: mut i64 = string_find(path, "/");
-    while (pos >= 0) {
-        let next: i64 = string_find_from(path, "/", pos + 1);
-        if (next < 0) {
-            return string_substring(path, pos + 1, string_length(path) - pos - 1);
-        }
-        pos = next;
-    }
-    return path;
-}
-
-fun get_stem(path: string) -> string {
-    let base: string = get_base_name(path);
-    let dot: i64 = string_find(base, ".");
-    if (dot < 0) { return base; }
-    return string_substring(base, 0, dot);
-}
-
-fun scope_kind_name(kind: ScopeKind) -> string {
-    if (kind is ScopeKind.GlobalScope) { return "GlobalScope"; }
-    if (kind is ScopeKind.NamespaceScope) { return "NamespaceScope"; }
-    if (kind is ScopeKind.ClassScope) { return "ClassScope"; }
-    if (kind is ScopeKind.EnumScope) { return "EnumScope"; }
-    if (kind is ScopeKind.InterfaceScope) { return "InterfaceScope"; }
-    if (kind is ScopeKind.FunctionScope) { return "FunctionScope"; }
-    if (kind is ScopeKind.BlockScope) { return "BlockScope"; }
-    if (kind is ScopeKind.InitialRoutineScope) { return "InitialRoutineScope"; }
-    if (kind is ScopeKind.ImplScope) { return "ImplScope"; }
-    return "Unknown";
-}
-
-fun symbol_kind_name(sym: BoundSymbol) -> string {
-    if (sym is BoundSymbol.variable) { return "var"; }
-    if (sym is BoundSymbol.function_sym) { return "func"; }
-    if (sym is BoundSymbol.type_sym) { return "type"; }
-    if (sym is BoundSymbol.enum_member) { return "enum_member"; }
-    if (sym is BoundSymbol.namespace_sym) { return "namespace"; }
-    return "unknown";
-}
-
-fun symbol_type_name(sym: BoundSymbol) -> string {
-    if (sym is BoundSymbol.variable) { return sym.variable.bound_type.display_name(); }
-    if (sym is BoundSymbol.function_sym) { return sym.function_sym.return_type.display_name(); }
-    if (sym is BoundSymbol.type_sym) { return sym.type_sym.bound_type.display_name(); }
-    if (sym is BoundSymbol.enum_member) { return sym.enum_member.member_type.display_name(); }
-    return "";
-}
-
-fun print_scope_to(sb: mut StringBuilder, scope: BoundScope, level: i64) {
-    let pad: mut string = "";
-    let pi: mut i64 = 0;
-    while (pi < level * 2) {
-        pad = pad + " ";
-        pi = pi + 1;
-    }
-    sb.append(pad + "[" + scope_kind_name(scope.kind) + "] " + scope.name);
-    if (string_length(scope.full_name) > 0) {
-        sb.append(" (" + scope.full_name + ")");
-    }
-    sb.append("\n");
-
-    let si: mut i64 = 0;
-    while (si < cast<i64>(scope.symbols.size())) {
-        let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
-        let type_str: string = symbol_type_name(sym);
-        sb.append(pad + "  " + symbol_kind_name(sym) + " " + sym.get_name());
-        if (string_length(type_str) > 0) {
-            sb.append(": " + type_str);
-        }
-        sb.append("\n");
-        si = si + 1;
-    }
-
-    let ci: mut i64 = 0;
-    while (ci < cast<i64>(scope.children.size())) {
-        print_scope_to(sb, scope.children.at(cast<u64>(ci)).some, level + 1);
-        ci = ci + 1;
-    }
-}
-
+// Thin driver. Argument parsing lives in CompilerConfig; the IR/lower/link
+// pipeline in LLVMCompiler; the .penguin-lib loading/validation/metadata in
+// Dynlib. This file only orchestrates: parse -> load lib chain -> assemble
+// sources -> compile -> validate (lib) -> link (exe or lib).
 initial {
     let args: _utils.List<string> = _utils.args();
     if (args.size() == 0) {
@@ -88,115 +11,77 @@ initial {
         __builtin.exit(1);
     }
 
-    // Parse options
-    let output_name: mut string = "";
-    let verbose: mut i64 = 0;
-    let source_start: mut i64 = 0;
-    let enable_meta: mut bool = false;
-    // Cross-compile target. "" = native host; "win64"/"windows" = PE/COFF via
-    // llvm-mingw (`./penguin -p` sets -target=win64). The linker flags and
-    // clang selection differ per target; this is the only reliable signal (the
-    // default output path is always "<tmp>/out.exe", so the .exe suffix alone
-    // cannot be used to detect Windows).
-    let target: mut string = "";
-    // For a Windows target WITH -enable-meta: dir containing a Windows LLVM
-    // (include/ + lib/libLLVM-22.dll.a) so the ORC JIT can be linked against
-    // the DLL. Empty = no Windows LLVM available -> meta silently unavailable
-    // in the produced binary.
-    let llvm_win: mut string = "";
-    // Determine source files
-    let source_files: mut _utils.List<string> = new _utils.List<string>();
-    // Command-line --define A=B / --define A seeds the compile-time option store
-    // (equivalent to a top-level #define("A","B"); code-level #define wins).
-    let cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
-    let cli_define_values: mut _utils.List<string> = new _utils.List<string>();
-
-    let i: mut i64 = 0;
-    while (i < cast<i64>(args.size())) {
-        let arg: string = args.at(cast<u64>(i)).some;
-        if (arg == "-vvv") {
-            verbose = 3;
-        } else if (arg == "-vv") {
-            verbose = 2;
-        } else if (arg == "-v") {
-            verbose = 1;
-        } else if (arg == "-o") {
-            i = i + 1;
-            if (i < cast<i64>(args.size())) {
-                output_name = args.at(cast<u64>(i)).some;
-            }
-        } else if (arg == "-enable-meta" || arg == "--enable-meta") {
-            enable_meta = true;
-        } else if (arg == "-target" || arg == "--target") {
-            i = i + 1;
-            if (i < cast<i64>(args.size())) {
-                target = args.at(cast<u64>(i)).some;
-            }
-        } else if (string_length(arg) >= 8 && string_substring(arg, 0, 8) == "-target=") {
-            target = string_substring(arg, 8, string_length(arg) - 8);
-        } else if (string_length(arg) >= 9 && string_substring(arg, 0, 9) == "--target=") {
-            target = string_substring(arg, 9, string_length(arg) - 9);
-        } else if (arg == "-llvm-win" || arg == "--llvm-win") {
-            i = i + 1;
-            if (i < cast<i64>(args.size())) {
-                llvm_win = args.at(cast<u64>(i)).some;
-            }
-        } else if (string_length(arg) >= 10 && string_substring(arg, 0, 10) == "-llvm-win=") {
-            llvm_win = string_substring(arg, 10, string_length(arg) - 10);
-        } else if (string_length(arg) >= 11 && string_substring(arg, 0, 11) == "--llvm-win=") {
-            llvm_win = string_substring(arg, 11, string_length(arg) - 11);
-        } else if (arg == "-define" || arg == "--define") {
-            i = i + 1;
-            if (i < cast<i64>(args.size())) {
-                let spec: string = args.at(cast<u64>(i)).some;
-                let eq: i64 = string_find(spec, "=");
-                if (eq >= 0) {
-                    cli_define_keys.push(string_substring(spec, 0, eq));
-                    cli_define_values.push(string_substring(spec, eq + 1, string_length(spec) - eq - 1));
-                } else {
-                    cli_define_keys.push(spec);
-                    cli_define_values.push("1");
-                }
-            }
-        } else {
-            source_files.push(args.at(cast<u64>(i)).some);
-        }
-        i = i + 1;
-    }
-    if (source_files.size() == 0) {
+    let mut config = new CompilerConfig();
+    config.parse(args);
+    if (config.source_files.size() == 0) {
         __builtin.eprintln("Error: no source files specified");
         __builtin.exit(1);
+    }
+    // Dyn-lib capability: --enable-dl (default on) is a plain config bool, and
+    // dynlib_available() reports whether THIS compiler binary was built with the
+    // json-backed Dynlib (only the pass3+ binary from EmperorPenguinFull.penguins
+    // is). Either being false disables building/consuming .penguin-lib files.
+    if (config.is_lib_mode() && (!config.dl_enabled || !dynlib_available())) {
+        __builtin.eprintln("[EmperorPenguin] Error: building a .penguin-lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.exit(1);
+    }
+    if (config.lib_paths.size() > 0 && (!config.dl_enabled || !dynlib_available())) {
+        __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.exit(1);
+    }
+
+    // Load the --lib chain (deps recursively, deps-first). On any unresolvable
+    // dependency the loader has already reported it; abort here.
+    let lib_state: mut LibLoadState = new LibLoadState();
+    if (config.lib_paths.size() > 0) {
+        lib_state = load_lib_chain(config.lib_paths, compiler_exe_dir());
+        if (lib_state.has_error) {
+            __builtin.exit(1);
+        }
     }
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
 
     // Build intermediates go into a per-process unique temp directory so that
-    // parallel EmperorPenguin invocations never collide on a shared path. The
-    // directory is created atomically by get_temp_folder().
+    // parallel EmperorPenguin invocations never collide on a shared path.
     let tmp_dir: mut string = _utils.get_temp_folder();
-    // The final executable defaults into that same isolated directory; -o
-    // overrides only the output location (intermediates always stay isolated).
+    // The final output defaults into that same isolated directory; -o overrides
+    // only the output location (intermediates always stay isolated).
     let exe_path: mut string = tmp_dir + "/out.exe";
-    if (string_length(output_name) > 0) {
-        exe_path = output_name;
-        // Ensure the output's parent directory exists.
+    if (string_length(config.output_name) > 0) {
+        exe_path = config.output_name;
         let last_slash: mut i64 = -1;
-        let pos: mut i64 = string_find(output_name, "/");
+        let pos: mut i64 = string_find(config.output_name, "/");
         while (pos >= 0) {
             last_slash = pos;
-            pos = string_find_from(output_name, "/", pos + 1);
+            pos = string_find_from(config.output_name, "/", pos + 1);
         }
         if (last_slash > 0) {
-            _utils.mkdir(string_substring(output_name, 0, last_slash));
+            _utils.mkdir(string_substring(config.output_name, 0, last_slash));
         }
     }
 
     let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
+
+    // Lib sources first (deps-first order from load_lib_chain), then user
+    // sources. For a lib build, lib_source_text accumulates the lib's OWN source
+    // (embedded verbatim into its metadata so consumers get the #fun/#template
+    // bodies) — loaded dep-lib sources are NOT re-embedded.
+    let lib_source_text: mut string = "";
+    let si: mut i64 = 0;
+    while (si < cast<i64>(lib_state.sources.size())) {
+        let src: SourceInput = lib_state.sources.at(cast<u64>(si)).some;
+        let lib_input: mut SourceInput = new SourceInput(src.filename, src.source);
+        lib_input.is_lib = true;
+        inputs.push(lib_input);
+        if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] Merged lib source: " + src.filename); }
+        si = si + 1;
+    }
     let fi: mut i64 = 0;
-    while (fi < cast<i64>(source_files.size())) {
-        let file: string = source_files.at(cast<u64>(fi)).some;
-        if (string_ends_with(file, ".penguins")) { 
+    while (fi < cast<i64>(config.source_files.size())) {
+        let file: string = config.source_files.at(cast<u64>(fi)).some;
+        if (string_ends_with(file, ".penguins")) {
             let proj: mut PenguinProject = PenguinProject.load(file);
             let project_dir: string = get_parent_dir(file);
             let resolved: mut _utils.List<string> = proj.resolve_sources(project_dir);
@@ -205,179 +90,67 @@ initial {
                 let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
                 let source: string = _utils.file_read_text(proj_file);
                 inputs.push(new SourceInput(proj_file, source));
-                if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + proj_file); }
+                if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+                if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + proj_file); }
                 project_file_index = project_file_index + 1;
             }
-        }
-        else {
+        } else {
             let source: string = _utils.file_read_text(file);
             inputs.push(new SourceInput(file, source));
-            if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
+            if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+            if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
         }
         fi = fi + 1;
     }
 
-    if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(source_files.size()) + " source files..."); }
+    if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(config.source_files.size()) + " source files..."); }
 
-    _utils.trace_set_verbose(verbose);
+    _utils.trace_set_verbose(config.verbose);
     let mut compiler = new EmperorPenguinCompiler();
-    compiler.verbose = verbose;
-    compiler.cli_define_keys = cli_define_keys;
-    compiler.cli_define_values = cli_define_values;
+    compiler.verbose = config.verbose;
+    compiler.cli_define_keys = config.cli_define_keys;
+    compiler.cli_define_values = config.cli_define_values;
+    // Dyn-lib routing data: shipped instances (the lib-source boundary is set
+    // via SourceInput.is_lib on the merged inputs, counted in compile_sources).
+    let lii: mut i64 = 0;
+    while (lii < cast<i64>(lib_state.instances.size())) {
+        compiler.lib_instances.push(lib_state.instances.at(cast<u64>(lii)).some);
+        lii = lii + 1;
+    }
     let result = compiler.compile_sources(inputs);
-
-    // Meta #fun calls in user code are JIT-executed and spliced at compile time
-    // inside SemanticModel.bind_meta_call (Phase 5b) — no special driver hook needed.
-
 
     if (result.has_errors()) {
         __builtin.eprintln("[EmperorPenguin] Compilation failed with " + cast<string>(result.errors.size()) + " errors:");
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
             let err: SemanticError = result.errors.at(cast<u64>(ei)).some;
-            // Workaround: capture location fields individually to avoid
-            // GC corrupting the reference-typed `filename` string pointer
-            // in SourceLocation.to_string().
-            let loc_s: SourceLocation = err.location;
             __builtin.eprintln("  error[" + error_code_name(err.code) + "]: " + err.message);
             ei = ei + 1;
         }
         __builtin.exit(1);
-    } else {
-        let generator = new IRGenerator();
-        generator.verbose = verbose;
-        let module = generator.generate(result);
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] IR generation done"); }
+    }
 
-        let emitter = new LLVMEmitter();
-        emitter.verbose = verbose;
-        let llvm_ir: string = emitter.lower(module, result);
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
-
-        let ll_path: string = tmp_dir + "/combined.ll";
-        _utils.file_write_text(ll_path, llvm_ir);
-
-        let lib_path: string = tmp_dir + "/libcore_builtin.a";
-
-        let make_args: mut _utils.List<string> = new _utils.List<string>();
-        make_args.push("--silent");
-        make_args.push("-C");
-        make_args.push("EmperorPenguin/std/c");
-        make_args.push("OUTPUT_DIR=" + tmp_dir);
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: make --silent -C EmperorPenguin/std/c OUTPUT_DIR=" + tmp_dir); }
-        let make_exit: i64 = _utils.exec("make", make_args);
-        if (make_exit != 0) {
-            __builtin.eprintln("[EmperorPenguin Link] make failed with exit code " + cast<string>(make_exit));
+    let lc: mut LLVMCompiler = new LLVMCompiler();
+    lc.verbose = config.verbose;
+    if (config.is_lib_mode()) {
+        // A lib may not emit @main / initialized globals.
+        if (!validate_lib_defs(result)) {
             __builtin.exit(1);
         }
-
-        // Windows target detection comes from -target=win64 (set by
-        // `./penguin -p`), never from the output filename: the default output
-        // path is always "<tmp>/out.exe", so a .exe suffix is not a Windows
-        // signal. A Windows target changes the stack-size flag (-Wl,--stack vs
-        // -z stack-size), links the meta JIT against the Windows LLVM DLL when
-        // -llvm-win is given (else no-op stubs), and selects the cross-compiler
-        // via $CLANG.
-        let is_windows: bool = target == "win64" || target == "windows" || target == "windows-gnu" || target == "mingw";
-
-        let clang_args: mut _utils.List<string> = new _utils.List<string>();
-        clang_args.push(ll_path);
-        clang_args.push(lib_path);
-
-        // When --enable-meta is active, link libpenguin_jit.a and LLVM
-        // so that the produced binary can JIT-compile #fun meta functions
-        // at runtime via the ORC JIT C API (penguin_jit_*).
-        if (enable_meta && !is_windows) {
-            // Capture llvm-config link flags (e.g. "-L/usr/lib -lLLVM-22").
-            // _exec_cmd uses system(3) so we redirect stdout to a file.
-            let ldflags_file: string = tmp_dir + "/llvm_ldflags.txt";
-            let cfg_exit: i64 = __builtin._exec_cmd(
-                "llvm-config --ldflags --libs core orcjit native > "
-                + ldflags_file + " 2>/dev/null");
-            if (cfg_exit == 0) {
-                let ldflags: string = _utils.file_read_text(ldflags_file);
-                // llvm-config emits flags newline-separated (e.g. "-L/usr/lib \n-lLLVM-22\n");
-                // split on BOTH space and newline so no token contains a newline — a newline
-                // inside a clang arg would be parsed by the shell (which _utils.exec uses) as
-                // a command separator, producing "-lLLVM-22: command not found".
-                let pos: mut i64 = 0;
-                let len: i64 = string_length(ldflags);
-                while (pos < len) {
-                    while (pos < len && (string_char_at(ldflags, pos) == " " || string_char_at(ldflags, pos) == "\n")) {
-                        pos = pos + 1;
-                    }
-                    if (pos >= len) { break; }
-                    let next_space: i64 = string_find_from(ldflags, " ", pos);
-                    let next_nl: i64 = string_find_from(ldflags, "\n", pos);
-                    let end_pos: mut i64 = next_space;
-                    if (next_nl >= 0 && (end_pos < 0 || next_nl < end_pos)) { end_pos = next_nl; }
-                    if (end_pos < 0) { end_pos = len; }
-                    if (end_pos > pos) {
-                        clang_args.push(string_substring(ldflags, pos, end_pos - pos));
-                    }
-                    pos = end_pos + 1;
-                }
-            }
-
-            let jit_lib_path: string = tmp_dir + "/libpenguin_jit.a";
-            clang_args.push(jit_lib_path);
-            clang_args.push("-rdynamic");
-            clang_args.push("-Wl,--export-dynamic");
-            clang_args.push("-lstdc++");
-        } else if (enable_meta && is_windows && string_length(llvm_win) > 0) {
-            // Windows meta: link the cross-built libpenguin_jit.a (built by the
-            // Makefile when LLVM_WIN_PREFIX is set) against the Windows LLVM DLL
-            // via its import lib. Host-symbol resolution for the ORC JIT needs
-            // the exe to export its symbols (the ELF analog of -rdynamic), which
-            // lld-link does with --export-all-symbols; -lc++/winpthread are the
-            // mingw C++ runtime the JIT wrapper is compiled against. At runtime
-            // libLLVM-22.dll + its deps must sit next to the exe.
-            clang_args.push(tmp_dir + "/libpenguin_jit.a");
-            clang_args.push(llvm_win + "/lib/libLLVM-22.dll.a");
-            clang_args.push("-Wl,--export-all-symbols");
-            clang_args.push("-lc++");
-            clang_args.push("-lwinpthread");
-        } else {
-            // No real JIT in this build: a Windows target without a Windows LLVM
-            // (llvm_win unset -> the Makefile skipped libpenguin_jit.a on the
-            // cross build) or a Linux build without -enable-meta.
-            // MetaEngine.penguin always references the penguin_jit_* externs, so
-            // link the strong stubs (meta_stubs.o, built by the Makefile above)
-            // that satisfy the link and report an error if a JIT call is ever
-            // attempted — the same contract BabyPenguin's pass-1 VM provides.
-            if (enable_meta) {
-                __builtin.eprintln("[EmperorPenguin Link] warning: --enable-meta requested but no Windows LLVM (-llvm-win) is available; linking no-op JIT stubs");
-            }
-            clang_args.push(tmp_dir + "/meta_stubs.o");
+        let instances: _utils.List<string> = collect_instances(result);
+        let lib_name: mut string = config.output_name;
+        let lidx: i64 = string_find(config.output_name, ".penguin-lib");
+        if (lidx >= 0) { lib_name = string_substring(config.output_name, 0, lidx); }
+        lib_name = _get_base_name(lib_name);
+        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_source_text);
+        if (!lc.link_lib(result, config, tmp_dir, exe_path, lib_meta)) {
+            __builtin.exit(1);
         }
-
-        // Request a 32 MB stack so deep recursion in the self-hosted compiler
-        // (especially SemanticModel pass_build_scopes) doesn't overflow the
-        // default 8 MB stack and cause intermittent SIGSEGV. The flag differs by
-        // target: ELF uses `-z stack-size` (GNU ld / lld-ELF); a Windows PE
-        // build sets the reserved stack in the header via lld-link's `--stack`
-        // (`-z` is rejected). Windows has no rlimits, so core_builtin.c's
-        // _emperor_boost_stack is a no-op there.
-        if (is_windows) {
-            clang_args.push("-Wl,--stack,33554432");
-        } else {
-            clang_args.push("-Wl,-z,stack-size=33554432");
-        }
-        clang_args.push("-o");
-        clang_args.push(exe_path);
-
-        if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -> " + exe_path); }
-        // Use the cross-compiler when the invoking script sets CLANG (e.g.
-        // `./penguin -p` sets it to the llvm-mingw x86_64-w64-mingw32-clang),
-        // falling back to plain `clang` on the host. `${CLANG:-clang}` is
-        // expanded by the shell that _exec_cmd/system() uses.
-        let exit_code: i64 = _utils.exec("${CLANG:-clang}", clang_args);
-        if (exit_code == 0) {
-            if (verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Output: " + exe_path); }
-        } else {
-            __builtin.eprintln("[EmperorPenguin Link] clang failed with exit code " + cast<string>(exit_code));
+    } else {
+        if (!lc.link_exe(result, config, tmp_dir, exe_path, lib_state.so_paths)) {
             __builtin.exit(1);
         }
     }
 }
+
 }

@@ -1,6 +1,6 @@
 # MetaJsonContainers
 ## Description
-Auto-impl over container fields: a class `ItemBox` with `penguin.Vector<i64>` (serializes to a JSON array, deserializes via `as_array()` + push), a nested `IJsonSerializable` class field `Child` (serialized via `value_raw`, deserialized via `Child.json_deserialize`), and a `penguin.HashMap<string,string>` (serialized via `key_iter()` as a JSON object, deserialized via `as_object()` + put). Container fields are field-initialized (`= new Vector/HashMap()`) so deserialize can push into them. Single-entry HashMap keeps the serialized object's key order deterministic. Full round-trip asserted. Requires native Pass2/Pass3.
+Auto-impl over container fields: a class `ItemBox` with `std.Vector<i64>` (serializes to a JSON array, deserializes via `as_array()` + push), a nested `IJsonSerializable` class field `Child` (serialized via `value_raw`, deserialized via `Child.json_deserialize`), and a `std.HashMap<string,string>` (serialized via `key_iter()` as a JSON object, deserialized via `as_object()` + put). Container fields are field-initialized (`= new Vector/HashMap()`) so deserialize can push into them. Single-entry HashMap keeps the serialized object's key order deterministic. Full round-trip asserted. Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -14,8 +14,8 @@ class Child {
 class ItemBox {
     name: string;
     count: i64;
-    items: mut penguin.Vector<i64> = new penguin.Vector<i64>();
-    tags: mut penguin.HashMap<string, string> = new penguin.HashMap<string, string>();
+    items: mut std.Vector<i64> = new std.Vector<i64>();
+    tags: mut std.HashMap<string, string> = new std.HashMap<string, string>();
     child: Child;
     #impl_json_serializable();
 }

@@ -1,0 +1,303 @@
+namespace emperor {
+
+// ---------------------------------------------------------------------------
+// Dynamic linking for .penguin-lib files — the JSON-backed implementation.
+//
+// A .penguin-lib is a native shared object (ELF .so / PE .dll / Mach-O .dylib)
+// with a JSON metadata blob appended after the binary and an ASCII footer:
+//
+//     <original .so bytes>
+//     <JSON metadata document>
+//     PENGUINLIB:<meta_offset>:<meta_size>\n
+//
+// The JSON (written with std.JsonWriter, read with std.JsonReader) holds
+// name / version / deps / instances / source (the lib's original source verbatim
+// — this carries #fun / #template bodies to consumers, so a consumer can
+// monomorphize NEW generic instances without the lib's source on disk). The
+// loader is OS-agnostic by construction: all native loaders ignore trailing
+// bytes past the last section, and the footer read uses the portable binary
+// file externs (_utils.file_size / file_read_range / file_append).
+//
+// This file is NOT in the default EmperorPenguin.penguins project — the default
+// build (pass1 / dotnet tests / pass2) compiles the ANTLR-safe DynlibStub.penguin
+// instead, which disables dyn-lib. The bootstrap's pass2→pass3 / pass3→pass4
+// steps build from EmperorPenguinFull.penguins, which swaps in THIS file plus
+// json/vector/hashmap (pass3+ only). No meta (#if/#option) anywhere in this
+// module: the compiler's own code is plain penguin.
+// ---------------------------------------------------------------------------
+
+class LibFooter {
+    found: bool = false;
+    offset: i64 = 0;
+    size: i64 = 0;
+}
+
+class LibMeta {
+    name: string = "";
+    version: i64 = 0;
+    deps: mut _utils.List<string> = new _utils.List<string>();
+    instances: mut _utils.List<string> = new _utils.List<string>();
+    source: string = "";
+}
+
+// Accumulated result of loading a --lib chain: the merged lib sources to
+// compile into the consumer, the .penguin-lib paths to link, the dep names to
+// record, and the union of shipped instance names (for declare-not-define
+// routing). has_error latches any unresolvable dependency.
+class LibLoadState {
+    sources: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+    so_paths: mut _utils.List<string> = new _utils.List<string>();
+    lib_names: mut _utils.List<string> = new _utils.List<string>();
+    instances: mut _utils.List<string> = new _utils.List<string>();
+    visited: mut _utils.List<string> = new _utils.List<string>();
+    has_error: bool = false;
+}
+
+fun _find_last_char(s: string, ch: string) -> i64 {
+    let pos: mut i64 = string_find(s, ch);
+    let last: mut i64 = -1;
+    while (pos >= 0) {
+        last = pos;
+        pos = string_find_from(s, ch, pos + 1);
+    }
+    return last;
+}
+
+fun _path_dir(path: string) -> string {
+    let slash: i64 = _find_last_char(path, "/");
+    if (slash >= 0) { return string_substring(path, 0, slash); }
+    return "";
+}
+
+fun _path_join(dir: string, file: string) -> string {
+    if (string_length(dir) == 0) { return file; }
+    return dir + "/" + file;
+}
+
+fun _string_list_contains(list: _utils.List<string>, value: string) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(list.size())) {
+        if (list.at(cast<u64>(i)).some == value) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Read the PENGUINLIB:<offset>:<size>\n footer from the last 128 bytes of the
+// file. Bootstrap-safe (uses only the binary file externs).
+fun read_lib_footer(path: string) -> LibFooter {
+    let footer: mut LibFooter = new LibFooter();
+    let size: i64 = _utils.file_size(path);
+    if (size <= 0) { return footer; }
+    let scan_len: mut i64 = 128;
+    if (size < scan_len) { scan_len = size; }
+    let tail: string = _utils.file_read_range(path, size - scan_len, scan_len);
+    let marker: string = "PENGUINLIB:";
+    let mi: i64 = string_find(tail, marker);
+    if (mi < 0) { return footer; }
+    let rest: string = string_substring(tail, mi + string_length(marker), string_length(tail) - mi - string_length(marker));
+    let colon1: i64 = string_find(rest, ":");
+    if (colon1 < 0) { return footer; }
+    let offset_text: string = string_substring(rest, 0, colon1);
+    let rest2: string = string_substring(rest, colon1 + 1, string_length(rest) - colon1 - 1);
+    let nl: i64 = string_find(rest2, "\n");
+    let size_text: mut string = rest2;
+    if (nl >= 0) { size_text = string_substring(rest2, 0, nl); }
+    footer.found = true;
+    footer.offset = string_to_int(offset_text);
+    footer.size = string_to_int(size_text);
+    return footer;
+}
+
+// Parse the appended JSON metadata into a LibMeta. Empty name on failure.
+fun read_meta(path: string) -> LibMeta {
+    let meta: mut LibMeta = new LibMeta();
+    let footer: LibFooter = read_lib_footer(path);
+    if (!footer.found) {
+        __builtin.eprintln("[EmperorPenguin Dynlib] No PENGUINLIB footer in " + path);
+        return meta;
+    }
+    if (footer.offset < 0 || footer.size < 0) { return meta; }
+    let json_text: string = _utils.file_read_range(path, footer.offset, footer.size);
+    let reader = new std.JsonReader(json_text);
+    let doc: std.JsonValue = reader.parse();
+    if (doc.is_error()) {
+        __builtin.eprintln("[EmperorPenguin Dynlib] Metadata parse failed in " + path);
+        return meta;
+    }
+    if (let nv := doc.get("name").some) { meta.name = nv.as_string(); }
+    if (let vv := doc.get("version").some) { meta.version = vv.as_i64(); }
+    if (let dv := doc.get("deps").some) {
+        if (dv.is_array()) {
+            let arr: std.Vector<std.JsonValue> = dv.as_array();
+            let i: mut u64 = 0;
+            while (i < arr.size()) {
+                meta.deps.push(arr.at(i).some.as_string());
+                i = i + 1;
+            }
+        }
+    }
+    if (let iv := doc.get("instances").some) {
+        if (iv.is_array()) {
+            let arr2: std.Vector<std.JsonValue> = iv.as_array();
+            let j: mut u64 = 0;
+            while (j < arr2.size()) {
+                meta.instances.push(arr2.at(j).some.as_string());
+                j = j + 1;
+            }
+        }
+    }
+    if (let sv := doc.get("source").some) { meta.source = sv.as_string(); }
+    return meta;
+}
+
+// Build the JSON metadata document for a lib being created.
+fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, source: string) -> string {
+    let mut w = new std.JsonWriter();
+    w.begin_object();
+    w.key("name"); w.value_string(name);
+    w.key("version"); w.value_i64(version);
+    w.key("deps"); w.begin_array();
+    let di: mut u64 = 0;
+    while (di < deps.size()) { w.value_string(deps.at(di).some); di = di + 1; }
+    w.end_array();
+    w.key("instances"); w.begin_array();
+    let ii: mut u64 = 0;
+    while (ii < instances.size()) { w.value_string(instances.at(ii).some); ii = ii + 1; }
+    w.end_array();
+    w.key("source"); w.value_string(source);
+    w.end_object();
+    return w.to_string();
+}
+
+// Locate a dependency lib by name: search the referencing lib's directory, the
+// compiler executable's directory, then the current directory.
+fun resolve_dep_path(dep_name: string, referencing_dir: string, exe_dir: string) -> Option<string> {
+    let candidates: mut _utils.List<string> = new _utils.List<string>();
+    candidates.push(_path_join(referencing_dir, dep_name + ".penguin-lib"));
+    candidates.push(_path_join(exe_dir, dep_name + ".penguin-lib"));
+    candidates.push(dep_name + ".penguin-lib");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(candidates.size())) {
+        let cand: string = candidates.at(cast<u64>(i)).some;
+        if (_utils.file_exists(cand)) {
+            return new Option<string>.some(cand);
+        }
+        i = i + 1;
+    }
+    return new Option<string>.none();
+}
+
+// Recursively load a lib and its deps (deps-first) into `state`.
+fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadState) {
+    if (_string_list_contains(state.visited, lib_path)) { return; }
+    state.visited.push(lib_path);
+    let meta: LibMeta = read_meta(lib_path);
+    if (string_length(meta.name) == 0) {
+        __builtin.eprintln("[EmperorPenguin Dynlib] Failed to read metadata from " + lib_path);
+        state.has_error = true;
+        return;
+    }
+    let referencing_dir: string = _path_dir(lib_path);
+    let di: mut i64 = 0;
+    while (di < cast<i64>(meta.deps.size())) {
+        let dep_name: string = meta.deps.at(cast<u64>(di)).some;
+        let dep_path: Option<string> = resolve_dep_path(dep_name, referencing_dir, exe_dir);
+        if (let dp := dep_path.some) {
+            load_lib_recursive(dp, exe_dir, state);
+        } else {
+            __builtin.eprintln("[EmperorPenguin Dynlib] Unresolved dependency '" + dep_name + "' of " + lib_path);
+            state.has_error = true;
+        }
+        di = di + 1;
+    }
+    state.sources.push(new SourceInput("<lib:" + meta.name + ">", meta.source));
+    state.so_paths.push(lib_path);
+    state.lib_names.push(meta.name);
+    let ii: mut i64 = 0;
+    while (ii < cast<i64>(meta.instances.size())) {
+        let inst: string = meta.instances.at(cast<u64>(ii)).some;
+        if (!_string_list_contains(state.instances, inst)) { state.instances.push(inst); }
+        ii = ii + 1;
+    }
+}
+
+// Load every --lib path (deps recursively, deps-first). Returns the merged
+// state; on any unresolvable dep the driver must abort with a non-zero exit.
+fun load_lib_chain(lib_paths: _utils.List<string>, exe_dir: string) -> mut LibLoadState {
+    let state: mut LibLoadState = new LibLoadState();
+    let li: mut i64 = 0;
+    while (li < cast<i64>(lib_paths.size())) {
+        load_lib_recursive(lib_paths.at(cast<u64>(li)).some, exe_dir, state);
+        li = li + 1;
+    }
+    return state;
+}
+
+// Directory of the running compiler executable (for dep resolution).
+fun compiler_exe_dir() -> string {
+    let exe: string = _utils.exe_path();
+    return _path_dir(exe);
+}
+
+// The compiler binary has the json-backed Dynlib machinery compiled in.
+fun dynlib_available() -> bool { return true; }
+
+// Collect the mangled full names of every specialized generic instance in the
+// compilation result — these are the instances a lib SHIPS, and the names a
+// consumer declares instead of re-compiling. Defs already provided by a loaded
+// dependency lib (is_lib_export) are excluded: they are not part of THIS lib.
+fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
+    let out: mut _utils.List<string> = new _utils.List<string>();
+    let i: mut i64 = 0;
+    while (i < cast<i64>(result.definitions.size())) {
+        let d: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+        if (d is BoundDefinition.class_def) {
+            if (d.class_def.is_specialized && !d.class_def.is_lib_export) { out.push(d.class_def.full_name); }
+        } else if (d is BoundDefinition.enum_def) {
+            if (d.enum_def.is_specialized && !d.enum_def.is_lib_export) { out.push(d.enum_def.full_name); }
+        } else if (d is BoundDefinition.interface_def) {
+            if (d.interface_def.is_specialized && !d.interface_def.is_lib_export) { out.push(d.interface_def.full_name); }
+        } else if (d is BoundDefinition.function_def) {
+            if (d.function_def.is_specialized && !d.function_def.is_lib_export) { out.push(d.function_def.full_name); }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// A .penguin-lib may not emit an @main entry point or initialized globals.
+// Returns true when the compilation is valid for lib mode.
+fun validate_lib_defs(result: BoundCompilationUnit) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(result.definitions.size())) {
+        let d: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+        if (d is BoundDefinition.initial_routine) {
+            __builtin.eprintln("[EmperorPenguin Dynlib] Error: a .penguin-lib may not contain an initial{} routine");
+            return false;
+        }
+        if (d is BoundDefinition.global_var_def) {
+            __builtin.eprintln("[EmperorPenguin Dynlib] Error: a .penguin-lib may not contain global variables");
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Synthesize a source that forces the monomorphizer to instantiate each
+// --lib-export root (a generic type like std.Vector<i64>) plus its transitive
+// closure, by referencing it as a field type in a throwaway namespace.
+fun make_force_export_sources(roots: _utils.List<string>) -> string {
+    let mut sb = new StringBuilder();
+    sb.append("namespace __lib_export_force {\n");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(roots.size())) {
+        sb.append("class _root_" + cast<string>(i) + " { _f: " + roots.at(cast<u64>(i)).some + "; }\n");
+        i = i + 1;
+    }
+    sb.append("}\n");
+    return sb.to_string();
+}
+
+} // namespace emperor

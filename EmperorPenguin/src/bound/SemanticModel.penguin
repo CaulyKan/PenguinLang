@@ -47,6 +47,15 @@ class SemanticModel {
     meta_engine: mut MetaEngine = new MetaEngine();
     meta_engine_seeded: mut bool = false;
     verbose: mut i64 = 0;
+    // Dyn-lib routing (see Dynlib.penguin). lib_def_start/count = the index
+    // RANGE of top-level definitions contributed by merged lib sources (marked
+    // by index, GC-safe, no filename string comparison). lib_instances = the
+    // union of shipped mangled generic-instance names across loaded libs;
+    // specialized defs whose full_name matches are declared too
+    // (declare-not-define routing).
+    lib_def_start: i64 = 0;
+    lib_def_count: i64 = 0;
+    lib_instances: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {
 
@@ -778,10 +787,203 @@ class SemanticModel {
 
     fun pass_build_scopes(mut this, unit: CompilationUnit, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_build_scopes");
+        let def_index: mut i64 = 0;
         for (let def : Definition in unit.definitions) {
             let bound: Option<BoundDefinition> = this.bind_definition(def, result.global_scope);
             if (let b := bound.some) {
+                // Dyn-lib: defs declared in a loaded .penguin-lib's embedded source
+                // are emitted as declarations (extern) linked to the lib, never
+                // re-compiled. Lib sources are pushed first (compile_sources), so
+                // the first lib_def_count defs are lib defs — marked by index
+                // (GC-safe). Non-generic lib defs marked here; shipped generic
+                // instances are marked during pass_monomorphize.
+                if (def_index >= this.lib_def_start && def_index < this.lib_def_start + this.lib_def_count) {
+                    this.mark_lib_export(b);
+                }
                 result.definitions.push(b);
+            }
+            def_index = def_index + 1;
+        }
+        // Dyn-lib collision guard: a consumer may not REDEFINE a name a loaded lib
+        // ships (declare-not-define routing would produce two symbols).
+        this.check_lib_redefinition(result);
+    }
+
+    // Detect a consumer definition whose full_name collides with a lib-exported
+    // (shipped) definition. Walks namespaces recursively.
+    fun check_lib_redefinition(mut this, result: BoundCompilationUnit) {
+        let shipped: mut _utils.List<string> = new _utils.List<string>();
+        let li: mut i64 = 0;
+        while (li < cast<i64>(result.definitions.size())) {
+            this.collect_shipped_fullnames(result.definitions.at(cast<u64>(li)).some, shipped);
+            li = li + 1;
+        }
+        if (cast<i64>(shipped.size()) == 0) { return; }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(result.definitions.size())) {
+            this.check_redef(result.definitions.at(cast<u64>(ci)).some, shipped);
+            ci = ci + 1;
+        }
+    }
+
+    fun collect_shipped_fullnames(mut this, d: BoundDefinition, shipped: mut _utils.List<string>) {
+        if (d is BoundDefinition.function_def) {
+            if (d.function_def.is_lib_export) { shipped.push(d.function_def.full_name); }
+        } else if (d is BoundDefinition.class_def) {
+            if (d.class_def.is_lib_export) { shipped.push(d.class_def.full_name); }
+        } else if (d is BoundDefinition.enum_def) {
+            if (d.enum_def.is_lib_export) { shipped.push(d.enum_def.full_name); }
+        } else if (d is BoundDefinition.interface_def) {
+            if (d.interface_def.is_lib_export) { shipped.push(d.interface_def.full_name); }
+        } else if (d is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = d.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                this.collect_shipped_fullnames(ns.children.at(cast<u64>(i)).some, shipped);
+                i = i + 1;
+            }
+        }
+    }
+
+    fun check_redef(mut this, d: BoundDefinition, shipped: _utils.List<string>) {
+        let full: mut string = "";
+        let is_lib: mut bool = false;
+        if (d is BoundDefinition.function_def) {
+            full = d.function_def.full_name;
+            is_lib = d.function_def.is_lib_export;
+        } else if (d is BoundDefinition.class_def) {
+            full = d.class_def.full_name;
+            is_lib = d.class_def.is_lib_export;
+        } else if (d is BoundDefinition.enum_def) {
+            full = d.enum_def.full_name;
+            is_lib = d.enum_def.is_lib_export;
+        } else if (d is BoundDefinition.interface_def) {
+            full = d.interface_def.full_name;
+            is_lib = d.interface_def.is_lib_export;
+        } else if (d is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = d.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                this.check_redef(ns.children.at(cast<u64>(i)).some, shipped);
+                i = i + 1;
+            }
+            return;
+        }
+        if (!is_lib && string_length(full) > 0) {
+            if (_string_list_contains(shipped, full)) {
+                this.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(), "duplicate definition: '" + full + "' is exported by a loaded .penguin-lib; consumers may not redefine it", new SourceLocation("", 0, 0));
+            }
+        }
+    }
+
+    // True when a specialized def's mangled full_name is shipped by a loaded lib.
+    fun is_shipped_instance(this, d: BoundDefinition) -> bool {
+        if (cast<i64>(this.lib_instances.size()) == 0) { return false; }
+        let full: mut string = "";
+        if (d is BoundDefinition.class_def) { full = d.class_def.full_name; }
+        else if (d is BoundDefinition.enum_def) { full = d.enum_def.full_name; }
+        else if (d is BoundDefinition.interface_def) { full = d.interface_def.full_name; }
+        else if (d is BoundDefinition.function_def) { full = d.function_def.full_name; }
+        else { return false; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.lib_instances.size())) {
+            if (this.lib_instances.at(cast<u64>(i)).some == full) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // True when the def is a lib-export declaration target (its body is not
+    // bound/emitted here; the compiled symbol comes from a .penguin-lib).
+    fun is_lib_export_def(this, d: BoundDefinition) -> bool {
+        if (d is BoundDefinition.function_def) { return d.function_def.is_lib_export; }
+        if (d is BoundDefinition.class_def) { return d.class_def.is_lib_export; }
+        if (d is BoundDefinition.enum_def) { return d.enum_def.is_lib_export; }
+        if (d is BoundDefinition.interface_def) { return d.interface_def.is_lib_export; }
+        return false;
+    }
+
+    // Mark a bound def (and, for namespaces, its descendants) as lib-export.
+    // For classes/enums/interfaces the METHODS and ctor are marked too — the IR
+    // layer lowers each method via lower_function_def, which checks the METHOD's
+    // is_lib_export flag (the class flag alone would leave bodies defined).
+    fun mark_lib_export(mut this, b: BoundDefinition) {
+        if (b is BoundDefinition.function_def) {
+            if (!b.function_def.is_generic_template) {
+                let f: mut BoundFunctionDefinition = b.function_def;
+                f.is_lib_export = true;
+            }
+        } else if (b is BoundDefinition.class_def) {
+            if (!b.class_def.is_generic_template) {
+                let c: mut BoundClassDefinition = b.class_def;
+                c.is_lib_export = true;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(c.methods.size())) {
+                    let md: BoundDefinition = c.methods.at(cast<u64>(mi)).some;
+                    if (md is BoundDefinition.function_def) {
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        mf.is_lib_export = true;
+                    }
+                    mi = mi + 1;
+                }
+                if (c.constructor.is_some()) {
+                    let ctor: mut BoundFunctionDefinition = c.constructor.some;
+                    ctor.is_lib_export = true;
+                }
+                let mii: mut i64 = 0;
+                while (mii < cast<i64>(c.interface_impls.size())) {
+                    let id: BoundDefinition = c.interface_impls.at(cast<u64>(mii)).some;
+                    if (id is BoundDefinition.impl_def) {
+                        let imp: BoundInterfaceImplementation = id.impl_def;
+                        let imi: mut i64 = 0;
+                        while (imi < cast<i64>(imp.methods.size())) {
+                            let imd: BoundDefinition = imp.methods.at(cast<u64>(imi)).some;
+                            if (imd is BoundDefinition.function_def) {
+                                let imf: mut BoundFunctionDefinition = imd.function_def;
+                                imf.is_lib_export = true;
+                            }
+                            imi = imi + 1;
+                        }
+                    }
+                    mii = mii + 1;
+                }
+            }
+        } else if (b is BoundDefinition.enum_def) {
+            // Enums/interfaces mark the template by generic_params (specialized
+            // and non-generic defs have an empty list; templates retain it).
+            if (cast<i64>(b.enum_def.generic_params.size()) == 0) {
+                let e: mut BoundEnumDefinition = b.enum_def;
+                e.is_lib_export = true;
+                let emi: mut i64 = 0;
+                while (emi < cast<i64>(e.methods.size())) {
+                    let emd: BoundDefinition = e.methods.at(cast<u64>(emi)).some;
+                    if (emd is BoundDefinition.function_def) {
+                        let emf: mut BoundFunctionDefinition = emd.function_def;
+                        emf.is_lib_export = true;
+                    }
+                    emi = emi + 1;
+                }
+            }
+        } else if (b is BoundDefinition.interface_def) {
+            if (cast<i64>(b.interface_def.generic_params.size()) == 0) {
+                let iface: mut BoundInterfaceDefinition = b.interface_def;
+                iface.is_lib_export = true;
+                let imi2: mut i64 = 0;
+                while (imi2 < cast<i64>(iface.methods.size())) {
+                    let imd2: BoundDefinition = iface.methods.at(cast<u64>(imi2)).some;
+                    if (imd2 is BoundDefinition.function_def) {
+                        let imf2: mut BoundFunctionDefinition = imd2.function_def;
+                        imf2.is_lib_export = true;
+                    }
+                    imi2 = imi2 + 1;
+                }
+            }
+        } else if (b is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = b.namespace_def;
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(ns.children.size())) {
+                this.mark_lib_export(ns.children.at(cast<u64>(ci)).some);
+                ci = ci + 1;
             }
         }
     }
@@ -2620,6 +2822,13 @@ class SemanticModel {
                 } else {
                     specialized_defs.set(cast<u64>(k), this.resolve_pair(ast_def, spec_def, result.global_scope));
                 }
+                // Dyn-lib: a specialized instance that a loaded lib SHIPS is emitted
+                // as a declaration (linked to the lib symbol) instead of being
+                // re-compiled into the consumer.
+                let resolved_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                if (this.is_shipped_instance(resolved_def)) {
+                    this.mark_lib_export(resolved_def);
+                }
                 k = k + 1;
             }
 
@@ -3159,6 +3368,7 @@ class SemanticModel {
         }
         let full_name: string = parent_full_name + "." + mangled_name;
         let result: mut BoundClassDefinition = new BoundClassDefinition(mangled_name, full_name);
+        result.is_specialized = true;
         let class_scope: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), mangled_name, full_name, scope_parent);
 
         let pi: mut i64 = 0;
@@ -3283,6 +3493,7 @@ class SemanticModel {
         }
         let full_name: string = parent_full_name + "." + mangled_name;
         let result: mut BoundEnumDefinition = new BoundEnumDefinition(mangled_name, full_name);
+        result.is_specialized = true;
         let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), mangled_name, full_name, scope_parent);
 
         let pi: mut i64 = 0;
@@ -3366,6 +3577,7 @@ class SemanticModel {
         }
         let full_name: string = parent_full_name + "." + mangled_name;
         let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(mangled_name, full_name);
+        result.is_specialized = true;
         let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), mangled_name, full_name, scope_parent);
 
         // Register generic type params in the specialized scope so method
@@ -3509,6 +3721,15 @@ class SemanticModel {
             }
             cls.constructor = new Option<BoundFunctionDefinition>.some(ctor);
             cls.constructors.push(new BoundDefinition.function_def(ctor));
+        }
+        // Dyn-lib: a lib-export class's ctor is declared too (its body lives in
+        // the .penguin-lib). Explicit ctors were already marked via the methods
+        // walk in mark_lib_export; the synthesized default ctor needs it here.
+        if (cls.is_lib_export) {
+            if (cls.constructor.is_some()) {
+                let ctor2: mut BoundFunctionDefinition = cls.constructor.some;
+                ctor2.is_lib_export = true;
+            }
         }
     }
 
@@ -4435,6 +4656,10 @@ class SemanticModel {
 
     fun bind_body_for_specialized_def(mut this, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
         _utils.trace_enter("Enter bind_body_for_specialized_def");
+        // Dyn-lib: a def whose symbol lives in a loaded .penguin-lib has no body
+        // here — skip binding (its meta calls would otherwise be JIT'd in the
+        // consumer); the IR layer emits a declaration + links the lib instead.
+        if (this.is_lib_export_def(bound_def)) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
             let template_name: string = this.extract_template_name(bound_cls.name);
@@ -4501,6 +4726,10 @@ class SemanticModel {
 
     fun bind_body_for_def(mut this, ast_def: Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
         _utils.trace_enter("Enter bind_body_for_def");
+        // Dyn-lib: a def whose symbol lives in a loaded .penguin-lib has no body
+        // here — skip binding (its meta calls would otherwise be JIT'd in the
+        // consumer); the IR layer emits a declaration + links the lib instead.
+        if (this.is_lib_export_def(bound_def)) { return bound_def; }
         if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let ast_func: FunctionDefinition = ast_def.function_def;
@@ -8516,6 +8745,7 @@ class SemanticModel {
         //   e.g. <global>.Foo.identity -> <global>.Foo.identity__string
         let full_name: string = this.build_specialized_full_name(tmpl, mangled_name, class_scope);
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(mangled_name, full_name, ast_func.is_extern, ast_func.is_pure, ast_func.is_new, ast_func.is_extern);
+        result.is_specialized = true;
 
         if (!ast_func.is_extern && ast_func.body.is_some()) {
             // Use class_scope as parent if available (for methods in specialized generic classes)

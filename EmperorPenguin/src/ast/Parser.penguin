@@ -1,4 +1,15 @@
 namespace emperor {
+
+// Set is_exported on an AST definition after an `export` prefix is parsed.
+fun _mark_ast_exported(def: Definition) {
+    if (def is Definition.function_def) { let f: mut FunctionDefinition = def.function_def; f.is_exported = true; }
+    else if (def is Definition.class_def) { let c: mut ClassDefinition = def.class_def; c.is_exported = true; }
+    else if (def is Definition.enum_def) { let e: mut EnumDefinition = def.enum_def; e.is_exported = true; }
+    else if (def is Definition.interface_def) { let i: mut InterfaceDefinition = def.interface_def; i.is_exported = true; }
+    else if (def is Definition.namespace_def) { let n: mut NamespaceDefinition = def.namespace_def; n.is_exported = true; }
+    else if (def is Definition.type_ref_def) { let t: mut TypeReferenceDefinition = def.type_ref_def; t.is_exported = true; }
+}
+
     class Parser {
         stream: mut TokenStream = new TokenStream(new _utils.List<Token>());
         errors: mut _utils.List<string> = new _utils.List<string>();
@@ -1251,6 +1262,10 @@ namespace emperor {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
             }
+            if (this.stream.peek_type() is TokenType.Export) {
+                this.stream.advance();
+                node.is_exported = true;
+            }
             this.stream.expect(new TokenType.Interface());
             let name_token: Token = this.stream.advance();
             node.name = name_token.text;
@@ -1384,6 +1399,10 @@ namespace emperor {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
             }
+            if (this.stream.peek_type() is TokenType.Export) {
+                this.stream.advance();
+                node.is_exported = true;
+            }
             this.stream.expect(new TokenType.Class());
             let name_token: Token = this.stream.advance();
             node.name = name_token.text;
@@ -1426,6 +1445,10 @@ namespace emperor {
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
+            }
+            if (this.stream.peek_type() is TokenType.Export) {
+                this.stream.advance();
+                node.is_exported = true;
             }
             this.stream.expect(new TokenType.Enum());
             let name_token: Token = this.stream.advance();
@@ -1824,7 +1847,25 @@ namespace emperor {
 
         // namespaceDeclaration: (letKeyword declaration ';') | typeReferenceDeclaration | namespaceDefinition | initialRoutine | functionDefinition | classDefinition | enumDefinition | interfaceDefinition | interfaceForImplementation | eventDefinition | onRoutine | ';';
         // Classification: Alternative
+        // `export` prefix (dyn-lib): marks a top-level def for shipping in a
+        // .penguin-lib build. When dynamic linking is disabled (--enable-dl off)
+        // the flag is parsed but ignored (no semantic effect). Applies to fun /
+        // class / enum / interface / namespace / type declarations.
         fun parse_namespaceDeclaration(this) -> Definition {
+            let is_exported: mut bool = false;
+            let first: Token = this.stream.peek();
+            if (first.token_type is TokenType.Export) {
+                this.stream.advance();
+                is_exported = true;
+            }
+            let def: Definition = this.parse_namespaceDeclaration_inner();
+            if (is_exported) {
+                _mark_ast_exported(def);
+            }
+            return def;
+        }
+
+        fun parse_namespaceDeclaration_inner(this) -> Definition {
             let next: Token = this.stream.peek();
             if (next.token_type is TokenType.Namespace) {
                 return this.parse_namespaceDefinition();
@@ -1906,12 +1947,29 @@ namespace emperor {
                     if (t.token_type is TokenType.LParen) { depth = depth + 1; }
                     if (t.token_type is TokenType.RParen) { depth = depth - 1; }
                 }
-                let after_tpl: Token = this.stream.peek();
+                // Skip an optional `export` between the template and the def
+                // (`#template(T: type) export class Vector {`); the parse_* function
+                // consumes it and sets is_exported itself.
                 this.stream.pos = saved_pos;
-                if (after_tpl.token_type is TokenType.Class) { return this.parse_classDefinition(); }
-                if (after_tpl.token_type is TokenType.Enum) { return this.parse_enumDefinition(); }
-                if (after_tpl.token_type is TokenType.Interface) { return this.parse_interfaceDefinition(); }
-                if (after_tpl.token_type is TokenType.Fun) { return this.parse_functionDefinition(); }
+                this.stream.advance(); // #
+                this.stream.advance(); // template
+                this.stream.expect(new TokenType.LParen());
+                let d2: mut i64 = 1;
+                while (d2 > 0 && !(this.stream.is_at_end())) {
+                    let tt: Token = this.stream.advance();
+                    if (tt.token_type is TokenType.LParen) { d2 = d2 + 1; }
+                    if (tt.token_type is TokenType.RParen) { d2 = d2 - 1; }
+                }
+                if (this.stream.peek().token_type is TokenType.Export) { this.stream.advance(); }
+                let tpl_is_class: bool = this.stream.peek().token_type is TokenType.Class;
+                let tpl_is_enum: bool = this.stream.peek().token_type is TokenType.Enum;
+                let tpl_is_iface: bool = this.stream.peek().token_type is TokenType.Interface;
+                let tpl_is_fun: bool = this.stream.peek().token_type is TokenType.Fun;
+                this.stream.pos = saved_pos;
+                if (tpl_is_class) { return this.parse_classDefinition(); }
+                if (tpl_is_enum) { return this.parse_enumDefinition(); }
+                if (tpl_is_iface) { return this.parse_interfaceDefinition(); }
+                if (tpl_is_fun) { return this.parse_functionDefinition(); }
                 print("error: #template not followed by class/enum/interface/fun\n");
                 return new Definition.function_def(new FunctionDefinition(""));
             }
@@ -2385,6 +2443,9 @@ namespace emperor {
                 } else if (spec.token_type is TokenType.Extern) {
                     this.stream.advance();
                     node.is_extern = true;
+                } else if (spec.token_type is TokenType.Export) {
+                    this.stream.advance();
+                    node.is_exported = true;
                 } else if (spec.token_type is TokenType.Async) {
                     this.stream.advance();
                     node.is_async = true;

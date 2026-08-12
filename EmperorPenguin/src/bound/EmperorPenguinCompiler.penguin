@@ -3,6 +3,10 @@ namespace emperor {
 class SourceInput {
     filename: string = "";
     source: string = "";
+    // Dyn-lib: true when this input is the verbatim source embedded in a loaded
+    // .penguin-lib. Its defs are lib-export (declared, linked to the lib) rather
+    // than re-compiled into the consumer.
+    is_lib: bool = false;
 
     fun new(mut this, filename: string, source: string) {
 
@@ -19,6 +23,14 @@ class EmperorPenguinCompiler {
     // priority (it runs during bind and overwrites these via meta_set_option).
     cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
     cli_define_values: mut _utils.List<string> = new _utils.List<string>();
+    // Dyn-lib routing data: the index RANGE [lib_def_start, lib_def_start +
+    // lib_def_count) of top-level definitions contributed by loaded lib sources
+    // (computed here from SourceInput.is_lib) + the shipped instance names,
+    // forwarded to the SemanticModel (see Dynlib.penguin). Index-based marking
+    // is GC-safe — the SemanticModel compares no filename strings.
+    lib_def_start: mut i64 = 0;
+    lib_def_count: mut i64 = 0;
+    lib_instances: mut _utils.List<string> = new _utils.List<string>();
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -32,6 +44,9 @@ class EmperorPenguinCompiler {
         let combined_defs: mut _utils.List<Definition> = new _utils.List<Definition>();
         let total_defs: mut i64 = 0;
         let parser_errors: mut _utils.List<string> = new _utils.List<string>();
+        this.lib_def_start = 0;
+        this.lib_def_count = 0;
+        let found_first_lib: mut bool = false;
         for (let input in inputs) {
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
             let lexer = new Lexer(input.source, input.filename);
@@ -51,6 +66,16 @@ class EmperorPenguinCompiler {
                 combined_defs.push(unit.definitions.at(cast<u64>(j)).some);
                 j = j + 1;
             }
+            // Lib sources are pushed after core_builtin (driver order); record the
+            // index range of their defs so the SemanticModel can mark them
+            // lib-export by index (GC-safe, no filename string comparison).
+            if (input.is_lib) {
+                if (!found_first_lib) {
+                    this.lib_def_start = total_defs;
+                    found_first_lib = true;
+                }
+                this.lib_def_count = this.lib_def_count + cast<i64>(unit.definitions.size());
+            }
             total_defs = total_defs + cast<i64>(unit.definitions.size());
         }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
@@ -59,6 +84,14 @@ class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        // Dyn-lib routing data (index-based lib-source boundary + shipped names).
+        model.lib_def_start = this.lib_def_start;
+        model.lib_def_count = this.lib_def_count;
+        let lii: mut i64 = 0;
+        while (lii < cast<i64>(this.lib_instances.size())) {
+            model.lib_instances.push(this.lib_instances.at(cast<u64>(lii)).some);
+            lii = lii + 1;
+        }
         // Seed command-line --define options before binding. Code-level #define
         // (processed during bind) overwrites these, so code has higher priority.
         let cdi: mut i64 = 0;

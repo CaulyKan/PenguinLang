@@ -37,23 +37,28 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     mkdir -p tmp
     # Pass 1: BabyPenguin lowers+compiles EmperorPenguin to C# and runs it (via the cs backend,
     # ~same order of magnitude as the native passes), which emits LLVM IR + clang -> tmp/pass2.
+    # Pass1 builds from EmperorPenguin.penguins (the ANTLR-safe DynlibStub — dyn-lib disabled),
+    # so --disable-dl is explicit per the bootstrap contract (pass1/pass2 are not dyn-lib capable).
     dotnet run --configuration Release --project BabyPenguin -- \
         --backend=cs EmperorPenguin/EmperorPenguin.penguins -- \
         EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
-        -vv -enable-meta -o "tmp/pass2" 2>&1 | ts "%F %T" | tee tmp/pass1.log
+        --disable-dl -vv -enable-meta -o "tmp/pass2" 2>&1 | ts "%F %T" | tee tmp/pass1.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass1 (BabyPenguin cs backend -> tmp/pass2)" >&2
         exit 1
     fi
+    # Pass2 (native) builds pass3 from EmperorPenguinFull.penguins: the json-backed Dynlib +
+    # json/vector/hashmap + _utils are part of the compiler, making pass3 the first
+    # dyn-lib-capable compiler (--enable-dl default on).
     echo "Running Pass 2 with bootstrapping ..."
-    tmp/pass2 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+    tmp/pass2 EmperorPenguin/EmperorPenguinFull.penguins \
         -vv -enable-meta -o "tmp/pass3" 2>&1 | ts "%F %T" | tee tmp/pass2.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass2 (tmp/pass2 -> tmp/pass3)" >&2
         exit 1
     fi
     echo "Running Pass 3 with bootstrapping ..."
-    tmp/pass3 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+    tmp/pass3 EmperorPenguin/EmperorPenguinFull.penguins \
         -vv -enable-meta -o "tmp/pass4" 2>&1 | ts "%F %T" | tee tmp/pass3.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass3 (tmp/pass3 -> tmp/pass4)" >&2
@@ -95,7 +100,7 @@ if [ $PUBLISH -eq 1 ]; then
 
     echo "Building Linux EmperorPenguin (tmp/linux/emperor_penguin) ..."
     mkdir -p tmp/linux
-    OPT=-O2 tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+    OPT=-O2 tmp/pass4 EmperorPenguin/EmperorPenguinFull.penguins \
         -enable-meta -o tmp/linux/emperor_penguin -vv 2>&1 | ts "%F %T" | tee tmp/publish-linux.log
     if [ $? -ne 0 ]; then
         echo "Publish FAILED: Linux EmperorPenguin build" >&2
@@ -127,7 +132,7 @@ if [ $PUBLISH -eq 1 ]; then
     CLANG=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
     LLVM_WIN_PREFIX="$LLVM_WIN_PREFIX" \
     OPT=-O2 \
-    tmp/pass4 EmperorPenguin/EmperorPenguin.penguins EmperorPenguin/src/utils.penguin \
+    tmp/pass4 EmperorPenguin/EmperorPenguinFull.penguins \
         -o tmp/win64/emperor_penguin.exe -target=win64 $WIN_META -vv 2>&1 | ts "%F %T" | tee tmp/publish-win64.log
     if [ $? -ne 0 ]; then
         echo "Publish FAILED: Windows EmperorPenguin cross-compile" >&2

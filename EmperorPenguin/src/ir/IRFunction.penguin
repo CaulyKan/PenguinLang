@@ -23,6 +23,12 @@ class IRFunction {
     next_temp: mut i64 = 0;
     next_label: mut i64 = 0;
     is_extern: mut bool = false;
+    // Dyn-lib: a declaration of a function whose body lives in a loaded
+    // .penguin-lib (emitted by IRGenerator.ensure_extern_decl_from_def). It IS
+    // extern (declared, not defined) but is a penguin function, NOT a C-runtime
+    // extern — so the LLVMEmitter must NOT route it through the _emperor_*
+    // extern_map (its symbol is the plain mangled name, matching the lib's def).
+    is_lib_export_decl: mut bool = false;
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
     // Names already allocated in this function. PenguinLang reuses source variable
     // names across sibling scopes (e.g. two `let x` in different if-branches of the

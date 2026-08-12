@@ -259,18 +259,20 @@ emitEventStatement: 'emit' expression '(' expression? ')' ';';
 compilationUnit: namespaceDeclaration* EOF;
 
 namespaceDeclaration:
-	(letKeyword declaration ';')
-	| typeReferenceDeclaration
-	| namespaceDefinition
-	| initialRoutine
-	| functionDefinition
-	| classDefinition
-	| enumDefinition
-	| interfaceDefinition
-	| interfaceForImplementation
-	| eventDefinition
-	| onRoutine
-	| ';';
+	'export'? (
+		(letKeyword declaration ';')
+		| typeReferenceDeclaration
+		| namespaceDefinition
+		| initialRoutine
+		| functionDefinition
+		| classDefinition
+		| enumDefinition
+		| interfaceDefinition
+		| interfaceForImplementation
+		| eventDefinition
+		| onRoutine
+		| ';'
+	);
 
 thisParameter: 'mut'? 'this';
 parameterList: (thisParameter | declaration)? (',' declaration)* ','?;

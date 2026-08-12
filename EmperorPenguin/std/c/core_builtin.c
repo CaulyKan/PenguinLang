@@ -360,6 +360,71 @@ void _emperor_file_write_text(const char* path, const char* text) {
     fclose(f);
 }
 
+/* --- Binary file I/O (dynamic-linking support) ---
+ * These back the `_utils.file_size` / `file_read_range` / `file_append` /
+ * `exe_path` externs. The read/append paths MUST use binary mode ("rb"/"ab"):
+ * on Windows text mode translates CRLF and would corrupt a .so/.dll tail + the
+ * appended JSON metadata + the PENGUINLIB footer. The metadata is ASCII, so the
+ * NUL-terminated string contract (strlen) stays valid. */
+
+long long _emperor_file_size(const char* path) {
+    if (!path) return -1;
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (long long)st.st_size;
+}
+
+/* Reads `size` bytes at byte offset `offset` into a GC buffer, NUL-terminated.
+ * Returns an empty string on error or when the range exceeds the file. */
+char* _emperor_file_read_range(const char* path, long long offset, long long size) {
+    char* empty = (char*)_emperor_gc_alloc(1, 1);
+    if (empty) empty[0] = '\0';
+    if (!path || offset < 0 || size < 0) return empty;
+    FILE* f = fopen(path, "rb");
+    if (!f) return empty;
+    if (fseek(f, (long)offset, SEEK_SET) != 0) { fclose(f); return empty; }
+    char* buf = (char*)_emperor_gc_alloc(size + 1, 1);
+    if (buf) {
+        size_t got = fread(buf, 1, (size_t)size, f);
+        buf[got] = '\0';
+    }
+    fclose(f);
+    return buf ? buf : empty;
+}
+
+void _emperor_file_append(const char* path, const char* text) {
+    if (!path) return;
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    if (text) {
+        fputs(text, f);
+    }
+    fclose(f);
+}
+
+/* Path of the running compiler executable. Used to locate .penguin-lib files
+ * in the compiler's own directory. Windows: GetModuleFileNameA; Linux/BSD:
+ * readlink /proc/self/exe; future macOS: _NSGetExecutablePath. */
+char* _emperor_exe_path(void) {
+#ifdef _WIN32
+    DWORD buf_size = 8192;
+    char* buf = (char*)_emperor_gc_alloc(buf_size, 1);
+    if (!buf) return buf;
+    DWORD got = GetModuleFileNameA(NULL, buf, buf_size);
+    if (got == 0 || got >= buf_size) { buf[0] = '\0'; }
+    else { buf[got] = '\0'; }
+    return buf;
+#else
+    long buf_size = 4096;
+    char* buf = (char*)_emperor_gc_alloc(buf_size, 1);
+    if (!buf) return buf;
+    long got = (long)readlink("/proc/self/exe", buf, (size_t)(buf_size - 1));
+    if (got < 0) { buf[0] = '\0'; }
+    else { buf[got] = '\0'; }
+    return buf;
+#endif
+}
+
 /* --- Filesystem --- */
 
 char _emperor_mkdir(const char* path) {

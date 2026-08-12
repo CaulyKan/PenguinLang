@@ -1,6 +1,6 @@
 # StdArrayTest
 ## Description
-End-to-end test of the meta-programming-driven stdlib `penguin.Array<T,N>` (fixed-size contiguous array) from `EmperorPenguin/std/penguin/array.penguin`. Allocates an `Array<i32,5>` via `_malloc(N*#sizeof(T))` (#sizeof computed at compile time = 4), fills it with `set`, reads back with bounds-checked `at` (out-of-bounds → Option.none), checks `size`, and manually `dispose_mem()`s. Exercises the new pointer IR (`#__load`/`#__store` → LOAD_PTR/STORE_PTR), the `#sizeof` compile-time intrinsic, the `_malloc`/`_mfree` externs, and req5 mixed type+value class templates (`#template<T: type, N: u64>`). Pass3-only: array.penguin is bootstrap-deferred stdlib (not auto-loaded; passed via Compile.Args) and the pointer IR is EmperorPenguin-native only.
+End-to-end test of the meta-programming-driven stdlib `std.Array<T,N>` (fixed-size contiguous array) from `EmperorPenguin/std/penguin/array.penguin`. Allocates an `Array<i32,5>` via `_malloc(N*#sizeof(T))` (#sizeof computed at compile time = 4), fills it with `set`, reads back with bounds-checked `at` (out-of-bounds → Option.none), checks `size`, and manually `dispose_mem()`s. Exercises the new pointer IR (`#__load`/`#__store` → LOAD_PTR/STORE_PTR), the `#sizeof` compile-time intrinsic, the `_malloc`/`_mfree` externs, and req5 mixed type+value class templates (`#template<T: type, N: u64>`). Pass3-only: array.penguin is bootstrap-deferred stdlib (not auto-loaded; passed via Compile.Args) and the pointer IR is EmperorPenguin-native only.
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -8,7 +8,7 @@ End-to-end test of the meta-programming-driven stdlib `penguin.Array<T,N>` (fixe
 ## Test Code
 ```
 initial {
-    let a = new penguin.Array<i32, 5>();
+    let a = new std.Array<i32, 5>();
     let i: mut u64 = 0;
     while (i < a.size()) {
         a.set(i, cast<i32>(i) * cast<i32>(i));

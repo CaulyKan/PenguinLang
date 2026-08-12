@@ -1,6 +1,6 @@
 # MetaJsonSerialize
 ## Description
-Meta-driven auto-impl: `#impl_json_serializable();` inside `class Point` expands (at 5a splice time) to an `impl penguin.IJsonSerializable<Point>` block. The `#fun impl_json_serializable` reads its enclosing class via `compiler().get_current_scope()`, reflects `t.fields()` (AST-fallback reflection — field names AND types, now enriched), and emits a `json_serialize` that streams each field through `penguin.JsonWriter` in declaration order. `p.json_serialize()` output is byte-exact. Requires native Pass2/Pass3 (meta JIT + reflection).
+Meta-driven auto-impl: `#impl_json_serializable();` inside `class Point` expands (at 5a splice time) to an `impl std.IJsonSerializable<Point>` block. The `#fun impl_json_serializable` reads its enclosing class via `compiler().get_current_scope()`, reflects `t.fields()` (AST-fallback reflection — field names AND types, now enriched), and emits a `json_serialize` that streams each field through `std.JsonWriter` in declaration order. `p.json_serialize()` output is byte-exact. Requires native Pass2/Pass3 (meta JIT + reflection).
 
 ## Apply To
 * EmperorPenguin Pass3

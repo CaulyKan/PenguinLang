@@ -6,6 +6,15 @@ namespace _utils {
     extern fun dir_exists(path: string) -> bool;
     extern fun dir_get_entries(path: string) -> string;
 
+    // Binary-mode file I/O for dynamic-linking (.penguin-lib) support. Read paths
+    // use "rb"/"ab" so Windows does not CRLF-mangle a .so/.dll tail or the JSON
+    // metadata + PENGUINLIB footer appended to it. Metadata is ASCII, so the
+    // NUL-terminated string contract holds.
+    extern fun file_size(file: string) -> i64;
+    extern fun file_read_range(file: string, offset: i64, size: i64) -> string;
+    extern fun file_append(file: string, text: string);
+    extern fun exe_path() -> string;
+
     // Create a fresh, process-unique temporary directory and return its path.
     // The directory is created atomically so it never conflicts with other
     // callers (including parallel compiler invocations). Cross-platform.

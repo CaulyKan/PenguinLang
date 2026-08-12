@@ -37,6 +37,13 @@ class BoundFunctionDefinition {
     is_new: bool = false;
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     is_generic_template: bool = false;
+    // Dyn-lib routing: this def's compiled symbol lives in a .penguin-lib, so the
+    // consumer emits a declaration (extern) and links against the lib instead of
+    // lowering a body. Set for lib-source defs and shipped generic instances.
+    is_lib_export: bool = false;
+    // Set on monomorphized generic instances (produced by specialize_*), so
+    // collect_instances can list the shipped instances in a lib's metadata.
+    is_specialized: bool = false;
 
     fun new(mut this, name: string, full_name: string, is_extern: mut bool, is_pure: mut bool, is_new: mut bool, is_static: mut bool) {
         this.name = name;
@@ -74,6 +81,8 @@ class BoundClassDefinition {
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_generic_template: bool = false;
+    is_lib_export: bool = false;
+    is_specialized: bool = false;
     // Interface names this class implements (from its `impl ...` members), populated
     // by the AST-fallback reflection (MetaEngine.spec_to_bound_type) so meta codegen
     // can check e.g. whether a field's type implements IJsonSerializable at
@@ -136,6 +145,8 @@ class BoundEnumDefinition {
     interface_impls: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     ast_source: Option<Definition> = new Option<Definition>.none();
+    is_lib_export: bool = false;
+    is_specialized: bool = false;
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -164,6 +175,8 @@ class BoundInterfaceDefinition {
     vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     ast_source: Option<Definition> = new Option<Definition>.none();
+    is_lib_export: bool = false;
+    is_specialized: bool = false;
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;

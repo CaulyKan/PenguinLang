@@ -5,9 +5,9 @@
 //      via get()/as_*) and JsonWriter (stream out a document). No per-type code.
 //   2. Auto-impl via meta — `#impl_json_serializable();` inside a class body
 //      expands (at compile time, through compiler().get_current_scope() + field
-//      reflection) to an `impl penguin.IJsonSerializable<Foo> { json_serialize /
-//      json_deserialize }` block. Fields may be primitives, penguin.Vector<T>,
-//      penguin.HashMap<K,V>, or nested IJsonSerializable classes (recursively).
+//      reflection) to an `impl std.IJsonSerializable<Foo> { json_serialize /
+//      json_deserialize }` block. Fields may be primitives, std.Vector<T>,
+//      std.HashMap<K,V>, or nested IJsonSerializable classes (recursively).
 //
 // NOT auto-loaded — compile it explicitly (e.g. via a markdown test's
 // Compile.Args) along with its dependencies hashmap.penguin + vector.penguin.
@@ -26,7 +26,7 @@
 // supported by the parser, and static impl calls through a generic/primitive
 // type name fail in the LLVM backend (red sentinel MetaStaticImplCall), so an
 // Option/Box field currently hits the "not IJsonSerializable" skip path.
-namespace penguin {
+namespace std {
 
 // ---------------------------------------------------------------------------
 // Serialization interface (meta-impl target)
@@ -110,8 +110,8 @@ enum JsonValue {
     json_int: string;
     json_float: string;
     json_string: string;
-    json_array: penguin.Vector<JsonValue>;
-    json_object: penguin.HashMap<string, JsonValue>;
+    json_array: std.Vector<JsonValue>;
+    json_object: std.HashMap<string, JsonValue>;
     json_error: string;
 
     fun is_null(this) -> bool { return this is JsonValue.json_null; }
@@ -156,14 +156,14 @@ enum JsonValue {
     }
 
     // Defensive: wrong variant -> a fresh empty container (callers gate on is_*).
-    fun as_array(this) -> penguin.Vector<JsonValue> {
+    fun as_array(this) -> std.Vector<JsonValue> {
         if (this is JsonValue.json_array) { return this.json_array; }
-        return new penguin.Vector<JsonValue>();
+        return new std.Vector<JsonValue>();
     }
 
-    fun as_object(this) -> penguin.HashMap<string, JsonValue> {
+    fun as_object(this) -> std.HashMap<string, JsonValue> {
         if (this is JsonValue.json_object) { return this.json_object; }
-        return new penguin.HashMap<string, JsonValue>();
+        return new std.HashMap<string, JsonValue>();
     }
 
     fun get(this, key: string) -> __builtin.Option<JsonValue> {
@@ -172,7 +172,7 @@ enum JsonValue {
     }
 
     fun to_json(this) -> string {
-        let mut w = new penguin.JsonWriter();
+        let mut w = new std.JsonWriter();
         w.value(this);
         return w.to_string();
     }
@@ -186,14 +186,14 @@ class JsonWriter {
     sb: mut __builtin.StringBuilder;
     // first[k] = 1 while container level k (0 = outermost) has emitted no value
     // yet, so no leading comma. depth = number of open containers.
-    first: mut penguin.Vector<u8>;
+    first: mut std.Vector<u8>;
     depth: mut i64 = 0;
     // After key() the next value belongs to that key (no comma emitted).
     pending_key: mut bool = false;
 
     fun new(mut this) {
         this.sb = new __builtin.StringBuilder();
-        this.first = new penguin.Vector<u8>();
+        this.first = new std.Vector<u8>();
         this.depth = 0;
         this.pending_key = false;
     }
@@ -216,7 +216,7 @@ class JsonWriter {
     fun _pop(mut this) {
         if (this.depth <= 0) { return; }
         let n: u64 = cast<u64>(this.depth) - 1;
-        let new_first: mut penguin.Vector<u8> = new penguin.Vector<u8>();
+        let new_first: mut std.Vector<u8> = new std.Vector<u8>();
         let i: mut u64 = 0;
         while (i < n) {
             new_first.push(this.first.at(i).some);
@@ -433,7 +433,7 @@ class JsonReader {
     fun _parse_object(mut this) -> JsonValue {
         this._advance();  // consume '{'
         this._skip_ws();
-        let map: mut penguin.HashMap<string, JsonValue> = new penguin.HashMap<string, JsonValue>();
+        let map: mut std.HashMap<string, JsonValue> = new std.HashMap<string, JsonValue>();
         if (this._peek() == "}") { this._advance(); return new JsonValue.json_object(map); }
         while (true) {
             this._skip_ws();
@@ -458,7 +458,7 @@ class JsonReader {
     fun _parse_array(mut this) -> JsonValue {
         this._advance();  // consume '['
         this._skip_ws();
-        let vec: mut penguin.Vector<JsonValue> = new penguin.Vector<JsonValue>();
+        let vec: mut std.Vector<JsonValue> = new std.Vector<JsonValue>();
         if (this._peek() == "]") { this._advance(); return new JsonValue.json_array(vec); }
         while (true) {
             let val: JsonValue = this._parse_value();
@@ -615,7 +615,7 @@ fun _unicode_escape(code: i64) -> string {
 
 // ---------------------------------------------------------------------------
 // Meta-driven auto-impl. `#impl_json_serializable();` inside a class body
-// expands to an `impl penguin.IJsonSerializable<Cls> { ... }` block generated
+// expands to an `impl std.IJsonSerializable<Cls> { ... }` block generated
 // by reflecting over the class's fields (compiler().get_current_scope()).
 // ---------------------------------------------------------------------------
 // Whether a field type can be JSON-serialized by the auto-impl. Primitives and
@@ -625,11 +625,11 @@ fun _unicode_escape(code: i64) -> string {
 #fun json_serializable_type(t: type) -> bool {
     let dn: string = t.display_name();
     if (t.is_primitive()) { return true; }
-    if (string_find(dn, "penguin.Vector") >= 0) {
+    if (string_find(dn, "std.Vector") >= 0) {
         if (t.generic_args.size() >= 1) { return json_serializable_type(t.generic_args.at(0).some); }
         return false;
     }
-    if (string_find(dn, "penguin.HashMap") >= 0) {
+    if (string_find(dn, "std.HashMap") >= 0) {
         if (t.generic_args.size() >= 2) { return json_serializable_type(t.generic_args.at(1).some); }
         return false;
     }
@@ -645,13 +645,13 @@ fun _unicode_escape(code: i64) -> string {
 // classes via theirs) so codegen is uniform.
 #fun json_write_snippet(t: type, arg: string) -> string {
     let dn: string = t.display_name();
-    if (string_find(dn, "penguin.Vector") >= 0 && t.generic_args.size() >= 1) {
+    if (string_find(dn, "std.Vector") >= 0 && t.generic_args.size() >= 1) {
         let elem = t.generic_args.at(0).some;
         if (json_serializable_type(elem) == false) { return ""; }
         return "w.begin_array(); for (let _v in " + arg + ") { "
             + json_write_snippet(elem, "_v") + " } w.end_array()";
     }
-    if (string_find(dn, "penguin.HashMap") >= 0 && t.generic_args.size() >= 2) {
+    if (string_find(dn, "std.HashMap") >= 0 && t.generic_args.size() >= 2) {
         let vv = t.generic_args.at(1).some;
         if (json_serializable_type(vv) == false) { return ""; }
         return "w.begin_object(); for (let _k in " + arg + ".iter_keys()) { w.key(_k); "
@@ -680,14 +680,14 @@ fun _unicode_escape(code: i64) -> string {
 // Statement(s) assigning `target` (an lvalue) from a JsonValue (`v`); "" = skip.
 #fun json_read_stmt(t: type, v: string, target: string) -> string {
     let dn: string = t.display_name();
-    if (string_find(dn, "penguin.Vector") >= 0 && t.generic_args.size() >= 1) {
+    if (string_find(dn, "std.Vector") >= 0 && t.generic_args.size() >= 1) {
         let elem = t.generic_args.at(0).some;
         if (json_serializable_type(elem) == false) { return ""; }
         return "let _arr = " + v + ".as_array(); let _j: mut u64 = 0; "
             + "while (_j < _arr.size()) { " + target + ".push("
             + json_read_expr(elem, "_arr.at(_j).some") + "); _j = _j + 1; }";
     }
-    if (string_find(dn, "penguin.HashMap") >= 0 && t.generic_args.size() >= 2) {
+    if (string_find(dn, "std.HashMap") >= 0 && t.generic_args.size() >= 2) {
         let vv = t.generic_args.at(1).some;
         if (json_serializable_type(vv) == false) { return ""; }
         return "let mut _map = " + v + ".as_object(); for (let _k in _map.iter_keys()) { "
@@ -706,8 +706,8 @@ fun _unicode_escape(code: i64) -> string {
     let cls: string = t.display_name();
     let fs = t.fields();
     let n: i64 = cast<i64>(fs.size());
-    let ser: mut string = "let mut w = new penguin.JsonWriter(); w.begin_object(); ";
-    let de: mut string = "let _v: penguin.JsonValue = penguin.parse_json(json); "
+    let ser: mut string = "let mut w = new std.JsonWriter(); w.begin_object(); ";
+    let de: mut string = "let _v: std.JsonValue = std.parse_json(json); "
         + "let mut _obj = new " + cls + "(); ";
     let i: mut i64 = 0;
     while (i < n) {
@@ -732,10 +732,10 @@ fun _unicode_escape(code: i64) -> string {
     ser = ser + "w.end_object(); return w.to_string();";
     de = de + "return _obj;";
     return compiler().create_definition(
-        "impl penguin.IJsonSerializable<" + cls + "> { "
+        "impl std.IJsonSerializable<" + cls + "> { "
         + "fun json_serialize(this) -> string { " + ser + " } "
         + "fun json_deserialize(json: string) -> mut " + cls + " { " + de + " } "
         + "}");
 }
 
-} // namespace penguin
+} // namespace std

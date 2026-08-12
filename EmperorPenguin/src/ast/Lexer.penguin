@@ -76,6 +76,12 @@ namespace emperor {
                     this.advance_chars(9);
                     continue;
                 }
+                if (this.match_keyword("export")) {
+                    tokens.push(new Token(new TokenType.Export(), "export", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
                 if (this.match_keyword("interface")) {
                     tokens.push(new Token(new TokenType.Interface(), "interface", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 9;
