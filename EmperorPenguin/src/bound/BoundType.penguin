@@ -155,6 +155,16 @@ class BoundType {
     }
 
     fun is_same_type(this, other: BoundType) -> bool {
+        // req5 value template args ride the generic_args as synthetic types whose
+        // kind/primitive is the VALUE's type (e.g. both i32 for N=5 and N=2), so
+        // they would compare equal and dedupe distinct instantiations (foo<5> vs
+        // foo<2>). Compare the concrete value instead.
+        if (this.is_template_value_arg || other.is_template_value_arg) {
+            if (this.is_template_value_arg && other.is_template_value_arg) {
+                return this.template_value == other.template_value;
+            }
+            return false;
+        }
         if (cast<string>(this.kind) != cast<string>(other.kind)) { return false; }
         if (this.kind is TypeKind.PrimitiveKind) {
             return cast<string>(this.primitive) == cast<string>(other.primitive);

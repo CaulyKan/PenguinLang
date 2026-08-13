@@ -13,6 +13,14 @@ fun _mark_ast_exported(def: Definition) {
     class Parser {
         stream: mut TokenStream = new TokenStream(new _utils.List<Token>());
         errors: mut _utils.List<string> = new _utils.List<string>();
+        // #specializing mode: while true, an `impl <Iface> { ... }` statement is
+        // parsed as a SpecializingImplExpression (conditional interface impl) in
+        // any code block — top-level or nested inside if/else branches. The slot
+        // counter + the current SpecializingDefinition let the block parser assign
+        // slots and collect the impl fragments in order.
+        in_specializing: mut bool = false;
+        specializing_slot_counter: mut i64 = 0;
+        current_specializing: mut SpecializingDefinition = new SpecializingDefinition();
 
         fun new(mut this, tokens: mut _utils.List<Token>) {
             this.stream = new TokenStream(tokens);
@@ -115,6 +123,16 @@ fun _mark_ast_exported(def: Definition) {
                     this.capture_meta_trailing_block(mc);
                 }
                 return new Expression.meta_call(mc);
+            } else if (token.token_type is TokenType.I8 || token.token_type is TokenType.I16 || token.token_type is TokenType.I32 || token.token_type is TokenType.I64
+                || token.token_type is TokenType.U8 || token.token_type is TokenType.U16 || token.token_type is TokenType.U32 || token.token_type is TokenType.U64
+                || token.token_type is TokenType.Float || token.token_type is TokenType.Double
+                || token.token_type is TokenType.Bool || token.token_type is TokenType.StringKw || token.token_type is TokenType.Char) {
+                // A primitive-type keyword used as an expression — a type-name
+                // expression for STATIC interface-impl calls (`i64.bar("5")`).
+                // Wrap the keyword text as an identifier (mirrors the meta-arg
+                // path); the binder resolves it to the primitive type symbol.
+                let pkw: Token = this.stream.advance();
+                return new Expression.identifier(new IdentifierExpression(pkw.text));
             } else {
                 return new Expression.constant(new ConstantExpression(""));
             }
@@ -278,6 +296,22 @@ fun _mark_ast_exported(def: Definition) {
                 } else if (next.token_type is TokenType.Hash || next.token_type is TokenType.Let || next.token_type is TokenType.For || next.token_type is TokenType.Return || next.token_type is TokenType.Break || next.token_type is TokenType.Continue || next.token_type is TokenType.Emit || next.token_type is TokenType.Yield || next.token_type is TokenType.InternalSignal || next.token_type is TokenType.Semicolon) {
                     let stmt = this.parse_statement();
                     node.statements.push(stmt);
+                } else if (next.token_type is TokenType.Impl && this.in_specializing) {
+                    // #specializing: a conditional interface impl at statement
+                    // position (top-level or inside an if/else branch).
+                    let impl_def: Definition = this.parse_interfaceImplementation();
+                    if (impl_def is Definition.impl_def) {
+                        let iexpr: mut SpecializingImplExpression = new SpecializingImplExpression();
+                        iexpr.impl_def = new Option<InterfaceImplementation>.some(impl_def.impl_def);
+                        iexpr.slot = this.specializing_slot_counter;
+                        this.specializing_slot_counter = this.specializing_slot_counter + 1;
+                        this.current_specializing.impl_fragments.push(impl_def.impl_def);
+                        let bs: BlockExpressionStatement = new BlockExpressionStatement();
+                        bs.expression = new Option<Expression>.some(new Expression.specializing_impl(iexpr));
+                        node.statements.push(new Statement.block_expr(bs));
+                    } else {
+                        this.report_error("error: #specializing only supports 'impl <Interface> { ... }'; 'impl ... for OtherType' is not supported yet");
+                    }
                 } else {
                     // expression or assignment
                     let expr = this.parse_expression();
@@ -1978,9 +2012,56 @@ fun _mark_ast_exported(def: Definition) {
             if (next.token_type is TokenType.For) { return this.parse_metaForDefinition(); }
             if (next.token_type is TokenType.While) { return this.parse_metaWhileDefinition(); }
             if (next.token_type is TokenType.Class) { return this.parse_metaClassDefinition(); }
+            if (next.token_type is TokenType.Identifier && next.text == "specializing") { return this.parse_specializingDefinition(); }
             if (next.token_type is TokenType.Identifier) { return this.parse_metaCallDefinition(); }
             print("error: unexpected token after # in meta declaration: " + next.to_string() + "\n");
             return new Definition.function_def(new FunctionDefinition(""));
+        }
+
+        // specializingDeclaration: '#' 'specializing' typeSpecifier '{' statement* '}'
+        // A compile-time conditional interface impl (Rust `where`-clause-style,
+        // evaluated positively). The target typeSpecifier names the generic type
+        // being specialized (e.g. `Bar<T>` or `foo<N>`); its template params become
+        // the callback's meta params. Body statements are if/else expressions,
+        // `impl <Interface> { ... }` blocks (each a conditional interface impl), and
+        // #error/#warn diagnostics. Classification: Dispatcher
+        fun parse_specializingDefinition(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.Hash());
+            this.stream.expect(new TokenType.Identifier()); // "specializing"
+            let node: mut SpecializingDefinition = new SpecializingDefinition();
+            node.target_type_spec = new Option<TypeSpecifier>.some(this.parse_typeSpecifier());
+            node.location = start_loc;
+            // Enter #specializing mode so the code-block parser handles `impl`
+            // statements (top-level or inside if/else branches) as conditional
+            // interface impls, then parse the body as one code block.
+            let saved_spec: mut SpecializingDefinition = this.current_specializing;
+            let saved_flag: bool = this.in_specializing;
+            let saved_counter: i64 = this.specializing_slot_counter;
+            this.current_specializing = node;
+            this.in_specializing = true;
+            this.specializing_slot_counter = 0;
+            let block: Expression = this.parse_codeBlockExpression();
+            if (block is Expression.code_block) {
+                let cb: CodeBlockExpression = block.code_block;
+                let si: mut i64 = 0;
+                while (si < cast<i64>(cb.statements.size())) {
+                    let st: Statement = cb.statements.at(cast<u64>(si)).some;
+                    if (st is Statement.expression) {
+                        if (st.expression.expression.is_some()) { node.body.push(st.expression.expression.some); }
+                    } else if (st is Statement.block_expr) {
+                        if (st.block_expr.expression.is_some()) { node.body.push(st.block_expr.expression.some); }
+                    } else {
+                        this.report_error("error: #specializing body may only contain if/else, impl, and #error/#warn statements");
+                    }
+                    si = si + 1;
+                }
+                if (cb.trailing_expr.is_some()) { node.body.push(cb.trailing_expr.some); }
+            }
+            this.current_specializing = saved_spec;
+            this.in_specializing = saved_flag;
+            this.specializing_slot_counter = saved_counter;
+            return new Definition.specializing_def(node);
         }
 
         // metaStatement: '#' ('if' | 'for' | 'while' | 'break' | 'continue' | identifier) ...

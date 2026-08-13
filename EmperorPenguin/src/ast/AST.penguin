@@ -444,6 +444,24 @@ class VoidLiteralExpression {
     }
 }
 
+// An `impl IFoo<T> { ... }` statement inside a `#specializing` block body. Not a
+// normal runtime expression: it declares a CONDITIONAL interface implementation
+// that the compiler activates when the #specializing callback runs. `slot` is the
+// impl's index within the block (0-based); the synthesized callback's body
+// replaces this node with `emperor.penguin_meta_activate_impl(<slot>)`.
+class SpecializingImplExpression {
+    impl_def: mut Option<InterfaceImplementation> = new Option<InterfaceImplementation>.none();
+    slot: mut i64 = 0;
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IExpression {
+        fun build_text(this: IExpression) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<SpecializingImplExpression>(this);
+            return self.impl_def.some.build_text();
+        }
+    }
+}
+
 class MetaCallExpression {
     func_name: mut string = "";
     arguments: mut _utils.List<Expression> = new _utils.List<Expression>();
@@ -499,6 +517,7 @@ enum Expression {
     wait_expr: WaitExpression;
     void_literal: VoidLiteralExpression;
     meta_call: MetaCallExpression;
+    specializing_impl: SpecializingImplExpression;
     try_bind: TryBindExpression;
 
     fun build_text(this) -> string {
@@ -523,6 +542,7 @@ enum Expression {
         if (this is Expression.wait_expr) { return this.wait_expr.build_text(); }
         if (this is Expression.void_literal) { return this.void_literal.build_text(); }
         if (this is Expression.meta_call) { return this.meta_call.build_text(); }
+        if (this is Expression.specializing_impl) { return this.specializing_impl.build_text(); }
         if (this is Expression.try_bind) { return this.try_bind.build_text(); }
         return "";
     }
@@ -1648,6 +1668,27 @@ class MetaCallDefinition {
     }
 }
 
+// `#specializing Bar<T> { ... }` — a compile-time conditional interface impl.
+// The block is compiled into a meta (#fun) callback that runs when `Bar<T>` is
+// instantiated; every executed `impl` statement (Expression.specializing_impl)
+// activates that interface implementation on the specialized class/enum. `body`
+// is the block's statements (if/else expressions, impls, #error/#warn calls).
+class SpecializingDefinition {
+    target_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    body: mut _utils.List<Expression> = new _utils.List<Expression>();
+    // The conditional impl blocks in SLOT order (nested or not); the callback's
+    // `emperor.penguin_meta_activate_impl(<slot>)` maps to these 1:1.
+    impl_fragments: mut _utils.List<InterfaceImplementation> = new _utils.List<InterfaceImplementation>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<SpecializingDefinition>(this);
+            return "#specializing " + self.target_type_spec.some.build_text() + " { <specializing-body> }";
+        }
+    }
+}
+
 enum Definition {
     function_def: FunctionDefinition;
     class_def: ClassDefinition;
@@ -1669,6 +1710,7 @@ enum Definition {
     meta_for_def: MetaForDefinition;
     meta_while_def: MetaWhileDefinition;
     meta_call_def: MetaCallDefinition;
+    specializing_def: SpecializingDefinition;
 
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
@@ -1692,6 +1734,7 @@ enum Definition {
         if (this is Definition.meta_for_def) { return this.meta_for_def.build_text(); }
         if (this is Definition.meta_while_def) { return this.meta_while_def.build_text(); }
         if (this is Definition.meta_call_def) { return this.meta_call_def.build_text(); }
+        if (this is Definition.specializing_def) { return this.specializing_def.build_text(); }
         return "";
     }
 }

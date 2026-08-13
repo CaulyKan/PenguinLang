@@ -20,12 +20,15 @@
 // builtins (e.g. `__builtin.Box`) — the AST-fallback reflection matches by
 // unqualified name, so a user `class Box` resolves to the builtin's fields.
 //
-// DEFERRED (recorded, not implemented): `IJsonSerializable` for `Option<T>` and
-// `Box<T>` (json null / inner-value). Generic interface impls
-// (`#template impl IJsonSerializable<Option<T>> for Option<T>`) are not
-// supported by the parser, and static impl calls through a generic/primitive
-// type name fail in the LLVM backend (red sentinel MetaStaticImplCall), so an
-// Option/Box field currently hits the "not IJsonSerializable" skip path.
+// `IJsonSerializable` for `Option<T>` and `Box<T>` is implemented via the
+// `#specializing` blocks at the end of this file (conditional impls activated
+// when the element type is itself deserializable). The impls ARE injected onto
+// the specialized type at instantiation; NOTE: calling an injected impl method
+// on a generic enum/class value is currently blocked by the underlying
+// enum-interface dispatch / boxing path in IRGenerator/LLVMEmitter (a separate
+// pre-existing gap), so the runtime round-trip is not yet reachable — the
+// auto-impl's Option/Box FIELD handling (mangled `Option__T` static
+// json_deserialize) is the working path.
 namespace std {
 
 // ---------------------------------------------------------------------------
@@ -633,10 +636,90 @@ fun _unicode_escape(code: i64) -> string {
         if (t.generic_args.size() >= 2) { return json_serializable_type(t.generic_args.at(1).some); }
         return false;
     }
+    // Option<T> / Box<T> are serializable exactly when their element has a real
+    // IJsonSerializable impl (json_deserializable_type, the strict predicate) —
+    // they get that impl via the #specializing blocks below.
+    if (string_find(dn, "Option") >= 0 || string_find(dn, "Box") >= 0) {
+        if (t.generic_args.size() >= 1) { return json_deserializable_type(t.generic_args.at(0).some); }
+        return false;
+    }
     if (let cd := t.class_def().some) {
         return cd.has_interface("IJsonSerializable");
     }
     return false;
+}
+
+// STRICT serializable predicate: the type has a real IJsonSerializable impl
+// (primitive, or a class/enum whose interface_impls include IJsonSerializable —
+// checked on real bound defs AND on 5a AST-fallback dummies via has_interface).
+// Containers (Vector/HashMap) have NO impl, so they are excluded: an Option<T>/
+// Box<T> only gets an impl when the element itself is deserializable.
+#fun json_deserializable_type(t: type) -> bool {
+    if (t.is_primitive()) {
+        // A failed type-token resolution materializes as an empty (void) BoundType;
+        // never treat that as serializable (it would wrongly inject the impl and the
+        // body's this.some.json_serialize() would fail on the real element type).
+        if (t.display_name() == "void") { return false; }
+        return true;
+    }
+    if (let cd := t.class_def().some) {
+        if (cd.has_interface("IJsonSerializable")) { return true; }
+        let impls = cd.interface_impls;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impls.size())) {
+            let d = impls.at(cast<u64>(i)).some;
+            if (d is emperor.BoundDefinition.impl_def) {
+                if (string_find(d.impl_def.interface_type.display_name(), "IJsonSerializable") >= 0) { return true; }
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+    if (let ed := t.enum_def().some) {
+        let impls2 = ed.interface_impls;
+        let j: mut i64 = 0;
+        while (j < cast<i64>(impls2.size())) {
+            let d2 = impls2.at(cast<u64>(j)).some;
+            if (d2 is emperor.BoundDefinition.impl_def) {
+                if (string_find(d2.impl_def.interface_type.display_name(), "IJsonSerializable") >= 0) { return true; }
+            }
+            j = j + 1;
+        }
+        return false;
+    }
+    return false;
+}
+
+// json_read_expr returns the EXPRESSION TEXT (a string, for splicing into
+// generated code). To splice it as a VALUE inside a #specializing impl body,
+// wrap it as an `ast` so the meta call splices the parsed expression (e.g.
+// `_v.as_i64()`) rather than the string literal.
+#fun json_read_expr_ast(t: type, v: string) -> ast {
+    let text: string = json_read_expr(t, v);
+    return compiler().create_expression(text);
+}
+
+// The mangled specialized type name (e.g. Option__i64) for a generic type — the
+// form that resolves in global_scope and lowers to a direct static call. The
+// namespace is dropped (matches the compiler's mangle_generic_name); bare
+// references resolve via global-scope fallback.
+#fun json_mangled_name(t: type) -> string {
+    let base: mut string = "?";
+    if (t.type_definition.is_some()) {
+        base = t.type_definition.some.get_name();
+    }
+    let mut s = base;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(t.generic_args.size())) {
+        s = s + "__" + json_mangle_arg(t.generic_args.at(cast<u64>(i)).some);
+        i = i + 1;
+    }
+    return s;
+}
+
+#fun json_mangle_arg(t: type) -> string {
+    if (cast<i64>(t.generic_args.size()) > 0) { return json_mangled_name(t); }
+    return t.display_name();
 }
 
 // Returns JsonWriter code that writes runtime expression `arg` (of type t), or
@@ -673,13 +756,27 @@ fun _unicode_escape(code: i64) -> string {
     if (dn == "bool") { return v + ".as_bool()"; }
     if (dn == "string") { return v + ".as_string()"; }
     if (dn == "char") { return "cast<char>(" + v + ".as_i64())"; }
-    // nested IJsonSerializable class (re-serialize the subtree to its fragment)
-    return dn + ".json_deserialize(" + v + ".to_json())";
+    // Nested IJsonSerializable class/enum: re-serialize the subtree to its
+    // fragment and call the type's static json_deserialize. The MANGLED name
+    // (e.g. Option__i64) resolves the specialized type; for a concrete class
+    // (Child) it is just the simple name — identical to the pre-#specializing
+    // behavior. Generic angle-bracket names don't parse in expression position.
+    return json_mangled_name(t) + ".json_deserialize(" + v + ".to_json())";
 }
 
 // Statement(s) assigning `target` (an lvalue) from a JsonValue (`v`); "" = skip.
 #fun json_read_stmt(t: type, v: string, target: string) -> string {
     let dn: string = t.display_name();
+    // Option<T> / Box<T>: read via the mangled static json_deserialize (the
+    // injected impl handles null for Option internally).
+    if (string_find(dn, "Option") >= 0 || string_find(dn, "Box") >= 0) {
+        if (t.generic_args.size() >= 1) {
+            let elem = t.generic_args.at(0).some;
+            if (json_deserializable_type(elem) == false) { return ""; }
+            return target + " = " + json_mangled_name(t) + ".json_deserialize(" + v + ".to_json());";
+        }
+        return "";
+    }
     if (string_find(dn, "std.Vector") >= 0 && t.generic_args.size() >= 1) {
         let elem = t.generic_args.at(0).some;
         if (json_serializable_type(elem) == false) { return ""; }
@@ -736,6 +833,51 @@ fun _unicode_escape(code: i64) -> string {
         + "fun json_serialize(this) -> string { " + ser + " } "
         + "fun json_deserialize(json: string) -> mut " + cls + " { " + de + " } "
         + "}");
+}
+
+// ---------------------------------------------------------------------------
+// #specializing: conditional IJsonSerializable for __builtin.Option<T> and
+// __builtin.Box<T>. When Option<T>/Box<T> is instantiated with a T that has a
+// real IJsonSerializable impl (json_deserializable_type), the callback activates
+// the impl below; otherwise the type simply has no impl (positive semantics —
+// using it as serializable is a compile error at the use site).
+// The impl body's deserialize uses #json_read_expr(T, "_v") (a meta splice at
+// bind time) so primitives read via JsonValue.as_* and classes via their static
+// json_deserialize — no per-T static calls through primitive/generic names.
+// ---------------------------------------------------------------------------
+#specializing __builtin.Option<T> {
+    if (json_deserializable_type(T)) {
+        impl std.IJsonSerializable<__builtin.Option<T>> {
+            fun json_serialize(this) -> string {
+                if (this.is_some()) {
+                    return this.some.json_serialize();
+                } else {
+                    return "null";
+                }
+            }
+            fun json_deserialize(json: string) -> mut __builtin.Option<T> {
+                if (json == "null") {
+                    return new __builtin.Option<T>.none();
+                }
+                let _v = std.parse_json(json);
+                return new __builtin.Option<T>.some(#json_read_expr_ast(T, "_v"));
+            }
+        }
+    }
+}
+
+#specializing __builtin.Box<T> {
+    if (json_deserializable_type(T)) {
+        impl std.IJsonSerializable<__builtin.Box<T>> {
+            fun json_serialize(this) -> string {
+                return this.value.json_serialize();
+            }
+            fun json_deserialize(json: string) -> mut __builtin.Box<T> {
+                let _v = std.parse_json(json);
+                return new __builtin.Box<T>(#json_read_expr_ast(T, "_v"));
+            }
+        }
+    }
 }
 
 } // namespace std

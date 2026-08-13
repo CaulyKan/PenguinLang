@@ -11,6 +11,18 @@ class FunctionInstantiation {
     }
 }
 
+// A compiled `#specializing Bar<T> { ... }` block. The block body becomes a
+// meta (#fun) callback `bmf` (params mirror Bar's template params; each `impl`
+// statement becomes emperor.penguin_meta_activate_impl(<slot>)), and the impl
+// fragments (in slot order) are what the monomorphize hook injects when a slot
+// is activated. Keyed by the TARGET template's simple name ("Bar").
+class SpecializingBlockInfo {
+    target_name: mut string = "";
+    bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition("", "");
+    impl_fragments: mut _utils.List<Definition> = new _utils.List<Definition>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+}
+
 class SemanticModel {
     type_registry: mut BoundTypeRegistry;
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
@@ -33,6 +45,11 @@ class SemanticModel {
     // Phase 6 v2: `#class` definitions collected from unit A, fed into unit B so
     // #funs can use them as meta-only data structures (not emitted to runtime).
     meta_class_defs: mut _utils.List<ClassDefinition> = new _utils.List<ClassDefinition>();
+    // #specializing: compiled blocks, keyed by target template simple name.
+    // `bind_specializing_def` (pass 1) registers one entry per block; the
+    // monomorphize loop runs matching callbacks per instantiation and injects the
+    // activated impl fragments into the specialized class/enum.
+    specializing_blocks: mut _utils.List<SpecializingBlockInfo> = new _utils.List<SpecializingBlockInfo>();
     // Primitive interface-method dispatch registry: `impl IHash for i64 { ... }`
     // methods are mangled to `<name>$$<primitive>` (e.g. hash$$i64) at bind time
     // and recorded here in four parallel lists (target primitive display name,
@@ -1052,7 +1069,168 @@ class SemanticModel {
             let r: mut BoundMetaCallDefinition = new BoundMetaCallDefinition(new Option<BoundExpression>.none(), def.meta_call_def.location);
             return new Option<BoundDefinition>.some(new BoundDefinition.meta_call_def(r));
         }
+        if (def is Definition.specializing_def) {
+            return this.bind_specializing_def(def.specializing_def, scope);
+        }
         return new Option<BoundDefinition>.none();
+    }
+
+    // #specializing: compile the block into a meta (#fun) callback and register it
+    // for the target type. The callback's params mirror the target's template
+    // params (type params → `type`, value params → i64/bool/string); each `impl`
+    // statement in the body becomes `emperor.penguin_meta_activate_impl(<slot>)`.
+    // Returns a placeholder BoundMetaFunctionDefinition so the pass loops'
+    // unit.definitions[i] <-> result.definitions[i] alignment is preserved.
+    fun bind_specializing_def(mut this, def: SpecializingDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_specializing_def");
+        if (def.target_type_spec.is_none()) { return new Option<BoundDefinition>.none(); }
+        let ts: TypeSpecifier = def.target_type_spec.some;
+        // Find the target template's AST definition to read its template params.
+        let tmpl: Option<Definition> = this.find_ast_def_by_name_from_scope(ts.name, scope);
+        let mut tmpl_decl = new Option<TemplateDeclaration>.none();
+        if (tmpl.is_some()) {
+            if (tmpl.some is Definition.class_def) { tmpl_decl = tmpl.some.class_def.template_decl; }
+            if (tmpl.some is Definition.enum_def) { tmpl_decl = tmpl.some.enum_def.template_decl; }
+            if (tmpl.some is Definition.interface_def) { tmpl_decl = tmpl.some.interface_def.template_decl; }
+        }
+        // Synthesize the callback #fun name (unique per block).
+        let block_index: i64 = cast<i64>(this.specializing_blocks.size());
+        let cb_name: string = "__specializing_" + ts.name + "_" + cast<string>(block_index);
+        let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(cb_name, scope.full_name + "." + cb_name);
+        // Params mirror the target's template params (positional). Type params →
+        // kind "type"; value params → their meta kind (i64/bool/string).
+        if (let td := tmpl_decl.some) {
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(td.parameters.size())) {
+                let tp: TemplateParameter = td.parameters.at(cast<u64>(pi)).some;
+                let mp: mut MetaParameter = new MetaParameter();
+                mp.name = tp.name;
+                if (tp.is_value_param) {
+                    mp.kind = this.value_param_to_meta_kind(tp.type_constraint);
+                } else {
+                    mp.kind = "type";
+                }
+                bmf.parameters.push(mp);
+                pi = pi + 1;
+            }
+        }
+        let ret_ts: mut TypeSpecifier = new TypeSpecifier();
+        ret_ts.name = "i64";
+        bmf.return_type = new Option<TypeSpecifier>.some(ret_ts);
+        bmf.location = def.location;
+        // Transform the body: impl statements → activate calls, keep everything
+        // else (if/else conditions, #error/#warn, other expressions) as text, then
+        // re-parse into a code block so it round-trips through the meta JIT.
+        let body_text: string = this.specializing_body_to_text(def.body);
+        let mut body_block = this.parse_code_block_text(body_text, def.location);
+        if (body_block.is_some()) {
+            bmf.body = body_block;
+        } else {
+            this.report_error(new ErrorCode.E_META(), "#specializing body could not be parsed: " + body_text, def.location);
+            return new Option<BoundDefinition>.none();
+        }
+        // Collect impl fragments (slot order) for injection.
+        let info: mut SpecializingBlockInfo = new SpecializingBlockInfo();
+        info.target_name = ts.name;
+        info.bmf = bmf;
+        info.location = def.location;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(def.impl_fragments.size())) {
+            info.impl_fragments.push(new Definition.impl_def(def.impl_fragments.at(cast<u64>(fi)).some));
+            fi = fi + 1;
+        }
+        this.specializing_blocks.push(info);
+        return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(bmf));
+    }
+
+    // Value template param type constraint (i32/u64/...) → meta param kind.
+    fun value_param_to_meta_kind(this, constraint: string) -> string {
+        if (constraint == "bool") { return "bool"; }
+        if (constraint == "string") { return "string"; }
+        return "i64";
+    }
+
+    // Render a #specializing block body as penguin text, replacing each `impl`
+    // statement with `emperor.penguin_meta_activate_impl(<slot>);` and recursing
+    // into if/else branches (so an impl inside any taken branch activates).
+    fun specializing_body_to_text(this, body: _utils.List<Expression>) -> string {
+        // Top-level callback body: the return type is i64 (the stub trampoline
+        // returns i64) and pass 9 requires every non-void path to return, so fall
+        // through to 0. Branch bodies (below) must NOT return early.
+        return this.specializing_body_to_text_inner(body) + "return 0;\n";
+    }
+
+    fun specializing_body_to_text_inner(this, body: _utils.List<Expression>) -> string {
+        let mut sb = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(body.size())) {
+            let e: Expression = body.at(cast<u64>(i)).some;
+            sb.append(this.specializing_expr_to_text(e));
+            sb.append("\n");
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    fun specializing_expr_to_text(this, e: Expression) -> string {
+        if (e is Expression.specializing_impl) {
+            return "emperor.penguin_meta_activate_impl(" + cast<string>(e.specializing_impl.slot) + ");";
+        }
+        if (e is Expression.if_expr) {
+            let mut s = "if (" + e.if_expr.condition.some.build_text() + ") "
+                + this.specializing_branch_to_text(e.if_expr.then_block.some);
+            if (e.if_expr.else_block.is_some()) {
+                s = s + " else " + this.specializing_branch_to_text(e.if_expr.else_block.some);
+            }
+            return s;
+        }
+        return e.build_text() + ";";
+    }
+
+    // Render an if/else branch (a code block, or a bare expression) to text,
+    // recursing so impl statements inside any taken branch activate. Uses the
+    // INNER renderer (no trailing `return 0;`).
+    fun specializing_branch_to_text(this, e: Expression) -> string {
+        if (e is Expression.code_block) {
+            return "{\n" + this.specializing_body_to_text_inner(this.code_block_statements(e.code_block)) + "}";
+        }
+        return this.specializing_expr_to_text(e);
+    }
+
+    // The statements of a code block expression (if/else branches are CodeBlocks).
+    fun code_block_statements(this, e: CodeBlockExpression) -> _utils.List<Expression> {
+        let result: mut _utils.List<Expression> = new _utils.List<Expression>();
+        let si: mut i64 = 0;
+        while (si < cast<i64>(e.statements.size())) {
+            let st: Statement = e.statements.at(cast<u64>(si)).some;
+            if (st is Statement.expression) {
+                if (st.expression.expression.is_some()) {
+                    result.push(st.expression.expression.some);
+                }
+            }
+            if (st is Statement.block_expr) {
+                if (st.block_expr.expression.is_some()) {
+                    result.push(st.block_expr.expression.some);
+                }
+            }
+            si = si + 1;
+        }
+        if (e.trailing_expr.is_some()) {
+            result.push(e.trailing_expr.some);
+        }
+        return result;
+    }
+
+    // Parse a fragment of penguin source into a code block expression.
+    fun parse_code_block_text(this, text: string, loc: SourceLocation) -> Option<Expression> {
+        let lex: Lexer = new Lexer("{\n" + text + "\n}", "<specializing>");
+        let toks: _utils.List<Token> = lex.tokenize();
+        let p: Parser = new Parser(toks);
+        let node: Expression = p.parse_codeBlockExpression();
+        if (!p.has_errors()) {
+            return new Option<Expression>.some(node);
+        }
+        return new Option<Expression>.none();
     }
 
     fun extract_template_params(this, template_decl: Option<TemplateDeclaration>, generic_params: mut _utils.List<string>) {
@@ -2692,8 +2870,9 @@ class SemanticModel {
                                     let spec_result: Option<BoundDefinition> = this.specialize_class_def(
                                         cls, inst.generic_args, mangled, result.global_scope);
                                     if (spec_result.is_some()) {
+                                        let injected: BoundDefinition = this.run_specializing_for_spec(cls.name, inst, spec_result.some, result.global_scope);
                                         if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + mangled); }
-                                        specialized_defs.push(spec_result.some);
+                                        specialized_defs.push(injected);
                                         specialized_asts.push(ast_def.some);
                                     }
                                 }
@@ -2710,8 +2889,9 @@ class SemanticModel {
                                     let spec_result: Option<BoundDefinition> = this.specialize_enum_def(
                                         e, inst.generic_args, mangled, result.global_scope);
                                     if (spec_result.is_some()) {
+                                        let injected: BoundDefinition = this.run_specializing_for_spec(e.name, inst, spec_result.some, result.global_scope);
                                         if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + mangled); }
-                                        specialized_defs.push(spec_result.some);
+                                        specialized_defs.push(injected);
                                         specialized_asts.push(ast_def.some);
                                     }
                                 }
@@ -2840,6 +3020,160 @@ class SemanticModel {
             total_specialized = total_specialized + cast<i64>(specialized_defs.size());
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Iteration " + cast<string>(iteration) + ": " + cast<string>(specialized_defs.size()) + " new specializations (total: " + cast<string>(total_specialized) + ")"); }
             iteration = iteration + 1;
+        }
+    }
+
+    // #specializing hook (run inside pass_monomorphize after specialize_class_def
+    // / specialize_enum_def): run every #specializing block targeting `target_name`
+    // with the concrete type/value args of `inst`, then inject the activated impl
+    // fragments into the specialized def. Only runs when blocks exist (i.e. in a
+    // meta-enabled compilation of a program that uses #specializing), so on
+    // non-meta builds this is a no-op.
+    fun run_specializing_for_spec(mut this, target_name: string, inst: BoundType, spec: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter run_specializing_for_spec");
+        if (cast<i64>(this.specializing_blocks.size()) == 0) { return spec; }
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(this.specializing_blocks.size())) {
+            let block: SpecializingBlockInfo = this.specializing_blocks.at(cast<u64>(bi)).some;
+            if (block.target_name == target_name) {
+                this.run_one_specializing_block(block, inst, spec, global_scope);
+            }
+            bi = bi + 1;
+        }
+        return spec;
+    }
+
+    fun run_one_specializing_block(mut this, block: SpecializingBlockInfo, inst: BoundType, spec: BoundDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter run_one_specializing_block");
+        // Ensure the module-global active_meta is THIS model's engine so the
+        // callback's emperor.penguin_meta_activate_impl pushes land on the
+        // specializing_active_slots we read back below.
+        this.seed_meta_engine();
+        // Build the callback args positionally from inst.generic_args, matching the
+        // callback's param kinds (type → token, i64/bool → value, string → value).
+        let args: mut _utils.List<i64> = new _utils.List<i64>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(block.bmf.parameters.size())) {
+            let arg_val: mut i64 = 0;
+            if (ai < cast<i64>(inst.generic_args.size())) {
+                let arg_type: BoundType = inst.generic_args.at(cast<u64>(ai)).some;
+                let kind: string = block.bmf.parameters.at(cast<u64>(ai)).some.kind;
+                if (kind == "type") {
+                    let name: string = this.bound_type_meta_name(arg_type);
+                    let token: u64 = this.meta_engine.get_or_assign_type_token(name);
+                    arg_val = cast<i64>(token);
+                } else if (kind == "bool") {
+                    if (arg_type.template_value != 0) { arg_val = 1; }
+                } else {
+                    arg_val = arg_type.template_value;
+                }
+            }
+            args.push(arg_val);
+            ai = ai + 1;
+        }
+        this.meta_engine.specializing_active_slots = new _utils.List<i64>();
+        this.meta_engine.call_meta_function_stub(block.bmf, args);
+        // Inject every activated impl slot.
+        let si: mut i64 = 0;
+        while (si < cast<i64>(this.meta_engine.specializing_active_slots.size())) {
+            let slot: i64 = this.meta_engine.specializing_active_slots.at(cast<u64>(si)).some;
+            if (slot >= 0 && slot < cast<i64>(block.impl_fragments.size())) {
+                let frag: Definition = block.impl_fragments.at(cast<u64>(slot)).some;
+                if (frag is Definition.impl_def) {
+                    this.inject_specializing_impl(frag.impl_def, spec, global_scope);
+                }
+            }
+            si = si + 1;
+        }
+    }
+
+    // A resolvable name for a concrete BoundType, for the meta type-token bridge
+    // (get_or_assign_type_token / emperor_penguin_meta_get_type). Primitives and
+    // concrete defs use their name; generic references use the mangled name.
+    fun bound_type_meta_name(this, bt: BoundType) -> string {
+        if (bt.is_template_value_arg) { return cast<string>(bt.template_value); }
+        if (bt.type_definition.is_some()) {
+            let def_name: string = bt.type_definition.some.get_name();
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                return mangle_generic_name(def_name, bt.generic_args);
+            }
+            return def_name;
+        }
+        return bt.display_name();
+    }
+
+    // Bind one activated impl fragment into the specialized class/enum and record
+    // its AST fragment (source_impl_def) so pass 6 (vtables) and pass 8 (method
+    // bodies) can process it. The fragment's `T` resolves in the specialized
+    // class/enum scope.
+    fun inject_specializing_impl(mut this, frag: InterfaceImplementation, spec: BoundDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter inject_specializing_impl");
+        if (spec is BoundDefinition.class_def) {
+            let cls: mut BoundClassDefinition = spec.class_def;
+            if (cls.scope.is_some()) {
+                let bound: Option<BoundDefinition> = this.bind_impl_def(frag, cls.scope.some);
+                if (bound.is_some() && bound.some is BoundDefinition.impl_def) {
+                    let bi: mut BoundInterfaceImplementation = bound.some.impl_def;
+                    bi.source_impl_def = new Option<Definition>.some(new Definition.impl_def(frag));
+                    // The injected impl is created in pass 3 (after pass 2 resolved
+                    // the template's own impl params), so resolve its method params
+                    // + return types here against the specialized class scope.
+                    this.resolve_injected_impl_methods(frag, bi, cls.scope.some, cls);
+                    cls.interface_impls.push(bound.some);
+                }
+            }
+        }
+        if (spec is BoundDefinition.enum_def) {
+            let e: mut BoundEnumDefinition = spec.enum_def;
+            if (e.scope.is_some()) {
+                let bound: Option<BoundDefinition> = this.bind_impl_def(frag, e.scope.some);
+                if (bound.is_some() && bound.some is BoundDefinition.impl_def) {
+                    let bi: mut BoundInterfaceImplementation = bound.some.impl_def;
+                    bi.source_impl_def = new Option<Definition>.some(new Definition.impl_def(frag));
+                    this.resolve_injected_impl_methods_for_enum(frag, bi, e.scope.some, e);
+                    e.interface_impls.push(bound.some);
+                }
+            }
+        }
+    }
+
+    fun resolve_injected_impl_methods(mut this, ast_impl: InterfaceImplementation, bound_impl: mut BoundInterfaceImplementation, scope: BoundScope, cls: BoundClassDefinition) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(ast_impl.functions.size())) {
+            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+            if (ast_func_def is Definition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(bound_impl.methods.size())) {
+                    let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(mi)).some;
+                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                        this.resolve_class_method_pair(ast_func_def.function_def, bm, scope, cls);
+                        bound_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                    }
+                    mi = mi + 1;
+                }
+            }
+            fi = fi + 1;
+        }
+    }
+
+    fun resolve_injected_impl_methods_for_enum(mut this, ast_impl: InterfaceImplementation, bound_impl: mut BoundInterfaceImplementation, scope: BoundScope, e: BoundEnumDefinition) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(ast_impl.functions.size())) {
+            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+            if (ast_func_def is Definition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(bound_impl.methods.size())) {
+                    let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(mi)).some;
+                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                        this.resolve_enum_method_pair(ast_func_def.function_def, bm, scope, e);
+                        bound_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                    }
+                    mi = mi + 1;
+                }
+            }
+            fi = fi + 1;
         }
     }
 
@@ -3905,6 +4239,7 @@ class SemanticModel {
             if (ast_def.is_some() && ast_def.some is Definition.class_def) {
                 this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
             }
+            this.build_injected_impl_vtables_for_class(cls, global_scope);
             return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.enum_def) {
@@ -3913,6 +4248,7 @@ class SemanticModel {
             if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
+            this.build_injected_impl_vtables_for_enum(e, global_scope);
             return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.interface_def) {
@@ -3926,6 +4262,64 @@ class SemanticModel {
             return new BoundDefinition.interface_def(iface);
         }
         return bound_def;
+    }
+
+    // #specializing: build vtables for impls injected by a callback. These impls
+    // are NOT in the AST template (build_class_vtables scans the template's
+    // members), so build each injected impl's vtable from its stored AST fragment.
+    fun build_injected_impl_vtables_for_class(mut this, cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_injected_impl_vtables_for_class");
+        if (cls.scope.is_none()) { return; }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(cls.interface_impls.size())) {
+            let impl_def: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+            if (impl_def is BoundDefinition.impl_def) {
+                let bi: BoundInterfaceImplementation = impl_def.impl_def;
+                if (bi.source_impl_def.is_some()) {
+                    if (bi.source_impl_def.some is Definition.impl_def) {
+                        let ast_impl: InterfaceImplementation = bi.source_impl_def.some.impl_def;
+                        // Resolve the interface by SIMPLE name (like build_class_vtables)
+                        // so the emitted interface_id global is `IJsonSerializable` —
+                        // matching how the CALLER computes it. bi.interface_type (with
+                        // generic args) stays on the bound impl for monomorphization
+                        // collection / interface-inheritance merging.
+                        let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+                        if (!this.has_vtable_for_interface(cls.vtables, iface_type)) {
+                            let vtable: mut BoundVTable = new BoundVTable();
+                            vtable.interface_type = iface_type;
+                            this.build_vtable_slots(ast_impl, vtable, global_scope, cls.scope.some);
+                            cls.vtables.push(vtable);
+                        }
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun build_injected_impl_vtables_for_enum(mut this, e: mut BoundEnumDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_injected_impl_vtables_for_enum");
+        if (e.scope.is_none()) { return; }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(e.interface_impls.size())) {
+            let impl_def: BoundDefinition = e.interface_impls.at(cast<u64>(ii)).some;
+            if (impl_def is BoundDefinition.impl_def) {
+                let bi: BoundInterfaceImplementation = impl_def.impl_def;
+                if (bi.source_impl_def.is_some()) {
+                    if (bi.source_impl_def.some is Definition.impl_def) {
+                        let ast_impl: InterfaceImplementation = bi.source_impl_def.some.impl_def;
+                        let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+                        if (!this.has_vtable_for_interface(e.vtables, iface_type)) {
+                            let vtable: mut BoundVTable = new BoundVTable();
+                            vtable.interface_type = iface_type;
+                            this.build_vtable_slots(ast_impl, vtable, global_scope, e.scope.some);
+                            e.vtables.push(vtable);
+                        }
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
     }
 
     fun extract_template_name(this, mangled_name: string) -> string {
@@ -4829,6 +5223,38 @@ class SemanticModel {
                 }
                 i = i + 1;
             }
+            // #specializing: bind method bodies for injected impls. Their AST
+            // fragments live on the bound impl (source_impl_def), not in
+            // ast_cls.members, so bind them from the fragment directly.
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(bound_cls.interface_impls.size())) {
+                let impl_def: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(ii)).some;
+                if (impl_def is BoundDefinition.impl_def) {
+                    let bound_iface_impl: mut BoundInterfaceImplementation = impl_def.impl_def;
+                    if (bound_iface_impl.source_impl_def.is_some()) {
+                        if (bound_iface_impl.source_impl_def.some is Definition.impl_def) {
+                            let ast_impl_member: InterfaceImplementation = bound_iface_impl.source_impl_def.some.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_cls.interface_impls.set(cast<u64>(ii), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                    }
+                }
+                ii = ii + 1;
+            }
             // Bind field default initializers (e.g. `errors: List<T> = new List<T>()`)
             // in the constructor's scope and store them on the bound field. The IR
             // generator emits them as `this.field = <init>` at the start of the
@@ -4916,6 +5342,37 @@ class SemanticModel {
                     }
                 }
                 i = i + 1;
+            }
+            // #specializing: bind method bodies for injected impls (AST fragments
+            // stored on the bound impl, not in ast_enum.members).
+            let inj: mut i64 = 0;
+            while (inj < cast<i64>(bound_enum.interface_impls.size())) {
+                let impl_def2: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(inj)).some;
+                if (impl_def2 is BoundDefinition.impl_def) {
+                    let bound_iface_impl2: mut BoundInterfaceImplementation = impl_def2.impl_def;
+                    if (bound_iface_impl2.source_impl_def.is_some()) {
+                        if (bound_iface_impl2.source_impl_def.some is Definition.impl_def) {
+                            let ast_impl2: InterfaceImplementation = bound_iface_impl2.source_impl_def.some.impl_def;
+                            let fi2: mut i64 = 0;
+                            while (fi2 < cast<i64>(ast_impl2.functions.size())) {
+                                let ast_func_def2: Definition = ast_impl2.functions.at(cast<u64>(fi2)).some;
+                                if (ast_func_def2 is Definition.function_def) {
+                                    let mi2: mut i64 = 0;
+                                    while (mi2 < cast<i64>(bound_iface_impl2.methods.size())) {
+                                        let bound_method2: BoundDefinition = bound_iface_impl2.methods.at(cast<u64>(mi2)).some;
+                                        if (bound_method2 is BoundDefinition.function_def && bound_method2.function_def.name == ast_func_def2.function_def.name) {
+                                            bound_iface_impl2.methods.set(cast<u64>(mi2), this.bind_body_for_def(ast_func_def2, bound_method2, result));
+                                        }
+                                        mi2 = mi2 + 1;
+                                    }
+                                }
+                                fi2 = fi2 + 1;
+                            }
+                            bound_enum.interface_impls.set(cast<u64>(inj), new BoundDefinition.impl_def(bound_iface_impl2));
+                        }
+                    }
+                }
+                inj = inj + 1;
             }
             return new BoundDefinition.enum_def(bound_enum);
         }
@@ -5259,6 +5716,59 @@ class SemanticModel {
     fun bind_identifier(mut this, expr: IdentifierExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_identifier");
         let sym: Option<BoundSymbol> = scope.lookup_symbol(expr.name);
+        // A generic TYPE name used as an expression (`Box<i64>.bar("5")` static
+        // impl call): resolve to the specialized type if already instantiated,
+        // otherwise fall back to the template+args type so member access can find
+        // the (generic) method and the IR mangles it per the receiver's args.
+        // Only applies when `expr.name` is actually a TYPE (not a generic function
+        // like `count_fields<Point>(...)`, which must bind as a function call).
+        if (cast<i64>(expr.generic_args.size()) > 0 && this.identifier_is_type_name(expr.name, scope)) {
+            let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let ok: mut bool = true;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(expr.generic_args.size())) {
+                let arg_bt: mut BoundType = this.resolve_type_specifier(expr.generic_args.at(cast<u64>(gi)).some, scope);
+                if (arg_bt.kind is TypeKind.ErrorKind) { ok = false; }
+                resolved_args.push(arg_bt);
+                gi = gi + 1;
+            }
+            if (ok) {
+                let mangled: string = mangle_generic_name(expr.name, resolved_args);
+                let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                    let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
+                    let pr: mut BoundIdentifierExpression = new BoundIdentifierExpression(spec_type, spec_sym);
+                    return new Option<BoundExpression>.some(new BoundExpression.identifier(pr));
+                }
+                let ts2: mut TypeSpecifier = new TypeSpecifier();
+                ts2.name = expr.name;
+                let gi2: mut i64 = 0;
+                while (gi2 < cast<i64>(expr.generic_args.size())) {
+                    ts2.generic_args.push(expr.generic_args.at(cast<u64>(gi2)).some);
+                    gi2 = gi2 + 1;
+                }
+                let tmpl_bt: mut BoundType = this.resolve_type_specifier(ts2, scope);
+                let tsym2: mut BoundTypeSymbol = new BoundTypeSymbol(expr.name, expr.name);
+                tsym2.bound_type = tmpl_bt;
+                let pr2: mut BoundIdentifierExpression = new BoundIdentifierExpression(tmpl_bt, new Option<BoundSymbol>.some(new BoundSymbol.type_sym(tsym2)));
+                return new Option<BoundExpression>.some(new BoundExpression.identifier(pr2));
+            }
+        }
+        // A primitive-type name used as an expression (`i64.bar("5")` static impl
+        // call): the type isn't a scope symbol, so fall back to the type registry
+        // and bind a type reference.
+        if (sym.is_none()) {
+            let prim_opt: Option<BoundType> = this.type_registry.resolve_type(expr.name);
+            if (prim_opt.is_some()) {
+                let prim_bt: mut BoundType = prim_opt.some;
+                if (prim_bt.kind is TypeKind.PrimitiveKind && !(prim_bt.primitive is PrimitiveType.VoidType)) {
+                    let ts: mut BoundTypeSymbol = new BoundTypeSymbol(expr.name, expr.name);
+                    ts.bound_type = prim_bt;
+                    let pr: mut BoundIdentifierExpression = new BoundIdentifierExpression(prim_bt, new Option<BoundSymbol>.some(new BoundSymbol.type_sym(ts)));
+                    return new Option<BoundExpression>.some(new BoundExpression.identifier(pr));
+                }
+            }
+        }
         if (sym.is_some()) {
             // Reject class field access from methods without `this` parameter.
             // For example, `fun foo() { a = 1; }` inside a class where `a` is a
@@ -5288,6 +5798,17 @@ class SemanticModel {
             "Cannot resolve symbol '" + expr.name + "'",
             new SourceLocation("", 0, 0));
         return new Option<BoundExpression>.some(new BoundExpression.identifier(result));
+    }
+
+    // True when `name` resolves to a TYPE (generic class/enum/interface or a
+    // primitive) rather than a function/variable — used to disambiguate a generic
+    // type-name expression (`Box<i64>.bar(...)`) from a generic function call
+    // (`count_fields<Point>(...)`).
+    fun identifier_is_type_name(this, name: string, scope: BoundScope) -> bool {
+        if (this.type_registry.resolve_type(name).is_some()) { return true; }
+        let tsym: Option<BoundSymbol> = scope.lookup_type_in_scope(name);
+        if (tsym.is_some()) { return true; }
+        return false;
     }
 
     fun resolve_symbol_type(this, sym: BoundSymbol) -> BoundType {
@@ -5537,6 +6058,63 @@ class SemanticModel {
         return new BoundType();
     }
 
+    // Resolve the specialized class/enum def for a generic base type reference
+    // (e.g. Option<i64> → Option__i64) so member lookup can search the specialized
+    // def's vtables (which include #specializing-injected impls that the template
+    // does not carry). Returns the template def unchanged when the base is
+    // non-generic, or none when no specialized def exists yet.
+    fun resolve_specialized_container_def(this, base_type: BoundType, scope: BoundScope) -> Option<BoundDefinition> {
+        if (cast<i64>(base_type.generic_args.size()) == 0) { return base_type.type_definition; }
+        if (base_type.type_definition.is_none()) { return new Option<BoundDefinition>.none(); }
+        let td: BoundDefinition = base_type.type_definition.some;
+        let name: mut string = "";
+        if (td is BoundDefinition.class_def) { name = td.class_def.name; }
+        if (td is BoundDefinition.enum_def) { name = td.enum_def.name; }
+        if (string_length(name) == 0) { return new Option<BoundDefinition>.none(); }
+        let mangled: string = mangle_generic_name(name, base_type.generic_args);
+        let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+        if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+            return spec_sym.some.type_sym.bound_type.type_definition;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // Look up `member_name` in the SPECIALIZED class/enum scope for a generic base
+    // type (e.g. Option<i64> → Option__i64). #specializing-injected impl methods are
+    // registered in the specialized scope, not the template's. Returns none when the
+    // base is non-generic or the member isn't found there.
+    fun lookup_specialized_scope_member(this, base_type: BoundType, member_name: string, scope: BoundScope) -> Option<BoundSymbol> {
+        if (let spec_def := this.resolve_specialized_container_def(base_type, scope).some) {
+            if (spec_def is BoundDefinition.class_def) {
+                if (spec_def.class_def.scope.is_some()) {
+                    return spec_def.class_def.scope.some.lookup_symbol(member_name);
+                }
+            }
+            if (spec_def is BoundDefinition.enum_def) {
+                if (spec_def.enum_def.scope.is_some()) {
+                    return spec_def.enum_def.scope.some.lookup_symbol(member_name);
+                }
+            }
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    // The vtables to search for a member access on `base_type`: the SPECIALIZED
+    // class/enum def's vtables when the base is generic (Option<i64>), else the
+    // template's vtables. #specializing-injected impl vtables live on the
+    // specialized def, not the template.
+    fun resolve_container_vtables(this, base_type: BoundType, template_vtables: _utils.List<BoundVTable>, scope: BoundScope) -> _utils.List<BoundVTable> {
+        if (let spec_def := this.resolve_specialized_container_def(base_type, scope).some) {
+            if (spec_def is BoundDefinition.class_def) {
+                return spec_def.class_def.vtables;
+            }
+            if (spec_def is BoundDefinition.enum_def) {
+                return spec_def.enum_def.vtables;
+            }
+        }
+        return template_vtables;
+    }
+
     fun bind_member_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_member_access");
         if (expr.base_expr.is_some()) {
@@ -5601,16 +6179,29 @@ class SemanticModel {
                                 let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
                                 return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
                             }
+                            // For a generic base (Box<i64>), the #specializing-injected impl
+                            // methods live in the SPECIALIZED scope (not the template's), so
+                            // resolve them there — they lower to a direct call on the
+                            // specialized impl (matching how normal `impl` methods resolve).
+                            let spec_scope_found: Option<BoundSymbol> = this.lookup_specialized_scope_member(base_type, expr.member_name, scope);
+                            if (spec_scope_found.is_some()) {
+                                let bt: BoundType = this.resolve_symbol_type(spec_scope_found.some);
+                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_scope_found);
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                            }
                             // Fallback: search implemented interface scopes for default methods.
                             // Detect ambiguity: if two or more implemented interfaces each
                             // provide a member with this name, the access is ambiguous
                             // (e.g. Foo.foo() where Foo implements both IB and IC, each
                             // defining foo). Collect every matching interface first so we
-                            // never silently pick the first.
+                            // never silently pick the first. For a generic base (Box<i64>),
+                            // search the SPECIALIZED def's vtables (the template's are empty
+                            // for #specializing-injected impls).
+                            let vtables_src: _utils.List<BoundVTable> = this.resolve_container_vtables(base_type, cls.vtables, scope);
                             let vi: mut i64 = 0;
                             let match_iface_names: mut _utils.List<string> = new _utils.List<string>();
-                            while (vi < cast<i64>(cls.vtables.size())) {
-                                let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+                            while (vi < cast<i64>(vtables_src.size())) {
+                                let vtable: BoundVTable = vtables_src.at(cast<u64>(vi)).some;
                                 let iface_type: BoundType = vtable.interface_type;
                                 if (let iface_def := iface_type.type_definition.some) {
                                     if (iface_def is BoundDefinition.interface_def) {
@@ -5638,8 +6229,8 @@ class SemanticModel {
                             if (cast<i64>(match_iface_names.size()) == 1) {
                                 // Exactly one interface provides the member — resolve it.
                                 let vi2: mut i64 = 0;
-                                while (vi2 < cast<i64>(cls.vtables.size())) {
-                                    let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi2)).some;
+                                while (vi2 < cast<i64>(vtables_src.size())) {
+                                    let vtable: BoundVTable = vtables_src.at(cast<u64>(vi2)).some;
                                     let iface_type: BoundType = vtable.interface_type;
                                     if (let iface_def := iface_type.type_definition.some) {
                                         if (iface_def is BoundDefinition.interface_def) {
@@ -5682,10 +6273,24 @@ class SemanticModel {
                                 return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
                             }
                         }
-                        // Fallback: search implemented interface scopes for methods
+                        // For a generic base (Option<i64>), the #specializing-injected
+                        // impl methods live in the SPECIALIZED scope (not the template's),
+                        // so resolve them there — they lower to a direct call on the
+                        // specialized impl (matching how normal `impl` methods resolve).
+                        let spec_scope_found: Option<BoundSymbol> = this.lookup_specialized_scope_member(base_type, expr.member_name, scope);
+                        if (spec_scope_found.is_some()) {
+                            let bt: BoundType = this.resolve_symbol_type(spec_scope_found.some);
+                            let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_scope_found);
+                            return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                        }
+                        // Fallback: search implemented interface scopes for methods.
+                        // For a generic base (Option<i64>), search the SPECIALIZED def's
+                        // vtables — #specializing-injected impls live there, not on the
+                        // template (whose vtables are empty).
+                        let vtables_src: _utils.List<BoundVTable> = this.resolve_container_vtables(base_type, e.vtables, scope);
                         let vi: mut i64 = 0;
-                        while (vi < cast<i64>(e.vtables.size())) {
-                            let vtable: BoundVTable = e.vtables.at(cast<u64>(vi)).some;
+                        while (vi < cast<i64>(vtables_src.size())) {
+                            let vtable: BoundVTable = vtables_src.at(cast<u64>(vi)).some;
                             let iface_type: BoundType = vtable.interface_type;
                             if (let iface_def := iface_type.type_definition.some) {
                                 if (iface_def is BoundDefinition.interface_def) {
@@ -6483,6 +7088,16 @@ class SemanticModel {
         if (ret_kind == "type") {
             this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " type-return splice is not supported in expression position (use a type-specifier position)", expr.location);
             return new Option<BoundExpression>.none();
+        }
+        // bool returns splice as a BOOL literal ("true"/"false"), not an integer
+        // literal — an IntegerLiteral carrying bool type would otherwise emit the
+        // wrong constant through cast<string>.
+        if (ret_kind == "bool") {
+            let bt: BoundType = this.type_registry.resolve_type("bool").some;
+            let val: mut string = "false";
+            if (result_i64 != 0) { val = "true"; }
+            let lit: BoundLiteralExpression = new BoundLiteralExpression(val, bt, new LiteralKind.BoolLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
         }
         let ret_type: BoundType = this.resolve_meta_return_type(bmf);
         let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(result_i64), ret_type, new LiteralKind.IntegerLiteral());

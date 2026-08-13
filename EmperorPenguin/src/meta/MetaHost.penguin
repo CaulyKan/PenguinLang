@@ -124,6 +124,13 @@ fun penguin_meta_info(msg: string) {
     active_model.report_info(new ErrorCode.E_META(), msg, new SourceLocation("<meta>", 0, 0));
 }
 
+// #specializing: called by the synthesized callback for each executed `impl`
+// statement. Pushes the impl's slot so the monomorphize hook can inject the
+// fragment into the specialized class/enum after the callback returns.
+fun penguin_meta_activate_impl(slot: i64) {
+    active_meta.specializing_active_slots.push(slot);
+}
+
 // String-value bridge: a compile-time string literal passed as a #fun arg is
 // stored in the MetaEngine string registry; the caller-stub calls this to
 // materialize the live string pointer.

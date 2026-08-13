@@ -193,6 +193,11 @@ class BoundInterfaceImplementation {
     implementing_type: BoundType = new BoundType();
     methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     vtable: Option<BoundVTable> = new Option<BoundVTable>.none();
+    // For impls injected by a `#specializing` block: the AST impl fragment it was
+    // bound from. The specialized class's AST template does NOT contain this impl
+    // (it is conditional per-instantiation), so pass 6 (vtable building) and pass 8
+    // (method-body binding) need the fragment here to build slots / bind bodies.
+    source_impl_def: Option<Definition> = new Option<Definition>.none();
     fun get_name(this) -> string {
         return "<impl>";
     }

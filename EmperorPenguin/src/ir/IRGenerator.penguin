@@ -879,6 +879,14 @@ class IRGenerator {
         if (func_name == old_class) {
             return new_class;
         }
+        // Already-mangled name (e.g. a method resolved from a specialized def's
+        // scope, like `Option__i64.json_serialize`): the mangled class name is
+        // already present, so no re-mangling is needed. Without this guard, the
+        // `.Option` prefix-match below would match `.Option__i64` and drop the
+        // `.json_serialize` suffix, emitting the type symbol as the callee.
+        if (string_find(func_name, new_class) >= 0) {
+            return func_name;
+        }
         let dot_pos: i64 = string_find(func_name, "." + old_class + ".");
         if (dot_pos >= 0) {
             let before: string = string_substring(func_name, 0, dot_pos);

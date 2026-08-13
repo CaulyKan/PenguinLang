@@ -63,6 +63,11 @@ class MetaEngine {
     // meta rewrite runs, read by the penguin_meta_get_current_scope responder.
     // Set (and save/restored) in SemanticModel.rewrite_meta_in_def_container.
     current_scope_class_name: mut string = "";
+    // #specializing: impl slots activated by the callback while it runs. The
+    // monomorphize hook resets this before invoking a callback, and reads it after
+    // (each activated slot → bind the matching impl fragment into the specialized
+    // class/enum). `emperor.penguin_meta_activate_impl(slot)` pushes here.
+    specializing_active_slots: mut _utils.List<i64> = new _utils.List<i64>();
 
     fun new(mut this) {
     }
@@ -122,6 +127,7 @@ class MetaEngine {
             + "    extern fun penguin_meta_create_empty_ast() -> i64;\n"
             + "    extern fun penguin_meta_create_function_ast(name: string, return_type: BoundType, body: string) -> i64;\n"
             + "    extern fun penguin_meta_get_current_scope() -> BoundType;\n"
+            + "    extern fun penguin_meta_activate_impl(slot: i64);\n"
             + "}\n";
     }
 
@@ -581,6 +587,11 @@ class MetaEngine {
                 prelude = prelude + "  " + bt_reg + " = call ptr @emperor_penguin_meta_get_string_value(i64 " + arg_val + ") \n";
                 sig_params = sig_params + "ptr";
                 call_args = call_args + "ptr " + bt_reg;
+            } else if (param_kind == "bool") {
+                // bool maps to i8 in LLVM; the #fun's real param is i8 (not i64),
+                // so pass the baked 0/1 as i8 to match the callee's signature.
+                sig_params = sig_params + "i8";
+                call_args = call_args + "i8 " + arg_val;
             } else {
                 sig_params = sig_params + "i64";
                 call_args = call_args + "i64 " + arg_val;
@@ -602,16 +613,24 @@ class MetaEngine {
         if (bmf.return_type.is_some()) { ret_kind = bmf.return_type.some.name; }
         let foo_ret: mut string = "i64";
         let result_global: mut string = "";
+        let bool_ret: mut bool = false;
         if (ret_kind == "type") {
             foo_ret = "ptr";
             result_global = "@emperor_active_type_result";
         } else if (ret_kind == "string") {
             foo_ret = "ptr";
             result_global = "@emperor_active_string_result";
+        } else if (ret_kind == "bool") {
+            // bool maps to i8 in LLVM; the #fun's real return is i8, so widen the
+            // i8 result back to i64 for the arity-0 trampoline.
+            foo_ret = "i8";
+            bool_ret = true;
         }
         let global_decl: mut string = "";
         let ret_line: mut string = "  ret i64 %r \n";
-        if (string_length(result_global) > 0) {
+        if (bool_ret) {
+            ret_line = "  %r64 = zext i8 %r to i64 \n  ret i64 %r64 \n";
+        } else if (string_length(result_global) > 0) {
             global_decl = result_global + " = external global ptr \n";
             ret_line = "  store ptr %r, ptr " + result_global + " \n  ret i64 0 \n";
         }
