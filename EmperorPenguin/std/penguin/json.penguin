@@ -849,7 +849,7 @@ fun _unicode_escape(code: i64) -> string {
     if (json_deserializable_type(T)) {
         impl std.IJsonSerializable<__builtin.Option<T>> {
             fun json_serialize(this) -> string {
-                if (this.is_some()) {
+                if (this is __builtin.Option<T>.some) {
                     return this.some.json_serialize();
                 } else {
                     return "null";

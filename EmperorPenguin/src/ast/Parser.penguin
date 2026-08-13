@@ -608,9 +608,13 @@ fun _mark_ast_exported(def: Definition) {
                         parse_ok = false;
                     }
                     if (parse_ok) {
-                        // Accept if followed by (, ), ;, ,, {, >, }, or EOF
+                        // Accept if followed by (, ), ;, ,, {, >, }, ., or EOF. The '.'
+                        // covers a namespace-qualified GENERIC type member access whose
+                        // generic args are followed by a further member (e.g.
+                        // `ns.Enum<i64>.variant`), so the args attach to the type member
+                        // access instead of being mis-parsed as a `<` comparison.
                         let after: Token = this.stream.peek();
-                        if (after.token_type is TokenType.LParen || after.token_type is TokenType.RParen || after.token_type is TokenType.Semicolon || after.token_type is TokenType.Comma || after.token_type is TokenType.LBrace || after.token_type is TokenType.RBrace || after.token_type is TokenType.EOF) {
+                        if (after.token_type is TokenType.LParen || after.token_type is TokenType.RParen || after.token_type is TokenType.Semicolon || after.token_type is TokenType.Comma || after.token_type is TokenType.LBrace || after.token_type is TokenType.RBrace || after.token_type is TokenType.Dot || after.token_type is TokenType.EOF) {
                             ma_expr.generic_args = ga;
                         } else {
                             this.stream.pos = saved_pos;
