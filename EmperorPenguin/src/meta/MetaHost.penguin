@@ -36,6 +36,14 @@ fun penguin_meta_get_type(token: i64) -> BoundType {
     return new BoundType();
 }
 
+// M6-step2 object bridge: recover a LIVE object from an object_ref address (a
+// value-template object argument's live address in the compiler's GC heap).
+// Implemented in C (std/c/core_builtin.c: emperor_penguin_meta_get_object,
+// pure inttoptr) so it is callable from JIT'd #fun bodies via the
+// meta_extern_decls extern — a PenguinLang body here would need unsafe_cast,
+// which pass1's parser (BabyPenguin/ANTLR) does not accept. The #fun body
+// casts the returned IReferenceType down to the concrete type before use.
+
 // Phase 6 codegen bridge (kept from Round 1, NOT reflection): a #fun builds a
 // code string at meta-runtime and #create_expression / #create_definition parse
 // it (computed string → ast token). The literal-string fast path is compile-time
@@ -97,9 +105,39 @@ fun penguin_meta_parse_arguments(code: string) -> i64 {
 // trampoline return. Single-threaded compile ⇒ one slot each is safe.
 let active_type_result: mut BoundType = new BoundType();
 let active_string_result: mut string = "";
+let active_double_result: mut f64 = 0.0;
 
 fun penguin_meta_get_type_result() -> BoundType { return active_type_result; }
 fun penguin_meta_get_string_result() -> string { return active_string_result; }
+fun penguin_meta_get_double_result() -> f64 { return active_double_result; }
+
+// M3 (#template -> #fun desugar): side-channel carrying the specialization request
+// from the M4 use-site routing to the penguin_meta_specialize responder. The
+// synthesized `_template_X` body ignores its own (cosmetic) params and reads these,
+// because the responder has a fixed nullary-ish signature (name only) — value/object
+// args can't all fit the heterogeneous-extern shape. Single-threaded ⇒ one slot.
+let pending_specialize_name: mut string = "";
+let pending_specialize_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+
+fun penguin_meta_set_specialize_args(name: string, args: _utils.List<BoundTypeArg>) {
+    pending_specialize_name = name;
+    let dst: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+    let i: mut i64 = 0;
+    while (i < cast<i64>(args.size())) {
+        dst.push(args.at(cast<u64>(i)).some);
+        i = i + 1;
+    }
+    pending_specialize_args = dst;
+}
+
+// M3: the `_template_X` body calls this. It asks the owning SemanticModel to
+// specialize (creating the def + catch_up if needed) and returns the specialized
+// type via the active_type_result channel (same pattern as #fun -> type).
+fun penguin_meta_specialize(name: string) -> BoundType {
+    let mut bt = active_model.ensure_specialized_type(pending_specialize_name, pending_specialize_args);
+    active_type_result = bt;
+    return bt;
+}
 
 // R1: compile-time diagnostics channel. active_model is the owning SemanticModel
 // (set by seed_meta_engine, restored after unit-B clobber via owner_model back-ref).
@@ -140,6 +178,17 @@ fun penguin_meta_get_string_value(token: i64) -> string {
         return s_opt.some;
     }
     return "";
+}
+
+// M6: double-value bridge — a compile-time double literal passed as a #fun arg
+// is stored in the MetaEngine double registry; the caller-stub calls this to
+// materialize the live double.
+fun penguin_meta_get_double_value(token: i64) -> f64 {
+    let d_opt: Option<f64> = active_meta.get_double_value(cast<u64>(token));
+    if (d_opt.is_some()) {
+        return d_opt.some;
+    }
+    return 0.0;
 }
 
 // R2: ast real-reuse bridge — resolve a compile-time ast token to the live

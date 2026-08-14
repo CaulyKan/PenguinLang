@@ -2,9 +2,9 @@ namespace emperor {
 
 class FunctionInstantiation {
     func_name: !mut string = "";
-    generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+    generic_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
 
-    fun new(mut this, func_name: string, generic_args: mut _utils.List<BoundType>) {
+    fun new(mut this, func_name: string, generic_args: mut _utils.List<BoundTypeArg>) {
 
         this.func_name = func_name;
         this.generic_args = generic_args;
@@ -29,6 +29,9 @@ class SemanticModel {
     global_scope: mut BoundScope;
     current_unit: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     _current_validating_func: mut string = "";
+    // M1a: how far the currently-processing def has been advanced; updated in
+    // bind() right before each pass runs (no guard/catch-up yet — tracking only).
+    current_pass_index: mut i64 = 0;
     ast_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
     // Host-side compile-time option store for #define / #defined / #option used
     // outside #fun bodies (e.g. #if (#defined("DEBUG")) conditional compilation).
@@ -42,6 +45,15 @@ class SemanticModel {
     // built with --enable-meta; in BabyPenguin-VM/dotnet-test builds it is never
     // reached (no user-code #fun calls), so libpenguin_jit need not be linked.
     meta_function_defs: mut _utils.List<BoundMetaFunctionDefinition> = new _utils.List<BoundMetaFunctionDefinition>();
+    // M1 (#template -> #fun desugar): synthesized `_template_<name>` meta functions
+    // for each #template class/enum/interface. Kept SEPARATE from meta_function_defs
+    // (the #funs-that-call-each-other JIT set) because _template_X are HOST-invoked
+    // (the M4 use-site routing calls them), never called from other #funs. If they
+    // were in all_meta_function_defs, every #fun / #specializing unit-B build would
+    // pull in their bodies (which call penguin_meta_specialize) and fail to JIT-link
+    // until the M3 host responder exists. M3 merges these into the JIT set once the
+    // responder is wired.
+    template_meta_function_defs: mut _utils.List<BoundMetaFunctionDefinition> = new _utils.List<BoundMetaFunctionDefinition>();
     // Phase 6 v2: `#class` definitions collected from unit A, fed into unit B so
     // #funs can use them as meta-only data structures (not emitted to runtime).
     meta_class_defs: mut _utils.List<ClassDefinition> = new _utils.List<ClassDefinition>();
@@ -207,6 +219,55 @@ class SemanticModel {
             return string_substring(quoted, 1, string_length(quoted) - 2);
         }
         return quoted;
+    }
+
+    // D6: build a value BoundTypeArg from a value-template arg expression
+    // (filled<3>, filled<true>, filled<"hi">, filled<2.5>). The arg's kind selects
+    // the factory; display_name (mangle) and body substitution use the real value.
+    // Mirrors resolve_generic_args's is_value_arg handling but for Expression args
+    // (value_generic_args).
+    fun value_expr_to_bound_type(this, varg: Expression) -> BoundTypeArg {
+        if (varg is Expression.constant) {
+            let txt: string = varg.constant.value;
+            if (string_find(txt, ".") >= 0 || string_find(txt, "e") >= 0 || string_find(txt, "E") >= 0) {
+                return make_double_value_arg(string_to_double(txt), txt);
+            }
+            return make_int_value_arg(string_to_int(txt));
+        } else if (varg is Expression.bool_literal) {
+            // Pass 0/1 (i64) — the LLVMEmitter doesn't zext an inline i1 (string
+            // ==) to the i8 bool param on call args, so avoid passing a bool here.
+            let bval: i64 = if (varg.bool_literal.value == "true") { 1 } else { 0 };
+            return make_bool_value_arg(bval);
+        } else if (varg is Expression.string_literal) {
+            return make_string_value_arg(this.meta_strip_quotes(varg.string_literal.value));
+        }
+        return make_int_value_arg(0);
+    }
+
+    // D6: build the correctly-typed literal Expression for a substituted value
+    // param, using the value's STATIC kind (set in value_expr_to_bound_type) — no
+    // text heuristics (a string like "hello" must not be read as a double because
+    // it contains an 'e').
+    //   "i64"    -> integer constant
+    //   "bool"   -> bool literal
+    //   "string" -> string literal (re-quoted)
+    //   "double" -> double constant (text)
+    fun make_value_literal(this, i64_val: i64, text: string, kind: string) -> Expression {
+        if (kind == "bool") {
+            let bl: mut BoolLiteralExpression = new BoolLiteralExpression();
+            bl.value = text;
+            return new Expression.bool_literal(bl);
+        }
+        if (kind == "string") {
+            let sl: mut StringLiteralExpression = new StringLiteralExpression("\"" + text + "\"");
+            return new Expression.string_literal(sl);
+        }
+        if (kind == "double") {
+            let ce: mut ConstantExpression = new ConstantExpression(text);
+            return new Expression.constant(ce);
+        }
+        let ce: mut ConstantExpression = new ConstantExpression(cast<string>(i64_val));
+        return new Expression.constant(ce);
     }
 
     // Fold a compile-time boolean condition for #if. Returns none when the
@@ -504,11 +565,84 @@ class SemanticModel {
             } else if (d is Definition.namespace_def) {
                 this.collect_meta_function_defs(d.namespace_def.children);
             } else if (d is Definition.class_def) {
+                // M1 (#template -> #fun desugar, representation layer): synthesize a
+                // `_template_<name>` meta function for a generic class template. It
+                // mirrors the template params (type -> "type", value -> meta kind) and
+                // returns `type`; its body delegates to the host specialize responder
+                // (penguin_meta_specialize, implemented in M3). Additive & inert: the
+                // function is registered (in template_meta_function_defs, isolated from
+                // the JIT set) but never JIT-compiled until use-site routing (M4) calls
+                // it, so pass1 / dotnet-test (no JIT) builds are unaffected. Function
+                // templates are excluded here (D6 dual semantics) and arrive with M3/M4.
+                if (d.class_def.template_decl.is_some() && meta_runtime_available()) {
+                    let synth: Option<BoundMetaFunctionDefinition> = this.synthesize_template_meta_function(d.class_def.name, d.class_def.template_decl, d.class_def.location);
+                    if (synth.is_some()) { this.template_meta_function_defs.push(synth.some); }
+                }
                 this.collect_meta_function_defs(d.class_def.members);
+            } else if (d is Definition.enum_def) {
+                if (d.enum_def.template_decl.is_some() && meta_runtime_available()) {
+                    let synth: Option<BoundMetaFunctionDefinition> = this.synthesize_template_meta_function(d.enum_def.name, d.enum_def.template_decl, d.enum_def.location);
+                    if (synth.is_some()) { this.template_meta_function_defs.push(synth.some); }
+                }
+            } else if (d is Definition.interface_def) {
+                if (d.interface_def.template_decl.is_some() && meta_runtime_available()) {
+                    let synth: Option<BoundMetaFunctionDefinition> = this.synthesize_template_meta_function(d.interface_def.name, d.interface_def.template_decl, d.interface_def.location);
+                    if (synth.is_some()) { this.template_meta_function_defs.push(synth.some); }
+                }
             } else if (d is Definition.impl_def) {
                 this.collect_meta_function_defs(d.impl_def.functions);
             }
         }
+    }
+
+    // M1 (#template -> #fun desugar, representation layer): synthesize a
+    // BoundMetaFunctionDefinition `_template_<name>` mirroring a template's
+    // parameters (type params -> kind "type"; value params -> i64/bool/string via
+    // value_param_to_meta_kind) and returning `type`. Its body is a single call to
+    // the host specialize responder:
+    //     { return emperor.penguin_meta_specialize("<name>"); }
+    // which M3 turns into the actual specialized BoundType. Additive & inert (see
+    // collect_meta_function_defs): registered but never JIT-compiled until M4.
+    // Parse failure is a silent skip (never happens for valid identifier names) to
+    // guarantee zero behavior change.
+    fun synthesize_template_meta_function(mut this, def_name: string, template_decl: Option<TemplateDeclaration>, location: SourceLocation) -> Option<BoundMetaFunctionDefinition> {
+        if (template_decl.is_none()) { return new Option<BoundMetaFunctionDefinition>.none(); }
+        let meta_name: string = "_template_" + def_name;
+        // Dedup against the isolated template-meta list (NOT meta_function_defs, which
+        // these are intentionally kept out of — see the field comment).
+        let di: mut i64 = 0;
+        while (di < cast<i64>(this.template_meta_function_defs.size())) {
+            if (this.template_meta_function_defs.at(cast<u64>(di)).some.name == meta_name) {
+                return new Option<BoundMetaFunctionDefinition>.none();
+            }
+            di = di + 1;
+        }
+        let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(meta_name, meta_name);
+        let td: TemplateDeclaration = template_decl.some;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(td.parameters.size())) {
+            let tp: TemplateParameter = td.parameters.at(cast<u64>(pi)).some;
+            let mp: mut MetaParameter = new MetaParameter();
+            mp.name = tp.name;
+            if (tp.is_value_param) {
+                mp.kind = this.value_param_to_meta_kind(tp.type_constraint);
+            } else {
+                mp.kind = "type";
+            }
+            bmf.parameters.push(mp);
+            pi = pi + 1;
+        }
+        let ret_ts: mut TypeSpecifier = new TypeSpecifier();
+        ret_ts.name = "type";
+        bmf.return_type = new Option<TypeSpecifier>.some(ret_ts);
+        bmf.location = location;
+        let body_text: string = "return emperor.penguin_meta_specialize(\"" + def_name + "\");\n";
+        let mut body_block = this.parse_code_block_text(body_text, location);
+        if (body_block.is_none()) {
+            return new Option<BoundMetaFunctionDefinition>.none();
+        }
+        bmf.body = body_block;
+        return new Option<BoundMetaFunctionDefinition>.some(bmf);
     }
 
     // Phase 6 v2: collect `#class` definitions (meta-only data structures) from
@@ -778,23 +912,33 @@ class SemanticModel {
         this.rewrite_meta_definitions(unit.definitions);
         // Phase 5a.3: resolve statement-level meta inside function/initial bodies.
         this.rewrite_meta_in_function_bodies(unit.definitions);
+        this.current_pass_index = 1;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 1/9: Building scopes..."); }
         this.pass_build_scopes(unit, result);
+        this.current_pass_index = 2;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 2/9: Resolving types..."); }
         this.pass_resolve_types(unit, result);
+        this.current_pass_index = 3;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 3/9: Monomorphizing generics..."); }
         this.pass_monomorphize(unit, result);
+        this.current_pass_index = 4;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9: Binding symbols..."); }
         this.pass_bind_symbols(result);
+        this.current_pass_index = 5;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9: Generating constructors..."); }
         this.pass_constructors(result);
+        this.current_pass_index = 6;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 6/9: Building interface vtables..."); }
         this.pass_interface_implementation(unit, result);
+        this.current_pass_index = 7;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 7/9: Classifying value types..."); }
         this.pass_classify_value_types(result);
+        this.current_pass_index = 7;
         this.pass_validate_interface_usage(result);
+        this.current_pass_index = 8;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9: Binding expressions..."); }
         this.pass_bind_expressions(unit, result);
+        this.current_pass_index = 9;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
         this.pass_validate_control_flow(result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
@@ -1147,7 +1291,14 @@ class SemanticModel {
     fun value_param_to_meta_kind(this, constraint: string) -> string {
         if (constraint == "bool") { return "bool"; }
         if (constraint == "string") { return "string"; }
-        return "i64";
+        if (constraint == "double" || constraint == "f64" || constraint == "float" || constraint == "f32") { return "double"; }
+        if (constraint == "i8" || constraint == "i16" || constraint == "i32" || constraint == "i64"
+            || constraint == "u8" || constraint == "u16" || constraint == "u32" || constraint == "u64"
+            || constraint == "char") { return "i64"; }
+        // M6-step2 4c: a reference-typed constraint (List<i64>, user classes, ...)
+        // is an OBJECT value param — the address flows as i64 and the caller-stub
+        // materializes the live pointer via penguin_meta_get_object.
+        return "object";
     }
 
     // Render a #specializing block body as penguin text, replacing each `impl`
@@ -1265,6 +1416,9 @@ class SemanticModel {
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(def.name, full_name, def.is_extern, def.is_pure, def.is_new, def.is_extern);
         this.extract_template_params(def.template_decl, result.generic_params);
+        // D6: value-template functions carry non-type params (N: i32) that must be
+        // substituted into the specialized body (mirrors bind_class_def).
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
         if (!def.is_extern && def.body.is_some()) {
             let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), def.name, full_name + ".<body>", new Option<BoundScope>.some(scope));
             result.scope = new Option<BoundScope>.some(func_scope);
@@ -1420,6 +1574,7 @@ class SemanticModel {
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundEnumDefinition = new BoundEnumDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
         let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), def.name, full_name, new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(enum_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
@@ -1483,6 +1638,7 @@ class SemanticModel {
         let full_name: string = scope.full_name + "." + def.name;
         let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
         let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), def.name, full_name, new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(iface_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
@@ -1577,6 +1733,11 @@ class SemanticModel {
         // IFoo<u8>) so downstream passes (monomorphization collection, etc.)
         // can see which generic interfaces a class instantiates.
         if (def.type_spec.is_some()) {
+            let dk: mut i64 = 0;
+            while (dk < cast<i64>(def.type_spec.some.generic_args.size())) {
+                let da: TypeSpecifier = def.type_spec.some.generic_args.at(cast<u64>(dk)).some;
+                dk = dk + 1;
+            }
             result.interface_type = this.resolve_type_specifier(def.type_spec.some, scope);
         }
         let i: mut i64 = 0;
@@ -1726,7 +1887,7 @@ class SemanticModel {
             let pi: mut i64 = 0;
             while (pi < cast<i64>(e.generic_params.size()) && pi < cast<i64>(concrete_type.generic_args.size())) {
                 if (bt_name == e.generic_params.at(cast<u64>(pi)).some) {
-                    let arg: mut BoundType = concrete_type.generic_args.at(cast<u64>(pi)).some;
+                    let arg: mut BoundType = arg_as_bound_type(concrete_type.generic_args.at(cast<u64>(pi)).some);
                     return arg;
                 }
                 pi = pi + 1;
@@ -1737,7 +1898,7 @@ class SemanticModel {
             let pi: mut i64 = 0;
             while (pi < cast<i64>(c.generic_params.size()) && pi < cast<i64>(concrete_type.generic_args.size())) {
                 if (bt_name == c.generic_params.at(cast<u64>(pi)).some) {
-                    let arg: mut BoundType = concrete_type.generic_args.at(cast<u64>(pi)).some;
+                    let arg: mut BoundType = arg_as_bound_type(concrete_type.generic_args.at(cast<u64>(pi)).some);
                     return arg;
                 }
                 pi = pi + 1;
@@ -1758,6 +1919,7 @@ class SemanticModel {
 
     fun bind_symbols_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter bind_symbols_for_def");
+        if (BoundDefinition.get_pass_index(def) >= this.current_pass_index) { return; }
         if (def is BoundDefinition.function_def) {
             this.bind_function_symbols(def.function_def);
         }
@@ -1832,6 +1994,7 @@ class SemanticModel {
         if (def is BoundDefinition.initial_routine) {
             this.bind_function_symbols_for_init(def.initial_routine);
         }
+        BoundDefinition.set_pass_index(def, this.current_pass_index);
     }
 
     fun bind_function_symbols(mut this, func: BoundFunctionDefinition) {
@@ -1916,29 +2079,35 @@ class SemanticModel {
 
     fun resolve_pair(mut this, ast_def: Definition, bound_def: BoundDefinition, scope: BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter resolve_pair");
+        if (BoundDefinition.get_pass_index(bound_def) >= this.current_pass_index) { return bound_def; }
         if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
             let bf: mut BoundFunctionDefinition = bound_def.function_def;
             this.resolve_function_pair(ast_def.function_def, bf, scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.function_def(bf);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let bc: mut BoundClassDefinition = bound_def.class_def;
             this.resolve_class_pair(ast_def.class_def, bc, scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.class_def(bc);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
             let be: mut BoundEnumDefinition = bound_def.enum_def;
             this.resolve_enum_types(be, scope, ast_def.enum_def);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.enum_def(be);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
             let bi: mut BoundInterfaceDefinition = bound_def.interface_def;
             this.resolve_interface_pair(ast_def.interface_def, bi, scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.interface_def(bi);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
             let bn: mut BoundNamespaceDefinition = bound_def.namespace_def;
             this.resolve_namespace_pair(ast_def.namespace_def, bn, scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.namespace_def(bn);
         }
         // Primitive interface impls: resolve each mangled method's parameter and
@@ -1979,6 +2148,7 @@ class SemanticModel {
                     this.type_registry.void_type, new _utils.List<BoundType>(), false);
                 init.symbol = new Option<BoundFunctionSymbol>.some(sym);
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.initial_routine(init);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
@@ -1991,6 +2161,7 @@ class SemanticModel {
                     gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
                 }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.global_var_def(gv);
         }
         if (bound_def is BoundDefinition.type_ref_def && ast_def is Definition.type_ref_def) {
@@ -2000,12 +2171,14 @@ class SemanticModel {
                 let alias_t: mut BoundType = new BoundType();
                 alias_t.kind = new TypeKind.TypeReferenceKind();
                 alias_t.generic_args.push(
-                    this.resolve_type_specifier(ast_def.type_ref_def.type_spec.some, scope));
+                    make_type_arg(this.resolve_type_specifier(ast_def.type_ref_def.type_spec.some, scope)));
                 tsym.bound_type = alias_t;
                 tr.type_symbol = new Option<BoundTypeSymbol>.some(tsym);
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.type_ref_def(tr);
         }
+        BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
         return bound_def;
     }
 
@@ -2362,6 +2535,11 @@ class SemanticModel {
         }
         sym.return_type = ret;
         bound_func.return_type = ret;
+        // Idempotent: clear existing parameters first (this is called both from the
+        // ordinary pass-2 resolve AND from specialize_interface_def for specialized
+        // interfaces' default methods; the latter may re-run on an already-populated
+        // bound method, which would otherwise duplicate e.g. `%this`).
+        bound_func.parameters = new _utils.List<BoundFunctionParameter>();
         let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(ast_func.parameters.size())) {
@@ -2434,21 +2612,29 @@ class SemanticModel {
         }
     }
 
-    fun resolve_generic_args(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut _utils.List<BoundType> {
+    // M6-step2: resolve ONE generic-arg TypeSpecifier to a BoundTypeArg. Covers
+    // all three arg forms: integer-literal value arg (A<5>), value-returning
+    // meta-call arg (A<#compute_n()> — JIT-evaluated at ANY pass; the per-arg
+    // volume is tiny so no OOM gate), and type arg (recursively resolved). All
+    // generic-arg resolution sites route through here so the forms behave
+    // uniformly (field types, new positions, impl interfaces, fixpoint collection).
+    fun resolve_single_generic_arg(this, arg_ts: TypeSpecifier, scope: BoundScope) -> BoundTypeArg {
+        if (arg_ts.is_value_arg) {
+            return make_int_value_arg(string_to_int(arg_ts.value_arg_text));
+        }
+        if (arg_ts.meta_call.is_some()) {
+            let mv: Option<BoundTypeArg> = this.try_eval_meta_value_arg(arg_ts, scope);
+            if (mv.is_some()) { return mv.some; }
+        }
+        return make_type_arg(this.resolve_type_specifier(arg_ts, scope));
+    }
+
+    fun resolve_generic_args(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut _utils.List<BoundTypeArg> {
         _utils.trace_enter("Enter resolve_generic_args");
-        let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
         let k: mut i64 = 0;
         while (k < cast<i64>(type_spec.generic_args.size())) {
-            let arg_ts: TypeSpecifier = type_spec.generic_args.at(cast<u64>(k)).some;
-            // req5: a value generic arg (A<5>) -> synthetic BoundType riding generic_args.
-            if (arg_ts.is_value_arg) {
-                let vbt: mut BoundType = new BoundType();
-                vbt.is_template_value_arg = true;
-                vbt.template_value = string_to_int(arg_ts.value_arg_text);
-                args.push(vbt);
-            } else {
-                args.push(this.resolve_type_specifier(arg_ts, scope));
-            }
+            args.push(this.resolve_single_generic_arg(type_spec.generic_args.at(cast<u64>(k)).some, scope));
             k = k + 1;
         }
         return args;
@@ -2466,15 +2652,14 @@ class SemanticModel {
     // constant values (5) inside an expression. Used when binding the members of
     // a specialized value-template class so `foo: i32 = N` becomes `= 5`. Returns
     // a new expression; the original (shared template) AST is not mutated.
-    fun substitute_value_params(mut this, expr: Expression, names: _utils.List<string>, values: _utils.List<i64>) -> Expression {
+    fun substitute_value_params(mut this, expr: Expression, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Expression {
         if (cast<i64>(names.size()) == 0) { return expr; }
         if (expr is Expression.identifier) {
             let id: IdentifierExpression = expr.identifier;
             let i: mut i64 = 0;
             while (i < cast<i64>(names.size())) {
                 if (names.at(cast<u64>(i)).some == id.name) {
-                    let ce: mut ConstantExpression = new ConstantExpression(cast<string>(values.at(cast<u64>(i)).some));
-                    return new Expression.constant(ce);
+                    return this.make_value_literal(values.at(cast<u64>(i)).some, texts.at(cast<u64>(i)).some, kinds.at(cast<u64>(i)).some);
                 }
                 i = i + 1;
             }
@@ -2486,41 +2671,209 @@ class SemanticModel {
             let oi: mut i64 = 0;
             while (oi < cast<i64>(b.operators.size())) { r.operators.push(b.operators.at(cast<u64>(oi)).some); oi = oi + 1; }
             let ai: mut i64 = 0;
-            while (ai < cast<i64>(b.operands.size())) { r.operands.push(this.substitute_value_params(b.operands.at(cast<u64>(ai)).some, names, values)); ai = ai + 1; }
+            while (ai < cast<i64>(b.operands.size())) { r.operands.push(this.substitute_value_params(b.operands.at(cast<u64>(ai)).some, names, values, texts, kinds)); ai = ai + 1; }
             return new Expression.binary(r);
         }
         if (expr is Expression.unary) {
             let u: UnaryExpression = expr.unary;
             let r: mut UnaryExpression = new UnaryExpression();
             r.operator_value = u.operator_value;
-            if (u.operand.is_some()) { r.operand = new Option<Expression>.some(this.substitute_value_params(u.operand.some, names, values)); }
+            if (u.operand.is_some()) { r.operand = new Option<Expression>.some(this.substitute_value_params(u.operand.some, names, values, texts, kinds)); }
             return new Expression.unary(r);
         }
         if (expr is Expression.parenthesized) {
             let e: ParenthesizedExpression = expr.parenthesized;
             let r: mut ParenthesizedExpression = new ParenthesizedExpression();
-            if (e.inner.is_some()) { r.inner = new Option<Expression>.some(this.substitute_value_params(e.inner.some, names, values)); }
+            if (e.inner.is_some()) { r.inner = new Option<Expression>.some(this.substitute_value_params(e.inner.some, names, values, texts, kinds)); }
             return new Expression.parenthesized(r);
         }
         if (expr is Expression.function_call) {
             let f: FunctionCallExpression = expr.function_call;
             let r: mut FunctionCallExpression = new FunctionCallExpression();
-            if (f.callee.is_some()) { r.callee = new Option<Expression>.some(this.substitute_value_params(f.callee.some, names, values)); }
+            if (f.callee.is_some()) { r.callee = new Option<Expression>.some(this.substitute_value_params(f.callee.some, names, values, texts, kinds)); }
             let ai: mut i64 = 0;
-            while (ai < cast<i64>(f.arguments.size())) { r.arguments.push(this.substitute_value_params(f.arguments.at(cast<u64>(ai)).some, names, values)); ai = ai + 1; }
+            while (ai < cast<i64>(f.arguments.size())) { r.arguments.push(this.substitute_value_params(f.arguments.at(cast<u64>(ai)).some, names, values, texts, kinds)); ai = ai + 1; }
             return new Expression.function_call(r);
         }
         if (expr is Expression.member_access) {
             let m: MemberAccessExpression = expr.member_access;
             let r: mut MemberAccessExpression = new MemberAccessExpression();
-            if (m.base_expr.is_some()) { r.base_expr = new Option<Expression>.some(this.substitute_value_params(m.base_expr.some, names, values)); }
+            if (m.base_expr.is_some()) { r.base_expr = new Option<Expression>.some(this.substitute_value_params(m.base_expr.some, names, values, texts, kinds)); }
             r.member_name = m.member_name;
             return new Expression.member_access(r);
+        }
+        if (expr is Expression.if_expr) {
+            let e: IfExpression = expr.if_expr;
+            let r: mut IfExpression = new IfExpression();
+            if (e.condition.is_some()) { r.condition = new Option<Expression>.some(this.substitute_value_params(e.condition.some, names, values, texts, kinds)); }
+            if (e.then_block.is_some()) { r.then_block = new Option<Expression>.some(this.substitute_value_params(e.then_block.some, names, values, texts, kinds)); }
+            if (e.else_block.is_some()) { r.else_block = new Option<Expression>.some(this.substitute_value_params(e.else_block.some, names, values, texts, kinds)); }
+            return new Expression.if_expr(r);
+        }
+        if (expr is Expression.while_expr) {
+            let e: WhileExpression = expr.while_expr;
+            let r: mut WhileExpression = new WhileExpression();
+            if (e.condition.is_some()) { r.condition = new Option<Expression>.some(this.substitute_value_params(e.condition.some, names, values, texts, kinds)); }
+            if (e.body.is_some()) { r.body = new Option<Expression>.some(this.substitute_value_params(e.body.some, names, values, texts, kinds)); }
+            return new Expression.while_expr(r);
+        }
+        if (expr is Expression.cast_expr) {
+            let c: CastExpression = expr.cast_expr;
+            let r: mut CastExpression = new CastExpression();
+            r.type_name = c.type_name;
+            r.target_type = c.target_type;
+            r.location = c.location;
+            if (c.inner.is_some()) { r.inner = new Option<Expression>.some(this.substitute_value_params(c.inner.some, names, values, texts, kinds)); }
+            return new Expression.cast_expr(r);
+        }
+        if (expr is Expression.meta_call) {
+            let mc: MetaCallExpression = expr.meta_call;
+            let r: mut MetaCallExpression = new MetaCallExpression();
+            r.func_name = mc.func_name;
+            r.trailing_block_raw = mc.trailing_block_raw;
+            r.trailing_definition = mc.trailing_definition;
+            r.location = mc.location;
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(mc.arguments.size())) { r.arguments.push(this.substitute_value_params(mc.arguments.at(cast<u64>(ai)).some, names, values, texts, kinds)); ai = ai + 1; }
+            return new Expression.meta_call(r);
+        }
+        if (expr is Expression.new_expr) {
+            let n: NewExpression = expr.new_expr;
+            let r: mut NewExpression = new NewExpression();
+            r.type_name = n.type_name;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(n.generic_args.size())) { r.generic_args.push(n.generic_args.at(cast<u64>(gi)).some); gi = gi + 1; }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(n.arguments.size())) { r.arguments.push(this.substitute_value_params(n.arguments.at(cast<u64>(ai)).some, names, values, texts, kinds)); ai = ai + 1; }
+            return new Expression.new_expr(r);
+        }
+        if (expr is Expression.code_block) {
+            let cb: CodeBlockExpression = expr.code_block;
+            let r: mut CodeBlockExpression = new CodeBlockExpression();
+            let si: mut i64 = 0;
+            while (si < cast<i64>(cb.statements.size())) {
+                r.statements.push(this.substitute_value_params_in_statement(cb.statements.at(cast<u64>(si)).some, names, values, texts, kinds));
+                si = si + 1;
+            }
+            if (cb.trailing_expr.is_some()) {
+                r.trailing_expr = new Option<Expression>.some(this.substitute_value_params(cb.trailing_expr.some, names, values, texts, kinds));
+            }
+            return new Expression.code_block(r);
         }
         return expr;
     }
 
-    // Phase 5c (type-return splice): if `type_spec` is a #fun() meta call in a
+    // req5/M3: substitute value-template params (N) -> concrete constants inside a
+    // STATEMENT (reached from a method body's code block). Mirrors the expression
+    // walker above; recurses into the statement's contained expressions and nested
+    // statements (if/while/for bodies). Statements with no expression payload
+    // (break/continue/emit/…) are returned unchanged.
+    fun substitute_value_params_in_statement(mut this, stmt: Statement, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Statement {
+        if (cast<i64>(names.size()) == 0) { return stmt; }
+        if (stmt is Statement.return_stmt) {
+            let s: ReturnStatement = stmt.return_stmt;
+            let r: mut ReturnStatement = new ReturnStatement();
+            if (s.value.is_some()) { r.value = new Option<Expression>.some(this.substitute_value_params(s.value.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.return_stmt(r);
+        }
+        if (stmt is Statement.expression) {
+            let s: ExpressionStatement = stmt.expression;
+            let r: mut ExpressionStatement = new ExpressionStatement();
+            if (s.expression.is_some()) { r.expression = new Option<Expression>.some(this.substitute_value_params(s.expression.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.expression(r);
+        }
+        if (stmt is Statement.block_expr) {
+            let s: BlockExpressionStatement = stmt.block_expr;
+            let r: mut BlockExpressionStatement = new BlockExpressionStatement();
+            if (s.expression.is_some()) { r.expression = new Option<Expression>.some(this.substitute_value_params(s.expression.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.block_expr(r);
+        }
+        if (stmt is Statement.assignment) {
+            let s: AssignmentStatement = stmt.assignment;
+            let r: mut AssignmentStatement = new AssignmentStatement();
+            if (s.target.is_some()) { r.target = new Option<Expression>.some(this.substitute_value_params(s.target.some, names, values, texts, kinds)); }
+            r.operator_value = s.operator_value;
+            if (s.value.is_some()) { r.value = new Option<Expression>.some(this.substitute_value_params(s.value.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.assignment(r);
+        }
+        if (stmt is Statement.let_decl) {
+            let s: LetDeclarationStatement = stmt.let_decl;
+            let r: mut LetDeclarationStatement = new LetDeclarationStatement();
+            r.is_mutable = s.is_mutable;
+            r.variable_name = s.variable_name;
+            r.variable_type = s.variable_type;
+            r.type_spec = s.type_spec;
+            if (s.initializer.is_some()) { r.initializer = new Option<Expression>.some(this.substitute_value_params(s.initializer.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.let_decl(r);
+        }
+        if (stmt is Statement.if_stmt) {
+            let s: IfStatement = stmt.if_stmt;
+            let r: mut IfStatement = new IfStatement();
+            if (s.condition.is_some()) { r.condition = new Option<Expression>.some(this.substitute_value_params(s.condition.some, names, values, texts, kinds)); }
+            if (s.then_statement.is_some()) { r.then_statement = new Option<Statement>.some(this.substitute_value_params_in_statement(s.then_statement.some, names, values, texts, kinds)); }
+            if (s.else_statement.is_some()) { r.else_statement = new Option<Statement>.some(this.substitute_value_params_in_statement(s.else_statement.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.if_stmt(r);
+        }
+        if (stmt is Statement.while_stmt) {
+            let s: WhileStatement = stmt.while_stmt;
+            let r: mut WhileStatement = new WhileStatement();
+            if (s.condition.is_some()) { r.condition = new Option<Expression>.some(this.substitute_value_params(s.condition.some, names, values, texts, kinds)); }
+            if (s.body.is_some()) { r.body = new Option<Statement>.some(this.substitute_value_params_in_statement(s.body.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.while_stmt(r);
+        }
+        if (stmt is Statement.for_stmt) {
+            let s: ForStatement = stmt.for_stmt;
+            let r: mut ForStatement = new ForStatement();
+            r.variable_name = s.variable_name;
+            r.variable_type = s.variable_type;
+            r.type_spec = s.type_spec;
+            r.is_mutable = s.is_mutable;
+            if (s.iterable.is_some()) { r.iterable = new Option<Expression>.some(this.substitute_value_params(s.iterable.some, names, values, texts, kinds)); }
+            if (s.body.is_some()) { r.body = new Option<Statement>.some(this.substitute_value_params_in_statement(s.body.some, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.for_stmt(r);
+        }
+        return stmt;
+    }
+
+    // req5/M3: build a shallow copy of a FunctionDefinition with its body run
+    // through substitute_value_params (value-template params N -> concrete
+    // constants), so a specialized value-template class's METHOD bodies get N
+    // substituted (e.g. `fun get() -> i32 { return N; }` -> `return 5`). Field
+    // initializers are substituted separately at the field-default binding; this
+    // extends substitution to method bodies. The shared template AST is NOT
+    // mutated — a fresh FunctionDefinition is returned. With no value params, the
+    // original definition is returned unchanged (so non-value-template classes are
+    // unaffected).
+    fun substitute_function_body_value_params(mut this, fdef: FunctionDefinition, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Definition {
+        if (cast<i64>(names.size()) == 0) { return new Definition.function_def(fdef); }
+        if (fdef.body.is_none()) { return new Definition.function_def(fdef); }
+        let r: mut FunctionDefinition = new FunctionDefinition(fdef.name);
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(fdef.parameters.size())) {
+            r.parameters.push(fdef.parameters.at(cast<u64>(pi)).some);
+            pi = pi + 1;
+        }
+        r.return_type = fdef.return_type;
+        r.body = new Option<Expression>.some(this.substitute_value_params(fdef.body.some, names, values, texts, kinds));
+        r.is_extern = fdef.is_extern;
+        r.is_pure = fdef.is_pure;
+        r.is_not_pure = fdef.is_not_pure;
+        r.is_async = fdef.is_async;
+        r.is_not_async = fdef.is_not_async;
+        r.is_new = fdef.is_new;
+        r.template_decl = fdef.template_decl;
+        r.location = fdef.location;
+        return new Definition.function_def(r);
+    }
+
     // type-specifier position (e.g. `let x: #int_by_bits(32) = 5;`), JIT-execute
     // the #fun (it returns a type token as i64) and resolve the token to a
     // BoundType via MetaEngine. Returns none when type_spec is not a meta-call
@@ -2650,8 +3003,8 @@ class SemanticModel {
                 eqi4 = eqi4 + 1;
             }
             let elem_type3: BoundType = this.resolve_type_specifier(elem_ts3, scope);
-            let gen_args3: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-            gen_args3.push(elem_type3.with_mutability(new Mutability.Immutable()));
+            let gen_args3: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+            gen_args3.push(make_type_arg(elem_type3.with_mutability(new Mutability.Immutable())));
             iface_type = iface_type.with_generic_args(gen_args3);
             // An iterable type (`i64[]`) is mutable by default so the resulting
             // IIterator's `next()` (mut this) can be called on the variable.
@@ -2694,6 +3047,14 @@ class SemanticModel {
         if (type_sym.is_some()) {
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             if (cast<i64>(type_spec.generic_args.size()) > 0) {
+                // M4: route VALUE-arg template instantiations through the `_template_X`
+                // meta path (returns the specialized type); type-only instantiations
+                // fall through to template+args + the fixpoint. try_resolve_template_instantiation
+                // gates to value args (the fixpoint's gap) to avoid OOM.
+                let m4: Option<BoundType> = this.try_resolve_template_instantiation(type_spec.name, type_spec.generic_args, scope);
+                if (m4.is_some()) {
+                    return this.apply_mutability(m4.some, type_spec.is_mutable);
+                }
                 result = result.with_generic_args(this.resolve_generic_args(type_spec, scope));
             }
             return this.apply_mutability(result, type_spec.is_mutable);
@@ -2743,6 +3104,14 @@ class SemanticModel {
         if (type_sym.is_some()) {
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             if (cast<i64>(type_spec.generic_args.size()) > 0) {
+                // M4: route VALUE-arg template instantiations through the `_template_X`
+                // meta path (returns the specialized type); type-only instantiations
+                // fall through to template+args + the fixpoint. try_resolve_template_instantiation
+                // gates to value args (the fixpoint's gap) to avoid OOM.
+                let m4: Option<BoundType> = this.try_resolve_template_instantiation(type_spec.name, type_spec.generic_args, scope);
+                if (m4.is_some()) {
+                    return this.apply_mutability(m4.some, type_spec.is_mutable);
+                }
                 result = result.with_generic_args(this.resolve_generic_args(type_spec, scope));
             }
             return this.apply_mutability(result, type_spec.is_mutable);
@@ -2767,8 +3136,8 @@ class SemanticModel {
         };
         if (iface_sym.is_some() && iface_sym.some is BoundSymbol.type_sym) {
             let iface_type: mut BoundType = iface_sym.some.type_sym.bound_type;
-            let gen_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-            gen_args.push(element_type.with_mutability(new Mutability.Immutable()));
+            let gen_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+            gen_args.push(make_type_arg(element_type.with_mutability(new Mutability.Immutable())));
             iface_type = iface_type.with_generic_args(gen_args);
             // An iterable type (`i64[]`) is mutable by default so the resulting
             // IIterator's `next()` (mut this) can be called on the variable.
@@ -2810,14 +3179,14 @@ class SemanticModel {
         return new Option<BoundType>.some(resolved);
     }
 
-    fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundType>) -> string {
+    fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
         _utils.trace_enter("Enter mangle_generic_name");
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
         while (i < cast<i64>(generic_args.size())) {
             sb.append("__");
-            let arg_name: string = generic_args.at(cast<u64>(i)).some.display_name();
+            let arg_name: string = arg_display_name(generic_args.at(cast<u64>(i)).some);
             let sanitized: mut StringBuilder = new StringBuilder();
             let j: mut i64 = 0;
             while (j < string_length(arg_name)) {
@@ -2842,6 +3211,132 @@ class SemanticModel {
         return false;
     }
 
+    // M3 (#template -> #fun desugar): the on-demand specialization entry point.
+    // Given an instantiation `inst` (a template + its generic_args), specialize it
+    // if not already present, run it through any passes it missed (catch_up_def),
+    // and return the NEWLY-created specialized BoundDefinition (or none if the
+    // instantiation already existed / the template was unknown). Idempotent via
+    // is_instantiation_already_exists. This is the single creation path used by
+    // pass_monomorphize (and, in M4, by the meta `_template_X` responder), so the
+    // meta path and the fixpoint share one specialization routine.
+    //
+    // R2 (type-ref consistency): the matching type lookup is the caller's job
+    // (lookup_type_in_scope(mangled)); this returns the def. The M4 responder wraps
+    // this and returns spec.bound_type (type_def = specialized def, NO generic_args).
+    fun ensure_specialized_def(mut this, inst: BoundType, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter ensure_specialized_def");
+        if (inst.type_definition.is_none()) { return new Option<BoundDefinition>.none(); }
+        let template_def: BoundDefinition = inst.type_definition.some;
+        // class
+        if (template_def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = template_def.class_def;
+            if (cast<i64>(cls.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(cls.name, inst.generic_args);
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_class_def(cls, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(cls.name, inst, spec_result.some, global_scope);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        // enum
+        if (template_def is BoundDefinition.enum_def) {
+            let e: BoundEnumDefinition = template_def.enum_def;
+            if (cast<i64>(e.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(e.name, inst.generic_args);
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_enum_def(e, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(e.name, inst, spec_result.some, global_scope);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        // interface
+        if (template_def is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = template_def.interface_def;
+            if (cast<i64>(iface.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(iface.name, inst.generic_args);
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_interface_def(iface, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(iface.name, inst, spec_result.some, global_scope);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // M3: type-returning wrapper around ensure_specialized_def — the form the
+    // penguin_meta_specialize responder (and M4 use-site routing) uses. Given a
+    // template name + its generic args, return the specialized type (R2: type_def
+    // = the specialized def, NO generic_args), creating + catch_up-ing the def if
+    // it doesn't yet exist. Idempotent.
+    fun ensure_specialized_type(mut this, template_name: string, type_args: _utils.List<BoundTypeArg>) -> BoundType {
+        _utils.trace_enter("Enter ensure_specialized_type");
+        let mangled: string = mangle_generic_name(template_name, type_args);
+        let existing: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(mangled);
+        if (existing.is_some() && existing.some is BoundSymbol.type_sym) {
+            return existing.some.type_sym.bound_type;
+        }
+        // Build a template+args inst and specialize via the shared creation path.
+        let tmpl_sym: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(template_name);
+        if (tmpl_sym.is_none() || !(tmpl_sym.some is BoundSymbol.type_sym)) {
+            return this.type_registry.make_error_type();
+        }
+        let inst: mut BoundType = tmpl_sym.some.type_sym.bound_type.with_generic_args(type_args);
+        let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, this.global_scope);
+        if (spec.is_some()) {
+            // Late-created (M4 meta path): run it through the passes it missed and
+            // register it in the compilation unit so it's emitted. (When this is
+            // reached during pass_monomorphize the unit's normal loop already does
+            // both, so this branch is for the on-demand / M4 caller.)
+            if (this.current_unit.is_some()) {
+                this.catch_up_def(spec.some, this.current_unit.some);
+                this.current_unit.some.definitions.push(spec.some);
+            }
+        }
+        let now: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(mangled);
+        if (now.is_some() && now.some is BoundSymbol.type_sym) {
+            return now.some.type_sym.bound_type;
+        }
+        return this.type_registry.make_error_type();
+    }
+
+    // M3: run a specialized def through the per-def processors for passes
+    // 4..current_pass_index (the passes that normally iterate result.definitions).
+    // This lets a specialization created LATE — e.g. by the M4 meta path during
+    // expression binding (pass 8) — still get symbols/constructors/vtables/
+    // value-type classification/body binding it would otherwise miss (the B1 bug).
+    //
+    // pass_monomorphize (pass 3) calls this right after creating a def; there the
+    // 4..3 range is empty so it is a no-op and the normal pass loop handles passes
+    // 4-8 — keeping the fixpoint's behavior identical. Each processor's
+    // `pass_index >= current_pass_index` guard makes this idempotent; we temporarily
+    // lower current_pass_index to each processor's pass number so a def first seen
+    // in a later pass is still run through the earlier processors (a single global
+    // current_pass_index would otherwise skip them). Passes 2-3 are NOT replayed
+    // here: pass_monomorphize's own resolve_pair + the specialize_* creation handle
+    // those, and replaying resolve_pair would double-resolve.
+    fun catch_up_def(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter catch_up_def");
+        let saved: i64 = this.current_pass_index;
+        // The returning processors (init_constructors_for_def, build_vtables_*,
+        // classify_def, bind_body_*) mutate the def's inner object IN PLACE and only
+        // re-wrap the same object, so ignoring their return is correct — the def
+        // (the same object held in result.definitions) is updated.
+        if (saved >= 4) { this.current_pass_index = 4; this.bind_symbols_for_def(def); }
+        if (saved >= 5) { this.current_pass_index = 5; this.init_constructors_for_def(def, result.global_scope); }
+        if (saved >= 6) {
+            this.current_pass_index = 6;
+            this.build_vtables_for_specialized_def(def, result.global_scope);
+            this.merge_inherited_vtables_for_def(def, result.global_scope);
+        }
+        if (saved >= 7) {
+            this.current_pass_index = 7;
+            this.classify_def(def, new _utils.List<string>());
+            this.validate_interface_usage_def(def);
+        }
+        if (saved >= 8) { this.current_pass_index = 8; this.bind_body_for_specialized_def(def, result); }
+        this.current_pass_index = saved;
+    }
+
     fun pass_monomorphize(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_monomorphize");
         // Iterative monomorphization: specialize, resolve, then re-collect from
@@ -2863,18 +3358,14 @@ class SemanticModel {
                     if (template_def is BoundDefinition.class_def) {
                         let cls: BoundClassDefinition = template_def.class_def;
                         if (cast<i64>(cls.generic_params.size()) > 0) {
-                            let mangled: string = mangle_generic_name(cls.name, inst.generic_args);
-                            if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
-                                let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, cls.name);
-                                if (ast_def.is_some()) {
-                                    let spec_result: Option<BoundDefinition> = this.specialize_class_def(
-                                        cls, inst.generic_args, mangled, result.global_scope);
-                                    if (spec_result.is_some()) {
-                                        let injected: BoundDefinition = this.run_specializing_for_spec(cls.name, inst, spec_result.some, result.global_scope);
-                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + mangled); }
-                                        specialized_defs.push(injected);
-                                        specialized_asts.push(ast_def.some);
-                                    }
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, cls.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    this.catch_up_def(spec.some, result);
+                                    if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + cls.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
                                 }
                             }
                         }
@@ -2882,18 +3373,14 @@ class SemanticModel {
                     if (template_def is BoundDefinition.enum_def) {
                         let e: BoundEnumDefinition = template_def.enum_def;
                         if (cast<i64>(e.generic_params.size()) > 0) {
-                            let mangled: string = mangle_generic_name(e.name, inst.generic_args);
-                            if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
-                                let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, e.name);
-                                if (ast_def.is_some()) {
-                                    let spec_result: Option<BoundDefinition> = this.specialize_enum_def(
-                                        e, inst.generic_args, mangled, result.global_scope);
-                                    if (spec_result.is_some()) {
-                                        let injected: BoundDefinition = this.run_specializing_for_spec(e.name, inst, spec_result.some, result.global_scope);
-                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + mangled); }
-                                        specialized_defs.push(injected);
-                                        specialized_asts.push(ast_def.some);
-                                    }
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, e.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    this.catch_up_def(spec.some, result);
+                                    if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + e.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
                                 }
                             }
                         }
@@ -2901,17 +3388,14 @@ class SemanticModel {
                     if (template_def is BoundDefinition.interface_def) {
                         let iface: BoundInterfaceDefinition = template_def.interface_def;
                         if (cast<i64>(iface.generic_params.size()) > 0) {
-                            let mangled: string = mangle_generic_name(iface.name, inst.generic_args);
-                            if (!this.is_instantiation_already_exists(mangled, result.global_scope)) {
-                                let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, iface.name);
-                                if (ast_def.is_some()) {
-                                    let spec_result: Option<BoundDefinition> = this.specialize_interface_def(
-                                        iface, inst.generic_args, mangled, result.global_scope);
-                                    if (spec_result.is_some()) {
-                                        if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized interface " + mangled); }
-                                        specialized_defs.push(spec_result.some);
-                                        specialized_asts.push(ast_def.some);
-                                    }
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, iface.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    this.catch_up_def(spec.some, result);
+                                    if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized interface " + iface.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
                                 }
                             }
                         }
@@ -3056,16 +3540,18 @@ class SemanticModel {
         while (ai < cast<i64>(block.bmf.parameters.size())) {
             let arg_val: mut i64 = 0;
             if (ai < cast<i64>(inst.generic_args.size())) {
-                let arg_type: BoundType = inst.generic_args.at(cast<u64>(ai)).some;
+                let arg: BoundTypeArg = inst.generic_args.at(cast<u64>(ai)).some;
                 let kind: string = block.bmf.parameters.at(cast<u64>(ai)).some.kind;
                 if (kind == "type") {
-                    let name: string = this.bound_type_meta_name(arg_type);
+                    let name: string = this.bound_type_meta_name(arg_as_bound_type(arg));
                     let token: u64 = this.meta_engine.get_or_assign_type_token(name);
                     arg_val = cast<i64>(token);
                 } else if (kind == "bool") {
-                    if (arg_type.template_value != 0) { arg_val = 1; }
+                    if (arg is BoundTypeArg.value_arg) {
+                        if (arg.value_arg.bool_val) { arg_val = 1; }
+                    }
                 } else {
-                    arg_val = arg_type.template_value;
+                    if (arg is BoundTypeArg.value_arg) { arg_val = arg.value_arg.as_i64(); }
                 }
             }
             args.push(arg_val);
@@ -3091,7 +3577,6 @@ class SemanticModel {
     // (get_or_assign_type_token / emperor_penguin_meta_get_type). Primitives and
     // concrete defs use their name; generic references use the mangled name.
     fun bound_type_meta_name(this, bt: BoundType) -> string {
-        if (bt.is_template_value_arg) { return cast<string>(bt.template_value); }
         if (bt.type_definition.is_some()) {
             let def_name: string = bt.type_definition.some.get_name();
             if (cast<i64>(bt.generic_args.size()) > 0) {
@@ -3229,7 +3714,7 @@ class SemanticModel {
         return this.find_ast_def_by_name(this.ast_definitions, name);
     }
 
-    fun mangle_generic_name_for_ir(base_name: string, generic_args: _utils.List<BoundType>) -> string {
+    fun mangle_generic_name_for_ir(base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
         _utils.trace_enter("Enter mangle_generic_name_for_ir");
         return mangle_generic_name(base_name, generic_args);
     }
@@ -3386,7 +3871,11 @@ class SemanticModel {
         }
         let i: mut i64 = 0;
         while (i < cast<i64>(bt.generic_args.size())) {
-            this.try_add_instantiation(bt.generic_args.at(cast<u64>(i)).some, instantiations);
+            let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(i)).some;
+            // Value args aren't types whose instantiation needs collecting.
+            if (!arg_is_value(arg)) {
+                this.try_add_instantiation(arg_as_bound_type(arg), instantiations);
+            }
             i = i + 1;
         }
     }
@@ -3632,19 +4121,10 @@ class SemanticModel {
         let base_type: Option<BoundType> = this.resolve_new_base_type_from_ast(type_name, scope);
         if (base_type.is_none()) { return new Option<BoundType>.none(); }
 
-        let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
         let k: mut i64 = 0;
         while (k < cast<i64>(generic_args.size())) {
-            let arg_ts: TypeSpecifier = generic_args.at(cast<u64>(k)).some;
-            // req5: a value generic arg (A<5>) -> synthetic BoundType.
-            if (arg_ts.is_value_arg) {
-                let vbt: mut BoundType = new BoundType();
-                vbt.is_template_value_arg = true;
-                vbt.template_value = string_to_int(arg_ts.value_arg_text);
-                args.push(vbt);
-            } else {
-                args.push(this.resolve_type_specifier(arg_ts, scope));
-            }
+            args.push(this.resolve_single_generic_arg(generic_args.at(cast<u64>(k)).some, scope));
             k = k + 1;
         }
         return new Option<BoundType>.some(base_type.some.with_generic_args(args));
@@ -3683,7 +4163,7 @@ class SemanticModel {
         return new Option<BoundType>.none();
     }
 
-    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter specialize_class_def");
         let ast_def: Option<Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
@@ -3708,7 +4188,8 @@ class SemanticModel {
         let pi: mut i64 = 0;
         while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
             let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
-            let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            let arg_type: BoundType = arg_as_bound_type(arg);
             let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
             param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
             class_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
@@ -3728,7 +4209,12 @@ class SemanticModel {
                 gpi = gpi + 1;
             }
             if (idx >= 0 && idx < cast<i64>(type_args.size())) {
-                result.value_param_values.push(type_args.at(cast<u64>(idx)).some.template_value);
+                let varg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (varg is BoundTypeArg.value_arg) {
+                    result.value_param_values.push(varg.value_arg.as_i64());
+                } else {
+                    result.value_param_values.push(0);
+                }
             } else {
                 result.value_param_values.push(0);
             }
@@ -3810,7 +4296,44 @@ class SemanticModel {
         return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
     }
 
-    fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+    // D6/req5: extract value-template params (is_template_value_arg args) into
+    // the destination lists (names/values/texts/kinds), positional via
+    // tmpl.generic_params (which holds ALL params, type + value, in template order).
+    // Shared by specialize_class/enum/interface/function_def. The `tmpl` is any
+    // def exposing value_param_names + generic_params; the caller passes its four
+    // output lists.
+    fun extract_specialized_value_params(mut this, tmpl_generic_params: _utils.List<string>, tmpl_value_param_names: _utils.List<string>, type_args: _utils.List<BoundTypeArg>, out_names: mut _utils.List<string>, out_values: mut _utils.List<i64>, out_texts: mut _utils.List<string>, out_kinds: mut _utils.List<string>) {
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl_value_param_names.size())) {
+            let vpname: string = tmpl_value_param_names.at(cast<u64>(vni)).some;
+            out_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(tmpl_generic_params.size())) {
+                if (tmpl_generic_params.at(cast<u64>(gi)).some == vpname) { idx = gi; }
+                gi = gi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                let arg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (arg is BoundTypeArg.value_arg) {
+                    out_values.push(arg.value_arg.as_i64());
+                    out_texts.push(arg.value_arg.as_text());
+                    out_kinds.push(arg.value_arg.kind_str());
+                } else {
+                    out_values.push(0);
+                    out_texts.push("");
+                    out_kinds.push("i64");
+                }
+            } else {
+                out_values.push(0);
+                out_texts.push("");
+                out_kinds.push("i64");
+            }
+            vni = vni + 1;
+        }
+    }
+
+    fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter specialize_enum_def");
         let ast_def: Option<Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
@@ -3833,12 +4356,20 @@ class SemanticModel {
         let pi: mut i64 = 0;
         while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
             let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
-            let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
-            let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
-            param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
-            enum_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            // D6/req5: a value-template arg is a VALUE, not a type — skip binding it
+            // as a type symbol (method bodies substitute it).
+            if (!arg_is_value(arg)) {
+                let arg_type: BoundType = arg_as_bound_type(arg);
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                enum_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
             pi = pi + 1;
         }
+
+        // D6/req5: extract value params for method-body substitution.
+        this.extract_specialized_value_params(tmpl.generic_params, tmpl.value_param_names, type_args, result.value_param_names, result.value_param_values, result.value_param_texts, result.value_param_kinds);
 
         result.scope = new Option<BoundScope>.some(enum_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
@@ -3894,7 +4425,7 @@ class SemanticModel {
     // so a default method `fun bar(this: IFoo<T>) -> T` specializes its signature and
     // body (T -> u8). Without this, lower_interface_def emits the unspecialized
     // template default method with an unresolved T-typed return.
-    fun specialize_interface_def(mut this, tmpl: BoundInterfaceDefinition, type_args: _utils.List<BoundType>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+    fun specialize_interface_def(mut this, tmpl: BoundInterfaceDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter specialize_interface_def");
         let ast_def: Option<Definition> = this.find_ast_def_by_name_from_scope(tmpl.name, global_scope);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
@@ -3919,12 +4450,20 @@ class SemanticModel {
         let pi: mut i64 = 0;
         while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
             let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
-            let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
-            let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
-            param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
-            iface_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            // D6/req5: a value-template arg is a VALUE, not a type — skip binding it
+            // as a type symbol (default-method bodies substitute it).
+            if (!arg_is_value(arg)) {
+                let arg_type: BoundType = arg_as_bound_type(arg);
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                iface_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
             pi = pi + 1;
         }
+
+        // D6/req5: extract value params for default-method body substitution.
+        this.extract_specialized_value_params(tmpl.generic_params, tmpl.value_param_names, type_args, result.value_param_names, result.value_param_values, result.value_param_texts, result.value_param_kinds);
 
         result.scope = new Option<BoundScope>.some(iface_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
@@ -3942,7 +4481,16 @@ class SemanticModel {
             if (member is Definition.function_def) {
                 let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, iface_scope);
                 if (bound_member.is_some()) {
-                    result.methods.push(bound_member.some);
+                    // Resolve the default method's signature types (return/params) in
+                    // the specialized scope (T -> arg) — bind_function_def only builds
+                    // the symbol; without this the specialized interface's default
+                    // method keeps a void return type and emits invalid LLVM.
+                    let bm: mut BoundDefinition = bound_member.some;
+                    if (bm is BoundDefinition.function_def) {
+                        this.resolve_interface_method_pair(member.function_def, bm.function_def, iface_scope, result);
+                        bm = new BoundDefinition.function_def(bm.function_def);
+                    }
+                    result.methods.push(bm);
                 }
             }
             if (member is Definition.impl_def) {
@@ -3977,14 +4525,17 @@ class SemanticModel {
 
     fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter init_constructors_for_def");
+        if (BoundDefinition.get_pass_index(def) >= this.current_pass_index) { return def; }
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.init_class_constructor(cls, global_scope);
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return new BoundDefinition.class_def(cls);
         }
         if (def is BoundDefinition.interface_def) {
             let iface: mut BoundInterfaceDefinition = def.interface_def;
             this.init_interface_constructor(iface, global_scope);
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return new BoundDefinition.interface_def(iface);
         }
         if (def is BoundDefinition.namespace_def) {
@@ -3995,8 +4546,10 @@ class SemanticModel {
                 ns.children.set(cast<u64>(k), updated);
                 k = k + 1;
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return new BoundDefinition.namespace_def(ns);
         }
+        BoundDefinition.set_pass_index(def, this.current_pass_index);
         return def;
     }
 
@@ -4133,6 +4686,10 @@ class SemanticModel {
 
     fun merge_inherited_vtables_for_def(mut this, def: BoundDefinition, global_scope: BoundScope) {
         _utils.trace_enter("Enter merge_inherited_vtables_for_def");
+        // Pass 6 phase 2 (shares current_pass_index=6 with build_vtables_for_def,
+        // which runs first on the same defs): use `>` so the phase-1 marker (6)
+        // does not skip this merge; phase 1 uses `>=` to stay skipped on re-run.
+        if (BoundDefinition.get_pass_index(def) > this.current_pass_index) { return; }
         if (def is BoundDefinition.class_def) {
             this.merge_container_vtables(def.class_def.vtables, def.class_def.interface_impls, global_scope);
         }
@@ -4147,6 +4704,7 @@ class SemanticModel {
                 ci = ci + 1;
             }
         }
+        BoundDefinition.set_pass_index(def, this.current_pass_index);
     }
 
     // Transitive interface-inheritance merge. A worklist is seeded from the
@@ -4233,6 +4791,7 @@ class SemanticModel {
 
     fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter build_vtables_for_specialized_def");
+        if (BoundDefinition.get_pass_index(bound_def) >= this.current_pass_index) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             let ast_def: Option<Definition> = this.find_ast_def_by_name(this.ast_definitions, this.extract_template_name(cls.name));
@@ -4240,6 +4799,7 @@ class SemanticModel {
                 this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
             }
             this.build_injected_impl_vtables_for_class(cls, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.enum_def) {
@@ -4249,6 +4809,7 @@ class SemanticModel {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
             this.build_injected_impl_vtables_for_enum(e, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.interface_def) {
@@ -4259,8 +4820,10 @@ class SemanticModel {
                     this.build_interface_vtables(ast_def.some.interface_def, iface, global_scope);
                 }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.interface_def(iface);
         }
+        BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
         return bound_def;
     }
 
@@ -4333,24 +4896,29 @@ class SemanticModel {
 
     fun build_vtables_for_def(mut this, ast_def: Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter build_vtables_for_def");
+        if (BoundDefinition.get_pass_index(bound_def) >= this.current_pass_index) { return bound_def; }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             this.build_class_vtables(ast_def.class_def, cls, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
             let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
             this.build_interface_vtables(ast_def.interface_def, iface, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.interface_def(iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
             let e: mut BoundEnumDefinition = bound_def.enum_def;
             this.build_enum_vtables(ast_def.enum_def, e, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
             let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
             this.process_impl_for(ast_def.impl_for_def, impl_for, global_scope, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.impl_for_def(impl_for);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
@@ -4365,8 +4933,10 @@ class SemanticModel {
                 }
                 k = k + 1;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.namespace_def(ns);
         }
+        BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
         return bound_def;
     }
 
@@ -4502,10 +5072,10 @@ class SemanticModel {
         _utils.trace_enter("Enter resolve_specialized_interface");
         if (impl_entry.type_spec.is_some()) {
             if (cast<i64>(impl_entry.type_spec.some.generic_args.size()) > 0) {
-                let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
                 let gi: mut i64 = 0;
                 while (gi < cast<i64>(impl_entry.type_spec.some.generic_args.size())) {
-                    args.push(this.resolve_type_specifier(impl_entry.type_spec.some.generic_args.at(cast<u64>(gi)).some, arg_scope));
+                    args.push(this.resolve_single_generic_arg(impl_entry.type_spec.some.generic_args.at(cast<u64>(gi)).some, arg_scope));
                     gi = gi + 1;
                 }
                 let mangled: string = mangle_generic_name(tmpl_iface.name, args);
@@ -4658,6 +5228,10 @@ class SemanticModel {
     }
 
     fun validate_interface_usage_def(mut this, def: BoundDefinition) {
+        // Pass 7 phase 2 (shares current_pass_index=7 with classify_def, which
+        // runs first on the same defs): use `>` so the phase-1 marker (7) does
+        // not skip this validation; phase 1 uses `>=` to stay skipped on re-run.
+        if (BoundDefinition.get_pass_index(def) > this.current_pass_index) { return; }
         if (def is BoundDefinition.namespace_def) {
             let ns: BoundNamespaceDefinition = def.namespace_def;
             let i: mut i64 = 0;
@@ -4665,6 +5239,7 @@ class SemanticModel {
                 this.validate_interface_usage_def(ns.children.at(cast<u64>(i)).some);
                 i = i + 1;
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return;
         }
         if (def is BoundDefinition.class_def) {
@@ -4695,6 +5270,7 @@ class SemanticModel {
                 this.validate_interface_usage_def(cls.constructors.at(cast<u64>(ci)).some);
                 ci = ci + 1;
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return;
         }
         if (def is BoundDefinition.enum_def) {
@@ -4718,6 +5294,7 @@ class SemanticModel {
                 this.validate_interface_usage_def(enm.methods.at(cast<u64>(mmi)).some);
                 mmi = mmi + 1;
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return;
         }
         if (def is BoundDefinition.function_def) {
@@ -4730,27 +5307,63 @@ class SemanticModel {
                     + "to the interface.",
                     this.func_sym_loc(func.symbol));
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return;
         }
     }
 
-    // An interface is "unsized" (unknown size at the language level) unless it transitively
-    // implements __builtin.IReferenceType. Currently no EmperorPenguin interface implements
-    // IReferenceType, so every interface type is unsized. When an interface opts into being a
-    // sized reference interface (via `impl IReferenceType`), extend this to walk the interface's
-    // implemented-interface closure so such interfaces are permitted as fields/returns.
+    // An interface is "unsized" (unknown size at the language level) unless it
+    // transitively implements __builtin.IReferenceType (via its nested impl
+    // blocks, e.g. `interface IReferenceType { impl IReferenceType; }` — the
+    // self-marker — or IIterator's `impl IReferenceType`). A sized reference
+    // interface is permitted as a field/return type.
     fun is_unsized_interface(this, bt: BoundType) -> bool {
         if (bt.kind is TypeKind.InterfaceKind) {
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.interface_def) {
+                let iface: BoundInterfaceDefinition = bt.type_definition.some.interface_def;
+                if (this.interface_impls_iref(iface, 0)) {
+                    return false;
+                }
+            }
             return true;
+        }
+        return false;
+    }
+
+    // True if the interface (or any interface it transitively implements via
+    // its nested impl blocks) is/implments __builtin.IReferenceType. `depth`
+    // guards against cyclic impl graphs.
+    fun interface_impls_iref(this, iface: BoundInterfaceDefinition, depth: i64) -> bool {
+        if (depth > 8) { return false; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iface.interface_impls.size())) {
+            let impl_def: BoundDefinition = iface.interface_impls.at(cast<u64>(i)).some;
+            if (impl_def is BoundDefinition.impl_def) {
+                let iface_impl: BoundInterfaceImplementation = impl_def.impl_def;
+                let iname: string = iface_impl.interface_type.display_name();
+                if (iname == "IReferenceType" || iname == "__builtin.IReferenceType") {
+                    return true;
+                }
+                // Transitive closure through the implemented interface's own impls.
+                let it: BoundType = iface_impl.interface_type;
+                if (it.type_definition.is_some() && it.type_definition.some is BoundDefinition.interface_def) {
+                    if (this.interface_impls_iref(it.type_definition.some.interface_def, depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+            i = i + 1;
         }
         return false;
     }
 
     fun classify_def(mut this, def: BoundDefinition, visiting: mut _utils.List<string>) -> BoundDefinition {
         _utils.trace_enter("Enter classify_def");
+        if (BoundDefinition.get_pass_index(def) >= this.current_pass_index) { return def; }
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.classify_class(cls, visiting);
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return new BoundDefinition.class_def(cls);
         }
         if (def is BoundDefinition.namespace_def) {
@@ -4761,8 +5374,10 @@ class SemanticModel {
                 ns.children.set(cast<u64>(k), updated);
                 k = k + 1;
             }
+            BoundDefinition.set_pass_index(def, this.current_pass_index);
             return new BoundDefinition.namespace_def(ns);
         }
+        BoundDefinition.set_pass_index(def, this.current_pass_index);
         return def;
     }
 
@@ -4973,9 +5588,13 @@ class SemanticModel {
             // dangling once the allocating function returns.
             let ei: mut i64 = 0;
             while (ei < cast<i64>(bt.generic_args.size())) {
-                let payload: BoundType = bt.generic_args.at(cast<u64>(ei)).some;
-                if (!this.is_type_value_like(payload, visiting)) {
-                    return false;
+                let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(ei)).some;
+                // Value args aren't types to classify.
+                if (!arg_is_value(arg)) {
+                    let payload: BoundType = arg_as_bound_type(arg);
+                    if (!this.is_type_value_like(payload, visiting)) {
+                        return false;
+                    }
                 }
                 ei = ei + 1;
             }
@@ -5054,6 +5673,7 @@ class SemanticModel {
         // here — skip binding (its meta calls would otherwise be JIT'd in the
         // consumer); the IR layer emits a declaration + links the lib instead.
         if (this.is_lib_export_def(bound_def)) { return bound_def; }
+        if (BoundDefinition.get_pass_index(bound_def) >= this.current_pass_index) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
             let template_name: string = this.extract_template_name(bound_cls.name);
@@ -5061,6 +5681,7 @@ class SemanticModel {
             if (ast_def.is_some() && ast_def.some is Definition.class_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return bound_def;
         }
         if (bound_def is BoundDefinition.enum_def) {
@@ -5070,6 +5691,7 @@ class SemanticModel {
             if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return bound_def;
         }
         if (bound_def is BoundDefinition.function_def) {
@@ -5079,6 +5701,7 @@ class SemanticModel {
             if (ast_def.is_some() && ast_def.some is Definition.function_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return bound_def;
         }
         if (bound_def is BoundDefinition.interface_def) {
@@ -5090,8 +5713,10 @@ class SemanticModel {
                     return this.bind_body_for_def(ast_def.some, bound_def, result);
                 }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return bound_def;
         }
+        BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
         return bound_def;
     }
 
@@ -5124,16 +5749,38 @@ class SemanticModel {
         // here — skip binding (its meta calls would otherwise be JIT'd in the
         // consumer); the IR layer emits a declaration + links the lib instead.
         if (this.is_lib_export_def(bound_def)) { return bound_def; }
+        if (BoundDefinition.get_pass_index(bound_def) >= this.current_pass_index) { return bound_def; }
         if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let ast_func: FunctionDefinition = ast_def.function_def;
             if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding function " + bound_func.full_name); }
+            // D6: skip binding the TEMPLATE body of a value-template function
+            // (value_param_names non-empty but no concrete values yet) — N has no
+            // value to substitute, so `while (i < N)` can't resolve. Only the
+            // specialized filled__3 body (value_param_values populated) is bound.
+            if (cast<i64>(bound_func.value_param_names.size()) > 0 && cast<i64>(bound_func.value_param_values.size()) == 0) {
+                BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
+                return new BoundDefinition.function_def(bound_func);
+            }
             if (bound_func.scope.is_some() && ast_func.body.is_some()) {
                 let func_scope: mut BoundScope = bound_func.scope.some;
                 this.ensure_params_in_scope(bound_func);
-                let bound_body: mut Option<BoundExpression> = this.bind_expression(ast_func.body.some, func_scope);
-                bound_func.body = bound_body;
+                // D6: substitute value-template params (N -> constant) into the
+                // specialized function body before binding (no-op for type-only
+                // generics, where value_param_names is empty).
+                let ast_to_bind: Definition = this.substitute_function_body_value_params(ast_func, bound_func.value_param_names, bound_func.value_param_values, bound_func.value_param_texts, bound_func.value_param_kinds);
+                let mut ast_body = new Option<Expression>.none();
+                if (ast_to_bind is Definition.function_def) {
+                    ast_body = ast_to_bind.function_def.body;
+                } else {
+                    ast_body = ast_func.body;
+                }
+                if (ast_body.is_some()) {
+                    let bound_body: mut Option<BoundExpression> = this.bind_expression(ast_body.some, func_scope);
+                    bound_func.body = bound_body;
+                }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.function_def(bound_func);
         }
         // Primitive interface impls: bind each mangled method's body. AST and
@@ -5174,11 +5821,12 @@ class SemanticModel {
                 let bound_init_body: mut Option<BoundExpression> = this.bind_expression(ast_init.body.some, init_scope);
                 bound_init.body = bound_init_body;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.initial_routine(bound_init);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
-            if (bound_cls.is_generic_template) { return bound_def; }
+            if (bound_cls.is_generic_template) { BoundDefinition.set_pass_index(bound_def, this.current_pass_index); return bound_def; }
             let ast_cls: ClassDefinition = ast_def.class_def;
             let bound_cls: mut BoundClassDefinition = bound_def.class_def;
             let i: mut i64 = 0;
@@ -5189,7 +5837,13 @@ class SemanticModel {
                     while (j < cast<i64>(bound_cls.methods.size())) {
                         let bound_md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
+                            // req5/M3: substitute value-template params (N) -> their concrete
+                            // constants in the method body before binding, so `fun get() { return N; }`
+                            // specializes to `return 5`. Field initializers already do this (the
+                            // field-default block below); method bodies need it too. For non-value
+                            // templates value_param_names is empty → no-op (original returned).
+                            let ast_to_bind: Definition = this.substitute_function_body_value_params(ast_member.function_def, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>());
+                            bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
                         }
                         j = j + 1;
                     }
@@ -5279,7 +5933,7 @@ class SemanticModel {
                                         if (am.class_field.initializer.is_some()) {
                                             // req5: substitute value-template params (N) -> their concrete
                                             // constants before binding the field default initializer.
-                                            ast_init = new Option<Expression>.some(this.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values));
+                                            ast_init = new Option<Expression>.some(this.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>()));
                                         }
                                     }
                                 }
@@ -5295,10 +5949,18 @@ class SemanticModel {
                     }
                 }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.class_def(bound_cls);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
             let bound_enum: mut BoundEnumDefinition = bound_def.enum_def;
+            // req5/D6: skip binding the TEMPLATE enum's method bodies (value params
+            // named but no concrete values yet) — N has nothing to substitute, so a
+            // method body using N can't resolve. Only the specialized E__5 body binds.
+            if (cast<i64>(bound_enum.value_param_names.size()) > 0 && cast<i64>(bound_enum.value_param_values.size()) == 0) {
+                BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
+                return new BoundDefinition.enum_def(bound_enum);
+            }
             let ast_enum: EnumDefinition = ast_def.enum_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ast_enum.members.size())) {
@@ -5308,7 +5970,10 @@ class SemanticModel {
                     while (j < cast<i64>(bound_enum.methods.size())) {
                         let bound_md: BoundDefinition = bound_enum.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            bound_enum.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
+                            // req5/D6: substitute value-template params (N) -> their concrete
+                            // constants in the specialized enum method body (no-op for type-only).
+                            let ast_to_bind: Definition = this.substitute_function_body_value_params(ast_member.function_def, bound_enum.value_param_names, bound_enum.value_param_values, bound_enum.value_param_texts, bound_enum.value_param_kinds);
+                            bound_enum.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
                         }
                         j = j + 1;
                     }
@@ -5374,6 +6039,7 @@ class SemanticModel {
                 }
                 inj = inj + 1;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
@@ -5429,11 +6095,19 @@ class SemanticModel {
                 }
                 k = k + 1;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.namespace_def(bound_ns);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
             let ast_iface: InterfaceDefinition = ast_def.interface_def;
             let bound_iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            // req5/D6: skip binding the TEMPLATE interface's default-method bodies
+            // (value params named but no concrete values yet) — N has nothing to
+            // substitute, so a default body using N can't resolve.
+            if (cast<i64>(bound_iface.value_param_names.size()) > 0 && cast<i64>(bound_iface.value_param_values.size()) == 0) {
+                BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
+                return new BoundDefinition.interface_def(bound_iface);
+            }
             let i: mut i64 = 0;
             while (i < cast<i64>(ast_iface.members.size())) {
                 let ast_member: Definition = ast_iface.members.at(cast<u64>(i)).some;
@@ -5442,7 +6116,10 @@ class SemanticModel {
                     while (j < cast<i64>(bound_iface.methods.size())) {
                         let bound_md: BoundDefinition = bound_iface.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            bound_iface.methods.set(cast<u64>(j), this.bind_body_for_def(ast_member, bound_md, result));
+                            // req5/D6: substitute value-template params (N) -> their concrete
+                            // constants in the specialized interface default-method body.
+                            let ast_to_bind: Definition = this.substitute_function_body_value_params(ast_member.function_def, bound_iface.value_param_names, bound_iface.value_param_values, bound_iface.value_param_texts, bound_iface.value_param_kinds);
+                            bound_iface.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
                         }
                         j = j + 1;
                     }
@@ -5487,6 +6164,7 @@ class SemanticModel {
                 }
                 i = i + 1;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.interface_def(bound_iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
@@ -5524,6 +6202,7 @@ class SemanticModel {
                 }
                 i = i + 1;
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
@@ -5544,8 +6223,10 @@ class SemanticModel {
                     }
                 }
             }
+            BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
             return new BoundDefinition.global_var_def(gv);
         }
+        BoundDefinition.set_pass_index(bound_def, this.current_pass_index);
         return bound_def;
     }
 
@@ -5723,13 +6404,13 @@ class SemanticModel {
         // Only applies when `expr.name` is actually a TYPE (not a generic function
         // like `count_fields<Point>(...)`, which must bind as a function call).
         if (cast<i64>(expr.generic_args.size()) > 0 && this.identifier_is_type_name(expr.name, scope)) {
-            let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
             let ok: mut bool = true;
             let gi: mut i64 = 0;
             while (gi < cast<i64>(expr.generic_args.size())) {
                 let arg_bt: mut BoundType = this.resolve_type_specifier(expr.generic_args.at(cast<u64>(gi)).some, scope);
                 if (arg_bt.kind is TypeKind.ErrorKind) { ok = false; }
-                resolved_args.push(arg_bt);
+                resolved_args.push(make_type_arg(arg_bt));
                 gi = gi + 1;
             }
             if (ok) {
@@ -6481,7 +7162,7 @@ class SemanticModel {
         }
         let gi: mut i64 = 0;
         while (gi < cast<i64>(param_type.generic_args.size())) {
-            if (this.param_type_is_template(param_type.generic_args.at(cast<u64>(gi)).some)) {
+            if (this.param_type_is_template(arg_as_bound_type(param_type.generic_args.at(cast<u64>(gi)).some))) {
                 return true;
             }
             gi = gi + 1;
@@ -6560,14 +7241,21 @@ class SemanticModel {
                         }
                         return this.bind_meta_call(mc, scope);
                     }
-                    let rewritten: mut FunctionCallExpression = new FunctionCallExpression();
-                    let clean_callee: mut IdentifierExpression = new IdentifierExpression(vid.name);
-                    rewritten.callee = new Option<Expression>.some(new Expression.identifier(clean_callee));
-                    let vi2: mut i64 = 0;
-                    while (vi2 < cast<i64>(vid.value_generic_args.size())) {
-                        rewritten.arguments.push(vid.value_generic_args.at(cast<u64>(vi2)).some);
-                        vi2 = vi2 + 1;
+                    // D6: a value-template function call (filled<3>()) — resolve the
+                    // value args to value BoundTypeArgs, mangle to the specialized name
+                    // (filled__3), and re-bind as a plain call to the specialized
+                    // function (which monomorphize already created + registered).
+                    let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                    let vai: mut i64 = 0;
+                    while (vai < cast<i64>(vid.value_generic_args.size())) {
+                        let varg: Expression = vid.value_generic_args.at(cast<u64>(vai)).some;
+                        resolved_args.push(this.value_expr_to_bound_type(varg));
+                        vai = vai + 1;
                     }
+                    let mangled: string = mangle_generic_name(vid.name, resolved_args);
+                    let rewritten: mut FunctionCallExpression = new FunctionCallExpression();
+                    let clean_callee: mut IdentifierExpression = new IdentifierExpression(mangled);
+                    rewritten.callee = new Option<Expression>.some(new Expression.identifier(clean_callee));
                     let oi: mut i64 = 0;
                     while (oi < cast<i64>(expr.arguments.items.size())) {
                         rewritten.arguments.push(expr.arguments.items.at(cast<u64>(oi)).some);
@@ -6610,7 +7298,14 @@ class SemanticModel {
                             }
                             // For generic function calls, use specialized function's return type
                             if (is_generic_call) {
-                                let mangled: string = mangle_generic_name(sym.function_sym.name, resolved_generic_args);
+                                let type_arg_wrap: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                                let wi: mut i64 = 0;
+                                while (wi < cast<i64>(resolved_generic_args.size())) {
+                                    let a: mut BoundType = resolved_generic_args.at(cast<u64>(wi)).some;
+                                    type_arg_wrap.push(make_type_arg(a));
+                                    wi = wi + 1;
+                                }
+                                let mangled: string = mangle_generic_name(sym.function_sym.name, type_arg_wrap);
                                 let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
                                 if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
                                     let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
@@ -6693,7 +7388,14 @@ class SemanticModel {
                             }
                             // For generic method calls, look up specialized method
                             if (is_generic_method_call) {
-                                let mangled: string = mangle_generic_name(sym.function_sym.name, resolved_generic_args);
+                                let type_arg_wrap: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                                let wi: mut i64 = 0;
+                                while (wi < cast<i64>(resolved_generic_args.size())) {
+                                    let a: mut BoundType = resolved_generic_args.at(cast<u64>(wi)).some;
+                                    type_arg_wrap.push(make_type_arg(a));
+                                    wi = wi + 1;
+                                }
+                                let mangled: string = mangle_generic_name(sym.function_sym.name, type_arg_wrap);
                                 let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
                                 if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
                                     let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
@@ -7099,6 +7801,28 @@ class SemanticModel {
             let lit: BoundLiteralExpression = new BoundLiteralExpression(val, bt, new LiteralKind.BoolLiteral());
             return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
         }
+        if (ret_kind == "double" || ret_kind == "f64" || ret_kind == "float" || ret_kind == "f32") {
+            // M6: the caller-stub stored the #fun's returned double into the host
+            // global active_double_result (returning i64 0). Splice it as a double
+            // (f64) literal. Format via cast<string> (VM: DoubleValue.ToString,
+            // native: %g) — the value text is a valid LLVM double constant.
+            let d: f64 = penguin_meta_get_double_result();
+            let bt: BoundType = this.type_registry.resolve_type("double").some;
+            let text: string = cast<string>(d);
+            let lit: BoundLiteralExpression = new BoundLiteralExpression(text, bt, new LiteralKind.FloatLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+        }
+        // M6-step2 4c: a REFERENCE-typed return (e.g. -> List<i64>) may NOT be
+        // spliced into runtime code — the stub hands back the compile-time address,
+        // which is meaningless in the generated program (dangling). Reference
+        // returns are for compile-time flows only (template args, # introspection).
+        if (string_length(ret_kind) > 0 && ret_kind != "ast"
+            && ret_kind != "i8" && ret_kind != "i16" && ret_kind != "i32" && ret_kind != "i64"
+            && ret_kind != "u8" && ret_kind != "u16" && ret_kind != "u32" && ret_kind != "u64"
+            && ret_kind != "char" && ret_kind != "void") {
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta '#" + bmf.name + "' returns a reference type ('" + ret_kind + "'); reference returns cannot be spliced into runtime code; use it as a template argument or introspect it inside another #fun", expr.location);
+            return new Option<BoundExpression>.none();
+        }
         let ret_type: BoundType = this.resolve_meta_return_type(bmf);
         let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(result_i64), ret_type, new LiteralKind.IntegerLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
@@ -7229,6 +7953,18 @@ class SemanticModel {
                 return new Option<i64>.some(0);
             }
             this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta bool argument must be a bool literal (true/false)", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "double") {
+            // M6: a double literal arg (e.g. scale<2.5>() desugars to #scale(2.5)).
+            // The literal text is parsed to f64 and stored in the double registry;
+            // the caller-stub materializes it via penguin_meta_get_double_value.
+            if (arg is Expression.constant) {
+                let val: f64 = string_to_double(arg.constant.value);
+                let token: u64 = this.meta_engine.register_double_value(val);
+                return new Option<i64>.some(cast<i64>(token));
+            }
+            this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta double argument must be a numeric literal", loc);
             return new Option<i64>.none();
         }
         let bound_opt: Option<BoundExpression> = this.bind_expression(arg, scope);
@@ -7480,6 +8216,183 @@ class SemanticModel {
             i = i + 1;
         }
         return new Option<BoundMetaFunctionDefinition>.none();
+    }
+
+    // M1/M4: look up a synthesized `_template_<name>` meta function in the isolated
+    // template_meta_function_defs list (NOT meta_function_defs — see the field comment).
+    fun find_template_meta_function(this, name: string) -> Option<BoundMetaFunctionDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.template_meta_function_defs.size())) {
+            if (this.template_meta_function_defs.at(cast<u64>(i)).some.name == name) {
+                return new Option<BoundMetaFunctionDefinition>.some(this.template_meta_function_defs.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundMetaFunctionDefinition>.none();
+    }
+
+    // M4 (use-site routing): resolve a template instantiation `Foo<args>` by calling
+    // the synthesized `_template_Foo` meta function via the caller-stub (it returns
+    // the specialized BoundType via the active_type_result channel, exactly like
+    // `#fun -> type`). Returns none when M4 should NOT handle this type (caller falls
+    // back to template+args + the fixpoint). Gated to current_pass_index >= 4 so we
+    // don't race creation during pass 2 type resolution (the fixpoint, pass 3, owns
+    // early creation; M4 handles types referenced from pass 4 onward, mostly lookups
+    // since the fixpoint already specialized them, plus genuine late specialization).
+    // Coexists with the fixpoint: ensure_specialized_type dedups, and the fixpoint's
+    // AST scan is the safety net.
+    // M6-step2: a generic arg written as a compile-time #fun() CALL whose declared
+    // return is a VALUE (not `type`) — e.g. `A<#compute_n()>` where
+    // `#fun compute_n() -> i64`. JIT-evaluates the call and wraps the i64 result
+    // as an int value arg. Returns none when the arg is not a meta call, the
+    // #fun returns `type` (the req2 type path handles it), or the meta runtime
+    // is unavailable (pass1/dotnet — value meta args are native-JIT-only).
+    // Immutable `this` (arg evaluation goes through eval_meta_type_call_args, not
+    // bind_expression — same contract as try_resolve_meta_type_specifier).
+    fun try_eval_meta_value_arg(this, ts: TypeSpecifier, scope: BoundScope) -> Option<BoundTypeArg> {
+        if (ts.meta_call.is_none()) { return new Option<BoundTypeArg>.none(); }
+        if (!meta_runtime_available()) { return new Option<BoundTypeArg>.none(); }
+        let mc: MetaCallExpression = ts.meta_call.some;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
+        if (bmf_opt.is_none()) { return new Option<BoundTypeArg>.none(); }
+        let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+        // Discriminate by the DECLARED return type: `type` -> the req2 type path
+        // (try_resolve_meta_type_specifier) owns it; anything else is a value.
+        if (bmf.return_type.is_some()) {
+            if (bmf.return_type.some.name == "type") { return new Option<BoundTypeArg>.none(); }
+        }
+        let args_opt: Option<_utils.List<i64>> = this.eval_meta_type_call_args(mc, bmf, scope);
+        if (args_opt.is_none()) { return new Option<BoundTypeArg>.none(); }
+        let result: i64 = this.meta_engine.call_meta_function_stub(bmf, args_opt.some);
+        // M6-step2 4b: a REFERENCE-typed #fun return is an OBJECT value arg —
+        // the i64 is the live address. Mangle/dedup by the IUniqueName canonical
+        // NAME (stable across compilations), not the unstable address. The name
+        // comes from the stdlib trampoline #fun (virtual get_unique_name via the
+        // object-param ABI). Gate: the declared static type must impl IUniqueName.
+        let ret_name: mut string = "";
+        if (bmf.return_type.is_some()) { ret_name = bmf.return_type.some.name; }
+        let is_int_ret: bool = ret_name == "i8" || ret_name == "i16" || ret_name == "i32" || ret_name == "i64"
+            || ret_name == "u8" || ret_name == "u16" || ret_name == "u32" || ret_name == "u64"
+            || ret_name == "bool" || ret_name == "string" || ret_name == "char"
+            || ret_name == "double" || ret_name == "f64" || ret_name == "f32" || ret_name == "float"
+            || ret_name == "";
+        if (!is_int_ret) {
+            // Immutable-this type lookup (resolve_type_name needs mut this).
+            let sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ret_name);
+            let vt_opt: mut Option<BoundType> = new Option<BoundType>.none();
+            if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+                vt_opt = new Option<BoundType>.some(sym.some.type_sym.bound_type);
+            }
+            let gate_ok: mut bool = false;
+            if (vt_opt.is_some()) {
+                if (let cd := vt_opt.some.class_def().some) {
+                    if (cd.has_interface("IUniqueName")) { gate_ok = true; }
+                    // has_interface reads implemented_interfaces, populated late;
+                    // the bound impl list (interface_impls) is populated at pass 1.
+                    let ii: mut i64 = 0;
+                    while (ii < cast<i64>(cd.interface_impls.size())) {
+                        let idef: BoundDefinition = cd.interface_impls.at(cast<u64>(ii)).some;
+                        if (idef is BoundDefinition.impl_def) {
+                            let nm: string = idef.impl_def.interface_type.display_name();
+                            if (nm == "IUniqueName" || nm == "mut IUniqueName") { gate_ok = true; }
+                        }
+                        ii = ii + 1;
+                    }
+                }
+            }
+            if (!gate_ok) {
+                this.report_error(new ErrorCode.E_UNSUPPORTED(), "object template argument '#" + mc.func_name + "()' returns '" + ret_name + "', which does not implement IUniqueName; object value-template args need a canonical get_unique_name for stable mangling", mc.location);
+                // Return the raw-address arg so the caller does NOT fall into the
+                // type path (a ref-returning stub yields the ADDRESS; the
+                // type-result channel holds no type and a stale value would be
+                // read as garbage). The reported error fails the compile.
+                return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+            }
+            let un_bmf: Option<BoundMetaFunctionDefinition> = this.find_meta_function("penguin_meta_unique_name");
+            if (un_bmf.is_none()) { return new Option<BoundTypeArg>.none(); }
+            let un_args: mut _utils.List<i64> = new _utils.List<i64>();
+            un_args.push(result);
+            let _un_ignored: i64 = this.meta_engine.call_meta_function_stub(un_bmf.some, un_args);
+            let unique_name: string = penguin_meta_get_string_result();
+            if (string_length(unique_name) == 0) { return new Option<BoundTypeArg>.none(); }
+            // with_mutability re-wrap yields a MUT BoundType (an immutable ref
+            // can't be assigned to make_object_value_arg's mut param).
+            let vt: mut BoundType = new BoundType();
+            if (vt_opt.is_some()) {
+                vt = vt_opt.some.with_mutability(vt_opt.some.mutability);
+            }
+            return new Option<BoundTypeArg>.some(make_object_value_arg(vt, unique_name, result));
+        }
+        return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+    }
+
+    fun try_resolve_template_instantiation(this, type_name: string, generic_args: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        if (cast<i64>(generic_args.size()) == 0) { return new Option<BoundType>.none(); }
+        // Only activate in JIT-linked binaries (Full project build). Without this,
+        // the routing would fire for common template instantiations and call the JIT
+        // in non-linked builds (VM / pass1 / dotnet test) where penguin_jit_* throws.
+        if (!meta_runtime_available()) { return new Option<BoundType>.none(); }
+        if (this.current_pass_index < 4) { return new Option<BoundType>.none(); }
+        // OOM guard — M4's real remit: route ONLY instantiations with a value/object
+        // template arg. Type-only instantiations are fully handled by the fixpoint
+        // (pass 3), so routing them too is redundant AND OOMs the bootstrap — the
+        // compiler source has thousands of type-only List/Option uses, each of which
+        // would JIT-call _template_X. Value/object args are exactly the case the
+        // fixpoint handles incompletely (substitute_value_params only does field
+        // initializers), and they are rare, so the JIT volume stays low.
+        // A meta-call arg counts as a value arg only if it VALUE-returns (the
+        // helper discriminates by declared return type; type-returning #args stay
+        // on the type path). Resolve args ONCE here (single JIT evaluation per
+        // meta-call arg) and derive has_value_arg from the result.
+        let has_value_arg: mut bool = false;
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(generic_args.size())) {
+            let arg_ts: TypeSpecifier = generic_args.at(cast<u64>(ci)).some;
+            if (arg_ts.is_value_arg) {
+                has_value_arg = true;
+                args.push(make_int_value_arg(string_to_int(arg_ts.value_arg_text)));
+            } else {
+                let mv: Option<BoundTypeArg> = this.try_eval_meta_value_arg(arg_ts, scope);
+                if (mv.is_some()) {
+                    has_value_arg = true;
+                    args.push(mv.some);
+                } else {
+                    args.push(make_type_arg(this.resolve_type_specifier(arg_ts, scope)));
+                }
+            }
+            ci = ci + 1;
+        }
+        if (!has_value_arg) { return new Option<BoundType>.none(); }
+        let meta_name: string = "_template_" + type_name;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_template_meta_function(meta_name);
+        if (bmf_opt.is_none()) { return new Option<BoundType>.none(); }
+        // Caller-stub args: value args bake their integer value (param kind i64);
+        // type args bake their type token (param kind type → the stub marshals via
+        // get_type). The body ignores its params; the responder reads the real
+        // BoundTypeArgs from the side-channel below.
+        let tokens: mut _utils.List<i64> = new _utils.List<i64>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(args.size())) {
+            let arg: BoundTypeArg = args.at(cast<u64>(ai)).some;
+            if (arg is BoundTypeArg.value_arg) {
+                tokens.push(arg.value_arg.as_i64());
+            } else {
+                let tname: string = this.bound_type_meta_name(arg_as_bound_type(arg));
+                let token: u64 = this.meta_engine.get_or_assign_type_token(tname);
+                tokens.push(cast<i64>(token));
+            }
+            ai = ai + 1;
+        }
+        // Side-channel: the real BoundTypeArgs for the responder.
+        penguin_meta_set_specialize_args(type_name, args);
+        // JIT-call _template_X (lazily compiled; body calls penguin_meta_specialize).
+        let _ignored: i64 = this.meta_engine.call_meta_function_stub(bmf_opt.some, tokens);
+        let bt: BoundType = penguin_meta_get_type_result();
+        if (bt.type_definition.is_none() && (bt.kind is TypeKind.PrimitiveKind) && (bt.primitive is PrimitiveType.VoidType)) {
+            return new Option<BoundType>.none();
+        }
+        return new Option<BoundType>.some(bt);
     }
 
     // Extract an i64 from a bound integer literal, or none if not a constant int.
@@ -8041,9 +8954,11 @@ class SemanticModel {
         let inner: Option<BoundExpression> = this.bind_optional_expr(expr.inner, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
 
-        if (inner.is_some()) {
+        if (inner.is_some() && !expr.is_unsafe) {
             let inner_type: BoundType = inner.some.get_bound_type();
-            // Boxing: value type (class or enum) → interface
+            // Boxing: value type (class or enum) → interface. SKIPPED for
+            // unsafe_cast — a raw reinterpret (e.g. i64 object_ref → interface
+            // via inttoptr, penguin_meta_get_object) must not box.
             if (target_type.kind is TypeKind.InterfaceKind) {
                 if (inner_type.is_value_type()) {
                     result.needs_boxing = true;
@@ -8073,19 +8988,20 @@ class SemanticModel {
     fun resolve_new_generic_args(this, expr: NewExpression, scope: BoundScope, bt: BoundType) -> mut BoundType {
         _utils.trace_enter("Enter resolve_new_generic_args");
         if (cast<i64>(expr.generic_args.size()) > 0) {
-            let args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            // M4: route VALUE-arg new-instantiations (`new A<5>()`) through the
+            // `_template_X` meta path — this is where value template args usually
+            // appear, so wiring the pass-8 new-binding is what makes M4 actually
+            // fire for the common value case. Returns the specialized type; the
+            // caller (bind_new_expr) applies Mutable. Falls through to template+args
+            // when M4 declines (type-only, no _template_X, or no JIT).
+            let m4: Option<BoundType> = this.try_resolve_template_instantiation(expr.type_name, expr.generic_args, scope);
+            if (m4.is_some()) {
+                return this.apply_mutability(m4.some, false);
+            }
+            let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
             let k: mut i64 = 0;
             while (k < cast<i64>(expr.generic_args.size())) {
-                let arg_ts: TypeSpecifier = expr.generic_args.at(cast<u64>(k)).some;
-                // req5: a value generic arg (A<5>) -> synthetic BoundType.
-                if (arg_ts.is_value_arg) {
-                    let vbt: mut BoundType = new BoundType();
-                    vbt.is_template_value_arg = true;
-                    vbt.template_value = string_to_int(arg_ts.value_arg_text);
-                    args.push(vbt);
-                } else {
-                    args.push(this.resolve_type_specifier(arg_ts, scope));
-                }
+                args.push(this.resolve_single_generic_arg(expr.generic_args.at(cast<u64>(k)).some, scope));
                 k = k + 1;
             }
             return bt.with_generic_args(args);
@@ -8818,6 +9734,7 @@ class SemanticModel {
 
     fun validate_control_flow_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter validate_control_flow_for_def");
+        if (BoundDefinition.get_pass_index(def) >= this.current_pass_index) { return; }
         if (def is BoundDefinition.function_def) {
             let func: BoundFunctionDefinition = def.function_def;
             if (func.body.is_some() && func.symbol.is_some()) {
@@ -8855,6 +9772,7 @@ class SemanticModel {
                 j = j + 1;
             }
         }
+        BoundDefinition.set_pass_index(def, this.current_pass_index);
     }
 
     fun validate_expr_control_flow(mut this, expr: BoundExpression, ret_type: BoundType, loop_depth: i64) {
@@ -9143,11 +10061,28 @@ class SemanticModel {
                 if (ast_callee is Expression.identifier) {
                     if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
                         let func_name: string = ast_callee.identifier.name;
-                        let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
                         let gi: mut i64 = 0;
                         while (gi < cast<i64>(ast_callee.identifier.generic_args.size())) {
-                            resolved_args.push(this.resolve_type_specifier(ast_callee.identifier.generic_args.at(cast<u64>(gi)).some, scope));
+                            resolved_args.push(make_type_arg(this.resolve_type_specifier(ast_callee.identifier.generic_args.at(cast<u64>(gi)).some, scope)));
                             gi = gi + 1;
+                        }
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                    // D6: a value-template function call (filled<3>()) — the value args
+                    // ride value_generic_args (Expression list) and become value
+                    // BoundTypeArgs, so the mangled name is filled__3 and
+                    // specialize_function_def substitutes N -> 3 into the body.
+                    // Integer/char constants are folded here; bool/string value args are
+                    // handled by bind_function_call directly.
+                    if (cast<i64>(ast_callee.identifier.value_generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.identifier.name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let vi: mut i64 = 0;
+                        while (vi < cast<i64>(ast_callee.identifier.value_generic_args.size())) {
+                            let varg: Expression = ast_callee.identifier.value_generic_args.at(cast<u64>(vi)).some;
+                            resolved_args.push(this.value_expr_to_bound_type(varg));
+                            vi = vi + 1;
                         }
                         func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
                     }
@@ -9156,10 +10091,10 @@ class SemanticModel {
                 if (ast_callee is Expression.member_access) {
                     if (cast<i64>(ast_callee.member_access.generic_args.size()) > 0) {
                         let func_name: string = ast_callee.member_access.member_name;
-                        let resolved_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
                         let gi: mut i64 = 0;
                         while (gi < cast<i64>(ast_callee.member_access.generic_args.size())) {
-                            resolved_args.push(this.resolve_type_specifier(ast_callee.member_access.generic_args.at(cast<u64>(gi)).some, scope));
+                            resolved_args.push(make_type_arg(this.resolve_type_specifier(ast_callee.member_access.generic_args.at(cast<u64>(gi)).some, scope)));
                             gi = gi + 1;
                         }
                         func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
@@ -9346,7 +10281,7 @@ class SemanticModel {
         return new Option<BoundDefinition>.none();
     }
 
-    fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundType>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
+    fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter specialize_function_def");
         let ast_def: Option<Definition> = this.find_ast_def_by_name(this.ast_definitions, tmpl.name);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
@@ -9362,6 +10297,39 @@ class SemanticModel {
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(mangled_name, full_name, ast_func.is_extern, ast_func.is_pure, ast_func.is_new, ast_func.is_extern);
         result.is_specialized = true;
 
+        // D6: extract value-template params (is_template_value_arg args) into
+        // result.value_param_names/values/texts so bind_body_for_def substitutes
+        // them into the body. Positional via generic_params (which holds ALL params,
+        // type + value, in template order).
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl.value_param_names.size())) {
+            let vpname: string = tmpl.value_param_names.at(cast<u64>(vni)).some;
+            result.value_param_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(tmpl.generic_params.size())) {
+                if (tmpl.generic_params.at(cast<u64>(gi)).some == vpname) { idx = gi; }
+                gi = gi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                let arg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (arg is BoundTypeArg.value_arg) {
+                    result.value_param_values.push(arg.value_arg.as_i64());
+                    result.value_param_texts.push(arg.value_arg.as_text());
+                    result.value_param_kinds.push(arg.value_arg.kind_str());
+                } else {
+                    result.value_param_values.push(0);
+                    result.value_param_texts.push("");
+                    result.value_param_kinds.push("i64");
+                }
+            } else {
+                result.value_param_values.push(0);
+                result.value_param_texts.push("");
+                result.value_param_kinds.push("i64");
+            }
+            vni = vni + 1;
+        }
+
         if (!ast_func.is_extern && ast_func.body.is_some()) {
             // Use class_scope as parent if available (for methods in specialized generic classes)
             // so that class type params (e.g., T=i32) are visible in the method body
@@ -9370,10 +10338,16 @@ class SemanticModel {
                 let pi: mut i64 = 0;
                 while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
                     let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
-                    let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
-                    let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
-                    param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
-                    func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+                    // D6: a value-template arg is a VALUE, not a type — skip binding it
+                    // as a type symbol (the body substitutes it via
+                    // value_param_names/values in bind_body_for_def).
+                    if (!arg_is_value(arg)) {
+                        let arg_type: BoundType = arg_as_bound_type(arg);
+                        let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                        param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                        func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    }
                     pi = pi + 1;
                 }
                 result.scope = new Option<BoundScope>.some(func_scope);
@@ -9382,10 +10356,16 @@ class SemanticModel {
                 let pi: mut i64 = 0;
                 while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
                     let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
-                    let arg_type: BoundType = type_args.at(cast<u64>(pi)).some;
-                    let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
-                    param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
-                    func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+                    // D6: a value-template arg is a VALUE, not a type — skip binding it
+                    // as a type symbol (the body substitutes it via
+                    // value_param_names/values in bind_body_for_def).
+                    if (!arg_is_value(arg)) {
+                        let arg_type: BoundType = arg_as_bound_type(arg);
+                        let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                        param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                        func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    }
                     pi = pi + 1;
                 }
                 result.scope = new Option<BoundScope>.some(func_scope);

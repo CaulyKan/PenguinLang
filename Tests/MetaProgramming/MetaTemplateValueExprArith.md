@@ -1,6 +1,6 @@
 # MetaTemplateValueExprArith
 ## Description
-req3 ambiguity: value-template call results combined with arithmetic. `dbl<5>() + dbl<3>()` and `dbl<10>() - dbl<5>()` — the parser must close each value-generic arg list at `>`, apply the `()` call, then treat the following `+`/`-` as ordinary arithmetic (not part of a generic arg list). Guards against the value-generic `<`/`>` backtracking over-consuming operators. Requires native Pass2/Pass3 (meta JIT).
+req3 ambiguity: value-template call results combined with arithmetic. `dbl<5>() + dbl<3>()` and `dbl<10>() - dbl<5>()` — the parser must close each value-generic arg list at `>`, apply the `()` call, then treat the following `+`/`-` as ordinary arithmetic (not part of a generic arg list). Guards against the value-generic `<`/`>` backtracking over-consuming operators. Value-template calls are specialized at runtime (D6); no meta JIT needed.
 
 ## Apply To
 * EmperorPenguin Pass2

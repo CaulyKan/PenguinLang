@@ -103,6 +103,24 @@ By default every `EmperorPenguin Pass1` entry carries
 `SKIP` status (not a failure); per-compiler pass rates exclude skips from the
 denominator, and the run's exit code is unaffected by skips.
 
+#### Unconditional skip (`## Skip`)
+
+A test whose semantics require a compiler feature that does not exist yet may
+be skipped entirely with a `## Skip` section (free-text reason):
+
+```
+## Skip
+Requires compiler dead-code evaluation: … (see ## Description).
+```
+
+Semantics: every (test × compiler) combo is recorded as `SKIP` with the stated
+reason and the compilers are **never run**. The expectations under
+`## Compile`/`## Run` are kept as documentation of the intended behavior and
+are checked the moment the skip is removed. A skip is never a regression or a
+new pass vs the baseline (informational `new SKIP` only), and the run's exit
+code is unaffected — so a known-red sentinel can be parked as a skip instead
+of showing a steady failure.
+
 ### `## Test Code`
 
 A fenced code block (```` ``` ````). Common leading indentation is stripped

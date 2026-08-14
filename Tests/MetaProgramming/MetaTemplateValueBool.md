@@ -1,6 +1,6 @@
 # MetaTemplateValueBool
 ## Description
-req3/req4 — a non-type (value) template parameter of type `bool`. `#template<B: bool> fun flag()` desugars to `#fun flag(B: bool)`; the call site `flag<true>()` / `flag<false>()` splices the bool literal as the meta argument. Exercises a value-template type other than i32 (the meta param kind `bool` path in bind_meta_arg_value). Requires native Pass2/Pass3 (meta JIT).
+req3/req4 — a non-type (value) template parameter of type `bool`. `#template<B: bool> fun flag()` is specialized at runtime (D6: value-template functions are no longer desugared to compile-time `#fun`s). The call site `flag<true>()` / `flag<false>()` specializes `flag__true` / `flag__false`, substituting the bool literal into the body — `if (B)` becomes `if (true)`. Exercises a value-template type other than i32.
 
 ## Apply To
 * EmperorPenguin Pass2

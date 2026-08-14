@@ -625,6 +625,19 @@ namespace BabyPenguin.VirtualMachine
                     result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = 0;
                 }
             });
+
+            vm.Global.RegisterExternFunction("__builtin.string_to_double", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                if (double.TryParse(s.Trim(), out var value))
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.DoubleValue = value;
+                }
+                else
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.DoubleValue = 0.0;
+                }
+            });
         }
 
         private static void AddBitShift(BabyPenguinVM vm)

@@ -1,0 +1,15 @@
+namespace emperor {
+
+// Build-variant stub for the compile-time meta JIT gate. The DEFAULT project
+// (EmperorPenguin.penguins — used by BabyPenguin VM, the bootstrap's pass1
+// cs-backend, and dotnet test) is NOT linked against libpenguin_jit, so the
+// penguin_jit_* builtins are unregistered and calling them throws. This stub
+// reports the JIT as unavailable so `_template_X` synthesis and M4 use-site
+// routing stay dormant. The Full project (EmperorPenguinFull.penguins — pass2+,
+// linked with -enable-meta) replaces this with src/meta/MetaConfig.penguin
+// returning true, activating the meta template path there only.
+fun meta_runtime_available() -> bool {
+    return false;
+}
+
+}

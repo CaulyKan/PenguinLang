@@ -1,0 +1,15 @@
+namespace emperor {
+
+// Build-variant real config for the compile-time meta JIT gate. This file lives
+// in std/penguin/ (NOT src/meta/), so the in-process dotnet tests — which glob
+// src/{ast,bound,ir,project,llvm,meta}/*.penguin — never pick it up; only the
+// Full project (EmperorPenguinFull.penguins, the bootstrap's pass2→pass3 and
+// pass3→pass4 steps, ./penguin -b) lists it. Those binaries ARE linked against
+// libpenguin_jit via -enable-meta, so reporting the JIT available activates
+// `_template_X` synthesis (M1) + M4 use-site routing there. The default project
+// ships src/meta/MetaConfigStub.penguin (returns false) instead.
+fun meta_runtime_available() -> bool {
+    return true;
+}
+
+}

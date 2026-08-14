@@ -52,6 +52,10 @@ class MetaEngine {
     // stored here under a 1-based token; the caller-stub materializes each via
     // penguin_meta_get_string_value(token) -> ptr (like type tokens via get_type).
     string_token_values: mut _utils.List<string> = new _utils.List<string>();
+    // M6: double-value registry (mirrors string_token_values). A compile-time
+    // double literal passed as a #fun arg is stored here; the caller-stub calls
+    // penguin_meta_get_double_value(token) to materialize the live double.
+    double_token_values: mut _utils.List<f64> = new _utils.List<f64>();
     // Phase 5c: AST registry. #create_expression / #create_definition parse a
     // literal code fragment into a structured AST node and store it here under a
     // 1-based token (shared counter, so tokens are globally unique). A #fun
@@ -116,6 +120,7 @@ class MetaEngine {
             + "    extern fun penguin_meta_warn(msg: string);\n"
             + "    extern fun penguin_meta_info(msg: string);\n"
             + "    extern fun penguin_meta_get_string_value(token: i64) -> string;\n"
+            + "    extern fun penguin_meta_get_double_value(token: i64) -> double;\n"
             + "    extern fun penguin_meta_get_ast_expression(token: i64) -> emperor.Expression;\n"
             + "    extern fun penguin_meta_set_option(key: string, value: string);\n"
             + "    extern fun penguin_meta_get_option(key: string) -> string;\n"
@@ -128,6 +133,16 @@ class MetaEngine {
             + "    extern fun penguin_meta_create_function_ast(name: string, return_type: BoundType, body: string) -> i64;\n"
             + "    extern fun penguin_meta_get_current_scope() -> BoundType;\n"
             + "    extern fun penguin_meta_activate_impl(slot: i64);\n"
+            // M1 (#template -> #fun desugar): the synthesized `_template_<name>`
+            // meta functions (one per #template class/enum/interface) call this
+            // responder, which the host (M3) turns into the actual specialized
+            // BoundType. Declared here so the bodies compile in unit B; the host
+            // responder is wired in M3.
+            + "    extern fun penguin_meta_specialize(name: string) -> BoundType;\n"
+            // M6-step2 object bridge: recover a live object from an object_ref
+            // address (host: pure inttoptr via unsafe_cast). The #fun body casts
+            // the returned IReferenceType down to the concrete type.
+            + "    extern fun penguin_meta_get_object(ref: i64) -> __builtin.IReferenceType;\n"
             + "}\n";
     }
 
@@ -199,6 +214,25 @@ class MetaEngine {
                     ts.name = "i64";
                 } else if (mp.kind == "unstructured_ast") {
                     ts.name = "string";
+                } else if (mp.param_type.is_some()) {
+                    // M6-step2 4c: use the DECLARED static type VERBATIM (i32 stays
+                    // i32 — kind "i64" is only the ABI hint; List<i64> for "object").
+                    // Copy name + qualified parts + generic args.
+                    ts.name = mp.param_type.some.name;
+                    let qi: mut i64 = 0;
+                    while (qi < cast<i64>(mp.param_type.some.qualified_parts.size())) {
+                        ts.qualified_parts.push(mp.param_type.some.qualified_parts.at(cast<u64>(qi)).some);
+                        qi = qi + 1;
+                    }
+                    let gi: mut i64 = 0;
+                    while (gi < cast<i64>(mp.param_type.some.generic_args.size())) {
+                        ts.generic_args.push(mp.param_type.some.generic_args.at(cast<u64>(gi)).some);
+                        gi = gi + 1;
+                    }
+                } else if (mp.kind == "object") {
+                    // No declared static type (e.g. a synthesized _template_X
+                    // param) — the body ignores params; type as i64.
+                    ts.name = "i64";
                 } else {
                     ts.name = mp.kind;
                 }
@@ -255,6 +289,25 @@ class MetaEngine {
                     ts.name = "i64";
                 } else if (mp.kind == "unstructured_ast") {
                     ts.name = "string";
+                } else if (mp.param_type.is_some()) {
+                    // M6-step2 4c: use the DECLARED static type VERBATIM (i32 stays
+                    // i32 — kind "i64" is only the ABI hint; List<i64> for "object").
+                    // Copy name + qualified parts + generic args.
+                    ts.name = mp.param_type.some.name;
+                    let qi: mut i64 = 0;
+                    while (qi < cast<i64>(mp.param_type.some.qualified_parts.size())) {
+                        ts.qualified_parts.push(mp.param_type.some.qualified_parts.at(cast<u64>(qi)).some);
+                        qi = qi + 1;
+                    }
+                    let gi: mut i64 = 0;
+                    while (gi < cast<i64>(mp.param_type.some.generic_args.size())) {
+                        ts.generic_args.push(mp.param_type.some.generic_args.at(cast<u64>(gi)).some);
+                        gi = gi + 1;
+                    }
+                } else if (mp.kind == "object") {
+                    // No declared static type (e.g. a synthesized _template_X
+                    // param) — the body ignores params; type as i64.
+                    ts.name = "i64";
                 } else {
                     ts.name = mp.kind;
                 }
@@ -566,6 +619,8 @@ class MetaEngine {
         let call_args: mut string = "";
         let needs_get_type: mut bool = false;
         let needs_get_string: mut bool = false;
+        let needs_get_double: mut bool = false;
+        let needs_get_object: mut bool = false;
         let ai2: mut i64 = 0;
         while (ai2 < cast<i64>(args.size())) {
             if (ai2 > 0) {
@@ -592,6 +647,23 @@ class MetaEngine {
                 // so pass the baked 0/1 as i8 to match the callee's signature.
                 sig_params = sig_params + "i8";
                 call_args = call_args + "i8 " + arg_val;
+            } else if (param_kind == "double") {
+                // M6: the baked i64 is a double-registry token; materialize the live
+                // double via the host bridge (the #fun's real param is `double`).
+                needs_get_double = true;
+                let d_reg: string = "%dbl" + cast<string>(ai2);
+                prelude = prelude + "  " + d_reg + " = call double @emperor_penguin_meta_get_double_value(i64 " + arg_val + ") \n";
+                sig_params = sig_params + "double";
+                call_args = call_args + "double " + d_reg;
+            } else if (param_kind == "object") {
+                // M6-step2 4c: a reference-typed param — the baked i64 is the live
+                // address; materialize the object pointer via the C bridge (the
+                // #fun's real param is the reference type = ptr in LLVM).
+                needs_get_object = true;
+                let o_reg: string = "%obj" + cast<string>(ai2);
+                prelude = prelude + "  " + o_reg + " = call ptr @emperor_penguin_meta_get_object(i64 " + arg_val + ") \n";
+                sig_params = sig_params + "ptr";
+                call_args = call_args + "ptr " + o_reg;
             } else {
                 sig_params = sig_params + "i64";
                 call_args = call_args + "i64 " + arg_val;
@@ -605,6 +677,12 @@ class MetaEngine {
         if (needs_get_string) {
             get_type_decl = get_type_decl + "declare ptr @emperor_penguin_meta_get_string_value(i64) \n";
         }
+        if (needs_get_double) {
+            get_type_decl = get_type_decl + "declare double @emperor_penguin_meta_get_double_value(i64) \n";
+        }
+        if (needs_get_object) {
+            get_type_decl = get_type_decl + "declare ptr @emperor_penguin_meta_get_object(i64) \n";
+        }
         // Phase 5: dispatch on the #fun's return kind. type/string return a real
         // reference (ptr) — the stub stores it into the matching host global and
         // returns i64 0. i64/ast/bool return the i64 directly (ast token resolved
@@ -614,6 +692,8 @@ class MetaEngine {
         let foo_ret: mut string = "i64";
         let result_global: mut string = "";
         let bool_ret: mut bool = false;
+        let double_ret: mut bool = false;
+        let object_ret: mut bool = false;
         if (ret_kind == "type") {
             foo_ret = "ptr";
             result_global = "@emperor_active_type_result";
@@ -625,11 +705,33 @@ class MetaEngine {
             // i8 result back to i64 for the arity-0 trampoline.
             foo_ret = "i8";
             bool_ret = true;
+        } else if (ret_kind == "double" || ret_kind == "f64" || ret_kind == "float" || ret_kind == "f32") {
+            // M6: the #fun returns a real double (return type may be spelled
+            // double/f64/float/f32); store it into the host global active_double_result
+            // (the arity-0 trampoline can't carry a double).
+            foo_ret = "double";
+            result_global = "@emperor_active_double_result";
+            double_ret = true;
+        } else if (string_length(ret_kind) > 0 && ret_kind != "ast"
+            && ret_kind != "i8" && ret_kind != "i16" && ret_kind != "i32" && ret_kind != "i64"
+            && ret_kind != "u8" && ret_kind != "u16" && ret_kind != "u32" && ret_kind != "u64"
+            && ret_kind != "char" && ret_kind != "void") {
+            // M6-step2 4c: a REFERENCE-typed return (e.g. -> List<i64>) — the callee
+            // returns ptr; convert to the address (i64) for the arity-0 trampoline.
+            // The host receives the address and (for template args) wraps it as a
+            // value arg. Runtime-constant splicing of references stays unsupported.
+            foo_ret = "ptr";
+            object_ret = true;
         }
         let global_decl: mut string = "";
         let ret_line: mut string = "  ret i64 %r \n";
         if (bool_ret) {
             ret_line = "  %r64 = zext i8 %r to i64 \n  ret i64 %r64 \n";
+        } else if (object_ret) {
+            ret_line = "  %r64 = ptrtoint ptr %r to i64 \n  ret i64 %r64 \n";
+        } else if (double_ret) {
+            global_decl = result_global + " = external global double \n";
+            ret_line = "  store double %r, ptr " + result_global + " \n  ret i64 0 \n";
         } else if (string_length(result_global) > 0) {
             global_decl = result_global + " = external global ptr \n";
             ret_line = "  store ptr %r, ptr " + result_global + " \n  ret i64 0 \n";
@@ -887,7 +989,7 @@ class MetaEngine {
         bt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy));
         let ai: mut i64 = 0;
         while (ai < cast<i64>(ts.generic_args.size())) {
-            bt.generic_args.push(this.spec_to_bound_type(ts.generic_args.at(cast<u64>(ai)).some));
+            bt.generic_args.push(make_type_arg(this.spec_to_bound_type(ts.generic_args.at(cast<u64>(ai)).some)));
             ai = ai + 1;
         }
         return bt;
@@ -969,6 +1071,21 @@ class MetaEngine {
             }
         }
         return new Option<string>.none();
+    }
+
+    // M6: double-value registry accessor (mirrors get_string_value).
+    fun register_double_value(mut this, val: f64) -> u64 {
+        this.double_token_values.push(val);
+        return cast<u64>(this.double_token_values.size());
+    }
+
+    fun get_double_value(this, token: u64) -> Option<f64> {
+        if (token >= 1) {
+            if (token <= cast<u64>(this.double_token_values.size())) {
+                return new Option<f64>.some(this.double_token_values.at(token - 1).some);
+            }
+        }
+        return new Option<f64>.none();
     }
 
     // -----------------------------------------------------------------

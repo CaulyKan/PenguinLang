@@ -102,6 +102,18 @@ namespace __builtin {
     // semantics then break aliasing (the LLVMEmitter this.sb buffer swap copies the
     // 24B struct instead of aliasing, so the buffer is never written).
     interface IReferenceType {
+        // Self-marker so the interface itself is reference-sized (callable as a
+        // return type, e.g. the M6-step2 penguin_meta_get_object bridge);
+        // mirrors IIterator's `impl IReferenceType`.
+        impl IReferenceType;
+    }
+
+    // M6-step2: canonical, deterministic name for a non-scalar value-template
+    // argument, used to mangle/dedup object value args (e.g. Foo<#make_list(...)>)
+    // by VALUE rather than by address. get_unique_name() must be stable across
+    // compilations (no embedded addresses/random) — it is the mangle key.
+    interface IUniqueName {
+        fun get_unique_name(this) -> string;
     }
 
     // Marker for manually-managed types that own raw memory (Array<T,N>,
@@ -241,6 +253,23 @@ namespace __builtin {
         extern fun new(mut this);
         extern fun append(mut this, s: string);
         extern fun to_string(this) -> mut string;
+        // M6-step2 4b: canonical value-level name for object value-template args
+        // (stable mangle/dedup by VALUE, not address). Content-derived. The name
+        // must be IDENTIFIER-SAFE (letters/digits/underscore) — it becomes part of
+        // the specialization's mangled symbol.
+        impl IUniqueName {
+            fun get_unique_name(this) -> string {
+                return "SB_" + this.data;
+            }
+        }
+    }
+
+    // M6-step2 4b: unique-name trampoline. The host JIT-calls this with a live
+    // object address (object-param ABI) to obtain the IUniqueName canonical name
+    // for stable mangling of object value-template args. The object must impl
+    // IUniqueName (the host gates on the declared static type).
+    #fun penguin_meta_unique_name(l: IUniqueName) -> string {
+        return l.get_unique_name();
     }
 
     // String helper functions
@@ -251,6 +280,7 @@ namespace __builtin {
     extern fun string_char_at(s: string, index: i64) -> string;
     extern fun string_char_code(s: string) -> i64;
     extern fun string_to_int(s: string) -> i64;
+    extern fun string_to_double(s: string) -> double;
 
     #template(T: type, E: type)
     enum Result {

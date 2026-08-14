@@ -62,6 +62,7 @@ namespace emperor {
         Class;
         Continue;
         Double;
+        UnsafeCast;
         Else;
         ElifKw;
         Emit;

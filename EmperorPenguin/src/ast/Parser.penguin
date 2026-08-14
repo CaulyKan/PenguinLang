@@ -79,8 +79,13 @@ fun _mark_ast_exported(def: Definition) {
                 return this.parse_ifExpression();
             } else if (token.token_type is TokenType.While) {
                 return this.parse_whileExpression();
-            } else if (token.token_type is TokenType.Cast) {
-                this.stream.expect(new TokenType.Cast());
+            } else if (token.token_type is TokenType.Cast || token.token_type is TokenType.UnsafeCast) {
+                let is_unsafe: bool = token.token_type is TokenType.UnsafeCast;
+                if (is_unsafe) {
+                    this.stream.expect(new TokenType.UnsafeCast());
+                } else {
+                    this.stream.expect(new TokenType.Cast());
+                }
                 this.stream.expect(new TokenType.Less());
                 // Parse a full type specifier so generic args and qualified names work:
                 //   cast<IFoo<u8>>(x), cast<mut Self>(this), cast<ns.Foo>(x)
@@ -103,6 +108,7 @@ fun _mark_ast_exported(def: Definition) {
                 cast_node.target_type = new Option<TypeSpecifier>.some(target_type);
                 cast_node.location = target_type.location;
                 cast_node.inner = new Option<Expression>.some(cast_inner);
+                cast_node.is_unsafe = is_unsafe;
                 return new Expression.cast_expr(cast_node);
             } else if (token.token_type is TokenType.Let) {
                 return this.parse_tryBindExpression();
@@ -2141,8 +2147,20 @@ fun _mark_ast_exported(def: Definition) {
             let node: mut MetaParameter = new MetaParameter();
             node.name = name_token.text;
             if (this.stream.match(new TokenType.Colon())) {
-                let kind_token: Token = this.stream.advance();
-                node.kind = kind_token.text;
+                // M6-step2 4c: 'type'/'ast' stay bare keywords; any other kind is a
+                // FULL type specifier so generic reference types parse — (l: List<i64>)
+                // previously left the <i64> unconsumed. Map to the ABI kind: scalars
+                // keep their kind name; reference types -> "object" (the caller-stub
+                // materializes the live pointer via penguin_meta_get_object).
+                let kt: Token = this.stream.peek();
+                if (kt.text == "type" || kt.text == "ast" || kt.text == "unstructured_ast") {
+                    this.stream.advance();
+                    node.kind = kt.text;
+                } else {
+                    let ts = this.parse_typeSpecifier();
+                    node.kind = this.value_type_to_meta_kind(ts.name);
+                    node.param_type = new Option<TypeSpecifier>.some(ts);
+                }
             }
             return node;
         }
@@ -2560,15 +2578,14 @@ fun _mark_ast_exported(def: Definition) {
             } else {
                 this.stream.expect(new TokenType.Semicolon());
             }
-            // req3+4: a value-template function — #template(N:i32,...) fun f() with
-            // ALL value (non-type) params and NO regular parameters — desugars to a
-            // #fun meta function: each value param becomes a meta parameter (integers
-            // map to i64). Call sites fab<5>() and recursive body calls fab<N-1>()
-            // carry value_generic_args on the callee identifier and are resolved at
-            // bind time (meta call at a host call site, plain call inside a #fun body).
-            if (this.is_value_template_function(node)) {
-                return new Definition.meta_function_def(this.value_template_function_to_meta(node));
-            }
+            // req3+4 / D6: a value-template function (#template(N:i32) fun f()) is
+            // now treated as a RUNTIME generic function — it is specialized like a
+            // type generic (filled<3> -> filled__3) and called at runtime, with the
+            // value params substituted into the body. The old compile-time #fun
+            // splice (desugar to `#fun f(N: i64)` and fold to a constant) was only an
+            // optimization, not required, and it broke reference-typed returns
+            // (filled() -> List<i32> can't be spliced as a constant). So we keep the
+            // FunctionDefinition and let the SemanticModel specialize it.
             return new Definition.function_def(node);
         }
 
@@ -2616,7 +2633,12 @@ fun _mark_ast_exported(def: Definition) {
         fun value_type_to_meta_kind(this, type_name: string) -> string {
             if (type_name == "bool") { return "bool"; }
             if (type_name == "string") { return "string"; }
-            return "i64";
+            if (type_name == "double" || type_name == "f64" || type_name == "float" || type_name == "f32") { return "double"; }
+            if (type_name == "i8" || type_name == "i16" || type_name == "i32" || type_name == "i64"
+                || type_name == "u8" || type_name == "u16" || type_name == "u32" || type_name == "u64"
+                || type_name == "char") { return "i64"; }
+            // M6-step2 4c: reference-typed constraint -> OBJECT value param.
+            return "object";
         }
 
         // eventDefinition: 'event' identifier (':' typeSpecifier)? ';';

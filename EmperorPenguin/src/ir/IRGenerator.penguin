@@ -700,7 +700,7 @@ class IRGenerator {
         }
         // Track if this is a method call on a generic type for name mangling
         let has_generic_receiver: mut bool = false;
-        let generic_args_list: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let generic_args_list: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
         let template_class_name: mut string = "";
         // Whether the callee's first parameter is `this` (set when the callee is
         // resolved below). Drives whether the receiver is passed / used for the
@@ -812,7 +812,16 @@ class IRGenerator {
                 func_name = this.replace_in_func_name(func_name, template_class_name, mangled_class);
             }
             if (expr.is_generic_function_call) {
-                let mangled_func: string = this.mangle_generic_name(sym.get_name(), expr.generic_args);
+                // expr.generic_args (the call's explicit TYPE args) stays
+                // List<BoundType>; wrap as type args for the mangle helper.
+                let type_arg_wrap: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                let wi: mut i64 = 0;
+                while (wi < cast<i64>(expr.generic_args.size())) {
+                    let a: mut BoundType = expr.generic_args.at(cast<u64>(wi)).some;
+                    type_arg_wrap.push(make_type_arg(a));
+                    wi = wi + 1;
+                }
+                let mangled_func: string = this.mangle_generic_name(sym.get_name(), type_arg_wrap);
                 func_name = this.replace_in_func_name(func_name, sym.get_name(), mangled_func);
             }
             if (expr.is_virtual) {
@@ -1145,9 +1154,9 @@ class IRGenerator {
                                     while (gi < cast<i64>(rt.generic_args.size())) {
                                         result_sb.append("__");
                                         if (cast<i64>(iface2.generic_params.size()) > gi && cast<i64>(recv_type.generic_args.size()) > gi) {
-                                            result_sb.append(recv_type.generic_args.at(cast<u64>(gi)).some.display_name());
+                                            result_sb.append(arg_display_name(recv_type.generic_args.at(cast<u64>(gi)).some));
                                         } else {
-                                            result_sb.append(rt.generic_args.at(cast<u64>(gi)).some.display_name());
+                                            result_sb.append(arg_display_name(rt.generic_args.at(cast<u64>(gi)).some));
                                         }
                                         gi = gi + 1;
                                     }
@@ -1185,17 +1194,31 @@ class IRGenerator {
         _utils.trace_enter("Enter resolve_interface_id");
         let base_iface: Option<BoundInterfaceDefinition> = this.call_base_interface_def(expr);
         if (base_iface.is_some()) {
-            return base_iface.some.name;
+            // The object's interface_map registers the TEMPLATE name (impl I<5> ->
+            // interface I), so the lookup must use the template name too — NOT the
+            // possibly-specialized def's name (I__5 from the M4 meta path). A
+            // mismatch (map "I" vs lookup "I__5") makes _emperor_vtable_lookup fail.
+            return this.extract_template_name(base_iface.some.name);
         }
         if (let sym := expr.callee_symbol.some) {
             let scope: Option<BoundScope> = sym.get_enclosing_scope();
             if (scope.is_some()) {
                 if (scope.some.kind is ScopeKind.InterfaceScope) {
-                    return scope.some.name;
+                    return this.extract_template_name(scope.some.name);
                 }
             }
         }
         return "";
+    }
+
+    // Strip a mangled name's `__<args>` suffix (I__5 -> I, List__i32 -> List).
+    // Mirrors SemanticModel.extract_template_name.
+    fun extract_template_name(this, mangled_name: string) -> string {
+        let pos: i64 = string_find(mangled_name, "__");
+        if (pos >= 0) {
+            return string_substring(mangled_name, 0, pos);
+        }
+        return mangled_name;
     }
 
     fun lower_code_block(mut this, expr: BoundCodeBlockExpression) -> IRValue {
@@ -1393,6 +1416,33 @@ class IRGenerator {
                 } else {
                     type_name = mangled;
                 }
+            } else {
+                // M4 / spec.bound_type: the bound_type is already a specialized def
+                // (type_def = A__5, NO generic_args). type_symbol still points at the
+                // template (A), so without this emit_new gets the template and the
+                // LLVM type has no layout → undefined register. Use the specialized
+                // def's name with the same prefix logic as the generic_args branch.
+                let spec_name: mut string = "";
+                if (expr.bound_type.type_definition.is_some()) {
+                    let td: BoundDefinition = expr.bound_type.type_definition.some;
+                    if (td is BoundDefinition.class_def) {
+                        if (td.class_def.is_specialized) { spec_name = td.class_def.name; }
+                    } else if (td is BoundDefinition.enum_def) {
+                        if (td.enum_def.is_specialized) { spec_name = td.enum_def.name; }
+                    } else if (td is BoundDefinition.interface_def) {
+                        if (td.interface_def.is_specialized) { spec_name = td.interface_def.name; }
+                    }
+                }
+                if (string_length(spec_name) > 0) {
+                    let base_name: string = expr.type_symbol.some.name;
+                    let scope_dot: i64 = string_find(type_name, "." + base_name);
+                    if (scope_dot >= 0) {
+                        let prefix: string = string_substring(type_name, 0, scope_dot);
+                        type_name = prefix + "." + spec_name;
+                    } else {
+                        type_name = spec_name;
+                    }
+                }
             }
             return this.builder.emit_new(type_name, args, loc);
         }
@@ -1401,14 +1451,14 @@ class IRGenerator {
         return this.builder.emit_new("Object", args, loc);
     }
 
-    fun mangle_generic_name(this, base_name: string, generic_args: _utils.List<BoundType>) -> string {
+    fun mangle_generic_name(this, base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
         _utils.trace_enter("Enter mangle_generic_name");
         let sb: mut StringBuilder = new StringBuilder();
         sb.append(base_name);
         let i: mut i64 = 0;
         while (i < cast<i64>(generic_args.size())) {
             sb.append("__");
-            let arg_name: string = generic_args.at(cast<u64>(i)).some.display_name();
+            let arg_name: string = arg_display_name(generic_args.at(cast<u64>(i)).some);
             let sanitized: mut StringBuilder = new StringBuilder();
             let j: mut i64 = 0;
             while (j < string_length(arg_name)) {

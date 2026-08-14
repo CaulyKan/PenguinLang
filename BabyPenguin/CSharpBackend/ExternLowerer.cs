@@ -38,6 +38,7 @@ namespace BabyPenguin.CSharpBackend
             ["__builtin_string_char_at"] = (["string", "long"], "string", "return a_0[(int)a_1].ToString();"),
             ["__builtin_string_char_code"] = (["string"], "long", "return a_0.Length == 0 ? -1L : (long)a_0[0];"),
             ["__builtin_string_to_int"] = (["string"], "long", "return long.TryParse(a_0, out var v) ? v : 0L;"),
+            ["__builtin_string_to_double"] = (["string"], "double", "return double.TryParse(a_0, out var v) ? v : 0.0;"),
             ["__builtin_lshift"] = (["long", "long"], "long", "return a_0 << (int)a_1;"),
             ["__builtin_rshift"] = (["long", "long"], "long", "return a_0 >> (int)a_1;"),
             ["__builtin___args_count"] = ([], "long", "return (long)GlobalState.Args.Length;"),

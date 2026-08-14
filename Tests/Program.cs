@@ -207,6 +207,25 @@ public static class Program
         Dictionary<CompilerKind, ICompilerBackend> backends, string repoRoot, string runDir,
         Options opts, ConcurrentBag<ComboResult> results, int totalWork, CancellationToken ct)
     {
+        // A `## Skip` section makes the whole test unconditional SKIP: record every
+        // combo as SKIP with the stated reason, never running the compiler.
+        if (items.Count > 0 && !string.IsNullOrEmpty(items[0].Test.SkipReason))
+        {
+            foreach (var w in items)
+            {
+                var skip = new ComboResult
+                {
+                    Category = w.Test.Category,
+                    Name = w.Test.Name,
+                    Compiler = w.Compiler,
+                    Status = Status.Skip,
+                    Message = "skipped: " + items[0].Test.SkipReason,
+                };
+                results.Add(skip);
+                LogCombo(skip, results.Count, totalWork);
+            }
+            return;
+        }
         // Per-test waves: run guard compilers first; for a compiler with a
         // "skip if <guard> PASS" condition, skip it when the guard passed (else run it).
         var decided = new Dictionary<CompilerKind, ComboResult>();
@@ -577,6 +596,12 @@ public sealed class MarkdownTestCase
     /// <summary>Multi-stage builds (e.g. build a .penguin-lib, then an exe against it). When
     /// non-empty, these replace Compile; the Run stage runs the last build's exe artifact.</summary>
     public List<StageSpec> Builds = new();
+    /// <summary>`## Skip` section: an explicit reason to NOT run this test at all. When set,
+    /// every (test × compiler) combo is recorded as SKIP without being executed (exit code
+    /// unaffected, never a regression vs the baseline). Mirrors the conditional per-compiler
+    /// skip, but unconditional — used for tests whose semantics require a compiler feature
+    /// that does not exist yet (e.g. dead-code evaluation for value-template recursion).</summary>
+    public string? SkipReason = null;
     public string SourcePath = "";
     public string Category = "";
     public string Name => string.IsNullOrEmpty(Title) ? Path.GetFileNameWithoutExtension(SourcePath) : Title;
@@ -597,6 +622,7 @@ public static class MarkdownTestParser
 
         string? section = null;
         var description = new StringBuilder();
+        var skipReason = new StringBuilder();
         var applyTo = new List<string>();
         // A `## Test Code` block applies to the NEXT `## Build N` (per-build code);
         // the last one is also the test's global Code (legacy single-compile / Run).
@@ -642,6 +668,11 @@ public static class MarkdownTestParser
             {
                 case "description":
                     description.AppendLine(line);
+                    break;
+                case "skip":
+                    // Unconditional skip reason — the whole test is recorded as SKIP
+                    // (every Apply To combo) without being run.
+                    skipReason.AppendLine(line);
                     break;
                 case "apply to":
                     var b = trimmed.TrimStart('*', '-', ' ').Trim();
@@ -689,6 +720,7 @@ public static class MarkdownTestParser
         }
 
         tc.Description = description.ToString().Trim();
+        tc.SkipReason = skipReason.ToString().Trim();
         tc.ApplyTo = ParseApplyTo(applyTo);
         if (tc.ApplyTo.Count == 0)
             throw new FormatException("No compilers listed under '## Apply To'.");

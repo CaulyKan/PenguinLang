@@ -1,6 +1,6 @@
 # MetaTemplateValueMetaCall
 ## Description
-req4 (meta x template): a non-type (value) template param `N` is passed to a `#fun` meta function. `#template<N:i32> fun foo() { return #test(N); }` desugars to `#fun foo(N:i64) { return #test(N); }`; inside foo's #fun body the `#test(N)` meta call rewrites to a plain `test(N)` call, and `test` is synthesized into unit B (alongside foo), so the compile-time evaluation resolves: `foo<5>()` JIT-evaluates foo(5) -> test(5) -> 10. Requires native Pass2/Pass3 (meta JIT).
+req4 (meta x template): a non-type (value) template param `N` is passed to a `#fun` meta function. `#template<N:i32> fun foo() { return #test(N); }` is specialized at runtime (D6): `foo<5>()` → `foo__5`, whose body substitutes `N` → `5` giving `return #test(5);`. The `#test(5)` meta call is JIT-evaluated at compile time and spliced as the constant 10, so `foo__5()` returns 10 at runtime. Requires native Pass2/Pass3 (meta JIT for the `#test` splice).
 
 ## Apply To
 * EmperorPenguin Pass2

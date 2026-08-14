@@ -112,6 +112,7 @@ namespace __builtin {
     extern fun string_char_at(s: string, index: i64) -> string;
     extern fun string_char_code(s: string) -> i64;
     extern fun string_to_int(s: string) -> i64;
+    extern fun string_to_double(s: string) -> double;
 
     #template(T: type, E: type)
     enum Result {

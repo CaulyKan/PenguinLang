@@ -3,7 +3,6 @@
 req2+req5: type-generic and value-generic instantiation used together. `new Box<i64>(42)` is a normal type-generic instantiation; `new Arr<3>()` is a value-template class (req5, N substituted into the field default). Both `<...>` forms must parse and resolve correctly in the same scope. Exercises both generic-arg kinds side by side.
 
 ## Apply To
-* EmperorPenguin Pass1
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

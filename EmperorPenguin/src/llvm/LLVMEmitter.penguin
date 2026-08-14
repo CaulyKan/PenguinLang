@@ -1683,8 +1683,7 @@ class LLVMEmitter {
         let i: mut i64 = 0;
         while (i < cast<i64>(bt.generic_args.size())) {
             sb2.append("__");
-            let arg: BoundType = bt.generic_args.at(cast<u64>(i)).some;
-            let arg_name: string = arg.display_name();
+            let arg_name: string = arg_display_name(bt.generic_args.at(cast<u64>(i)).some);
             let sanitized: mut StringBuilder = new StringBuilder();
             let j: mut i64 = 0;
             while (j < string_length(arg_name)) {
@@ -3944,6 +3943,12 @@ class LLVMEmitter {
         // Float precision
         if (from == "float" && to == "double") { return "fpext"; }
         if (from == "double" && to == "float") { return "fptrunc"; }
+        // M6-step2: unsafe_cast raw pointer<->integer (object_ref etc.) and
+        // pointer<->pointer reinterpret. References lower to LLVM ptr, so these
+        // fire for unsafe_cast<i64>(ref) / unsafe_cast<Ref>(i64) / unsafe_cast
+        // between reference types.
+        if (from == "ptr" && (to == "i64" || to == "i32" || to == "i16" || to == "i8")) { return "ptrtoint"; }
+        if ((from == "i64" || from == "i32" || from == "i16" || from == "i8") && to == "ptr") { return "inttoptr"; }
         return "bitcast";
     }
 

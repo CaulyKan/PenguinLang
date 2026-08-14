@@ -33,6 +33,189 @@ enum TypeKind {
     ErrorKind;
 }
 
+// D5: the sub-kind of a value (non-type) template argument. Scalars carry their
+// value directly; ObjectArg carries a live address (object_ref, M3b) + canonical
+// unique_name for stable mangling/dedup of arbitrary data-structure args.
+enum ValueArgSubKind {
+    IntArg;
+    BoolArg;
+    StringArg;
+    DoubleArg;
+    ObjectArg;
+}
+
+// D5: a TYPE template argument (the T in Foo<T>). Thin wrapper so generic_args
+// is a uniform List<BoundTypeArg> holding both type and value args.
+class BoundTypeArgType {
+    bound_type: BoundType = new BoundType();
+}
+
+// D5: a VALUE (non-type) template argument (the 5/true/"hi"/2.5/#make_list(...)
+// in Foo<...>). value_type is the value's STATIC type (self-describing —
+// distinguishes Foo<Option.some(5)> from Foo<my_box>). unique_name is the stable
+// canonical name for non-scalar args (IUniqueName), used for mangling/dedup;
+// "" for scalar args (mangled by value). object_ref is the live address for
+// ObjectArg (M3b). Replaces the former is_template_value_arg hack fields.
+class BoundTypeArgValue {
+    value_type: BoundType = new BoundType();
+    unique_name: mut string = "";
+    value_arg_kind: mut ValueArgSubKind = new ValueArgSubKind.IntArg();
+    int_val: mut i64 = 0;
+    bool_val: mut bool = false;
+    // StringArg: the string content. DoubleArg: the source text (cast<string> of a
+    // double does not round-trip, so the canonical mangle text is kept here).
+    string_val: mut string = "";
+    double_val: mut double = 0.0;
+    object_ref: mut i64 = 0;
+
+    // The (value, text, kind) triple consumed by make_value_literal when
+    // substituting a value param -> its constant inside a specialized body.
+    fun as_i64(this) -> i64 {
+        if (this.value_arg_kind is ValueArgSubKind.BoolArg) {
+            if (this.bool_val) { return 1; }
+            return 0;
+        }
+        // M6-step2 4b: an object arg's i64 projection is the LIVE ADDRESS — value
+        // substitution into template bodies (and stub tokens) uses it.
+        if (this.value_arg_kind is ValueArgSubKind.ObjectArg) {
+            return this.object_ref;
+        }
+        return this.int_val;
+    }
+
+    fun as_text(this) -> string {
+        if (this.value_arg_kind is ValueArgSubKind.StringArg) { return this.string_val; }
+        if (this.value_arg_kind is ValueArgSubKind.DoubleArg) { return this.string_val; }
+        if (this.value_arg_kind is ValueArgSubKind.BoolArg) {
+            if (this.bool_val) { return "true"; }
+            return "false";
+        }
+        return "";
+    }
+
+    fun kind_str(this) -> string {
+        if (this.value_arg_kind is ValueArgSubKind.BoolArg) { return "bool"; }
+        if (this.value_arg_kind is ValueArgSubKind.StringArg) { return "string"; }
+        if (this.value_arg_kind is ValueArgSubKind.DoubleArg) { return "double"; }
+        return "i64";
+    }
+
+    fun display_name(this) -> string {
+        if (this.value_arg_kind is ValueArgSubKind.IntArg) { return cast<string>(this.int_val); }
+        if (this.value_arg_kind is ValueArgSubKind.BoolArg) {
+            if (this.bool_val) { return "true"; }
+            return "false";
+        }
+        if (this.value_arg_kind is ValueArgSubKind.StringArg) { return this.string_val; }
+        if (this.value_arg_kind is ValueArgSubKind.DoubleArg) { return this.string_val; }
+        // ObjectArg: the stable canonical name (value-level mangle/dedup, D5).
+        return this.unique_name;
+    }
+
+    fun is_same(this, other: BoundTypeArgValue) -> bool {
+        if (cast<string>(this.value_arg_kind) != cast<string>(other.value_arg_kind)) { return false; }
+        if (this.value_arg_kind is ValueArgSubKind.IntArg) { return this.int_val == other.int_val; }
+        if (this.value_arg_kind is ValueArgSubKind.BoolArg) { return this.bool_val == other.bool_val; }
+        if (this.value_arg_kind is ValueArgSubKind.StringArg) { return this.string_val == other.string_val; }
+        if (this.value_arg_kind is ValueArgSubKind.DoubleArg) { return this.double_val == other.double_val; }
+        // ObjectArg: compare by canonical unique_name (value-level dedup, D5).
+        return this.unique_name == other.unique_name;
+    }
+}
+
+// D5: a generic-template argument — either a TYPE arg or a VALUE arg.
+// generic_args: List<BoundTypeArg>.
+enum BoundTypeArg {
+    type_arg: BoundTypeArgType;
+    value_arg: BoundTypeArgValue;
+}
+
+// --- BoundTypeArg helpers (free, namespace emperor; usable from all units) ---
+// NOTE: a BoundType passed for storage must be `mut BoundType` — assigning an
+// immutable value to a field is rejected by the binder (mirrors
+// BoundEnumMemberDefinition's `mut BoundType` constructor param).
+
+fun make_type_arg(bt: mut BoundType) -> BoundTypeArg {
+    let t: mut BoundTypeArgType = new BoundTypeArgType();
+    t.bound_type = bt;
+    return new BoundTypeArg.type_arg(t);
+}
+
+fun make_int_value_arg(val: i64) -> BoundTypeArg {
+    let v: mut BoundTypeArgValue = new BoundTypeArgValue();
+    v.value_arg_kind = new ValueArgSubKind.IntArg();
+    v.int_val = val;
+    return new BoundTypeArg.value_arg(v);
+}
+
+// Takes 0/1 (i64) rather than bool: the LLVMEmitter doesn't zext an inline i1
+// (e.g. a `==` result) to the i8 bool ABI on call args, so callers pass an i64
+// and we branch on it to assign bool literals (no i1 store).
+fun make_bool_value_arg(val: i64) -> BoundTypeArg {
+    let v: mut BoundTypeArgValue = new BoundTypeArgValue();
+    v.value_arg_kind = new ValueArgSubKind.BoolArg();
+    if (val != 0) { v.bool_val = true; } else { v.bool_val = false; }
+    return new BoundTypeArg.value_arg(v);
+}
+
+fun make_string_value_arg(val: string) -> BoundTypeArg {
+    let v: mut BoundTypeArgValue = new BoundTypeArgValue();
+    v.value_arg_kind = new ValueArgSubKind.StringArg();
+    v.string_val = val;
+    return new BoundTypeArg.value_arg(v);
+}
+
+fun make_double_value_arg(val: double, text: string) -> BoundTypeArg {
+    let v: mut BoundTypeArgValue = new BoundTypeArgValue();
+    v.value_arg_kind = new ValueArgSubKind.DoubleArg();
+    v.double_val = val;
+    v.string_val = text;
+    return new BoundTypeArg.value_arg(v);
+}
+
+fun make_object_value_arg(vt: mut BoundType, unique_name: string, object_ref: i64) -> BoundTypeArg {
+    let v: mut BoundTypeArgValue = new BoundTypeArgValue();
+    v.value_type = vt;
+    v.value_arg_kind = new ValueArgSubKind.ObjectArg();
+    v.unique_name = unique_name;
+    v.object_ref = object_ref;
+    return new BoundTypeArg.value_arg(v);
+}
+
+fun arg_is_value(a: BoundTypeArg) -> bool {
+    return a is BoundTypeArg.value_arg;
+}
+
+// The underlying BoundType: type arg -> its type; value arg -> the value's STATIC
+// type. Lets type-only consumers treat a generic_args slot uniformly.
+fun arg_as_bound_type(a: BoundTypeArg) -> mut BoundType {
+    if (a is BoundTypeArg.type_arg) { return a.type_arg.bound_type; }
+    if (a is BoundTypeArg.value_arg) { return a.value_arg.value_type; }
+    let e: mut BoundType = new BoundType();
+    return e;
+}
+
+fun arg_display_name(a: BoundTypeArg) -> string {
+    if (a is BoundTypeArg.type_arg) { return a.type_arg.bound_type.display_name(); }
+    if (a is BoundTypeArg.value_arg) { return a.value_arg.display_name(); }
+    return "?";
+}
+
+fun arg_is_same(a: BoundTypeArg, b: BoundTypeArg) -> bool {
+    if (a is BoundTypeArg.type_arg) {
+        if (b is BoundTypeArg.type_arg) {
+            return a.type_arg.bound_type.is_same_type(b.type_arg.bound_type);
+        }
+        return false;
+    }
+    if (a is BoundTypeArg.value_arg) {
+        if (b is BoundTypeArg.value_arg) {
+            return a.value_arg.is_same(b.value_arg);
+        }
+    }
+    return false;
+}
+
 fun primitive_type_to_string(p: PrimitiveType) -> string {
     if (p is PrimitiveType.I8) { return "i8"; }
     if (p is PrimitiveType.I16) { return "i16"; }
@@ -62,20 +245,14 @@ class BoundType {
     kind: TypeKind = new TypeKind.PrimitiveKind();
     primitive: PrimitiveType = new PrimitiveType.VoidType();
     type_definition: Option<BoundDefinition> = new Option<BoundDefinition>.none();
-    generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+    // D5: template args (type AND value) as a uniform List<BoundTypeArg>. Value
+    // args are BoundTypeArgValue (no longer hack fields on BoundType).
+    generic_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
     mutability: Mutability = new Mutability.Immutable();
     is_async_function: bool = false;
-    // req5: a non-type (value) template argument, e.g. the `5` in A<5> where
-    // #template<N:i32> class A. Rides the existing generic_args plumbing: its
-    // display_name is the value text so mangling yields A__5, and specialize_*
-    // substitutes the matching value param identifier -> this constant.
-    is_template_value_arg: mut bool = false;
-    template_value: mut i64 = 0;
+
 
     fun display_name(this) -> string {
-        if (this.is_template_value_arg) {
-            return cast<string>(this.template_value);
-        }
         if (this.kind is TypeKind.PrimitiveKind) {
             return primitive_type_to_string(this.primitive);
         }
@@ -90,7 +267,7 @@ class BoundType {
             let i: mut i64 = 0;
             while (i < cast<i64>(this.generic_args.size())) {
                 if (i > 0) { sb.append(", "); }
-                sb.append(this.generic_args.at(cast<u64>(i)).some.display_name());
+                sb.append(arg_display_name(this.generic_args.at(cast<u64>(i)).some));
                 i = i + 1;
             }
             sb.append(">");
@@ -98,7 +275,7 @@ class BoundType {
         }
         if (this.kind is TypeKind.TypeReferenceKind) {
             if (cast<i64>(this.generic_args.size()) > 0) {
-                return this.generic_args.at(cast<u64>(0)).some.display_name();
+                return arg_display_name(this.generic_args.at(cast<u64>(0)).some);
             }
             return "?";
         }
@@ -115,7 +292,7 @@ class BoundType {
             let i: mut i64 = 0;
             while (i < cast<i64>(this.generic_args.size())) {
                 if (i > 0) { sb.append(", "); }
-                sb.append(this.generic_args.at(cast<u64>(i)).some.display_name());
+                sb.append(arg_display_name(this.generic_args.at(cast<u64>(i)).some));
                 i = i + 1;
             }
             sb.append(">");
@@ -139,7 +316,7 @@ class BoundType {
         return result;
     }
 
-    fun with_generic_args(this, args: _utils.List<BoundType>) -> mut BoundType {
+    fun with_generic_args(this, args: _utils.List<BoundTypeArg>) -> mut BoundType {
         let result: mut BoundType = new BoundType();
         result.kind = this.kind;
         result.primitive = this.primitive;
@@ -155,16 +332,6 @@ class BoundType {
     }
 
     fun is_same_type(this, other: BoundType) -> bool {
-        // req5 value template args ride the generic_args as synthetic types whose
-        // kind/primitive is the VALUE's type (e.g. both i32 for N=5 and N=2), so
-        // they would compare equal and dedupe distinct instantiations (foo<5> vs
-        // foo<2>). Compare the concrete value instead.
-        if (this.is_template_value_arg || other.is_template_value_arg) {
-            if (this.is_template_value_arg && other.is_template_value_arg) {
-                return this.template_value == other.template_value;
-            }
-            return false;
-        }
         if (cast<string>(this.kind) != cast<string>(other.kind)) { return false; }
         if (this.kind is TypeKind.PrimitiveKind) {
             return cast<string>(this.primitive) == cast<string>(other.primitive);
@@ -182,7 +349,7 @@ class BoundType {
         }
         let i: mut i64 = 0;
         while (i < cast<i64>(this.generic_args.size())) {
-            if (!this.generic_args.at(cast<u64>(i)).some.is_same_type(other.generic_args.at(cast<u64>(i)).some)) {
+            if (!arg_is_same(this.generic_args.at(cast<u64>(i)).some, other.generic_args.at(cast<u64>(i)).some)) {
                 return false;
             }
             i = i + 1;
@@ -221,7 +388,7 @@ class BoundType {
                 let mangled: mut string = ca.name;
                 let mi: mut i64 = 0;
                 while (mi < cast<i64>(this.generic_args.size())) {
-                    let arg_name: string = this.generic_args.at(cast<u64>(mi)).some.display_name();
+                    let arg_name: string = arg_display_name(this.generic_args.at(cast<u64>(mi)).some);
                     let sanitized: mut string = "";
                     let mj: mut i64 = 0;
                     while (mj < string_length(arg_name)) {

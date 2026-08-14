@@ -24,6 +24,7 @@ class BoundEnumMemberDefinition {
 }
 
 class BoundFunctionDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
@@ -37,6 +38,20 @@ class BoundFunctionDefinition {
     is_new: bool = false;
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     is_generic_template: bool = false;
+    // D6: non-type (value) template params of a value-template FUNCTION (e.g. N in
+    // #template<N:i32> fun filled()), and the concrete values bound at specialization.
+    // Parallel lists; the specialized body substitutes N -> the constant (mirrors
+    // BoundClassDefinition.value_param_names/values).
+    value_param_names: mut _utils.List<string> = new _utils.List<string>();
+    value_param_values: mut _utils.List<i64> = new _utils.List<i64>();
+    // D6: source text of non-i64 value params (bool/string/double), parallel to
+    // value_param_names/values. Empty for i64 value params. Used by
+    // substitute_value_params to emit the correctly-typed literal.
+    value_param_texts: mut _utils.List<string> = new _utils.List<string>();
+    // D6: static kind of each value param ("i64"/"bool"/"string"/"double"),
+    // parallel to value_param_names. Used by substitute_value_params to build the
+    // correctly-typed literal (no text heuristics).
+    value_param_kinds: mut _utils.List<string> = new _utils.List<string>();
     // Dyn-lib routing: this def's compiled symbol lives in a .penguin-lib, so the
     // consumer emits a declaration (extern) and links against the lib instead of
     // lowering a body. Set for lib-source defs and shipped generic instances.
@@ -60,6 +75,7 @@ class BoundFunctionDefinition {
 }
 
 class BoundClassDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
@@ -133,6 +149,7 @@ class BoundClassDefinition {
 }
 
 class BoundEnumDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
@@ -147,6 +164,14 @@ class BoundEnumDefinition {
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_lib_export: bool = false;
     is_specialized: bool = false;
+    // D6/req5: non-type (value) template params (N in #template(N: i32) enum E) and
+    // the concrete values/texts/kinds bound at specialization. Parallel lists; the
+    // specialized methods' bodies substitute N -> the constant. Mirrors
+    // BoundClassDefinition.value_param_*.
+    value_param_names: mut _utils.List<string> = new _utils.List<string>();
+    value_param_values: mut _utils.List<i64> = new _utils.List<i64>();
+    value_param_texts: mut _utils.List<string> = new _utils.List<string>();
+    value_param_kinds: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -159,6 +184,7 @@ class BoundEnumDefinition {
 }
 
 class BoundInterfaceDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
@@ -177,6 +203,13 @@ class BoundInterfaceDefinition {
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_lib_export: bool = false;
     is_specialized: bool = false;
+    // D6/req5: non-type (value) template params (N in #template(N: i32) interface I)
+    // and the concrete values bound at specialization. Parallel lists; the
+    // specialized default methods' bodies substitute N -> the constant.
+    value_param_names: mut _utils.List<string> = new _utils.List<string>();
+    value_param_values: mut _utils.List<i64> = new _utils.List<i64>();
+    value_param_texts: mut _utils.List<string> = new _utils.List<string>();
+    value_param_kinds: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this, name: string, full_name: string) {
         this.name = name;
@@ -189,6 +222,7 @@ class BoundInterfaceDefinition {
 }
 
 class BoundInterfaceImplementation {
+    pass_index: mut i64 = 0;
     interface_type: BoundType = new BoundType();
     implementing_type: BoundType = new BoundType();
     methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
@@ -204,6 +238,7 @@ class BoundInterfaceImplementation {
 }
 
 class BoundInterfaceForImplementation {
+    pass_index: mut i64 = 0;
     interface_type: BoundType = new BoundType();
     for_type: BoundType = new BoundType();
     methods: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
@@ -214,6 +249,7 @@ class BoundInterfaceForImplementation {
 }
 
 class BoundNamespaceDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     children: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
@@ -230,6 +266,7 @@ class BoundNamespaceDefinition {
 }
 
 class BoundInitialRoutineDefinition {
+    pass_index: mut i64 = 0;
     body: Option<BoundExpression> = new Option<BoundExpression>.none();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
@@ -245,6 +282,7 @@ class BoundInitialRoutineDefinition {
 }
 
 class BoundTypeReferenceDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     alias_type: BoundType = new BoundType();
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
@@ -259,6 +297,7 @@ class BoundTypeReferenceDefinition {
 }
 
 class BoundClassFieldDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     bound_type: BoundType = new BoundType();
     field_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
@@ -276,6 +315,7 @@ class BoundClassFieldDefinition {
 }
 
 class BoundGlobalVariableDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     variable_symbol: Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
@@ -287,6 +327,7 @@ class BoundGlobalVariableDefinition {
 }
 
 class BoundMetaFunctionDefinition {
+    pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
@@ -308,6 +349,7 @@ class BoundMetaFunctionDefinition {
 }
 
 class BoundMetaIfDefinition {
+    pass_index: mut i64 = 0;
     ast_source: !mut Option<Definition> = new Option<Definition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
@@ -322,6 +364,7 @@ class BoundMetaIfDefinition {
 }
 
 class BoundMetaForDefinition {
+    pass_index: mut i64 = 0;
     ast_source: !mut Option<Definition> = new Option<Definition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
@@ -336,6 +379,7 @@ class BoundMetaForDefinition {
 }
 
 class BoundMetaWhileDefinition {
+    pass_index: mut i64 = 0;
     ast_source: !mut Option<Definition> = new Option<Definition>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
@@ -350,6 +394,7 @@ class BoundMetaWhileDefinition {
 }
 
 class BoundMetaCallDefinition {
+    pass_index: mut i64 = 0;
     call: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 
@@ -399,6 +444,45 @@ enum BoundDefinition {
         if (this is BoundDefinition.meta_while_def) { return this.meta_while_def.get_name(); }
         if (this is BoundDefinition.meta_call_def) { return this.meta_call_def.get_name(); }
         return "";
+    }
+
+    fun get_pass_index(def: BoundDefinition) -> i64 {
+        if (def is BoundDefinition.function_def) { return def.function_def.pass_index; }
+        if (def is BoundDefinition.class_def) { return def.class_def.pass_index; }
+        if (def is BoundDefinition.enum_def) { return def.enum_def.pass_index; }
+        if (def is BoundDefinition.interface_def) { return def.interface_def.pass_index; }
+        if (def is BoundDefinition.impl_def) { return def.impl_def.pass_index; }
+        if (def is BoundDefinition.impl_for_def) { return def.impl_for_def.pass_index; }
+        if (def is BoundDefinition.namespace_def) { return def.namespace_def.pass_index; }
+        if (def is BoundDefinition.initial_routine) { return def.initial_routine.pass_index; }
+        if (def is BoundDefinition.type_ref_def) { return def.type_ref_def.pass_index; }
+        if (def is BoundDefinition.class_field) { return def.class_field.pass_index; }
+        if (def is BoundDefinition.global_var_def) { return def.global_var_def.pass_index; }
+        if (def is BoundDefinition.meta_function_def) { return def.meta_function_def.pass_index; }
+        if (def is BoundDefinition.meta_if_def) { return def.meta_if_def.pass_index; }
+        if (def is BoundDefinition.meta_for_def) { return def.meta_for_def.pass_index; }
+        if (def is BoundDefinition.meta_while_def) { return def.meta_while_def.pass_index; }
+        if (def is BoundDefinition.meta_call_def) { return def.meta_call_def.pass_index; }
+        return 0;
+    }
+
+    fun set_pass_index(def: BoundDefinition, v: i64) {
+        if (def is BoundDefinition.function_def) { def.function_def.pass_index = v; }
+        if (def is BoundDefinition.class_def) { def.class_def.pass_index = v; }
+        if (def is BoundDefinition.enum_def) { def.enum_def.pass_index = v; }
+        if (def is BoundDefinition.interface_def) { def.interface_def.pass_index = v; }
+        if (def is BoundDefinition.impl_def) { def.impl_def.pass_index = v; }
+        if (def is BoundDefinition.impl_for_def) { def.impl_for_def.pass_index = v; }
+        if (def is BoundDefinition.namespace_def) { def.namespace_def.pass_index = v; }
+        if (def is BoundDefinition.initial_routine) { def.initial_routine.pass_index = v; }
+        if (def is BoundDefinition.type_ref_def) { def.type_ref_def.pass_index = v; }
+        if (def is BoundDefinition.class_field) { def.class_field.pass_index = v; }
+        if (def is BoundDefinition.global_var_def) { def.global_var_def.pass_index = v; }
+        if (def is BoundDefinition.meta_function_def) { def.meta_function_def.pass_index = v; }
+        if (def is BoundDefinition.meta_if_def) { def.meta_if_def.pass_index = v; }
+        if (def is BoundDefinition.meta_for_def) { def.meta_for_def.pass_index = v; }
+        if (def is BoundDefinition.meta_while_def) { def.meta_while_def.pass_index = v; }
+        if (def is BoundDefinition.meta_call_def) { def.meta_call_def.pass_index = v; }
     }
 }
 

@@ -208,6 +208,12 @@ namespace emperor {
                     this.advance_chars(4);
                     continue;
                 }
+                if (this.match_keyword("unsafe_cast")) {
+                    tokens.push(new Token(new TokenType.UnsafeCast(), "unsafe_cast", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 11;
+                    this.advance_chars(11);
+                    continue;
+                }
                 if (this.match_keyword("else")) {
                     tokens.push(new Token(new TokenType.Else(), "else", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;

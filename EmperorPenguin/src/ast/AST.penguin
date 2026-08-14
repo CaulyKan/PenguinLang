@@ -318,6 +318,10 @@ class CastExpression {
     target_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     inner: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    // M6-step2: true for `unsafe_cast<T>(x)` — raw i64<->reference/pointer
+    // conversion (inttoptr/ptrtoint/bitcast), NO runtime type check. `cast<T>`
+    // stays checked.
+    is_unsafe: mut bool = false;
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1516,6 +1520,10 @@ class GlobalVariableDefinition {
 class MetaParameter {
     name: mut string = "";
     kind: mut string = "";
+    // M6-step2 4c: the declared STATIC type of an "object" param (e.g. List<i64>
+    // in `(l: List<i64>)`) — the unit-B synthesis uses it as the real param type
+    // (the kind alone, "object", is not a type name).
+    param_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     fun build_text(this) -> string {
         _utils.trace_enter("Enter build_text");
         if (string_length(this.kind) > 0) {

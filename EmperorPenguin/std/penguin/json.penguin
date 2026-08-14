@@ -629,18 +629,18 @@ fun _unicode_escape(code: i64) -> string {
     let dn: string = t.display_name();
     if (t.is_primitive()) { return true; }
     if (string_find(dn, "std.Vector") >= 0) {
-        if (t.generic_args.size() >= 1) { return json_serializable_type(t.generic_args.at(0).some); }
+        if (t.generic_args.size() >= 1) { return json_serializable_type(arg_as_bound_type(t.generic_args.at(0).some)); }
         return false;
     }
     if (string_find(dn, "std.HashMap") >= 0) {
-        if (t.generic_args.size() >= 2) { return json_serializable_type(t.generic_args.at(1).some); }
+        if (t.generic_args.size() >= 2) { return json_serializable_type(arg_as_bound_type(t.generic_args.at(1).some)); }
         return false;
     }
     // Option<T> / Box<T> are serializable exactly when their element has a real
     // IJsonSerializable impl (json_deserializable_type, the strict predicate) —
     // they get that impl via the #specializing blocks below.
     if (string_find(dn, "Option") >= 0 || string_find(dn, "Box") >= 0) {
-        if (t.generic_args.size() >= 1) { return json_deserializable_type(t.generic_args.at(0).some); }
+        if (t.generic_args.size() >= 1) { return json_deserializable_type(arg_as_bound_type(t.generic_args.at(0).some)); }
         return false;
     }
     if (let cd := t.class_def().some) {
@@ -711,7 +711,7 @@ fun _unicode_escape(code: i64) -> string {
     let mut s = base;
     let i: mut i64 = 0;
     while (i < cast<i64>(t.generic_args.size())) {
-        s = s + "__" + json_mangle_arg(t.generic_args.at(cast<u64>(i)).some);
+        s = s + "__" + json_mangle_arg(arg_as_bound_type(t.generic_args.at(cast<u64>(i)).some));
         i = i + 1;
     }
     return s;
@@ -729,13 +729,13 @@ fun _unicode_escape(code: i64) -> string {
 #fun json_write_snippet(t: type, arg: string) -> string {
     let dn: string = t.display_name();
     if (string_find(dn, "std.Vector") >= 0 && t.generic_args.size() >= 1) {
-        let elem = t.generic_args.at(0).some;
+        let elem = arg_as_bound_type(t.generic_args.at(0).some);
         if (json_serializable_type(elem) == false) { return ""; }
         return "w.begin_array(); for (let _v in " + arg + ") { "
             + json_write_snippet(elem, "_v") + " } w.end_array()";
     }
     if (string_find(dn, "std.HashMap") >= 0 && t.generic_args.size() >= 2) {
-        let vv = t.generic_args.at(1).some;
+        let vv = arg_as_bound_type(t.generic_args.at(1).some);
         if (json_serializable_type(vv) == false) { return ""; }
         return "w.begin_object(); for (let _k in " + arg + ".iter_keys()) { w.key(_k); "
             + json_write_snippet(vv, "(" + arg + ").get(_k).some") + " } w.end_object()";
@@ -771,21 +771,21 @@ fun _unicode_escape(code: i64) -> string {
     // injected impl handles null for Option internally).
     if (string_find(dn, "Option") >= 0 || string_find(dn, "Box") >= 0) {
         if (t.generic_args.size() >= 1) {
-            let elem = t.generic_args.at(0).some;
+            let elem = arg_as_bound_type(t.generic_args.at(0).some);
             if (json_deserializable_type(elem) == false) { return ""; }
             return target + " = " + json_mangled_name(t) + ".json_deserialize(" + v + ".to_json());";
         }
         return "";
     }
     if (string_find(dn, "std.Vector") >= 0 && t.generic_args.size() >= 1) {
-        let elem = t.generic_args.at(0).some;
+        let elem = arg_as_bound_type(t.generic_args.at(0).some);
         if (json_serializable_type(elem) == false) { return ""; }
         return "let _arr = " + v + ".as_array(); let _j: mut u64 = 0; "
             + "while (_j < _arr.size()) { " + target + ".push("
             + json_read_expr(elem, "_arr.at(_j).some") + "); _j = _j + 1; }";
     }
     if (string_find(dn, "std.HashMap") >= 0 && t.generic_args.size() >= 2) {
-        let vv = t.generic_args.at(1).some;
+        let vv = arg_as_bound_type(t.generic_args.at(1).some);
         if (json_serializable_type(vv) == false) { return ""; }
         return "let mut _map = " + v + ".as_object(); for (let _k in _map.iter_keys()) { "
             + target + ".put(_k, " + json_read_expr(vv, "_map.get(_k).some") + "); }";

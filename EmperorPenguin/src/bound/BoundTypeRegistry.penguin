@@ -245,14 +245,15 @@ class BoundTypeRegistry {
         return false;
     }
 
-    fun make_function_type(this, ret: BoundType, params: _utils.List<BoundType>, is_async: bool) -> mut BoundType {
+    fun make_function_type(this, ret: mut BoundType, params: _utils.List<BoundType>, is_async: bool) -> mut BoundType {
         _utils.trace_enter("Enter make_function_type");
         let t: mut BoundType = new BoundType();
         t.kind = new TypeKind.FunctionKind();
-        t.generic_args.push(ret);
+        t.generic_args.push(make_type_arg(ret));
         let i: mut i64 = 0;
         while (i < cast<i64>(params.size())) {
-            t.generic_args.push(params.at(cast<u64>(i)).some);
+            let p: mut BoundType = params.at(cast<u64>(i)).some;
+            t.generic_args.push(make_type_arg(p));
             i = i + 1;
         }
         t.is_async_function = is_async;
