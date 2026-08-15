@@ -52,6 +52,10 @@ class MetaEngine {
     // stored here under a 1-based token; the caller-stub materializes each via
     // penguin_meta_get_string_value(token) -> ptr (like type tokens via get_type).
     string_token_values: mut _utils.List<string> = new _utils.List<string>();
+    // Re-entrancy guard: names of #funs currently being JIT-compiled
+    // (call_meta_function_stub). Prevents a #specializing gate from recursively
+    // compiling itself while its own unit-B compilation specializes types.
+    compiling_meta_names: mut _utils.List<string> = new _utils.List<string>();
     // M6: double-value registry (mirrors string_token_values). A compile-time
     // double literal passed as a #fun arg is stored here; the caller-stub calls
     // penguin_meta_get_double_value(token) to materialize the live double.
@@ -155,6 +159,7 @@ class MetaEngine {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
         result.push(new SourceInput("core_builtin.penguin", _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin")));
         result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
+        // (temporarily removed for bisection)
         // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
         // EmperorPenguin.penguins), so its emperor.penguin_meta_* extern calls
         // resolve against the <meta_externs> injected in compile_meta_function.
@@ -373,6 +378,14 @@ class MetaEngine {
         if (string_length(this.meta_class_source) > 0) {
             inputs.push(new SourceInput("<meta_classes>", this.meta_class_source));
         }
+        // NOTE: std/penguin/uniquename.penguin (#specializing-injected
+        // IUniqueMangleName impls) is deliberately NOT in the unit-B base
+        // sources. Including it (even only for __unique_name_* trampoline
+        // compiles) currently SEGFAULTS in the JIT'd trampoline execution —
+        // the injected impl's cross-module interaction with the live object is
+        // still broken (see the MetaMangleObjectListArg sentinel). Until that
+        // is fixed, object args on generic std types fail with a clean
+        // E_UNSUPPORTED at the gate instead of crashing.
         inputs.push(new SourceInput("<unit_b>", unit_b_source));
 
         if (this.verbose >= 1) {
@@ -579,15 +592,33 @@ class MetaEngine {
     // Lazily compiles the #fun if not already JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_stub(mut this, bmf: BoundMetaFunctionDefinition, args: _utils.List<i64>) -> i64 {
+        // Re-entrancy guard: a #fun that is CURRENTLY being JIT-compiled must
+        // not recursively compile itself. This happens when a #specializing
+        // gate (e.g. umangleable) fires while its own unit-B compilation is
+        // specializing types — the gate would otherwise recursively compile
+        // itself forever. Return 0 (the gate then evaluates false; the impl is
+        // simply not injected in that pass).
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(this.compiling_meta_names.size())) {
+            if (this.compiling_meta_names.at(cast<u64>(gi)).some == bmf.name) {
+                return 0;
+            }
+            gi = gi + 1;
+        }
         let fn_ptr: mut u64 = this.find_ptr(bmf.name);
         if (fn_ptr == 0) {
+            this.compiling_meta_names.push(bmf.name);
             let ok: bool = this.compile_meta_function(bmf);
+            // Pop the guard (always — compile failure exits below, but pop
+            // first so the error path stays clean).
+            if (cast<i64>(this.compiling_meta_names.size()) > 0) {
+                this.compiling_meta_names.pop();
+            }
             if (!ok) {
                 __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
                 __builtin.exit(1);
             }
         }
-        // Memoize key: "<fun name>:<arg0>,<arg1>,..." — unique per (fun, args).
         let key: mut string = bmf.name + ":";
         let ai: mut i64 = 0;
         while (ai < cast<i64>(args.size())) {
@@ -769,7 +800,10 @@ class MetaEngine {
         let i: mut i64 = 0;
         while (i < n) {
             let ch: string = string_char_at(name, i);
-            if (ch == "." || ch == "<" || ch == ">" || ch == " " || ch == ",") {
+            // `$` is the mangle separator (M6): it must not reach unit-B source
+            // as-is (it is not a valid identifier char there until the Lexer
+            // accepts it), so fold it to "_" alongside the other specials.
+            if (ch == "." || ch == "<" || ch == ">" || ch == " " || ch == "," || ch == "$") {
                 out.append("_");
             } else {
                 out.append(ch);

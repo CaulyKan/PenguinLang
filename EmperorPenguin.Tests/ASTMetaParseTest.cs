@@ -36,7 +36,9 @@ initial {{
     // ==================== Meta function definition ====================
 
     [Fact]
-    [BatchParseTest("#fun fib(n: u32) -> u32 { 0 }", "parse_metaFunctionDefinition", "#fun fib(n: u32) -> u32 { 0 }")]
+    // Param kind prints the ABI kind (all integer widths fold to "i64"; the
+    // declared u32 spelling is kept in MetaParameter.param_type).
+    [BatchParseTest("#fun fib(n: u32) -> u32 { 0 }", "parse_metaFunctionDefinition", "#fun fib(n: i64) -> u32 { 0 }")]
     public void ParseMetaDef_Function() => Batch.Assert();
 
     [Fact]

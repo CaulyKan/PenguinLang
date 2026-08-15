@@ -352,7 +352,7 @@ initial {
         println(""param0_kind="" + param0.kind);
     }
 }
-", "name=g\nhas_return_type=true\nhas_body=true\nparam0_name=t\nparam0_kind=u32")]
+", "name=g\nhas_return_type=true\nhas_body=true\nparam0_name=t\nparam0_kind=i64")]
     public void BindMetaFunctionSignaturePreserved() => _batch.Value.Assert();
 
     [Fact]

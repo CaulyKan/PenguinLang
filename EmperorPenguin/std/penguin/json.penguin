@@ -703,23 +703,28 @@ fun _unicode_escape(code: i64) -> string {
 // form that resolves in global_scope and lowers to a direct static call. The
 // namespace is dropped (matches the compiler's mangle_generic_name); bare
 // references resolve via global-scope fallback.
-#fun json_mangled_name(t: type) -> string {
-    let base: mut string = "?";
-    if (t.type_definition.is_some()) {
-        base = t.type_definition.some.get_name();
-    }
+// Source-level TYPE SPELLING of a BoundType (e.g. `__builtin.Option<i64>`), for
+// splicing into generated code that the EmperorPenguin parser re-parses. This
+// replaces the old mangled-name splice (`Option__i64.json_deserialize(...)`):
+// with the generic-static-call syntax the callee is a plain type spelling, so
+// generated code contains no mangled names (they live only in symbol/LLVM
+// layers). Non-generic types spell their (short) name — matching the pre-splice
+// behavior; nested/qualified names keep their qualification so the re-parse
+// resolves the same type.
+#fun json_type_spelling(t: type) -> string {
+    let base: mut string = t.display_name();
+    // display_name() of a generic type is already `Name<args>` (e.g.
+    // `Option<i64>`); for a qualified type it is the SHORT name. Use the short
+    // name + explicit generic args, matching how type specifiers are written.
     let mut s = base;
     let i: mut i64 = 0;
     while (i < cast<i64>(t.generic_args.size())) {
-        s = s + "__" + json_mangle_arg(arg_as_bound_type(t.generic_args.at(cast<u64>(i)).some));
+        if (i == 0) { s = s + "<"; } else { s = s + ", "; }
+        s = s + json_type_spelling(arg_as_bound_type(t.generic_args.at(cast<u64>(i)).some));
         i = i + 1;
     }
+    if (cast<i64>(t.generic_args.size()) > 0) { s = s + ">"; }
     return s;
-}
-
-#fun json_mangle_arg(t: type) -> string {
-    if (cast<i64>(t.generic_args.size()) > 0) { return json_mangled_name(t); }
-    return t.display_name();
 }
 
 // Returns JsonWriter code that writes runtime expression `arg` (of type t), or
@@ -757,11 +762,11 @@ fun _unicode_escape(code: i64) -> string {
     if (dn == "string") { return v + ".as_string()"; }
     if (dn == "char") { return "cast<char>(" + v + ".as_i64())"; }
     // Nested IJsonSerializable class/enum: re-serialize the subtree to its
-    // fragment and call the type's static json_deserialize. The MANGLED name
-    // (e.g. Option__i64) resolves the specialized type; for a concrete class
-    // (Child) it is just the simple name — identical to the pre-#specializing
-    // behavior. Generic angle-bracket names don't parse in expression position.
-    return json_mangled_name(t) + ".json_deserialize(" + v + ".to_json())";
+    // fragment and call the type's static json_deserialize. The TYPE SPELLING
+    // (e.g. `__builtin.Option<i64>`) resolves the specialized type via the
+    // generic-static-call syntax; a concrete class (Child) is its plain name —
+    // identical to the pre-splice behavior.
+    return json_type_spelling(t) + ".json_deserialize(" + v + ".to_json())";
 }
 
 // Statement(s) assigning `target` (an lvalue) from a JsonValue (`v`); "" = skip.
@@ -773,7 +778,7 @@ fun _unicode_escape(code: i64) -> string {
         if (t.generic_args.size() >= 1) {
             let elem = arg_as_bound_type(t.generic_args.at(0).some);
             if (json_deserializable_type(elem) == false) { return ""; }
-            return target + " = " + json_mangled_name(t) + ".json_deserialize(" + v + ".to_json());";
+            return target + " = " + json_type_spelling(t) + ".json_deserialize(" + v + ".to_json());";
         }
         return "";
     }

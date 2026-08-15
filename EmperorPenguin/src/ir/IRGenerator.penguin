@@ -702,6 +702,7 @@ class IRGenerator {
         let has_generic_receiver: mut bool = false;
         let generic_args_list: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
         let template_class_name: mut string = "";
+        let template_class_name_full: mut string = "";
         // Whether the callee's first parameter is `this` (set when the callee is
         // resolved below). Drives whether the receiver is passed / used for the
         // virtual vtable lookup.
@@ -777,6 +778,7 @@ class IRGenerator {
                                     has_generic_receiver = true;
                                     generic_args_list = receiver_type.generic_args;
                                     template_class_name = recv_def.class_def.name;
+                                    template_class_name_full = recv_def.class_def.full_name;
                                 }
                             }
                             if (recv_def is BoundDefinition.enum_def) {
@@ -784,6 +786,7 @@ class IRGenerator {
                                     has_generic_receiver = true;
                                     generic_args_list = receiver_type.generic_args;
                                     template_class_name = recv_def.enum_def.name;
+                                    template_class_name_full = recv_def.enum_def.full_name;
                                 }
                             }
                         }
@@ -808,7 +811,7 @@ class IRGenerator {
         if (let sym := expr.callee_symbol.some) {
             let func_name: mut string = this.clean_function_name(sym.get_full_name());
             if (has_generic_receiver) {
-                let mangled_class: string = this.mangle_generic_name(template_class_name, generic_args_list);
+                let mangled_class: string = this.mangle_generic_name(template_class_name_full, generic_args_list);
                 func_name = this.replace_in_func_name(func_name, template_class_name, mangled_class);
             }
             if (expr.is_generic_function_call) {
@@ -821,7 +824,7 @@ class IRGenerator {
                     type_arg_wrap.push(make_type_arg(a));
                     wi = wi + 1;
                 }
-                let mangled_func: string = this.mangle_generic_name(sym.get_name(), type_arg_wrap);
+                let mangled_func: string = this.mangle_generic_name(sym.get_full_name(), type_arg_wrap);
                 func_name = this.replace_in_func_name(func_name, sym.get_name(), mangled_func);
             }
             if (expr.is_virtual) {
@@ -1152,7 +1155,6 @@ class IRGenerator {
                                     result_sb.append(rt.type_definition.some.get_name());
                                     let gi: mut i64 = 0;
                                     while (gi < cast<i64>(rt.generic_args.size())) {
-                                        result_sb.append("__");
                                         if (cast<i64>(iface2.generic_params.size()) > gi && cast<i64>(recv_type.generic_args.size()) > gi) {
                                             result_sb.append(arg_display_name(recv_type.generic_args.at(cast<u64>(gi)).some));
                                         } else {
@@ -1211,9 +1213,13 @@ class IRGenerator {
         return "";
     }
 
-    // Strip a mangled name's `__<args>` suffix (I__5 -> I, List__i32 -> List).
-    // Mirrors SemanticModel.extract_template_name.
+    // Strip a mangled name's suffix (new: `Name$<base62>` → Name; legacy:
+    // `Name__<args>` → Name). Mirrors SemanticModel.extract_template_name.
     fun extract_template_name(this, mangled_name: string) -> string {
+        let dollar: i64 = string_find(mangled_name, "$");
+        if (dollar >= 0) {
+            return string_substring(mangled_name, 0, dollar);
+        }
         let pos: i64 = string_find(mangled_name, "__");
         if (pos >= 0) {
             return string_substring(mangled_name, 0, pos);
@@ -1407,9 +1413,12 @@ class IRGenerator {
         if (expr.type_symbol.is_some()) {
             let type_name: mut string = expr.type_symbol.some.full_name;
             if (cast<i64>(expr.bound_type.generic_args.size()) > 0) {
-                let base_name: string = expr.type_symbol.some.name;
-                let mangled: string = this.mangle_generic_name(base_name, expr.bound_type.generic_args);
-                let scope_dot: i64 = string_find(type_name, "." + base_name);
+                // Full base feeds the mangle (encodes the qualified name); the
+                // SHORT name locates the position inside type_name for splicing.
+                let base_full: string = expr.type_symbol.some.full_name;
+                let base_short: string = expr.type_symbol.some.name;
+                let mangled: string = this.mangle_generic_name(base_full, expr.bound_type.generic_args);
+                let scope_dot: i64 = string_find(type_name, "." + base_short);
                 if (scope_dot >= 0) {
                     let prefix: string = string_substring(type_name, 0, scope_dot);
                     type_name = prefix + "." + mangled;
@@ -1453,27 +1462,9 @@ class IRGenerator {
 
     fun mangle_generic_name(this, base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
         _utils.trace_enter("Enter mangle_generic_name");
-        let sb: mut StringBuilder = new StringBuilder();
-        sb.append(base_name);
-        let i: mut i64 = 0;
-        while (i < cast<i64>(generic_args.size())) {
-            sb.append("__");
-            let arg_name: string = arg_display_name(generic_args.at(cast<u64>(i)).some);
-            let sanitized: mut StringBuilder = new StringBuilder();
-            let j: mut i64 = 0;
-            while (j < string_length(arg_name)) {
-                let ch: string = string_char_at(arg_name, j);
-                if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
-                    sanitized.append("_");
-                } else {
-                    sanitized.append(ch);
-                }
-                j = j + 1;
-            }
-            sb.append(sanitized.to_string());
-            i = i + 1;
-        }
-        return sb.to_string();
+        // The unified mangle (BoundType.penguin mangle_specialization) — must
+        // stay byte-identical to SemanticModel.mangle_generic_name.
+        return mangle_specialization(base_name, generic_args);
     }
 
     // Wrap a BoundStatement as a void BoundExpression (code block)
@@ -1769,9 +1760,15 @@ class IRGenerator {
         }
         if (bt.kind is TypeKind.ClassKind) {
             if (bt.type_definition.is_some()) {
-                let base_name: string = bt.type_definition.some.get_name();
+                let td: BoundDefinition = bt.type_definition.some;
+                // GENERIC: full base feeds the mangle (short-prefix output).
+                // NON-GENERIC: the SHORT name — `ref<X>` is resolved against the
+                // layout table whose keys are global-prefix-stripped full names,
+                // so a qualified spelling here would never match.
+                let base_name: string = td.get_name();
                 if (cast<i64>(bt.generic_args.size()) > 0) {
-                    return "ref<" + this.mangle_generic_name(base_name, bt.generic_args) + ">";
+                    let base_full: string = (if (td is BoundDefinition.class_def) { td.class_def.full_name } else { base_name });
+                    return "ref<" + this.mangle_generic_name(base_full, bt.generic_args) + ">";
                 }
                 return "ref<" + base_name + ">";
             }
@@ -1779,9 +1776,11 @@ class IRGenerator {
         }
         if (bt.kind is TypeKind.EnumKind) {
             if (bt.type_definition.is_some()) {
-                let base_name: string = bt.type_definition.some.get_name();
+                let td: BoundDefinition = bt.type_definition.some;
+                let base_name: string = td.get_name();
                 if (cast<i64>(bt.generic_args.size()) > 0) {
-                    return "enum<" + this.mangle_generic_name(base_name, bt.generic_args) + ">";
+                    let base_full: string = (if (td is BoundDefinition.enum_def) { td.enum_def.full_name } else { base_name });
+                    return "enum<" + this.mangle_generic_name(base_full, bt.generic_args) + ">";
                 }
                 return "enum<" + base_name + ">";
             }

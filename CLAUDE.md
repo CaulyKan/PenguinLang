@@ -55,6 +55,12 @@ dotnet publish -r linux-x64 --self-contained
 cd MagellanicPenguin\vscode && npm run package
 ```
 
+## AI development workflow
+1. When creating a plan, write to .ai_workspace/plans
+2. Use skills in .ai_workspace/skills
+3. Write project memory in .ai_workspace/memory
+4. When developing a new feature, create a branch with feature name, make commit at every milestones
+
 ## Important Tips
 * When writing penguinlang code, use skill penguin
 * Always use max effort to implement function and test cases. Never use a easy but incorrect solution.
@@ -115,20 +121,20 @@ Claude Code has access to the `penguin-debug` MCP server for debugging PenguinLa
 
 ### Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `penguin_debug_launch` | Compile and start debugging. Args: `program`, `stopOnEntry`, `breakpoints` |
-| `penguin_debug_set_breakpoints` | Set breakpoints. Args: `file`, `breakpoints` (array of `{line, column?}`) |
-| `penguin_debug_continue` | Continue execution until next stop or completion |
-| `penguin_debug_step_over` | Step over current line |
-| `penguin_debug_step_into` | Step into function call |
-| `penguin_debug_step_out` | Step out of current function |
-| `penguin_debug_stack_trace` | Get current call stack with source locations |
-| `penguin_debug_variables` | Get local variables (optional `variablesReference` for nested objects) |
-| `penguin_debug_evaluate` | Evaluate an expression |
-| `penguin_debug_output` | Get diagnostic output (compiler messages, breakpoint status, debug logs) |
-| `penguin_debug_status` | Query current debug session state |
-| `penguin_debug_disconnect` | End debug session and get final output |
+| Tool                            | Description                                                                |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `penguin_debug_launch`          | Compile and start debugging. Args: `program`, `stopOnEntry`, `breakpoints` |
+| `penguin_debug_set_breakpoints` | Set breakpoints. Args: `file`, `breakpoints` (array of `{line, column?}`)  |
+| `penguin_debug_continue`        | Continue execution until next stop or completion                           |
+| `penguin_debug_step_over`       | Step over current line                                                     |
+| `penguin_debug_step_into`       | Step into function call                                                    |
+| `penguin_debug_step_out`        | Step out of current function                                               |
+| `penguin_debug_stack_trace`     | Get current call stack with source locations                               |
+| `penguin_debug_variables`       | Get local variables (optional `variablesReference` for nested objects)     |
+| `penguin_debug_evaluate`        | Evaluate an expression                                                     |
+| `penguin_debug_output`          | Get diagnostic output (compiler messages, breakpoint status, debug logs)   |
+| `penguin_debug_status`          | Query current debug session state                                          |
+| `penguin_debug_disconnect`      | End debug session and get final output                                     |
 
 ### Example: Debug with Breakpoints
 
@@ -254,19 +260,19 @@ main.penguin     -- Entry point (180 lines)
 
 The bound tree sits between AST and IR. Key files in `src/bound/`:
 
-| File | Contents |
-|------|----------|
-| `BoundType.penguin` | `Mutability`, `PrimitiveType`, `TypeKind`, `BoundType` class with `display_name()`, `is_same_type()`, `is_value_type()`, `is_reference_type()`, `with_mutability()`, `with_generic_args()` |
-| `BoundTypeRegistry.penguin` | Primitive type pre-building, `resolve_type()` lookup, `can_implicitly_cast()` rules, `can_widen_primitive()` for numeric widening |
-| `BoundSymbol.penguin` | `BoundVariableSymbol`, `BoundFunctionSymbol`, `BoundTypeSymbol`, `BoundEnumMemberSymbol`, `BoundNamespaceSymbol`, `BoundFunctionParameter`, aggregated by `BoundSymbol` enum |
-| `BoundScope.penguin` | `ScopeKind` (Global/Class/Enum/Interface/Function/Block/InitialRoutine/Impl), `BoundScope` — hierarchical lookup with `lookup_symbol()`, `lookup_type_in_scope()`, `resolve_qualified()`, namespace merging |
-| `BoundExpression.penguin` | 12 expression classes + `BoundExpression` enum |
-| `BoundStatement.penguin` | 10 statement classes + `BoundStatement` enum |
-| `BoundDefinition.penguin` | `BoundVTable`, 11 definition classes (Function, Class, Enum, Interface, Namespace, InitialRoutine, TypeReference, ClassField, GlobalVariable, InterfaceImpl, InterfaceForImpl) + `BoundDefinition` enum |
-| `BoundCompilationUnit.penguin` | `SemanticError`, `BoundCompilationUnit` with definitions, global_scope, type_registry, errors |
-| `BoundTreePrinter.penguin` | Debug printer for bound tree visualization |
-| `EmperorPenguinCompiler.penguin` | Top-level compiler entry: `compile_sources()` orchestrates the full pipeline |
-| `SemanticModel.penguin` | Multi-pass binding orchestrator (4260 lines) |
+| File                             | Contents                                                                                                                                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BoundType.penguin`              | `Mutability`, `PrimitiveType`, `TypeKind`, `BoundType` class with `display_name()`, `is_same_type()`, `is_value_type()`, `is_reference_type()`, `with_mutability()`, `with_generic_args()`                  |
+| `BoundTypeRegistry.penguin`      | Primitive type pre-building, `resolve_type()` lookup, `can_implicitly_cast()` rules, `can_widen_primitive()` for numeric widening                                                                           |
+| `BoundSymbol.penguin`            | `BoundVariableSymbol`, `BoundFunctionSymbol`, `BoundTypeSymbol`, `BoundEnumMemberSymbol`, `BoundNamespaceSymbol`, `BoundFunctionParameter`, aggregated by `BoundSymbol` enum                                |
+| `BoundScope.penguin`             | `ScopeKind` (Global/Class/Enum/Interface/Function/Block/InitialRoutine/Impl), `BoundScope` — hierarchical lookup with `lookup_symbol()`, `lookup_type_in_scope()`, `resolve_qualified()`, namespace merging |
+| `BoundExpression.penguin`        | 12 expression classes + `BoundExpression` enum                                                                                                                                                              |
+| `BoundStatement.penguin`         | 10 statement classes + `BoundStatement` enum                                                                                                                                                                |
+| `BoundDefinition.penguin`        | `BoundVTable`, 11 definition classes (Function, Class, Enum, Interface, Namespace, InitialRoutine, TypeReference, ClassField, GlobalVariable, InterfaceImpl, InterfaceForImpl) + `BoundDefinition` enum     |
+| `BoundCompilationUnit.penguin`   | `SemanticError`, `BoundCompilationUnit` with definitions, global_scope, type_registry, errors                                                                                                               |
+| `BoundTreePrinter.penguin`       | Debug printer for bound tree visualization                                                                                                                                                                  |
+| `EmperorPenguinCompiler.penguin` | Top-level compiler entry: `compile_sources()` orchestrates the full pipeline                                                                                                                                |
+| `SemanticModel.penguin`          | Multi-pass binding orchestrator (4260 lines)                                                                                                                                                                |
 
 ### Compiler Pipeline (SemanticModel) — All 9 Passes Implemented
 
@@ -282,16 +288,16 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 
 ### IR Layer (`src/ir/`)
 
-| File | Contents |
-|------|----------|
-| `IRModule.penguin` | Container for functions and global variables |
-| `IRFunction.penguin` | Functions with parameters, instructions, registers |
-| `IRInstruction.penguin` | 23 instruction types (CONST, BINOP, UNARYOP, ASSIGN, CAST, RDMBR, WRMBR, BR, BR_COND, RET, RET_VOID, CALL, CALL_VOID, CALL_VIRT, NEW, NEW_ENUM, ISENUM, RDENUM, ISINSTANCE, BOX, UNBOX, GLOBAL_LOAD, GLOBAL_STORE) |
-| `IRGenerator.penguin` | Converts bound trees to IR. Handles vtable calls, boxing/unboxing, enum pattern matching, symbol registers |
-| `IRBuilder.penguin` | Helper for building IR instructions |
-| `IRValue.penguin` | IR value representation |
-| `IRPrinter.penguin` | Debug printer for IR |
-| `IRSourceLocation.penguin` | Source location tracking in IR |
+| File                       | Contents                                                                                                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `IRModule.penguin`         | Container for functions and global variables                                                                                                                                                                       |
+| `IRFunction.penguin`       | Functions with parameters, instructions, registers                                                                                                                                                                 |
+| `IRInstruction.penguin`    | 23 instruction types (CONST, BINOP, UNARYOP, ASSIGN, CAST, RDMBR, WRMBR, BR, BR_COND, RET, RET_VOID, CALL, CALL_VOID, CALL_VIRT, NEW, NEW_ENUM, ISENUM, RDENUM, ISINSTANCE, BOX, UNBOX, GLOBAL_LOAD, GLOBAL_STORE) |
+| `IRGenerator.penguin`      | Converts bound trees to IR. Handles vtable calls, boxing/unboxing, enum pattern matching, symbol registers                                                                                                         |
+| `IRBuilder.penguin`        | Helper for building IR instructions                                                                                                                                                                                |
+| `IRValue.penguin`          | IR value representation                                                                                                                                                                                            |
+| `IRPrinter.penguin`        | Debug printer for IR                                                                                                                                                                                               |
+| `IRSourceLocation.penguin` | Source location tracking in IR                                                                                                                                                                                     |
 
 ### LLVM Emission (`src/llvm/`)
 
@@ -310,19 +316,19 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 
 ### C Runtime (`EmperorPenguin/std/c/`)
 
-| File | Contents |
-|------|----------|
-| `core_builtin.c` | All built-in function implementations: print, string operations, GC allocation, type conversions (int→string, bool→string), string concatenation, file I/O, StringBuilder |
-| `gc.c` | Conservative mark-sweep garbage collector with stack scanning. Root registration, automatic collection thresholds. Platform-specific (x86_64, aarch64) |
-| `penguinlang_interop.c` | Runtime support: `_emperor_vtable_lookup()` for virtual dispatch, `_emperor_isinstance()` for interface checks, `_emperor_check_class()` for class type checks |
-| `Makefile` | Builds `libcore_builtin.a` from the above sources. Accepts `OUTPUT_DIR` variable |
+| File                    | Contents                                                                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core_builtin.c`        | All built-in function implementations: print, string operations, GC allocation, type conversions (int→string, bool→string), string concatenation, file I/O, StringBuilder |
+| `gc.c`                  | Conservative mark-sweep garbage collector with stack scanning. Root registration, automatic collection thresholds. Platform-specific (x86_64, aarch64)                    |
+| `penguinlang_interop.c` | Runtime support: `_emperor_vtable_lookup()` for virtual dispatch, `_emperor_isinstance()` for interface checks, `_emperor_check_class()` for class type checks            |
+| `Makefile`              | Builds `libcore_builtin.a` from the above sources. Accepts `OUTPUT_DIR` variable                                                                                          |
 
 ### Standard Library (`EmperorPenguin/std/penguin/`)
 
-| File | Contents |
-|------|----------|
+| File                               | Contents                                                                                                                                                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core_builtin.penguin` (129 lines) | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>` |
-| `utils.penguin` (188 lines) | `_utils` namespace: `List<T>` (linked list), `Queue<T>` (linked queue), file I/O externs, `exec()` helper, `dir_get_entries()` |
+| `utils.penguin` (188 lines)        | `_utils` namespace: `List<T>` (linked list), `Queue<T>` (linked queue), file I/O externs, `exec()` helper, `dir_get_entries()`                                                                                                                     |
 
 ### Project Handling (`src/project/`)
 

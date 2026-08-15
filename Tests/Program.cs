@@ -146,6 +146,7 @@ public static class Program
         var sw = Stopwatch.StartNew();
 
         var results = new ConcurrentBag<ComboResult>();
+        MemGate.Init(opts);
         var parallel = Math.Max(1, opts.Parallel);
         var byTest = work.GroupBy(w => w.Test).Select(g => g.ToList()).ToList();
         await Parallel.ForEachAsync(byTest, new ParallelOptions { MaxDegreeOfParallelism = parallel },
@@ -255,10 +256,19 @@ public static class Program
             }
             await Task.WhenAll(toRun.Select(async w =>
             {
-                var r = await TestRunner.RunAsync(w.Test, w.Compiler, backends[w.Compiler], repoRoot, runDir, opts, ct);
-                results.Add(r);
-                lock (decided) decided[w.Compiler] = r;
-                LogCombo(r, results.Count, totalWork);
+                // Reserve memory before spawning: native meta compiles JIT-compile a
+                // copy of the compiler (multi-GiB RSS); unreserved parallelism let the
+                // kernel OOM-killer SIGKILL compilers (exit 137). See MemGate.
+                var label = $"{w.Compiler.Key()} {w.Test.Category}/{w.Test.Name}";
+                var lease = await MemGate.AcquireAsync(MemGate.EstimateReservation(w.Test, w.Compiler), label, ct);
+                try
+                {
+                    var r = await TestRunner.RunAsync(w.Test, w.Compiler, backends[w.Compiler], repoRoot, runDir, opts, ct);
+                    results.Add(r);
+                    lock (decided) decided[w.Compiler] = r;
+                    LogCombo(r, results.Count, totalWork);
+                }
+                finally { lease.Dispose(); }
             }));
             foreach (var w in ready) pending.Remove(w);
         }
@@ -347,6 +357,179 @@ public static class Program
 
     public static readonly CompilerKind[] AllCompilers =
         { CompilerKind.BabyPenguin, CompilerKind.BabyPenguinCs, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3, CompilerKind.EmperorPenguinPass4 };
+}
+
+// ───────────────────────── Memory gate ─────────────────────────
+
+/// <summary>
+/// Admission control for compiler processes, keyed on estimated peak RSS.
+/// Measured peaks (tmp/testruns result.json): a native pass2/3/4 compile whose
+/// program (or extra Compile.Args source, e.g. json.penguin) uses the meta
+/// machinery JIT-compiles a copy of the compiler itself and peaks at ~4.6 GiB;
+/// pass1 (EmperorPenguin on the dotnet VM) sits at 1.6-2.8 GiB; everything else
+/// stays under ~0.2 GiB. Test-group waves run several compilers concurrently on
+/// top of the group-level parallelism, which oversubscribed RAM and had the
+/// kernel OOM-killer SIGKILL compilers mid-compile (exit 137, empty logs).
+/// Every combo acquires a reservation before spawning; admission is strict FIFO
+/// so a heavy waiter cannot starve behind a stream of light jobs, and the sum
+/// of in-flight reservations is kept within the budget (MemAvailable at
+/// startup). A live MemAvailable floor blocks spawning into an
+/// already-exhausted system (e.g. memory pressure from unrelated apps); a
+/// per-waiter deadline admits anyway rather than deadlocking the run.
+/// </summary>
+public static class MemGate
+{
+    private const long HeavyBytes = 5L << 30;        // pass2/3/4 meta compile
+    private const long Pass1Bytes = 3L << 30;        // dotnet VM baseline
+    private const long LightBytes = 512L << 20;      // plain native / baby compiles
+    private const long LiveFloorBytes = 1536L << 20; // ≥1.5 GiB free at spawn time
+    private static readonly TimeSpan GiveUpAfter = TimeSpan.FromMinutes(15);
+
+    private readonly record struct Lease(long Bytes) : IDisposable
+    {
+        public void Dispose() => MemGate.Release(Bytes);
+    }
+
+    private sealed class Waiter
+    {
+        public long Bytes;
+        public DateTime Enqueued;
+        public string Label = "";
+        public TaskCompletionSource Done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private static readonly object _sync = new();
+    private static readonly Queue<Waiter> _queue = new();
+    private static long _budget;
+    private static long _inflight;
+    private static Timer? _pumpTimer;
+
+    public static void Init(Options opts)
+    {
+        long avail = ReadMemAvailable();
+        long budget = avail > 0 ? avail : 8L << 30;
+        // A user-specified --parallel below the reservation-derived concurrency is
+        // honored as-is; a higher one is meaningless past the gate's budget.
+        int byMem = (int)Math.Max(1, Math.Min(int.MaxValue, budget / LightBytes));
+        if (opts.Parallel > byMem)
+            opts.Parallel = Math.Min(opts.Parallel, Math.Max(2, byMem));
+        lock (_sync)
+        {
+            _budget = budget;
+            _pumpTimer ??= new Timer(_ => Pump(), null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+        }
+        Console.WriteLine($"Memory gate: budget {budget / 1073741824.0:F1} GiB " +
+                          $"(heavy {HeavyBytes >> 30} GiB, pass1 {Pass1Bytes >> 30} GiB, light {LightBytes >> 20} MiB)");
+    }
+
+    /// <summary>Estimated peak RSS of one (test, compiler) combo; see class comment.</summary>
+    public static long EstimateReservation(MarkdownTestCase test, CompilerKind compiler)
+    {
+        if (compiler is CompilerKind.EmperorPenguinPass2 or CompilerKind.EmperorPenguinPass3
+                             or CompilerKind.EmperorPenguinPass4)
+            return UsesMeta(test) ? HeavyBytes : LightBytes;
+        if (compiler == CompilerKind.EmperorPenguinPass1)
+            return Pass1Bytes;
+        return LightBytes;
+    }
+
+    /// <summary>Meta syntax in the program, or extra `.penguin` Compile.Args sources
+    /// (json.penguin, utils.penguin, …) that drag the meta runtime into the build.</summary>
+    private static bool UsesMeta(MarkdownTestCase test)
+    {
+        var args = test.Compile.Args + " " + string.Join(" ", test.Builds.Select(b => b.Args));
+        if (args.Contains(".penguin", StringComparison.OrdinalIgnoreCase)) return true;
+        var code = test.Code + "\n" + string.Join("\n", test.Builds.Select(b => b.Code));
+        for (int i = 0; i + 1 < code.Length; i++)
+            if (code[i] == '#' && (char.IsLetter(code[i + 1]) || code[i + 1] == '_')) return true;
+        return false;
+    }
+
+    public static async Task<IDisposable> AcquireAsync(long bytes, string label, CancellationToken ct)
+    {
+        Task wait;
+        lock (_sync)
+        {
+            var w = new Waiter { Bytes = bytes, Enqueued = DateTime.UtcNow, Label = label };
+            _queue.Enqueue(w);
+            wait = w.Done.Task;
+            Pump();
+        }
+        using (ct.Register(() =>
+        {
+            lock (_sync)
+            {
+                // Remove any canceled waiter still queued and pump the next one.
+                var rest = _queue.Where(x => x.Done.Task != wait).ToList();
+                _queue.Clear();
+                foreach (var x in rest) _queue.Enqueue(x);
+                Pump();
+            }
+        }))
+        {
+            await wait;
+        }
+        return new Lease(bytes);
+    }
+
+    private static void Release(long bytes)
+    {
+        lock (_sync)
+        {
+            _inflight -= bytes;
+            Pump();
+        }
+    }
+
+    private static void Pump()
+    {
+        lock (_sync)
+        {
+            while (_queue.Count > 0)
+            {
+                var head = _queue.Peek();
+                bool fits = _inflight + head.Bytes <= _budget;
+                bool liveOk;
+                if (!fits) liveOk = true; // don't read meminfo when budget already blocks
+                else
+                {
+                    long live = ReadMemAvailable();
+                    liveOk = live <= 0 || live >= LiveFloorBytes;
+                }
+                if (fits && liveOk)
+                {
+                    _queue.Dequeue();
+                    _inflight += head.Bytes;
+                    head.Done.TrySetResult();
+                    continue;
+                }
+                if (DateTime.UtcNow - head.Enqueued > GiveUpAfter)
+                {
+                    Console.WriteLine($"  [memgate] admitting '{head.Label}' past deadline " +
+                                      $"(inflight {_inflight / 1073741824.0:F1} / {_budget / 1073741824.0:F1} GiB)");
+                    _queue.Dequeue();
+                    _inflight += head.Bytes;
+                    head.Done.TrySetResult();
+                    continue;
+                }
+                break; // strict FIFO: the head must go first
+            }
+        }
+    }
+
+    /// <summary>MemAvailable from /proc/meminfo (Linux); -1 when unavailable.</summary>
+    private static long ReadMemAvailable()
+    {
+        try
+        {
+            if (!File.Exists("/proc/meminfo")) return -1;
+            foreach (var line in File.ReadLines("/proc/meminfo"))
+                if (line.StartsWith("MemAvailable:", StringComparison.Ordinal))
+                    return long.Parse(line.Split(' ', StringSplitOptions.RemoveEmptyEntries)[1]) * 1024;
+        }
+        catch { }
+        return -1;
+    }
 }
 
 // ───────────────────────── Options ─────────────────────────
@@ -446,7 +629,8 @@ public sealed class Options
                                   Limit to these compilers (default: each test's Apply To).
           --filter <glob|substr>  Select Tests/ files, e.g. CalculationTest/* or AddTest.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
-          --parallel <n>          Max concurrent combos (default: cores-1).
+          --parallel <n>          Max concurrent combos (default: cores-1; memory
+                                   gate additionally limits by estimated peak RSS).
           --timeout-compile <s>   Per-case compile timeout (default 600).
           --timeout-run <s>       Per-case run timeout (default 60).
           --compare-with <path>   Baseline to diff against: latest, none, or a .json path.

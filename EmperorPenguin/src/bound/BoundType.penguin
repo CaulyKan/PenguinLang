@@ -53,7 +53,7 @@ class BoundTypeArgType {
 // D5: a VALUE (non-type) template argument (the 5/true/"hi"/2.5/#make_list(...)
 // in Foo<...>). value_type is the value's STATIC type (self-describing —
 // distinguishes Foo<Option.some(5)> from Foo<my_box>). unique_name is the stable
-// canonical name for non-scalar args (IUniqueName), used for mangling/dedup;
+// canonical name for non-scalar args (IUniqueMangleName), used for mangling/dedup;
 // "" for scalar args (mangled by value). object_ref is the live address for
 // ObjectArg (M3b). Replaces the former is_template_value_arg hack fields.
 class BoundTypeArgValue {
@@ -241,6 +241,201 @@ fun mutability_to_string(m: Mutability) -> string {
     return "";
 }
 
+// ---------------------------------------------------------------------------
+// Mangle encoding: fully-qualified serialization → fixed-width base62 groups.
+//
+// The mangled symbol for a generic specialization is:
+//     <short base name>$<base62 of the serialized template+args>
+// `$` is not a valid Penguin identifier character, so it can never collide with
+// a user symbol, and `extract_template_name` slices at the first `$` with no
+// ambiguity. The base62 payload is an INJECTIVE encoding of the fully-qualified
+// serialization (no hashing): two different specializations always yield
+// different mangles (fixes A<B<C>> vs A<B, C>, n1.B vs n2.B, "a b" vs "a_b").
+//
+// The serialization is a plain string over an identifier-safe alphabet:
+//     <qualified base name> "<" <arg> ("," <arg>)* ">"
+// where each arg is a type arg (recursive) or a value arg prefixed by its kind
+// tag (i64:/bool:/string:/double:/obj: + the value's stable text). The
+// identifier-safe alphabet means the serialization itself needs no escaping —
+// the encoding is what makes it symbol-safe.
+//
+// Encoding: the serialization bytes are consumed in fixed 7-byte groups (56
+// bits); each group is rendered as a fixed-width 10-character base62 group
+// (leading '0's padded). No bignum: each group fits in u64 (56 bits < 62^10),
+// and the fixed width keeps the encoding injective (no delimiter needed).
+// Decoding reverses: 10 chars → u64 → 7 bytes.
+// ---------------------------------------------------------------------------
+
+// Encode a u64 as fixed-width `width` base62 digits (leading zeros padded).
+// The digit alphabet is [0-9A-Za-z] (62 chars); groups are fixed-width so
+// concatenation is unambiguous.
+fun base62_encode_u64(val: u64, width: i64) -> string {
+    let digits: string = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let sb: mut StringBuilder = new StringBuilder();
+    let i: mut i64 = 0;
+    // Emit least-significant first, then reverse (fixed width via padding).
+    let tmp: mut StringBuilder = new StringBuilder();
+    if (val == 0) {
+        tmp.append("0");
+    } else {
+        let mut v = val;
+        while (v > 0) {
+            let d: i64 = cast<i64>(v % 62);
+            tmp.append(string_char_at(digits, d));
+            v = v / 62;
+        }
+    }
+    // Pad to width on the LEFT.
+    let n_digits: i64 = string_length(tmp.to_string());
+    let pad: mut i64 = width - n_digits;
+    while (pad > 0) {
+        sb.append("0");
+        pad = pad - 1;
+    }
+    // Reverse tmp into sb.
+    let j: mut i64 = n_digits - 1;
+    while (j >= 0) {
+        sb.append(string_char_at(tmp.to_string(), j));
+        j = j - 1;
+    }
+    return sb.to_string();
+}
+
+// Encode a string as fixed-width base62 groups: every 7 bytes → one 10-char
+// group. The last (partial) group is padded with NUL bytes (0x00) to 7 bytes —
+// injective because the total byte count is recoverable from the number of
+// groups (10 chars per group), so trailing padding is unambiguous.
+fun base62_encode_string(s: string) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    let len: i64 = string_length(s);
+    let full_groups: i64 = len / 7;
+    let rem: i64 = len % 7;
+    let total_groups: i64 = full_groups + (if (rem > 0) { 1 } else { 0 });
+    let gi: mut i64 = 0;
+    while (gi < total_groups) {
+        // Build the 7-byte group as a u64 (little-endian byte order). Accumulate
+        // in i64 (a bare 0-literal infers u8), cast at the end.
+        let group: mut i64 = 0;
+        let bi: mut i64 = 0;
+        while (bi < 7) {
+            let src_idx: i64 = gi * 7 + bi;
+            if (src_idx < len) {
+                let code: i64 = string_char_code(string_char_at(s, src_idx));
+                // Byte at offset bi → bits [bi*8, bi*8+8). Use lshift (the <<
+                // operator does not parse under the BabyPenguin ANTLR grammar).
+                group = group + __builtin.lshift(code, bi * 8);
+            }
+            // else: zero byte (padding)
+            bi = bi + 1;
+        }
+        sb.append(base62_encode_u64(cast<u64>(group), 10));
+        gi = gi + 1;
+    }
+    return sb.to_string();
+}
+
+// The fully-qualified name of a BoundType for serialization. Primitives use
+// their canonical spelling; class/enum/interface use their FULL name (scope
+// dotted) from the definition; unknown/void → "?" (should not happen for
+// mangle inputs).
+fun bound_type_qualified_name(bt: BoundType) -> string {
+    if (bt.kind is TypeKind.PrimitiveKind) {
+        return primitive_type_to_string(bt.primitive);
+    }
+    if (bt.type_definition.is_some()) {
+        let td: BoundDefinition = bt.type_definition.some;
+        if (td is BoundDefinition.class_def) { return td.class_def.full_name; }
+        if (td is BoundDefinition.enum_def) { return td.enum_def.full_name; }
+        if (td is BoundDefinition.interface_def) { return td.interface_def.full_name; }
+        // type_ref_def has no full_name — fall back to its name.
+        if (td is BoundDefinition.type_ref_def) { return td.type_ref_def.name; }
+    }
+    return "?";
+}
+
+// Serialize a single generic argument (type or value) to the identifier-safe
+// serialization alphabet. Type args recurse; value args are tagged by kind so
+// `Foo<5>` (int) and `Foo<"5">` (string) serialize differently:
+//   type   → <qualified name>[<args>]
+//   int    → "i64:" <decimal>
+//   bool   → "bool:" true|false
+//   string → "string:" <content>       (content is identifier-safe by contract)
+//   double → "double:" <source text>
+//   object → "obj:" <IUniqueMangleName canonical name>
+fun serialize_bound_type_arg(arg: BoundTypeArg) -> string {
+    if (arg is BoundTypeArg.type_arg) {
+        return serialize_bound_type(arg.type_arg.bound_type);
+    }
+    if (arg is BoundTypeArg.value_arg) {
+        let v: BoundTypeArgValue = arg.value_arg;
+        if (v.value_arg_kind is ValueArgSubKind.IntArg) { return "i64:" + cast<string>(v.int_val); }
+        if (v.value_arg_kind is ValueArgSubKind.BoolArg) {
+            if (v.bool_val) { return "bool:t"; }
+            return "bool:f";
+        }
+        if (v.value_arg_kind is ValueArgSubKind.StringArg) { return "string:" + v.string_val; }
+        if (v.value_arg_kind is ValueArgSubKind.DoubleArg) { return "double:" + v.string_val; }
+        if (v.value_arg_kind is ValueArgSubKind.ObjectArg) { return "obj:" + v.unique_name; }
+        return "?";
+    }
+    return "?";
+}
+
+// Serialize a BoundType to the identifier-safe alphabet: qualified name, plus
+// generic args in angle brackets (comma-separated, no spaces — injective).
+fun serialize_bound_type(bt: BoundType) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(bound_type_qualified_name(bt));
+    if (cast<i64>(bt.generic_args.size()) > 0) {
+        sb.append("<");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            if (i > 0) { sb.append(","); }
+            sb.append(serialize_bound_type_arg(bt.generic_args.at(cast<u64>(i)).some));
+            i = i + 1;
+        }
+        sb.append(">");
+    }
+    return sb.to_string();
+}
+
+// THE unified mangle: <short base name>$<base62 of serialization>. The caller
+// passes the FULLY-QUALIFIED base name (e.g. `__builtin.Wrap` or
+// `<global>.n1.B`); the symbol prefix is its LAST segment (the short name) so
+// the output stays a single identifier-safe token, while the base62 payload
+// encodes the full base name + args — so two same-named templates in different
+// namespaces (n1.Wrap vs n2.Wrap) can never collide. This is the single
+// implementation every layer (SemanticModel, IRGenerator, LLVMEmitter) must
+// use.
+fun mangle_specialization(full_base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
+    // Short base = the segment after the last '.'.
+    let short_base: mut string = full_base_name;
+    let dot: mut i64 = string_find(full_base_name, ".");
+    while (dot >= 0) {
+        let next_dot: i64 = string_find_from(full_base_name, ".", dot + 1);
+        if (next_dot < 0) { break; }
+        dot = next_dot;
+    }
+    if (dot >= 0) {
+        short_base = string_substring(full_base_name, dot + 1, string_length(full_base_name) - dot - 1);
+    }
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(short_base);
+    sb.append("$");
+    let ser: mut StringBuilder = new StringBuilder();
+    ser.append(full_base_name);
+    ser.append("<");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(generic_args.size())) {
+        if (i > 0) { ser.append(","); }
+        ser.append(serialize_bound_type_arg(generic_args.at(cast<u64>(i)).some));
+        i = i + 1;
+    }
+    ser.append(">");
+    sb.append(base62_encode_string(ser.to_string()));
+    return sb.to_string();
+}
+
 class BoundType {
     kind: TypeKind = new TypeKind.PrimitiveKind();
     primitive: PrimitiveType = new PrimitiveType.VoidType();
@@ -356,6 +551,21 @@ class BoundType {
         }
         if (this.is_async_function != other.is_async_function) { return false; }
         if (this.type_definition.is_some() && other.type_definition.is_some()) {
+            // Compare by QUALIFIED name: two same-named types in different
+            // namespaces (n1.B vs n2.B) are distinct. get_name() is the short
+            // name, which would wrongly dedup them (the mangle distinguishes
+            // them, so the dedup must too).
+            let td: BoundDefinition = this.type_definition.some;
+            let od: BoundDefinition = other.type_definition.some;
+            if (td is BoundDefinition.class_def && od is BoundDefinition.class_def) {
+                return td.class_def.full_name == od.class_def.full_name;
+            }
+            if (td is BoundDefinition.enum_def && od is BoundDefinition.enum_def) {
+                return td.enum_def.full_name == od.enum_def.full_name;
+            }
+            if (td is BoundDefinition.interface_def && od is BoundDefinition.interface_def) {
+                return td.interface_def.full_name == od.interface_def.full_name;
+            }
             return this.type_definition.some.get_name() == other.type_definition.some.get_name();
         }
         return true;
@@ -382,27 +592,9 @@ class BoundType {
             if (ca.is_generic_template && !cb.is_generic_template
                 && cast<i64>(this.generic_args.size()) > 0
                 && cast<i64>(other.generic_args.size()) == 0) {
-                // Compute the specialized name (mangle of template name + args) inline
-                // (mangle_generic_name is a SemanticModel method, not callable here) and
-                // compare to the specialized def's name.
-                let mangled: mut string = ca.name;
-                let mi: mut i64 = 0;
-                while (mi < cast<i64>(this.generic_args.size())) {
-                    let arg_name: string = arg_display_name(this.generic_args.at(cast<u64>(mi)).some);
-                    let sanitized: mut string = "";
-                    let mj: mut i64 = 0;
-                    while (mj < string_length(arg_name)) {
-                        let ch: string = string_char_at(arg_name, mj);
-                        if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
-                            sanitized = sanitized + "_";
-                        } else {
-                            sanitized = sanitized + ch;
-                        }
-                        mj = mj + 1;
-                    }
-                    mangled = mangled + "__" + sanitized;
-                    mi = mi + 1;
-                }
+                // Compute the specialized name (mangle of template name + args)
+                // via the unified mangle and compare to the specialized def's name.
+                let mangled: string = mangle_specialization(ca.full_name, this.generic_args);
                 return mangled == cb.name;
             }
         }

@@ -1106,7 +1106,12 @@ class LLVMEmitter {
         if (!is_value) {
             this.has_iref_class = true;
         }
-        let layout: mut ClassLayout = new ClassLayout(this.strip_global_prefix(cls.full_name), is_value, has_metadata);
+        // Layout name must match the IR type references (`ref<X>`): a SPECIALIZED
+        // def's name IS the mangle (short prefix), so use it directly; a template
+        // def uses the global-prefix-stripped full name.
+        let layout_name: mut string = this.strip_global_prefix(cls.full_name);
+        if (cls.is_specialized) { layout_name = cls.name; }
+        let layout: mut ClassLayout = new ClassLayout(layout_name, is_value, has_metadata);
 
         let offset: mut i64 = 0;
         if (has_metadata) {
@@ -1159,7 +1164,11 @@ class LLVMEmitter {
 
     fun build_enum_layout(mut this, enum_def: BoundEnumDefinition) {
         _utils.trace_enter("Enter build_enum_layout");
-        let layout: mut EnumLayout = new EnumLayout(this.strip_global_prefix(enum_def.full_name));
+        // Layout name must match IR type references (`enum<X>`); specialized
+        // defs use their mangle name directly (short prefix).
+        let layout_name: mut string = this.strip_global_prefix(enum_def.full_name);
+        if (enum_def.is_specialized) { layout_name = enum_def.name; }
+        let layout: mut EnumLayout = new EnumLayout(layout_name);
         let has_payload: mut bool = false;
         let payload_type: mut string = "";
         let enum_name: string = enum_def.name;
@@ -1661,14 +1670,15 @@ class LLVMEmitter {
             if (def is BoundDefinition.class_def) {
                 let cls: BoundClassDefinition = def.class_def;
                 if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(cls.generic_params.size()) > 0) {
-                    return this.compute_mangled_name(cls.name, bt);
+                    // Full base feeds the mangle (encodes the qualified name).
+                    return this.compute_mangled_name(cls.full_name, bt);
                 }
                 return this.strip_global_prefix(cls.full_name);
             }
             if (def is BoundDefinition.enum_def) {
                 let e: BoundEnumDefinition = def.enum_def;
                 if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(e.generic_params.size()) > 0) {
-                    return this.compute_mangled_name(e.name, bt);
+                    return this.compute_mangled_name(e.full_name, bt);
                 }
                 return this.strip_global_prefix(e.full_name);
             }
@@ -1678,27 +1688,9 @@ class LLVMEmitter {
 
     fun compute_mangled_name(this, base_name: string, bt: BoundType) -> string {
         _utils.trace_enter("Enter compute_mangled_name(base_name=" + cast<string>(base_name) + ")");
-        let sb2: mut StringBuilder = new StringBuilder();
-        sb2.append(base_name);
-        let i: mut i64 = 0;
-        while (i < cast<i64>(bt.generic_args.size())) {
-            sb2.append("__");
-            let arg_name: string = arg_display_name(bt.generic_args.at(cast<u64>(i)).some);
-            let sanitized: mut StringBuilder = new StringBuilder();
-            let j: mut i64 = 0;
-            while (j < string_length(arg_name)) {
-                let ch: string = string_char_at(arg_name, j);
-                if (ch == " " || ch == "<" || ch == ">" || ch == ",") {
-                    sanitized.append("_");
-                } else {
-                    sanitized.append(ch);
-                }
-                j = j + 1;
-            }
-            sb2.append(sanitized.to_string());
-            i = i + 1;
-        }
-        return sb2.to_string();
+        // The unified mangle (BoundType.penguin mangle_specialization) — must
+        // stay byte-identical to SemanticModel.mangle_generic_name.
+        return mangle_specialization(base_name, bt.generic_args);
     }
 
     fun class_type_to_llvm(this, bt: BoundType) -> string {
@@ -2613,8 +2605,11 @@ class LLVMEmitter {
             }
         }
 
-        // Fallback: plain store
-        this.emit_line("  store " + llvm_type + " " + value_resolved + ", ptr " + obj_resolved);
+        // Fallback: plain store — but coerce the value first: a mutable reg
+        // holding a struct value resolves to its alloca (ptr), so a struct-typed
+        // store needs the load (mirrors the layout branch's coerce_operand).
+        let coerced_value: string = this.coerce_operand(value_resolved, llvm_type);
+        this.emit_line("  store " + llvm_type + " " + coerced_value + ", ptr " + obj_resolved);
     }
 
     // ADDRESS_OF: yield the storage address of a value-backed operand (u64).

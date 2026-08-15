@@ -112,8 +112,42 @@ namespace __builtin {
     // argument, used to mangle/dedup object value args (e.g. Foo<#make_list(...)>)
     // by VALUE rather than by address. get_unique_name() must be stable across
     // compilations (no embedded addresses/random) — it is the mangle key.
-    interface IUniqueName {
+    // CONTRACT: the returned name must be an INJECTIVE encoding of the content
+    // the template body may introspect — pass free-text content through
+    // umangle_escape() so distinct values never share a name (the mangle-level
+    // sanitizer maps ' ', '<', '>', ',' to '_', so raw text like "a b" and "a_b"
+    // would otherwise collide and wrongly dedup two distinct instantiations).
+    interface IUniqueMangleName {
         fun get_unique_name(this) -> string;
+    }
+
+    // Identifier-safe, injective escaping for IUniqueMangleName content:
+    //   '_' → "_0", [A-Za-z0-9] → verbatim, everything else → "_x" + 2 hex digits
+    // (e.g. ' ' → "_x20"). Because '_' itself is escaped, the mapping is
+    // one-to-one: two different inputs always yield different names, and the
+    // output survives the mangle sanitizer (it contains no ' ', '<', '>', ',')
+    // byte-for-byte.
+    fun umangle_escape(s: string) -> string {
+        let digits: string = "0123456789abcdef";
+        let sb: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < string_length(s)) {
+            let ch: string = string_char_at(s, i);
+            let code: i64 = string_char_code(ch);
+            if (code == 95) {
+                sb.append("_0");
+            } else {
+                if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+                    sb.append(ch);
+                } else {
+                    sb.append("_x");
+                    sb.append(string_char_at(digits, code / 16));
+                    sb.append(string_char_at(digits, code % 16));
+                }
+            }
+            i = i + 1;
+        }
+        return sb.to_string();
     }
 
     // Marker for manually-managed types that own raw memory (Array<T,N>,
@@ -153,6 +187,84 @@ namespace __builtin {
     impl __builtin.ICopy<i16> for i16;
     impl __builtin.ICopy<u16> for u16;
     impl __builtin.ICopy<i8> for i8;
+
+    // --- IUniqueMangleName for every primitive ----------------------------
+    // Primitive interface impls (`impl Iface for <prim>`) are name-mangled to
+    // `<method>$$<prim>` and dispatched directly (the IHash precedent). They let
+    // the IUniqueMangleName render below be UNIFORM — every umangleable element
+    // type answers `.get_unique_name()` — so the container impl bodies in the
+    // #specializing blocks below contain NO meta calls (no JIT, no recursion).
+    // Render text must distinguish kinds at a glance: digits for ints, quoted
+    // for string, true/false for bool, decimal text for floats.
+    impl IUniqueMangleName for i64 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for i32 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for i16 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for i8 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for u64 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for u32 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for u16 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for u8 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for f64 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for f32 { fun get_unique_name(this) -> string { return cast<string>(this); } }
+    impl IUniqueMangleName for bool {
+        fun get_unique_name(this) -> string {
+            if (this) { return "true"; }
+            return "false";
+        }
+    }
+    impl IUniqueMangleName for char { fun get_unique_name(this) -> string { return cast<string>(cast<i64>(this)); } }
+    impl IUniqueMangleName for string { fun get_unique_name(this) -> string { return "\"" + this + "\""; } }
+
+    // --- IUniqueMangleName auto-impls for the core/std generic wrappers -----
+    // These #specializing blocks live in core_builtin deliberately: core_builtin
+    // is (a) the stdlib of EVERY host compilation and (b) a base source of EVERY
+    // unit-B (meta) compilation — so the impl is injected symmetrically in all
+    // modules that specialize these types, keeping their specializations
+    // layout/vtable-identical (the cross-module asymmetry was the crash).
+    // The `umangleable(T)` gate is evaluated NATIVELY by the compiler (no JIT
+    // gate — a JIT gate would recurse: its own unit-B compile re-fires these
+    // blocks). The impl bodies use only the uniform `.get_unique_name()` render
+    // above — no meta splices, nothing left to JIT.
+    #specializing _utils.List<T> {
+        if (umangleable(T)) {
+            impl IUniqueMangleName {
+                fun get_unique_name(this) -> string {
+                    let sb: mut StringBuilder = new StringBuilder();
+                    sb.append("Ls_");
+                    sb.append(cast<string>(this.size()));
+                    let i: mut i64 = 0;
+                    while (i < cast<i64>(this.size())) {
+                        sb.append("_");
+                        sb.append(this.at(cast<u64>(i)).some.get_unique_name());
+                        i = i + 1;
+                    }
+                    return sb.to_string();
+                }
+            }
+        }
+    }
+
+    #specializing __builtin.Box<T> {
+        if (umangleable(T)) {
+            impl IUniqueMangleName {
+                fun get_unique_name(this) -> string {
+                    return "Bx_" + this.value.get_unique_name();
+                }
+            }
+        }
+    }
+
+    #specializing __builtin.Option<T> {
+        if (umangleable(T)) {
+            impl IUniqueMangleName {
+                fun get_unique_name(this) -> string {
+                    if (this is Option<T>.none) { return "Op_n"; }
+                    return "Op_s_" + this.some.get_unique_name();
+                }
+            }
+        }
+    }
+
     impl __builtin.ICopy<u8> for u8;
     impl __builtin.ICopy<bool> for bool;
     impl __builtin.ICopy<char> for char;
@@ -254,23 +366,25 @@ namespace __builtin {
         extern fun append(mut this, s: string);
         extern fun to_string(this) -> mut string;
         // M6-step2 4b: canonical value-level name for object value-template args
-        // (stable mangle/dedup by VALUE, not address). Content-derived. The name
-        // must be IDENTIFIER-SAFE (letters/digits/underscore) — it becomes part of
-        // the specialization's mangled symbol.
-        impl IUniqueName {
+        // (stable mangle/dedup by VALUE, not address). Content-derived and ESCAPED
+        // via umangle_escape so distinct contents never share a mangle (raw text
+        // like "a b" vs "a_b" would collide in the mangle sanitizer's '_'
+        // mapping) — it becomes part of the specialization's mangled symbol.
+        impl IUniqueMangleName {
             fun get_unique_name(this) -> string {
-                return "SB_" + this.data;
+                return "SB_" + umangle_escape(this.data);
             }
         }
     }
 
-    // M6-step2 4b: unique-name trampoline. The host JIT-calls this with a live
-    // object address (object-param ABI) to obtain the IUniqueName canonical name
-    // for stable mangling of object value-template args. The object must impl
-    // IUniqueName (the host gates on the declared static type).
-    #fun penguin_meta_unique_name(l: IUniqueName) -> string {
-        return l.get_unique_name();
-    }
+    // NOTE: the old M6-step2 generic unique-name trampoline
+    // (`#fun penguin_meta_unique_name(l: IUniqueMangleName)`) was REMOVED — its
+    // virtual dispatch ran on the UNIT-B object, where impls injected into the
+    // host compilation (#specializing blocks) do not exist, producing a missing
+    // vtable entry and a SEGV. The host now synthesizes a per-type STATIC
+    // trampoline (SemanticModel.find_unique_name_trampoline); only impls written
+    // in base-meta-source class bodies (like StringBuilder's above) are callable
+    // that way.
 
     // String helper functions
     extern fun string_length(s: string) -> i64;

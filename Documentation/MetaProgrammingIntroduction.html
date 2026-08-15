@@ -1,0 +1,1575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meta Programming in EmperorPenguin — PenguinLang 编译期元编程</title>
+  <style>
+    :root {
+      --bg: #fbfaf6;
+      --card: #ffffff;
+      --text: #232830;
+      --muted: #5c6773;
+      --accent: #1f6f8b;
+      --accent-soft: #e4eff4;
+      --border: #e2ddd2;
+      --code-bg: #f4f1e9;
+      --label-bg: #4a5568;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 0 28px 80px;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1f6f8b 0%, #14485c 100%);
+      color: #fff;
+      padding: 48px 0 40px;
+      margin-bottom: 32px;
+    }
+
+    header .container {
+      padding-bottom: 0;
+    }
+
+    header h1 {
+      margin: 0 0 10px;
+      font-size: 2rem;
+    }
+
+    header .sub {
+      opacity: 0.92;
+      font-size: 1.02rem;
+    }
+
+    header .meta {
+      margin-top: 14px;
+      font-size: 0.88rem;
+      opacity: 0.75;
+    }
+
+    nav.toc {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 26px;
+      margin-bottom: 40px;
+    }
+
+    nav.toc h2 {
+      margin: 0 0 10px;
+      font-size: 1.02rem;
+      border: none;
+      padding: 0;
+      color: var(--muted);
+    }
+
+    nav.toc ol {
+      columns: 2;
+      column-gap: 40px;
+      margin: 0;
+      padding-left: 22px;
+      font-size: 0.92rem;
+    }
+
+    nav.toc a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    nav.toc a:hover {
+      text-decoration: underline;
+    }
+
+    section {
+      margin-bottom: 48px;
+    }
+
+    h2 {
+      font-size: 1.42rem;
+      margin: 0 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--accent);
+    }
+
+    h2 .num {
+      color: var(--accent);
+      margin-right: 8px;
+    }
+
+    h3 {
+      font-size: 1.08rem;
+      margin: 26px 0 10px;
+      color: #14485c;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul {
+      margin: 8px 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      padding: 10px 16px;
+      margin: 14px 0;
+      font-size: 0.93rem;
+    }
+
+    .note.warn {
+      background: #fdf0e4;
+      border-left-color: #b5651d;
+    }
+
+    .codelabel {
+      display: inline-block;
+      margin: 14px 0 0;
+      padding: 1px 12px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #fff;
+      background: var(--label-bg);
+      border-radius: 5px 5px 0 0;
+    }
+
+    pre {
+      margin: 0 0 6px;
+      padding: 14px 18px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 0 8px 8px 8px;
+      overflow-x: auto;
+      font-size: 13.5px;
+      line-height: 1.55;
+      font-family: "SF Mono", Consolas, "JetBrains Mono", Menlo, "Courier New", monospace;
+    }
+
+    pre code {
+      font-family: inherit;
+    }
+
+    code {
+      background: #eceae2;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 0.88em;
+      font-family: "SF Mono", Consolas, Menlo, monospace;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+    }
+
+    .hl-s {
+      color: #2e7d32;
+    }
+
+    .hl-c {
+      color: #8a8f98;
+      font-style: italic;
+    }
+
+    .hl-k {
+      color: #7c3aed;
+      font-weight: 600;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: var(--card);
+      margin: 12px 0;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: #efece3;
+    }
+
+    tr:nth-child(even) td {
+      background: #faf8f2;
+    }
+
+    #toTop {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    }
+
+    #toTop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      text-align: center;
+    }
+
+    @media (max-width: 720px) {
+      nav.toc ol {
+        columns: 1;
+      }
+
+      header h1 {
+        font-size: 1.5rem;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div class="container">
+      <h1>Meta Programming in EmperorPenguin</h1>
+      <div class="sub">PenguinLang 编译期元编程 —— 从简单到复杂，每个功能点对照主流语言（Rust / C++ / C# / Scala）</div>
+      <div class="meta">Cauly Kan | Aug, 2026</div>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <nav class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li><a href="#intro">什么是元编程</a></li>
+        <li><a href="#philosophy">设计理念</a></li>
+        <li><a href="#overview">功能全景</a></li>
+        <li><a href="#f1">编译期选项：#define / #defined / #option</a></li>
+        <li><a href="#f2">编译期条件：#if / #elif / #else</a></li>
+        <li><a href="#f3">编译期循环：#while</a></li>
+        <li><a href="#f4">元函数：#fun</a></li>
+        <li><a href="#f5">类型级函数：#fun -&gt; type</a></li>
+        <li><a href="#f6">泛型模板：#template</a></li>
+        <li><a href="#tpl-meta">模板值参数与元函数交互</a></li>
+        <li><a href="#specializing">模板特化：#specializing</a></li>
+        <li><a href="#f7">类型查询：#typeof(T)</a></li>
+        <li><a href="#f8">结构化反射：t.fields() 等</a></li>
+        <li><a href="#f9">元数据类：#class</a></li>
+        <li><a href="#f10">编译器上下文：#compiler()</a></li>
+        <li><a href="#f11">AST 代码生成：#fun -&gt; ast</a></li>
+        <li><a href="#unstructured-ast">AST 原始文本捕获：unstructured_ast</a></li>
+        <li><a href="#tpl-list">模板中的容器：List vs C++ tuple</a></li>
+        <li><a href="#json-lib">综合示例（真实项目）：JSON 标准库</a></li>
+        <li><a href="#summary">能力对比一览</a></li>
+        <li><a href="#refs">运行前提与参考资料</a></li>
+      </ol>
+    </nav>
+
+    <section id="intro">
+      <h2><span class="num">00</span>什么是元编程？</h2>
+      <p><strong>写程序的程序</strong>：一段代码在编译期执行，计算数值、变换类型、生成代码，结果再进入正常编译流程。</p>
+      <ul>
+        <li>EmperorPenguin 把每个 <code>#fun</code> 用 <strong>LLVM ORC JIT</strong> 编译成原生代码，在编译过程中直接执行（native Pass2 /
+          Pass3）。</li>
+        <li>执行结果（数值 / 类型 / AST 片段）<strong>拼回编译管线</strong>，继续走类型检查、IR 生成、LLVM 发射 —— 运行时零开销。</li>
+        <li>本文从最简单的「编译期开关」讲到最复杂的「代码生成（derive 宏）」；每个功能点选 1~2 个最有代表性的语言对照，其余语言用一句话说明。</li>
+      </ul>
+    </section>
+
+    <section id="philosophy">
+      <h2><span class="num">01</span>设计理念：让元编程像写普通代码</h2>
+      <p>PenguinLang 的元编程不是另一门语言，而是同一门语言的编译期运行。三条核心理念贯穿后面所有功能：</p>
+
+      <h3>1. 编译器代码与运行时代码尽量等价</h3>
+      <p><code>#fun</code> 的语法与普通函数完全一致 —— 没有独立的模板语言：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun fib(n: i64) -&gt; i64 {
+    if (n &lt; 2) { return n; }
+    return fib(n - 1) + fib(n - 2);   // 与普通函数完全相同的写法
+}
+// 去掉 # 前缀就是运行时函数 —— 同一门语言，编译期 / 运行时两处可用</code></pre>
+      <ul>
+        <li>元函数里的 <code>if</code> / <code>while</code> / 递归 / 调用其它函数都是普通写法，编译器用 LLVM ORC JIT 把它编译成原生代码执行。</li>
+        <li>对比：C++ 模板元编程是"另一门语言"，Rust 宏是 token 层面的另一套体系 —— PenguinLang 只学一次。</li>
+      </ul>
+
+      <h3>2. 用顺序代码代替 SFINAE / 模式匹配</h3>
+      <p>C++ 的类型分派要写偏特化 / SFINAE / <code>enable_if</code>，Rust 要写 <code>where</code> 谓词 —— 都是"让编译器猜"的声明式技巧。PenguinLang 把它们写成按人类思维顺序执行的代码：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun choose_comparator(t: type) -&gt; type {
+    if (t == #typeof(f32) || t == #typeof(f64)) { return #typeof(FloatComp); }
+    if (t == #typeof(string))                    { return #typeof(StrComp); }
+    return #typeof(DefaultComp);     // 顺序判断，一目了然
+}</code></pre>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">// 同样的分派在 C++ 里是偏特化 + SFINAE 的叠罗汉
+template &lt;typename T, typename = void&gt; struct Comp { using type = DefaultComp; };
+template &lt;typename T&gt;
+struct Comp&lt;T, std::enable_if_t&lt;std::is_floating_point_v&lt;T&gt;&gt;&gt; { using type = FloatComp; };</code></pre>
+      <ul>
+        <li><code>#if (T == i32)</code>、<code>#specializing { if (N &gt; 3) ... }</code> 都是顺序分支 —— 读起来就是普通逻辑。</li>
+        <li>条件可以是任意元代码（调用 <code>#fun</code>、反射字段），而不是预定义的谓词组合。</li>
+      </ul>
+
+      <h3>3. 用户与编译器协同工作</h3>
+      <p>编译器把内部世界开放给用户代码：<code>compiler()</code> 上下文、<code>type</code> 就是编译器的 <code>BoundType</code>、字段反射、<code>create_definition</code> 注入 —— 用户代码与编译器读<strong>同一批对象</strong>，互相配合，而不是依赖语言预置的魔法：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">// 用户提供意图（一行宏），编译器提供对象（当前类、字段），
+// 用户代码完成生成 —— 双方合作，而非语言包办
+class Person {
+    name: string;
+    age: i64;
+    #impl_json_serializable();   // json 库：反射字段 → 生成 impl
+}</code></pre>
+      <ul>
+        <li>需要什么能力，就用 <code>#fun</code> + 反射 + <code>create_ast</code> 自己造 —— 不等待语言添加注解 / 属性系统。</li>
+        <li>局限也透明：做不到的（如异构元组）直接用生成代码绕过去，而不是硬造语法糖。</li>
+      </ul>
+    </section>
+
+    <section id="overview">
+      <h2><span class="num">02</span>功能全景：从简单到复杂</h2>
+      <table>
+        <tr>
+          <th>#</th>
+          <th>功能</th>
+          <th>是什么</th>
+          <th>典型对应物</th>
+        </tr>
+        <tr>
+          <td>1</td>
+          <td><code>#define</code> / <code>#defined</code> / <code>#option</code></td>
+          <td>编译期键值存储</td>
+          <td>C 宏 <code>-D</code> / C# 编译符号</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><code>#if</code> / <code>#elif</code> / <code>#else</code></td>
+          <td>编译期条件（条件代码生成）</td>
+          <td>C++ <code>if constexpr</code></td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><code>#while</code></td>
+          <td>编译期循环（循环展开）</td>
+          <td>C++ 模板递归</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><code>#fun</code></td>
+          <td>编译期执行的函数</td>
+          <td>C++ <code>constexpr</code> / Rust <code>const fn</code></td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><code>#fun -&gt; type</code></td>
+          <td>类型级函数（类型即值）</td>
+          <td>C++ type traits</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><code>#template</code></td>
+          <td>泛型（类型参数 + 值参数）</td>
+          <td>C++ / Rust 泛型</td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td>模板值参数 ↔ 元函数</td>
+          <td>值参数传给 <code>#fun</code>、值参数本身是元调用</td>
+          <td>非类型模板参数 + <code>constexpr</code></td>
+        </tr>
+        <tr>
+          <td>8</td>
+          <td><code>#specializing</code></td>
+          <td>按实例化参数选择实现（编译期校验）</td>
+          <td>C++ 模板偏特化 / Rust <code>where</code></td>
+        </tr>
+        <tr>
+          <td>9</td>
+          <td><code>#typeof(T)</code></td>
+          <td>类型查询</td>
+          <td>C++ <code>decltype</code> / C# <code>typeof</code></td>
+        </tr>
+        <tr>
+          <td>10</td>
+          <td><code>t.fields()</code> 等</td>
+          <td>结构化反射</td>
+          <td>C# <code>System.Reflection</code>（运行时）</td>
+        </tr>
+        <tr>
+          <td>11</td>
+          <td><code>#class</code></td>
+          <td>编译期专用数据结构</td>
+          <td>（无直接对应物）</td>
+        </tr>
+        <tr>
+          <td>12</td>
+          <td><code>#compiler()</code></td>
+          <td>编译器上下文访问</td>
+          <td>Rust proc_macro / C# Source Generator</td>
+        </tr>
+        <tr>
+          <td>13</td>
+          <td><code>#fun -&gt; ast</code></td>
+          <td>AST 代码生成（derive）</td>
+          <td>Rust <code>#[derive]</code> / C# Source Generator</td>
+        </tr>
+        <tr>
+          <td>14</td>
+          <td><code>unstructured_ast</code></td>
+          <td>AST 原始文本捕获（尾随块）</td>
+          <td>Rust proc_macro <code>TokenStream</code></td>
+        </tr>
+      </table>
+      <ul>
+        <li>功能 1~3 是<strong>硬编码的编译期结构</strong>：编译器直接求值，不经过 JIT。</li>
+        <li>功能 4 开始是真正的 <strong>JIT 元函数</strong>：<code>#fun</code> 编译成原生代码执行。</li>
+      </ul>
+    </section>
+
+    <section id="f1">
+      <h2><span class="num">03</span>编译期选项：#define / #defined / #option</h2>
+      <p>最轻量的元编程入口：往编译期键值表里存、取数据，还能从命令行注入。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#define("MODE", "release");
+#define("VERSION", "1.2.0");
+
+initial {
+    #if (#defined("MODE")) {
+        println("MODE=" + #option("MODE"));     // 编译期读取
+    }
+    println("ver=" + #option("VERSION"));       // ver=1.2.0
+}</code></pre>
+      <ul>
+        <li><code>#define(key, value)</code> / <code>#defined(key)</code> / <code>#option(key)</code>
+          是<strong>内置元函数</strong>（可用同名 <code>#fun</code> 覆盖）。</li>
+        <li>命令行注入与 <code>#define</code> 共享同一存储：<code>penguin -DMODE=debug test.penguin</code>。</li>
+        <li>典型用途：平台分支、特性开关、版本号注入。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C/C++、C#）</h3>
+      <div class="codelabel">C / C++</div>
+      <pre><code class="lang-cpp">#define PI 3.14
+#define MODE "release"
+#ifdef MODE
+    printf("MODE=%s", MODE);
+#endif
+// 命令行: gcc -DMODE=debug test.c</code></pre>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">#define MODE
+#if MODE
+    Console.WriteLine("MODE");
+#endif
+// MSBuild: &lt;DefineConstants&gt;MODE&lt;/DefineConstants&gt;</code></pre>
+      <div class="note">Rust 用 <code>cfg!(feature = ...)</code> / <code>env!("VAR")</code> 近似；Scala 无编译期键值存储（由构建工具 sbt
+        的设置注入）。</div>
+    </section>
+
+    <section id="f2">
+      <h2><span class="num">04</span>编译期条件：#if / #elif / #else</h2>
+      <p>根据编译期可求值的条件只保留选中分支，其余分支<strong>不会进入后续编译阶段</strong>。</p>
+
+      <h3>顶层用法：控制整个定义的生成</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#define("X", "1");
+
+#if (#defined("X") || #defined("Y")) {     // 支持 || / &amp;&amp; / ! 逻辑运算
+    fun flag() -&gt; i64 { return 1; }
+} #elif (#defined("Y")) {
+    fun flag() -&gt; i64 { return 2; }
+} #else {
+    fun flag() -&gt; i64 { return 0; }
+}</code></pre>
+
+      <h3>类型条件分支（模板内）</h3>
+      <p>与顶层用法相同，条件可以是类型比较</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#template(T: type)
+fun default_value() -&gt; T {
+    #if (T == i32) {
+        return 0;
+    } #elif (T == f32) {
+        return 0.0;
+    } #else {
+        return T.default();
+    }
+}</code></pre>
+      <ul>
+        <li><code>#if</code> 是<strong>硬编码编译期结构</strong>：编译器直接求值条件，不经过 JIT。</li>
+        <li><strong>注意</strong>：分支关键字是 <code>#elif</code> / <code>#else</code>（带 <code>#</code>），写成普通
+          <code>else if</code> 会被解析成运行时嵌套 if。
+        </li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">template &lt;typename T&gt;
+T default_value() {
+    if constexpr (std::is_same_v&lt;T, int&gt;)        return 0;
+    else if constexpr (std::is_same_v&lt;T, float&gt;) return 0.0f;
+    else                                         return T{};
+}</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">inline def classify(x: Int): String =
+  inline if (x &gt; 3) then "big"
+  else if (x == 2) then "two"
+  else "other"
+// 实参为编译期常量时，只保留选中分支</code></pre>
+      <div class="note">Rust 无 <code>if constexpr</code>（用 <code>cfg!</code> / 泛型特化）；C# 预处理器 <code>#if</code> 只能按编译符号分支。
+      </div>
+    </section>
+
+    <section id="f3">
+      <h2><span class="num">05</span>编译期循环：#while</h2>
+      <p><code>#while</code> 在编译期反复求值条件、展开循环体，展开后的代码才进入后续编译。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun count_bits(v: u32) -&gt; u32 {
+    let bits: mut u32 = 0;
+    let remaining: mut u32 = v;
+    #while (remaining &gt; 0) {
+        bits = bits + (remaining &amp; 1);
+        remaining = remaining &gt;&gt; 1;
+    }
+    return bits;
+}
+
+initial {
+    println("bits=" + cast&lt;string&gt;(#count_bits(255)));   // 8，编译期算出
+}</code></pre>
+      <ul>
+        <li><code>#while</code> 与 <code>#if</code> 一样是硬编码编译期结构：编译器直接求值条件并展开。</li>
+        <li><code>#for (let i in range(0, N)) { ... }</code> 与编译期 <code>#break</code> / <code>#continue</code>
+          已进入解析器，splice 展开陆续落地中。</li>
+        <li>展开结果零运行时开销；适合编译期查表、序列展开。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Rust、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">template &lt;int N&gt;
+struct Sum {
+    static constexpr int value = Sum&lt;N-1&gt;::value + N;
+};
+template &lt;&gt; struct Sum&lt;0&gt; { static constexpr int value = 0; };</code></pre>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">const fn sum_upto(n: usize) -&gt; usize {
+    let mut s = 0;
+    let mut i = 0;
+    while i &lt;= n { s += i; i += 1; }
+    s
+}
+const S: usize = sum_upto(10);   // 编译期求值</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">// 编译期循环：inline 递归展开
+inline def sumUpTo(inline n: Int): Int =
+  inline if (n &lt;= 0) then 0 else n + sumUpTo(n - 1)
+
+val s: Int = sumUpTo(5)   // 编译期展开 → 15</code></pre>
+      <div class="note">C# 无编译期循环（只能交给 T4 代码生成器）。</div>
+    </section>
+
+    <section id="f4">
+      <h2><span class="num">06</span>元函数：#fun</h2>
+      <p><code>#fun</code> 在编译期被 LLVM ORC JIT 编译成原生代码并执行，结果直接拼回调用点。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun fib(n: i64) -&gt; i64 {
+    if (n &lt; 2) { return n; }
+    return fib(n - 1) + fib(n - 2);   // 递归调用不需要 # 前缀
+}
+
+initial {
+    let x: i64 = #fib(10);
+    println("fib=" + cast&lt;string&gt;(x));   // 等价于 let x: i64 = 55;
+}</code></pre>
+      <ul>
+        <li><code>#fun</code> 只能在<strong>全局 / 命名空间作用域</strong>声明；返回类型不能为引用类型。</li>
+        <li>返回类型可以是普通值（<code>i64</code> / <code>bool</code> / <code>string</code>
+          ...）、<code>type</code>、<code>ast</code>。</li>
+        <li>按需编译 + 缓存；体内递归、循环、调用其他 <code>#fun</code> 都是普通写法。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Rust、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">constexpr int fib(int n) {
+    return n &lt; 2 ? n : fib(n - 1) + fib(n - 2);
+}
+static_assert(fib(10) == 55);   // 编译期计算</code></pre>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">const fn fib(n: u64) -&gt; u64 {
+    if n &lt; 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+const FIB_10: u64 = fib(10);    // 编译期计算</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">inline def square(x: Int): Int = x * x
+inline def twice(x: Int): Int = square(x) + square(x)
+
+val n: Int = twice(21)   // 编译期展开求值</code></pre>
+      <div class="note">C# 无「把同一函数在编译期求值」的能力（Source Generator 在独立生成器进程中运行）；Scala 3 的 <code>inline def</code>
+        在调用点编译期展开求值。</div>
+    </section>
+
+    <section id="f5">
+      <h2><span class="num">07</span>类型级函数：#fun -&gt; type</h2>
+      <p><code>type</code> 是合法的参数 / 返回类型：元函数可以<strong>直接计算出一个类型</strong>，用在类型位置。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun signed_to_unsigned(t: type) -&gt; type {
+    if (t == #typeof(i32)) { return #typeof(u32); }
+    if (t == #typeof(i64)) { return #typeof(u64); }
+    return #typeof(void);   // 其他类型走默认分支
+}
+
+initial {
+    let x: #signed_to_unsigned(i32) = 0;   // x 的类型是 u32
+}
+
+#template(T: type)
+fun abs_val(v: T) -&gt; #signed_to_unsigned(T) {
+    return cast&lt;#signed_to_unsigned(T)&gt;(v);
+}</code></pre>
+      <ul>
+        <li>对比 C++：不需要偏特化或 trait，一个普通 <code>if</code> 就完成类型分派。</li>
+        <li>元函数内部可以随意操作类型：比较、传参、返回。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">template &lt;typename T&gt; struct make_unsigned;
+template &lt;&gt; struct make_unsigned&lt;int&gt;  { using type = unsigned int; };
+template &lt;&gt; struct make_unsigned&lt;long&gt; { using type = unsigned long; };
+using T = make_unsigned&lt;int&gt;::type;      // 标准库: std::make_unsigned_t&lt;T&gt;</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">type ToUnsigned[X] = X match
+  case Int  =&gt; Long
+  case Long =&gt; BigInt
+
+val x: ToUnsigned[Int] = 5L   // 类型级函数：编译期计算</code></pre>
+      <div class="note">Rust 用 trait + associated type 模拟（<code>type Output</code>）；C# 无（<code>typeof(T)</code>
+        不能参与编译期类型计算）。Scala 3 的 <code>match types</code> 是原生的类型级函数。</div>
+    </section>
+
+    <section id="f6">
+      <h2><span class="num">08</span>泛型模板：#template</h2>
+      <p><code>#template</code> 是「返回类型的元函数」的语法糖，同时支持<strong>类型参数</strong>和<strong>值参数</strong>（编译期常量）。</p>
+
+      <h3>类型参数</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#template(T: type)
+class Box&lt;T&gt; { value: T; }
+
+#template(T: type)
+fun identity(v: T) -&gt; T { return v; }
+
+initial {
+    let b: Box&lt;i32&gt; = new Box&lt;i32&gt;();
+    let x = identity&lt;string&gt;("hi");
+}</code></pre>
+      <ul>
+        <li>每次实例化都会<strong>单态化</strong>（如 <code>Box&lt;i32&gt;</code>），无虚函数开销。</li>
+        <li>概念上等价于 <code>#fun Box(T: type) -&gt; type { ... }</code>。</li>
+      </ul>
+
+      <h3>值参数</h3>
+      <p>数字、布尔、字符串都可以作为值参数：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#template(N: i32)                  // 数字值参数
+fun dbl() -&gt; i64 { return N * 2; }
+
+#template(B: bool)                 // 布尔值参数
+fun flag() -&gt; i64 {
+    if (B) { return 1; }
+    return 0;
+}
+
+#template(S: string)               // 字符串值参数
+fun slen() -&gt; i64 {
+    return string_length(S);
+}
+
+initial {
+    println(cast&lt;string&gt;(dbl&lt;5&gt;()));          // 10
+    println(cast&lt;string&gt;(flag&lt;true&gt;()));      // 1
+    println(cast&lt;string&gt;(slen&lt;"hello"&gt;()));   // 5
+}</code></pre>
+
+      <h3>其他语言对应（代表：C++、Rust、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">template &lt;typename T&gt; struct Box { T value; };
+template &lt;unsigned N&gt; unsigned dbl() { return N * 2; }</code></pre>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">struct Box&lt;T&gt; { value: T }
+fn dbl&lt;const N: u32&gt;() -&gt; u32 { N * 2 }</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">import scala.compiletime.constValue
+
+class Box[T](val value: T)
+
+// 值参数：字面量类型 N + constValue 取回常量
+inline def dbl[N &lt;: Int]: Int = constValue[N] * 2
+
+val b = new Box[Int](42)
+val n = dbl[5]   // 10，编译期求值</code></pre>
+      <div class="note">C# 只有类型参数（值参数几乎不可用）。</div>
+    </section>
+
+    <section id="tpl-meta">
+      <h2><span class="num">09</span>模板值参数与元函数交互：#template + #fun</h2>
+      <p>值参数在特化时替换进函数体 / 字段初值；如果替换后的代码里含有 <code>#fun</code> 元调用，元调用会随特化一起在编译期求值 —— <strong>单态化与元求值的组合</strong>。</p>
+
+      <h3>值参数传给元函数</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun test(i: i64) -&gt; i64 { return i * 2; }
+
+#template(N: i32)
+fun foo() -&gt; i64 {
+    return #test(N);      // 特化时 N -&gt; 5，得到 #test(5)
+}
+
+initial {
+    let r = foo&lt;5&gt;();     // 特化 foo__5，元调用编译期求值 -&gt; 10
+    println("r=" + cast&lt;string&gt;(r));
+}</code></pre>
+
+      <h3>值参数本身可以是元函数调用</h3>
+      <p>值参数不限于字面量：<code>new A&lt;#compute_n()&gt;()</code> 中的元调用会在特化前 JIT 求值（native Pass3）。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun compute_n() -&gt; i64 { return 5; }
+
+#template(N: i32)
+class A {
+    foo: i32 = N;
+}
+
+initial {
+    let a = new A&lt;#compute_n()&gt;();   // 值参数 = 编译期表达式
+    println("foo=" + cast&lt;string&gt;(a.foo));   // 5
+}</code></pre>
+      <ul>
+        <li>混用：<code>#template(T: type, N: i32)</code> + <code>new P&lt;i32, #compute_n()&gt;()</code> ——
+          类型参数与值参数按位置分别解析。</li>
+        <li>特化体里的 <code>#test(N)</code> 被求值并拼接为常量 —— 模板展开时自动触发元求值，无需额外步骤。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Rust、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">constexpr unsigned test(unsigned i) { return i * 2; }
+
+template &lt;unsigned N&gt;
+unsigned foo() { return test(N); }   // constexpr 求值
+// C++20 起: template&lt;auto N&gt; / consteval</code></pre>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">const fn test(i: u64) -&gt; u64 { i * 2 }
+
+fn foo&lt;const N: u64&gt;() -&gt; u64 { test(N) }   // const 上下文求值</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">import scala.quoted.*
+import scala.compiletime.constValue
+
+// 值参数 N 传给 macro（相当于 #template(N) + #test(N)）
+inline def foo[N &lt;: Int]: Int = ${ fooImpl[N] }
+
+def fooImpl[N &lt;: Int](using Quotes): Expr[Int] =
+  Expr(constValue[N] * 2)   // 编译期计算
+
+val r: Int = foo[5]   // 10</code></pre>
+      <div class="note">C# 泛型没有值参数。</div>
+    </section>
+
+    <section id="specializing">
+      <h2><span class="num">10</span>模板特化：#specializing</h2>
+      <p>按实例化参数控制一个类<strong>是否实现某个接口</strong>、以及<strong>如何实现</strong>，条件是<strong>编译期元代码</strong>
+        —— 是 Rust <code>impl ... where</code> 子句的正面、声明式替代（C++ / Scala 的对应机制见下）。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#template(T: type)
+interface IDescribe {
+    fun describe(this) -&gt; string;
+}
+
+#template(N: i32)
+class foo {
+    impl IReferenceType;
+}
+
+#specializing foo&lt;N&gt; {
+    if (N &gt; 3) {
+        impl IDescribe {
+            fun describe(this) -&gt; string { return "big"; }
+        }
+    }
+    else if (N == 2) {
+        impl IDescribe {
+            fun describe(this) -&gt; string { return "two"; }
+        }
+    }
+    else if (N == 1) {
+        #error("N never 1");     // 实例化 foo&lt;1&gt; 时编译失败
+    }
+}
+
+initial {
+    let a = new foo&lt;4&gt;();
+    let da: IDescribe = a;
+    println("n=" + da.describe());   // "big"
+}</code></pre>
+      <ul>
+        <li>条件在<strong>实例化时</strong>求值：<code>foo&lt;4&gt;</code> 走第一个分支，<code>foo&lt;2&gt;</code> 走第二个。</li>
+        <li><code>#error("...")</code> 使编译失败 —— 比 <code>static_assert</code> 更灵活：条件可以是任意元代码，且无需手动维护常量。</li>
+        <li>每个分支可以注入不同的 <code>impl</code> / 方法 —— 既决定<strong>是否实现</strong>，也决定<strong>如何实现</strong>。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：Rust、C++、Scala）</h3>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">// 条件实现：where 子句决定「是否实现」以及「如何实现」
+trait IDescribe { fn describe(&amp;self) -&gt; String; }
+
+struct Foo&lt;T&gt;(T);
+
+trait NotJson {}                    // 约束标记
+impl NotJson for i32 {}
+impl NotJson for String {}
+
+impl&lt;T: NotJson&gt; IDescribe for Foo&lt;T&gt; {
+    fn describe(&amp;self) -&gt; String { "big".to_string() }
+}
+
+let f = Foo(42i32);                 // i32: NotJson → 有实现
+// Foo&lt;f64&gt; 没有 NotJson → 没有 IDescribe，用作接口即编译错误</code></pre>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">// 特化决定「是否继承接口」以及「如何实现」
+template &lt;int N&gt; struct Foo : IDescribe {
+    std::string describe() const override { return "big"; }
+};
+template &lt;&gt; struct Foo&lt;2&gt; : IDescribe {
+    std::string describe() const override { return "two"; }
+};
+template &lt;&gt; struct Foo&lt;1&gt; {};      // N==1：不实现接口，用作 IDescribe 即编译错误</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">// 类型类 + given：编译期实例搜索决定「是否具有能力」
+trait Describe[T]:
+  def describe: String
+
+case class Foo[N &lt;: Int]()
+
+given big4: Describe[Foo[4]] = new Describe[Foo[4]]:
+  def describe = "big"
+given two2: Describe[Foo[2]] = new Describe[Foo[2]]:
+  def describe = "two"
+
+val s = summon[Describe[Foo[4]]].describe    // "big"
+// summon[Describe[Foo[1]]] —— 编译错误：找不到 given 实例</code></pre>
+      <div class="note">对比：penguin 的条件是任意编译期元代码（可调用 <code>#fun</code>，如 json 库的 <code>json_deserializable_type(T)</code>），Rust / C++ / Scala 的约束则是类型或常量谓词；C# 泛型无法按值分派。</div>
+    </section>
+
+    <section id="f7">
+      <h2><span class="num">11</span>类型查询：#typeof(T)</h2>
+      <p><code>#typeof(T)</code> 把类型名解析成 <code>type</code> 值，交给元函数做比较、反射、传递。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun is_integer(t: type) -&gt; bool {
+    return t == #typeof(i32) || t == #typeof(i64);
+}
+
+#template(T: type)
+fun check() {
+    #if (is_integer(#typeof(T))) {
+        println("T is an integer type");
+    } #else {
+        println("T is not an integer type");
+    }
+}
+
+initial {
+    let a: #typeof(i32) = 42;      // 直接当类型用
+    check&lt;i32&gt;();                  // "T is an integer type"
+    check&lt;string&gt;();               // "T is not an integer type"
+}</code></pre>
+      <ul>
+        <li>模板内 <code>#typeof(T)</code> 沿作用域链解析到<strong>具体实例化类型</strong>。</li>
+        <li>反射入口：把 <code>#typeof(Point)</code> 传给元函数，即可拿到类型的字段 / 方法（见下节）。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、C#、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">decltype(x)                  // 表达式的类型
+std::is_same_v&lt;T, int&gt;       // 编译期类型比较</code></pre>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">typeof(T)                    // 编译期求得 System.Type 对象
+typeof(T).GetFields()        // 反射字段 —— 只能发生在运行时</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">import scala.compiletime.erasedValue
+
+// 编译期类型查询：erasedValue match 按类型分派
+inline def isInt[T]: Boolean =
+  inline erasedValue[T] match
+    case _: Int    =&gt; true
+    case _         =&gt; false
+
+val b: Boolean = isInt[Int]      // true
+val c: Boolean = isInt[String]   // false</code></pre>
+      <div class="note">Rust 有 <code>std::any::type_name::&lt;T&gt;()</code>（编译期类型名）与
+        <code>TypeId::of::&lt;T&gt;()</code>。C# 的 <code>typeof(T)</code>
+        虽在编译期求值，但用它反射字段 / 方法发生在<strong>运行时</strong> —— 不是编译期元编程。
+      </div>
+    </section>
+
+    <section id="f8">
+      <h2><span class="num">12</span>结构化反射：t.fields() / t.methods() / t.variants()</h2>
+      <p><code>type</code> 就是编译器的 <code>BoundType</code> 本体：<code>fields()</code> / <code>methods()</code> /
+        <code>variants()</code> 返回编译器<strong>正在使用中的对象</strong>，字段直接读。
+      </p>
+
+      <h3>读取字段列表</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">class Point {
+    x: mut i32;
+    y: mut i32;
+}
+
+#fun field_count_of(t: type) -&gt; i64 {
+    return cast&lt;i64&gt;(t.fields().size());
+}
+
+initial {
+    println("count=" + cast&lt;string&gt;(#field_count_of(#typeof(Point))));   // 2
+}</code></pre>
+
+      <h3>遍历字段名</h3>
+      <p>字段对象直接暴露 <code>name</code> / <code>bound_type</code>，配合 <code>#while</code> 逐字段处理：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun describe(t: type) -&gt; string {
+    let fs = t.fields();
+    let mut s = t.display_name() + "{";
+    let i: mut i64 = 0;
+    #while (i &lt; cast&lt;i64&gt;(fs.size())) {
+        if (i &gt; 0) { s = s + ", "; }
+        s = s + fs.at(cast&lt;u64&gt;(i)).some.name;   // 直接读 Field.name
+        i = i + 1;
+    }
+    return s + "}";
+}
+
+initial {
+    println(#describe(#typeof(Point)));   // Point{x, y}
+}</code></pre>
+      <ul>
+        <li>没有平行的 FieldInfo / MethodInfo 体系 —— 元代码与编译器读的是<strong>同一批对象</strong>。</li>
+        <li>类型方法：<code>display_name()</code> / <code>kind()</code> / <code>is_class()</code> / <code>fields()</code> /
+          <code>methods()</code> / <code>variants()</code> / <code>generic_args()</code>；<code>methods()</code> /
+          <code>variants()</code> 与 <code>fields()</code> 同构。
+        </li>
+      </ul>
+
+      <h3>其他语言对应（代表：C#、Scala）</h3>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">typeof(Point).GetFields();   // 运行时反射：编译后才知道字段，且带运行时开销</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">case class Point(x: Int, y: Int) derives JsonCodec
+// derives 在编译期生成 impl；
+// Mirror 在编译期提供字段名（MirroredElemNames）与类型元数据</code></pre>
+      <div class="note warn">C# 要达到类似效果只能靠 <strong>System.Reflection 运行时反射</strong> ——
+        发生在运行时，<strong>不是编译期元编程</strong>；要在编译期拿到字段列表并生成代码，只能靠 Source Generator（见第 14 / 15 节）。C++ 无（C++26
+        静态反射提案未落地，<code>magic_enum</code> 等库靠解析编译器内建字符串）；Rust 无（proc macro 只能看到 TokenStream）；Scala 3 的
+        <code>derives</code> + <code>Mirror</code> 是编译期结构反射（字段名 / 类型以类型元数据形式暴露）。
+      </div>
+    </section>
+
+    <section id="f9">
+      <h2><span class="num">13</span>元数据类：#class</h2>
+      <p><code>#class</code> 是仅存在于元编译单元的数据结构：给 <code>#fun</code> 当编译期中间数据用，<strong>不会</strong>进入最终程序。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#class Acc {
+    total: mut i64;
+    fun new(mut this) { this.total = 0; }
+    fun add(mut this, x: i64) { this.total = this.total + x; }
+    fun get(this) -&gt; i64 { return this.total; }
+}
+
+#fun use_class(n: i64) -&gt; i64 {
+    let a: mut Acc = new Acc();    // #class 实例只能在元函数里使用
+    a.add(n);
+    a.add(n);
+    return a.get();
+}
+
+initial {
+    println("result=" + cast&lt;string&gt;(#use_class(21)));   // 42
+}</code></pre>
+      <ul>
+        <li>字段 / 方法 / 泛型 / 可变性 —— 与普通 class 能力完全一致。</li>
+        <li>适用场景：编译期收集数据、构造生成器需要的中间表示。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：C++、Scala）</h3>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">template &lt;typename T&gt; struct TypeTraits;   // 编译期数据载体
+struct TrueType  { static constexpr bool value = true; };
+struct FalseType { static constexpr bool value = false; };</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">// 编译期中间数据：普通 case class（inline 展开时求值）
+case class Acc(total: Int)
+
+inline def use(inline n: Int): Int =
+  Acc(0).copy(total = n + n).total
+
+val r: Int = use(21)   // 编译期求值 → 42</code></pre>
+      <div class="note">Rust 无直接对应（const fn 内可用普通 struct 做临时数据）；C# 靠生成器进程内的辅助类。</div>
+    </section>
+
+    <section id="f10">
+      <h2><span class="num">14</span>编译器上下文：#compiler()</h2>
+      <p><code>#compiler()</code> 返回编译器代理对象：查类型 / 符号、解析代码、输出诊断。</p>
+
+      <h3>诊断与校验</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun assert_small(t: type) -&gt; i64 {
+    let n = cast&lt;i64&gt;(t.fields().size());
+    #if (n &gt; 3) {
+        compiler().error("Type " + t.display_name() + " has too many fields");
+    } #else {
+        compiler().info("OK: " + t.display_name());
+    }
+    return n;
+}
+
+initial {
+    let n = assert_small(#typeof(Point));   // 输出 "OK: Point"
+}</code></pre>
+      <ul>
+        <li>诊断：<code>error</code>（使编译失败）/ <code>warn</code> / <code>info</code>。</li>
+        <li>选项：<code>set_option</code> / <code>get_option</code> / <code>has_option</code>（与 <code>#define</code> 同一存储）。
+        </li>
+      </ul>
+
+      <h3>查询与解析</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun lookup_option() -&gt; string {
+    let opt = compiler().resolve_type("Option");    // Option&lt;type&gt;
+    if (opt.is_none()) { compiler().error("Option not found"); }
+    return opt.some.display_name();
+}
+
+initial {
+    println("t=" + lookup_option());   // t=Option
+}</code></pre>
+      <ul>
+        <li>查询：<code>resolve_type</code> / <code>resolve_symbol</code> / <code>has_type</code>。</li>
+        <li>解析：<code>create_expression</code> / <code>create_definition</code> / <code>create_ast</code>（文本 → AST）。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：Rust、C#、Scala）</h3>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">compile_error!("too many fields");     // 或 proc_macro::Diagnostic::spanned_error</code></pre>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">context.ReportDiagnostic(Diagnostic.Create(rule, location, "too many fields"));
+// GeneratorExecutionContext 提供语法树 / 语义模型查询</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">import scala.quoted.*
+
+// 编译期诊断：macro 在 Quotes 上下文里报错
+inline def assertSmall(inline n: Int): Int = ${ assertSmallImpl('n) }
+
+def assertSmallImpl(n: Expr[Int])(using Quotes): Expr[Int] =
+  import quotes.reflect.report
+  n.value match
+    case Some(v) if v &gt; 3 =&gt; report.errorAndAbort("too many fields")
+    case _                =&gt; n</code></pre>
+      <div class="note">C++ 只有 <code>static_assert</code> 诊断、没有查询 / 生成能力。</div>
+    </section>
+
+    <section id="f11">
+      <h2><span class="num">15</span>AST 代码生成：#fun -&gt; ast</h2>
+      <p>元函数返回 <code>ast</code> 时，结果会被<strong>拼回调用点</strong>继续走正常编译管线 —— 这就是 derive 宏。</p>
+
+      <h3>生成与注入</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">class Point { x: mut i32; y: mut i32; }
+
+#fun derive_clone(t: type) -&gt; ast {
+    let fs = t.fields();
+    let n = cast&lt;i64&gt;(fs.size());
+    let mut body = "fun my_clone(p: mut Point) -&gt; Point { let q: mut Point = new Point(); ";
+    let i: mut i64 = 0;
+    #while (i &lt; n) {
+        let fname = fs.at(cast&lt;u64&gt;(i)).some.name;
+        body = body + "q." + fname + " = p." + fname + "; ";
+        i = i + 1;
+    }
+    body = body + "return q; }";
+    return compiler().create_definition(body);    // 文本 → 定义 AST
+}
+
+#derive_clone(#typeof(Point));    // 生成并注入 my_clone()</code></pre>
+      <p>组合拳：反射字段 → 拼接源码 → <code>create_definition</code> → 注入 → 正常编译。</p>
+
+      <h3>使用生成的函数</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">initial {
+    let p: mut Point = new Point();
+    p.x = 3; p.y = 4;
+    let q: Point = my_clone(p);   // 生成的函数直接可用
+    println(cast&lt;string&gt;(q.x) + "," + cast&lt;string&gt;(q.y));   // 3,4
+}</code></pre>
+      <ul>
+        <li><strong>尾随代码块</strong>：若 <code>#fun</code> 最后一个参数是 <code>ast</code>，调用点可跟一个 <code>{ ... }</code>
+          代码块作为该参数；<code>unstructured_ast</code> 则捕获原始文本。</li>
+        <li>生成代码与手写代码地位相同：类型检查、IR、LLVM 全流程照常。</li>
+      </ul>
+
+      <h3>其他语言对应（代表：Rust、C#、Scala）</h3>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">#[proc_macro_derive(Clone)]
+pub fn derive_clone(input: TokenStream) -&gt; TokenStream {
+    // 解析字段 → 生成代码 → 返回 TokenStream
+}
+
+#[derive(Clone)]
+struct Point { x: i32, y: i32 }</code></pre>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">[Generator]
+public class CloneGen : ISourceGenerator {
+    // 用语法树 / 语义模型读字段，向 context 添加生成文件
+}</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">import scala.quoted.*
+
+inline def printf(fmt: String, args: Any*): String =
+  ${ printfImpl('fmt, 'args) }      // 引号代码拼接
+
+def printfImpl(fmt: Expr[String], args: Expr[Seq[Any]])(using Quotes): Expr[String] =
+  // 编译期检查格式串并生成表达式（类似 penguin 的 #printf）</code></pre>
+      <div class="note">C++ 用宏 / X-macro / 外部代码生成器（protoc 等）。</div>
+    </section>
+
+    <section id="unstructured-ast">
+      <h2><span class="num">16</span>AST 原始文本捕获：unstructured_ast</h2>
+      <p><code>ast</code> 参数捕获<strong>结构化 AST 节点</strong>；<code>unstructured_ast</code>
+        则按<strong>原始文本</strong>捕获（不做解析、逗号保留），交给元函数自己处理 —— 适合变长参数、格式串等需要看到原始写法的场景。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun printf(fmt: string, params: unstructured_ast) -&gt; ast {
+    let token = compiler().parse_arguments(params);   // 原始文本 -&gt; 实参列表 AST
+    let expr = compiler().get_ast(token);             // 取真实节点做内省
+    if (expr is emperor.Expression.function_call_arguments) {
+        let args = expr.function_call_arguments;
+        let n = cast&lt;i64&gt;(args.size());
+        let mut fmt_idx = 0;
+        let mut arg_idx = 0;
+        let fmt_len = string_length(fmt);
+        let mut result = "println(\"";
+        while (fmt_idx &lt; fmt_len) {
+            let ch = string_char_at(fmt, fmt_idx);
+            if (ch == "{" &amp;&amp; fmt_idx + 1 &lt; fmt_len &amp;&amp; string_char_at(fmt, fmt_idx + 1) == "}") {
+                if (arg_idx &lt; n) {
+                    let arg_expr = args.at(cast&lt;u64&gt;(arg_idx)).some;
+                    result = result + "\" + cast&lt;string&gt;(" + arg_expr.build_text() + ") + \"";
+                }
+                arg_idx = arg_idx + 1;
+                fmt_idx = fmt_idx + 2;
+            } else {
+                result = result + ch;
+                fmt_idx = fmt_idx + 1;
+            }
+        }
+        result = result + "\")";
+        return compiler().create_expression(result);
+    }
+    return compiler().create_expression("println(\"error\")");
+}
+
+initial {
+    let a: i32 = 10;
+    let b: i32 = 20;
+    #printf("a={}, b={}") { a, b };   // 尾随块按原始文本捕获: "a , b"
+    // 生成: println("a=" + cast&lt;string&gt;(a) + ", b=" + cast&lt;string&gt;(b));
+}</code></pre>
+      <ul>
+        <li>尾随 <code>{ ... }</code> 块以原始文本送达（如 <code>"a , b"</code>，逗号原样保留）。</li>
+        <li><code>compiler().parse_arguments</code> 把原始文本解析成 <code>FunctionCallArguments</code>
+          节点；<code>compiler().get_ast</code> 取回真实节点做内省 —— 这里逐实参生成 <code>cast&lt;string&gt;(...) + ...</code> 的拼接表达式。
+        </li>
+      </ul>
+
+      <h3>其他语言对应（代表：Rust、C#）</h3>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">// proc_macro 收到的是原始 TokenStream（类似 unstructured_ast）
+#[proc_macro]
+pub fn printf(input: TokenStream) -&gt; TokenStream {
+    // 需要自己把 TokenStream 解析成 TokenTree 或 AST
+}</code></pre>
+      <div class="codelabel">C#</div>
+      <pre><code class="lang-csharp">// Source Generator 拿到的是已解析的语法树（类似 ast，结构化）
+// SyntaxNode / ArgumentList —— 无需自行解析文本</code></pre>
+      <div class="note">C++ 宏收到的是预处理后的原始 token；Scala 3 的引号代码 <code>'{...}</code> 是结构化 <code>Expr</code>，没有原始文本概念。</div>
+    </section>
+
+    <section id="tpl-list">
+      <h2><span class="num">17</span>模板中的容器：List&lt;T&gt; vs C++ tuple</h2>
+      <p>模板里同样可以使用标准容器：penguin 的 <code>List&lt;T&gt;</code> 在单态化后成为<strong>具体类型</strong>的运行时链表；C++
+        侧对应的「模板 + 容器」场景是变长参数包 + <code>std::tuple</code> —— 元素类型可以各不相同，数量在编译期固定。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#template(T: type)
+class ShoppingCart {
+    items: mut List&lt;T&gt;;            // 模板里的 List：实例化后是具体类型链表
+
+    fun new(mut this) { this.items = new List&lt;T&gt;(); }
+    fun add(mut this, item: T) { this.items.push(item); }
+    fun count(this) -&gt; i64 { return cast&lt;i64&gt;(this.items.size()); }
+}
+
+initial {
+    let cart = new ShoppingCart&lt;string&gt;();   // 单态化：items 是 List&lt;string&gt;
+    cart.add("apple");
+    cart.add("banana");
+    println("count=" + cast&lt;string&gt;(cart.count()));   // 2
+}</code></pre>
+      <div class="codelabel">C++</div>
+      <pre><code class="lang-cpp">#include &lt;tuple&gt;
+#include &lt;utility&gt;
+
+template &lt;typename... Ts&gt;
+class Cart {
+    std::tuple&lt;Ts...&gt; items;        // 异构集合：每个元素类型可以不同
+public:
+    explicit Cart(Ts... vs) : items(std::move(vs)...) {}
+    std::size_t count() const { return sizeof...(Ts); }   // 编译期固定
+};
+
+// 用法：每种元素一个类型槽位
+Cart&lt;int, std::string&gt; c(2, "apple");</code></pre>
+      <ul>
+        <li>penguin：<code>#template(T: type)</code> 实例化后 <code>items</code> 的类型完整确定（如
+          <code>List&lt;i32&gt;</code>），<code>push</code> / <code>size</code> 等成员直接可用 —— 单态化让容器类型完整落地。</li>
+        <li>C++：<code>Ts...</code> 是变长模板参数包，<code>std::tuple&lt;Ts...&gt;</code> 的元素类型可以各不相同，数量在编译期固定（<code>sizeof...(Ts)</code>）。</li>
+        <li>对比要点：「同质、运行时可变」的 <code>List&lt;T&gt;</code> vs 「异构、编译期固定」的 tuple —— 都无虚函数开销。</li>
+        <li>penguin 没有内置异构元组：需要异构集合时，用 <code>#fun</code> + <code>ast</code> 在编译期生成对应代码（见第 15 节）。</li>
+      </ul>
+    </section>
+
+    <section id="json-lib">
+      <h2><span class="num">18</span>综合示例（真实项目）：JSON 标准库的实现</h2>
+      <p><code>EmperorPenguin/std/penguin/json.penguin</code>（888 行）是标准库里真实使用元编程的例子：序列化接口、按字段反射自动生成
+        <code>impl</code>、条件特化。它提供两层 API：
+      </p>
+      <ul>
+        <li><strong>动态 API</strong>：<code>JsonValue</code>（带标签枚举，数字以原文字符串保存以支持
+          round-trip）、<code>parse_json</code>、<code>JsonWriter</code> —— 不需要元编程。</li>
+        <li><strong>元编程 API</strong>：类里写一行 <code>#impl_json_serializable();</code>，编译期自动生成该类的序列化 / 反序列化
+          <code>impl</code>。
+        </li>
+      </ul>
+
+      <h3>用法：一行宏，任意类可序列化</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">class Person {
+    name: string;
+    age: i64;
+    friends: std.Vector&lt;string&gt;;
+
+    #impl_json_serializable();   // 编译期生成 impl std.IJsonSerializable&lt;Person&gt;
+}
+
+initial {
+    let p = new Person();
+    p.name = "Alice";
+    p.age = 30;
+    let json = p.json_serialize();              // {"name":"Alice","age":30,...}
+    let q = Person.json_deserialize(json);      // 静态调用
+}</code></pre>
+
+      <h3>实现拆解：反射 → 逐字段生成 → 注入</h3>
+      <p>宏体就是几个普通 <code>#fun</code>：先拿到<strong>当前类</strong>的类型对象并反射字段，再按字段类型拼接源码，最后把整个 <code>impl</code> 注入回编译管线。</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun impl_json_serializable() -&gt; ast {
+    let t: emperor.BoundType = compiler().get_current_scope();   // 当前类
+    if (t.display_name() == "void") {
+        compiler().error("must be called inside a class body");
+    }
+    let cls: string = t.display_name();
+    let fs = t.fields();                                        // 反射全部字段
+    let mut ser = "let mut w = new std.JsonWriter(); w.begin_object(); ";
+    let mut de  = "let _v: std.JsonValue = std.parse_json(json); let mut _obj = new " + cls + "(); ";
+    let i: mut i64 = 0;
+    while (i &lt; cast&lt;i64&gt;(fs.size())) {
+        let f = fs.at(cast&lt;u64&gt;(i)).some;
+        ser = ser + "w.key(\"" + f.name + "\"); "
+                  + json_write_snippet(f.bound_type, "this." + f.name) + "; ";
+        de = de + "if (let _f := _v.get(\"" + f.name + "\").some) { "
+                + json_read_stmt(f.bound_type, "_f", "_obj." + f.name) + " } ";
+        i = i + 1;
+    }
+    ser = ser + "w.end_object(); return w.to_string();";
+    de = de + "return _obj;";
+    return compiler().create_definition(                        // 拼接后注入
+        "impl std.IJsonSerializable&lt;" + cls + "&gt; { "
+        + "fun json_serialize(this) -&gt; string { " + ser + " } "
+        + "fun json_deserialize(json: string) -&gt; mut " + cls + " { " + de + " } "
+        + "}");
+}</code></pre>
+      <p>字段的「怎么写 / 怎么读」由按类型分派的元函数生成 —— 容器字段递归展开，嵌套类字段委托给其自身的 <code>json_serialize</code>：</p>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#fun json_write_snippet(t: type, arg: string) -&gt; string {
+    let dn: string = t.display_name();
+    if (string_find(dn, "std.Vector") &gt;= 0 &amp;&amp; t.generic_args.size() &gt;= 1) {
+        let elem = arg_as_bound_type(t.generic_args.at(0).some);
+        if (json_serializable_type(elem) == false) { return ""; }   // 不可序列化则跳过
+        return "w.begin_array(); for (let _v in " + arg + ") { "
+             + json_write_snippet(elem, "_v") + " } w.end_array()";
+    }
+    // std.HashMap -&gt; begin_object + 遍历 iter_keys()，同理
+    if (json_serializable_type(t) == false) { return ""; }
+    return "w.value_raw(" + arg + ".json_serialize())";
+}
+
+#fun json_serializable_type(t: type) -&gt; bool {
+    if (t.is_primitive()) { return true; }
+    // Vector / HashMap / Option / Box：递归检查泛型参数
+    // 类 / 枚举：检查是否实现了 IJsonSerializable（has_interface）
+    return false;
+}</code></pre>
+
+      <h3>#specializing：只有元素可序列化时，Option&lt;T&gt; 才有 impl</h3>
+      <div class="codelabel">penguin</div>
+      <pre><code class="lang-penguin">#specializing __builtin.Option&lt;T&gt; {
+    if (json_deserializable_type(T)) {      // 实例化时求值的编译期条件
+        impl std.IJsonSerializable&lt;__builtin.Option&lt;T&gt;&gt; {
+            fun json_serialize(this) -&gt; string {
+                if (this is __builtin.Option&lt;T&gt;.some) { return this.some.json_serialize(); }
+                return "null";
+            }
+            fun json_deserialize(json: string) -&gt; mut __builtin.Option&lt;T&gt; {
+                if (json == "null") { return new __builtin.Option&lt;T&gt;.none(); }
+                let _v = std.parse_json(json);
+                return new __builtin.Option&lt;T&gt;.some(#json_read_expr_ast(T, "_v"));
+            }
+        }
+    }
+}</code></pre>
+      <ul>
+        <li>正面语义：<code>Option&lt;T&gt;</code> 只有当 <code>T</code> 本身可反序列化时才获得 impl，否则把 <code>Option&lt;T&gt;</code>
+          当序列化类型使用就是编译错误 —— 类似 Rust 的 trait bound。反序列化体里的 <code>#json_read_expr_ast(T, "_v")</code> 是元调用拼接的表达式（第 9 节）。
+        </li>
+        <li><code>Box&lt;T&gt;</code> 同理（<code>this.value.json_serialize()</code> / 拆包
+          <code>#json_read_expr_ast</code>）。
+        </li>
+      </ul>
+
+      <h3>用到的功能一览与对照</h3>
+      <ul>
+        <li><code>#template</code> 接口 <code>IJsonSerializable&lt;T&gt;</code> + 全基础类型 impl（第 8 节）；<code>#fun</code>
+          生成源码片段（第 6 节）。</li>
+        <li><code>compiler().get_current_scope()</code> 取当前类 + <code>t.fields()</code> 反射字段（第 12 / 14
+          节）；<code>compiler().create_definition</code> 注入生成代码（第 15 节）。</li>
+        <li><code>#specializing</code> 条件实现（第 10 节）+ 特化时元函数求值（第 9 节）。</li>
+        <li>已知限制：目前仅支持具体顶层类（泛型参数字段类型无法在 codegen 分派），u64 / f64 的精度保留也有限制 —— 详见 json.penguin 头部注释。</li>
+      </ul>
+      <h3>其他语言对应（代表：Rust、Scala）</h3>
+      <div class="codelabel">Rust</div>
+      <pre><code class="lang-rust">#[derive(Serialize, Deserialize)]
+struct Person { name: String, age: i32 }
+// serde derive：反射字段生成 impl</code></pre>
+      <div class="codelabel">Scala 3</div>
+      <pre><code class="lang-scala">case class Person(name: String, age: Int) derives JsonCodec
+// 编译期生成序列化 impl —— 与 #impl_json_serializable() 同一思路</code></pre>
+      <div class="note">C# <code>System.Text.Json</code> 用运行时反射（非编译期）；C++ nlohmann/json 靠模板与特化。PenguinLang
+        的反射对象是编译器自己的 <code>BoundType</code>，宏体就是普通 <code>#fun</code> 代码。</div>
+    </section>
+
+    <section id="summary">
+      <h2><span class="num">19</span>能力对比一览</h2>
+      <table>
+        <tr>
+          <th>能力</th>
+          <th>PenguinLang</th>
+          <th>C++</th>
+          <th>Rust</th>
+          <th>C#</th>
+          <th>Scala 3</th>
+        </tr>
+        <tr>
+          <td>编译期计算</td>
+          <td><code>#fun</code>（JIT，原生速度）</td>
+          <td><code>constexpr</code></td>
+          <td><code>const fn</code></td>
+          <td>无</td>
+          <td><code>inline def</code></td>
+        </tr>
+        <tr>
+          <td>编译期条件</td>
+          <td><code>#if</code> / <code>#elif</code> / <code>#else</code></td>
+          <td><code>if constexpr</code> / 预处理</td>
+          <td><code>cfg!</code> / 特化</td>
+          <td>编译符号</td>
+          <td><code>inline if</code></td>
+        </tr>
+        <tr>
+          <td>编译期循环</td>
+          <td><code>#while</code> / <code>#for</code></td>
+          <td>模板递归</td>
+          <td>const fn 循环</td>
+          <td>无</td>
+          <td><code>inline match</code> + 递归</td>
+        </tr>
+        <tr>
+          <td>类型级函数</td>
+          <td><code>#fun -&gt; type</code></td>
+          <td>type traits</td>
+          <td>trait + assoc type</td>
+          <td>无</td>
+          <td><code>match types</code></td>
+        </tr>
+        <tr>
+          <td>结构化反射</td>
+          <td><code>t.fields()</code> / <code>t.methods()</code></td>
+          <td>无（C++26 提案中）</td>
+          <td>无</td>
+          <td>System.Reflection（运行时，非编译期）</td>
+          <td><code>derives</code> / <code>Mirror</code>（编译期）</td>
+        </tr>
+        <tr>
+          <td>代码生成</td>
+          <td><code>#fun -&gt; ast</code></td>
+          <td>宏 / 外部工具</td>
+          <td>proc_macro</td>
+          <td>Source Generator</td>
+          <td><code>macro</code>（引号代码）</td>
+        </tr>
+        <tr>
+          <td>泛型值参数</td>
+          <td><code>#template(N: i32)</code></td>
+          <td><code>template&lt;int N&gt;</code></td>
+          <td>const 泛型</td>
+          <td>无</td>
+          <td>字面量类型 + <code>constValue</code></td>
+        </tr>
+        <tr>
+          <td>编译期诊断</td>
+          <td><code>compiler().error()</code></td>
+          <td><code>static_assert</code></td>
+          <td><code>compile_error!</code></td>
+          <td>生成器 Diagnostic</td>
+          <td><code>report.errorAndAbort</code></td>
+        </tr>
+        <tr>
+          <td>模板条件特化</td>
+          <td><code>#specializing</code></td>
+          <td>偏特化（决定是否继承接口）</td>
+          <td><code>impl ... where</code> 条件实现</td>
+          <td>无</td>
+          <td>given / 类型类实例</td>
+        </tr>
+        <tr>
+          <td>值参数 ↔ 元函数</td>
+          <td><code>#template(N)</code> + <code>#fun</code></td>
+          <td>非类型参数 + <code>constexpr</code></td>
+          <td>const 泛型</td>
+          <td>无</td>
+          <td><code>inline</code> + <code>constValue</code></td>
+        </tr>
+        <tr>
+          <td>AST 原始文本</td>
+          <td><code>unstructured_ast</code></td>
+          <td>宏（原始 token）</td>
+          <td>proc_macro <code>TokenStream</code></td>
+          <td>语法树（结构化）</td>
+          <td>无（引号代码为结构化 Expr）</td>
+        </tr>
+        <tr>
+          <td>概念数量</td>
+          <td><strong>1 套统一模型</strong></td>
+          <td>4+ 套机制</td>
+          <td>多种机制</td>
+          <td>生成器 API</td>
+          <td>多套机制（inline / match types / macro）</td>
+        </tr>
+      </table>
+    </section>
+
+    <section id="refs">
+      <h2><span class="num">20</span>运行前提与参考资料</h2>
+      <ul>
+        <li>元编程 JIT 只在 <strong>native Pass2 / Pass3</strong> 生效：先执行 <code>./penguin -b</code> 构建自举编译器。</li>
+        <li>Pass1 / BabyPenguin 只验证 <code>.penguin</code> 能编译，不执行元函数 JIT。</li>
+        <li>详细规范：<code>Documentation/10_MetaProgramming.md</code>。</li>
+        <li>可运行用例：<code>Tests/MetaProgramming/*.md</code>（约 80 个）。</li>
+      </ul>
+      <div class="codelabel">bash</div>
+      <pre><code class="lang-bash">dotnet run --project Tests/PenguinTestRunner -- --filter MetaProgramming/*</code></pre>
+    </section>
+
+    <footer>
+      <p>Meta Programming in EmperorPenguin · <a
+          href="https://github.com/CaulyKan/PenguinLang">github.com/CaulyKan/PenguinLang</a></p>
+    </footer>
+
+  </div>
+
+  <button id="toTop" title="回到顶部">&uarr;</button>
+
+  <script>
+    // 轻量代码高亮：字符串 / 注释 /（penguin 的 # 前缀元关键字）
+    document.querySelectorAll('pre code').forEach(function (block) {
+      var lang = block.className;
+      var pattern = /(#\w+)|("(?:[^"\\]|\\.)*")|(\/\/[^\n]*)/g;
+      if (!/penguin/.test(lang)) pattern = /("(?:[^"\\]|\\.)*")|(\/\/[^\n]*)/g;
+      block.innerHTML = block.textContent
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(pattern, function (m, k, s, c) {
+          if (k) return '<span class="hl-k">' + k + '</span>';
+          if (s) return '<span class="hl-s">' + s + '</span>';
+          if (c) return '<span class="hl-c">' + c + '</span>';
+          return m;
+        });
+    });
+
+    // 回到顶部
+    var btn = document.getElementById('toTop');
+    window.addEventListener('scroll', function () {
+      btn.classList.toggle('show', window.scrollY > 400);
+    });
+    btn.addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
+  </script>
+
+</body>
+
+</html>
