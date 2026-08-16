@@ -19,7 +19,7 @@ initial {
     let source = ""fun foo() -> i64 { return 42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -39,7 +39,7 @@ initial {
     let source = ""fun foo() -> bool { return true; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -63,7 +63,7 @@ initial {
     let source = ""fun test() -> i64 { return 1 + 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -85,7 +85,7 @@ initial {
     let source = ""fun test() -> i64 { return 10 - 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -107,7 +107,7 @@ initial {
     let source = ""fun test() -> i64 { return 3 * 4; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -129,7 +129,7 @@ initial {
     let source = ""fun test() -> bool { return 1 < 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -151,7 +151,7 @@ initial {
     let source = ""fun test() -> bool { return 1 == 1; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -173,7 +173,7 @@ initial {
     let source = ""fun test() -> i64 { return 1 + 2 * 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -201,7 +201,7 @@ initial {
     let source = ""fun test() -> i64 { return -42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -222,7 +222,7 @@ initial {
     let source = ""fun test() -> bool { return !true; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -247,7 +247,7 @@ initial {
     let source = ""fun test() -> i64 { let x: i32 = 42; return cast<i64>(x); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -272,7 +272,7 @@ initial {
     let source = ""fun test(x: i64) -> i64 { if (x > 0) { return 1; } else { return 0; } }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -302,7 +302,7 @@ initial {
     let source = ""fun test(x: i64) -> i64 { if (x > 0) { return 1; } return 0; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -334,7 +334,7 @@ initial {
     let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -371,7 +371,7 @@ initial {
     let source = ""fun test() -> i64 { let x: i64 = 1; { let y: i64 = 2; x = y; } return x; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -393,7 +393,7 @@ initial {
     let source = ""fun test() -> i64 { { 1; 2; 3 } }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -418,7 +418,7 @@ initial {
     let source = ""fun test() -> i64 { let mut x = 0; x = 42; return x; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -444,7 +444,7 @@ initial {
     let source = ""fun test() { return; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -467,7 +467,7 @@ initial {
     let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 10) { if (i == 5) { break; } sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -506,7 +506,7 @@ initial {
     let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 10) { i = i + 1; if (i < 5) { continue; } sum = sum + i; } return sum; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -549,7 +549,7 @@ initial {
     let source = ""fun add(a: i64, b: i64) -> i64 { return a + b; } fun test() -> i64 { return add(1, 2); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(1)).some;
     let i: mut i64 = 0;
@@ -568,7 +568,7 @@ initial {
     let source = ""fun void_func() {} fun test() { void_func(); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(1)).some;
     let i: mut i64 = 0;
@@ -591,7 +591,7 @@ initial {
     let source = ""fun test() -> i64 { let x: i64 = 42; let y: i64 = x; return y; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -616,7 +616,7 @@ initial {
     let source = ""fun test(a: i64, b: i64, c: i64) -> i64 { return a + b + c; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -644,7 +644,7 @@ initial {
     let source = ""fun a() -> i64 { return 1; } fun b() -> i64 { return 2; } fun c() -> i64 { return 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     println(""funcs="" + cast<string>(cast<i64>(module.functions.size())));
 }
@@ -661,7 +661,7 @@ initial {
     let source = ""fun test(n: i64) -> i64 { let mut result = 1; let mut i = 1; while (i <= n) { if (i % 2 == 0) { result = result * i; } else { result = result + i; } i = i + 1; } return result; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -709,7 +709,7 @@ initial {
     let source = ""fun foo() -> i64 { return 42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -729,7 +729,7 @@ initial {
     let source = ""fun bar(x: i64) -> i64 { return x; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -749,7 +749,7 @@ initial {
     let source = ""fun callee(x: i64) -> i64 { return x; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     println(""params="" + cast<string>(cast<i64>(f.parameters.size())));
@@ -763,7 +763,7 @@ initial {
     let source = ""fun test() -> i64 { let x: i64 = 10; return x; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -783,7 +783,7 @@ initial {
     let source = ""fun callee(x: i64) -> i64 { return x; } fun caller() -> i64 { return callee(42); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(1)).some;
     let i: mut i64 = 0;
@@ -802,7 +802,7 @@ initial {
     let source = ""fun test() -> i64 { return 42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(0)).some;
     let i: mut i64 = 0;
@@ -822,7 +822,7 @@ initial {
     let source = ""fun void_func() {} fun test() { void_func(); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
     let f = module.functions.at(cast<u64>(1)).some;
     let i: mut i64 = 0;
@@ -846,7 +846,7 @@ initial {
 	    let source = ""enum Option { none; } fun create() -> Option { return new Option.none(); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -867,7 +867,7 @@ inst1=RET %t0")]
 	    let source = ""enum Option { some: i64; none; } fun create() -> Option { return new Option.some(42); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -889,7 +889,7 @@ inst2=RET %t1")]
 	    let source = ""enum TrafficLight { Red; Yellow; Green; } fun red() -> TrafficLight { return new TrafficLight.Red(); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -910,7 +910,7 @@ inst1=RET %t0")]
 	    let source = ""enum Option { some: i64; none; } fun is_some(o: Option) -> bool { return o is Option.some; }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -933,7 +933,7 @@ inst3=RET %t2")]
 	    let source = ""enum Option { some: i64; none; } fun test() { let x: Option = new Option.none(); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -955,7 +955,7 @@ inst2=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } fun test() { let mut x = new Option.none(); x = new Option.some(5); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -980,7 +980,7 @@ inst5=RET_VOID")]
 	    let source = ""enum Result { ok: i64; error; } fun return_ok() -> Result { return new Result.ok(200); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1002,7 +1002,7 @@ inst2=RET %t1")]
 	    let source = ""enum Option { some: i64; none; } fun match_option(o: Option) -> i64 { if (o is Option.some) { return 1; } else { return 0; } }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1033,7 +1033,7 @@ inst11=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } enum Result { ok: i64; error; }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    println(""defs="" + cast<string>(cast<i64>(result.definitions.size())));
 	}
@@ -1047,7 +1047,7 @@ inst11=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } fun take_option(o: Option) -> bool { if (o is Option.none) { return true; } else { return false; } }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1078,7 +1078,7 @@ inst11=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } fun nested_match(o: Option) -> i64 { if (o is Option.none) { return 0; } else { if (o is Option.some) { return 1; } else { return 2; } } }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1117,7 +1117,7 @@ inst19=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } fun add(o: Option, val: i64) -> Option { if (o is Option.some) { return new Option.some(val + 1); } else { return new Option.none(); } }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1151,7 +1151,7 @@ inst14=RET_VOID")]
 	    let source = ""enum Option { some: i64; none; } fun loop_test(n: i64) -> Option { while (n > 0) { n = n - 1; } return new Option.none(); }"";
 	    let mut compiler = new emperor.EmperorPenguinCompiler();
 	    let result = compiler.compile(source);
-	    let generator = new emperor.IRGenerator();
+	    let mut generator = new emperor.IRGenerator();
 	    let module = generator.generate(result);
 	    let f = module.functions.at(cast<u64>(0)).some;
 	    let i: mut i64 = 0;
@@ -1188,7 +1188,7 @@ inst12=RET %t5")]
             let source = ""enum Option { some: i64; none; } fun get_payload(o: Option) -> i64 { return o.some; }"";
             let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
-            let generator = new emperor.IRGenerator();
+            let mut generator = new emperor.IRGenerator();
             let module = generator.generate(result);
             let f = module.functions.at(cast<u64>(0)).some;
             let i: mut i64 = 0;
@@ -1208,7 +1208,7 @@ inst12=RET %t5")]
             let source = ""enum Option { some: i64; none; } fun add_one(o: Option) -> i64 { return o.some + 1; }"";
             let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
-            let generator = new emperor.IRGenerator();
+            let mut generator = new emperor.IRGenerator();
             let module = generator.generate(result);
             let f = module.functions.at(cast<u64>(0)).some;
             let i: mut i64 = 0;
@@ -1232,7 +1232,7 @@ inst12=RET %t5")]
             let source = ""enum Option { some: i64; none; } fun is_some(o: Option) -> bool { return o is Option.some; }"";
             let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
-            let generator = new emperor.IRGenerator();
+            let mut generator = new emperor.IRGenerator();
             let module = generator.generate(result);
             let f = module.functions.at(cast<u64>(0)).some;
             let i: mut i64 = 0;
@@ -1252,7 +1252,7 @@ inst12=RET %t5")]
             let source = ""enum Option { some: i64; none; } fun is_none(o: Option) -> bool { return o is Option.none; }"";
             let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
-            let generator = new emperor.IRGenerator();
+            let mut generator = new emperor.IRGenerator();
             let module = generator.generate(result);
             let f = module.functions.at(cast<u64>(0)).some;
             let i: mut i64 = 0;
@@ -1272,7 +1272,7 @@ inst12=RET %t5")]
             let source = ""enum Option { some: i64; none; } fun match_option(o: Option) -> i64 { if (o is Option.some) { return 1; } else { return 0; } }"";
             let mut compiler = new emperor.EmperorPenguinCompiler();
             let result = compiler.compile(source);
-            let generator = new emperor.IRGenerator();
+            let mut generator = new emperor.IRGenerator();
             let module = generator.generate(result);
             let f = module.functions.at(cast<u64>(0)).some;
             let i: mut i64 = 0;

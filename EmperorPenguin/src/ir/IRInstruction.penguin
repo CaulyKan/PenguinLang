@@ -275,7 +275,7 @@ class IRCall {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         // Only show result if ret_type is not void
         if (this.ret_type != "void") {
             sb.append(this.result_value.display());
@@ -309,7 +309,7 @@ class IRCallVoid {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         sb.append("CALL @" + this.func_name + "(");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.args.size())) {
@@ -343,7 +343,7 @@ class IRCallIndirect {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         if (this.ret_type != "void") {
             sb.append(this.result_value.display());
             sb.append(":" + this.ret_type + " = ");
@@ -384,7 +384,7 @@ class IRCallVirt {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         if (this.ret_type != "void") {
             sb.append(this.result_value.display());
             sb.append(":" + this.ret_type + " = ");
@@ -419,7 +419,7 @@ class IRNew {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         sb.append(this.result.display() + ":ptr = NEW " + this.type_name + "(");
         let i: mut i64 = 0;
         while (i < cast<i64>(this.args.size())) {
@@ -454,7 +454,7 @@ class IRNewEnum {
     }
 
     fun display(this) -> string {
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         sb.append(this.result.display() + " = NEW_ENUM " + this.type_name + "." + this.variant_name);
         if (this.payload.is_some()) {
             sb.append("(" + this.payload.some.display() + ")");

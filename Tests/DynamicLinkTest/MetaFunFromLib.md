@@ -23,7 +23,7 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 initial {
-    let m = new std.HashMap<string, i64>();
+    let mut m = new std.HashMap<string, i64>();
     m.put("apple", 1);
     m.put("banana", 2);
     println("size=" + cast<string>(m.size()));

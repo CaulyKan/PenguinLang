@@ -181,7 +181,7 @@ initial {
         var output = RunBoundCode(@"
 initial {
     let reg = new emperor.BoundTypeRegistry();
-    let params = new _utils.List<emperor.BoundType>();
+    let mut params = new _utils.List<emperor.BoundType>();
     params.push(reg.i32_type);
     params.push(reg.i64_type);
     let ft = reg.make_function_type(reg.bool_type, params, false);
@@ -234,7 +234,7 @@ initial {
     {
         var output = RunBoundCode(@"
 initial {
-    let reg = new emperor.BoundTypeRegistry();
+    let mut reg = new emperor.BoundTypeRegistry();
     let t: mut emperor.BoundType = new emperor.BoundType();
     t.kind = new emperor.TypeKind.ClassKind();
     reg.register_type(""MyClass"", t);

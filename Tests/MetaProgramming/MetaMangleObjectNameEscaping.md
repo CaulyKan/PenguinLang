@@ -8,14 +8,14 @@ Object value-template args are mangled by the IUniqueMangleName canonical name, 
 ## Test Code
 ```
 #fun make_sb_sp() -> StringBuilder {
-    let b = new StringBuilder();
+    let mut b = new StringBuilder();
     b.append("a");
     b.append(" ");
     b.append("b");
     return b;
 }
 #fun make_sb_us() -> StringBuilder {
-    let b = new StringBuilder();
+    let mut b = new StringBuilder();
     b.append("a");
     b.append("_");
     b.append("b");

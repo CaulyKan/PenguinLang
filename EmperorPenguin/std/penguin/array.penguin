@@ -1,7 +1,8 @@
 // Stdlib fixed-size contiguous array, built with meta-programming (req1-5 + the
 // pointer IR + #sizeof intrinsics). NOT auto-loaded by the compiler — compile it
-// explicitly (e.g. via a markdown test's Compile.Args). Manual memory management
-// via _malloc/_mfree; release with dispose_mem() (auto-finalize is future work).
+// explicitly (e.g. via a markdown test's Compile.Args). The raw buffer is
+// released by dispose_mem() — manually, or automatically by the GC finalizer
+// (IMemoryDispose.dispose_mem is wired into the class metadata destructor slot).
 namespace std {
 
 // Value-typed wrapper around a raw u64 address, for direct pointer access with a
@@ -47,12 +48,17 @@ export class _ptr {
 #template(T: type, N: u64)
 export class Array {
     impl __builtin.IReferenceType;
+    impl __builtin.IMemoryDispose;
     buf: mut u64;
     // N (value param) is usable in field initializers only; stash it here.
     len: u64 = N;
 
     fun new(mut this) {
-        this.buf = __builtin._malloc(cast<u64>(#sizeof(T)) * this.len);
+        let bytes: u64 = cast<u64>(#sizeof(T)) * this.len;
+        this.buf = __builtin._malloc(bytes);
+        // Element storage may hold GC references (ref T): make the buffer
+        // visible to the collector. Removed in dispose_mem.
+        __builtin._gc_scan_add(this.buf, cast<i64>(bytes));
     }
 
     fun at(this, i: u64) -> __builtin.Option<T> {
@@ -77,6 +83,7 @@ export class Array {
 
     fun dispose_mem(mut this) {
         if (this.buf != 0) {
+            __builtin._gc_scan_remove(this.buf);
             __builtin._mfree(this.buf);
             this.buf = 0;
         }

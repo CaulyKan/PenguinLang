@@ -17,6 +17,14 @@ namespace __builtin {
     // malloc/free, NOT the GC arena). Unreferenced externs are free.
     extern fun _malloc(size: u64) -> u64;
     extern fun _mfree(addr: u64);
+    // GC scan-region registration for raw buffers that CONTAIN pointers to GC
+    // objects (Vector/HashMap/Array element storage). The conservative
+    // collector cannot see inside malloc'd memory: register the buffer right
+    // after allocating it, and remove the region BEFORE freeing/replacing it
+    // (dispose_mem / _grow). A missing registration means live elements get
+    // swept; a stale one only retains garbage.
+    extern fun _gc_scan_add(addr: u64, size: i64);
+    extern fun _gc_scan_remove(addr: u64);
 
     // Byte-level helpers for generic HashMap<K,V>: hash and equality over the raw
     // bytes of a value-type key (address + #sizeof). Routed to @_emperor_hash_bytes
@@ -150,9 +158,13 @@ namespace __builtin {
         return sb.to_string();
     }
 
-    // Marker for manually-managed types that own raw memory (Array<T,N>,
-    // HashMap<K,V>, ...). Call dispose_mem() explicitly; automatic finalization
-    // (GC sweep / value-type scope-exit) is not wired up yet.
+    // Marker for reference types that own raw memory (Array<T,N>,
+    // HashMap<K,V>, ...). dispose_mem() may be called explicitly, and for
+    // IReferenceType classes it is also invoked automatically by the GC when
+    // a dead instance is swept (the emitter points the class metadata
+    // destructor slot at dispose_mem). Implementations must be idempotent —
+    // an owner's finalizer may dispose an inner object before that object's
+    // own finalizer runs.
     interface IMemoryDispose {
         fun dispose_mem();
     }

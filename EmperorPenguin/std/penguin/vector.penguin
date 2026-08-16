@@ -22,14 +22,22 @@ export class Vector {
 
     // Grow to new_cap, copying existing elements element-by-element.
     fun _grow(mut this, new_cap: u64) {
-        let new_buf: u64 = __builtin._malloc(new_cap * cast<u64>(#sizeof(T)));
+        let new_bytes: u64 = new_cap * cast<u64>(#sizeof(T));
+        let new_buf: u64 = __builtin._malloc(new_bytes);
+        // Register the new buffer as a GC scan region BEFORE elements (which
+        // may be GC references) land in it; unregister the old one before
+        // freeing so the collector never scans freed memory.
+        __builtin._gc_scan_add(new_buf, cast<i64>(new_bytes));
         let i: mut u64 = 0;
         while (i < this.len) {
             let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));
             #__store(T, new_buf + i * cast<u64>(#sizeof(T)), v);
             i = i + 1;
         }
-        if (this.buf != 0) { __builtin._mfree(this.buf); }
+        if (this.buf != 0) {
+            __builtin._gc_scan_remove(this.buf);
+            __builtin._mfree(this.buf);
+        }
         this.buf = new_buf;
         this.cap = new_cap;
     }
@@ -86,6 +94,7 @@ export class Vector {
 
     fun dispose_mem(mut this) {
         if (this.buf != 0) {
+            __builtin._gc_scan_remove(this.buf);
             __builtin._mfree(this.buf);
             this.buf = 0;
         }

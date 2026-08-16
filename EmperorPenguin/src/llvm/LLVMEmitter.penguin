@@ -1517,6 +1517,26 @@ class LLVMEmitter {
         // Emit field arrays for GC traversal
         this.emit_field_arrays(name, layout.fields);
 
+        // GC finalizer: a non-value class implementing IMemoryDispose points
+        // the destructor slot at its dispose_mem implementation — the method
+        // has exactly the slot's signature void(ptr) — so the collector's
+        // sweep phase can release raw malloc'd buffers (Array<T,N>.buf, ...)
+        // when a dead instance is reclaimed. Value types (ICopy) stay null: a
+        // boxed copy would free buffers still owned by the live stack
+        // original. IMemoryDispose has the single method dispose_mem, so
+        // method_ptrs slot 0 of its vtable is the implementation.
+        let finalizer: mut string = "ptr null";
+        if (!layout.is_value_type) {
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(layout.interface_vtables.size())) {
+                let fvt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(fi)).some;
+                if (fvt.interface_name == "IMemoryDispose" && cast<i64>(fvt.method_ptrs.size()) > 0) {
+                    finalizer = "ptr " + fvt.method_ptrs.at(cast<u64>(0)).some;
+                }
+                fi = fi + 1;
+            }
+        }
+
         // Emit full ClassMetadata
         // struct: { ptr name, i32 instance_size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr destructor }
         this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
@@ -1528,7 +1548,7 @@ class LLVMEmitter {
         this.sb.append("  ptr null,\n");
         this.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
         this.sb.append("  ptr @" + name + "_interface_map,\n");
-        this.sb.append("  ptr null\n");
+        this.sb.append("  " + finalizer + "\n");
         this.sb.append("}\n");
 
         // Emit name string constant

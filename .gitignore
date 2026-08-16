@@ -21,3 +21,4 @@ Tests/Program.cs
 nohup.out
 .reasonix
 thirdparty/
+.zcode

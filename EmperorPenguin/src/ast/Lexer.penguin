@@ -12,7 +12,7 @@ namespace emperor {
         }
 
         fun tokenize(this) -> _utils.List<Token> {
-            let tokens = new _utils.List<Token>();
+            let mut tokens = new _utils.List<Token>();
             while (!this.is_at_end()) {
                 let ch: string = this.current_char();
                 // Skip whitespace

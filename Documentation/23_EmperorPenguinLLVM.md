@@ -276,7 +276,7 @@ let iface: IFoo = obj;                // iface 类型: ptr (同一个指针)
     ptr,    ; virtual_method_table → ptr[]
     i32,    ; interface_count
     ptr,    ; interface_map → InterfaceMapEntry[]
-    ptr     ; destructor (析构函数指针)
+    ptr     ; destructor (析构函数指针；实现 IMemoryDispose 的引用类型指向其 dispose_mem 实现，GC 回收死对象时调用；其余为 null)
 }
 
 %InterfaceMapEntry = type {
@@ -417,7 +417,7 @@ typedef struct PenguinClassMetadata {
     void** virtual_method_table; // 虚方法表 ptr[]
     int interface_count;         // 实现的接口数量
     PenguinInterfaceMapEntry* interface_map; // 接口映射表
-    void (*destructor)(void*);   // 析构函数指针
+    void (*destructor)(void*);   // GC finalizer：实现 IMemoryDispose 的引用类型指向 dispose_mem（签名恰好一致），sweep 回收前调用
 } PenguinClassMetadata;
 ```
 
@@ -1158,7 +1158,7 @@ class Counter {
     ptr @Counter_field_offsets, ptr @Counter_field_types, ptr @Counter_field_flags,
     ptr @Counter_vtable,
     i32 1, ptr @Counter_interface_map,
-    ptr null  ; no destructor (only i32 field)
+    ptr null  ; no destructor (Counter does not impl IMemoryDispose; a class that does would point at its dispose_mem, e.g. ptr @Vector__i64_dispose_mem)
 }
 ```
 

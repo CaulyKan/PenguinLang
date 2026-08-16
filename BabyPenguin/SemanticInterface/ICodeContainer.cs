@@ -99,13 +99,20 @@ namespace BabyPenguin.SemanticInterface
                     var type = Model.ResolveType(typeName, scope: this);
                     if (type != null)
                     {
-                        variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
-                        // `let mut v = new Foo()`: make the binding reassignable.
-                        // Plain `let v = new Foo()` keeps an immutable binding to a
-                        // mutable value (IsMutable stays Auto -> MutableSymbolProxy
-                        // resolves it as immutable, matching EmperorPenguin).
+                        // `let v = new Foo()` infers an IMMUTABLE value: the
+                        // binding is immutable AND the value cannot be mutated
+                        // through it (no `mut this` method calls, no `mut`
+                        // field writes) — the mutable form is `let mut v = ...`,
+                        // which infers a mutable value AND a reassignable binding.
                         if (variableSymbol.TypeInferStatus == TypeInferStatus.NeedTypeInferToMutable)
+                        {
+                            variableSymbol.TypeInfo = type.WithMutability(Mutability.Mutable);
                             variableSymbol.IsMutable = Mutability.Mutable;
+                        }
+                        else
+                        {
+                            variableSymbol.TypeInfo = type.WithMutability(Mutability.Immutable);
+                        }
                         variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
                         return variableSymbol.TypeInfo;
                     }
@@ -128,7 +135,11 @@ namespace BabyPenguin.SemanticInterface
                     }
                     else
                     {
-                        variableSymbol.TypeInfo = type;
+                        // `let x = <expr>` infers an immutable value regardless of
+                        // the expression's own mutability (a `new` expression is
+                        // mutable; a function returning `mut T` stays mutable at
+                        // its source — neither leaks into the binding).
+                        variableSymbol.TypeInfo = type.WithMutability(Mutability.Immutable);
                     }
                     variableSymbol.TypeInferStatus = TypeInferStatus.ExplicitTyped;
                     return variableSymbol.TypeInfo;

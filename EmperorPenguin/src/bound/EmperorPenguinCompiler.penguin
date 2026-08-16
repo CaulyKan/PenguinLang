@@ -53,9 +53,9 @@ class EmperorPenguinCompiler {
         let found_first_lib: mut bool = false;
         for (let input in inputs) {
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
-            let lexer = new Lexer(input.source, input.filename);
+            let mut lexer = new Lexer(input.source, input.filename);
             let tokens = lexer.tokenize();
-            let p = new Parser(tokens);
+            let mut p = new Parser(tokens);
             let unit: CompilationUnit = p.parse_compilationUnit();
             // Collect parser errors
             if (p.has_errors()) {

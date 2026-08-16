@@ -19,7 +19,7 @@ Generic class with a generic method that casts from U to T.
         }
     }
     initial {
-        let a = new Foo<i32>();
+        let mut a = new Foo<i32>();
         a.foo<i64>(123);
         println(cast<string>(a.v));
     }

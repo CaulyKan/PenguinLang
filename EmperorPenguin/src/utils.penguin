@@ -41,7 +41,7 @@ namespace _utils {
     }
 
     fun args() -> _utils.List<string> {
-        let result = new _utils.List<string>();
+        let mut result = new _utils.List<string>();
         let count: i64 = __builtin.__args_count();
         let i: mut i64 = 0;
         while (i < count) {

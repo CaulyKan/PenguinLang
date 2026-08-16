@@ -233,7 +233,7 @@ fun _mark_ast_exported(def: Definition) {
             } else {
                 // Braceless if: wrap single statement into a code block
                 let stmt = this.parse_statement();
-                let wrapper = new CodeBlockExpression();
+                let mut wrapper = new CodeBlockExpression();
                 wrapper.statements.push(stmt);
                 then_block = new Option<Expression>.some(new Expression.code_block(wrapper));
             }
@@ -246,12 +246,12 @@ fun _mark_ast_exported(def: Definition) {
                 } else {
                     // Braceless else: wrap single statement
                     let else_stmt = this.parse_statement();
-                    let else_wrapper = new CodeBlockExpression();
+                    let mut else_wrapper = new CodeBlockExpression();
                     else_wrapper.statements.push(else_stmt);
                     else_block = new Option<Expression>.some(new Expression.code_block(else_wrapper));
                 }
             }
-            let node = new IfExpression();
+            let mut node = new IfExpression();
             node.condition = new Option<Expression>.some(condition);
             node.then_block = then_block;
             node.else_block = else_block;
@@ -274,11 +274,11 @@ fun _mark_ast_exported(def: Definition) {
                 // nested `while (c) while (c2) {...}`) hit "Expected LBrace" because
                 // the body was unconditionally parsed as a braced codeBlockExpression.
                 let stmt = this.parse_statement();
-                let wrapper = new CodeBlockExpression();
+                let mut wrapper = new CodeBlockExpression();
                 wrapper.statements.push(stmt);
                 body = new Option<Expression>.some(new Expression.code_block(wrapper));
             }
-            let node = new WhileExpression();
+            let mut node = new WhileExpression();
             node.condition = new Option<Expression>.some(condition);
             node.body = body;
             return new Expression.while_expr(node);
@@ -288,7 +288,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_codeBlockExpression(this) -> Expression {
             this.stream.expect(new TokenType.LBrace());
-            let node = new CodeBlockExpression();
+            let mut node = new CodeBlockExpression();
             while (!(this.stream.is_at_end())) {
                 if (this.stream.peek_type() is TokenType.RBrace) { break; }
                 let _loop_guard_pos: mut i64 = this.stream.pos;
@@ -510,7 +510,7 @@ fun _mark_ast_exported(def: Definition) {
         // postfixExpression: primaryExpression | postfixExpression '.' identifierWithGeneric | postfixExpression '(' expression? (',' expression)* ')' | 'new' typeSpecifier '(' expression? (',' expression)* ')' | 'async' expression | 'wait' expression?;
         // Classification: LeftRecursive
         fun parse_postfixExpression(this) -> Expression {
-            let results = new _utils.List<Expression>();
+            let mut results = new _utils.List<Expression>();
             if (this.stream.peek_type() is TokenType.New) {
             this.stream.expect(new TokenType.New());
             let type_token: Token = this.stream.advance();
@@ -675,8 +675,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_multiplicativeExpression(this) -> Expression {
             let first: Expression = this.parse_unaryExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -705,8 +705,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_additiveExpression(this) -> Expression {
             let first: Expression = this.parse_multiplicativeExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -735,8 +735,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_relationalExpression(this) -> Expression {
             let first: Expression = this.parse_additiveExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -765,8 +765,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_equalityExpression(this) -> Expression {
             let first: Expression = this.parse_relationalExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -795,8 +795,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_bitwiseAndExpression(this) -> Expression {
             let first: Expression = this.parse_equalityExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -824,8 +824,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_bitwiseXorExpression(this) -> Expression {
             let first: Expression = this.parse_bitwiseAndExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -853,8 +853,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_bitwiseOrExpression(this) -> Expression {
             let first: Expression = this.parse_bitwiseXorExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -882,8 +882,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_logicalAndExpression(this) -> Expression {
             let first: Expression = this.parse_bitwiseOrExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -911,8 +911,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_logicalOrExpression(this) -> Expression {
             let first: Expression = this.parse_logicalAndExpression();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -1208,8 +1208,8 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Binary
         fun parse_identifierWithDots(this) -> Expression {
             let first: Expression = this.parse_identifier();
-            let operators = new _utils.List<BinaryOperator>();
-            let operands = new _utils.List<Expression>();
+            let mut operators = new _utils.List<BinaryOperator>();
+            let mut operands = new _utils.List<Expression>();
             operands.push(first);
             while (true) {
                 let token: Token = this.stream.peek();
@@ -1240,7 +1240,7 @@ fun _mark_ast_exported(def: Definition) {
             if (this.stream.peek_type() is TokenType.Less) {
                 this.parse_genericArguments();
             }
-            let node = new ConstantExpression("");
+            let mut node = new ConstantExpression("");
             return new Expression.constant(node);
         }
 
@@ -1255,7 +1255,7 @@ fun _mark_ast_exported(def: Definition) {
                 this.parse_typeSpecifier();
             }
             this.stream.expect(new TokenType.Greater());
-            let node = new ConstantExpression("");
+            let mut node = new ConstantExpression("");
             return new Expression.constant(node);
         }
 
@@ -1979,11 +1979,11 @@ fun _mark_ast_exported(def: Definition) {
             }
             if (next.token_type is TokenType.Semicolon) {
                 this.stream.advance();
-                let fallback2 = new FunctionDefinition("");
+                let mut fallback2 = new FunctionDefinition("");
                 return new Definition.function_def(fallback2);
             }
             // fallback
-            let fallback3 = new FunctionDefinition("");
+            let mut fallback3 = new FunctionDefinition("");
             return new Definition.function_def(fallback3);
         }
 

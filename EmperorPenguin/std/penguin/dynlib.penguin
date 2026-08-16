@@ -119,7 +119,7 @@ fun read_meta(path: string) -> LibMeta {
     }
     if (footer.offset < 0 || footer.size < 0) { return meta; }
     let json_text: string = _utils.file_read_range(path, footer.offset, footer.size);
-    let reader = new std.JsonReader(json_text);
+    let mut reader = new std.JsonReader(json_text);
     let doc: std.JsonValue = reader.parse();
     if (doc.is_error()) {
         __builtin.eprintln("[EmperorPenguin Dynlib] Metadata parse failed in " + path);

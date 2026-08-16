@@ -17,7 +17,7 @@ class W {
 initial {
     let i: mut i64 = 0;
     while (i < 1) {
-        let w = new W<i64>(0);
+        let mut w = new W<i64>(0);
         w.setv(5);
         i = i + 1;
     }

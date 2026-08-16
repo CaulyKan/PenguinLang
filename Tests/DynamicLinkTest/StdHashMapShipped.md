@@ -23,7 +23,7 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 initial {
-    let m = new std.HashMap<i64, i64>();
+    let mut m = new std.HashMap<i64, i64>();
     let i: mut i64 = 0;
     while (i < 5) { m.put(i, i * 100); i = i + 1; }
     println("size=" + cast<string>(m.size()));

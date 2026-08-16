@@ -1163,7 +1163,7 @@ namespace BabyPenguin.Tests
             var cls = model.Classes.First(c => c.Name == "Foo");
             var symbol = cls.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
-            Assert.Equal("mut ns.A", symbol.TypeInfo.FullName());
+            Assert.Equal("!mut ns.A", symbol.TypeInfo.FullName());
         }
 
         [Fact]
@@ -1182,7 +1182,7 @@ namespace BabyPenguin.Tests
             var cls = model.Interfaces.First(c => c.Name == "Foo");
             var symbol = cls.Symbols.FirstOrDefault(s => s.Name == "x");
             Assert.NotNull(symbol);
-            Assert.Equal("mut ns.A", symbol.TypeInfo.FullName());
+            Assert.Equal("!mut ns.A", symbol.TypeInfo.FullName());
         }
 
         [Fact]

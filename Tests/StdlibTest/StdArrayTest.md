@@ -8,7 +8,7 @@ End-to-end test of the meta-programming-driven stdlib `std.Array<T,N>` (fixed-si
 ## Test Code
 ```
 initial {
-    let a = new std.Array<i32, 5>();
+    let mut a = new std.Array<i32, 5>();
     let i: mut u64 = 0;
     while (i < a.size()) {
         a.set(i, cast<i32>(i) * cast<i32>(i));

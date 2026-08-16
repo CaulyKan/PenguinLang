@@ -27,7 +27,7 @@ class Key {
     fun new(mut this, id: i64) { this.id = id; }
 }
 initial {
-    let v = new std.Vector<Key>();
+    let mut v = new std.Vector<Key>();
     v.push(new Key(1));
     v.push(new Key(2));
     v.push(new Key(3));

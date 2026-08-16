@@ -6,7 +6,7 @@ class IRPrinter {
 
     fun print_module(this, module: IRModule) -> string {
         _utils.trace_enter("Enter print_module");
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         let i: mut i64 = 0;
         while (i < cast<i64>(module.functions.size())) {
             let f: IRFunction = module.functions.at(cast<u64>(i)).some;
@@ -20,7 +20,7 @@ class IRPrinter {
 
     fun print_function(this, func: IRFunction) -> string {
         _utils.trace_enter("Enter print_function");
-        let sb = new StringBuilder();
+        let mut sb = new StringBuilder();
         sb.append("function @" + func.name + "(");
         let pi: mut i64 = 0;
         while (pi < cast<i64>(func.parameters.size())) {

@@ -10,6 +10,13 @@ void _emperor_gc_init(void* stack_bottom);
 /* Register a global pointer as a GC root. */
 void _emperor_gc_add_root(void** root);
 
+/* Register/unregister a RAW (non-GC) buffer whose CONTENTS include pointers
+ * to GC objects (std container element storage). The collector scans every
+ * registered region like an extension of the stack. Containers must remove
+ * the region when they free or replace the buffer (dispose_mem / _grow). */
+void _emperor_gc_scan_add(void* base, size_t bytes);
+void _emperor_gc_scan_remove(void* base);
+
 /* Trigger an immediate garbage collection. */
 void _emperor_gc_collect(void);
 

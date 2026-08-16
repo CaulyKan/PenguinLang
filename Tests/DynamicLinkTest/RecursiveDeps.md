@@ -41,7 +41,7 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 initial {
-    let v = new std.Vector<i64>();
+    let mut v = new std.Vector<i64>();
     v.push(5);
     v.push(7);
     let s: i64 = mid.first(v);

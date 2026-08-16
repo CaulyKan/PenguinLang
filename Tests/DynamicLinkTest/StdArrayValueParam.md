@@ -23,7 +23,7 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 initial {
-    let a = new std.Array<i32, 5>();
+    let mut a = new std.Array<i32, 5>();
     let i: mut i32 = 0;
     while (i < 5) { a.set(cast<u32>(i), i * 3); i = i + 1; }
     println("size=" + cast<string>(a.size()));

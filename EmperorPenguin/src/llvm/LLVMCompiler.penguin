@@ -11,12 +11,12 @@ class LLVMCompiler {
 
     // IR-generate + LLVM-lower + write combined.ll. Shared by link_exe/link_lib.
     fun build_ll(mut this, result: BoundCompilationUnit, tmp_dir: string) -> bool {
-        let generator = new IRGenerator();
+        let mut generator = new IRGenerator();
         generator.verbose = this.verbose;
         let module = generator.generate(result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] IR generation done"); }
 
-        let emitter = new LLVMEmitter();
+        let mut emitter = new LLVMEmitter();
         emitter.verbose = this.verbose;
         let llvm_ir: string = emitter.lower(module, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }

@@ -92,7 +92,7 @@ class IRFunction {
     fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
         let idx: i64 = cast<i64>(this.parameters.size());
         let param_loc: SourceLocation = new SourceLocation(this.location.filename, line, col);
-        let param = new IRParameter(name, ir_type, idx, param_loc);
+        let mut param = new IRParameter(name, ir_type, idx, param_loc);
         this.parameters.push(param);
         return this.alloc_named_reg(name, ir_type, line, col);
     }

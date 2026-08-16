@@ -8,7 +8,7 @@ End-to-end test of the stdlib `std.HashMap<K,V>` from `EmperorPenguin/std/pengui
 ## Test Code
 ```
 initial {
-    let m = new std.HashMap<i64, i64>();
+    let mut m = new std.HashMap<i64, i64>();
     let i: mut i64 = 0;
     while (i < 10) {
         m.put(i, i * 100);
@@ -36,7 +36,7 @@ initial {
     println("kcount=" + cast<string>(kcount));
     m.dispose_mem();
 
-    let ms = new std.HashMap<string, i64>();
+    let mut ms = new std.HashMap<string, i64>();
     ms.put("apple", 1);
     ms.put("banana", 2);
     ms.put("cherry", 3);

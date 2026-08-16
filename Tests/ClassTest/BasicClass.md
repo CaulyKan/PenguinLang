@@ -74,7 +74,7 @@ namespace __c4 {
         }
     }
     initial {
-        let c = new Counter();
+        let mut c = new Counter();
         c.increment();
         c.increment();
         c.increment();

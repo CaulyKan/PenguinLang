@@ -4400,6 +4400,19 @@ class SemanticModel {
                     this.collect_from_ast_expr_safe(def.initial_routine.body.some, def_scope, instantiations);
                 }
             }
+            if (def is Definition.function_def) {
+                // Top-level functions (not class members): their bodies can
+                // instantiate generics too (`new std.Array<i64,4>()` inside a
+                // plain function). Without this the instantiation was never
+                // collected, the specialization never entered the bound tree,
+                // emit_new found no class layout, and the allocation was
+                // silently skipped (leaving method-call this-registers
+                // undefined). Class members are covered below; initial
+                // routines above.
+                if (def.function_def.body.is_some()) {
+                    this.collect_from_ast_expr_safe(def.function_def.body.some, def_scope, instantiations);
+                }
+            }
             if (def is Definition.class_def) {
                 // Skip template class bodies - their type params aren't resolvable here
                 if (def.class_def.template_decl.is_none()) {
@@ -8024,7 +8037,7 @@ class SemanticModel {
                             // `let a : A = new A(); a.mutable()`. BabyPenguin compares
                             // the receiver's TYPE mutability against the `mut this` param
                             // ("Cant use !mut A as 'this' param of type mut A"), so an
-                            // inferred `let a = new A()` (type is mutable) is allowed.
+                            // inferred `let mut a = new A()` (type is mutable) is allowed.
                             if (this.function_is_method(sym.function_sym) && ma_expr.base_expr.is_some()) {
                                 let this_param: BoundFunctionParameter = sym.function_sym.parameters.at(cast<u64>(0)).some;
                                 if (this_param.is_mutable) {
@@ -8032,7 +8045,7 @@ class SemanticModel {
                                     if (base_type.mutability is Mutability.Immutable) {
                                         this.report_error(new ErrorCode.E_TYPE_MISMATCH(),
                                             "Cannot call method '" + sym.function_sym.name + "' with 'mut this' on an immutable binding",
-                                            new SourceLocation("", 0, 0));
+                                            sym.function_sym.location);
                                     }
                                 }
                             }
@@ -10126,7 +10139,7 @@ class SemanticModel {
                             // IReferenceType types, the value's mutability must match
                             // the target's binding mutability. When the value is a
                             // variable reference, its BINDING mutability is
-                            // authoritative (BabyPenguin: `let a = new Ref(1)` is an
+                            // authoritative (BabyPenguin: `let mut a = new Ref(1)` is an
                             // immutable binding even though the new-expression's type
                             // is mutable), so an immutable binding assigned to a
                             // mutable target fails E_MUTABILITY.
@@ -10260,18 +10273,26 @@ class SemanticModel {
                         if (initializer.some is BoundExpression.function_call) { vtag = "call"; }
                         if (initializer.some is BoundExpression.member_access) { vtag = "member"; }
                     }
-                    // When type is inferred (no type_spec), propagate mutability
-                    // from the initializer's type to the binding (BabyPenguin
-                    // conflates binding and type mutability). Reference types
-                    // (IReferenceType) are exempt: BabyPenguin keeps `let a = new Ref(1)`
-                    // an immutable binding even though the new-expression's type is
-                    // mutable, so assigning it to a `mut` binding must fail E_MUTABILITY.
+                    let decl_type: mut BoundType = initializer.some.get_bound_type();
+                    // Inference (no type_spec): the binding's mutability AND the
+                    // inferred type's mutability are both determined by the
+                    // syntax — `let x = <init>` is an immutable binding holding an
+                    // immutable-typed value, `let mut x = <init>` a mutable
+                    // binding holding a mutable-typed value. The initializer's
+                    // own mutability is NOT inherited: `new` expressions are
+                    // mutable, so `let a = new Array<T>()` (immutable binding)
+                    // must NOT be able to call `mut this` methods — use
+                    // `let mut a = new Array<T>()` (mutable binding) or
+                    // `let a: mut Array<T> = ...` (immutable binding to a
+                    // mutable value) for that.
                     if (stmt.let_decl.type_spec.is_none()) {
-                        if (init_type.mutability is Mutability.Mutable && !this.is_iref_type(init_type)) {
-                            var_sym.is_mutable = true;
+                        var_sym.is_mutable = stmt.let_decl.is_mutable;
+                        if (stmt.let_decl.is_mutable) {
+                            decl_type = decl_type.with_mutability(new Mutability.Mutable());
+                        } else {
+                            decl_type = decl_type.with_mutability(new Mutability.Immutable());
                         }
                     }
-                    let decl_type: mut BoundType = initializer.some.get_bound_type();
                     if (stmt.let_decl.type_spec.is_some()) {
                         let resolved: mut BoundType = this.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
                         decl_type = resolved;
@@ -10281,7 +10302,13 @@ class SemanticModel {
                     // IReferenceType value aliases, so imm→mut would allow mutating
                     // shared state). A fresh mutable expression (`new Ref(...)`) is
                     // allowed, and value types (ICopy) copy so they are exempt.
-                    if (this.is_iref_type(decl_type)) {
+                    // Only applies to EXPLICIT type annotations (`let b: mut T = ...`):
+                    // an inferred `let mut x = <expr>` always lifts the type to mutable
+                    // (per the new mutability semantics), so the init's own mutability
+                    // must not fail the binding (e.g. macro-generated
+                    // `let mut _map = _f.as_object()` where as_object returns a
+                    // non-mut type).
+                    if (stmt.let_decl.type_spec.is_some() && this.is_iref_type(decl_type)) {
                         let target_mut: Mutability = decl_type.mutability;
                         let val_mut: mut Mutability = init_type.mutability;
                         if (initializer.some is BoundExpression.identifier) {

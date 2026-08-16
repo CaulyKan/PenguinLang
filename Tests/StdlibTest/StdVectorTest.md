@@ -8,7 +8,7 @@ End-to-end test of the stdlib `std.Vector<T>` from `EmperorPenguin/std/penguin/v
 ## Test Code
 ```
 initial {
-    let v = new std.Vector<i64>();
+    let mut v = new std.Vector<i64>();
     let i: mut u64 = 0;
     while (i < 17) { v.push(cast<i64>(i) * 10); i = i + 1; }
     println("size=" + cast<string>(v.size()));

@@ -23,7 +23,7 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 initial {
-    let v = new std.Vector<i64>();
+    let mut v = new std.Vector<i64>();
     v.push(10);
     v.push(20);
     println("size=" + cast<string>(v.size()));

@@ -19,9 +19,9 @@ initial {
     let source = ""fun foo() -> i64 { return 42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -42,9 +42,9 @@ initial {
     let source = ""fun foo() -> bool { return true; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -61,9 +61,9 @@ initial {
     let source = ""fun foo() -> bool { return false; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -84,9 +84,9 @@ initial {
     let source = ""fun test() -> i64 { return 1 + 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -105,9 +105,9 @@ initial {
     let source = ""fun test() -> i64 { return 3 - 1; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -126,9 +126,9 @@ initial {
     let source = ""fun test() -> i64 { return 3 * 4; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -147,9 +147,9 @@ initial {
     let source = ""fun test() -> bool { return 1 < 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -173,9 +173,9 @@ initial {
     let source = ""fun add(a: i64, b: i64) -> i64 { return a + b; } fun test() -> i64 { return add(1, 2); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -204,9 +204,9 @@ initial {
     let source = ""fun void_func() {}"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -226,9 +226,9 @@ initial {
     let source = ""fun test() -> i64 { return -42; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -250,9 +250,9 @@ initial {
     let source = ""fun test(x: i64) -> i64 { if (x > 0) { return 1; } else { return 0; } }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -282,9 +282,9 @@ initial {
     let source = ""fun test() -> i64 { let mut sum = 0; let mut i = 0; while (i < 3) { sum = sum + i; i = i + 1; } return sum; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -328,9 +328,9 @@ initial {
     let source = ""extern fun puts(s: string) -> i32;"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -347,9 +347,9 @@ initial {
     let source = ""enum Option { none; } fun create() -> Option { return new Option.none(); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -396,9 +396,9 @@ initial {
     let source = ""enum Option { some: i64; none; } fun create() -> Option { return new Option.some(42); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -448,9 +448,9 @@ initial {
     let source = ""enum Option { some: i64; none; } fun is_some(o: Option) -> bool { return o is Option.some; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -495,9 +495,9 @@ initial {
     let source = ""enum Option { some: i64; none; } fun match_option(o: Option) -> i64 { if (o is Option.some) { return 1; } else { return 0; } }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -551,9 +551,9 @@ initial {
     let source = ""fun void_func() {} fun test() { void_func(); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -579,9 +579,9 @@ initial {
     let source = ""fun test() -> i64 { let x: i32 = 42; return cast<i64>(x); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -603,9 +603,9 @@ initial {
     let source = ""fun test() -> bool { return !true; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -627,9 +627,9 @@ initial {
     let source = ""fun a() -> i64 { return 1; } fun b() -> i64 { return 2; } fun c() -> i64 { return 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -662,9 +662,9 @@ initial {
     let source = ""fun test(n: i64) -> i64 { let mut sum = 0; let mut i = 0; while (i < n) { if (i > 0) { sum = sum + i; } i = i + 1; } return sum; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -714,9 +714,9 @@ initial {
     let source = ""fun test() -> i64 { return 10 / 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -739,9 +739,9 @@ initial {
     let source = ""fun test() -> i64 { return 10 % 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -764,9 +764,9 @@ initial {
     let source = ""fun test() -> bool { return 1 == 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -790,9 +790,9 @@ initial {
     let source = ""fun test() -> bool { return 1 != 2; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -816,9 +816,9 @@ initial {
     let source = ""fun test() -> bool { return 5 > 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -842,9 +842,9 @@ initial {
     let source = ""fun test() -> bool { return 3 <= 5; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -868,9 +868,9 @@ initial {
     let source = ""fun test() -> bool { return 5 >= 3; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -894,9 +894,9 @@ initial {
     let source = ""fun test() -> i64 { return 12 & 10; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -919,9 +919,9 @@ initial {
     let source = ""fun test() -> i64 { return 12 | 10; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -944,9 +944,9 @@ initial {
     let source = ""fun mul(a: i64, b: i64, c: i64) -> i64 { return a * b + c; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -968,9 +968,9 @@ initial {
     let source = ""fun dbl(x: i64) -> i64 { return x * 2; } fun add_dbl(a: i64, b: i64) -> i64 { return dbl(a) + dbl(b); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -1000,9 +1000,9 @@ initial {
     let source = ""fun fib(n: i64) -> i64 { if (n <= 1) { return n; } return fib(n - 1) + fib(n - 2); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -1035,9 +1035,9 @@ initial {
     let source = ""fun test(x: i32) -> i32 { return x + 1; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -1060,9 +1060,9 @@ initial {
     let source = ""class Foo { x: i64; } fun make_foo() -> Foo { return new Foo(); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -1115,9 +1115,9 @@ initial {
     let user = ""fun create(s: string) -> __builtin.Option<string> { return new __builtin.Option<string>.some(s); } fun empty() -> __builtin.Option<string> { return new __builtin.Option<string>.none(); } fun make_i64(v: i64) -> __builtin.Option<i64> { return new __builtin.Option<i64>.some(v); }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(stdlib + ""\n"" + user);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
@@ -1138,9 +1138,9 @@ initial {
     let source = ""fun compute(x: i64) -> i64 { let total: mut i64 = x; total = total + 1; return total; }"";
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(source);
-    let generator = new emperor.IRGenerator();
+    let mut generator = new emperor.IRGenerator();
     let module = generator.generate(result);
-    let emitter = new emperor.LLVMEmitter();
+    let mut emitter = new emperor.LLVMEmitter();
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
