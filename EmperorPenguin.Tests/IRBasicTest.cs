@@ -559,10 +559,7 @@ initial {
         i = i + 1;
     }
 }
-", @"inst0=%t0:i64 = CONST 1
-inst1=%t1:i64 = CONST 2
-inst2=%t2:i64 = CALL @add(%t0, %t1)
-inst3=RET %t2")]
+", "inst0=%t0:i64 = CONST 1\ninst1=%t1:i64 = CONST 2\ninst2=%t2:i64 = CALL @add(%t0, %t1)\ninst3=RET %t2")]
     public void TestFunctionCall() => _batch.Value.Assert();
 
     [Fact]
@@ -581,8 +578,7 @@ initial {
         i = i + 1;
     }
 }
-", @"inst0=CALL @void_func()
-inst1=RET_VOID")]
+", "inst0=CALL @void_func()\ninst1=RET_VOID")]
     public void TestVoidFunctionCall() => _batch.Value.Assert();
 
     #endregion
@@ -797,9 +793,7 @@ initial {
         i = i + 1;
     }
 }
-", @"inst0=%t0:i64 = CONST 42
-inst1=%t1:i64 = CALL @callee(%t0)
-inst2=RET %t1")]
+", "inst0=%t0:i64 = CONST 42\ninst1=%t1:i64 = CALL @callee(%t0)\ninst2=RET %t1")]
     public void TestSimpleIRCall() => _batch.Value.Assert();
 
     [Fact]
@@ -838,8 +832,7 @@ initial {
         i = i + 1;
     }
 }
-", @"inst0=CALL @void_func()
-inst1=RET_VOID")]
+", "inst0=CALL @void_func()\ninst1=RET_VOID")]
     public void TestIRCallVoidVariant() => _batch.Value.Assert();
 
     #endregion

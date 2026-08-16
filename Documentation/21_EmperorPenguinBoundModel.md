@@ -132,15 +132,22 @@ BoundScope
 
 | 方法 | 说明 |
 |------|------|
-| `lookup_symbol(name) -> Option<BoundSymbol>` | 查找符号（含父作用域） |
+| `lookup_symbol(name) -> Option<BoundSymbol>` | 查找符号:本地 → 父链（仅符号） → using 导入（自身优先，逐级向上） → `__builtin`（默认 using） |
 | `lookup_symbol_local(name) -> Option<BoundSymbol>` | 仅查找当前作用域 |
-| `lookup_type_in_scope(name) -> Option<BoundSymbol>` | 类型查找 |
+| `lookup_type_in_scope(name) -> Option<BoundSymbol>` | 类型查找（同上顺序，`type_sym` 变体） |
 | `lookup_namespace(name) -> Option<BoundScope>` | 命名空间查找 |
 | `resolve_qualified(parts) -> Option<BoundSymbol>` | 限定名解析 |
-| `lookup_with_imports(name) -> Option<BoundSymbol>` | 含 using 导入的查找 |
+| `lookup_imported_symbol(name)` / `lookup_imported_type(name)` | using 导入查找（`__builtin` 恒附加；导入不传递） |
+| `lookup_symbol_anywhere(name)` / `lookup_type_anywhere(name)` | 旧的全局子命名空间扫描，仅供语义模型内部使用（元编程占位判定、元模板查找），不得用于用户代码解析 |
 | `add_or_merge_namespace(name) -> BoundScope` | 添加/合并命名空间 |
 | `add_symbol(symbol)` | 添加符号 |
 | `add_child(child)` | 添加子作用域 |
+
+### 命名空间可见性规则（与 BabyPenguin 对齐）
+
+- **`using <ns>;`**（文件顶层或 `namespace` 体内）把命名空间加入该作用域的 `imported_namespaces`；非限定查找在父链之后咨询导入，且**不传递**（只看被导入命名空间的直接符号）。
+- **`__builtin` 默认 using**：所有查找链最后恒定尝试 `__builtin` 命名空间。
+- **文件级匿名命名空间**：顶层（不在任何 `namespace` 内）的定义绑定到每文件独占的 `_ns_<stem>_<hash16>` 命名空间（C++ static 语义）——同文件内非限定可见，跨文件需限定访问；显式命名空间仍按名跨文件合并。
 
 ---
 

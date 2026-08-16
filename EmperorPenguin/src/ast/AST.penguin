@@ -1132,6 +1132,7 @@ class FunctionDefinition {
     is_new: mut bool = false;
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -1174,6 +1175,7 @@ class ClassDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -1208,6 +1210,7 @@ class EnumDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -1242,6 +1245,7 @@ class InterfaceDefinition {
 
     template_decl: mut Option<TemplateDeclaration> = new Option<TemplateDeclaration>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -1269,6 +1273,7 @@ class InterfaceImplementation {
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
 
     fun new(mut this, type_name: string) {
 
@@ -1308,6 +1313,7 @@ class InterfaceForImplementation {
     for_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     functions: mut _utils.List<Definition> = new _utils.List<Definition>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
 
     fun new(mut this, type_name: string, for_type_name: string) {
 
@@ -1347,6 +1353,8 @@ class InterfaceForImplementation {
 class EventDefinition {
     name: mut string = "";
     event_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
 
     fun new(mut this, name: string) {
 
@@ -1375,6 +1383,7 @@ class NamespaceDefinition {
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     is_exported: bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
@@ -1392,9 +1401,29 @@ class NamespaceDefinition {
     }
 }
 
+// using <namespace-name> ';'
+// A using-directive: pulls the named namespace's symbols into unqualified
+// lookup for the enclosing file-namespace / namespace scope (see
+// BoundScope.imported_namespaces). Binds to a placeholder bound def (the
+// #class pattern) so the pass loops' unit.definitions[i] <->
+// result.definitions[i] alignment is preserved.
+class UsingDefinition {
+    name: mut string = "";
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
+    is_exported: bool = false;
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            let self = cast<UsingDefinition>(this);
+            return "using " + self.name + ";";
+        }
+    }
+}
+
 class InitialRoutineDefinition {
     body: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1410,6 +1439,8 @@ class OnRoutineDefinition {
     event_expr: mut Option<Expression> = new Option<Expression>.none();
     parameter: mut Option<Parameter> = new Option<Parameter>.none();
     body: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1429,6 +1460,8 @@ class TypeReferenceDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     is_exported: bool = false;
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
 
     fun new(mut this, name: string) {
 
@@ -1503,6 +1536,7 @@ class GlobalVariableDefinition {
     }
 
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1539,6 +1573,7 @@ class MetaFunctionDefinition {
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     body: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -1573,6 +1608,7 @@ class MetaIfDefinition {
     elif_branches: mut _utils.List<MetaElifBranch> = new _utils.List<MetaElifBranch>();
     else_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1616,6 +1652,7 @@ class MetaForDefinition {
     iterable: mut Option<Expression> = new Option<Expression>.none();
     body: mut _utils.List<Definition> = new _utils.List<Definition>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1644,6 +1681,7 @@ class MetaWhileDefinition {
     condition: mut Option<Expression> = new Option<Expression>.none();
     body: mut _utils.List<Definition> = new _utils.List<Definition>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1667,6 +1705,7 @@ class MetaWhileDefinition {
 class MetaCallDefinition {
     call: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1688,6 +1727,7 @@ class SpecializingDefinition {
     // `emperor.penguin_meta_activate_impl(<slot>)` maps to these 1:1.
     impl_fragments: mut _utils.List<InterfaceImplementation> = new _utils.List<InterfaceImplementation>();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
@@ -1697,11 +1737,12 @@ class SpecializingDefinition {
     }
 }
 
-enum Definition {
+    enum Definition {
     function_def: FunctionDefinition;
     class_def: ClassDefinition;
     enum_def: EnumDefinition;
     namespace_def: NamespaceDefinition;
+    using_def: UsingDefinition;
     initial_routine: InitialRoutineDefinition;
     interface_def: InterfaceDefinition;
     impl_def: InterfaceImplementation;
@@ -1726,6 +1767,7 @@ enum Definition {
         if (this is Definition.class_def) { return this.class_def.build_text(); }
         if (this is Definition.enum_def) { return this.enum_def.build_text(); }
         if (this is Definition.namespace_def) { return this.namespace_def.build_text(); }
+        if (this is Definition.using_def) { return this.using_def.build_text(); }
         if (this is Definition.initial_routine) { return this.initial_routine.build_text(); }
         if (this is Definition.interface_def) { return this.interface_def.build_text(); }
         if (this is Definition.impl_def) { return this.impl_def.build_text(); }

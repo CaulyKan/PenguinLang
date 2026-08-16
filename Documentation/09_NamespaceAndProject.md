@@ -4,7 +4,7 @@ PenguinLang uses namespaces to avoid naming conflicts. The concept is similar to
 PenguinLang also supports the `using` statement similar to C#.
 
 ```
-let a = 0;   // full name: _global_xxx.a
+let a = 0;   // full name: _ns_<file>.a  (per-file anonymous namespace)
 
 namespace MyModule {
 	let b = 0;   // full name: MyModule.b
@@ -17,6 +17,11 @@ initial {
 }
 
 ```
+
+Notes:
+- Top-level definitions (not inside any `namespace` block) live in a per-file anonymous namespace (C++ `static` semantics): unqualified-visible inside their own file, requiring qualification from other files.
+- `using <ns>;` is accepted at file top level and inside namespace bodies. The `__builtin` namespace is always implicitly used (its symbols — `Option`, `panic`, string builtins, … — resolve unqualified everywhere).
+- Status: implemented in EmperorPenguin (lexer/parser/semantic). The BabyPenguin (C# reference) grammar does not parse `using` yet.
 
 ## Source File
 PenguinLang recommends using `.penguin` as the source file extension. PenguinLang does not enforce any restriction on files and directories. 

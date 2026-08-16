@@ -31,6 +31,10 @@ class EmperorPenguinCompiler {
     lib_def_start: mut i64 = 0;
     lib_def_count: mut i64 = 0;
     lib_instances: mut _utils.List<string> = new _utils.List<string>();
+    // Unit B (meta) compilation: top-level defs bind into the global scope
+    // (no per-file anonymous namespaces) so the compiler's own cross-file
+    // top-level helpers stay visible. Set by the MetaEngine.
+    top_level_in_global: bool = false;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -84,6 +88,7 @@ class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        model.top_level_in_global = this.top_level_in_global;
         // Dyn-lib routing data (index-based lib-source boundary + shipped names).
         model.lib_def_start = this.lib_def_start;
         model.lib_def_count = this.lib_def_count;

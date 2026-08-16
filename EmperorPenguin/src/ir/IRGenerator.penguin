@@ -473,6 +473,14 @@ class IRGenerator {
     fun lower_identifier(mut this, expr: BoundIdentifierExpression) -> IRValue {
         _utils.trace_enter("Enter lower_identifier");
         if (expr.symbol.is_some()) {
+            // A function symbol used as a VALUE (fun-typed field default,
+            // `let f: fun<i32,i32> = twice;`) — emit its code address as a
+            // fat funptr constant instead of looking up a register.
+            if (expr.symbol.some is BoundSymbol.function_sym) {
+                let loc: SourceLocation = this.sym_loc(expr.symbol);
+                let fname: string = this.clean_function_name(expr.symbol.some.function_sym.full_name);
+                return this.builder.emit_const(fname, "funptr", loc);
+            }
             let reg: Option<IRValue> = this.get_symbol_reg(expr.symbol.some);
             if (let val := reg.some) {
                 // If this is a global reference, emit a load
@@ -712,6 +720,27 @@ class IRGenerator {
                 let ma: BoundMemberAccessExpression = callee_expr.member_access;
                 if (ma.base_expr.is_some() && expr.callee_symbol.is_some()) {
                     let sym: BoundSymbol = expr.callee_symbol.some;
+                    if (sym is BoundSymbol.variable) {
+                        // fun-typed FIELD call: `h.cb(21)` where
+                        // `cb: mut fun<i32, i32>` — load the field (a fat
+                        // function pointer) and call through it.
+                        let ftype: BoundType = sym.variable.bound_type;
+                        if (ftype.kind is TypeKind.FunctionKind) {
+                            let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                            let obj: IRValue = this.lower_expression(ma.base_expr.some);
+                            let fnptr: IRValue = this.builder.emit_rdmbr(obj, ma.member_name, this.bound_type_to_ir_type(ftype), loc);
+                            let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                            let ai: mut i64 = 0;
+                            while (ai < cast<i64>(expr.arguments.size())) {
+                                args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
+                                ai = ai + 1;
+                            }
+                            let ret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+                            let result: Option<IRValue> = this.builder.emit_call_indirect(fnptr, args, ret_type, loc);
+                            if (result.is_some()) { return result.some; }
+                            return this.builder.void_value();
+                        }
+                    }
                     if (sym is BoundSymbol.function_sym) {
                         // Whether the callee's first parameter is `this`. If not, the
                         // receiver is discarded (not passed) -- for interface-typed

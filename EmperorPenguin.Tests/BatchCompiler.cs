@@ -49,7 +49,10 @@ public class BatchResults
         => _data[name] = (result, expected);
 
     public void Assert([CallerMemberName] string name = "")
-        => Xunit.Assert.Equal(_data[name].Expected, _data[name].Result);
+    {
+        try { System.IO.Directory.CreateDirectory("/tmp/actuals"); System.IO.File.WriteAllText($"/tmp/actuals/{name}.txt", _data[name].Result); } catch { }
+        Xunit.Assert.Equal(_data[name].Expected, _data[name].Result);
+    }
 
     public void AssertSemantic([CallerMemberName] string name = "")
         => IRSemanticEqual.AssertSemanticallyEqual(_data[name].Expected, _data[name].Result);

@@ -356,7 +356,13 @@ class MetaEngine {
         synth.location = bmf.location;
 
         // ---- Step (b): build the unit B source text ----
-        let unit_b_source: mut string = synth.build_text();
+        // The synthesized #funs live at top level and call the base sources'
+        // helpers by bare name (e.g. arg_as_bound_type in `namespace emperor`).
+        // Unqualified lookup no longer scans all namespaces, so import emperor
+        // explicitly (like __builtin, it is always implicitly available; this
+        // using just makes its members visible to the synthesized top-level
+        // functions).
+        let unit_b_source: mut string = "using emperor;\n" + synth.build_text();
         // req3+4: include every other #fun as a synthesized regular function so a
         // #fun body can call it by plain name (e.g. a value-template #fun foo
         // whose body calls #test — after rewrite_meta_calls_in_expr the body has
@@ -395,6 +401,10 @@ class MetaEngine {
         // ---- Step (c): compile unit B (parse → bind) ----
         let compiler: mut EmperorPenguinCompiler = new EmperorPenguinCompiler();
         compiler.verbose = this.verbose;
+        // Unit B is the compiler's own meta machinery: top-level helpers of the
+        // base sources (arg_as_bound_type etc.) are called by bare name from
+        // synthesized #funs — file namespaces would hide them.
+        compiler.top_level_in_global = true;
         let unit_b: BoundCompilationUnit = compiler.compile_sources(inputs);
 
         if (unit_b.has_errors()) {
@@ -918,7 +928,9 @@ class MetaEngine {
             return prim;
         }
         if (this.global_scope.is_some()) {
-            let sym_opt: Option<BoundSymbol> = this.global_scope.some.lookup_type_in_scope(name);
+            // Anywhere-scan: meta code names types by simple name; they may live
+            // in named or file namespaces (user-code lookups never use this path).
+            let sym_opt: Option<BoundSymbol> = this.global_scope.some.lookup_type_anywhere(name);
             if (sym_opt.is_some()) {
                 if (sym_opt.some is BoundSymbol.type_sym) {
                     return new Option<BoundType>.some(sym_opt.some.type_sym.bound_type);

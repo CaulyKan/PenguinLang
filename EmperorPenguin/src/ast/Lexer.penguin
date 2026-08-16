@@ -94,6 +94,12 @@ namespace emperor {
                     this.advance_chars(9);
                     continue;
                 }
+                if (this.match_keyword("using")) {
+                    tokens.push(new Token(new TokenType.Using(), "using", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
                 if (this.match_keyword("template")) {
                     tokens.push(new Token(new TokenType.TemplateKw(), "template", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 8;

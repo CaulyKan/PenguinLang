@@ -253,7 +253,16 @@ fun penguin_meta_resolve_symbol(name: string) -> Option<BoundSymbol> {
             pos = next_dot + 1;
         }
     }
-    return active_meta.global_scope.some.resolve_qualified(parts);
+    let resolved: Option<BoundSymbol> = active_meta.global_scope.some.resolve_qualified(parts);
+    if (resolved.is_some()) { return resolved; }
+    // Fallback for a bare (unqualified) symbol: it may live in a per-file
+    // anonymous namespace (e.g. a top-level global in the user's file). Meta
+    // reflection must see those — match master, which found them via the
+    // global child-namespace scan.
+    if (cast<i64>(parts.size()) == 1) {
+        return active_meta.global_scope.some.lookup_symbol_anywhere(parts.at(cast<u64>(0)).some);
+    }
+    return new Option<BoundSymbol>.none();
 }
 
 // AST construction: create_ast parses a single-definition compilation unit

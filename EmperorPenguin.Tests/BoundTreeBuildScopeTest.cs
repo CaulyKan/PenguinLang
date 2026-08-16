@@ -18,7 +18,7 @@ initial {
         println(""func_name="" + func.name);
         println(""func_full="" + func.full_name);
     }
-    let func_sym = result.global_scope.lookup_symbol(""my_func"");
+    let func_sym = result.global_scope.lookup_symbol_anywhere(""my_func"");
     if (func_sym.is_some()) {
         println(""func_sym="" + func_sym.some.get_name());
     }
@@ -133,7 +133,7 @@ initial {
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""class MyClass {}"");
-    let type_sym = result.global_scope.lookup_type_in_scope(""MyClass"");
+    let type_sym = result.global_scope.lookup_type_anywhere(""MyClass"");
     if (type_sym.is_some()) {
         println(""type_found="" + type_sym.some.get_name());
     }
@@ -146,7 +146,7 @@ initial {
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""enum Color { Red; }"");
-    let type_sym = result.global_scope.lookup_type_in_scope(""Color"");
+    let type_sym = result.global_scope.lookup_type_anywhere(""Color"");
     if (type_sym.is_some()) {
         println(""type_found="" + type_sym.some.get_name());
     }
@@ -159,7 +159,7 @@ initial {
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""interface IPrintable { fun print(); }"");
-    let type_sym = result.global_scope.lookup_type_in_scope(""IPrintable"");
+    let type_sym = result.global_scope.lookup_type_anywhere(""IPrintable"");
     if (type_sym.is_some()) {
         println(""type_found="" + type_sym.some.get_name());
     }

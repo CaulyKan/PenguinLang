@@ -43,18 +43,27 @@ class BoundScope {
         if (local.is_some()) {
             return local;
         }
+        // BabyPenguin lookup order: own scope -> full parent chain (symbols
+        // only) -> imports (own, then ancestors') -> __builtin (default using).
         if (this.parent.is_some()) {
-            return this.parent.some.lookup_symbol(name);
-        }
-        // At global scope, also search child namespace scopes (for builtins etc.)
-        let ci: mut i64 = 0;
-        while (ci < cast<i64>(this.children.size())) {
-            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
-            let result: Option<BoundSymbol> = child.lookup_symbol_local(name);
-            if (result.is_some()) {
-                return result;
+            let chained: Option<BoundSymbol> = this.parent.some.lookup_symbol_chain(name);
+            if (chained.is_some()) {
+                return chained;
             }
-            ci = ci + 1;
+        }
+        return this.lookup_imported_symbol(name);
+    }
+
+    // Parent-chain symbol lookup without imports (the recursive half of
+    // lookup_symbol).
+    fun lookup_symbol_chain(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_symbol_chain");
+        let local: Option<BoundSymbol> = this.lookup_symbol_local(name);
+        if (local.is_some()) {
+            return local;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_symbol_chain(name);
         }
         return new Option<BoundSymbol>.none();
     }
@@ -83,17 +92,28 @@ class BoundScope {
             i = i + 1;
         }
         if (this.parent.is_some()) {
-            return this.parent.some.lookup_type_in_scope(name);
-        }
-        // At global scope, also search child namespace scopes
-        let ci: mut i64 = 0;
-        while (ci < cast<i64>(this.children.size())) {
-            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
-            let result: Option<BoundSymbol> = child.lookup_type_in_scope_local(name);
-            if (result.is_some()) {
-                return result;
+            let chained: Option<BoundSymbol> = this.parent.some.lookup_type_in_scope_chain(name);
+            if (chained.is_some()) {
+                return chained;
             }
-            ci = ci + 1;
+        }
+        return this.lookup_imported_type(name);
+    }
+
+    // Parent-chain type lookup without imports (the recursive half of
+    // lookup_type_in_scope).
+    fun lookup_type_in_scope_chain(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_type_in_scope_chain");
+        let i: mut u64 = 0;
+        while (i < this.symbols.size()) {
+            let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
+            if (sym is BoundSymbol.type_sym && sym.get_name() == name) {
+                return new Option<BoundSymbol>.some(sym);
+            }
+            i = i + 1;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_type_in_scope_chain(name);
         }
         return new Option<BoundSymbol>.none();
     }
@@ -138,24 +158,121 @@ class BoundScope {
         return new Option<BoundSymbol>.none();
     }
 
-    fun lookup_with_imports(this, name: string) -> Option<BoundSymbol> {
-        _utils.trace_enter("Enter lookup_with_imports");
-        let result: Option<BoundSymbol> = this.lookup_symbol(name);
-        if (result.is_some()) { return result; }
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.imported_namespaces.size())) {
-            let ns_name: string = this.imported_namespaces.at(cast<u64>(i)).some;
-            let parts: mut _utils.List<string> = new _utils.List<string>();
-            parts.push(ns_name);
-            let ns_sym: Option<BoundSymbol> = this.resolve_qualified(parts);
-            if (ns_sym.is_some() && ns_sym.some is BoundSymbol.namespace_sym) {
-                let ns_scope: Option<BoundScope> = ns_sym.some.namespace_sym.namespace_scope;
+    // Imports step of lookup (mirrors BabyPenguin GetImportedNamespaces): walk
+    // from this scope up through the ancestors, consulting each scope's
+    // imported_namespaces (own imports first, then ancestors'), then always
+    // try __builtin (the default using). Imports are NOT transitive — only the
+    // direct symbols of an imported namespace are visible.
+    fun lookup_imported_symbol(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_imported_symbol");
+        let s: mut Option<BoundScope> = new Option<BoundScope>.some(this);
+        while (s.is_some()) {
+            let sc: BoundScope = s.some;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(sc.imported_namespaces.size())) {
+                let ns_name: string = sc.imported_namespaces.at(cast<u64>(i)).some;
+                let ns_scope: Option<BoundScope> = this.resolve_imported_namespace(ns_name);
                 if (ns_scope.is_some()) {
                     let found: Option<BoundSymbol> = ns_scope.some.lookup_symbol_local(name);
                     if (found.is_some()) { return found; }
                 }
+                i = i + 1;
+            }
+            s = sc.parent;
+        }
+        let builtin: Option<BoundScope> = this.resolve_imported_namespace("__builtin");
+        if (builtin.is_some()) {
+            return builtin.some.lookup_symbol_local(name);
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    // Type variant of lookup_imported_symbol (for unqualified type names).
+    fun lookup_imported_type(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_imported_type");
+        let s: mut Option<BoundScope> = new Option<BoundScope>.some(this);
+        while (s.is_some()) {
+            let sc: BoundScope = s.some;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(sc.imported_namespaces.size())) {
+                let ns_name: string = sc.imported_namespaces.at(cast<u64>(i)).some;
+                let ns_scope: Option<BoundScope> = this.resolve_imported_namespace(ns_name);
+                if (ns_scope.is_some()) {
+                    let found: Option<BoundSymbol> = ns_scope.some.lookup_type_in_scope_local(name);
+                    if (found.is_some()) { return found; }
+                }
+                i = i + 1;
+            }
+            s = sc.parent;
+        }
+        let builtin: Option<BoundScope> = this.resolve_imported_namespace("__builtin");
+        if (builtin.is_some()) {
+            return builtin.some.lookup_type_in_scope_local(name);
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    // Resolve an imported namespace NAME to its scope: walk up from this scope
+    // looking for a direct child namespace with that name. Unresolvable names
+    // are skipped silently.
+    fun resolve_imported_namespace(this, ns_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter resolve_imported_namespace");
+        let s: mut Option<BoundScope> = new Option<BoundScope>.some(this);
+        while (s.is_some()) {
+            let sc: BoundScope = s.some;
+            let found: Option<BoundScope> = sc.lookup_namespace(ns_name);
+            if (found.is_some()) { return found; }
+            s = sc.parent;
+        }
+        return new Option<BoundScope>.none();
+    }
+
+    // Old global-root child-namespace scan, kept for internal SemanticModel
+    // sites that need "does this name exist as a real symbol/type anywhere"
+    // semantics (meta placeholder detection, meta template lookup). NOT for
+    // user-code resolution — it defeats file-namespace isolation.
+    fun lookup_symbol_anywhere(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_symbol_anywhere");
+        let local: Option<BoundSymbol> = this.lookup_symbol_local(name);
+        if (local.is_some()) {
+            return local;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_symbol_anywhere(name);
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.children.size())) {
+            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
+            let result: Option<BoundSymbol> = child.lookup_symbol_local(name);
+            if (result.is_some()) {
+                return result;
+            }
+            ci = ci + 1;
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+    fun lookup_type_anywhere(this, name: string) -> Option<BoundSymbol> {
+        _utils.trace_enter("Enter lookup_type_anywhere");
+        let i: mut u64 = 0;
+        while (i < this.symbols.size()) {
+            let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
+            if (sym is BoundSymbol.type_sym && sym.get_name() == name) {
+                return new Option<BoundSymbol>.some(sym);
             }
             i = i + 1;
+        }
+        if (this.parent.is_some()) {
+            return this.parent.some.lookup_type_anywhere(name);
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.children.size())) {
+            let child: BoundScope = this.children.at(cast<u64>(ci)).some;
+            let result: Option<BoundSymbol> = child.lookup_type_in_scope_local(name);
+            if (result.is_some()) {
+                return result;
+            }
+            ci = ci + 1;
         }
         return new Option<BoundSymbol>.none();
     }

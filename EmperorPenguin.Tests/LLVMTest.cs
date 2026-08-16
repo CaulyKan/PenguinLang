@@ -158,8 +158,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp slt i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryCompare() => _batch.Value.AssertSemantic();
 
@@ -423,17 +423,17 @@ declare ptr @_emperor_string_concat(ptr, ptr)
 
 define void @create(ptr sret(%enum.Option) %_sret_result) {
 entry:
-  %tmp_0 = alloca %enum.Option
-  store %enum.Option zeroinitializer, ptr %tmp_0
+  %t1 = alloca %enum.Option
+  store %enum.Option zeroinitializer, ptr %t1
   %t0 = add i64 0, 42
-  %tmp_1 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 0
-  store ptr @Option_metadata, ptr %tmp_1
-  %tmp_2 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 1
-  store i32 0, ptr %tmp_2
-  %tmp_3 = getelementptr %enum.Option, ptr %tmp_0, i32 0, i32 2
-  store i64 %t0, ptr %tmp_3
-  %t1 = load %enum.Option, ptr %tmp_0
-  store %enum.Option %t1, ptr %_sret_result
+  %tmp_0 = getelementptr %enum.Option, ptr %t1, i32 0, i32 0
+  store ptr @Option_metadata, ptr %tmp_0
+  %tmp_1 = getelementptr %enum.Option, ptr %t1, i32 0, i32 1
+  store i32 0, ptr %tmp_1
+  %tmp_2 = getelementptr %enum.Option, ptr %t1, i32 0, i32 2
+  store i64 %t0, ptr %tmp_2
+  %tmp_3 = load %enum.Option, ptr %t1
+  store %enum.Option %tmp_3, ptr %_sret_result
   ret void
 }")]
     public void TestLLVMNewEnumWithPayload() => _batch.Value.AssertSemantic();
@@ -587,9 +587,9 @@ initial {
 }
 ", @"define i64 @test() {
 entry:
-  %v0 = add i32 0, 42
-  %v1 = zext i32 %v0 to i64
-  ret i64 %v1
+  %x = add i32 0, 42
+  %t0 = zext i32 %x to i64
+  ret i64 %t0
 }")]
     public void TestLLVMCast() => _batch.Value.AssertSemantic();
 
@@ -775,8 +775,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp eq i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryEqual() => _batch.Value.AssertSemantic();
 
@@ -801,8 +801,8 @@ entry:
   %t0 = add i64 0, 1
   %t1 = add i64 0, 2
   %t2 = icmp ne i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryNotEqual() => _batch.Value.AssertSemantic();
 
@@ -827,8 +827,8 @@ entry:
   %t0 = add i64 0, 5
   %t1 = add i64 0, 3
   %t2 = icmp sgt i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryGreaterThan() => _batch.Value.AssertSemantic();
 
@@ -853,8 +853,8 @@ entry:
   %t0 = add i64 0, 3
   %t1 = add i64 0, 5
   %t2 = icmp sle i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryLessThanOrEqual() => _batch.Value.AssertSemantic();
 
@@ -879,8 +879,8 @@ entry:
   %t0 = add i64 0, 5
   %t1 = add i64 0, 3
   %t2 = icmp sge i64 %t0, %t1
-  %t3 = zext i1 %t2 to i8
-  ret i8 %t3
+  %tmp_0 = zext i1 %t2 to i8
+  ret i8 %tmp_0
 }")]
     public void TestLLVMBinaryGreaterThanOrEqual() => _batch.Value.AssertSemantic();
 

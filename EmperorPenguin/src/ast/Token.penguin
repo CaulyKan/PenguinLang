@@ -101,6 +101,7 @@ namespace emperor {
         U32;
         U64;
         U8;
+        Using;
         Void;
         Wait;
         While;

@@ -23,7 +23,7 @@ initial {
             println(""is_meta="" + cast<string>(sym.is_meta));
         }
     }
-    let found = result.global_scope.lookup_symbol(""fib"");
+    let found = result.global_scope.lookup_symbol_anywhere(""fib"");
     println(""symbol_found="" + cast<string>(found.is_some()));
 }
 ", "d0_type=fib\nname=fib\nparam_count=1\nis_meta=true\nsymbol_found=true")]

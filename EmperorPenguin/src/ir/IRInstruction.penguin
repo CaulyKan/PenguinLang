@@ -325,6 +325,44 @@ class IRCallVoid {
     }
 }
 
+// 12c. CALL_INDIRECT - call through a function-pointer value (fun-typed
+// fields / locals). The callee is an IRValue holding a fat function pointer.
+class IRCallIndirect {
+    callee: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    args: !mut _utils.List<IRValue> = new _utils.List<IRValue>();
+    result_value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ret_type: !mut string = "";
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, callee: IRValue, args: mut _utils.List<IRValue>, result: IRValue, ret_type: string, loc: SourceLocation) {
+        this.callee = callee;
+        this.args = args;
+        this.result_value = result;
+        this.ret_type = ret_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        let sb = new StringBuilder();
+        if (this.ret_type != "void") {
+            sb.append(this.result_value.display());
+            sb.append(":" + this.ret_type + " = ");
+        }
+        sb.append("CALL_INDIRECT " + this.callee.display() + "(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.args.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(this.args.at(cast<u64>(i)).some.display());
+            i = i + 1;
+        }
+        sb.append(")");
+        return sb.to_string();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
 // 13. CALL_VIRT - virtual call through interface_map
 class IRCallVirt {
     obj: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
@@ -680,6 +718,7 @@ enum IRInstruction {
     ret_void: IRRetVoid;
     call: IRCall;
     call_void: IRCallVoid;
+    call_indirect: IRCallIndirect;
     call_virt: IRCallVirt;
     new_inst: IRNew;
     new_enum: IRNewEnum;
@@ -710,6 +749,7 @@ enum IRInstruction {
         if (this is IRInstruction.ret_void) { return this.ret_void.display(); }
         if (this is IRInstruction.call) { return this.call.display(); }
         if (this is IRInstruction.call_void) { return this.call_void.display(); }
+        if (this is IRInstruction.call_indirect) { return this.call_indirect.display(); }
         if (this is IRInstruction.call_virt) { return this.call_virt.display(); }
         if (this is IRInstruction.new_inst) { return this.new_inst.display(); }
         if (this is IRInstruction.new_enum) { return this.new_enum.display(); }

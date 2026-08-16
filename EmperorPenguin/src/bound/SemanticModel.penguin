@@ -23,6 +23,167 @@ class SpecializingBlockInfo {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Per-file anonymous namespaces (C++ static semantics, BabyPenguin parity).
+// Top-level definitions that are not inside an explicit `namespace` block are
+// file-local: they bind into a per-file namespace `_ns_<stem>_<hash16>`
+// (stem = basename without extension, hash over the full path) instead of
+// `<global>`, so same-named top-level defs in different files never collide
+// and cross-file unqualified access does not see them. Explicit namespaces
+// still merge by name across files (add_or_merge_namespace), and a file that
+// declares only named namespaces never materializes its file namespace
+// (it is created lazily on first use).
+// ---------------------------------------------------------------------------
+
+// djb2 restricted to 16 bits — the uniquifier half of BabyPenguin's
+// `_ns_<name>_<hash(fullPath) % 0xFFFF>` file-namespace naming.
+fun _file_ns_hash(s: string) -> i64 {
+    let h: mut i64 = 5381;
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        h = (h * 33 + string_char_code(string_char_at(s, i))) % 65536;
+        i = i + 1;
+    }
+    return h;
+}
+
+fun file_ns_name(filename: string) -> string {
+    let last_slash: mut i64 = -1;
+    let pos: mut i64 = string_find(filename, "/");
+    while (pos >= 0) {
+        last_slash = pos;
+        pos = string_find_from(filename, "/", pos + 1);
+    }
+    let base: string = string_substring(filename, last_slash + 1, string_length(filename) - last_slash - 1);
+    let ext: i64 = string_find(base, ".penguin");
+    let stem: mut string = base;
+    if (ext >= 0) {
+        stem = string_substring(base, 0, ext);
+    }
+    return "_ns_" + stem + "_" + cast<string>(_file_ns_hash(filename));
+}
+
+// The source filename a top-level ast def came from (each parse sets location
+// from token locations, which carry the lexer's filename). Unknown shapes
+// fall back to "" which maps to one stable anonymous namespace.
+// Stamp the owning source file onto a meta-spliced def (see
+// try_splice_meta_fun_def): compiler-generated definitions from
+// #create_definition / #make_*() parse with a synthetic "<meta_...>" filename,
+// but semantically they belong to the file that called the #fun — they must
+// bind into THAT file's anonymous namespace so user types (e.g. Point) stay
+// visible to them and vice versa.
+fun set_def_source_file(def: Definition, fname: string) {
+    if (def is Definition.function_def) { def.function_def.source_file = fname; }
+    else if (def is Definition.class_def) { def.class_def.source_file = fname; }
+    else if (def is Definition.enum_def) { def.enum_def.source_file = fname; }
+    else if (def is Definition.namespace_def) { def.namespace_def.source_file = fname; }
+    else if (def is Definition.using_def) { def.using_def.source_file = fname; }
+    else if (def is Definition.initial_routine) { def.initial_routine.source_file = fname; }
+    else if (def is Definition.interface_def) { def.interface_def.source_file = fname; }
+    else if (def is Definition.impl_def) { def.impl_def.source_file = fname; }
+    else if (def is Definition.impl_for_def) { def.impl_for_def.source_file = fname; }
+    else if (def is Definition.type_ref_def) { def.type_ref_def.source_file = fname; }
+    else if (def is Definition.global_var) { def.global_var.source_file = fname; }
+    else if (def is Definition.event_def) { def.event_def.source_file = fname; }
+    else if (def is Definition.on_routine_def) { def.on_routine_def.source_file = fname; }
+    else if (def is Definition.meta_function_def) { def.meta_function_def.source_file = fname; }
+    else if (def is Definition.meta_class_def) { def.meta_class_def.source_file = fname; }
+    else if (def is Definition.meta_if_def) { def.meta_if_def.source_file = fname; }
+    else if (def is Definition.meta_for_def) { def.meta_for_def.source_file = fname; }
+    else if (def is Definition.meta_while_def) { def.meta_while_def.source_file = fname; }
+    else if (def is Definition.meta_call_def) { def.meta_call_def.source_file = fname; }
+    else if (def is Definition.specializing_def) { def.specializing_def.source_file = fname; }
+}
+
+fun ast_def_filename(def: Definition) -> string {
+    // The per-def source file is carried in `source_file` (set by the parser
+    // from the token's location). NOT def.location.filename: location fields
+    // are `mut` references whose assignment goes through ICopy (a C#-backend
+    // codegen path that corrupts the value), while plain string fields are
+    // safe — see the file-namespace bootstrap fix.
+    if (def is Definition.function_def) { return def.function_def.source_file; }
+    if (def is Definition.class_def) { return def.class_def.source_file; }
+    if (def is Definition.enum_def) { return def.enum_def.source_file; }
+    if (def is Definition.namespace_def) { return def.namespace_def.source_file; }
+    if (def is Definition.using_def) { return def.using_def.source_file; }
+    if (def is Definition.initial_routine) { return def.initial_routine.source_file; }
+    if (def is Definition.interface_def) { return def.interface_def.source_file; }
+    if (def is Definition.impl_def) { return def.impl_def.source_file; }
+    if (def is Definition.impl_for_def) { return def.impl_for_def.source_file; }
+    if (def is Definition.type_ref_def) { return def.type_ref_def.source_file; }
+    if (def is Definition.global_var) { return def.global_var.source_file; }
+    if (def is Definition.event_def) { return def.event_def.source_file; }
+    if (def is Definition.on_routine_def) { return def.on_routine_def.source_file; }
+    if (def is Definition.meta_function_def) { return def.meta_function_def.source_file; }
+    if (def is Definition.meta_class_def) { return def.meta_class_def.source_file; }
+    if (def is Definition.meta_if_def) { return def.meta_if_def.source_file; }
+    if (def is Definition.meta_for_def) { return def.meta_for_def.source_file; }
+    if (def is Definition.meta_while_def) { return def.meta_while_def.source_file; }
+    if (def is Definition.meta_call_def) { return def.meta_call_def.source_file; }
+    if (def is Definition.specializing_def) { return def.specializing_def.source_file; }
+    return "";
+}
+
+// The scope a TOP-LEVEL ast def binds into: explicit `namespace` blocks
+// against the global scope (they merge by name across files); everything else
+// against this file's anonymous namespace.
+fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut BoundScope {
+    if (def is Definition.namespace_def) { return global_scope; }
+    // Defs with no source file or a SYNTHETIC source name (meta-spliced
+    // definitions from #create_definition / #make_*() — the parser names them
+    // "<meta_create_definition>" etc.) bind into the global scope: they are
+    // compiler-generated, belong to no user file, and must stay reachable
+    // from any user file (master semantics).
+    let fname: string = ast_def_filename(def);
+    if (string_length(fname) == 0) { return global_scope; }
+    if (string_char_at(fname, 0) == "<") { return global_scope; }
+    return global_scope.add_or_merge_namespace(file_ns_name(fname));
+}
+
+// The ENCLOSING scope of a bound def (the scope its name is registered in):
+// the def's own scope's parent for class/enum/interface/function/initial
+// defs, the namespace's own scope for namespaces, the variable symbol's
+// enclosing scope for globals; fallback is the global scope. Used where a
+// pass iterates bound defs and needs the def's lookup context.
+fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {
+    if (def is BoundDefinition.class_def) {
+        if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
+            return def.class_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.enum_def) {
+        if (def.enum_def.scope.is_some() && def.enum_def.scope.some.parent.is_some()) {
+            return def.enum_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.interface_def) {
+        if (def.interface_def.scope.is_some() && def.interface_def.scope.some.parent.is_some()) {
+            return def.interface_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.function_def) {
+        if (def.function_def.scope.is_some() && def.function_def.scope.some.parent.is_some()) {
+            return def.function_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.initial_routine) {
+        if (def.initial_routine.scope.is_some() && def.initial_routine.scope.some.parent.is_some()) {
+            return def.initial_routine.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.namespace_def) {
+        if (def.namespace_def.scope.is_some()) {
+            return def.namespace_def.scope.some;
+        }
+    }
+    if (def is BoundDefinition.global_var_def) {
+        if (def.global_var_def.variable_symbol.is_some() && def.global_var_def.variable_symbol.some.enclosing_scope.is_some()) {
+            return def.global_var_def.variable_symbol.some.enclosing_scope.some;
+        }
+    }
+    return global_scope;
+}
+
 class SemanticModel {
     type_registry: mut BoundTypeRegistry;
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
@@ -88,6 +249,13 @@ class SemanticModel {
     lib_def_start: i64 = 0;
     lib_def_count: i64 = 0;
     lib_instances: mut _utils.List<string> = new _utils.List<string>();
+    // When true (unit B meta compilation), top-level defs bind directly into
+    // the global scope instead of their per-file anonymous namespace. Unit B
+    // is the compiler's own meta machinery: its base sources (bound/AST type
+    // layers) call each other's top-level helpers by bare name (e.g.
+    // arg_as_bound_type from json.penguin #funs), which file namespaces
+    // would hide.
+    top_level_in_global: bool = false;
 
     fun new(mut this) {
 
@@ -953,7 +1121,15 @@ class SemanticModel {
         _utils.trace_enter("Enter pass_build_scopes");
         let def_index: mut i64 = 0;
         for (let def : Definition in unit.definitions) {
-            let bound: Option<BoundDefinition> = this.bind_definition(def, result.global_scope);
+            // Top-level defs outside explicit namespaces bind into this file's
+            // anonymous namespace (C++ static semantics); namespaces merge by
+            // name against the global scope as before.
+            let bind_scope: mut BoundScope = if (this.top_level_in_global) {
+                result.global_scope
+            } else {
+                top_level_def_scope(def, result.global_scope)
+            };
+            let bound: Option<BoundDefinition> = this.bind_definition(def, bind_scope);
             if (let b := bound.some) {
                 // Dyn-lib: defs declared in a loaded .penguin-lib's embedded source
                 // are emitted as declarations (extern) linked to the lib, never
@@ -1218,6 +1394,29 @@ class SemanticModel {
         }
         if (def is Definition.specializing_def) {
             return this.bind_specializing_def(def.specializing_def, scope);
+        }
+        if (def is Definition.using_def) {
+            // using <ns>; — record the import on the enclosing scope (the file
+            // namespace for top-level using, the namespace scope inside
+            // `namespace` bodies) so unqualified lookups consult it (see
+            // BoundScope.lookup_imported_symbol). Binds a placeholder slot
+            // (the #class pattern) so the pass loops' unit.definitions[i] <->
+            // result.definitions[i] alignment is preserved.
+            if (string_length(def.using_def.name) > 0) {
+                let already: mut bool = false;
+                let ii: mut i64 = 0;
+                while (ii < cast<i64>(scope.imported_namespaces.size())) {
+                    if (scope.imported_namespaces.at(cast<u64>(ii)).some == def.using_def.name) {
+                        already = true;
+                    }
+                    ii = ii + 1;
+                }
+                if (!already) {
+                    scope.imported_namespaces.push(def.using_def.name);
+                }
+            }
+            let placeholder: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.using_def.name, def.using_def.name);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(placeholder));
         }
         return new Option<BoundDefinition>.none();
     }
@@ -1784,14 +1983,33 @@ class SemanticModel {
         let result: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
         // Resolve the implemented interface type (with generic args, e.g.
         // IFoo<u8>) so downstream passes (monomorphization collection, etc.)
-        // can see which generic interfaces a class instantiates.
+        // can see which generic interfaces a class instantiates. Non-reporting:
+        // a specialized enum's impl block (e.g. `impl IHasValue` injected into
+        // __builtin.Option) resolves from the SPECIALIZED scope, where a
+        // cross-namespace interface is invisible — fall back to an anywhere
+        // scan (matches master's global child scan for impl targets).
         if (def.type_spec.is_some()) {
-            let dk: mut i64 = 0;
-            while (dk < cast<i64>(def.type_spec.some.generic_args.size())) {
-                let da: TypeSpecifier = def.type_spec.some.generic_args.at(cast<u64>(dk)).some;
-                dk = dk + 1;
+            if (cast<i64>(def.type_spec.some.generic_args.size()) == 0) {
+                // No generic args: non-reporting resolution + anywhere fallback
+                // (a #specializing impl like `impl IHasValue` injected into a
+                // specialized enum resolves from the SPECIALIZED scope, where a
+                // cross-namespace interface is invisible).
+                let iface_opt: Option<BoundType> = this.try_resolve_qualified_type(def.type_spec.some, scope);
+                if (iface_opt.is_some()) {
+                    let iface_bt: mut BoundType = iface_opt.some;
+                    result.interface_type = iface_bt;
+                } else {
+                    let anywhere: Option<BoundSymbol> = this.global_scope.lookup_type_anywhere(def.type_spec.some.name);
+                    if (anywhere.is_some() && anywhere.some is BoundSymbol.type_sym) {
+                        let abt: mut BoundType = anywhere.some.type_sym.bound_type;
+                        result.interface_type = abt;
+                    }
+                }
+            } else {
+                // With generic args keep the full resolution path (template
+                // instantiation / M4), which the qualified-only path lacks.
+                result.interface_type = this.resolve_type_specifier(def.type_spec.some, scope);
             }
-            result.interface_type = this.resolve_type_specifier(def.type_spec.some, scope);
         }
         let i: mut i64 = 0;
         while (i < cast<i64>(def.functions.size())) {
@@ -2124,7 +2342,15 @@ class SemanticModel {
             let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
             let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
             if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Resolving " + this.def_display_name(bound_def)); }
-            let updated: BoundDefinition = this.resolve_pair(ast_def, bound_def, result.global_scope);
+            // Pair against the scope the def was bound into (file namespace for
+            // top-level defs, global for namespaces) so sibling file-local types
+            // resolve unqualified.
+            let pair_scope: mut BoundScope = if (this.top_level_in_global) {
+                result.global_scope
+            } else {
+                top_level_def_scope(ast_def, result.global_scope)
+            };
+            let updated: BoundDefinition = this.resolve_pair(ast_def, bound_def, pair_scope);
             result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
@@ -3022,16 +3248,24 @@ class SemanticModel {
             return this.apply_mutability(mt.some, type_spec.is_mutable);
         }
         if (type_spec.is_function_type || type_spec.is_async_function_type) {
+            // BabyPenguin convention: the FIRST generic arg is the RETURN
+            // type, the rest are parameters (`fun<i32, i32>` = i32(i32)).
+            // An explicit `-> ret` overrides the first arg as the return and
+            // keeps all generic args as parameters.
+            let ret: mut BoundType = this.type_registry.void_type;
+            let param_start: mut i64 = 0;
+            if (type_spec.return_type.is_some()) {
+                ret = this.resolve_type_specifier(type_spec.return_type.some, scope);
+            } else if (cast<i64>(type_spec.function_params.size()) > 0) {
+                ret = this.resolve_type_specifier(type_spec.function_params.at(cast<u64>(0)).some, scope);
+                param_start = 1;
+            }
             let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-            let i: mut i64 = 0;
+            let i: mut i64 = param_start;
             while (i < cast<i64>(type_spec.function_params.size())) {
                 param_types.push(this.resolve_type_specifier(
                     type_spec.function_params.at(cast<u64>(i)).some, scope));
                 i = i + 1;
-            }
-            let ret: mut BoundType = this.type_registry.void_type;
-            if (type_spec.return_type.is_some()) {
-                ret = this.resolve_type_specifier(type_spec.return_type.some, scope);
             }
             return this.type_registry.make_function_type(ret, param_types, type_spec.is_async_function_type);
         }
@@ -3315,7 +3549,10 @@ class SemanticModel {
     // it doesn't yet exist. Idempotent.
     fun ensure_specialized_type(mut this, template_name: string, type_args: _utils.List<BoundTypeArg>) -> BoundType {
         _utils.trace_enter("Enter ensure_specialized_type");
-        let tmpl_sym: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(template_name);
+        // The template name comes from meta code as a plain name — use the
+        // anywhere-scan so namespaced / file-local templates still resolve
+        // (user-code lookups never go through this path).
+        let tmpl_sym: Option<BoundSymbol> = this.global_scope.lookup_type_anywhere(template_name);
         if (tmpl_sym.is_none() || !(tmpl_sym.some is BoundSymbol.type_sym)) {
             return this.type_registry.make_error_type();
         }
@@ -3371,16 +3608,17 @@ class SemanticModel {
     fun catch_up_def(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter catch_up_def");
         let saved: i64 = this.current_pass_index;
+        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
         // The returning processors (init_constructors_for_def, build_vtables_*,
         // classify_def, bind_body_*) mutate the def's inner object IN PLACE and only
         // re-wrap the same object, so ignoring their return is correct — the def
         // (the same object held in result.definitions) is updated.
         if (saved >= 4) { this.current_pass_index = 4; this.bind_symbols_for_def(def); }
-        if (saved >= 5) { this.current_pass_index = 5; this.init_constructors_for_def(def, result.global_scope); }
+        if (saved >= 5) { this.current_pass_index = 5; this.init_constructors_for_def(def, def_scope); }
         if (saved >= 6) {
             this.current_pass_index = 6;
-            this.build_vtables_for_specialized_def(def, result.global_scope);
-            this.merge_inherited_vtables_for_def(def, result.global_scope);
+            this.build_vtables_for_specialized_def(def, def_scope);
+            this.merge_inherited_vtables_for_def(def, def_scope);
         }
         if (saved >= 7) {
             this.current_pass_index = 7;
@@ -3505,8 +3743,12 @@ class SemanticModel {
                             if (ast_def.is_some()) {
                                 // Find the specialized class scope if this is a method in a specialized generic class
                                 let method_class_scope: Option<BoundScope> = this.find_method_class_scope(result.definitions, specialized_defs, inst.func_name);
+                                // The specialized function's scope parent is the TEMPLATE's
+                                // enclosing scope (file namespace / namespace), so body name
+                                // resolution sees the same siblings as the template.
+                                let tmpl_parent_scope: mut BoundScope = def_lookup_scope(tmpl_def.some, result.global_scope);
                                 let spec_result: Option<BoundDefinition> = this.specialize_function_def(
-                                    tmpl_func, inst.generic_args, mangled, result.global_scope, method_class_scope);
+                                    tmpl_func, inst.generic_args, mangled, tmpl_parent_scope, method_class_scope);
                                 if (spec_result.is_some()) {
                                     if (this.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized function " + mangled); }
                                     specialized_defs.push(spec_result.some);
@@ -4137,13 +4379,25 @@ class SemanticModel {
     }
 
     fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        this.collect_generic_instantiations_from_ast_impl(defs, bound_defs, scope, true, instantiations);
+    }
+
+    fun collect_generic_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, top_level: bool, instantiations: mut _utils.List<BoundType>) {
         _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: Definition = defs.at(cast<u64>(i)).some;
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !this.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
             if (def is Definition.initial_routine) {
                 if (def.initial_routine.body.is_some()) {
-                    this.collect_from_ast_expr_safe(def.initial_routine.body.some, scope, instantiations);
+                    this.collect_from_ast_expr_safe(def.initial_routine.body.some, def_scope, instantiations);
                 }
             }
             if (def is Definition.class_def) {
@@ -4155,7 +4409,7 @@ class SemanticModel {
                         let member: Definition = members.at(cast<u64>(mi)).some;
                         if (member is Definition.function_def) {
                             if (member.function_def.body.is_some()) {
-                                this.collect_from_ast_expr_safe(member.function_def.body.some, scope, instantiations);
+                                this.collect_from_ast_expr_safe(member.function_def.body.some, def_scope, instantiations);
                             }
                         }
                         mi = mi + 1;
@@ -4164,27 +4418,27 @@ class SemanticModel {
             }
             if (def is Definition.namespace_def) {
                 // Find matching bound namespace to get its scope
-        let ns_scope: BoundScope = if (i < cast<i64>(bound_defs.size())) {
-            let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
-            if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
-                bd.namespace_def.scope.some
-            } else {
-                scope
-            }
-        } else {
-            scope
-        };
-        let ns_bound_children: _utils.List<BoundDefinition> = if (i < cast<i64>(bound_defs.size())) {
-            let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
-            if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
-                bd.namespace_def.children
-            } else {
-                new _utils.List<BoundDefinition>()
-            }
-        } else {
-            new _utils.List<BoundDefinition>()
-        };
-                this.collect_generic_instantiations_from_ast(def.namespace_def.children, ns_bound_children, ns_scope, instantiations);
+                let ns_scope: BoundScope = if (i < cast<i64>(bound_defs.size())) {
+                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                        bd.namespace_def.scope.some
+                    } else {
+                        scope
+                    }
+                } else {
+                    scope
+                };
+                let ns_bound_children: _utils.List<BoundDefinition> = if (i < cast<i64>(bound_defs.size())) {
+                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                        bd.namespace_def.children
+                    } else {
+                        new _utils.List<BoundDefinition>()
+                    }
+                } else {
+                    new _utils.List<BoundDefinition>()
+                };
+                this.collect_generic_instantiations_from_ast_impl(def.namespace_def.children, ns_bound_children, ns_scope, false, instantiations);
             }
             i = i + 1;
         }
@@ -4767,7 +5021,8 @@ class SemanticModel {
         _utils.trace_enter("Enter pass_constructors");
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            let updated: BoundDefinition = this.init_constructors_for_def(result.definitions.at(cast<u64>(i)).some, result.global_scope);
+            let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+            let updated: BoundDefinition = this.init_constructors_for_def(def, def_lookup_scope(def, result.global_scope));
             result.definitions.set(cast<u64>(i), updated);
             i = i + 1;
         }
@@ -4921,10 +5176,15 @@ class SemanticModel {
             if (i < ast_count) {
                 let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-                result.definitions.set(cast<u64>(i), this.build_vtables_for_def(ast_def, bound_def, result.global_scope));
+                let vt_scope: mut BoundScope = if (this.top_level_in_global) {
+                    result.global_scope
+                } else {
+                    top_level_def_scope(ast_def, result.global_scope)
+                };
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_def(ast_def, bound_def, vt_scope));
             } else {
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-                result.definitions.set(cast<u64>(i), this.build_vtables_for_specialized_def(bound_def, result.global_scope));
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_specialized_def(bound_def, def_lookup_scope(bound_def, result.global_scope)));
             }
             i = i + 1;
         }
@@ -4935,7 +5195,8 @@ class SemanticModel {
         // Walks the bound tree recursively (classes may be nested in namespaces).
         let m: mut i64 = 0;
         while (m < cast<i64>(result.definitions.size())) {
-            this.merge_inherited_vtables_for_def(result.definitions.at(cast<u64>(m)).some, result.global_scope);
+            let mdef: BoundDefinition = result.definitions.at(cast<u64>(m)).some;
+            this.merge_inherited_vtables_for_def(mdef, def_lookup_scope(mdef, result.global_scope));
             m = m + 1;
         }
     }
@@ -5102,7 +5363,12 @@ class SemanticModel {
                         // matching how the CALLER computes it. bi.interface_type (with
                         // generic args) stays on the bound impl for monomorphization
                         // collection / interface-inheritance merging.
-                        let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+                        let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(ast_impl.type_spec.some, global_scope, ast_impl.location);
+        } else {
+            iface_type = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+        }
                         if (!this.has_vtable_for_interface(cls.vtables, iface_type)) {
                             let vtable: mut BoundVTable = new BoundVTable();
                             vtable.interface_type = iface_type;
@@ -5127,7 +5393,12 @@ class SemanticModel {
                 if (bi.source_impl_def.is_some()) {
                     if (bi.source_impl_def.some is Definition.impl_def) {
                         let ast_impl: InterfaceImplementation = bi.source_impl_def.some.impl_def;
-                        let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+                        let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(ast_impl.type_spec.some, global_scope, ast_impl.location);
+        } else {
+            iface_type = this.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+        }
                         if (!this.has_vtable_for_interface(e.vtables, iface_type)) {
                             let vtable: mut BoundVTable = new BoundVTable();
                             vtable.interface_type = iface_type;
@@ -5253,7 +5524,12 @@ class SemanticModel {
             let member: Definition = ast_cls.members.at(cast<u64>(i)).some;
             if (member is Definition.impl_def) {
                 let impl_entry: InterfaceImplementation = member.impl_def;
-                let iface_type: mut BoundType = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+                let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
                 // A class may have several `impl IFoo<u8>` blocks; build only one
                 // vtable per interface (build_vtable_slots scans the whole class
                 // scope for overrides, so one pass covers all blocks).
@@ -5288,7 +5564,12 @@ class SemanticModel {
             let member: Definition = ast_enum.members.at(cast<u64>(i)).some;
             if (member is Definition.impl_def) {
                 let impl_entry: InterfaceImplementation = member.impl_def;
-                let iface_type: mut BoundType = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+                let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
                 if (!this.has_vtable_for_interface(bound_enum.vtables, iface_type)) {
                     let vtable: mut BoundVTable = new BoundVTable();
                     vtable.interface_type = iface_type;
@@ -5315,7 +5596,12 @@ class SemanticModel {
             let member: Definition = ast_iface.members.at(cast<u64>(i)).some;
             if (member is Definition.impl_def) {
                 let impl_entry: InterfaceImplementation = member.impl_def;
-                let iface_type: mut BoundType = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+                let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = this.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
                 let vtable: mut BoundVTable = new BoundVTable();
                 vtable.interface_type = iface_type;
                 this.build_vtable_slots(impl_entry, vtable, global_scope, iface_scope);
@@ -5411,8 +5697,21 @@ class SemanticModel {
 
     fun process_impl_for(mut this, ast_impl: InterfaceForImplementation, bound_impl: mut BoundInterfaceForImplementation, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
         _utils.trace_enter("Enter process_impl_for");
-        let iface_type: mut BoundType = this.resolve_type_name(ast_impl.type_name, impl_scope, ast_impl.location);
-        let for_type: mut BoundType = this.resolve_type_name(ast_impl.for_type_name, impl_scope, ast_impl.location);
+        // Resolve via the full TypeSpecifier (qualified_parts aware): the parser
+        // stores `ns2.Bar` as name="Bar" + qualified_parts=["ns2"], so resolving
+        // the bare name from the impl scope would miss cross-namespace targets.
+        let iface_type: mut BoundType = this.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = this.resolve_impl_base_type(ast_impl.type_spec.some, impl_scope, ast_impl.location);
+        } else {
+            iface_type = this.resolve_type_name(ast_impl.type_name, impl_scope, ast_impl.location);
+        }
+        let for_type: mut BoundType = this.type_registry.make_error_type();
+        if (ast_impl.for_type_spec.is_some()) {
+            for_type = this.resolve_type_specifier(ast_impl.for_type_spec.some, impl_scope);
+        } else {
+            for_type = this.resolve_type_name(ast_impl.for_type_name, impl_scope, ast_impl.location);
+        }
         bound_impl.interface_type = iface_type;
         bound_impl.for_type = for_type;
         // Orphan principle: at least one of (interface, target type) must be in
@@ -5873,6 +6172,40 @@ class SemanticModel {
             return false;
         }
         return false;
+    }
+
+    // Resolve an impl block's interface/target type by its QUALIFIED NAME ONLY
+    // (no generic args). Vtables key on the interface TEMPLATE (matching the
+    // call side's extract_template_name), and in a template context the generic
+    // args may reference template params (T) that are unresolvable outside the
+    // class scope — resolving them here would fail and/or register a
+    // specialized interface where master semantics keep the template.
+    fun resolve_impl_base_type(mut this, ts: TypeSpecifier, scope: mut BoundScope, location: SourceLocation) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_impl_base_type");
+        // Non-reporting resolution chain (resolve_type_specifier REPORTS an
+        // error on failure, which would leak even when a later fallback hits):
+        // 1) qualified name via try_resolve_qualified_type (no error),
+        // 2) simple name via scope lookup,
+        // 3) anywhere scan — an impl block may reference an interface from a
+        //    DIFFERENT namespace than where it ends up being processed.
+        //    #specializing injects `impl IHasValue` (defined in `namespace
+        //    penguin`) into __builtin.Option, so resolution from the Option
+        //    scope fails. Matches master's global child scan for impl targets
+        //    only — user code isolation is unaffected.
+        let base_ts: mut TypeSpecifier = new TypeSpecifier();
+        base_ts.name = ts.name;
+        let qi: mut i64 = 0;
+        while (qi < cast<i64>(ts.qualified_parts.size())) {
+            base_ts.qualified_parts.push(ts.qualified_parts.at(cast<u64>(qi)).some);
+            qi = qi + 1;
+        }
+        let qual: Option<BoundType> = this.try_resolve_qualified_type(base_ts, scope);
+        if (qual.is_some()) { return qual.some; }
+        let sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ts.name);
+        if (sym.is_some() && sym.some is BoundSymbol.type_sym) { return sym.some.type_sym.bound_type; }
+        let anywhere: Option<BoundSymbol> = this.global_scope.lookup_type_anywhere(ts.name);
+        if (anywhere.is_some() && anywhere.some is BoundSymbol.type_sym) { return anywhere.some.type_sym.bound_type; }
+        return this.type_registry.make_error_type();
     }
 
     fun resolve_type_name(mut this, name: string, scope: mut BoundScope, location: SourceLocation) -> mut BoundType {
@@ -7661,6 +7994,24 @@ class SemanticModel {
                         }
                     }
                     if (let sym := ma_expr.member_symbol.some) {
+                        if (sym is BoundSymbol.variable) {
+                            // fun-typed FIELD call: `h.cb(21)` where
+                            // `cb: mut fun<i32, i32>` — the field holds a fat
+                            // function pointer. Bind as a call whose callee is
+                            // the field access, returning the fun type's
+                            // return type (generic_args[0]; the rest are the
+                            // parameter types).
+                            let ftype: BoundType = sym.variable.bound_type;
+                            if (ftype.kind is TypeKind.FunctionKind) {
+                                let ret: mut BoundType = this.type_registry.void_type;
+                                if (cast<i64>(ftype.generic_args.size()) > 0) {
+                                    ret = arg_as_bound_type(ftype.generic_args.at(cast<u64>(0)).some);
+                                }
+                                let empty_ga: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                                let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(ret, callee, ma_expr.member_symbol, args, false, empty_ga, false);
+                                return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
+                            }
+                        }
                         if (sym is BoundSymbol.function_sym) {
                             // A member function whose first parameter is not `this`
                             // may still be called via `receiver.foo(...)` -- the
@@ -8198,6 +8549,17 @@ class SemanticModel {
                         let single: mut _utils.List<Definition> = new _utils.List<Definition>();
                         single.push(def_opt.some);
                         this.collect_resolved_definitions(single, out);
+                        // Stamp the CALLING file onto the spliced defs (they
+                        // parsed with a synthetic "<meta_...>" filename, which
+                        // would otherwise bind them into a synthetic file
+                        // namespace invisible to the user's file).
+                        let owner_file: string = mc.location.filename;
+                        let oi2: mut i64 = 0;
+                        while (oi2 < cast<i64>(out.size())) {
+                            let od: Definition = out.at(cast<u64>(oi2)).some;
+                            set_def_source_file(od, owner_file);
+                            oi2 = oi2 + 1;
+                        }
                         return true;
                     }
                     this.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return a definition ast in definition position", mc.location);
@@ -8489,7 +8851,8 @@ class SemanticModel {
                 // is either a real global type (e.g. Point) or an unspecialized
                 // template-param placeholder (T). The placeholder is NOT present in the
                 // global scope — only the real type is — so that distinguishes them.
-                let g: Option<BoundSymbol> = this.global_scope.lookup_type_in_scope(name);
+                // Anywhere-scan: real types may live in named or file namespaces.
+                let g: Option<BoundSymbol> = this.global_scope.lookup_type_anywhere(name);
                 if (g.is_some()) {
                     return false;
                 }
@@ -8625,10 +8988,31 @@ class SemanticModel {
             || ret_name == "";
         if (!is_int_ret) {
             // Immutable-this type lookup (resolve_type_name needs mut this).
-            let sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ret_name);
+            // Qualified-aware: `_utils.List<i64>` parses as name="List" +
+            // qualified_parts=["_utils"], which a bare simple-name lookup
+            // misses under file-namespace isolation (master's global child
+            // scan used to find it). Falls back to the simple-name lookup.
             let vt_opt: mut Option<BoundType> = new Option<BoundType>.none();
-            if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
-                vt_opt = new Option<BoundType>.some(sym.some.type_sym.bound_type);
+            if (bmf.return_type.is_some()) {
+                let rt_spec: TypeSpecifier = bmf.return_type.some;
+                let base_ts: mut TypeSpecifier = new TypeSpecifier();
+                base_ts.name = rt_spec.name;
+                let qi: mut i64 = 0;
+                while (qi < cast<i64>(rt_spec.qualified_parts.size())) {
+                    base_ts.qualified_parts.push(rt_spec.qualified_parts.at(cast<u64>(qi)).some);
+                    qi = qi + 1;
+                }
+                let rt_qual: Option<BoundType> = this.try_resolve_qualified_type(base_ts, scope);
+                if (rt_qual.is_some()) {
+                    vt_opt = new Option<BoundType>.some(rt_qual.some);
+                } else {
+                    let sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ret_name);
+                    if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+                        vt_opt = new Option<BoundType>.some(sym.some.type_sym.bound_type);
+                    }
+                }
+            }
+            if (vt_opt.is_some()) {
                 // A GENERIC return type's IUniqueMangleName impl lives on the
                 // SPECIALIZATION (injected by #specializing blocks at pass 3),
                 // not on the template — resolve the mangled specialization and
@@ -9405,9 +9789,13 @@ class SemanticModel {
 
     fun bind_cast(mut this, expr: CastExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_cast");
-        let target_type: mut BoundType = this.resolve_type_name(expr.type_name, scope, expr.location);
+        // Prefer the full TypeSpecifier (qualified_parts aware) when present;
+        // the bare-name fallback only handles unqualified types.
+        let target_type: mut BoundType = this.type_registry.make_error_type();
         if (expr.target_type.is_some()) {
             target_type = this.resolve_type_specifier(expr.target_type.some, scope);
+        } else {
+            target_type = this.resolve_type_name(expr.type_name, scope, expr.location);
         }
         let inner: Option<BoundExpression> = this.bind_optional_expr(expr.inner, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
@@ -10486,21 +10874,38 @@ class SemanticModel {
 
     fun collect_function_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
         _utils.trace_enter("Enter collect_function_instantiations_from_ast");
+        this.collect_function_instantiations_from_ast_impl(defs, scope, true, func_instantiations);
+    }
+
+    fun collect_function_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, scope: BoundScope, top_level: bool, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
             let def: Definition = defs.at(cast<u64>(i)).some;
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !this.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
             if (def is Definition.initial_routine) {
                 if (def.initial_routine.body.is_some()) {
-                    this.collect_func_inst_from_expr(def.initial_routine.body.some, scope, func_instantiations);
+                    this.collect_func_inst_from_expr(def.initial_routine.body.some, def_scope, func_instantiations);
                 }
             }
             if (def is Definition.function_def) {
                 if (def.function_def.body.is_some()) {
-                    this.collect_func_inst_from_expr(def.function_def.body.some, scope, func_instantiations);
+                    this.collect_func_inst_from_expr(def.function_def.body.some, def_scope, func_instantiations);
                 }
             }
             if (def is Definition.namespace_def) {
-                this.collect_function_instantiations_from_ast(def.namespace_def.children, scope, func_instantiations);
+                // Namespace children resolve in the namespace scope (merged by
+                // name across files, so sibling types are its local symbols).
+                let ns_lookup: Option<BoundScope> = scope.lookup_namespace(def.namespace_def.name);
+                let ns_scope: BoundScope = if (ns_lookup.is_some()) { ns_lookup.some } else { scope };
+                this.collect_function_instantiations_from_ast_impl(def.namespace_def.children, ns_scope, false, func_instantiations);
             }
             if (def is Definition.class_def) {
                 if (def.class_def.template_decl.is_none()) {
@@ -10510,7 +10915,7 @@ class SemanticModel {
                         let member: Definition = members.at(cast<u64>(mi)).some;
                         if (member is Definition.function_def) {
                             if (member.function_def.body.is_some()) {
-                                this.collect_func_inst_from_expr(member.function_def.body.some, scope, func_instantiations);
+                                this.collect_func_inst_from_expr(member.function_def.body.some, def_scope, func_instantiations);
                             }
                         }
                         mi = mi + 1;
@@ -10847,9 +11252,22 @@ class SemanticModel {
         sym.is_new = ast_func.is_new;
         result.symbol = new Option<BoundFunctionSymbol>.some(sym);
         // add_symbol would overwrite full_name, so we set enclosing_scope manually
-        // and push directly to preserve the correct full_name
-        sym.enclosing_scope = new Option<BoundScope>.some(parent_scope);
-        parent_scope.symbols.push(new BoundSymbol.function_sym(sym));
+        // and push directly to preserve the correct full_name.
+        // The symbol must be reachable from CALL SITES, which resolve `name__args`
+        // up their scope chain (function -> ... -> file namespace -> global). A
+        // class-method template's enclosing scope is the CLASS scope — not on any
+        // call site's chain — so register the symbol in the class's containing
+        // namespace (the file namespace for top-level classes) instead.
+        // Free-function templates keep their own enclosing scope (parent_scope is
+        // already the file/namespace scope).
+        if (parent_scope.kind is ScopeKind.ClassScope && parent_scope.parent.is_some()) {
+            let ns_parent: mut BoundScope = parent_scope.parent.some;
+            sym.enclosing_scope = new Option<BoundScope>.some(ns_parent);
+            ns_parent.symbols.push(new BoundSymbol.function_sym(sym));
+        } else {
+            sym.enclosing_scope = new Option<BoundScope>.some(parent_scope);
+            parent_scope.symbols.push(new BoundSymbol.function_sym(sym));
+        }
 
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
     }
@@ -10946,49 +11364,35 @@ class SemanticModel {
         return this.replace_name_in_full_name(tmpl.full_name, tmpl.name, mangled_name);
     }
 
-    // Find the parent class for a method by extracting the class name from the function's full_name
-    // e.g. full_name="<global>.Foo__i32.foo__i64" -> parent class is "Foo__i32"
+    // Find the parent class for a method by extracting the class's full_name
+    // from the function's full_name: everything before the last '.' — e.g.
+    // "<global>._ns_f.Foo__i32.foo__i64" -> "<global>._ns_f.Foo__i32" (the
+    // specialized class def's full_name, see build_specialized_full_name /
+    // specialize_class_def). Matching by full_name (not simple name) keeps
+    // file-local and specialized classes findable.
     fun find_parent_class_for_method(this, defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, func_full_name: string) -> Option<BoundClassDefinition> {
         _utils.trace_enter("Enter find_parent_class_for_method");
-        // Extract class name from full_name: strip <global>. prefix and last .method part
-        let prefix: string = "<global>.";
-        let prefix_len: i64 = string_length(prefix);
-        let full_len: i64 = string_length(func_full_name);
-        let after_prefix: mut string = func_full_name;
-        if (full_len > prefix_len) {
-            let matches: mut bool = true;
-            let ci: mut i64 = 0;
-            while (ci < prefix_len) {
-                if (string_char_at(func_full_name, ci) != string_char_at(prefix, ci)) {
-                    matches = false;
-                }
-                ci = ci + 1;
-            }
-            if (matches) {
-                after_prefix = string_substring(func_full_name, prefix_len, full_len - prefix_len);
-            }
-        }
-        // Find the last dot to separate class name from method name
+        // Find the last dot: the prefix is the enclosing class's full_name.
         let last_dot: mut i64 = -1;
         let search_pos: mut i64 = 0;
-        let after_len: i64 = string_length(after_prefix);
-        while (search_pos < after_len) {
-            let found: i64 = string_find_from(after_prefix, ".", search_pos);
+        let full_len: i64 = string_length(func_full_name);
+        while (search_pos < full_len) {
+            let found: i64 = string_find_from(func_full_name, ".", search_pos);
             if (found < 0) {
-                search_pos = after_len;
+                search_pos = full_len;
             } else {
                 last_dot = found;
                 search_pos = found + 1;
             }
         }
         if (last_dot >= 0) {
-            let class_name: string = string_substring(after_prefix, 0, last_dot);
+            let class_full_name: string = string_substring(func_full_name, 0, last_dot);
             // Search in existing defs
             let i: mut i64 = 0;
             while (i < cast<i64>(defs.size())) {
                 let def: BoundDefinition = defs.at(cast<u64>(i)).some;
                 if (def is BoundDefinition.class_def) {
-                    if (def.class_def.name == class_name) {
+                    if (def.class_def.full_name == class_full_name) {
                         return new Option<BoundClassDefinition>.some(def.class_def);
                     }
                 }
@@ -10999,7 +11403,7 @@ class SemanticModel {
             while (j < cast<i64>(new_defs.size())) {
                 let def: BoundDefinition = new_defs.at(cast<u64>(j)).some;
                 if (def is BoundDefinition.class_def) {
-                    if (def.class_def.name == class_name) {
+                    if (def.class_def.full_name == class_full_name) {
                         return new Option<BoundClassDefinition>.some(def.class_def);
                     }
                 }

@@ -150,6 +150,20 @@ class IRBuilder {
         return new Option<IRValue>.none();
     }
 
+    // CALL_INDIRECT instruction — call through a function-pointer value
+    // (fun-typed fields / locals).
+    fun emit_call_indirect(mut this, callee: IRValue, args: mut _utils.List<IRValue>, ret_type: string, loc: SourceLocation) -> Option<IRValue> {
+        _utils.trace_enter("Enter emit_call_indirect");
+        if (ret_type != "void") {
+            let result: IRValue = this.func.alloc_temp(ret_type);
+            this.func.add_inst(new IRInstruction.call_indirect(new IRCallIndirect(callee, args, result, ret_type, loc)));
+            return new Option<IRValue>.some(result);
+        }
+        let dummy: IRValue = new IRValue.constant(new IRConstant("", ""));
+        this.func.add_inst(new IRInstruction.call_indirect(new IRCallIndirect(callee, args, dummy, ret_type, loc)));
+        return new Option<IRValue>.none();
+    }
+
     // NEW instruction
     fun emit_new(mut this, type_name: string, args: mut _utils.List<IRValue>, loc: SourceLocation) -> IRValue {
         _utils.trace_enter("Enter emit_new");

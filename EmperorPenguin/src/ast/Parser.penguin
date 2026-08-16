@@ -952,6 +952,8 @@ fun _mark_ast_exported(def: Definition) {
             let ts = this.parse_typeSpecifier();
             this.stream.expect(new TokenType.Semicolon());
             let node: TypeReferenceDefinition = new TypeReferenceDefinition(name_token.text);
+            node.location = this.tok_loc(name_token);
+            node.source_file = name_token.location.filename;
             node.type_spec = new Option<TypeSpecifier>.some(ts);
             return new Definition.type_ref_def(node);
         }
@@ -1302,6 +1304,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_interfaceDefinition(this) -> Definition {
             let node: mut InterfaceDefinition = new InterfaceDefinition("");
+            node.source_file = this.stream.peek().location.filename;
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
@@ -1362,6 +1365,7 @@ fun _mark_ast_exported(def: Definition) {
                 let for_type_spec: TypeSpecifier = this.parse_typeSpecifier();
                 let node: InterfaceForImplementation = new InterfaceForImplementation(type_spec.name, for_type_spec.name);
                 node.location = type_spec.location;
+                node.source_file = type_spec.location.filename;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.LBrace) {
@@ -1379,6 +1383,7 @@ fun _mark_ast_exported(def: Definition) {
             // interfaceImplementation: impl Type { ... } or impl Type ;
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
             node2.location = type_spec.location;
+            node2.source_file = type_spec.location.filename;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.stream.expect(new TokenType.LBrace());
@@ -1404,6 +1409,7 @@ fun _mark_ast_exported(def: Definition) {
                 let for_type_spec: TypeSpecifier = this.parse_typeSpecifier();
                 let node: InterfaceForImplementation = new InterfaceForImplementation(type_spec.name, for_type_spec.name);
                 node.location = type_spec.location;
+                node.source_file = type_spec.location.filename;
                 node.type_spec = new Option<TypeSpecifier>.some(type_spec);
                 node.for_type_spec = new Option<TypeSpecifier>.some(for_type_spec);
                 if (this.stream.peek_type() is TokenType.LBrace) {
@@ -1421,6 +1427,7 @@ fun _mark_ast_exported(def: Definition) {
             // interfaceImplementation: impl Type { ... } or impl Type ;
             let node2: InterfaceImplementation = new InterfaceImplementation(type_spec.name);
             node2.location = type_spec.location;
+            node2.source_file = type_spec.location.filename;
             node2.type_spec = new Option<TypeSpecifier>.some(type_spec);
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.stream.expect(new TokenType.LBrace());
@@ -1439,6 +1446,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_classDefinition(this) -> Definition {
             let node: mut ClassDefinition = new ClassDefinition("");
+            node.source_file = this.stream.peek().location.filename;
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
@@ -1486,6 +1494,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_enumDefinition(this) -> Definition {
             let node: mut EnumDefinition = new EnumDefinition("");
+            node.source_file = this.stream.peek().location.filename;
             if (this.stream.peek_type() is TokenType.Hash) {
                 let tpl = this.parse_templateDeclaration();
                 node.template_decl = new Option<TemplateDeclaration>.some(tpl);
@@ -1914,6 +1923,9 @@ fun _mark_ast_exported(def: Definition) {
             if (next.token_type is TokenType.Namespace) {
                 return this.parse_namespaceDefinition();
             }
+            if (next.token_type is TokenType.Using) {
+                return this.parse_usingDirective();
+            }
             if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync) {
                 return this.parse_functionDefinition();
             }
@@ -1938,6 +1950,7 @@ fun _mark_ast_exported(def: Definition) {
                 let gvar: mut GlobalVariableDefinition = new GlobalVariableDefinition(name_tok.text);
                 gvar.is_mutable = is_mut;
                 gvar.location = let_loc;
+                gvar.source_file = this.stream.peek().location.filename;
                 if (this.stream.match(new TokenType.Colon())) {
                     let ts: TypeSpecifier = this.parse_typeSpecifier();
                     gvar.type_spec = new Option<TypeSpecifier>.some(ts);
@@ -2042,6 +2055,7 @@ fun _mark_ast_exported(def: Definition) {
             let node: mut SpecializingDefinition = new SpecializingDefinition();
             node.target_type_spec = new Option<TypeSpecifier>.some(this.parse_typeSpecifier());
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             // Enter #specializing mode so the code-block parser handles `impl`
             // statements (top-level or inside if/else branches) as conditional
             // interface impls, then parse the body as one code block.
@@ -2106,6 +2120,7 @@ fun _mark_ast_exported(def: Definition) {
             let name_token: Token = this.stream.advance();
             let node: mut MetaFunctionDefinition = new MetaFunctionDefinition(name_token.text);
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             if (this.stream.match(new TokenType.LParen())) {
                 while (!(this.stream.peek_type() is TokenType.RParen)) {
                     let mp = this.parse_metaParameter();
@@ -2177,6 +2192,7 @@ fun _mark_ast_exported(def: Definition) {
             let node: mut MetaIfDefinition = new MetaIfDefinition();
             node.condition = new Option<Expression>.some(condition);
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             this.stream.expect(new TokenType.LBrace());
             {
                 let _loop_guard_pos_b: mut i64 = -1;
@@ -2307,6 +2323,7 @@ fun _mark_ast_exported(def: Definition) {
             node.variable_type = var_type;
             node.iterable = new Option<Expression>.some(iterable);
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             this.stream.expect(new TokenType.LBrace());
             {
                 let _loop_guard_pos_g: mut i64 = -1;
@@ -2366,6 +2383,7 @@ fun _mark_ast_exported(def: Definition) {
             let node: mut MetaWhileDefinition = new MetaWhileDefinition();
             node.condition = new Option<Expression>.some(condition);
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             this.stream.expect(new TokenType.LBrace());
             {
                 let _loop_guard_pos_h: mut i64 = -1;
@@ -2436,6 +2454,7 @@ fun _mark_ast_exported(def: Definition) {
             let name_token: Token = this.stream.advance();
             let node: mut MetaCallDefinition = new MetaCallDefinition();
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             let mc: mut MetaCallExpression = new MetaCallExpression();
             mc.func_name = name_token.text;
             mc.location = start_loc;
@@ -2563,6 +2582,7 @@ fun _mark_ast_exported(def: Definition) {
             let name_token: Token = this.stream.advance();
             node.name = name_token.text;
             node.location = this.tok_loc(name_token);
+            node.source_file = name_token.location.filename;
             if (name_token.text == "new") { node.is_new = true; }
             if (this.stream.match(new TokenType.LParen())) {
                 this.parse_parameterList(node.parameters);
@@ -2647,6 +2667,7 @@ fun _mark_ast_exported(def: Definition) {
             this.stream.expect(new TokenType.EventKw());
             let name_token: Token = this.stream.advance();
             let node: EventDefinition = new EventDefinition(name_token.text);
+            node.source_file = name_token.location.filename;
             if (this.stream.match(new TokenType.Colon())) {
                 let type_token: Token = this.stream.advance();
                 let ts: TypeSpecifier = new TypeSpecifier();
@@ -2671,6 +2692,7 @@ fun _mark_ast_exported(def: Definition) {
             let node: mut InitialRoutineDefinition = new InitialRoutineDefinition();
             node.body = new Option<Expression>.some(body);
             node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
             return new Definition.initial_routine(node);
         }
 
@@ -2679,6 +2701,8 @@ fun _mark_ast_exported(def: Definition) {
         fun parse_onRoutine(this) -> Definition {
             this.stream.expect(new TokenType.On());
             let node: OnRoutineDefinition = new OnRoutineDefinition();
+            node.location = this.cur_loc();
+            node.source_file = this.stream.peek().location.filename;
             let event_token: Token = this.stream.advance();
             let event_id: IdentifierExpression = new IdentifierExpression(event_token.text);
             if (this.stream.peek_type() is TokenType.Dot) {
@@ -2713,6 +2737,7 @@ fun _mark_ast_exported(def: Definition) {
             this.stream.expect(new TokenType.LBrace());
             let node: mut NamespaceDefinition = new NamespaceDefinition(name_token.text);
             node.location = this.tok_loc(name_token);
+            node.source_file = name_token.location.filename;
             let _loop_guard_pos: mut i64 = -1;
             while (!(this.stream.peek_type() is TokenType.RBrace)) {
                 if (this.stream.peek_type() is TokenType.Semicolon) {
@@ -2729,6 +2754,23 @@ fun _mark_ast_exported(def: Definition) {
             }
             this.stream.expect(new TokenType.RBrace());
             return new Definition.namespace_def(node);
+        }
+
+        // usingDirective: 'using' identifier ';';
+        // Classification: Sequence
+        fun parse_usingDirective(this) -> Definition {
+            let using_tok: Token = this.stream.peek();
+            this.stream.expect(new TokenType.Using());
+            let name_token: Token = this.stream.advance();
+            if (!(name_token.token_type is TokenType.Identifier)) {
+                this.report_error("expected namespace name after 'using', got: " + name_token.to_string());
+            }
+            this.stream.expect(new TokenType.Semicolon());
+            let node: mut UsingDefinition = new UsingDefinition();
+            node.name = name_token.text;
+            node.location = this.tok_loc(using_tok);
+            node.source_file = name_token.location.filename;
+            return new Definition.using_def(node);
         }
 
         // identifier: Identifier | 'this';

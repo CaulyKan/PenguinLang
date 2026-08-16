@@ -1141,7 +1141,7 @@ class LLVMEmitter {
         let vi: mut i64 = 0;
         while (vi < cast<i64>(cls.vtables.size())) {
             let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
-            let iface_name: string = vtable.interface_type.display_name();
+            let iface_name: string = this.interface_map_name(vtable.interface_type);
             let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
             let si: mut i64 = 0;
             while (si < cast<i64>(vtable.slots.size())) {
@@ -1204,7 +1204,7 @@ class LLVMEmitter {
         let vi: mut i64 = 0;
         while (vi < cast<i64>(enum_def.vtables.size())) {
             let vtable: BoundVTable = enum_def.vtables.at(cast<u64>(vi)).some;
-            let iface_name: string = vtable.interface_type.display_name();
+            let iface_name: string = this.interface_map_name(vtable.interface_type);
             let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
             let si: mut i64 = 0;
             while (si < cast<i64>(vtable.slots.size())) {
@@ -2042,6 +2042,7 @@ class LLVMEmitter {
         if (inst is IRInstruction.ret_void) { return inst.ret_void.location; }
         if (inst is IRInstruction.call) { return inst.call.location; }
         if (inst is IRInstruction.call_void) { return inst.call_void.location; }
+        if (inst is IRInstruction.call_indirect) { return inst.call_indirect.location; }
         if (inst is IRInstruction.call_virt) { return inst.call_virt.location; }
         if (inst is IRInstruction.new_inst) { return inst.new_inst.location; }
         if (inst is IRInstruction.new_enum) { return inst.new_enum.location; }
@@ -2085,6 +2086,7 @@ class LLVMEmitter {
         if (inst is IRInstruction.ret_void) { this.emit_ret_void(); return; }
         if (inst is IRInstruction.call) { this.emit_call(inst.call); return; }
         if (inst is IRInstruction.call_void) { this.emit_call_void(inst.call_void); return; }
+        if (inst is IRInstruction.call_indirect) { this.emit_call_indirect(inst.call_indirect); return; }
         if (inst is IRInstruction.call_virt) { this.emit_call_virt(inst.call_virt); return; }
         if (inst is IRInstruction.new_inst) { this.emit_new(inst.new_inst); return; }
         if (inst is IRInstruction.new_enum) { this.emit_new_enum(inst.new_enum); return; }
@@ -2160,6 +2162,20 @@ class LLVMEmitter {
                 this.emit_line("  " + result_name + " = fadd " + llvm_type + " 0.0, " + normalized);
             }
             this.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (ir_type == "funptr") {
+            // Function-address constant: a fat funptr is just the code
+            // address, so map the register directly to the global function
+            // symbol (ptr arithmetic on @name is invalid LLVM).
+            let func_sym: string = this.llvm_func_name(inst.value);
+            if (this.is_mutable_reg(result_name)) {
+                let alloca_name: string = this.get_alloca_name(result_name);
+                this.emit_line("  store ptr " + func_sym + ", ptr " + alloca_name);
+            } else {
+                this.reg_map.push(new RegMapping(result_name, func_sym));
+            }
+            this.register_llvm_type(result_name, "ptr");
             return;
         }
         // fallback
@@ -2817,6 +2833,43 @@ class LLVMEmitter {
         this.emit_line("  call void " + func_name + "(" + args_str + ")");
     }
 
+    // CALL_INDIRECT — call through a function-pointer VALUE (fun-typed fields).
+    // The callee operand is a live ptr register; no signature-based coercion is
+    // possible (the fat-pointer ABI has no call-site metadata), so arguments are
+    // emitted as-is.
+    fun emit_call_indirect(mut this, inst: IRCallIndirect) {
+        _utils.trace_enter("Enter emit_call_indirect(inst=" + inst.display() + ")");
+        let callee_resolved: string = this.resolve_value(inst.callee);
+        let callee_sret_type: mut string = "";
+        if (this.needs_sret(inst.ret_type)) {
+            callee_sret_type = this.get_sret_llvm_type(inst.ret_type);
+        }
+        if (callee_sret_type != "") {
+            let sret_tmp: string = this.next_tmp();
+            this.emit_entry_alloca(sret_tmp, callee_sret_type);
+            let args_str: string = this.emit_args(inst.args);
+            if (string_length(args_str) > 0) {
+                this.emit_line("  call void " + callee_resolved + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")");
+            } else {
+                this.emit_line("  call void " + callee_resolved + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")");
+            }
+            let result_name: string = inst.result_value.display();
+            this.emit_line("  " + result_name + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+            this.register_llvm_type(result_name, callee_sret_type);
+            return;
+        }
+        if (inst.ret_type != "void") {
+            let result_name: string = inst.result_value.display();
+            let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
+            let args_str: string = this.emit_args(inst.args);
+            this.emit_line("  " + result_name + " = call " + ret_llvm + " " + callee_resolved + "(" + args_str + ")");
+            this.register_llvm_type(result_name, ret_llvm);
+            return;
+        }
+        let args_str2: string = this.emit_args(inst.args);
+        this.emit_line("  call void " + callee_resolved + "(" + args_str2 + ")");
+    }
+
     fun emit_call_virt(mut this, inst: IRCallVirt) {
         _utils.trace_enter("Enter emit_call_virt");
         this.needs_vtable_lookup = true;
@@ -3310,6 +3363,21 @@ class LLVMEmitter {
         return false;
     }
 
+    // The interface id registered in interface_map must match the CALL side's
+    // interface_id (resolve_interface_id → extract_template_name → the
+    // template's simple name), e.g. "IIterator" for `impl IIterator<i64> for
+    // ...`. The full display_name ("IIterator<i64>") would break
+    // _emperor_vtable_lookup and produce invalid LLVM identifiers.
+    fun interface_map_name(this, iface_type: BoundType) -> string {
+        _utils.trace_enter("Enter interface_map_name");
+        let dn: string = iface_type.display_name();
+        let pos: i64 = string_find(dn, "<");
+        if (pos >= 0) {
+            return string_substring(dn, 0, pos);
+        }
+        return dn;
+    }
+
     fun sanitize_type_id(this, type_id: string) -> string {
         _utils.trace_enter("Enter sanitize_type_id(type_id=" + cast<string>(type_id) + ")");
         let result: mut string = "";
@@ -3340,9 +3408,57 @@ class LLVMEmitter {
             }
             i = i + 1;
         }
-        let display_name: string = this.type_id_display_name(type_id);
+        let display_name: string = this.type_id_constant_content(type_id);
         let len: i64 = cast<i64>(string_length(display_name)) + 1;
         this.type_id_constants.push(new TypeIdConstant(global_name, display_name, len));
+    }
+
+    // The CONTENT of a `@.<id>_type_id` constant must match what the object's
+    // side registers. Interfaces are identified by their simple TEMPLATE name
+    // (the interface_map / resolve_interface_id convention — `impl I<5>` maps
+    // "I"), so an interface type_id (a full_name, used for
+    // is_interface_type_id routing) must reduce to that simple name. Classes
+    // keep the <global>.-stripped full path, matching the metadata name.
+    // (This also fixes `x is SomeNs.IFace`, where the old content
+    // "SomeNs.IFace" never matched the map's "IFace".)
+    fun type_id_constant_content(this, type_id: string) -> string {
+        _utils.trace_enter("Enter type_id_constant_content");
+        if (this.current_unit.is_some()) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.current_unit.some.definitions.size())) {
+                let simple: Option<string> = this.def_interface_simple_name(this.current_unit.some.definitions.at(cast<u64>(i)).some, type_id);
+                if (simple.is_some()) {
+                    let n: string = simple.some;
+                    let pos: i64 = string_find(n, "__");
+                    if (pos >= 0) {
+                        return string_substring(n, 0, pos);
+                    }
+                    return n;
+                }
+                i = i + 1;
+            }
+        }
+        return this.type_id_display_name(type_id);
+    }
+
+    fun def_interface_simple_name(this, def: BoundDefinition, type_id: string) -> Option<string> {
+        _utils.trace_enter("Enter def_interface_simple_name");
+        if (def is BoundDefinition.interface_def) {
+            if (def.interface_def.type_symbol.is_some()) {
+                if (def.interface_def.type_symbol.some.full_name == type_id) {
+                    return new Option<string>.some(def.interface_def.name);
+                }
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(def.namespace_def.children.size())) {
+                let found: Option<string> = this.def_interface_simple_name(def.namespace_def.children.at(cast<u64>(i)).some, type_id);
+                if (found.is_some()) { return found; }
+                i = i + 1;
+            }
+        }
+        return new Option<string>.none();
     }
 
     fun type_id_display_name(this, type_id: string) -> string {
@@ -4040,7 +4156,9 @@ class LLVMEmitter {
         let i: mut i64 = 0;
         while (i < len) {
             let ch: string = string_char_at(name, i);
-            if (ch == "<" || ch == ">" || ch == " " || ch == "," || ch == ".") {
+            // `:` appears in synthetic source names (dyn-lib sources are
+            // "<lib>:<name>" → file namespaces like _ns___lib:std_xxxx).
+            if (ch == "<" || ch == ">" || ch == " " || ch == "," || ch == "." || ch == ":") {
                 sb2.append("_");
             } else {
                 sb2.append(ch);
