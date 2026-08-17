@@ -1,9 +1,9 @@
 # MetaFunDirectCall
 ## Description
-A lib DEFINES a `#fun dbl(x: i64) -> i64` (compile-time meta function). The consumer calls `#dbl(21)` DIRECTLY — the meta call JIT-executes the LIB's `#fun` (whose body travels verbatim in the lib's embedded source) and splices the result 42 at compile time. Verifies a `#fun` defined in a lib is callable from the exe without any runtime symbol. Pass4-only.
+A lib DEFINES a `#fun dbl(x: i64) -> i64` (compile-time meta function). The consumer calls `#dbl(21)` DIRECTLY — the meta call JIT-executes the LIB's `#fun` (whose body travels verbatim in the lib's embedded source) and splices the result 42 at compile time. Verifies a `#fun` defined in a lib is callable from the exe without any runtime symbol. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

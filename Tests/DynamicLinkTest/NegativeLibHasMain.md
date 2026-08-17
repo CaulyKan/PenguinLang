@@ -1,9 +1,9 @@
 # NegativeLibHasMain
 ## Description
-A `.penguin-lib` build whose source contains an `initial{}` routine is rejected: a lib may not emit an `@main` entry point (validate_lib_defs). Pass4-only.
+A `.penguin-lib` build whose source contains an `initial{}` routine is rejected: a lib may not emit an `@main` entry point (validate_lib_defs). Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

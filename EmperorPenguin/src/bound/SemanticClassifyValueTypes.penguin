@@ -1,0 +1,381 @@
+// Pass 7 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: classify which classes are value types (ICopy semantics) vs
+// reference types (IRef) — including the recursive-field/visiting cycle check —
+// then validate that non-IRef interfaces are not used in unsized positions
+// (class/enum fields, enum payloads, function returns).
+namespace emperor {
+
+class ClassifyValueTypesPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_classify_value_types
+    fun run(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_classify_value_types");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            let updated: BoundDefinition = this.classify_def(result.definitions.at(cast<u64>(i)).some, new _utils.List<string>());
+            result.definitions.set(cast<u64>(i), updated);
+            i = i + 1;
+        }
+    }
+
+    // Requirement 2 (no implicit boxing): a non-IRef interface has unknown size at the
+    // language level, so it cannot be stored in a class/enum field or returned from a
+    // function — it may only live as a local variable or parameter (a pointer), or behind
+    // an explicit Box<T>. This pass walks every definition and reports violations. Runs
+    // after classification (types resolved + monomorphized + vtables built).
+    // Pass 7 phase 2 entry: 原 pass_validate_interface_usage
+    fun validate_interface_usage(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_validate_interface_usage");
+        for (let def in result.definitions) {
+            this.validate_interface_usage_def(def);
+        }
+    }
+
+    fun validate_interface_usage_def(mut this, def: BoundDefinition) {
+        // Pass 7 phase 2 (shares current_pass_index=7 with classify_def, which
+        // runs first on the same defs): use `>` so the phase-1 marker (7) does
+        // not skip this validation; phase 1 uses `>=` to stay skipped on re-run.
+        if (this.model.some.processed_beyond(def)) { return; }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            for (let child in ns.children) {
+                this.validate_interface_usage_def(child);
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return;
+        }
+        if (def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = def.class_def;
+            for (let field_def in cls.fields) {
+                if (field_def is BoundDefinition.class_field) {
+                    let ft: BoundType = field_def.class_field.bound_type;
+                    if (this.is_unsized_interface(ft)) {
+                        this.model.some.report_error(new ErrorCode.E_UNSIZED_INTERFACE(),
+                            "Field of class '" + cls.full_name + "' has non-IRef interface type '"
+                            + ft.display_name() + "'. Interfaces without IReferenceType have unknown "
+                            + "size and cannot be fields. Use Box<" + ft.display_name()
+                            + "> or add 'impl IReferenceType' to the interface.",
+                            this.model.some.var_sym_loc(field_def.class_field.field_symbol));
+                    }
+                }
+            }
+            for (let cmd in cls.methods) {
+                this.validate_interface_usage_def(cmd);
+            }
+            for (let cstr in cls.constructors) {
+                this.validate_interface_usage_def(cstr);
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return;
+        }
+        if (def is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = def.enum_def;
+            for (let member in enm.members) {
+                let mt: BoundType = member.member_type;
+                if (this.is_unsized_interface(mt)) {
+                    this.model.some.report_error(new ErrorCode.E_UNSIZED_INTERFACE(),
+                        "Enum variant of '" + enm.full_name + "' has non-IRef interface payload type '"
+                        + mt.display_name() + "'. Interfaces without IReferenceType have unknown "
+                        + "size and cannot be enum payloads. Use Box<" + mt.display_name()
+                        + "> or add 'impl IReferenceType' to the interface.",
+                        this.model.some.enum_member_sym_loc(member.member_symbol));
+                }
+            }
+            for (let emd in enm.methods) {
+                this.validate_interface_usage_def(emd);
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return;
+        }
+        if (def is BoundDefinition.function_def) {
+            let func: BoundFunctionDefinition = def.function_def;
+            if (this.is_unsized_interface(func.return_type)) {
+                this.model.some.report_error(new ErrorCode.E_UNSIZED_INTERFACE(),
+                    "Function '" + func.full_name + "' returns non-IRef interface type '"
+                    + func.return_type.display_name() + "'. Interfaces without IReferenceType have "
+                    + "unknown size and cannot be returned. Use Box<...> or add 'impl IReferenceType' "
+                    + "to the interface.",
+                    this.model.some.func_sym_loc(func.symbol));
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return;
+        }
+    }
+
+    // An interface is "unsized" (unknown size at the language level) unless it
+    // transitively implements __builtin.IReferenceType (via its nested impl
+    // blocks, e.g. `interface IReferenceType { impl IReferenceType; }` — the
+    // self-marker — or IIterator's `impl IReferenceType`). A sized reference
+    // interface is permitted as a field/return type.
+    fun is_unsized_interface(this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.InterfaceKind) {
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.interface_def) {
+                let iface: BoundInterfaceDefinition = bt.type_definition.some.interface_def;
+                if (this.interface_impls_iref(iface, 0)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // True if the interface (or any interface it transitively implements via
+    // its nested impl blocks) is/implments __builtin.IReferenceType. `depth`
+    // guards against cyclic impl graphs.
+    fun interface_impls_iref(this, iface: BoundInterfaceDefinition, depth: i64) -> bool {
+        if (depth > 8) { return false; }
+        for (let impl_def in iface.interface_impls) {
+            if (impl_def is BoundDefinition.impl_def) {
+                let iface_impl: BoundInterfaceImplementation = impl_def.impl_def;
+                let iname: string = iface_impl.interface_type.display_name();
+                if (iname == "IReferenceType" || iname == "__builtin.IReferenceType") {
+                    return true;
+                }
+                // Transitive closure through the implemented interface's own impls.
+                let it: BoundType = iface_impl.interface_type;
+                if (it.type_definition.is_some() && it.type_definition.some is BoundDefinition.interface_def) {
+                    if (this.interface_impls_iref(it.type_definition.some.interface_def, depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    fun classify_def(mut this, def: BoundDefinition, visiting: mut _utils.List<string>) -> BoundDefinition {
+        _utils.trace_enter("Enter classify_def");
+        if (this.model.some.already_processed(def)) { return def; }
+        if (def is BoundDefinition.class_def) {
+            let cls: mut BoundClassDefinition = def.class_def;
+            this.classify_class(cls, visiting);
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(cls);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let updated: BoundDefinition = this.classify_def(ns.children.at(cast<u64>(k)).some, visiting);
+                ns.children.set(cast<u64>(k), updated);
+                k = k + 1;
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return new BoundDefinition.namespace_def(ns);
+        }
+        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        return def;
+    }
+
+    fun classify_class(mut this, cls: mut BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter classify_class");
+        if (cls.is_value_class.is_some()) {
+            return cls.is_value_class.some;
+        }
+
+        if (this.is_in_visiting(cls.full_name, visiting)) {
+            cls.is_value_class = new Option<bool>.some(false);
+            return false;
+        }
+
+        if (this.class_has_ivalue_type(cls)) {
+            if (this.class_has_ireference_type(cls)) {
+                this.model.some.report_error(new ErrorCode.E_VALUE_TYPE_CONFLICT(), "Class '" + cls.name + "' cannot implement both IValueType and IReferenceType", this.model.some.type_sym_loc(cls.type_symbol));
+                cls.is_value_class = new Option<bool>.some(false);
+                return false;
+            }
+            cls.is_value_class = new Option<bool>.some(true);
+            return true;
+        }
+
+        if (this.class_has_ireference_type(cls)) {
+            cls.is_value_class = new Option<bool>.some(false);
+            return false;
+        }
+
+        visiting.push(cls.full_name);
+        let all_value: bool = this.all_fields_value_type(cls, visiting);
+        visiting.pop();
+
+        cls.is_value_class = new Option<bool>.some(all_value);
+        return all_value;
+    }
+
+    fun class_has_user_interfaces(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_user_interfaces");
+        for (let vtable in cls.vtables) {
+            let name: string = vtable.interface_type.display_name();
+            if (name != "IValueType" && name != "IReferenceType" && name != "ICopy") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fun class_has_ivalue_type(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_ivalue_type");
+        for (let vtable in cls.vtables) {
+            if (vtable.interface_type.display_name() == "IValueType") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fun is_iref_type(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter is_iref_type");
+        if (bt.kind is TypeKind.ClassKind && bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                return this.class_has_ireference_type(td.class_def);
+            }
+        }
+        return false;
+    }
+
+    fun class_has_ireference_type(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_ireference_type");
+        for (let vtable in cls.vtables) {
+            if (vtable.interface_type.display_name() == "IReferenceType") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A type is an iterator if it names IIterator<?>, implements it (a vtable for
+    // IIterator<...> on the class/interface definition), or declares a structural
+    // `next` method (EmperorPenguin iterators such as _ListIterator are concrete
+    // classes exposing `next(mut this)`). for-loop desugaring uses this to decide
+    // whether to consume an `in` expression as-is or to call iter()/iter_mut().
+    fun is_iterator_type(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter is_iterator_type");
+        if (string_find(bt.display_name(), "IIterator<") >= 0) { return true; }
+        if (let td := bt.type_definition.some) {
+            if (td is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = td.class_def;
+                for (let cv in cls.vtables) {
+                    if (string_find(cv.interface_type.display_name(), "IIterator<") >= 0) { return true; }
+                }
+                for (let m in cls.methods) {
+                    if (m is BoundDefinition.function_def && m.function_def.name == "next") { return true; }
+                }
+            }
+            if (td is BoundDefinition.interface_def) {
+                let iface: BoundInterfaceDefinition = td.interface_def;
+                for (let iv in iface.vtables) {
+                    if (string_find(iv.interface_type.display_name(), "IIterator<") >= 0) { return true; }
+                }
+            }
+        }
+        return false;
+    }
+
+    fun class_has_icopy(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_icopy");
+        for (let vtable in cls.vtables) {
+            if (vtable.interface_type.display_name() == "ICopy") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // True when a type's `.copy()` should lower to the base expression itself
+    // (value semantics — the value copies on assignment anyway): primitives
+    // (all implement ICopy<self>) and auto-classified value classes / enums.
+    // Classes with an EXPLICIT `impl ICopy<Self>` are excluded: their `.copy()`
+    // resolves through the existing interface path (emitting _emperor_ICopy_copy,
+    // a real heap clone), which identity-lowering would wrongly turn into aliasing.
+    fun base_type_has_icopy(this, bt: BoundType) -> bool {
+        _utils.trace_enter("Enter base_type_has_icopy");
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            return true;
+        }
+        if (bt.kind is TypeKind.ClassKind && bt.type_definition.is_some()) {
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) {
+                if (this.class_has_icopy(td.class_def)) { return false; }
+                if (td.class_def.is_value_class.is_some() && td.class_def.is_value_class.some) { return true; }
+            }
+        }
+        if (bt.kind is TypeKind.EnumKind && bt.type_definition.is_some()) {
+            return true;
+        }
+        return false;
+    }
+
+    fun is_in_visiting(this, full_name: string, visiting: _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter is_in_visiting");
+        for (let vn in visiting) {
+            if (vn == full_name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fun all_fields_value_type(mut this, cls: BoundClassDefinition, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter all_fields_value_type");
+        for (let field_def in cls.fields) {
+            if (field_def is BoundDefinition.class_field) {
+                let field_type: BoundType = field_def.class_field.bound_type;
+                if (!this.is_type_value_like(field_type, visiting)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    fun is_type_value_like(mut this, bt: BoundType, visiting: mut _utils.List<string>) -> bool {
+        _utils.trace_enter("Enter is_type_value_like");
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            return true; // All primitives (including string) are value types
+        }
+        if (bt.kind is TypeKind.EnumKind) {
+            // An enum (e.g. Option<T>) is value-like only if every payload
+            // (generic argument) type is itself value-like. This is what lets the
+            // `visiting` cycle check below detect recursive classes such as
+            //   class Node { next: Option<Node>; }
+            // When classifying Node, its `next` field has enum kind; recursing into
+            // the Node payload finds Node already in `visiting`, which forces Node
+            // (and therefore the field) to be non-value-like — i.e. a reference
+            // type. Without this recursion an enum short-circuits to "value-like",
+            // recursive classes get misclassified as value types, their instances
+            // are stack-allocated, and any address that escapes into the enum
+            // payload (a linked-list node stored in head/tail/next) is left
+            // dangling once the allocating function returns.
+            for (let arg in bt.generic_args) {
+                // Value args aren't types to classify.
+                if (!arg_is_value(arg)) {
+                    let payload: BoundType = arg_as_bound_type(arg);
+                    if (!this.is_type_value_like(payload, visiting)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        if (bt.kind is TypeKind.ClassKind) {
+            if (let def := bt.type_definition.some) {
+                if (def is BoundDefinition.class_def) {
+                    return this.classify_class(def.class_def, visiting);
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+}
+
+}

@@ -67,13 +67,12 @@ Recognized names (matched case-insensitively, by substring):
 | `EmperorPenguin Pass1` | EmperorPenguin compiler source run on the BabyPenguin VM (slow) |
 | `EmperorPenguin Pass2` | Native `tmp/pass2` (built by `./penguin -b`) |
 | `EmperorPenguin Pass3` | Native `tmp/pass3` (built by `./penguin -b`) |
-| `EmperorPenguin Pass4` | Native `tmp/pass4` (built by `./penguin -b`) |
 
-> Pass2/Pass3/Pass4 require bootstrapped native binaries (built by `./penguin -b`).
-> Pass3 and pass4 are the first dyn-lib-capable compilers (built from
+> Pass2/Pass3 require bootstrapped native binaries (built by `./penguin -b`).
+> Pass3 is the earliest dyn-lib-capable compiler (built from
 > `EmperorPenguinFull.penguins`, which compiles the json-backed Dynlib module +
 > json/vector/hashmap into the compiler). Dynamic-linking tests
-> (`Tests/DynamicLinkTest/*.md`) run against Pass4.
+> (`Tests/DynamicLinkTest/*.md`) run against Pass3.
 
 Set **Apply To** to only the compilers a test is verified on. Expand it later
 once more compilers agree (use `--probe` to discover agreement; see *Running*).
@@ -198,7 +197,7 @@ ExpectedStderr: DISCARD
   (also the per-combo `TMPDIR`), so later stages reference earlier artifacts
   (`--lib ${WORKDIR}/std.penguin-lib`).
 - The `## Run` stage runs the **last** build's artifact.
-- Multi-stage tests may **only** Apply To `EmperorPenguin Pass2/Pass3/Pass4`
+- Multi-stage tests may **only** Apply To `EmperorPenguin Pass2/Pass3`
   (BabyPenguin is single-process; Pass1 is VM/cs-driven and cannot dyn-link).
 
 #### Match modes

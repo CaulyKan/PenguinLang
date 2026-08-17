@@ -1,9 +1,9 @@
 # StdVectorShipped
 ## Description
-Build a `.penguin-lib` shipping `std.Vector<i64>`: `vector.penguin` marks `export class Vector<T>`, and the lib's own code instantiates `Vector<i64>` (the seed) so the monomorphizer ships that instance + its closure. The consumer uses the SHIPPED instance — it DECLARES `std.Vector__i64`'s methods (declare-not-define) and links to the lib's symbols at runtime. Exercises the core dyn-lib path: lib build (-shared + JSON metadata + PENGUINLIB footer), consumer `--lib` load (embedded source merge), shipped-instance declare routing, and `-rdynamic` symbol export. Pass4-only.
+Build a `.penguin-lib` shipping `std.Vector<i64>`: `vector.penguin` marks `export class Vector<T>`, and the lib's own code instantiates `Vector<i64>` (the seed) so the monomorphizer ships that instance + its closure. The consumer uses the SHIPPED instance — it DECLARES `std.Vector__i64`'s methods (declare-not-define) and links to the lib's symbols at runtime. Exercises the core dyn-lib path: lib build (-shared + JSON metadata + PENGUINLIB footer), consumer `--lib` load (embedded source merge), shipped-instance declare routing, and `-rdynamic` symbol export. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

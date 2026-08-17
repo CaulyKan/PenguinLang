@@ -1,0 +1,955 @@
+// Pass 1 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: bind every AST definition into its per-file anonymous
+// namespace / the global scope (C++ static semantics), producing the
+// BoundDefinition tree and registering symbols (functions, classes, enums,
+// interfaces, namespaces, initial routines, impls, type refs, globals, meta
+// defs, #specializing blocks) — plus dyn-lib export marking and the shipped-
+// name collision guard.
+namespace emperor {
+
+class BuildScopesPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_build_scopes
+    fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_build_scopes");
+        let def_index: mut i64 = 0;
+        for (let def in unit.definitions) {
+            // Top-level defs outside explicit namespaces bind into this file's
+            // anonymous namespace (C++ static semantics); namespaces merge by
+            // name against the global scope as before.
+            let bind_scope: mut BoundScope = if (this.model.some.top_level_in_global) {
+                result.global_scope
+            } else {
+                top_level_def_scope(def, result.global_scope)
+            };
+            let bound: Option<BoundDefinition> = this.bind_definition(def, bind_scope);
+            if (let b := bound.some) {
+                // Dyn-lib: defs declared in a loaded .penguin-lib's embedded source
+                // are emitted as declarations (extern) linked to the lib, never
+                // re-compiled. Lib sources are pushed first (compile_sources), so
+                // the first lib_def_count defs are lib defs — marked by index
+                // (GC-safe). Non-generic lib defs marked here; shipped generic
+                // instances are marked during pass_monomorphize.
+                if (def_index >= this.model.some.lib_def_start && def_index < this.model.some.lib_def_start + this.model.some.lib_def_count) {
+                    this.mark_lib_export(b);
+                }
+                result.definitions.push(b);
+            }
+            def_index = def_index + 1;
+        }
+        // Dyn-lib collision guard: a consumer may not REDEFINE a name a loaded lib
+        // ships (declare-not-define routing would produce two symbols).
+        this.check_lib_redefinition(result);
+    }
+
+    // Detect a consumer definition whose full_name collides with a lib-exported
+    // (shipped) definition. Walks namespaces recursively.
+    fun check_lib_redefinition(mut this, result: BoundCompilationUnit) {
+        let shipped: mut _utils.List<string> = new _utils.List<string>();
+        for (let d in result.definitions) {
+            this.collect_shipped_fullnames(d, shipped);
+        }
+        if (cast<i64>(shipped.size()) == 0) { return; }
+        for (let d2 in result.definitions) {
+            this.check_redef(d2, shipped);
+        }
+    }
+
+    fun collect_shipped_fullnames(mut this, d: BoundDefinition, shipped: mut _utils.List<string>) {
+        if (d is BoundDefinition.function_def) {
+            if (d.function_def.is_lib_export) { shipped.push(d.function_def.full_name); }
+        } else if (d is BoundDefinition.class_def) {
+            if (d.class_def.is_lib_export) { shipped.push(d.class_def.full_name); }
+        } else if (d is BoundDefinition.enum_def) {
+            if (d.enum_def.is_lib_export) { shipped.push(d.enum_def.full_name); }
+        } else if (d is BoundDefinition.interface_def) {
+            if (d.interface_def.is_lib_export) { shipped.push(d.interface_def.full_name); }
+        } else if (d is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = d.namespace_def;
+            for (let child in ns.children) {
+                this.collect_shipped_fullnames(child, shipped);
+            }
+        }
+    }
+
+    fun check_redef(mut this, d: BoundDefinition, shipped: _utils.List<string>) {
+        let full: mut string = "";
+        let is_lib: mut bool = false;
+        if (d is BoundDefinition.function_def) {
+            full = d.function_def.full_name;
+            is_lib = d.function_def.is_lib_export;
+        } else if (d is BoundDefinition.class_def) {
+            full = d.class_def.full_name;
+            is_lib = d.class_def.is_lib_export;
+        } else if (d is BoundDefinition.enum_def) {
+            full = d.enum_def.full_name;
+            is_lib = d.enum_def.is_lib_export;
+        } else if (d is BoundDefinition.interface_def) {
+            full = d.interface_def.full_name;
+            is_lib = d.interface_def.is_lib_export;
+        } else if (d is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = d.namespace_def;
+            for (let child in ns.children) {
+                this.check_redef(child, shipped);
+            }
+            return;
+        }
+        if (!is_lib && string_length(full) > 0) {
+            if (_string_list_contains(shipped, full)) {
+                this.model.some.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(), "duplicate definition: '" + full + "' is exported by a loaded .penguin-lib; consumers may not redefine it", new SourceLocation("", 0, 0));
+            }
+        }
+    }
+
+    // True when a specialized def's mangled full_name is shipped by a loaded lib.
+    fun is_shipped_instance(this, d: BoundDefinition) -> bool {
+        if (cast<i64>(this.model.some.lib_instances.size()) == 0) { return false; }
+        let full: mut string = "";
+        if (d is BoundDefinition.class_def) { full = d.class_def.full_name; }
+        else if (d is BoundDefinition.enum_def) { full = d.enum_def.full_name; }
+        else if (d is BoundDefinition.interface_def) { full = d.interface_def.full_name; }
+        else if (d is BoundDefinition.function_def) { full = d.function_def.full_name; }
+        else { return false; }
+        for (let inst in this.model.some.lib_instances) {
+            if (inst == full) { return true; }
+        }
+        return false;
+    }
+
+    // True when the def is a lib-export declaration target (its body is not
+    // bound/emitted here; the compiled symbol comes from a .penguin-lib).
+    fun is_lib_export_def(this, d: BoundDefinition) -> bool {
+        if (d is BoundDefinition.function_def) { return d.function_def.is_lib_export; }
+        if (d is BoundDefinition.class_def) { return d.class_def.is_lib_export; }
+        if (d is BoundDefinition.enum_def) { return d.enum_def.is_lib_export; }
+        if (d is BoundDefinition.interface_def) { return d.interface_def.is_lib_export; }
+        return false;
+    }
+
+    // Mark a bound def (and, for namespaces, its descendants) as lib-export.
+    // For classes/enums/interfaces the METHODS and ctor are marked too — the IR
+    // layer lowers each method via lower_function_def, which checks the METHOD's
+    // is_lib_export flag (the class flag alone would leave bodies defined).
+    fun mark_lib_export(mut this, b: BoundDefinition) {
+        let export_name: mut string = "?";
+        if (b is BoundDefinition.function_def) { export_name = b.function_def.full_name; }
+        else if (b is BoundDefinition.class_def) { export_name = b.class_def.full_name; }
+        else if (b is BoundDefinition.enum_def) { export_name = b.enum_def.full_name; }
+        else if (b is BoundDefinition.interface_def) { export_name = b.interface_def.full_name; }
+        else if (b is BoundDefinition.namespace_def) { export_name = b.namespace_def.full_name; }
+        this.model.some.trace("mark_lib_export " + export_name);
+        if (b is BoundDefinition.function_def) {
+            if (!b.function_def.is_generic_template) {
+                let f: mut BoundFunctionDefinition = b.function_def;
+                f.is_lib_export = true;
+            }
+        } else if (b is BoundDefinition.class_def) {
+            if (!b.class_def.is_generic_template) {
+                let c: mut BoundClassDefinition = b.class_def;
+                c.is_lib_export = true;
+                for (let md in c.methods) {
+                    if (md is BoundDefinition.function_def) {
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        mf.is_lib_export = true;
+                    }
+                }
+                if (c.constructor.is_some()) {
+                    let ctor: mut BoundFunctionDefinition = c.constructor.some;
+                    ctor.is_lib_export = true;
+                }
+                for (let id in c.interface_impls) {
+                    if (id is BoundDefinition.impl_def) {
+                        let imp: BoundInterfaceImplementation = id.impl_def;
+                        for (let imd in imp.methods) {
+                            if (imd is BoundDefinition.function_def) {
+                                let imf: mut BoundFunctionDefinition = imd.function_def;
+                                imf.is_lib_export = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (b is BoundDefinition.enum_def) {
+            // Enums/interfaces mark the template by generic_params (specialized
+            // and non-generic defs have an empty list; templates retain it).
+            if (cast<i64>(b.enum_def.generic_params.size()) == 0) {
+                let e: mut BoundEnumDefinition = b.enum_def;
+                e.is_lib_export = true;
+                for (let emd in e.methods) {
+                    if (emd is BoundDefinition.function_def) {
+                        let emf: mut BoundFunctionDefinition = emd.function_def;
+                        emf.is_lib_export = true;
+                    }
+                }
+            }
+        } else if (b is BoundDefinition.interface_def) {
+            if (cast<i64>(b.interface_def.generic_params.size()) == 0) {
+                let iface: mut BoundInterfaceDefinition = b.interface_def;
+                iface.is_lib_export = true;
+                for (let imd2 in iface.methods) {
+                    if (imd2 is BoundDefinition.function_def) {
+                        let imf2: mut BoundFunctionDefinition = imd2.function_def;
+                        imf2.is_lib_export = true;
+                    }
+                }
+            }
+        } else if (b is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = b.namespace_def;
+            for (let child in ns.children) {
+                this.mark_lib_export(child);
+            }
+        }
+    }
+
+    fun bind_definition(mut this, def: Definition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_definition");
+        if (def is Definition.function_def) {
+            return this.bind_function_def(def.function_def, scope);
+        }
+        if (def is Definition.class_def) {
+            return this.bind_class_def(def.class_def, scope);
+        }
+        if (def is Definition.enum_def) {
+            return this.bind_enum_def(def.enum_def, scope);
+        }
+        if (def is Definition.interface_def) {
+            return this.bind_interface_def(def.interface_def, scope);
+        }
+        if (def is Definition.namespace_def) {
+            return this.bind_namespace_def(def.namespace_def, scope);
+        }
+        if (def is Definition.initial_routine) {
+            return this.bind_initial_routine(def.initial_routine, scope);
+        }
+        if (def is Definition.impl_def) {
+            return this.bind_impl_def(def.impl_def, scope);
+        }
+        if (def is Definition.impl_for_def) {
+            return this.bind_impl_for_def(def.impl_for_def, scope);
+        }
+        if (def is Definition.type_ref_def) {
+            return this.bind_type_ref_def(def.type_ref_def, scope);
+        }
+        if (def is Definition.global_var) {
+            return this.bind_global_var_def(def.global_var, scope);
+        }
+        if (def is Definition.meta_function_def) {
+            return this.bind_meta_function_def(def.meta_function_def, scope);
+        }
+        if (def is Definition.meta_class_def) {
+            // Phase 6 v2: `#class` is meta-only — collected into unit B by
+            // collect_meta_class_defs (so #funs can use it); not emitted to runtime.
+            // Bind a placeholder slot (reusing the meta_function_def bound variant,
+            // which IRGenerator/LLVMEmitter skip) so pass_bind_expressions's parallel
+            // unit.definitions[i] <-> result.definitions[i] iteration stays aligned.
+            let placeholder: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.meta_class_def.name, def.meta_class_def.name);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(placeholder));
+        }
+        if (def is Definition.meta_if_def) {
+            let r: mut BoundMetaIfDefinition = new BoundMetaIfDefinition(new Option<Definition>.some(new Definition.meta_if_def(def.meta_if_def)), def.meta_if_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_if_def(r));
+        }
+        if (def is Definition.meta_for_def) {
+            let r: mut BoundMetaForDefinition = new BoundMetaForDefinition(new Option<Definition>.some(new Definition.meta_for_def(def.meta_for_def)), def.meta_for_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_for_def(r));
+        }
+        if (def is Definition.meta_while_def) {
+            let r: mut BoundMetaWhileDefinition = new BoundMetaWhileDefinition(new Option<Definition>.some(new Definition.meta_while_def(def.meta_while_def)), def.meta_while_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_while_def(r));
+        }
+        if (def is Definition.meta_call_def) {
+            if (def.meta_call_def.call.is_some()) {
+                // bind_expression takes `mut this`: rebind the (immutably-typed)
+                // Option payload to a mutable binding first (option payloads are
+                // non-mut by default, so `this.model.some.bind_expression(...)`
+                // would fail the mut-this receiver check).
+                let m: mut SemanticModel = this.model.some;
+                let r: mut BoundMetaCallDefinition = new BoundMetaCallDefinition(m.bind_expressions_pass.bind_expression(def.meta_call_def.call.some, scope), def.meta_call_def.location);
+                return new Option<BoundDefinition>.some(new BoundDefinition.meta_call_def(r));
+            }
+            let r: mut BoundMetaCallDefinition = new BoundMetaCallDefinition(new Option<BoundExpression>.none(), def.meta_call_def.location);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_call_def(r));
+        }
+        if (def is Definition.specializing_def) {
+            return this.bind_specializing_def(def.specializing_def, scope);
+        }
+        if (def is Definition.using_def) {
+            // using <ns>; — record the import on the enclosing scope (the file
+            // namespace for top-level using, the namespace scope inside
+            // `namespace` bodies) so unqualified lookups consult it (see
+            // BoundScope.lookup_imported_symbol). Binds a placeholder slot
+            // (the #class pattern) so the pass loops' unit.definitions[i] <->
+            // result.definitions[i] alignment is preserved.
+            if (string_length(def.using_def.name) > 0) {
+                let already: mut bool = false;
+                for (let ns_name in scope.imported_namespaces) {
+                    if (ns_name == def.using_def.name) {
+                        already = true;
+                    }
+                }
+                if (!already) {
+                    scope.imported_namespaces.push(def.using_def.name);
+                }
+            }
+            let placeholder: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.using_def.name, def.using_def.name);
+            return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(placeholder));
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // #specializing: compile the block into a meta (#fun) callback and register it
+    // for the target type. The callback's params mirror the target's template
+    // params (type params → `type`, value params → i64/bool/string); each `impl`
+    // statement in the body becomes `emperor.penguin_meta_activate_impl(<slot>)`.
+    // Returns a placeholder BoundMetaFunctionDefinition so the pass loops'
+    // unit.definitions[i] <-> result.definitions[i] alignment is preserved.
+    fun bind_specializing_def(mut this, def: SpecializingDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_specializing_def");
+        if (def.target_type_spec.is_none()) { return new Option<BoundDefinition>.none(); }
+        let ts: TypeSpecifier = def.target_type_spec.some;
+        // Find the target template's AST definition to read its template params.
+        let tmpl: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, ts.name);
+        let mut tmpl_decl = new Option<TemplateDeclaration>.none();
+        if (tmpl.is_some()) {
+            if (tmpl.some is Definition.class_def) { tmpl_decl = tmpl.some.class_def.template_decl; }
+            if (tmpl.some is Definition.enum_def) { tmpl_decl = tmpl.some.enum_def.template_decl; }
+            if (tmpl.some is Definition.interface_def) { tmpl_decl = tmpl.some.interface_def.template_decl; }
+        }
+        // Synthesize the callback #fun name (unique per block).
+        let block_index: i64 = cast<i64>(this.model.some.specializing_blocks.size());
+        let cb_name: string = "__specializing_" + ts.name + "_" + cast<string>(block_index);
+        let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(cb_name, scope.full_name + "." + cb_name);
+        // Params mirror the target's template params (positional). Type params →
+        // kind "type"; value params → their meta kind (i64/bool/string).
+        if (let td := tmpl_decl.some) {
+            for (let tp in td.parameters) {
+                let mp: mut MetaParameter = new MetaParameter();
+                mp.name = tp.name;
+                if (tp.is_value_param) {
+                    mp.kind = this.value_param_to_meta_kind(tp.type_constraint);
+                } else {
+                    mp.kind = "type";
+                }
+                bmf.parameters.push(mp);
+            }
+        }
+        let ret_ts: mut TypeSpecifier = new TypeSpecifier();
+        ret_ts.name = "i64";
+        bmf.return_type = new Option<TypeSpecifier>.some(ret_ts);
+        bmf.location = def.location;
+        // Transform the body: impl statements → activate calls, keep everything
+        // else (if/else conditions, #error/#warn, other expressions) as text, then
+        // re-parse into a code block so it round-trips through the meta JIT.
+        let body_text: string = this.specializing_body_to_text(def.body);
+        let mut body_block = this.parse_code_block_text(body_text, def.location);
+        if (body_block.is_some()) {
+            bmf.body = body_block;
+        } else {
+            this.model.some.report_error(new ErrorCode.E_META(), "#specializing body could not be parsed: " + body_text, def.location);
+            return new Option<BoundDefinition>.none();
+        }
+        // Collect impl fragments (slot order) for injection.
+        let info: mut SpecializingBlockInfo = new SpecializingBlockInfo();
+        // Target name = the template's QUALIFIED SPELLING (`_utils.List`,
+        // `__builtin.Box`), matched against the specialization's template
+        // full_name with the `<global>.` prefix stripped (see
+        // run_specializing_for_spec). Pure string matching: no scope lookup, so
+        // it works even when the block registers BEFORE the template's
+        // namespace is bound (core_builtin registers before utils.penguin).
+        // A `__builtin.Box` block can then never fire for a USER class named
+        // Box (full spelling `<global>.Box` → `Box` ≠ `__builtin.Box`).
+        let tgt: mut string = ts.name;
+        if (cast<i64>(ts.qualified_parts.size()) > 0) {
+            let tgt_sb: mut StringBuilder = new StringBuilder();
+            let qi: mut i64 = 0;
+            while (qi < cast<i64>(ts.qualified_parts.size())) {
+                if (qi > 0) { tgt_sb.append("."); }
+                tgt_sb.append(ts.qualified_parts.at(cast<u64>(qi)).some);
+                qi = qi + 1;
+            }
+            tgt_sb.append(".");
+            tgt_sb.append(ts.name);
+            tgt = tgt_sb.to_string();
+        }
+        info.target_name = tgt;
+        info.bmf = bmf;
+        info.location = def.location;
+        for (let frag in def.impl_fragments) {
+            info.impl_fragments.push(new Definition.impl_def(frag));
+        }
+        // Dedup: unit-B compilations reuse this model, so the same block would
+        // otherwise be re-registered (and re-fired) once per #fun compile —
+        // runaway growth on the bootstrap's many meta compilations.
+        let dup: mut bool = false;
+        for (let ex in this.model.some.specializing_blocks) {
+            if (ex.target_name == info.target_name && ex.bmf.name == info.bmf.name) { dup = true; }
+        }
+        if (!dup) {
+            this.model.some.specializing_blocks.push(info);
+        }
+        return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(bmf));
+    }
+
+    // Resolve a TypeSpecifier (possibly qualified: `_utils.List`) to its scope
+    // symbol. Plain lookup_type_in_scope only matches the bare name in the
+    // current scope chain; a qualified spec needs resolve_qualified.
+    fun lookup_type_spec_symbol(this, ts: TypeSpecifier, scope: BoundScope) -> Option<BoundSymbol> {
+        if (cast<i64>(ts.qualified_parts.size()) == 0) {
+            return scope.lookup_type_in_scope(ts.name);
+        }
+        let parts: mut _utils.List<string> = new _utils.List<string>();
+        for (let part in ts.qualified_parts) {
+            parts.push(part);
+        }
+        parts.push(ts.name);
+        return scope.resolve_qualified(parts);
+    }
+
+    // Value template param type constraint (i32/u64/...) → meta param kind.
+    fun value_param_to_meta_kind(this, constraint: string) -> string {
+        if (constraint == "bool") { return "bool"; }
+        if (constraint == "string") { return "string"; }
+        if (constraint == "double" || constraint == "f64" || constraint == "float" || constraint == "f32") { return "double"; }
+        if (constraint == "i8" || constraint == "i16" || constraint == "i32" || constraint == "i64"
+            || constraint == "u8" || constraint == "u16" || constraint == "u32" || constraint == "u64"
+            || constraint == "char") { return "i64"; }
+        // M6-step2 4c: a reference-typed constraint (List<i64>, user classes, ...)
+        // is an OBJECT value param — the address flows as i64 and the caller-stub
+        // materializes the live pointer via penguin_meta_get_object.
+        return "object";
+    }
+
+    // Render a #specializing block body as penguin text, replacing each `impl`
+    // statement with `emperor.penguin_meta_activate_impl(<slot>);` and recursing
+    // into if/else branches (so an impl inside any taken branch activates).
+    fun specializing_body_to_text(this, body: _utils.List<Expression>) -> string {
+        // Top-level callback body: the return type is i64 (the stub trampoline
+        // returns i64) and pass 9 requires every non-void path to return, so fall
+        // through to 0. Branch bodies (below) must NOT return early.
+        return this.specializing_body_to_text_inner(body) + "return 0;\n";
+    }
+
+    fun specializing_body_to_text_inner(this, body: _utils.List<Expression>) -> string {
+        let mut sb = new StringBuilder();
+        for (let e in body) {
+            sb.append(this.specializing_expr_to_text(e));
+            sb.append("\n");
+        }
+        return sb.to_string();
+    }
+
+    fun specializing_expr_to_text(this, e: Expression) -> string {
+        if (e is Expression.specializing_impl) {
+            return "emperor.penguin_meta_activate_impl(" + cast<string>(e.specializing_impl.slot) + ");";
+        }
+        if (e is Expression.if_expr) {
+            let mut s = "if (" + e.if_expr.condition.some.build_text() + ") "
+                + this.specializing_branch_to_text(e.if_expr.then_block.some);
+            if (e.if_expr.else_block.is_some()) {
+                s = s + " else " + this.specializing_branch_to_text(e.if_expr.else_block.some);
+            }
+            return s;
+        }
+        return e.build_text() + ";";
+    }
+
+    // Render an if/else branch (a code block, or a bare expression) to text,
+    // recursing so impl statements inside any taken branch activate. Uses the
+    // INNER renderer (no trailing `return 0;`).
+    fun specializing_branch_to_text(this, e: Expression) -> string {
+        if (e is Expression.code_block) {
+            return "{\n" + this.specializing_body_to_text_inner(this.code_block_statements(e.code_block)) + "}";
+        }
+        return this.specializing_expr_to_text(e);
+    }
+
+    // The statements of a code block expression (if/else branches are CodeBlocks).
+    fun code_block_statements(this, e: CodeBlockExpression) -> _utils.List<Expression> {
+        let result: mut _utils.List<Expression> = new _utils.List<Expression>();
+        for (let st in e.statements) {
+            if (st is Statement.expression) {
+                if (let ex := st.expression.expression.some) {
+                    result.push(ex);
+                }
+            }
+            if (st is Statement.block_expr) {
+                if (let be := st.block_expr.expression.some) {
+                    result.push(be);
+                }
+            }
+        }
+        if (let tr := e.trailing_expr.some) {
+            result.push(tr);
+        }
+        return result;
+    }
+
+    // Parse a fragment of penguin source into a code block expression.
+    fun parse_code_block_text(this, text: string, loc: SourceLocation) -> Option<Expression> {
+        let lex: Lexer = new Lexer("{\n" + text + "\n}", "<specializing>");
+        let toks: _utils.List<Token> = lex.tokenize();
+        let p: Parser = new Parser(toks);
+        let node: Expression = p.parse_codeBlockExpression();
+        if (!p.has_errors()) {
+            return new Option<Expression>.some(node);
+        }
+        return new Option<Expression>.none();
+    }
+
+    fun extract_template_params(this, template_decl: Option<TemplateDeclaration>, generic_params: mut _utils.List<string>) {
+        _utils.trace_enter("Enter extract_template_params");
+        if (let td := template_decl.some) {
+            for (let param in td.parameters) {
+                generic_params.push(param.name);
+            }
+        }
+    }
+
+    // req5: collect the names of non-type (value) template params (e.g. N in
+    // #template<N:i32> class A) so specialization can substitute them -> constants.
+    fun extract_value_param_names(this, template_decl: Option<TemplateDeclaration>, names: mut _utils.List<string>) {
+        if (let td := template_decl.some) {
+            for (let param in td.parameters) {
+                if (param.is_value_param) {
+                    names.push(param.name);
+                }
+            }
+        }
+    }
+
+    fun bind_function_def(mut this, def: FunctionDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_function_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(def.name, full_name, def.is_extern, def.is_pure, def.is_new, def.is_extern);
+        this.extract_template_params(def.template_decl, result.generic_params);
+        // D6: value-template functions carry non-type params (N: i32) that must be
+        // substituted into the specialized body (mirrors bind_class_def).
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
+        if (!def.is_extern && def.body.is_some()) {
+            let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), def.name, full_name + ".<body>", new Option<BoundScope>.some(scope));
+            result.scope = new Option<BoundScope>.some(func_scope);
+            // Register generic type params in function scope so parameter/return types
+            // can resolve them (mirrors bind_class_def). Without this, resolving a
+            // type like `T` inside `#template(T: type) fun identity(x: T) -> T` fails.
+            if (cast<i64>(result.generic_params.size()) > 0) {
+                for (let param_name in result.generic_params) {
+                    let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                    let pt: mut BoundType = new BoundType();
+                    pt.kind = new TypeKind.ClassKind();
+                    let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                    pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                    param_sym.bound_type = pt;
+                    func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                }
+            }
+        }
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(def.name, full_name);
+        sym.is_extern = def.is_extern;
+        sym.is_static = result.is_static;
+        sym.is_pure = def.is_pure;
+        sym.is_new = def.is_new;
+        sym.location = def.location;
+        result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            result.is_generic_template = true;
+        }
+        scope.add_symbol(new BoundSymbol.function_sym(sym));
+        return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
+    }
+
+    fun bind_meta_function_def(mut this, def: MetaFunctionDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_meta_function_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.name, full_name);
+        for (let param in def.parameters) {
+            result.parameters.push(param);
+        }
+        result.return_type = def.return_type;
+        result.body = def.body;
+        result.location = def.location;
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(def.name, full_name);
+        sym.is_meta = true;
+        sym.location = def.location;
+        result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        scope.add_symbol(new BoundSymbol.function_sym(sym));
+        this.model.some.meta_function_defs.push(result);
+        return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(result));
+    }
+
+    fun bind_class_def(mut this, def: ClassDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_class_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundClassDefinition = new BoundClassDefinition(def.name, full_name);
+        this.extract_template_params(def.template_decl, result.generic_params);
+        // req5: record value (non-type) template param names for specialization substitution.
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            result.is_generic_template = true;
+        }
+        let class_scope: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), def.name, full_name, new Option<BoundScope>.some(scope));
+        result.scope = new Option<BoundScope>.some(class_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
+        this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.ClassKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+        // Register generic type params in class scope so field/method types
+        // can resolve them (mirrors bind_enum_def). Without this, resolving a
+        // field like `Option<T>` inside `#template(T: type) class List` fails
+        // to find `T`, producing spurious E_RESOLVE_TYPE errors.
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            for (let param_name in result.generic_params) {
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                let pt: mut BoundType = new BoundType();
+                pt.kind = new TypeKind.ClassKind();
+                let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                param_sym.bound_type = pt;
+                class_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
+        }
+        for (let member in def.members) {
+            if (member is Definition.class_field) {
+                let ast_field: ClassFieldDefinition = member.class_field;
+                let field: mut BoundClassFieldDefinition = new BoundClassFieldDefinition(ast_field.name);
+                let field_full_name: string = full_name + "." + ast_field.name;
+                let fsym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                fsym.name = ast_field.name;
+                fsym.full_name = field_full_name;
+                fsym.variable_kind = new VariableSymbolKind.Field();
+                fsym.location = ast_field.location;
+                // Read mutability from AST type_spec
+                if (let ts := ast_field.type_spec.some) {
+                    if (ts.is_not_mutable) {
+                        fsym.is_mutable = false;
+                        field.mutability = new Mutability.Immutable();
+                    } else if (ts.is_mutable) {
+                        // Explicit 'mut': field is always mutable
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Mutable();
+                    } else if (ts.is_auto_mutability) {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Auto();
+                    } else {
+                        // Default: aligns with container (Auto)
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Auto();
+                    }
+                } else {
+                    // No type spec: default aligns with container
+                    fsym.is_mutable = true;
+                    field.mutability = new Mutability.Auto();
+                }
+                fsym.enclosing_scope = new Option<BoundScope>.some(class_scope);
+                field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
+                class_scope.add_symbol(new BoundSymbol.variable(fsym));
+                result.fields.push(new BoundDefinition.class_field(field));
+            }
+            if (member is Definition.function_def) {
+                let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, class_scope);
+                if (let bm := bound_member.some) {
+                    result.methods.push(bm);
+                }
+            }
+            if (member is Definition.impl_def) {
+                let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, class_scope);
+                if (let bi := bound_impl.some) {
+                    result.interface_impls.push(bi);
+                }
+            }
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.class_def(def));
+        return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
+    }
+
+    fun bind_enum_def(mut this, def: EnumDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_enum_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundEnumDefinition = new BoundEnumDefinition(def.name, full_name);
+        this.extract_template_params(def.template_decl, result.generic_params);
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
+        let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), def.name, full_name, new Option<BoundScope>.some(scope));
+        result.scope = new Option<BoundScope>.some(enum_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
+        this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.EnumKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+        // Register generic type params in enum scope so payload types can resolve them
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            for (let param_name in result.generic_params) {
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                let pt: mut BoundType = new BoundType();
+                pt.kind = new TypeKind.ClassKind();
+                let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                param_sym.bound_type = pt;
+                enum_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
+        }
+        let member_idx: mut i64 = 0;
+        for (let member in def.members) {
+            if (member is Definition.enum_member) {
+                // Defer payload type resolution to pass 2 (resolve_enum_types)
+                // so that forward-referenced types (e.g. class A defined after
+                // enum B { a: A }) are available in scope.
+                let payload_type: mut BoundType = this.model.some.type_registry.void_type;
+                let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
+                let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
+                m.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                enum_scope.add_symbol(new BoundSymbol.enum_member(msym));
+                result.members.push(m);
+                member_idx = member_idx + 1;
+            }
+            if (member is Definition.impl_def) {
+                let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, enum_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
+            if (member is Definition.function_def) {
+                let bound_method: Option<BoundDefinition> = this.bind_function_def(member.function_def, enum_scope);
+                if (let bm := bound_method.some) {
+                    result.methods.push(bm);
+                }
+            }
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.enum_def(def));
+        return new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
+    }
+
+    fun bind_interface_def(mut this, def: InterfaceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_interface_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(def.name, full_name);
+        this.extract_template_params(def.template_decl, result.generic_params);
+        this.extract_value_param_names(def.template_decl, result.value_param_names);
+        let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), def.name, full_name, new Option<BoundScope>.some(scope));
+        result.scope = new Option<BoundScope>.some(iface_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
+        this.extract_template_params(def.template_decl, type_sym.generic_params);
+        type_sym.location = def.location;
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.InterfaceKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+        // Register generic type params in interface scope so method signatures
+        // can resolve them (mirrors bind_class_def / bind_enum_def). Without
+        // this, `extern fun copy(this: T) -> T` inside `ICopy<T>` fails to
+        // resolve `T`, producing spurious E_RESOLVE_TYPE errors.
+        if (cast<i64>(result.generic_params.size()) > 0) {
+            for (let param_name in result.generic_params) {
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                let pt: mut BoundType = new BoundType();
+                pt.kind = new TypeKind.ClassKind();
+                let dummy_def: mut BoundClassDefinition = new BoundClassDefinition(param_name, full_name + "." + param_name);
+                pt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(dummy_def));
+                param_sym.bound_type = pt;
+                iface_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
+        }
+        for (let member in def.members) {
+            if (member is Definition.function_def) {
+                let bound_member: Option<BoundDefinition> = this.bind_function_def(member.function_def, iface_scope);
+                if (let bm := bound_member.some) {
+                    result.methods.push(bm);
+                }
+            }
+            if (member is Definition.impl_def) {
+                // Nested `impl IOther<T> { ... }` (interface inheritance): bind the
+                // impl's methods in this interface's scope so they can be emitted and
+                // referenced by the interface's own vtables.
+                let bound_impl: Option<BoundDefinition> = this.bind_impl_def(member.impl_def, iface_scope);
+                if (let bi := bound_impl.some) {
+                    result.interface_impls.push(bi);
+                }
+            }
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.interface_def(def));
+        return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+    }
+
+    fun bind_namespace_def(mut this, def: NamespaceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_namespace_def");
+        let ns_scope: mut BoundScope = scope.add_or_merge_namespace(def.name);
+        let result: mut BoundNamespaceDefinition = new BoundNamespaceDefinition(def.name, ns_scope.full_name);
+        result.scope = new Option<BoundScope>.some(ns_scope);
+        if (!ns_scope.lookup_symbol_local(def.name).is_some()) {
+            let ns_sym: BoundNamespaceSymbol = new BoundNamespaceSymbol(def.name, ns_scope.full_name, new Option<BoundScope>.some(ns_scope));
+            scope.add_symbol(new BoundSymbol.namespace_sym(ns_sym));
+        }
+        for (let child in def.children) {
+            let bound: Option<BoundDefinition> = this.bind_definition(child, ns_scope);
+            if (bound.is_some()) {
+                result.children.push(bound.some);
+            }
+        }
+        return new Option<BoundDefinition>.some(new BoundDefinition.namespace_def(result));
+    }
+
+    fun bind_initial_routine(mut this, def: InitialRoutineDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_initial_routine");
+        let count: i64 = scope.init_routine_count;
+        scope.init_routine_count = count + 1;
+        let full_name: string = scope.full_name + ".<initial>" + cast<string>(count);
+        let result: mut BoundInitialRoutineDefinition = new BoundInitialRoutineDefinition(full_name);
+        let init_scope: mut BoundScope = new BoundScope(new ScopeKind.InitialRoutineScope(), "<initial>", full_name + ".<body>", new Option<BoundScope>.some(scope));
+        result.scope = new Option<BoundScope>.some(init_scope);
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("<initial>", full_name);
+        sym.location = def.location;
+        result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        scope.add_symbol(new BoundSymbol.function_sym(sym));
+        return new Option<BoundDefinition>.some(new BoundDefinition.initial_routine(result));
+    }
+
+    fun bind_impl_def(mut this, def: InterfaceImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_impl_def");
+        let result: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
+        // Resolve the implemented interface type (with generic args, e.g.
+        // IFoo<u8>) so downstream passes (monomorphization collection, etc.)
+        // can see which generic interfaces a class instantiates. Non-reporting:
+        // a specialized enum's impl block (e.g. `impl IHasValue` injected into
+        // __builtin.Option) resolves from the SPECIALIZED scope, where a
+        // cross-namespace interface is invisible — fall back to an anywhere
+        // scan (matches master's global child scan for impl targets).
+        if (def.type_spec.is_some()) {
+            if (cast<i64>(def.type_spec.some.generic_args.size()) == 0) {
+                // No generic args: non-reporting resolution + anywhere fallback
+                // (a #specializing impl like `impl IHasValue` injected into a
+                // specialized enum resolves from the SPECIALIZED scope, where a
+                // cross-namespace interface is invisible).
+                let iface_opt: Option<BoundType> = this.model.some.try_resolve_qualified_type(def.type_spec.some, scope);
+                if (iface_opt.is_some()) {
+                    let iface_bt: mut BoundType = iface_opt.some;
+                    result.interface_type = iface_bt;
+                } else {
+                    let anywhere: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_anywhere(def.type_spec.some.name);
+                    if (anywhere.is_some() && anywhere.some is BoundSymbol.type_sym) {
+                        let abt: mut BoundType = anywhere.some.type_sym.bound_type;
+                        result.interface_type = abt;
+                    }
+                }
+            } else {
+                // With generic args keep the full resolution path (template
+                // instantiation / M4), which the qualified-only path lacks.
+                result.interface_type = this.model.some.resolve_type_specifier(def.type_spec.some, scope);
+            }
+        }
+        for (let func in def.functions) {
+            if (func is Definition.function_def) {
+                let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
+                if (bound.is_some()) {
+                    result.methods.push(bound.some);
+                }
+            }
+        }
+        return new Option<BoundDefinition>.some(new BoundDefinition.impl_def(result));
+    }
+
+    fun bind_impl_for_def(mut this, def: InterfaceForImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_impl_for_def");
+        let result: mut BoundInterfaceForImplementation = new BoundInterfaceForImplementation();
+        // Primitive impls (`impl IHash for i64 { ... }`): each method name is
+        // mangled to `<name>$$<primitive>` (e.g. hash$$i64) so every primitive's
+        // implementation is a distinct symbol in the enclosing scope; the mangled
+        // symbol is recorded in the primitive_impl registry for bind_member_access.
+        // `$$` can never appear in a user identifier (lexer forbids it), so the
+        // mangling cannot collide. Non-primitive `impl ... for ...` is unchanged.
+        // The for_type is probed via type_registry.resolve_type (no error emitted)
+        // — legacy empty impls like `impl ICopy<float> for float;` name non-types
+        // and must stay on the unchanged path.
+        let for_type_opt: Option<BoundType> = this.model.some.type_registry.resolve_type(def.for_type_name);
+        let is_primitive_for: mut bool = false;
+        let prim_display: mut string = "";
+        if (let ft := for_type_opt.some) {
+            if (ft.kind is TypeKind.PrimitiveKind && !(ft.primitive is PrimitiveType.VoidType)) {
+                is_primitive_for = true;
+                prim_display = ft.display_name();
+            }
+        }
+        for (let func in def.functions) {
+            if (func is Definition.function_def) {
+                if (is_primitive_for) {
+                    let orig_name: string = func.function_def.name;
+                    func.function_def.name = orig_name + "$$" + prim_display;
+                    let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
+                    func.function_def.name = orig_name;
+                    if (bound.is_some()) {
+                        result.methods.push(bound.some);
+                        if (bound.some is BoundDefinition.function_def) {
+                            if (bound.some.function_def.symbol.is_some()) {
+                                this.model.some.primitive_impl_for_type.push(prim_display);
+                                this.model.some.primitive_impl_iface.push(def.type_name);
+                                this.model.some.primitive_impl_method_name.push(orig_name);
+                                this.model.some.primitive_impl_method_sym.push(bound.some.function_def.symbol.some);
+                            }
+                        }
+                    }
+                } else {
+                    let bound: Option<BoundDefinition> = this.bind_function_def(func.function_def, scope);
+                    if (bound.is_some()) {
+                        result.methods.push(bound.some);
+                    }
+                }
+            }
+        }
+        return new Option<BoundDefinition>.some(new BoundDefinition.impl_for_def(result));
+    }
+
+    fun bind_type_ref_def(mut this, def: TypeReferenceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_type_ref_def");
+        let result: mut BoundTypeReferenceDefinition = new BoundTypeReferenceDefinition(def.name);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, scope.full_name + "." + def.name);
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+        return new Option<BoundDefinition>.some(new BoundDefinition.type_ref_def(result));
+    }
+
+    fun bind_global_var_def(mut this, def: GlobalVariableDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter bind_global_var_def");
+        let full_name: string = scope.full_name + "." + def.name;
+        let result: mut BoundGlobalVariableDefinition = new BoundGlobalVariableDefinition();
+        result.name = def.name;
+        result.full_name = full_name;
+        result.is_mutable = def.is_mutable;
+        result.scope = new Option<BoundScope>.some(scope);
+        result.ast_source = new Option<Definition>.some(new Definition.global_var(def));
+        let var_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+        var_sym.name = def.name;
+        var_sym.full_name = full_name;
+        var_sym.variable_kind = new VariableSymbolKind.Global();
+        var_sym.is_mutable = def.is_mutable;
+        if (def.type_spec.is_some()) {
+            if (def.type_spec.some.is_mutable) {
+                var_sym.is_mutable = true;
+            }
+        }
+        var_sym.enclosing_scope = new Option<BoundScope>.some(scope);
+        result.variable_symbol = new Option<BoundVariableSymbol>.some(var_sym);
+        scope.add_symbol(new BoundSymbol.variable(var_sym));
+        return new Option<BoundDefinition>.some(new BoundDefinition.global_var_def(result));
+    }
+
+}
+
+}

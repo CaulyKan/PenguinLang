@@ -1,0 +1,189 @@
+namespace emperor {
+
+class FunctionInstantiation {
+    func_name: !mut string = "";
+    generic_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+
+    fun new(mut this, func_name: string, generic_args: mut _utils.List<BoundTypeArg>) {
+
+        this.func_name = func_name;
+        this.generic_args = generic_args;
+    }
+}
+
+// A compiled `#specializing Bar<T> { ... }` block. The block body becomes a
+// meta (#fun) callback `bmf` (params mirror Bar's template params; each `impl`
+// statement becomes emperor.penguin_meta_activate_impl(<slot>)), and the impl
+// fragments (in slot order) are what the monomorphize hook injects when a slot
+// is activated. Keyed by the TARGET template's simple name ("Bar").
+class SpecializingBlockInfo {
+    target_name: mut string = "";
+    bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition("", "");
+    impl_fragments: mut _utils.List<Definition> = new _utils.List<Definition>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Per-file anonymous namespaces (C++ static semantics, BabyPenguin parity).
+// Top-level definitions that are not inside an explicit `namespace` block are
+// file-local: they bind into a per-file namespace `_ns_<stem>_<hash16>`
+// (stem = basename without extension, hash over the full path) instead of
+// `<global>`, so same-named top-level defs in different files never collide
+// and cross-file unqualified access does not see them. Explicit namespaces
+// still merge by name across files (add_or_merge_namespace), and a file that
+// declares only named namespaces never materializes its file namespace
+// (it is created lazily on first use).
+// ---------------------------------------------------------------------------
+
+// djb2 restricted to 16 bits — the uniquifier half of BabyPenguin's
+// `_ns_<name>_<hash(fullPath) % 0xFFFF>` file-namespace naming.
+fun _file_ns_hash(s: string) -> i64 {
+    let h: mut i64 = 5381;
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        h = (h * 33 + string_char_code(string_char_at(s, i))) % 65536;
+        i = i + 1;
+    }
+    return h;
+}
+
+fun file_ns_name(filename: string) -> string {
+    let last_slash: mut i64 = -1;
+    let pos: mut i64 = string_find(filename, "/");
+    while (pos >= 0) {
+        last_slash = pos;
+        pos = string_find_from(filename, "/", pos + 1);
+    }
+    let base: string = string_substring(filename, last_slash + 1, string_length(filename) - last_slash - 1);
+    let ext: i64 = string_find(base, ".penguin");
+    let stem: mut string = base;
+    if (ext >= 0) {
+        stem = string_substring(base, 0, ext);
+    }
+    return "_ns_" + stem + "_" + cast<string>(_file_ns_hash(filename));
+}
+
+// The source filename a top-level ast def came from (each parse sets location
+// from token locations, which carry the lexer's filename). Unknown shapes
+// fall back to "" which maps to one stable anonymous namespace.
+// Stamp the owning source file onto a meta-spliced def (see
+// try_splice_meta_fun_def): compiler-generated definitions from
+// #create_definition / #make_*() parse with a synthetic "<meta_...>" filename,
+// but semantically they belong to the file that called the #fun — they must
+// bind into THAT file's anonymous namespace so user types (e.g. Point) stay
+// visible to them and vice versa.
+fun set_def_source_file(def: Definition, fname: string) {
+    if (def is Definition.function_def) { def.function_def.source_file = fname; }
+    else if (def is Definition.class_def) { def.class_def.source_file = fname; }
+    else if (def is Definition.enum_def) { def.enum_def.source_file = fname; }
+    else if (def is Definition.namespace_def) { def.namespace_def.source_file = fname; }
+    else if (def is Definition.using_def) { def.using_def.source_file = fname; }
+    else if (def is Definition.initial_routine) { def.initial_routine.source_file = fname; }
+    else if (def is Definition.interface_def) { def.interface_def.source_file = fname; }
+    else if (def is Definition.impl_def) { def.impl_def.source_file = fname; }
+    else if (def is Definition.impl_for_def) { def.impl_for_def.source_file = fname; }
+    else if (def is Definition.type_ref_def) { def.type_ref_def.source_file = fname; }
+    else if (def is Definition.global_var) { def.global_var.source_file = fname; }
+    else if (def is Definition.event_def) { def.event_def.source_file = fname; }
+    else if (def is Definition.on_routine_def) { def.on_routine_def.source_file = fname; }
+    else if (def is Definition.meta_function_def) { def.meta_function_def.source_file = fname; }
+    else if (def is Definition.meta_class_def) { def.meta_class_def.source_file = fname; }
+    else if (def is Definition.meta_if_def) { def.meta_if_def.source_file = fname; }
+    else if (def is Definition.meta_for_def) { def.meta_for_def.source_file = fname; }
+    else if (def is Definition.meta_while_def) { def.meta_while_def.source_file = fname; }
+    else if (def is Definition.meta_call_def) { def.meta_call_def.source_file = fname; }
+    else if (def is Definition.specializing_def) { def.specializing_def.source_file = fname; }
+}
+
+// Keep in sync: adding a Definition variant requires updating BOTH dispatch chains (and BabyPenguin parity).
+
+fun ast_def_filename(def: Definition) -> string {
+    // The per-def source file is carried in `source_file` (set by the parser
+    // from the token's location). NOT def.location.filename: location fields
+    // are `mut` references whose assignment goes through ICopy (a C#-backend
+    // codegen path that corrupts the value), while plain string fields are
+    // safe — see the file-namespace bootstrap fix.
+    if (def is Definition.function_def) { return def.function_def.source_file; }
+    if (def is Definition.class_def) { return def.class_def.source_file; }
+    if (def is Definition.enum_def) { return def.enum_def.source_file; }
+    if (def is Definition.namespace_def) { return def.namespace_def.source_file; }
+    if (def is Definition.using_def) { return def.using_def.source_file; }
+    if (def is Definition.initial_routine) { return def.initial_routine.source_file; }
+    if (def is Definition.interface_def) { return def.interface_def.source_file; }
+    if (def is Definition.impl_def) { return def.impl_def.source_file; }
+    if (def is Definition.impl_for_def) { return def.impl_for_def.source_file; }
+    if (def is Definition.type_ref_def) { return def.type_ref_def.source_file; }
+    if (def is Definition.global_var) { return def.global_var.source_file; }
+    if (def is Definition.event_def) { return def.event_def.source_file; }
+    if (def is Definition.on_routine_def) { return def.on_routine_def.source_file; }
+    if (def is Definition.meta_function_def) { return def.meta_function_def.source_file; }
+    if (def is Definition.meta_class_def) { return def.meta_class_def.source_file; }
+    if (def is Definition.meta_if_def) { return def.meta_if_def.source_file; }
+    if (def is Definition.meta_for_def) { return def.meta_for_def.source_file; }
+    if (def is Definition.meta_while_def) { return def.meta_while_def.source_file; }
+    if (def is Definition.meta_call_def) { return def.meta_call_def.source_file; }
+    if (def is Definition.specializing_def) { return def.specializing_def.source_file; }
+    return "";
+}
+
+// The scope a TOP-LEVEL ast def binds into: explicit `namespace` blocks
+// against the global scope (they merge by name across files); everything else
+// against this file's anonymous namespace.
+fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut BoundScope {
+    if (def is Definition.namespace_def) { return global_scope; }
+    // Defs with no source file or a SYNTHETIC source name (meta-spliced
+    // definitions from #create_definition / #make_*() — the parser names them
+    // "<meta_create_definition>" etc.) bind into the global scope: they are
+    // compiler-generated, belong to no user file, and must stay reachable
+    // from any user file (master semantics).
+    let fname: string = ast_def_filename(def);
+    if (string_length(fname) == 0) { return global_scope; }
+    if (string_char_at(fname, 0) == "<") { return global_scope; }
+    return global_scope.add_or_merge_namespace(file_ns_name(fname));
+}
+
+// The ENCLOSING scope of a bound def (the scope its name is registered in):
+// the def's own scope's parent for class/enum/interface/function/initial
+// defs, the namespace's own scope for namespaces, the variable symbol's
+// enclosing scope for globals; fallback is the global scope. Used where a
+// pass iterates bound defs and needs the def's lookup context.
+fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {
+    if (def is BoundDefinition.class_def) {
+        if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
+            return def.class_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.enum_def) {
+        if (def.enum_def.scope.is_some() && def.enum_def.scope.some.parent.is_some()) {
+            return def.enum_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.interface_def) {
+        if (def.interface_def.scope.is_some() && def.interface_def.scope.some.parent.is_some()) {
+            return def.interface_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.function_def) {
+        if (def.function_def.scope.is_some() && def.function_def.scope.some.parent.is_some()) {
+            return def.function_def.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.initial_routine) {
+        if (def.initial_routine.scope.is_some() && def.initial_routine.scope.some.parent.is_some()) {
+            return def.initial_routine.scope.some.parent.some;
+        }
+    }
+    if (def is BoundDefinition.namespace_def) {
+        if (def.namespace_def.scope.is_some()) {
+            return def.namespace_def.scope.some;
+        }
+    }
+    if (def is BoundDefinition.global_var_def) {
+        if (def.global_var_def.variable_symbol.is_some() && def.global_var_def.variable_symbol.some.enclosing_scope.is_some()) {
+            return def.global_var_def.variable_symbol.some.enclosing_scope.some;
+        }
+    }
+    return global_scope;
+}
+
+}

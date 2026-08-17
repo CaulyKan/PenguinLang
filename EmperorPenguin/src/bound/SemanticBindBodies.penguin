@@ -1,0 +1,1261 @@
+// Pass 8 (phase 1 of 3) of the SemanticModel pipeline, extracted from
+// SemanticModel.penguin: BODY / STATEMENT binding. This pass walks every
+// definition and binds function/initial/class/enum/interface/impl bodies
+// (including #specializing-injected impls and field defaults) into bound
+// expressions, and dispatches every statement (let/if/while/for/return/
+// assignment/try-bind desugaring/meta statements) to its bound form. The
+// expression family (bind_expression / bind_code_block / analyze_try_bind)
+// stays in SemanticModel core; M8b/M8c will split those out next.
+namespace emperor {
+
+class BindBodiesPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_bind_expressions
+    fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_bind_expressions");
+        this.model.some.current_unit = new Option<BoundCompilationUnit>.some(result);
+        let ast_count: i64 = cast<i64>(unit.definitions.size());
+        let total: i64 = cast<i64>(result.definitions.size());
+        let i: mut i64 = 0;
+        while (i < total) {
+            if (i < ast_count) {
+                let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding " + this.model.some.def_display_name(bound_def)); }
+                result.definitions.set(cast<u64>(i), this.bind_body_for_def(ast_def, bound_def, result));
+            } else {
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding (specialized) " + this.model.some.def_display_name(bound_def)); }
+                result.definitions.set(cast<u64>(i), this.bind_body_for_specialized_def(bound_def, result));
+            }
+            i = i + 1;
+        }
+        this.model.some.current_unit = new Option<BoundCompilationUnit>.none();
+    }
+
+    fun bind_body_for_specialized_def(mut this, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
+        _utils.trace_enter("Enter bind_body_for_specialized_def");
+        // Dyn-lib: a def whose symbol lives in a loaded .penguin-lib has no body
+        // here — skip binding (its meta calls would otherwise be JIT'd in the
+        // consumer); the IR layer emits a declaration + links the lib instead.
+        if (this.model.some.build_scopes_pass.is_lib_export_def(bound_def)) { return bound_def; }
+        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (bound_def is BoundDefinition.class_def) {
+            let bound_cls: BoundClassDefinition = bound_def.class_def;
+            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_cls.name);
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            if (ast_def.is_some() && ast_def.some is Definition.class_def) {
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return bound_def;
+        }
+        if (bound_def is BoundDefinition.enum_def) {
+            let bound_enum: BoundEnumDefinition = bound_def.enum_def;
+            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_enum.name);
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return bound_def;
+        }
+        if (bound_def is BoundDefinition.function_def) {
+            let bound_func: BoundFunctionDefinition = bound_def.function_def;
+            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_func.name);
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            if (ast_def.is_some() && ast_def.some is Definition.function_def) {
+                return this.bind_body_for_def(ast_def.some, bound_def, result);
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return bound_def;
+        }
+        if (bound_def is BoundDefinition.interface_def) {
+            let bound_iface: BoundInterfaceDefinition = bound_def.interface_def;
+            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_iface.name);
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            if (ast_def.is_some()) {
+                if (ast_def.some is Definition.interface_def) {
+                    return this.bind_body_for_def(ast_def.some, bound_def, result);
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return bound_def;
+        }
+        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        return bound_def;
+    }
+
+    fun ensure_params_in_scope(mut this, func: mut BoundFunctionDefinition) {
+        _utils.trace_enter("Enter ensure_params_in_scope");
+        if (func.scope.is_none()) { return; }
+        let func_scope: mut BoundScope = func.scope.some;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            let param: BoundFunctionParameter = func.parameters.at(cast<u64>(pi)).some;
+            let existing: Option<BoundSymbol> = func_scope.lookup_symbol_local(param.name);
+            if (existing.is_none()) {
+                let param_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                param_sym.name = param.name;
+                param_sym.full_name = func.full_name + "." + param.name;
+                param_sym.bound_type = param.bound_type;
+                param_sym.variable_kind = new VariableSymbolKind.Param();
+                param_sym.is_mutable = param.is_mutable;
+                param_sym.parameter_index = param.index;
+                param_sym.enclosing_scope = new Option<BoundScope>.some(func_scope);
+                func_scope.add_symbol(new BoundSymbol.variable(param_sym));
+            }
+            pi = pi + 1;
+        }
+    }
+
+    fun bind_body_for_def(mut this, ast_def: Definition, bound_def: BoundDefinition, result: BoundCompilationUnit) -> BoundDefinition {
+        _utils.trace_enter("Enter bind_body_for_def");
+        // mut-this core methods (bind_expression / bind_optional_expr /
+        // analyze_try_bind) need a mutable SemanticModel: rebind the Option
+        // payload once here.
+        let m: mut SemanticModel = this.model.some;
+        // Dyn-lib: a def whose symbol lives in a loaded .penguin-lib has no body
+        // here — skip binding (its meta calls would otherwise be JIT'd in the
+        // consumer); the IR layer emits a declaration + links the lib instead.
+        if (this.model.some.build_scopes_pass.is_lib_export_def(bound_def)) {
+            this.model.some.trace("bind_body_for_def skip (lib export): " + this.model.some.def_display_name(bound_def));
+            return bound_def;
+        }
+        if (this.model.some.already_processed(bound_def)) {
+            this.model.some.trace("bind_body_for_def skip (already processed): " + this.model.some.def_display_name(bound_def));
+            return bound_def;
+        }
+        if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
+            let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
+            let ast_func: FunctionDefinition = ast_def.function_def;
+            if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding function " + bound_func.full_name); }
+            // D6: skip binding the TEMPLATE body of a value-template function
+            // (value_param_names non-empty but no concrete values yet) — N has no
+            // value to substitute, so `while (i < N)` can't resolve. Only the
+            // specialized filled__3 body (value_param_values populated) is bound.
+            if (cast<i64>(bound_func.value_param_names.size()) > 0 && cast<i64>(bound_func.value_param_values.size()) == 0) {
+                this.model.some.trace("bind_body_for_def skip (value-template, no concrete values): " + bound_func.full_name);
+                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                return new BoundDefinition.function_def(bound_func);
+            }
+            if (bound_func.scope.is_some() && ast_func.body.is_some()) {
+                let func_scope: mut BoundScope = bound_func.scope.some;
+                this.ensure_params_in_scope(bound_func);
+                // D6: substitute value-template params (N -> constant) into the
+                // specialized function body before binding (no-op for type-only
+                // generics, where value_param_names is empty).
+                let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_func, bound_func.value_param_names, bound_func.value_param_values, bound_func.value_param_texts, bound_func.value_param_kinds);
+                let mut ast_body = new Option<Expression>.none();
+                if (ast_to_bind is Definition.function_def) {
+                    ast_body = ast_to_bind.function_def.body;
+                } else {
+                    ast_body = ast_func.body;
+                }
+                if (ast_body.is_some()) {
+                    let bound_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_body.some, func_scope);
+                    bound_func.body = bound_body;
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.function_def(bound_func);
+        }
+        // Primitive interface impls: bind each mangled method's body. AST and
+        // bound methods are index-aligned (both loops skip non-function entries),
+        // and the bound name carries the `$$<primitive>` mangle, so matching by
+        // index (not by name) is required.
+        if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
+            let ast_impl: InterfaceForImplementation = ast_def.impl_for_def;
+            let bound_impl: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(ast_impl.functions.size())) {
+                let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                if (ast_func_def is Definition.function_def) {
+                    if (fi < cast<i64>(bound_impl.methods.size())) {
+                        let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(fi)).some;
+                        if (bound_method is BoundDefinition.function_def) {
+                            let bf: mut BoundFunctionDefinition = bound_method.function_def;
+                            if (bf.scope.is_some() && ast_func_def.function_def.body.is_some()) {
+                                let func_scope: mut BoundScope = bf.scope.some;
+                                this.ensure_params_in_scope(bf);
+                                let bound_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_func_def.function_def.body.some, func_scope);
+                                bf.body = bound_body;
+                            }
+                            bound_impl.methods.set(cast<u64>(fi), new BoundDefinition.function_def(bf));
+                        }
+                    }
+                }
+                fi = fi + 1;
+            }
+            return new BoundDefinition.impl_for_def(bound_impl);
+        }
+        if (bound_def is BoundDefinition.initial_routine && ast_def is Definition.initial_routine) {
+            let bound_init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
+            let ast_init: InitialRoutineDefinition = ast_def.initial_routine;
+            if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding initial routine"); }
+            if (bound_init.scope.is_some() && ast_init.body.is_some()) {
+                let init_scope: mut BoundScope = bound_init.scope.some;
+                let bound_init_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_init.body.some, init_scope);
+                bound_init.body = bound_init_body;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.initial_routine(bound_init);
+        }
+        if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
+            let bound_cls: BoundClassDefinition = bound_def.class_def;
+            if (bound_cls.is_generic_template) { BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index); return bound_def; }
+            let ast_cls: ClassDefinition = ast_def.class_def;
+            let bound_cls: mut BoundClassDefinition = bound_def.class_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ast_cls.members.size())) {
+                let ast_member: Definition = ast_cls.members.at(cast<u64>(i)).some;
+                if (ast_member is Definition.function_def) {
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_cls.methods.size())) {
+                        let bound_md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
+                        if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
+                            // req5/M3: substitute value-template params (N) -> their concrete
+                            // constants in the method body before binding, so `fun get() { return N; }`
+                            // specializes to `return 5`. Field initializers already do this (the
+                            // field-default block below); method bodies need it too. For non-value
+                            // templates value_param_names is empty → no-op (original returned).
+                            let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_member.function_def, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>());
+                            bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
+                        }
+                        j = j + 1;
+                    }
+                }
+                if (ast_member is Definition.impl_def) {
+                    let ast_impl_member: InterfaceImplementation = ast_member.impl_def;
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_cls.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(j)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_cls.interface_impls.set(cast<u64>(j), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        j = j + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            // #specializing: bind method bodies for injected impls. Their AST
+            // fragments live on the bound impl (source_impl_def), not in
+            // ast_cls.members, so bind them from the fragment directly.
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(bound_cls.interface_impls.size())) {
+                let impl_def: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(ii)).some;
+                if (impl_def is BoundDefinition.impl_def) {
+                    let bound_iface_impl: mut BoundInterfaceImplementation = impl_def.impl_def;
+                    if (bound_iface_impl.source_impl_def.is_some()) {
+                        if (bound_iface_impl.source_impl_def.some is Definition.impl_def) {
+                            let ast_impl_member: InterfaceImplementation = bound_iface_impl.source_impl_def.some.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_cls.interface_impls.set(cast<u64>(ii), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                    }
+                }
+                ii = ii + 1;
+            }
+            // Bind field default initializers (e.g. `errors: List<T> = new List<T>()`)
+            // in the constructor's scope and store them on the bound field. The IR
+            // generator emits them as `this.field = <init>` at the start of the
+            // constructor. Without this, field defaults are silently dropped and
+            // the field is left at its memset-zero state (null for reference-typed
+            // fields, empty for value-typed) — which crashes as soon as a method
+            // dereferences it.
+            if (let ctor := bound_cls.constructor.some) {
+                if (ctor.scope.is_some()) {
+                    let ctor_scope: mut BoundScope = ctor.scope.some;
+                    let fi: mut i64 = 0;
+                    while (fi < cast<i64>(bound_cls.fields.size())) {
+                        let field_def: BoundDefinition = bound_cls.fields.at(cast<u64>(fi)).some;
+                        if (field_def is BoundDefinition.class_field) {
+                            let bound_field: mut BoundClassFieldDefinition = field_def.class_field;
+                            let ast_init: mut Option<Expression> = new Option<Expression>.none();
+                            let ai: mut i64 = 0;
+                            while (ai < cast<i64>(ast_cls.members.size())) {
+                                let am: Definition = ast_cls.members.at(cast<u64>(ai)).some;
+                                if (am is Definition.class_field) {
+                                    if (am.class_field.name == bound_field.name) {
+                                        if (am.class_field.initializer.is_some()) {
+                                            // req5: substitute value-template params (N) -> their concrete
+                                            // constants before binding the field default initializer.
+                                            ast_init = new Option<Expression>.some(this.model.some.resolve_types_pass.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>()));
+                                        }
+                                    }
+                                }
+                                ai = ai + 1;
+                            }
+                            if (ast_init.is_some()) {
+                                let bound_init: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_init.some, ctor_scope);
+                                bound_field.initializer = bound_init;
+                                bound_cls.fields.set(cast<u64>(fi), new BoundDefinition.class_field(bound_field));
+                            }
+                        }
+                        fi = fi + 1;
+                    }
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(bound_cls);
+        }
+        if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
+            let bound_enum: mut BoundEnumDefinition = bound_def.enum_def;
+            // req5/D6: skip binding the TEMPLATE enum's method bodies (value params
+            // named but no concrete values yet) — N has nothing to substitute, so a
+            // method body using N can't resolve. Only the specialized E__5 body binds.
+            if (cast<i64>(bound_enum.value_param_names.size()) > 0 && cast<i64>(bound_enum.value_param_values.size()) == 0) {
+                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                return new BoundDefinition.enum_def(bound_enum);
+            }
+            let ast_enum: EnumDefinition = ast_def.enum_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ast_enum.members.size())) {
+                let ast_member: Definition = ast_enum.members.at(cast<u64>(i)).some;
+                if (ast_member is Definition.function_def) {
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_enum.methods.size())) {
+                        let bound_md: BoundDefinition = bound_enum.methods.at(cast<u64>(j)).some;
+                        if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
+                            // req5/D6: substitute value-template params (N) -> their concrete
+                            // constants in the specialized enum method body (no-op for type-only).
+                            let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_member.function_def, bound_enum.value_param_names, bound_enum.value_param_values, bound_enum.value_param_texts, bound_enum.value_param_kinds);
+                            bound_enum.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
+                        }
+                        j = j + 1;
+                    }
+                }
+                // Also bind interface impl methods for enums
+                if (ast_member is Definition.impl_def) {
+                    let ast_impl: InterfaceImplementation = ast_member.impl_def;
+                    let ii: mut i64 = 0;
+                    while (ii < cast<i64>(bound_enum.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(ii)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl.functions.size())) {
+                                let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_enum.interface_impls.set(cast<u64>(ii), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        ii = ii + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            // #specializing: bind method bodies for injected impls (AST fragments
+            // stored on the bound impl, not in ast_enum.members).
+            let inj: mut i64 = 0;
+            while (inj < cast<i64>(bound_enum.interface_impls.size())) {
+                let impl_def2: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(inj)).some;
+                if (impl_def2 is BoundDefinition.impl_def) {
+                    let bound_iface_impl2: mut BoundInterfaceImplementation = impl_def2.impl_def;
+                    if (bound_iface_impl2.source_impl_def.is_some()) {
+                        if (bound_iface_impl2.source_impl_def.some is Definition.impl_def) {
+                            let ast_impl2: InterfaceImplementation = bound_iface_impl2.source_impl_def.some.impl_def;
+                            let fi2: mut i64 = 0;
+                            while (fi2 < cast<i64>(ast_impl2.functions.size())) {
+                                let ast_func_def2: Definition = ast_impl2.functions.at(cast<u64>(fi2)).some;
+                                if (ast_func_def2 is Definition.function_def) {
+                                    let mi2: mut i64 = 0;
+                                    while (mi2 < cast<i64>(bound_iface_impl2.methods.size())) {
+                                        let bound_method2: BoundDefinition = bound_iface_impl2.methods.at(cast<u64>(mi2)).some;
+                                        if (bound_method2 is BoundDefinition.function_def && bound_method2.function_def.name == ast_func_def2.function_def.name) {
+                                            bound_iface_impl2.methods.set(cast<u64>(mi2), this.bind_body_for_def(ast_func_def2, bound_method2, result));
+                                        }
+                                        mi2 = mi2 + 1;
+                                    }
+                                }
+                                fi2 = fi2 + 1;
+                            }
+                            bound_enum.interface_impls.set(cast<u64>(inj), new BoundDefinition.impl_def(bound_iface_impl2));
+                        }
+                    }
+                }
+                inj = inj + 1;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.enum_def(bound_enum);
+        }
+        if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
+            let ast_ns: NamespaceDefinition = ast_def.namespace_def;
+            let bound_ns: mut BoundNamespaceDefinition = bound_def.namespace_def;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ast_ns.children.size())) {
+                let ast_child: Definition = ast_ns.children.at(cast<u64>(k)).some;
+                let m: mut i64 = 0;
+                while (m < cast<i64>(bound_ns.children.size())) {
+                    let bound_child: BoundDefinition = bound_ns.children.at(cast<u64>(m)).some;
+                    if (ast_child is Definition.function_def && bound_child is BoundDefinition.function_def) {
+                        if (ast_child.function_def.name == bound_child.function_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.class_def && bound_child is BoundDefinition.class_def) {
+                        if (ast_child.class_def.name == bound_child.class_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.interface_def && bound_child is BoundDefinition.interface_def) {
+                        if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                        // impl_for_defs have no name to match on; namespace children are
+                        // index-aligned from pass 1 (bind_namespace_def binds in order).
+                        if (k == m) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.initial_routine && bound_child is BoundDefinition.initial_routine) {
+                        bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                    }
+                    if (ast_child is Definition.enum_def && bound_child is BoundDefinition.enum_def) {
+                        if (ast_child.enum_def.name == bound_child.enum_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.namespace_def && bound_child is BoundDefinition.namespace_def) {
+                        if (ast_child.namespace_def.name == bound_child.namespace_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    if (ast_child is Definition.global_var && bound_child is BoundDefinition.global_var_def) {
+                        if (ast_child.global_var.name == bound_child.global_var_def.name) {
+                            bound_ns.children.set(cast<u64>(m), this.bind_body_for_def(ast_child, bound_child, result));
+                        }
+                    }
+                    m = m + 1;
+                }
+                k = k + 1;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.namespace_def(bound_ns);
+        }
+        if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
+            let ast_iface: InterfaceDefinition = ast_def.interface_def;
+            let bound_iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            // req5/D6: skip binding the TEMPLATE interface's default-method bodies
+            // (value params named but no concrete values yet) — N has nothing to
+            // substitute, so a default body using N can't resolve.
+            if (cast<i64>(bound_iface.value_param_names.size()) > 0 && cast<i64>(bound_iface.value_param_values.size()) == 0) {
+                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                return new BoundDefinition.interface_def(bound_iface);
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ast_iface.members.size())) {
+                let ast_member: Definition = ast_iface.members.at(cast<u64>(i)).some;
+                if (ast_member is Definition.function_def) {
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_iface.methods.size())) {
+                        let bound_md: BoundDefinition = bound_iface.methods.at(cast<u64>(j)).some;
+                        if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
+                            // req5/D6: substitute value-template params (N) -> their concrete
+                            // constants in the specialized interface default-method body.
+                            let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_member.function_def, bound_iface.value_param_names, bound_iface.value_param_values, bound_iface.value_param_texts, bound_iface.value_param_kinds);
+                            bound_iface.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
+                        }
+                        j = j + 1;
+                    }
+                }
+                if (ast_member is Definition.impl_def) {
+                    // Bind bodies of nested-impl methods (interface inheritance).
+                    let ast_impl_member: InterfaceImplementation = ast_member.impl_def;
+                    let bi: mut i64 = 0;
+                    while (bi < cast<i64>(bound_iface.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_iface.interface_impls.at(cast<u64>(bi)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            let bmd: mut BoundFunctionDefinition = bound_method.function_def;
+                                            // Nested-impl methods are missed by the normal
+                                            // function-pair resolution pass, so resolve their
+                                            // signature (params, return type) here. The scope
+                                            // has T -> concrete arg for specialized interfaces.
+                                            if (cast<i64>(bmd.parameters.size()) == 0) {
+                                                if (bound_iface.scope.is_some()) {
+                                                    this.model.some.resolve_types_pass.resolve_function_pair(ast_func_def.function_def, bmd, bound_iface.scope.some);
+                                                }
+                                            }
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_iface.interface_impls.set(cast<u64>(bi), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        bi = bi + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.interface_def(bound_iface);
+        }
+        if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
+            let ast_enum: EnumDefinition = ast_def.enum_def;
+            let bound_enum: mut BoundEnumDefinition = bound_def.enum_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ast_enum.members.size())) {
+                let ast_member: Definition = ast_enum.members.at(cast<u64>(i)).some;
+                if (ast_member is Definition.impl_def) {
+                    let ast_impl_member: InterfaceImplementation = ast_member.impl_def;
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bound_enum.interface_impls.size())) {
+                        let bound_impl_def: BoundDefinition = bound_enum.interface_impls.at(cast<u64>(j)).some;
+                        if (bound_impl_def is BoundDefinition.impl_def) {
+                            let bound_iface_impl: mut BoundInterfaceImplementation = bound_impl_def.impl_def;
+                            let fi: mut i64 = 0;
+                            while (fi < cast<i64>(ast_impl_member.functions.size())) {
+                                let ast_func_def: Definition = ast_impl_member.functions.at(cast<u64>(fi)).some;
+                                if (ast_func_def is Definition.function_def) {
+                                    let mi: mut i64 = 0;
+                                    while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                        let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                        if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                            bound_iface_impl.methods.set(cast<u64>(mi), this.bind_body_for_def(ast_func_def, bound_method, result));
+                                        }
+                                        mi = mi + 1;
+                                    }
+                                }
+                                fi = fi + 1;
+                            }
+                            bound_enum.interface_impls.set(cast<u64>(j), new BoundDefinition.impl_def(bound_iface_impl));
+                        }
+                        j = j + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.enum_def(bound_enum);
+        }
+        if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
+            let gv: mut BoundGlobalVariableDefinition = bound_def.global_var_def;
+            if (gv.scope.is_some() && ast_def.global_var.initializer.is_some()) {
+                let gv_scope: mut BoundScope = gv.scope.some;
+                let bound_init: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_def.global_var.initializer.some, gv_scope);
+                gv.initializer = bound_init;
+                if (bound_init.is_some()) {
+                    let init_type: mut BoundType = bound_init.some.get_bound_type();
+                    if (gv.bound_type.kind is TypeKind.PrimitiveKind && gv.bound_type.primitive is PrimitiveType.VoidType) {
+                        gv.bound_type = init_type;
+                        if (gv.variable_symbol.is_some()) {
+                            let sym: mut BoundVariableSymbol = gv.variable_symbol.some;
+                            sym.bound_type = init_type;
+                            gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
+                        }
+                    }
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.global_var_def(gv);
+        }
+        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        return bound_def;
+    }
+    fun bind_optional_stmt(mut this, opt: Option<Statement>, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_optional_stmt");
+        if (opt.is_some()) {
+            return this.bind_statement(opt.some, scope);
+        }
+        return new Option<BoundStatement>.none();
+    }
+    fun bind_try_bind_if_stmt(mut this, if_stmt: IfStatement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_try_bind_if_stmt");
+        // mut-this core methods (bind_expression / bind_optional_expr /
+        // analyze_try_bind) need a mutable SemanticModel: rebind the Option
+        // payload once here.
+        let m: mut SemanticModel = this.model.some;
+        let tb: TryBindExpression = if_stmt.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundStatement>.none(); }
+        let analysis: Option<TryBindAnalysis> = m.bind_expressions_pass.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundStatement>.none(); }
+        let then_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        then_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_then: Option<BoundStatement> = this.bind_optional_stmt(if_stmt.then_statement, then_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(then_scope));
+        let_stmt.location = tb.location;
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        stmts.push(new BoundStatement.let_decl(let_stmt));
+        if (bound_then.is_some()) { stmts.push(bound_then.some); }
+        let block: mut BoundBlockStatement = new BoundBlockStatement(stmts, new Option<BoundScope>.some(then_scope));
+        block.location = if_stmt.location;
+        let else_stmt: Option<BoundStatement> = this.bind_optional_stmt(if_stmt.else_statement, scope);
+        let result: mut BoundIfStatement = new BoundIfStatement(analysis.some.check, new Option<BoundStatement>.some(new BoundStatement.block(block)), else_stmt);
+        result.location = if_stmt.location;
+        return new Option<BoundStatement>.some(new BoundStatement.if_stmt(result));
+    }
+
+    // Desugar `while (let a [: T] := b) body` into
+    //   `while (CHK) { let a = EXT; body }`
+    fun bind_try_bind_while_stmt(mut this, while_stmt: WhileStatement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_try_bind_while_stmt");
+        // mut-this core methods (bind_expression / bind_optional_expr /
+        // analyze_try_bind) need a mutable SemanticModel: rebind the Option
+        // payload once here.
+        let m: mut SemanticModel = this.model.some;
+        let tb: TryBindExpression = while_stmt.condition.some.try_bind;
+        let bound_rhs: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(tb.rhs.some, scope);
+        if (bound_rhs.is_none()) { return new Option<BoundStatement>.none(); }
+        let analysis: Option<TryBindAnalysis> = m.bind_expressions_pass.analyze_try_bind(tb, bound_rhs.some, scope);
+        if (analysis.is_none()) { return new Option<BoundStatement>.none(); }
+        let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try-bind>", scope.full_name + ".<try-bind>", new Option<BoundScope>.some(scope));
+        body_scope.add_symbol(new BoundSymbol.variable(analysis.some.variable_symbol.some));
+        let bound_body: Option<BoundStatement> = this.bind_optional_stmt(while_stmt.body, body_scope);
+        let let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+            analysis.some.variable_symbol, analysis.some.extract, analysis.some.bound_type,
+            new Option<BoundScope>.some(body_scope));
+        let_stmt.location = tb.location;
+        let stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        stmts.push(new BoundStatement.let_decl(let_stmt));
+        if (bound_body.is_some()) { stmts.push(bound_body.some); }
+        let block: mut BoundBlockStatement = new BoundBlockStatement(stmts, new Option<BoundScope>.some(body_scope));
+        block.location = while_stmt.location;
+        let result: mut BoundWhileStatement = new BoundWhileStatement(analysis.some.check, new Option<BoundStatement>.some(new BoundStatement.block(block)));
+        result.location = while_stmt.location;
+        return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));
+    }
+    fun bind_statement(mut this, stmt: Statement, scope: mut BoundScope) -> Option<BoundStatement> {
+        _utils.trace_enter("Enter bind_statement");
+        // mut-this core methods (bind_expression / bind_optional_expr /
+        // analyze_try_bind) need a mutable SemanticModel: rebind the Option
+        // payload once here.
+        let m: mut SemanticModel = this.model.some;
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                let bound_expr: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.expression.expression.some, scope);
+                let result: mut BoundExpressionStatement = new BoundExpressionStatement(bound_expr);
+                result.location = stmt.expression.location;
+                return new Option<BoundStatement>.some(new BoundStatement.expression(result));
+            }
+            let result: mut BoundExpressionStatement = new BoundExpressionStatement(new Option<BoundExpression>.none());
+            result.location = stmt.expression.location;
+            return new Option<BoundStatement>.some(new BoundStatement.expression(result));
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                let bound_expr: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.block_expr.expression.some, scope);
+                if (bound_expr.is_some()) {
+                    if (bound_expr.some is BoundExpression.code_block) {
+                        let cb: BoundCodeBlockExpression = bound_expr.some.code_block;
+                        let block_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+                        let i: mut i64 = 0;
+                        while (i < cast<i64>(cb.statements.size())) {
+                            block_stmts.push(cb.statements.at(cast<u64>(i)).some);
+                            i = i + 1;
+                        }
+                        let result: mut BoundBlockStatement = new BoundBlockStatement(block_stmts, cb.scope);
+                        return new Option<BoundStatement>.some(new BoundStatement.block(result));
+                    }
+                    let result: mut BoundExpressionStatement = new BoundExpressionStatement(bound_expr);
+                    return new Option<BoundStatement>.some(new BoundStatement.expression(result));
+                }
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                let target: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.assignment.target.some, scope);
+                if (stmt.assignment.value.is_some()) {
+                    let value: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.assignment.value.some, scope);
+                    let effective_op: mut AssignmentOperator = stmt.assignment.operator_value;
+                    // Desugar a compound assignment (target op= value) into a plain
+                    // assignment whose RHS reads the target: target = target op value.
+                    // Without this, op= was emitted as plain =, so e.g. i += 1 stored
+                    // the literal RHS and never read i, producing an infinite loop.
+                    let compound_binop: Option<BinaryOperator> = compound_assignment_to_binary_operator(stmt.assignment.operator_value);
+                    if (compound_binop.is_some()) {
+                        let operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+                        operands.push(target.some);
+                        operands.push(value.some);
+                        let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+                        operators.push(compound_binop.some);
+                        let bin_type: BoundType = target.some.get_bound_type();
+                        let desugared: mut BoundBinaryExpression = new BoundBinaryExpression(bin_type, operators, operands);
+                        value = new Option<BoundExpression>.some(new BoundExpression.binary(desugared));
+                        effective_op = new AssignmentOperator.Assign();
+                    }
+                    let value_type: BoundType = target.some.get_bound_type();
+                    // Binding mutability check: cannot reassign an immutable variable.
+                    // For `let x: i32`, `x = ...` is rejected (binding is immutable).
+                    // `let x: mut i32` makes the binding mutable (BabyPenguin conflates
+                    // binding and type mutability), so reassignment is allowed.
+                    if (target.some is BoundExpression.identifier) {
+                        let id_expr: BoundIdentifierExpression = target.some.identifier;
+                        if (let sym := id_expr.symbol.some) {
+                            if (sym is BoundSymbol.variable) {
+                                if (!sym.variable.is_mutable) {
+                                    this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                        "Cannot assign to immutable variable '" + sym.variable.name + "'",
+                                        new SourceLocation("", 0, 0));
+                                }
+                            }
+                        }
+                    }
+                    // Member access target mutability: for a.a = 1, check field's
+                    // effective mutability. Skip for `this` (constructor/method init).
+                    if (target.some is BoundExpression.member_access) {
+                        let ma: BoundMemberAccessExpression = target.some.member_access;
+                        if (ma.base_expr.is_some() && ma.member_symbol.is_some()) {
+                            let ms: BoundSymbol = ma.member_symbol.some;
+                            if (ms is BoundSymbol.variable && ms.variable.variable_kind is VariableSymbolKind.Field) {
+                                // Skip check for `this.xxx` assignments (constructor/method init)
+                                let is_this_assign: mut bool = false;
+                                if (ma.base_expr.some is BoundExpression.identifier) {
+                                    let base_id: BoundIdentifierExpression = ma.base_expr.some.identifier;
+                                    if (base_id.symbol.is_some()) {
+                                        if (base_id.symbol.some is BoundSymbol.variable) {
+                                            if (base_id.symbol.some.variable.name == "this") {
+                                                is_this_assign = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!is_this_assign) {
+                                    // Compute effective field mutability based on
+                                    // the field's bound type mutability (which already
+                                    // reflects container mutability for Auto fields).
+                                    if (value_type.mutability is Mutability.Immutable) {
+                                        this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                            "Cannot assign to field '" + ms.variable.name + "' (field is immutable)",
+                                            new SourceLocation("", 0, 0));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (target.some is BoundExpression.identifier) {
+                        if (target.some.identifier.symbol.is_some()) {
+                            // Reference type mutability compatibility: for explicit
+                            // IReferenceType types, the value's mutability must match
+                            // the target's binding mutability. When the value is a
+                            // variable reference, its BINDING mutability is
+                            // authoritative (BabyPenguin: `let mut a = new Ref(1)` is an
+                            // immutable binding even though the new-expression's type
+                            // is mutable), so an immutable binding assigned to a
+                            // mutable target fails E_MUTABILITY.
+                            if (value.is_some() && this.model.some.classify_value_types_pass.is_iref_type(value_type)) {
+                                let val_type: BoundType = value.some.get_bound_type();
+                                let target_mut: Mutability = value_type.mutability;
+                                let val_mut: mut Mutability = val_type.mutability;
+                                if (value.some is BoundExpression.identifier) {
+                                    let v_id: BoundIdentifierExpression = value.some.identifier;
+                                    if (v_id.symbol.is_some()) {
+                                        if (v_id.symbol.some is BoundSymbol.variable) {
+                                            if (!v_id.symbol.some.variable.is_mutable) {
+                                                val_mut = new Mutability.Immutable();
+                                            }
+                                        }
+                                    }
+                                }
+                                if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
+                                    this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                        "Cannot assign immutable value to mutable variable",
+                                        new SourceLocation("", 0, 0));
+                                }
+                            }
+                            let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, effective_op, value, value_type);
+                            result.location = stmt.assignment.location;
+                            return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+                        }
+                    }
+                    let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), effective_op, value, value_type);
+                    result.location = stmt.assignment.location;
+                    return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+                }
+                let value_type: BoundType = target.some.get_bound_type();
+                let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), stmt.assignment.operator_value, new Option<BoundExpression>.none(), value_type);
+                result.location = stmt.assignment.location;
+                return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+            }
+            if (stmt.assignment.value.is_some()) {
+                let value: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.assignment.value.some, scope);
+                let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(new Option<BoundExpression>.none(), new Option<BoundSymbol>.none(), stmt.assignment.operator_value, value, new BoundType());
+                result.location = stmt.assignment.location;
+                return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+            }
+            let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(new Option<BoundExpression>.none(), new Option<BoundSymbol>.none(), stmt.assignment.operator_value, new Option<BoundExpression>.none(), new BoundType());
+            result.location = stmt.assignment.location;
+            return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some() && stmt.if_stmt.condition.some is Expression.try_bind) {
+                return this.bind_try_bind_if_stmt(stmt.if_stmt, scope);
+            }
+            // P2 condition-region: pattern variables from `&&` chains in the
+            // condition are visible in the then-branch only.
+            let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+            cond_region.is_region = true;
+            cond_region.is_condition_region = true;
+            let condition: Option<BoundExpression> = m.bind_expressions_pass.bind_optional_expr(stmt.if_stmt.condition, cond_region);
+            let then_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.then_statement, cond_region);
+            let else_stmt: Option<BoundStatement> = this.bind_optional_stmt(stmt.if_stmt.else_statement, scope);
+            let result: mut BoundIfStatement = new BoundIfStatement(condition, then_stmt, else_stmt);
+            result.location = stmt.if_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.if_stmt(result));
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some() && stmt.while_stmt.condition.some is Expression.try_bind) {
+                return this.bind_try_bind_while_stmt(stmt.while_stmt, scope);
+            }
+            let cond_region: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<cond>", scope.full_name + ".<cond>", new Option<BoundScope>.some(scope));
+            cond_region.is_region = true;
+            cond_region.is_condition_region = true;
+            let condition: Option<BoundExpression> = m.bind_expressions_pass.bind_optional_expr(stmt.while_stmt.condition, cond_region);
+            let body: Option<BoundStatement> = this.bind_optional_stmt(stmt.while_stmt.body, cond_region);
+            let result: mut BoundWhileStatement = new BoundWhileStatement(condition, body);
+            result.location = stmt.while_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                let value: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.return_stmt.value.some, scope);
+                if (value.is_some()) {
+                    let ret_type: BoundType = value.some.get_bound_type();
+                    let result: mut BoundReturnStatement = new BoundReturnStatement(value, ret_type);
+                    result.location = stmt.return_stmt.location;
+                    return new Option<BoundStatement>.some(new BoundStatement.return_stmt(result));
+                }
+            }
+            let result: mut BoundReturnStatement = new BoundReturnStatement(new Option<BoundExpression>.none(), new BoundType());
+            result.location = stmt.return_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.return_stmt(result));
+        }
+        if (stmt is Statement.break_stmt) {
+            if (stmt.break_stmt.value.is_some()) {
+                let value: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.break_stmt.value.some, scope);
+                let result: mut BoundBreakStatement = new BoundBreakStatement(value);
+                result.location = stmt.break_stmt.location;
+                return new Option<BoundStatement>.some(new BoundStatement.break_stmt(result));
+            }
+            let result: mut BoundBreakStatement = new BoundBreakStatement(new Option<BoundExpression>.none());
+            result.location = stmt.break_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.break_stmt(result));
+        }
+        if (stmt is Statement.continue_stmt) {
+            let result: mut BoundContinueStatement = new BoundContinueStatement();
+            result.location = stmt.continue_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.continue_stmt(result));
+        }
+        if (stmt is Statement.let_decl) {
+            let var_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            var_sym.name = stmt.let_decl.variable_name;
+            var_sym.full_name = scope.full_name + "." + stmt.let_decl.variable_name;
+            var_sym.is_mutable = stmt.let_decl.is_mutable;
+            // BabyPenguin conflates binding mutability with type mutability:
+            // `let x: mut T` makes both the binding and the value mutable.
+            if (stmt.let_decl.type_spec.is_some()) {
+                if (stmt.let_decl.type_spec.some.is_mutable) {
+                    var_sym.is_mutable = true;
+                }
+            }
+            var_sym.location = stmt.let_decl.location;
+            if (stmt.let_decl.initializer.is_some()) {
+                let initializer: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.let_decl.initializer.some, scope);
+                if (initializer.is_some()) {
+                    let init_type: BoundType = initializer.some.get_bound_type();
+                    if (stmt.let_decl.variable_name == "v") {
+                        let tdname: mut string = "?";
+                        if (init_type.type_definition.is_some()) {
+                            tdname = init_type.type_definition.some.get_name();
+                        }
+                        let vtag: mut string = "?";
+                        if (initializer.some is BoundExpression.literal) { vtag = "literal"; }
+                        if (initializer.some is BoundExpression.function_call) { vtag = "call"; }
+                        if (initializer.some is BoundExpression.member_access) { vtag = "member"; }
+                    }
+                    let decl_type: mut BoundType = initializer.some.get_bound_type();
+                    // Inference (no type_spec): the binding's mutability AND the
+                    // inferred type's mutability are both determined by the
+                    // syntax — `let x = <init>` is an immutable binding holding an
+                    // immutable-typed value, `let mut x = <init>` a mutable
+                    // binding holding a mutable-typed value. The initializer's
+                    // own mutability is NOT inherited: `new` expressions are
+                    // mutable, so `let a = new Array<T>()` (immutable binding)
+                    // must NOT be able to call `mut this` methods — use
+                    // `let mut a = new Array<T>()` (mutable binding) or
+                    // `let a: mut Array<T> = ...` (immutable binding to a
+                    // mutable value) for that.
+                    if (stmt.let_decl.type_spec.is_none()) {
+                        var_sym.is_mutable = stmt.let_decl.is_mutable;
+                        if (stmt.let_decl.is_mutable) {
+                            decl_type = decl_type.with_mutability(new Mutability.Mutable());
+                        } else {
+                            decl_type = decl_type.with_mutability(new Mutability.Immutable());
+                        }
+                    }
+                    if (stmt.let_decl.type_spec.is_some()) {
+                        let resolved: mut BoundType = this.model.some.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
+                        decl_type = resolved;
+                    }
+                    // Reference type mutability compatibility: `let b: mut Ref = a`
+                    // where `a` is an immutable binding must fail E_MUTABILITY (an
+                    // IReferenceType value aliases, so imm→mut would allow mutating
+                    // shared state). A fresh mutable expression (`new Ref(...)`) is
+                    // allowed, and value types (ICopy) copy so they are exempt.
+                    // Only applies to EXPLICIT type annotations (`let b: mut T = ...`):
+                    // an inferred `let mut x = <expr>` always lifts the type to mutable
+                    // (per the new mutability semantics), so the init's own mutability
+                    // must not fail the binding (e.g. macro-generated
+                    // `let mut _map = _f.as_object()` where as_object returns a
+                    // non-mut type).
+                    if (stmt.let_decl.type_spec.is_some() && this.model.some.classify_value_types_pass.is_iref_type(decl_type)) {
+                        let target_mut: Mutability = decl_type.mutability;
+                        let val_mut: mut Mutability = init_type.mutability;
+                        if (initializer.some is BoundExpression.identifier) {
+                            let v_id: BoundIdentifierExpression = initializer.some.identifier;
+                            if (v_id.symbol.is_some()) {
+                                if (v_id.symbol.some is BoundSymbol.variable) {
+                                    if (!v_id.symbol.some.variable.is_mutable) {
+                                        val_mut = new Mutability.Immutable();
+                                    }
+                                }
+                            }
+                        }
+                        if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot assign immutable value to mutable variable",
+                                new SourceLocation("", 0, 0));
+                        }
+                    }
+                    // Numeric coercion for non-literal initializers: literals
+                    // are already re-typed by the IR layer (emit_const_direct
+                    // emits the constant in the declared register type), but an
+                    // expression like unary `-3.5` binds as f64 — `let x: f32 =
+                    // -3.5` would otherwise ASSIGN a double to a float register
+                    // and LLVMEmitter.coerce_operand would emit an invalid
+                    // `zext double to float`. Wrap it in an explicit numeric
+                    // cast (lowers to fptrunc/fpext/sitofp/fptosi/trunc/zext
+                    // via LLVMEmitter.cast_op). Skip combinations cast_op does
+                    // not support (e.g. i8/i16 <-> float/double) rather than
+                    // risk new invalid IR.
+                    if (stmt.let_decl.type_spec.is_some()) {
+                        if (!(initializer.some is BoundExpression.literal)) {
+                            if (this.model.some.is_numeric_primitive_type(init_type)
+                                && this.model.some.is_numeric_primitive_type(decl_type)
+                                && !init_type.is_same_type(decl_type)
+                                && this.model.some.numeric_cast_supported(init_type.primitive, decl_type.primitive)) {
+                                let num_cast: mut BoundCastExpression = new BoundCastExpression(decl_type, decl_type, initializer, true);
+                                initializer = new Option<BoundExpression>.some(new BoundExpression.cast_expr(num_cast));
+                            }
+                        }
+                    }
+                    var_sym.bound_type = decl_type;
+                    let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                        new Option<BoundVariableSymbol>.some(var_sym),
+                        initializer, decl_type, new Option<BoundScope>.some(scope));
+                    result.location = stmt.let_decl.location;
+                    scope.add_symbol(new BoundSymbol.variable(var_sym));
+                    return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
+                }
+            }
+            // No initializer: resolve type from type_specifier if available
+            let decl_type: mut BoundType = new BoundType();
+            if (stmt.let_decl.type_spec.is_some()) {
+                decl_type = this.model.some.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
+            }
+            var_sym.bound_type = decl_type;
+            let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(var_sym),
+                new Option<BoundExpression>.none(), decl_type, new Option<BoundScope>.some(scope));
+            result.location = stmt.let_decl.location;
+            scope.add_symbol(new BoundSymbol.variable(var_sym));
+            return new Option<BoundStatement>.some(new BoundStatement.let_decl(result));
+        }
+        if (stmt is Statement.for_stmt) {
+            let fs: ForStatement = stmt.for_stmt;
+            let loc: SourceLocation = fs.location;
+
+            // Create for scope
+            let for_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for>", scope.full_name + ".<for>", new Option<BoundScope>.some(scope));
+
+            // The iteration method is chosen from the loop variable's mutability:
+            //   let x         -> iter()      (read-only path)
+            //   let x : mut T -> iter_mut()  (mutable path)
+            //   let mut x     -> iter_mut()
+            let loop_mutable: bool = fs.is_mutable || (fs.type_spec.is_some() && fs.type_spec.some.is_mutable);
+
+            // 1. Bind the iterable expression to learn its type.
+            let bound_iterable: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(fs.iterable.some, for_scope);
+            if (bound_iterable.is_none()) {
+                return new Option<BoundStatement>.none();
+            }
+            let iterable_type: mut BoundType = bound_iterable.some.get_bound_type();
+
+            let bound_iter_call: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+            let iter_type: mut BoundType = this.model.some.type_registry.make_error_type();
+            if (this.model.some.classify_value_types_pass.is_iterator_type(iterable_type)) {
+                // Already an iterator — use it directly (no extra .iter() wrap).
+                bound_iter_call = bound_iterable;
+                iter_type = iterable_type;
+            } else {
+                // A genuine iterable: desugar to iter()/iter_mut(). The iterable must
+                // provide the chosen method, otherwise the type is not iterable.
+                let method_name: string = if (loop_mutable) { "iter_mut" } else { "iter" };
+                let ast_iter_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+                ast_iter_ma.member_access.base_expr = fs.iterable;
+                ast_iter_ma.member_access.member_name = method_name;
+                let ast_iter_call: Expression = new Expression.function_call(new FunctionCallExpression());
+                ast_iter_call.function_call.callee = new Option<Expression>.some(ast_iter_ma);
+                let b: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_iter_call, for_scope);
+                if (b.is_none()) {
+                    this.model.some.report_error(new ErrorCode.E_ITERATOR_INVALID(),
+                        "Type '" + iterable_type.display_name() + "' is not iterable (missing '" + method_name + "' method)",
+                        loc);
+                    return new Option<BoundStatement>.none();
+                }
+                bound_iter_call = b;
+                let it_tmp: mut BoundType = bound_iter_call.some.get_bound_type();
+                iter_type = it_tmp;
+            }
+
+            // 2. Declare __iter. The iterator is ALWAYS held by a mutable binding so
+            // that next(mut this) is callable even when iter() returns a non-mut-typed
+            // IIterator (the read-only path).
+            let iter_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            iter_sym.name = "__iter";
+            iter_sym.full_name = for_scope.full_name + ".__iter";
+            iter_sym.bound_type = iter_type.with_mutability(new Mutability.Mutable());
+            iter_sym.is_mutable = true;
+            iter_sym.variable_kind = new VariableSymbolKind.Local();
+            iter_sym.location = loc;
+            for_scope.add_symbol(new BoundSymbol.variable(iter_sym));
+
+            // 3. Build __iter.next() call
+            let ast_iter_ident: Expression = new Expression.identifier(new IdentifierExpression("__iter"));
+            let ast_next_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_next_ma.member_access.base_expr = new Option<Expression>.some(ast_iter_ident);
+            ast_next_ma.member_access.member_name = "next";
+            let ast_next_call: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_next_call.function_call.callee = new Option<Expression>.some(ast_next_ma);
+            let bound_next_call: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_next_call, for_scope);
+
+            if (bound_next_call.is_none()) {
+                return new Option<BoundStatement>.none();
+            }
+            let opt_type: mut BoundType = bound_next_call.some.get_bound_type();
+
+            // 4. Declare __opt
+            let opt_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            opt_sym.name = "__opt";
+            opt_sym.full_name = for_scope.full_name + ".__opt";
+            opt_sym.bound_type = opt_type;
+            opt_sym.is_mutable = true;
+            opt_sym.variable_kind = new VariableSymbolKind.Local();
+            opt_sym.location = loc;
+            for_scope.add_symbol(new BoundSymbol.variable(opt_sym));
+
+            // 5. Build __opt.is_none() call (for break condition)
+            let ast_opt_ident: Expression = new Expression.identifier(new IdentifierExpression("__opt"));
+            let ast_isnone_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_isnone_ma.member_access.base_expr = new Option<Expression>.some(ast_opt_ident);
+            ast_isnone_ma.member_access.member_name = "is_none";
+            let ast_isnone_call: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_isnone_call.function_call.callee = new Option<Expression>.some(ast_isnone_ma);
+            let bound_isnone_call: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_isnone_call, for_scope);
+
+            // 6. Build __opt.some (for loop variable initialization)
+            let ast_opt_some_ma: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_opt_some_ma.member_access.base_expr = new Option<Expression>.some(ast_opt_ident);
+            ast_opt_some_ma.member_access.member_name = "some";
+            let bound_opt_some: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_opt_some_ma, for_scope);
+
+            // 7. Determine element type
+            let elem_type: mut BoundType;
+            if (bound_opt_some.is_some()) {
+                let tmp_elem: mut BoundType = bound_opt_some.some.get_bound_type();
+                elem_type = tmp_elem;
+            } else {
+                elem_type = new BoundType();
+            }
+
+            // 8. Create body scope for loop variable
+            let body_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<for_body>", for_scope.full_name + ".<for_body>", new Option<BoundScope>.some(for_scope));
+
+            // 9. Create loop variable. The declared type (if any) is authoritative for
+            // the binding — including its mutability (`let x : mut Foo`); otherwise the
+            // iterator's element type is inferred. `let mut x` makes the binding
+            // reassignable.
+            let loop_var_type: mut BoundType = elem_type;
+            if (fs.type_spec.is_some()) {
+                loop_var_type = this.model.some.resolve_type_specifier(fs.type_spec.some, body_scope);
+            }
+            let loop_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            loop_sym.name = fs.variable_name;
+            loop_sym.full_name = body_scope.full_name + "." + fs.variable_name;
+            loop_sym.bound_type = loop_var_type;
+            loop_sym.is_mutable = fs.is_mutable;
+            loop_sym.variable_kind = new VariableSymbolKind.Local();
+            loop_sym.location = loc;
+            body_scope.add_symbol(new BoundSymbol.variable(loop_sym));
+
+            // 10. Bind original body
+            let bound_body: Option<BoundStatement> = this.bind_optional_stmt(fs.body, body_scope);
+
+            // 11. Build advance assignment: __opt = __iter.next()
+            let ast_iter_ident2: Expression = new Expression.identifier(new IdentifierExpression("__iter"));
+            let ast_next_ma2: Expression = new Expression.member_access(new MemberAccessExpression());
+            ast_next_ma2.member_access.base_expr = new Option<Expression>.some(ast_iter_ident2);
+            ast_next_ma2.member_access.member_name = "next";
+            let ast_next_call2: Expression = new Expression.function_call(new FunctionCallExpression());
+            ast_next_call2.function_call.callee = new Option<Expression>.some(ast_next_ma2);
+            let ast_assign: Statement = new Statement.assignment(new AssignmentStatement());
+            ast_assign.assignment.target = new Option<Expression>.some(new Expression.identifier(new IdentifierExpression("__opt")));
+            ast_assign.assignment.operator_value = new AssignmentOperator.Assign();
+            ast_assign.assignment.value = new Option<Expression>.some(ast_next_call2);
+            ast_assign.assignment.location = loc;
+            let bound_advance: Option<BoundStatement> = this.bind_statement(ast_assign, for_scope);
+
+            // 12. Build inner body block
+            let inner_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            // let x = __opt.some
+            let loop_let_stmt: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(loop_sym),
+                bound_opt_some,
+                loop_var_type,
+                new Option<BoundScope>.some(body_scope));
+            loop_let_stmt.location = loc;
+            inner_stmts.push(new BoundStatement.let_decl(loop_let_stmt));
+            // original body
+            if (bound_body.is_some()) {
+                inner_stmts.push(bound_body.some);
+            }
+            let inner_block: Option<BoundStatement> = new Option<BoundStatement>.some(
+                new BoundStatement.block(new BoundBlockStatement(inner_stmts, new Option<BoundScope>.some(body_scope))));
+
+            // 13. Build if-break: if (__opt.is_none()) break;
+            let break_stmt: mut BoundBreakStatement = new BoundBreakStatement(new Option<BoundExpression>.none());
+            break_stmt.location = loc;
+            let if_check: mut BoundIfStatement = new BoundIfStatement(
+                bound_isnone_call,
+                new Option<BoundStatement>.some(new BoundStatement.break_stmt(break_stmt)),
+                new Option<BoundStatement>.none());
+            if_check.location = loc;
+
+            // 14. Build while body block
+            let wb_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            if (bound_advance.is_some()) { wb_stmts.push(bound_advance.some); }
+            wb_stmts.push(new BoundStatement.if_stmt(if_check));
+            if (inner_block.is_some()) { wb_stmts.push(inner_block.some); }
+            let while_body_block: mut BoundBlockStatement = new BoundBlockStatement(wb_stmts, new Option<BoundScope>.some(for_scope));
+
+            // 15. Build while(true) loop
+            let true_literal: BoundLiteralExpression = new BoundLiteralExpression("true", this.model.some.type_registry.bool_type, new LiteralKind.BoolLiteral());
+            let true_bound: Option<BoundExpression> = new Option<BoundExpression>.some(new BoundExpression.literal(true_literal));
+            let while_stmt: mut BoundWhileStatement = new BoundWhileStatement(true_bound, new Option<BoundStatement>.some(new BoundStatement.block(while_body_block)));
+            while_stmt.location = loc;
+
+            // 16. Build final block
+            let final_stmts: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+            // let mut __iter = iterable.iter()
+            let iter_decl: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(iter_sym),
+                bound_iter_call,
+                iter_sym.bound_type,
+                new Option<BoundScope>.some(for_scope));
+            iter_decl.location = loc;
+            final_stmts.push(new BoundStatement.let_decl(iter_decl));
+            // let mut __opt: Option<T> (no initializer)
+            let opt_decl: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
+                new Option<BoundVariableSymbol>.some(opt_sym),
+                new Option<BoundExpression>.none(),
+                opt_type,
+                new Option<BoundScope>.some(for_scope));
+            opt_decl.location = loc;
+            final_stmts.push(new BoundStatement.let_decl(opt_decl));
+            // while (true) { ... }
+            final_stmts.push(new BoundStatement.while_stmt(while_stmt));
+
+            let result: mut BoundBlockStatement = new BoundBlockStatement(final_stmts, new Option<BoundScope>.some(for_scope));
+            result.location = loc;
+            return new Option<BoundStatement>.some(new BoundStatement.block(result));
+        }
+        if (stmt is Statement.meta_if_stmt) {
+            let r: mut BoundMetaIfStatement = new BoundMetaIfStatement(new Option<Statement>.some(new Statement.meta_if_stmt(stmt.meta_if_stmt)));
+            r.location = stmt.meta_if_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_if_stmt(r));
+        }
+        if (stmt is Statement.meta_while_stmt) {
+            let r: mut BoundMetaWhileStatement = new BoundMetaWhileStatement(new Option<Statement>.some(new Statement.meta_while_stmt(stmt.meta_while_stmt)));
+            r.location = stmt.meta_while_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_while_stmt(r));
+        }
+        if (stmt is Statement.meta_for_stmt) {
+            let r: mut BoundMetaForStatement = new BoundMetaForStatement(new Option<Statement>.some(new Statement.meta_for_stmt(stmt.meta_for_stmt)));
+            r.location = stmt.meta_for_stmt.location;
+            return new Option<BoundStatement>.some(new BoundStatement.meta_for_stmt(r));
+        }
+        if (stmt is Statement.meta_break_stmt) {
+            return new Option<BoundStatement>.some(new BoundStatement.meta_break_stmt(new BoundMetaBreakStatement(stmt.meta_break_stmt.location)));
+        }
+        if (stmt is Statement.meta_continue_stmt) {
+            return new Option<BoundStatement>.some(new BoundStatement.meta_continue_stmt(new BoundMetaContinueStatement(stmt.meta_continue_stmt.location)));
+        }
+        return new Option<BoundStatement>.none();
+    }
+
+}
+
+}

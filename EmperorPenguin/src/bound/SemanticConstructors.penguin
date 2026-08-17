@@ -1,0 +1,170 @@
+// Pass 5 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: constructor generation — synthesize a default `new` (with a
+// `mut this` param) for classes/interfaces that declare none, and wire the
+// explicit constructor (marked `is_new`) as the class's constructor.
+namespace emperor {
+
+class ConstructorsPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_constructors
+    fun run(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_constructors");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+            let updated: BoundDefinition = this.init_constructors_for_def(def, def_lookup_scope(def, result.global_scope));
+            result.definitions.set(cast<u64>(i), updated);
+            i = i + 1;
+        }
+        let j: mut i64 = 0;
+        while (j < cast<i64>(result.definitions.size())) {
+            let updated: BoundDefinition = this.process_constructors_for_def(result.definitions.at(cast<u64>(j)).some);
+            result.definitions.set(cast<u64>(j), updated);
+            j = j + 1;
+        }
+    }
+
+    fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter init_constructors_for_def");
+        if (this.model.some.already_processed(def)) { return def; }
+        if (def is BoundDefinition.class_def) {
+            let cls: mut BoundClassDefinition = def.class_def;
+            this.init_class_constructor(cls, global_scope);
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(cls);
+        }
+        if (def is BoundDefinition.interface_def) {
+            let iface: mut BoundInterfaceDefinition = def.interface_def;
+            this.init_interface_constructor(iface, global_scope);
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return new BoundDefinition.interface_def(iface);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let updated: BoundDefinition = this.init_constructors_for_def(ns.children.at(cast<u64>(k)).some, global_scope);
+                ns.children.set(cast<u64>(k), updated);
+                k = k + 1;
+            }
+            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            return new BoundDefinition.namespace_def(ns);
+        }
+        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        return def;
+    }
+
+    fun process_constructors_for_def(mut this, def: BoundDefinition) -> BoundDefinition {
+        _utils.trace_enter("Enter process_constructors_for_def");
+        if (def is BoundDefinition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = def.namespace_def;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let updated: BoundDefinition = this.process_constructors_for_def(ns.children.at(cast<u64>(k)).some);
+                ns.children.set(cast<u64>(k), updated);
+                k = k + 1;
+            }
+            return new BoundDefinition.namespace_def(ns);
+        }
+        return def;
+    }
+
+    fun init_class_constructor(mut this, cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter init_class_constructor");
+        let found_idx: mut i64 = -1;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cls.methods.size())) {
+            let md: BoundDefinition = cls.methods.at(cast<u64>(i)).some;
+            if (md is BoundDefinition.function_def) {
+                if (md.function_def.is_new) {
+                    found_idx = i;
+                }
+            }
+            i = i + 1;
+        }
+        if (found_idx >= 0) {
+            let ctor_def: BoundDefinition = cls.methods.at(cast<u64>(found_idx)).some;
+            let ctor: mut BoundFunctionDefinition = ctor_def.function_def;
+            cls.constructor = new Option<BoundFunctionDefinition>.some(ctor);
+            cls.constructors.push(ctor_def);
+        } else {
+            let ctor_full_name: string = cls.full_name + ".new";
+            let ctor: mut BoundFunctionDefinition = new BoundFunctionDefinition("new", ctor_full_name, false, false, true, false);
+            let this_param: mut BoundFunctionParameter = new BoundFunctionParameter("this", 0, true, true);
+            this_param.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
+            ctor.parameters.push(this_param);
+            ctor.return_type = this.model.some.type_registry.void_type;
+            let ctor_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), "new", ctor_full_name + ".<body>", cls.scope);
+            ctor.scope = new Option<BoundScope>.some(ctor_scope);
+            let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("new", ctor_full_name);
+            sym.is_new = true;
+            let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            param_types.push(this_param.bound_type);
+            sym.bound_type = this.model.some.type_registry.make_function_type(this.model.some.type_registry.void_type, param_types, false);
+            sym.return_type = this.model.some.type_registry.void_type;
+            ctor.symbol = new Option<BoundFunctionSymbol>.some(sym);
+            if (cls.scope.is_some()) {
+                let class_scope: mut BoundScope = cls.scope.some;
+                class_scope.add_symbol(new BoundSymbol.function_sym(sym));
+            }
+            cls.constructor = new Option<BoundFunctionDefinition>.some(ctor);
+            cls.constructors.push(new BoundDefinition.function_def(ctor));
+        }
+        // Dyn-lib: a lib-export class's ctor is declared too (its body lives in
+        // the .penguin-lib). Explicit ctors were already marked via the methods
+        // walk in mark_lib_export; the synthesized default ctor needs it here.
+        if (cls.is_lib_export) {
+            if (cls.constructor.is_some()) {
+                let ctor2: mut BoundFunctionDefinition = cls.constructor.some;
+                ctor2.is_lib_export = true;
+            }
+        }
+    }
+
+    fun init_interface_constructor(mut this, iface: mut BoundInterfaceDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter init_interface_constructor");
+        let found_idx: mut i64 = -1;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iface.methods.size())) {
+            let md: BoundDefinition = iface.methods.at(cast<u64>(i)).some;
+            if (md is BoundDefinition.function_def) {
+                if (md.function_def.is_new) {
+                    found_idx = i;
+                }
+            }
+            i = i + 1;
+        }
+        if (found_idx >= 0) {
+            let ctor_def: BoundDefinition = iface.methods.at(cast<u64>(found_idx)).some;
+            let ctor: BoundFunctionDefinition = ctor_def.function_def;
+        } else {
+            let ctor_full_name: string = iface.full_name + ".new";
+            let ctor: mut BoundFunctionDefinition = new BoundFunctionDefinition("new", ctor_full_name, false, false, true, false);
+            let this_param: mut BoundFunctionParameter = new BoundFunctionParameter("this", 0, true, true);
+            this_param.bound_type = iface.bound_type.with_mutability(new Mutability.Mutable());
+            ctor.parameters.push(this_param);
+            ctor.return_type = this.model.some.type_registry.void_type;
+            let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol("new", ctor_full_name);
+            sym.is_new = true;
+            let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            param_types.push(this_param.bound_type);
+            sym.bound_type = this.model.some.type_registry.make_function_type(this.model.some.type_registry.void_type, param_types, false);
+            sym.return_type = this.model.some.type_registry.void_type;
+            ctor.symbol = new Option<BoundFunctionSymbol>.some(sym);
+            if (iface.scope.is_some()) {
+                let iface_scope: mut BoundScope = iface.scope.some;
+                iface_scope.add_symbol(new BoundSymbol.function_sym(sym));
+            }
+        }
+    }
+
+}
+
+}

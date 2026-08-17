@@ -1,0 +1,2120 @@
+// Pass 3 of the SemanticModel pipeline, extracted from SemanticModel.penguin
+// (including the physically-split tail block: function specialization). This is
+// the generic monomorphization pass — an iterative fixpoint that collects
+// class/enum/interface/function instantiation requests from both the bound tree
+// and the AST, specializes generic templates (mangled as Foo__i32), runs each
+// new def through the catch-up processors, executes #specializing blocks and
+// injects their impl fragments.
+namespace emperor {
+
+class MonomorphizePass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    fun mangle_generic_name(base_name: string, generic_args: _utils.List<BoundTypeArg>) -> string {
+        _utils.trace_enter("Enter mangle_generic_name");
+        // THE unified mangle (see BoundType.penguin): fully-qualified
+        // serialization → fixed-width base62 groups, joined with `$`. The `$`
+        // can never appear in a user identifier, and the encoding is injective
+        // (two different specializations always differ). This is the single
+        // implementation every layer must use.
+        return mangle_specialization(base_name, generic_args);
+    }
+
+    fun is_instantiation_already_exists(this, mangled_name: string, scope: BoundScope) -> bool {
+        _utils.trace_enter("Enter is_instantiation_already_exists");
+        let found: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled_name);
+        if (found.is_some()) { return true; }
+        return false;
+    }
+
+    // M3 (#template -> #fun desugar): the on-demand specialization entry point.
+    // Given an instantiation `inst` (a template + its generic_args), specialize it
+    // if not already present, run it through any passes it missed (catch_up_def),
+    // and return the NEWLY-created specialized BoundDefinition (or none if the
+    // instantiation already existed / the template was unknown). Idempotent via
+    // is_instantiation_already_exists. This is the single creation path used by
+    // pass_monomorphize (and, in M4, by the meta `_template_X` responder), so the
+    // meta path and the fixpoint share one specialization routine.
+    //
+    // R2 (type-ref consistency): the matching type lookup is the caller's job
+    // (lookup_type_in_scope(mangled)); this returns the def. The M4 responder wraps
+    // this and returns spec.bound_type (type_def = specialized def, NO generic_args).
+    fun ensure_specialized_def(mut this, inst: BoundType, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter ensure_specialized_def");
+        if (inst.type_definition.is_none()) { return new Option<BoundDefinition>.none(); }
+        let template_def: BoundDefinition = inst.type_definition.some;
+        // class
+        if (template_def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = template_def.class_def;
+            if (cast<i64>(cls.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(cls.full_name, inst.generic_args);
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_class_def(cls, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(cls.full_name, inst, spec_result.some, global_scope);
+            this.model.some.trace("monomorphize created specialization " + mangled);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        // enum
+        if (template_def is BoundDefinition.enum_def) {
+            let e: BoundEnumDefinition = template_def.enum_def;
+            if (cast<i64>(e.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(e.full_name, inst.generic_args);
+            let argdump: mut string = "";
+            let di: mut i64 = 0;
+            while (di < cast<i64>(inst.generic_args.size())) {
+                if (di > 0) { argdump = argdump + "|"; }
+                argdump = argdump + serialize_bound_type_arg(inst.generic_args.at(cast<u64>(di)).some);
+                di = di + 1;
+            }
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_enum_def(e, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(e.full_name, inst, spec_result.some, global_scope);
+            this.model.some.trace("monomorphize created specialization " + mangled);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        // interface
+        if (template_def is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = template_def.interface_def;
+            if (cast<i64>(iface.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
+            let mangled: string = mangle_generic_name(iface.full_name, inst.generic_args);
+            if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
+            let spec_result: Option<BoundDefinition> = this.specialize_interface_def(iface, inst.generic_args, mangled, global_scope);
+            if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
+            let injected: BoundDefinition = this.run_specializing_for_spec(iface.full_name, inst, spec_result.some, global_scope);
+            this.model.some.trace("monomorphize created specialization " + mangled);
+            return new Option<BoundDefinition>.some(injected);
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // M3: type-returning wrapper around ensure_specialized_def — the form the
+    // penguin_meta_specialize responder (and M4 use-site routing) uses. Given a
+    // template name + its generic args, return the specialized type (R2: type_def
+    // = the specialized def, NO generic_args), creating + catch_up-ing the def if
+    // it doesn't yet exist. Idempotent.
+    fun ensure_specialized_type(mut this, template_name: string, type_args: _utils.List<BoundTypeArg>) -> BoundType {
+        _utils.trace_enter("Enter ensure_specialized_type");
+        // catch_up_def takes `mut this`: rebind the (immutably-typed)
+        // Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        // The template name comes from meta code as a plain name — use the
+        // anywhere-scan so namespaced / file-local templates still resolve
+        // (user-code lookups never go through this path).
+        let tmpl_sym: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_anywhere(template_name);
+        if (tmpl_sym.is_none() || !(tmpl_sym.some is BoundSymbol.type_sym)) {
+            return this.model.some.type_registry.make_error_type();
+        }
+        // Full base name from the template def (the mangle encodes it, so
+        // same-named templates in different namespaces never collide).
+        let tmpl_bt: BoundType = tmpl_sym.some.type_sym.bound_type;
+        let full_base: mut string = template_name;
+        if (tmpl_bt.type_definition.is_some()) {
+            let td: BoundDefinition = tmpl_bt.type_definition.some;
+            if (td is BoundDefinition.class_def) { full_base = td.class_def.full_name; }
+            if (td is BoundDefinition.enum_def) { full_base = td.enum_def.full_name; }
+            if (td is BoundDefinition.interface_def) { full_base = td.interface_def.full_name; }
+        }
+        let mangled: string = mangle_generic_name(full_base, type_args);
+        let existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled);
+        if (existing.is_some() && existing.some is BoundSymbol.type_sym) {
+            return existing.some.type_sym.bound_type;
+        }
+        let inst: mut BoundType = tmpl_sym.some.type_sym.bound_type.with_generic_args(type_args);
+        let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, this.model.some.global_scope);
+        if (spec.is_some()) {
+            this.model.some.trace("monomorphize ensured type " + mangled);
+            // Late-created (M4 meta path): run it through the passes it missed and
+            // register it in the compilation unit so it's emitted. (When this is
+            // reached during pass_monomorphize the unit's normal loop already does
+            // both, so this branch is for the on-demand / M4 caller.)
+            if (this.model.some.current_unit.is_some()) {
+                m.catch_up_def(spec.some, this.model.some.current_unit.some);
+                this.model.some.current_unit.some.definitions.push(spec.some);
+            }
+        }
+        let now: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled);
+        if (now.is_some() && now.some is BoundSymbol.type_sym) {
+            return now.some.type_sym.bound_type;
+        }
+        return this.model.some.type_registry.make_error_type();
+    }
+    // 唯一入口：原 pass_monomorphize
+    fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_monomorphize");
+        // catch_up_def takes `mut this`: rebind the (immutably-typed)
+        // Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        // Iterative monomorphization: specialize, resolve, then re-collect from
+        // the newly resolved definitions for transitive instantiations.
+        let total_specialized: mut i64 = 0;
+        let max_iterations: mut i64 = 10;
+        let iteration: mut i64 = 0;
+        while (iteration < max_iterations) {
+            let instantiations: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            this.collect_generic_instantiations(result.definitions, instantiations);
+            this.collect_generic_instantiations_from_ast(unit.definitions, result.definitions, result.global_scope, instantiations);
+            this.model.some.trace("monomorphize iteration " + cast<string>(iteration) + " start: " + cast<string>(instantiations.size()) + " instantiation(s) collected");
+
+            let specialized_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+            let specialized_asts: mut _utils.List<Definition> = new _utils.List<Definition>();
+            let i: mut i64 = 0;
+            while (i < cast<i64>(instantiations.size())) {
+                let inst: BoundType = instantiations.at(cast<u64>(i)).some;
+                if (let template_def := inst.type_definition.some) {
+                    if (template_def is BoundDefinition.class_def) {
+                        let cls: BoundClassDefinition = template_def.class_def;
+                        if (cast<i64>(cls.generic_params.size()) > 0) {
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, cls.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    m.catch_up_def(spec.some, result);
+                                    if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + cls.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
+                                }
+                            }
+                        }
+                    }
+                    if (template_def is BoundDefinition.enum_def) {
+                        let e: BoundEnumDefinition = template_def.enum_def;
+                        if (cast<i64>(e.generic_params.size()) > 0) {
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, e.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    m.catch_up_def(spec.some, result);
+                                    if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + e.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
+                                }
+                            }
+                        }
+                    }
+                    if (template_def is BoundDefinition.interface_def) {
+                        let iface: BoundInterfaceDefinition = template_def.interface_def;
+                        if (cast<i64>(iface.generic_params.size()) > 0) {
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, iface.name);
+                            if (ast_def.is_some()) {
+                                let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, result.global_scope);
+                                if (spec.is_some()) {
+                                    m.catch_up_def(spec.some, result);
+                                    if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized interface " + iface.name); }
+                                    specialized_defs.push(spec.some);
+                                    specialized_asts.push(ast_def.some);
+                                }
+                            }
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+
+            // Collect function instantiations from AST
+            let func_instantiations: mut _utils.List<FunctionInstantiation> = new _utils.List<FunctionInstantiation>();
+            this.collect_function_instantiations_from_ast(unit.definitions, result.global_scope, func_instantiations);
+
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(func_instantiations.size())) {
+                let inst: FunctionInstantiation = func_instantiations.at(cast<u64>(fi)).some;
+                // Full base name for the mangle (it encodes the qualified name).
+                let inst_tmpl: Option<BoundDefinition> = this.find_bound_function_def(result.definitions, inst.func_name);
+                let inst_full_base: mut string = inst.func_name;
+                if (inst_tmpl.is_some() && inst_tmpl.some is BoundDefinition.function_def) {
+                    inst_full_base = inst_tmpl.some.function_def.full_name;
+                }
+                let mangled: string = mangle_generic_name(inst_full_base, inst.generic_args);
+                let already_exists: mut bool = false;
+                let check_i: mut i64 = 0;
+                while (check_i < cast<i64>(specialized_defs.size())) {
+                    let sd: BoundDefinition = specialized_defs.at(cast<u64>(check_i)).some;
+                    if (sd is BoundDefinition.function_def) {
+                        if (sd.function_def.name == mangled) {
+                            already_exists = true;
+                        }
+                    }
+                    check_i = check_i + 1;
+                }
+                // Also check result.definitions for specializations from previous iterations
+                if (!already_exists) {
+                    let check_j: mut i64 = 0;
+                    while (check_j < cast<i64>(result.definitions.size())) {
+                        let sd: BoundDefinition = result.definitions.at(cast<u64>(check_j)).some;
+                        if (sd is BoundDefinition.function_def) {
+                            if (sd.function_def.name == mangled) {
+                                already_exists = true;
+                            }
+                        }
+                        check_j = check_j + 1;
+                    }
+                }
+                if (!already_exists) {
+                    let tmpl_def: Option<BoundDefinition> = inst_tmpl;
+                    if (tmpl_def.is_some() && tmpl_def.some is BoundDefinition.function_def) {
+                        let tmpl_func: BoundFunctionDefinition = tmpl_def.some.function_def;
+                        if (cast<i64>(tmpl_func.generic_params.size()) > 0) {
+                            let ast_def: Option<Definition> = this.find_ast_def_by_name(unit.definitions, inst.func_name);
+                            if (ast_def.is_some()) {
+                                // Find the specialized class scope if this is a method in a specialized generic class
+                                let method_class_scope: Option<BoundScope> = this.find_method_class_scope(result.definitions, specialized_defs, inst.func_name);
+                                // The specialized function's scope parent is the TEMPLATE's
+                                // enclosing scope (file namespace / namespace), so body name
+                                // resolution sees the same siblings as the template.
+                                let tmpl_parent_scope: mut BoundScope = def_lookup_scope(tmpl_def.some, result.global_scope);
+                                let spec_result: Option<BoundDefinition> = this.specialize_function_def(
+                                    tmpl_func, inst.generic_args, mangled, tmpl_parent_scope, method_class_scope);
+                                if (spec_result.is_some()) {
+                                    if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized function " + mangled); }
+                                    specialized_defs.push(spec_result.some);
+                                    specialized_asts.push(ast_def.some);
+                                }
+                            }
+                        }
+                    }
+                }
+                fi = fi + 1;
+            }
+
+            if (cast<i64>(specialized_defs.size()) == 0) {
+                // No new specializations found, we're done
+                if (this.model.some.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Completed in " + cast<string>(iteration) + " iterations, " + cast<string>(total_specialized) + " total specializations"); }
+                return;
+            }
+
+            // Resolve types BEFORE pushing so mut reference updates persist
+            let k: mut i64 = 0;
+            while (k < cast<i64>(specialized_defs.size())) {
+                let spec_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                let ast_def: Definition = specialized_asts.at(cast<u64>(k)).some;
+                if (spec_def is BoundDefinition.function_def) {
+                    if (spec_def.function_def.scope.is_some()) {
+                        specialized_defs.set(cast<u64>(k), this.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, spec_def.function_def.scope.some));
+                    } else {
+                        specialized_defs.set(cast<u64>(k), this.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, result.global_scope));
+                    }
+                    // Fix up 'this' parameter type for class method specializations
+                    let updated_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                    let parent_cls: Option<BoundClassDefinition> = this.find_parent_class_for_method(result.definitions, specialized_defs, updated_def.function_def.full_name);
+                    if (parent_cls.is_some()) {
+                        this.fix_this_param_type(updated_def.function_def, parent_cls.some);
+                        specialized_defs.set(cast<u64>(k), updated_def);
+                    }
+                } else {
+                    specialized_defs.set(cast<u64>(k), this.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, result.global_scope));
+                }
+                // Dyn-lib: a specialized instance that a loaded lib SHIPS is emitted
+                // as a declaration (linked to the lib symbol) instead of being
+                // re-compiled into the consumer.
+                let resolved_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                if (this.model.some.build_scopes_pass.is_shipped_instance(resolved_def)) {
+                    this.model.some.build_scopes_pass.mark_lib_export(resolved_def);
+                }
+                k = k + 1;
+            }
+
+            let j: mut i64 = 0;
+            while (j < cast<i64>(specialized_defs.size())) {
+                result.definitions.push(specialized_defs.at(cast<u64>(j)).some);
+                j = j + 1;
+            }
+            total_specialized = total_specialized + cast<i64>(specialized_defs.size());
+            if (this.model.some.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Iteration " + cast<string>(iteration) + ": " + cast<string>(specialized_defs.size()) + " new specializations (total: " + cast<string>(total_specialized) + ")"); }
+            iteration = iteration + 1;
+        }
+    }
+
+    // #specializing hook (run inside pass_monomorphize after specialize_class_def
+    // / specialize_enum_def): run every #specializing block targeting `target_name`
+    // with the concrete type/value args of `inst`, then inject the activated impl
+    // fragments into the specialized def. Only runs when blocks exist (i.e. in a
+    // meta-enabled compilation of a program that uses #specializing), so on
+    // non-meta builds this is a no-op.
+    fun run_specializing_for_spec(mut this, target_name: string, inst: BoundType, spec: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter run_specializing_for_spec");
+        if (cast<i64>(this.model.some.specializing_blocks.size()) == 0) { return spec; }
+        // Match on the template's QUALIFIED SPELLING: strip the `<global>.`
+        // prefix from the full name so it aligns with the block target
+        // (`<global>._utils.List` → `_utils.List`; `__builtin.Box` blocks never
+        // match a user `Box` whose full name is `<global>.Box` → `Box`).
+        let qualified: mut string = target_name;
+        // "<global>." is 9 chars.
+        if (string_length(target_name) > 9 && string_substring(target_name, 0, 9) == "<global>.") {
+            qualified = string_substring(target_name, 9, string_length(target_name) - 9);
+        }
+        // Short name (last dotted segment) for legacy blocks that target the
+        // bare name (`#specializing foo<N>` inside a namespace).
+        let short: mut string = qualified;
+        let dot: mut i64 = string_find(qualified, ".");
+        while (dot >= 0) {
+            let nd: i64 = string_find_from(qualified, ".", dot + 1);
+            if (nd < 0) { break; }
+            dot = nd;
+        }
+        if (dot >= 0) {
+            short = string_substring(qualified, dot + 1, string_length(qualified) - dot - 1);
+        }
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(this.model.some.specializing_blocks.size())) {
+            let block: SpecializingBlockInfo = this.model.some.specializing_blocks.at(cast<u64>(bi)).some;
+            if (block.target_name == qualified || block.target_name == short) {
+                this.run_one_specializing_block(block, inst, spec, global_scope);
+            }
+            bi = bi + 1;
+        }
+        return spec;
+    }
+
+    fun run_one_specializing_block(mut this, block: SpecializingBlockInfo, inst: BoundType, spec: BoundDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter run_one_specializing_block");
+        // NOTE: no meta_runtime_available() gate here — that flag tracks the
+        // metaconfig build variant (stub in the default project), NOT whether
+        // the JIT is linked. The bootstrap's pass2 carries the stub config but
+        // IS JIT-linked and must run the blocks, or pass3 (built by stub-pass2)
+        // and pass4 (built by full-pass3) diverge and the bootstrap never
+        // converges. Block-bearing files (json & friends) are Full-project only,
+        // so pass1/VM/dotnet builds never collect blocks in the first place.
+        //
+        // NATIVE GATE: blocks whose gate is exactly `umangleable(<param>)` (the
+        // core_builtin IUniqueMangleName blocks) are evaluated natively — no
+        // JIT. A JIT gate would recurse: compiling the gate is a unit-B
+        // compilation whose base sources (core_builtin) carry these very
+        // blocks, which would fire again. Native evaluation terminates and is
+        // also available in non-JIT nested contexts. On success ALL impl
+        // fragments activate (these blocks have a single branch); on failure
+        // none do. Other gates (e.g. json_deserializable_type) keep the JIT
+        // path — their files are not base sources, so no recursion.
+        let native: Option<bool> = this.native_umangleable_gate(block, inst);
+        if (native.is_some()) {
+            if (native.some) {
+                let ni: mut i64 = 0;
+                while (ni < cast<i64>(block.impl_fragments.size())) {
+                    let frag: Definition = block.impl_fragments.at(cast<u64>(ni)).some;
+                    if (frag is Definition.impl_def) {
+                        this.inject_specializing_impl(frag.impl_def, spec, global_scope);
+                    }
+                    ni = ni + 1;
+                }
+            }
+            return;
+        }
+        // Ensure the module-global active_meta is THIS model's engine so the
+        // callback's emperor.penguin_meta_activate_impl pushes land on the
+        // specializing_active_slots we read back below.
+        this.model.some.meta_rewriter.seed_meta_engine();
+        // Build the callback args positionally from inst.generic_args, matching the
+        // callback's param kinds (type → token, i64/bool → value, string → value).
+        let args: mut _utils.List<i64> = new _utils.List<i64>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(block.bmf.parameters.size())) {
+            let arg_val: mut i64 = 0;
+            if (ai < cast<i64>(inst.generic_args.size())) {
+                let arg: BoundTypeArg = inst.generic_args.at(cast<u64>(ai)).some;
+                let kind: string = block.bmf.parameters.at(cast<u64>(ai)).some.kind;
+                if (kind == "type") {
+                    let name: string = this.bound_type_meta_name(arg_as_bound_type(arg));
+                    let token: u64 = this.model.some.meta_engine.get_or_assign_type_token(name);
+                    arg_val = cast<i64>(token);
+                } else if (kind == "bool") {
+                    if (arg is BoundTypeArg.value_arg) {
+                        if (arg.value_arg.bool_val) { arg_val = 1; }
+                    }
+                } else {
+                    if (arg is BoundTypeArg.value_arg) { arg_val = arg.value_arg.as_i64(); }
+                }
+            }
+            args.push(arg_val);
+            ai = ai + 1;
+        }
+        this.model.some.meta_engine.specializing_active_slots = new _utils.List<i64>();
+        this.model.some.meta_engine.call_meta_function_stub(block.bmf, args);
+        // Inject every activated impl slot.
+        let si: mut i64 = 0;
+        while (si < cast<i64>(this.model.some.meta_engine.specializing_active_slots.size())) {
+            let slot: i64 = this.model.some.meta_engine.specializing_active_slots.at(cast<u64>(si)).some;
+            if (slot >= 0 && slot < cast<i64>(block.impl_fragments.size())) {
+                let frag: Definition = block.impl_fragments.at(cast<u64>(slot)).some;
+                if (frag is Definition.impl_def) {
+                    this.inject_specializing_impl(frag.impl_def, spec, global_scope);
+                }
+            }
+            si = si + 1;
+        }
+    }
+
+    // Recognize the native-gate form `umangleable(<param>)` on a #specializing
+    // block and evaluate it against the specialization's args. Returns:
+    //   some(true)  — the gate passed (inject all impl fragments)
+    //   some(false) — the gate failed (inject none)
+    //   none        — the gate is NOT the native form (caller uses the JIT path)
+    // The umangleable predicate itself, natively: primitives are renderable;
+    // a class/enum is renderable iff its interface_impls carry IUniqueMangleName
+    // (declared impls bind at pass 1; #specializing-injected impls push into the
+    // same list); a template+args resolves its specialization and checks that.
+    fun native_umangleable_gate(this, block: SpecializingBlockInfo, inst: BoundType) -> Option<bool> {
+        if (block.bmf.body.is_none()) { return new Option<bool>.none(); }
+        let body: Expression = block.bmf.body.some;
+        if (!(body is Expression.code_block)) { return new Option<bool>.none(); }
+        let cb: CodeBlockExpression = body.code_block;
+        if (cast<i64>(cb.statements.size()) == 0) { return new Option<bool>.none(); }
+        // The gate's `if` is the first statement (block_expr- or expression-wrapped).
+        let st: Statement = cb.statements.at(cast<u64>(0)).some;
+        let cond: mut Option<Expression> = new Option<Expression>.none();
+        if (st is Statement.block_expr) {
+            if (st.block_expr.expression.is_some()) {
+                let e: Expression = st.block_expr.expression.some;
+                if (e is Expression.if_expr) {
+                    if (e.if_expr.condition.is_some()) { cond = e.if_expr.condition; }
+                }
+            }
+        } else if (st is Statement.expression) {
+            if (st.expression.expression.is_some()) {
+                let e: Expression = st.expression.expression.some;
+                if (e is Expression.if_expr) {
+                    if (e.if_expr.condition.is_some()) { cond = e.if_expr.condition; }
+                }
+            }
+        }
+        if (cond.is_none()) { return new Option<bool>.none(); }
+        // The condition must be `umangleable(<identifier>)`.
+        if (!(cond.some is Expression.function_call)) { return new Option<bool>.none(); }
+        let fc: FunctionCallExpression = cond.some.function_call;
+        if (fc.callee.is_none()) { return new Option<bool>.none(); }
+        if (!(fc.callee.some is Expression.identifier)) { return new Option<bool>.none(); }
+        if (fc.callee.some.identifier.name != "umangleable") { return new Option<bool>.none(); }
+        if (cast<i64>(fc.arguments.items.size()) != 1) { return new Option<bool>.none(); }
+        let arg0: Expression = fc.arguments.items.at(cast<u64>(0)).some;
+        if (!(arg0 is Expression.identifier)) { return new Option<bool>.none(); }
+        let param_name: string = arg0.identifier.name;
+        // Map the param name to the specialization's arg position.
+        let pi: mut i64 = -1;
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(block.bmf.parameters.size())) {
+            if (block.bmf.parameters.at(cast<u64>(bi)).some.name == param_name) { pi = bi; }
+            bi = bi + 1;
+        }
+        if (pi < 0 || pi >= cast<i64>(inst.generic_args.size())) { return new Option<bool>.some(false); }
+        let bt: BoundType = arg_as_bound_type(inst.generic_args.at(cast<u64>(pi)).some);
+        return new Option<bool>.some(this.native_umangleable_type(bt));
+    }
+
+    fun native_umangleable_type(this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.PrimitiveKind) { return true; }
+        if (bt.type_definition.is_none()) { return false; }
+        let td: BoundDefinition = bt.type_definition.some;
+        // CORE WRAPPERS: the IUniqueMangleName impl for List/Box/Option/Result/
+        // Pair is injected by the core_builtin #specializing blocks gated on
+        // `umangleable(<element>)` — so the wrapper is renderable EXACTLY when
+        // its type arguments are. This is computed from the args alone (no
+        // dependence on whether the specialization/injection has happened yet),
+        // which is what makes the object-arg gate work during early passes.
+        let short_name: mut string = "";
+        if (td is BoundDefinition.class_def) { short_name = td.class_def.name; }
+        if (td is BoundDefinition.enum_def) { short_name = td.enum_def.name; }
+        let is_core_wrapper: bool = short_name == "List" || short_name == "Box"
+            || short_name == "Option" || short_name == "Result" || short_name == "Pair";
+        if (is_core_wrapper) {
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(bt.generic_args.size())) {
+                let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(ai)).some;
+                if (!arg_is_value(arg)) {
+                    if (!this.native_umangleable_type(arg_as_bound_type(arg))) { return false; }
+                }
+                ai = ai + 1;
+            }
+            return true;
+        }
+        // Other class/enum: renderable iff its (specialized) def carries the impl.
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            let name: mut string = "";
+            if (td is BoundDefinition.class_def) { name = td.class_def.full_name; }
+            if (td is BoundDefinition.enum_def) { name = td.enum_def.full_name; }
+            if (td is BoundDefinition.interface_def) { name = td.interface_def.full_name; }
+            if (string_length(name) > 0) {
+                let mangled: string = mangle_generic_name(name, bt.generic_args);
+                let spec_sym: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                    let spec_bt: BoundType = spec_sym.some.type_sym.bound_type;
+                    if (spec_bt.type_definition.is_some()) {
+                        return this.def_has_unique_mangle_impl(spec_bt.type_definition.some);
+                    }
+                }
+            }
+            return false;
+        }
+        return this.def_has_unique_mangle_impl(td);
+    }
+
+    fun def_has_unique_mangle_impl(this, td: BoundDefinition) -> bool {
+        let impls: mut Option<_utils.List<BoundDefinition>> = new Option<_utils.List<BoundDefinition>>.none();
+        if (td is BoundDefinition.class_def) {
+            impls = new Option<_utils.List<BoundDefinition>>.some(td.class_def.interface_impls);
+        }
+        if (td is BoundDefinition.enum_def) {
+            impls = new Option<_utils.List<BoundDefinition>>.some(td.enum_def.interface_impls);
+        }
+        if (impls.is_none()) { return false; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impls.some.size())) {
+            let d: BoundDefinition = impls.some.at(cast<u64>(i)).some;
+            if (d is BoundDefinition.impl_def) {
+                if (string_find(d.impl_def.interface_type.display_name(), "IUniqueMangleName") >= 0) { return true; }
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // A resolvable name for a concrete BoundType, for the meta type-token bridge
+    // (get_or_assign_type_token / emperor_penguin_meta_get_type). Primitives and
+    // concrete defs use their name; generic references use the mangled name.
+    fun bound_type_meta_name(this, bt: BoundType) -> string {
+        if (bt.type_definition.is_some()) {
+            let def_name: string = bt.type_definition.some.get_name();
+            let def_full: mut string = def_name;
+            let td: BoundDefinition = bt.type_definition.some;
+            if (td is BoundDefinition.class_def) { def_full = td.class_def.full_name; }
+            if (td is BoundDefinition.enum_def) { def_full = td.enum_def.full_name; }
+            if (td is BoundDefinition.interface_def) { def_full = td.interface_def.full_name; }
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                return mangle_generic_name(def_full, bt.generic_args);
+            }
+            return def_name;
+        }
+        return bt.display_name();
+    }
+
+    // Bind one activated impl fragment into the specialized class/enum and record
+    // its AST fragment (source_impl_def) so pass 6 (vtables) and pass 8 (method
+    // bodies) can process it. The fragment's `T` resolves in the specialized
+    // class/enum scope.
+    fun inject_specializing_impl(mut this, frag: InterfaceImplementation, spec: BoundDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter inject_specializing_impl");
+        if (spec is BoundDefinition.class_def) {
+            let cls: mut BoundClassDefinition = spec.class_def;
+            if (cls.scope.is_some()) {
+                let bound: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_impl_def(frag, cls.scope.some);
+                if (bound.is_some() && bound.some is BoundDefinition.impl_def) {
+                    let bi: mut BoundInterfaceImplementation = bound.some.impl_def;
+                    bi.source_impl_def = new Option<Definition>.some(new Definition.impl_def(frag));
+                    // The injected impl is created in pass 3 (after pass 2 resolved
+                    // the template's own impl params), so resolve its method params
+                    // + return types here against the specialized class scope.
+                    this.resolve_injected_impl_methods(frag, bi, cls.scope.some, cls);
+                    cls.interface_impls.push(bound.some);
+                }
+            }
+        }
+        if (spec is BoundDefinition.enum_def) {
+            let e: mut BoundEnumDefinition = spec.enum_def;
+            if (e.scope.is_some()) {
+                let bound: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_impl_def(frag, e.scope.some);
+                if (bound.is_some() && bound.some is BoundDefinition.impl_def) {
+                    let bi: mut BoundInterfaceImplementation = bound.some.impl_def;
+                    bi.source_impl_def = new Option<Definition>.some(new Definition.impl_def(frag));
+                    this.resolve_injected_impl_methods_for_enum(frag, bi, e.scope.some, e);
+                    e.interface_impls.push(bound.some);
+                    let mdump: mut string = "";
+                    let di: mut i64 = 0;
+                    while (di < cast<i64>(bi.methods.size())) {
+                        let bm2: BoundDefinition = bi.methods.at(cast<u64>(di)).some;
+                        if (bm2 is BoundDefinition.function_def) {
+                            mdump = mdump + bm2.function_def.name + "(";
+                            let pi2: mut i64 = 0;
+                            while (pi2 < cast<i64>(bm2.function_def.parameters.size())) {
+                                if (pi2 > 0) { mdump = mdump + ","; }
+                                mdump = mdump + bm2.function_def.parameters.at(cast<u64>(pi2)).some.bound_type.display_name();
+                                pi2 = pi2 + 1;
+                            }
+                            mdump = mdump + ") ";
+                        }
+                        di = di + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    fun resolve_injected_impl_methods(mut this, ast_impl: InterfaceImplementation, bound_impl: mut BoundInterfaceImplementation, scope: BoundScope, cls: BoundClassDefinition) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(ast_impl.functions.size())) {
+            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+            if (ast_func_def is Definition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(bound_impl.methods.size())) {
+                    let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(mi)).some;
+                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                        this.model.some.resolve_types_pass.resolve_class_method_pair(ast_func_def.function_def, bm, scope, cls);
+                        bound_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                    }
+                    mi = mi + 1;
+                }
+            }
+            fi = fi + 1;
+        }
+    }
+
+    fun resolve_injected_impl_methods_for_enum(mut this, ast_impl: InterfaceImplementation, bound_impl: mut BoundInterfaceImplementation, scope: BoundScope, e: BoundEnumDefinition) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(ast_impl.functions.size())) {
+            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+            if (ast_func_def is Definition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(bound_impl.methods.size())) {
+                    let bound_method: BoundDefinition = bound_impl.methods.at(cast<u64>(mi)).some;
+                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                        this.model.some.resolve_types_pass.resolve_enum_method_pair(ast_func_def.function_def, bm, scope, e);
+                        bound_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                    }
+                    mi = mi + 1;
+                }
+            }
+            fi = fi + 1;
+        }
+    }
+
+    fun find_ast_def_by_name(this, defs: _utils.List<Definition>, name: string) -> Option<Definition> {
+        _utils.trace_enter("Enter find_ast_def_by_name");
+        // Search in reverse order so user-defined types override stdlib types
+        let i: mut i64 = cast<i64>(defs.size()) - 1;
+        while (i >= 0) {
+            let def: Definition = defs.at(cast<u64>(i)).some;
+            if (def is Definition.function_def) {
+                if (def.function_def.name == name) {
+                    return new Option<Definition>.some(def);
+                }
+            }
+            if (def is Definition.class_def) {
+                if (def.class_def.name == name) {
+                    return new Option<Definition>.some(def);
+                }
+                // Also search class methods for generic method instantiation
+                let members: _utils.List<Definition> = def.class_def.members;
+                let mi: mut i64 = cast<i64>(members.size()) - 1;
+                while (mi >= 0) {
+                    let member: Definition = members.at(cast<u64>(mi)).some;
+                    if (member is Definition.function_def) {
+                        if (member.function_def.name == name) {
+                            return new Option<Definition>.some(member);
+                        }
+                    }
+                    mi = mi - 1;
+                }
+            }
+            if (def is Definition.enum_def) {
+                if (def.enum_def.name == name) {
+                    return new Option<Definition>.some(def);
+                }
+            }
+            if (def is Definition.interface_def) {
+                if (def.interface_def.name == name) {
+                    return new Option<Definition>.some(def);
+                }
+            }
+            if (def is Definition.namespace_def) {
+                let found: Option<Definition> = this.find_ast_def_by_name(def.namespace_def.children, name);
+                if (found.is_some()) { return found; }
+            }
+            i = i - 1;
+        }
+        return new Option<Definition>.none();
+    }
+
+    fun replace_name_in_full_name(this, full_name: string, old_name: string, new_name: string) -> string {
+        _utils.trace_enter("Enter replace_name_in_full_name");
+        let dot_pos: i64 = string_find(full_name, "." + old_name);
+        if (dot_pos >= 0) {
+            let before: string = string_substring(full_name, 0, dot_pos);
+            return before + "." + new_name;
+        }
+        return new_name;
+    }
+
+    fun collect_generic_instantiations(this, defs: _utils.List<BoundDefinition>, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_generic_instantiations");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            this.collect_instantiations_from_def(def, instantiations);
+            i = i + 1;
+        }
+    }
+
+    fun collect_instantiations_from_def(this, def: BoundDefinition, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_instantiations_from_def");
+        if (def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = def.class_def;
+            // Skip template classes - their type params produce error types
+            if (cls.is_generic_template) { return; }
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    this.try_add_instantiation(fd.class_field.bound_type, instantiations);
+                }
+                fi = fi + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.try_add_instantiation(md.function_def.return_type, instantiations);
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(md.function_def.parameters.size())) {
+                        this.try_add_instantiation(md.function_def.parameters.at(cast<u64>(pi)).some.bound_type, instantiations);
+                        pi = pi + 1;
+                    }
+                }
+                mi = mi + 1;
+            }
+            // Collect generic interface instantiations from `impl IFoo<u8>` blocks
+            // so the interface (and its default methods) get specialized.
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    this.try_add_instantiation(id.impl_def.interface_type, instantiations);
+                }
+                ii = ii + 1;
+            }
+            // Transitive specialization: a specialized class's METHOD BODIES may
+            // instantiate OTHER generic classes with this class's (now concrete)
+            // type params, e.g. Holder<i32>.use() { new Wrap<i32>(...) }. Scan the
+            // template AST body (ast_source) with THIS specialized class's scope so
+            // those inner instantiations get collected and specialized in a later
+            // monomorphization iteration. Templates are skipped above; ast_source is
+            // set only for specialized classes, so non-generic classes aren't rescanned.
+            if (cls.ast_source.is_some() && cls.scope.is_some()) {
+                if (cls.ast_source.some is Definition.class_def) {
+                    let ast_cls: ClassDefinition = cls.ast_source.some.class_def;
+                    let body_scope: BoundScope = cls.scope.some;
+                    let bmi: mut i64 = 0;
+                    while (bmi < cast<i64>(ast_cls.members.size())) {
+                        let bm: Definition = ast_cls.members.at(cast<u64>(bmi)).some;
+                        if (bm is Definition.function_def) {
+                            if (bm.function_def.body.is_some()) {
+                                this.collect_from_ast_expr_safe(bm.function_def.body.some, body_scope, instantiations);
+                            }
+                        }
+                        if (bm is Definition.impl_def) {
+                            let ifn: mut i64 = 0;
+                            while (ifn < cast<i64>(bm.impl_def.functions.size())) {
+                                let im: Definition = bm.impl_def.functions.at(cast<u64>(ifn)).some;
+                                if (im is Definition.function_def) {
+                                    if (im.function_def.body.is_some()) {
+                                        this.collect_from_ast_expr_safe(im.function_def.body.some, body_scope, instantiations);
+                                    }
+                                }
+                                ifn = ifn + 1;
+                            }
+                        }
+                        bmi = bmi + 1;
+                    }
+                }
+            }
+        }
+        if (def is BoundDefinition.function_def) {
+            let func: BoundFunctionDefinition = def.function_def;
+            this.try_add_instantiation(func.return_type, instantiations);
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(func.parameters.size())) {
+                this.try_add_instantiation(func.parameters.at(cast<u64>(pi)).some.bound_type, instantiations);
+                pi = pi + 1;
+            }
+        }
+        if (def is BoundDefinition.initial_routine) {
+            let init: BoundInitialRoutineDefinition = def.initial_routine;
+            if (init.scope.is_some()) {
+                this.collect_instantiations_from_scope(init.scope.some, instantiations);
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(ns.children.size())) {
+                this.collect_instantiations_from_def(ns.children.at(cast<u64>(ci)).some, instantiations);
+                ci = ci + 1;
+            }
+        }
+    }
+
+    fun collect_instantiations_from_scope(this, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_instantiations_from_scope");
+        let si: mut i64 = 0;
+        while (si < cast<i64>(scope.symbols.size())) {
+            let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
+            if (sym is BoundSymbol.variable) {
+                this.try_add_instantiation(sym.variable.bound_type, instantiations);
+            }
+            si = si + 1;
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(scope.children.size())) {
+            this.collect_instantiations_from_scope(scope.children.at(cast<u64>(ci)).some, instantiations);
+            ci = ci + 1;
+        }
+    }
+
+    fun try_add_instantiation(this, bt: BoundType, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter try_add_instantiation");
+        if (cast<i64>(bt.generic_args.size()) > 0 && bt.type_definition.is_some()) {
+            let already: mut bool = false;
+            let j: mut i64 = 0;
+            while (j < cast<i64>(instantiations.size())) {
+                if (bt.is_same_type(instantiations.at(cast<u64>(j)).some)) {
+                    already = true;
+                }
+                j = j + 1;
+            }
+            if (already) {
+                this.model.some.trace("monomorphize instantiation already exists (skip): " + bt.display_name());
+            } else {
+                instantiations.push(bt);
+                this.model.some.trace("monomorphize collect instantiation " + bt.display_name());
+            }
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(i)).some;
+            // Value args aren't types whose instantiation needs collecting.
+            if (!arg_is_value(arg)) {
+                this.try_add_instantiation(arg_as_bound_type(arg), instantiations);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        this.collect_generic_instantiations_from_ast_impl(defs, bound_defs, scope, true, instantiations);
+    }
+
+    fun collect_generic_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, top_level: bool, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: Definition = defs.at(cast<u64>(i)).some;
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !this.model.some.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
+            if (def is Definition.initial_routine) {
+                if (def.initial_routine.body.is_some()) {
+                    this.collect_from_ast_expr_safe(def.initial_routine.body.some, def_scope, instantiations);
+                }
+            }
+            if (def is Definition.function_def) {
+                // Top-level functions (not class members): their bodies can
+                // instantiate generics too (`new std.Array<i64,4>()` inside a
+                // plain function). Without this the instantiation was never
+                // collected, the specialization never entered the bound tree,
+                // emit_new found no class layout, and the allocation was
+                // silently skipped (leaving method-call this-registers
+                // undefined). Class members are covered below; initial
+                // routines above.
+                if (def.function_def.body.is_some()) {
+                    this.collect_from_ast_expr_safe(def.function_def.body.some, def_scope, instantiations);
+                }
+            }
+            if (def is Definition.class_def) {
+                // Skip template class bodies - their type params aren't resolvable here
+                if (def.class_def.template_decl.is_none()) {
+                    let members: _utils.List<Definition> = def.class_def.members;
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(members.size())) {
+                        let member: Definition = members.at(cast<u64>(mi)).some;
+                        if (member is Definition.function_def) {
+                            if (member.function_def.body.is_some()) {
+                                this.collect_from_ast_expr_safe(member.function_def.body.some, def_scope, instantiations);
+                            }
+                        }
+                        mi = mi + 1;
+                    }
+                }
+            }
+            if (def is Definition.namespace_def) {
+                // Find matching bound namespace to get its scope
+                let ns_scope: BoundScope = if (i < cast<i64>(bound_defs.size())) {
+                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                        bd.namespace_def.scope.some
+                    } else {
+                        scope
+                    }
+                } else {
+                    scope
+                };
+                let ns_bound_children: _utils.List<BoundDefinition> = if (i < cast<i64>(bound_defs.size())) {
+                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
+                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
+                        bd.namespace_def.children
+                    } else {
+                        new _utils.List<BoundDefinition>()
+                    }
+                } else {
+                    new _utils.List<BoundDefinition>()
+                };
+                this.collect_generic_instantiations_from_ast_impl(def.namespace_def.children, ns_bound_children, ns_scope, false, instantiations);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Recurse into a statement's sub-expressions (and nested statements) so that
+    // generic instantiations inside while/if/for bodies are collected. Without this,
+    // `new Foo<X>()` inside a loop body was missed by monomorphization collection
+    // → never specialized → emit_new found no layout → use of undefined value.
+    fun collect_from_ast_statement_safe(this, stmt: Statement, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.expression.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.block_expr.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.target.some, scope, instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.let_decl.initializer.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.return_stmt.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.if_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.then_statement.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.else_statement.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.while_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.while_stmt.body.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.for_stmt.iterable.some, scope, instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.for_stmt.body.some, scope, instantiations);
+            }
+        }
+    }
+
+    fun collect_from_ast_expr_safe(this, expr: Expression, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_from_ast_expr_safe");
+        if (expr is Expression.new_expr) {
+            let ne: NewExpression = expr.new_expr;
+            if (cast<i64>(ne.generic_args.size()) > 0) {
+                let resolved: Option<BoundType> = this.resolve_new_generic_args_from_ast(ne.type_name, ne.generic_args, scope);
+                if (resolved.is_some()) {
+                    this.try_add_instantiation(resolved.some, instantiations);
+                }
+            }
+        }
+        // Recurse into sub-expressions safely
+        if (expr is Expression.function_call) {
+            let fc: FunctionCallExpression = expr.function_call;
+            if (fc.callee.is_some()) {
+                this.collect_from_ast_expr_safe(fc.callee.some, scope, instantiations);
+            }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(fc.arguments.size())) {
+                this.collect_from_ast_expr_safe(fc.arguments.at(cast<u64>(ai)).some, scope, instantiations);
+                ai = ai + 1;
+            }
+        }
+        if (expr is Expression.code_block) {
+            let blk: CodeBlockExpression = expr.code_block;
+            let si: mut i64 = 0;
+            while (si < cast<i64>(blk.statements.size())) {
+                this.collect_from_ast_statement_safe(blk.statements.at(cast<u64>(si)).some, scope, instantiations);
+                si = si + 1;
+            }
+            if (blk.trailing_expr.is_some()) {
+                this.collect_from_ast_expr_safe(blk.trailing_expr.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.cast_expr) {
+            let ce: CastExpression = expr.cast_expr;
+            // A cast to a generic interface (e.g. cast<IFoo<u8>>(x)) must register
+            // the instantiation so its default methods get monomorphized with the
+            // concrete type args (otherwise their T-typed returns stay unresolved).
+            if (let ts := ce.target_type.some) {
+                if (cast<i64>(ts.generic_args.size()) > 0) {
+                    let base_name: mut string = ts.name;
+                    if (cast<i64>(ts.qualified_parts.size()) > 0) {
+                        let sb2: mut StringBuilder = new StringBuilder();
+                        let qi: mut i64 = 0;
+                        while (qi < cast<i64>(ts.qualified_parts.size())) {
+                            sb2.append(ts.qualified_parts.at(cast<u64>(qi)).some);
+                            sb2.append(".");
+                            qi = qi + 1;
+                        }
+                        sb2.append(ts.name);
+                        base_name = sb2.to_string();
+                    }
+                    let resolved: Option<BoundType> = this.resolve_new_generic_args_from_ast(base_name, ts.generic_args, scope);
+                    if (resolved.is_some()) {
+                        this.try_add_instantiation(resolved.some, instantiations);
+                    }
+                }
+            }
+            if (ce.inner.is_some()) {
+                this.collect_from_ast_expr_safe(ce.inner.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.member_access) {
+            let ma: MemberAccessExpression = expr.member_access;
+            if (ma.base_expr.is_some()) {
+                this.collect_from_ast_expr_safe(ma.base_expr.some, scope, instantiations);
+            }
+        }
+        // if/while parse as *expressions* inside code blocks (wrapped in a
+        // Statement.block_expr by parse_codeBlockExpression), so generic
+        // instantiations inside their bodies (e.g. `new Foo<T>()` in a while
+        // body) were never collected here -> class never specialized -> the
+        // LLVM emitter hit "NEW Foo__T (no layout)" and the object's registers
+        // stayed undefined. Recurse into both branches just like the
+        // statement-level variants above.
+        if (expr is Expression.if_expr) {
+            let ie: IfExpression = expr.if_expr;
+            if (ie.condition.is_some()) {
+                this.collect_from_ast_expr_safe(ie.condition.some, scope, instantiations);
+            }
+            if (ie.then_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.then_block.some, scope, instantiations);
+            }
+            if (ie.else_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.else_block.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.while_expr) {
+            let we: WhileExpression = expr.while_expr;
+            if (we.condition.is_some()) {
+                this.collect_from_ast_expr_safe(we.condition.some, scope, instantiations);
+            }
+            if (we.body.is_some()) {
+                this.collect_from_ast_expr_safe(we.body.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.binary) {
+            let bin: BinaryExpression = expr.binary;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(bin.operands.size())) {
+                this.collect_from_ast_expr_safe(bin.operands.at(cast<u64>(oi)).some, scope, instantiations);
+                oi = oi + 1;
+            }
+        }
+        if (expr is Expression.unary) {
+            if (expr.unary.operand.is_some()) {
+                this.collect_from_ast_expr_safe(expr.unary.operand.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                this.collect_from_ast_expr_safe(expr.parenthesized.inner.some, scope, instantiations);
+            }
+        }
+    }
+
+    fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        _utils.trace_enter("Enter resolve_new_generic_args_from_ast");
+        // Resolve the base type, then apply the generic args. See
+        // resolve_new_base_type_from_ast for why the trailing variant segment of an
+        // enum new-expression ("Enum.variant") must be stripped.
+        let base_type: Option<BoundType> = this.resolve_new_base_type_from_ast(type_name, scope);
+        if (base_type.is_none()) { return new Option<BoundType>.none(); }
+
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let k: mut i64 = 0;
+        while (k < cast<i64>(generic_args.size())) {
+            args.push(this.model.some.resolve_types_pass.resolve_single_generic_arg(generic_args.at(cast<u64>(k)).some, scope));
+            k = k + 1;
+        }
+        return new Option<BoundType>.some(base_type.some.with_generic_args(args));
+    }
+
+    // Resolve the base type named by a new-expression's type_name for the AST-driven
+    // monomorphization collector. type_name may be qualified ("_utils.List"). For an
+    // enum variant new the parser flattens `new Enum<T>.variant()` into type_name =
+    // "Enum.variant" (the variant is appended after the generic args); "Enum.variant"
+    // resolves to the enum *member*, not a type. Without stripping the trailing variant
+    // segment, a generic enum used only as a local in an initial block (which the
+    // bound-tree collector never sees) is never monomorphized — no LLVM type is emitted
+    // and payload access falls back to i64. Try the full name, then strip one segment.
+    fun resolve_new_base_type_from_ast(this, type_name: string, scope: BoundScope) -> Option<BoundType> {
+        _utils.trace_enter("Enter resolve_new_base_type_from_ast");
+        let found: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(type_name, scope);
+        if (found.is_some()) {
+            if (found.some is BoundSymbol.type_sym) {
+                if (found.some.type_sym.bound_type.type_definition.is_some()) {
+                    return new Option<BoundType>.some(found.some.type_sym.bound_type);
+                }
+            }
+        }
+        let dot: i64 = this.model.some.bind_expressions_pass.find_last_dot(type_name);
+        if (dot > 0) {
+            let base_name: string = string_substring(type_name, 0, dot);
+            let found2: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(base_name, scope);
+            if (found2.is_some()) {
+                if (found2.some is BoundSymbol.type_sym) {
+                    if (found2.some.type_sym.bound_type.type_definition.is_some()) {
+                        return new Option<BoundType>.some(found2.some.type_sym.bound_type);
+                    }
+                }
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_class_def");
+        let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
+        if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
+        if (!(ast_def.some is Definition.class_def)) { return new Option<BoundDefinition>.none(); }
+
+        let ast_class: ClassDefinition = ast_def.some.class_def;
+        // Use the original template's scope parent (namespace scope) so that
+        // type resolution within the specialized class can find sibling types
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
+        let result: mut BoundClassDefinition = new BoundClassDefinition(mangled_name, full_name);
+        result.is_specialized = true;
+        let class_scope: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), mangled_name, full_name, scope_parent);
+
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+            let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            let arg_type: BoundType = arg_as_bound_type(arg);
+            let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+            param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+            class_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            pi = pi + 1;
+        }
+
+        // req5: copy value-param names and bind their concrete values (the synthetic
+        // value BoundTypes ride type_args) so member binding can substitute N -> constant.
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl.value_param_names.size())) {
+            let vpname: string = tmpl.value_param_names.at(cast<u64>(vni)).some;
+            result.value_param_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gpi: mut i64 = 0;
+            while (gpi < cast<i64>(tmpl.generic_params.size())) {
+                if (tmpl.generic_params.at(cast<u64>(gpi)).some == vpname) { idx = gpi; }
+                gpi = gpi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                let varg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (varg is BoundTypeArg.value_arg) {
+                    result.value_param_values.push(varg.value_arg.as_i64());
+                } else {
+                    result.value_param_values.push(0);
+                }
+            } else {
+                result.value_param_values.push(0);
+            }
+            vni = vni + 1;
+        }
+
+        result.scope = new Option<BoundScope>.some(class_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.ClassKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_class.members.size())) {
+            let member: Definition = ast_class.members.at(cast<u64>(i)).some;
+            if (member is Definition.class_field) {
+                let ast_field: ClassFieldDefinition = member.class_field;
+                let field: mut BoundClassFieldDefinition = new BoundClassFieldDefinition(ast_field.name);
+                let field_full_name: string = full_name + "." + ast_field.name;
+                let fsym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                fsym.name = ast_field.name;
+                fsym.full_name = field_full_name;
+                fsym.variable_kind = new VariableSymbolKind.Field();
+                // Read mutability from AST type_spec
+                if (let ts := ast_field.type_spec.some) {
+                    if (ts.is_not_mutable) {
+                        fsym.is_mutable = false;
+                        field.mutability = new Mutability.Immutable();
+                    } else if (ts.is_auto_mutability) {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Auto();
+                    } else {
+                        fsym.is_mutable = true;
+                        field.mutability = new Mutability.Mutable();
+                    }
+                    field.bound_type = this.model.some.resolve_type_specifier(ast_field.type_spec.some, class_scope);
+                } else {
+                    fsym.is_mutable = true;
+                    field.mutability = new Mutability.Mutable();
+                }
+                fsym.bound_type = field.bound_type;
+                field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
+                class_scope.add_symbol(new BoundSymbol.variable(fsym));
+                result.fields.push(new BoundDefinition.class_field(field));
+            }
+            if (member is Definition.function_def) {
+                let bound_member: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_function_def(member.function_def, class_scope);
+                if (bound_member.is_some()) {
+                    if (bound_member.some is BoundDefinition.function_def) {
+                        result.methods.push(new BoundDefinition.function_def(bound_member.some.function_def));
+                    } else {
+                        result.methods.push(bound_member.some);
+                    }
+                }
+            }
+            if (member is Definition.impl_def) {
+                let bound_impl: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_impl_def(member.impl_def, class_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
+            i = i + 1;
+        }
+
+        // Preserve the template's generic params + AST source so member access can
+        // distinguish a generic-param field (`a: T`, implicitly immutable) from a
+        // concrete field (`b: i32`, Auto → follows container mutability).
+        let gpi: mut i64 = 0;
+        while (gpi < cast<i64>(tmpl.generic_params.size())) {
+            result.generic_params.push(tmpl.generic_params.at(cast<u64>(gpi)).some);
+            gpi = gpi + 1;
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.class_def(ast_class));
+
+        return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
+    }
+
+    // D6/req5: extract value-template params (is_template_value_arg args) into
+    // the destination lists (names/values/texts/kinds), positional via
+    // tmpl.generic_params (which holds ALL params, type + value, in template order).
+    // Shared by specialize_class/enum/interface/function_def. The `tmpl` is any
+    // def exposing value_param_names + generic_params; the caller passes its four
+    // output lists.
+    fun extract_specialized_value_params(mut this, tmpl_generic_params: _utils.List<string>, tmpl_value_param_names: _utils.List<string>, type_args: _utils.List<BoundTypeArg>, out_names: mut _utils.List<string>, out_values: mut _utils.List<i64>, out_texts: mut _utils.List<string>, out_kinds: mut _utils.List<string>) {
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl_value_param_names.size())) {
+            let vpname: string = tmpl_value_param_names.at(cast<u64>(vni)).some;
+            out_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(tmpl_generic_params.size())) {
+                if (tmpl_generic_params.at(cast<u64>(gi)).some == vpname) { idx = gi; }
+                gi = gi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                let arg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (arg is BoundTypeArg.value_arg) {
+                    out_values.push(arg.value_arg.as_i64());
+                    out_texts.push(arg.value_arg.as_text());
+                    out_kinds.push(arg.value_arg.kind_str());
+                } else {
+                    out_values.push(0);
+                    out_texts.push("");
+                    out_kinds.push("i64");
+                }
+            } else {
+                out_values.push(0);
+                out_texts.push("");
+                out_kinds.push("i64");
+            }
+            vni = vni + 1;
+        }
+    }
+
+    fun specialize_enum_def(mut this, tmpl: BoundEnumDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_enum_def");
+        let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
+        if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
+        if (!(ast_def.some is Definition.enum_def)) { return new Option<BoundDefinition>.none(); }
+
+        let ast_enum: EnumDefinition = ast_def.some.enum_def;
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
+        let result: mut BoundEnumDefinition = new BoundEnumDefinition(mangled_name, full_name);
+        result.is_specialized = true;
+        let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), mangled_name, full_name, scope_parent);
+
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+            let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            // D6/req5: a value-template arg is a VALUE, not a type — skip binding it
+            // as a type symbol (method bodies substitute it).
+            if (!arg_is_value(arg)) {
+                let arg_type: BoundType = arg_as_bound_type(arg);
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                enum_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
+            pi = pi + 1;
+        }
+
+        // D6/req5: extract value params for method-body substitution.
+        this.extract_specialized_value_params(tmpl.generic_params, tmpl.value_param_names, type_args, result.value_param_names, result.value_param_values, result.value_param_texts, result.value_param_kinds);
+
+        result.scope = new Option<BoundScope>.some(enum_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.EnumKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+
+        let member_idx: mut i64 = 0;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_enum.members.size())) {
+            let member: Definition = ast_enum.members.at(cast<u64>(i)).some;
+            if (member is Definition.enum_member) {
+                let payload_type: mut BoundType = this.model.some.type_registry.void_type;
+                if (member.enum_member.type_spec.is_some()) {
+                    payload_type = this.model.some.resolve_type_specifier(member.enum_member.type_spec.some, enum_scope);
+                }
+                let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
+                let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
+                m.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                enum_scope.add_symbol(new BoundSymbol.enum_member(msym));
+                result.members.push(m);
+                member_idx = member_idx + 1;
+            }
+            if (member is Definition.impl_def) {
+                let bound_impl: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_impl_def(member.impl_def, enum_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
+            if (member is Definition.function_def) {
+                let bound_method: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_function_def(member.function_def, enum_scope);
+                if (bound_method.is_some()) {
+                    let bm: mut BoundDefinition = bound_method.some;
+                    if (bm is BoundDefinition.function_def) {
+                        this.model.some.resolve_types_pass.resolve_enum_method_pair(member.function_def, bm.function_def, enum_scope, result);
+                        bm = new BoundDefinition.function_def(bm.function_def);
+                    }
+                    result.methods.push(bm);
+                }
+            }
+            i = i + 1;
+        }
+
+        return new Option<BoundDefinition>.some(new BoundDefinition.enum_def(result));
+    }
+
+    // Specialize a generic interface for concrete type args (e.g. IFoo<T> -> IFoo__u8).
+    // Re-binds each default method in a scope where the type params map to the args,
+    // so a default method `fun bar(this: IFoo<T>) -> T` specializes its signature and
+    // body (T -> u8). Without this, lower_interface_def emits the unspecialized
+    // template default method with an unresolved T-typed return.
+    fun specialize_interface_def(mut this, tmpl: BoundInterfaceDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_interface_def");
+        let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
+        if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
+        if (!(ast_def.some is Definition.interface_def)) { return new Option<BoundDefinition>.none(); }
+
+        let ast_iface: InterfaceDefinition = ast_def.some.interface_def;
+        let scope_parent: mut Option<BoundScope> = new Option<BoundScope>.some(global_scope);
+        if (tmpl.scope.is_some()) {
+            scope_parent = tmpl.scope.some.parent;
+        }
+        let parent_full_name: mut string = global_scope.full_name;
+        if (scope_parent.is_some()) {
+            parent_full_name = scope_parent.some.full_name;
+        }
+        let full_name: string = parent_full_name + "." + mangled_name;
+        let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(mangled_name, full_name);
+        result.is_specialized = true;
+        let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), mangled_name, full_name, scope_parent);
+
+        // Register generic type params in the specialized scope so method
+        // signatures and bodies resolve T -> the concrete type arg.
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+            let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+            let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+            // D6/req5: a value-template arg is a VALUE, not a type — skip binding it
+            // as a type symbol (default-method bodies substitute it).
+            if (!arg_is_value(arg)) {
+                let arg_type: BoundType = arg_as_bound_type(arg);
+                let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                iface_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+            }
+            pi = pi + 1;
+        }
+
+        // D6/req5: extract value params for default-method body substitution.
+        this.extract_specialized_value_params(tmpl.generic_params, tmpl.value_param_names, type_args, result.value_param_names, result.value_param_values, result.value_param_texts, result.value_param_kinds);
+
+        result.scope = new Option<BoundScope>.some(iface_scope);
+        let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(mangled_name, full_name);
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.InterfaceKind();
+        t.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+        type_sym.bound_type = t;
+        result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
+        result.bound_type = t;
+        global_scope.add_symbol(new BoundSymbol.type_sym(type_sym));
+
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_iface.members.size())) {
+            let member: Definition = ast_iface.members.at(cast<u64>(i)).some;
+            if (member is Definition.function_def) {
+                let bound_member: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_function_def(member.function_def, iface_scope);
+                if (bound_member.is_some()) {
+                    // Resolve the default method's signature types (return/params) in
+                    // the specialized scope (T -> arg) — bind_function_def only builds
+                    // the symbol; without this the specialized interface's default
+                    // method keeps a void return type and emits invalid LLVM.
+                    let bm: mut BoundDefinition = bound_member.some;
+                    if (bm is BoundDefinition.function_def) {
+                        this.model.some.resolve_types_pass.resolve_interface_method_pair(member.function_def, bm.function_def, iface_scope, result);
+                        bm = new BoundDefinition.function_def(bm.function_def);
+                    }
+                    result.methods.push(bm);
+                }
+            }
+            if (member is Definition.impl_def) {
+                // Nested interface impl (interface inheritance): re-bind in the
+                // specialized scope so the impl's `impl IFoo<T>` resolves T -> arg.
+                let bound_impl: Option<BoundDefinition> = this.model.some.build_scopes_pass.bind_impl_def(member.impl_def, iface_scope);
+                if (bound_impl.is_some()) {
+                    result.interface_impls.push(bound_impl.some);
+                }
+            }
+            i = i + 1;
+        }
+        result.ast_source = new Option<Definition>.some(new Definition.interface_def(ast_iface));
+        return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+    }
+    fun collect_function_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
+        this.collect_function_instantiations_from_ast_impl(defs, scope, true, func_instantiations);
+    }
+
+    fun collect_function_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, scope: BoundScope, top_level: bool, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: Definition = defs.at(cast<u64>(i)).some;
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !this.model.some.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
+            if (def is Definition.initial_routine) {
+                if (def.initial_routine.body.is_some()) {
+                    this.collect_func_inst_from_expr(def.initial_routine.body.some, def_scope, func_instantiations);
+                }
+            }
+            if (def is Definition.function_def) {
+                if (def.function_def.body.is_some()) {
+                    this.collect_func_inst_from_expr(def.function_def.body.some, def_scope, func_instantiations);
+                }
+            }
+            if (def is Definition.namespace_def) {
+                // Namespace children resolve in the namespace scope (merged by
+                // name across files, so sibling types are its local symbols).
+                let ns_lookup: Option<BoundScope> = scope.lookup_namespace(def.namespace_def.name);
+                let ns_scope: BoundScope = if (ns_lookup.is_some()) { ns_lookup.some } else { scope };
+                this.collect_function_instantiations_from_ast_impl(def.namespace_def.children, ns_scope, false, func_instantiations);
+            }
+            if (def is Definition.class_def) {
+                if (def.class_def.template_decl.is_none()) {
+                    let members: _utils.List<Definition> = def.class_def.members;
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(members.size())) {
+                        let member: Definition = members.at(cast<u64>(mi)).some;
+                        if (member is Definition.function_def) {
+                            if (member.function_def.body.is_some()) {
+                                this.collect_func_inst_from_expr(member.function_def.body.some, def_scope, func_instantiations);
+                            }
+                        }
+                        mi = mi + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    fun collect_func_inst_from_expr(this, expr: Expression, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_func_inst_from_expr");
+        if (expr is Expression.function_call) {
+            let fc: FunctionCallExpression = expr.function_call;
+            if (let ast_callee := fc.callee.some) {
+                if (ast_callee is Expression.identifier) {
+                    if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.identifier.name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let gi: mut i64 = 0;
+                        while (gi < cast<i64>(ast_callee.identifier.generic_args.size())) {
+                            resolved_args.push(make_type_arg(this.model.some.resolve_type_specifier(ast_callee.identifier.generic_args.at(cast<u64>(gi)).some, scope)));
+                            gi = gi + 1;
+                        }
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                    // D6: a value-template function call (filled<3>()) — the value args
+                    // ride value_generic_args (Expression list) and become value
+                    // BoundTypeArgs, so the mangled name is filled__3 and
+                    // specialize_function_def substitutes N -> 3 into the body.
+                    // Integer/char constants are folded here; bool/string value args are
+                    // handled by bind_function_call directly.
+                    if (cast<i64>(ast_callee.identifier.value_generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.identifier.name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let vi: mut i64 = 0;
+                        while (vi < cast<i64>(ast_callee.identifier.value_generic_args.size())) {
+                            let varg: Expression = ast_callee.identifier.value_generic_args.at(cast<u64>(vi)).some;
+                            resolved_args.push(this.model.some.meta_rewriter.value_expr_to_bound_type(varg));
+                            vi = vi + 1;
+                        }
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                }
+                // Generic method calls: obj.method<T>(args)
+                if (ast_callee is Expression.member_access) {
+                    if (cast<i64>(ast_callee.member_access.generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.member_access.member_name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let gi: mut i64 = 0;
+                        while (gi < cast<i64>(ast_callee.member_access.generic_args.size())) {
+                            resolved_args.push(make_type_arg(this.model.some.resolve_type_specifier(ast_callee.member_access.generic_args.at(cast<u64>(gi)).some, scope)));
+                            gi = gi + 1;
+                        }
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                }
+                this.collect_func_inst_from_expr(fc.callee.some, scope, func_instantiations);
+            }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(fc.arguments.size())) {
+                this.collect_func_inst_from_expr(fc.arguments.at(cast<u64>(ai)).some, scope, func_instantiations);
+                ai = ai + 1;
+            }
+        }
+        if (expr is Expression.code_block) {
+            let blk: CodeBlockExpression = expr.code_block;
+            let si: mut i64 = 0;
+            while (si < cast<i64>(blk.statements.size())) {
+                let stmt: Statement = blk.statements.at(cast<u64>(si)).some;
+                if (stmt is Statement.let_decl) {
+                    if (stmt.let_decl.initializer.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.let_decl.initializer.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.expression) {
+                    if (stmt.expression.expression.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
+                    }
+                }
+                // if/while bodies are wrapped as block_expr statements (see
+                // parse_codeBlockExpression); recurse so generic calls inside
+                // them are collected too.
+                if (stmt is Statement.block_expr) {
+                    if (stmt.block_expr.expression.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.while_stmt) {
+                    if (stmt.while_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.while_stmt.body.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.if_stmt) {
+                    if (stmt.if_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.then_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.else_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+                    }
+                }
+                si = si + 1;
+            }
+        }
+        if (expr is Expression.cast_expr) {
+            if (expr.cast_expr.inner.is_some()) {
+                this.collect_func_inst_from_expr(expr.cast_expr.inner.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.member_access) {
+            if (expr.member_access.base_expr.is_some()) {
+                this.collect_func_inst_from_expr(expr.member_access.base_expr.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.if_expr) {
+            if (expr.if_expr.condition.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.condition.some, scope, func_instantiations);
+            }
+            if (expr.if_expr.then_block.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.then_block.some, scope, func_instantiations);
+            }
+            if (expr.if_expr.else_block.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.else_block.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.binary) {
+            let bin: BinaryExpression = expr.binary;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(bin.operands.size())) {
+                this.collect_func_inst_from_expr(bin.operands.at(cast<u64>(oi)).some, scope, func_instantiations);
+                oi = oi + 1;
+            }
+        }
+        if (expr is Expression.unary) {
+            if (expr.unary.operand.is_some()) {
+                this.collect_func_inst_from_expr(expr.unary.operand.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.new_expr) {
+            let ne: NewExpression = expr.new_expr;
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(ne.arguments.size())) {
+                this.collect_func_inst_from_expr(ne.arguments.at(cast<u64>(ai)).some, scope, func_instantiations);
+                ai = ai + 1;
+            }
+        }
+    }
+
+    // Statement-level counterpart of collect_func_inst_from_expr: recurse into a
+    // statement's sub-statements/expressions so generic calls inside if/while
+    // bodies are collected (block-expr statements hold if/while *expressions*).
+    fun collect_func_inst_from_expr_stmt(this, stmt: Statement, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.target.some, scope, func_instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_func_inst_from_expr(stmt.let_decl.initializer.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.return_stmt.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_func_inst_from_expr(stmt.for_stmt.iterable.some, scope, func_instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.for_stmt.body.some, scope, func_instantiations);
+            }
+        }
+    }
+
+    fun find_bound_function_def(this, defs: _utils.List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter find_bound_function_def");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.function_def) {
+                if (def.function_def.name == name) {
+                    return new Option<BoundDefinition>.some(def);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let found: Option<BoundDefinition> = this.find_bound_function_def(def.namespace_def.children, name);
+                if (found.is_some()) { return found; }
+            }
+            if (def is BoundDefinition.class_def) {
+                let found: Option<BoundDefinition> = this.find_bound_function_def(def.class_def.methods, name);
+                if (found.is_some()) { return found; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter specialize_function_def");
+        let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
+        if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
+        if (!(ast_def.some is Definition.function_def)) { return new Option<BoundDefinition>.none(); }
+
+        let ast_func: FunctionDefinition = ast_def.some.function_def;
+        // Build the full_name:
+        // - For methods in specialized generic classes, use the class_scope's full_name
+        //   e.g. <global>.Foo__i32.foo__i64 (not <global>.Foo.foo__i64)
+        // - For other methods, use the template's full_name with name replaced
+        //   e.g. <global>.Foo.identity -> <global>.Foo.identity__string
+        let full_name: string = this.build_specialized_full_name(tmpl, mangled_name, class_scope);
+        let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(mangled_name, full_name, ast_func.is_extern, ast_func.is_pure, ast_func.is_new, ast_func.is_extern);
+        result.is_specialized = true;
+
+        // D6: extract value-template params (is_template_value_arg args) into
+        // result.value_param_names/values/texts so bind_body_for_def substitutes
+        // them into the body. Positional via generic_params (which holds ALL params,
+        // type + value, in template order).
+        let vni: mut i64 = 0;
+        while (vni < cast<i64>(tmpl.value_param_names.size())) {
+            let vpname: string = tmpl.value_param_names.at(cast<u64>(vni)).some;
+            result.value_param_names.push(vpname);
+            let idx: mut i64 = -1;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(tmpl.generic_params.size())) {
+                if (tmpl.generic_params.at(cast<u64>(gi)).some == vpname) { idx = gi; }
+                gi = gi + 1;
+            }
+            if (idx >= 0 && idx < cast<i64>(type_args.size())) {
+                let arg: BoundTypeArg = type_args.at(cast<u64>(idx)).some;
+                if (arg is BoundTypeArg.value_arg) {
+                    result.value_param_values.push(arg.value_arg.as_i64());
+                    result.value_param_texts.push(arg.value_arg.as_text());
+                    result.value_param_kinds.push(arg.value_arg.kind_str());
+                } else {
+                    result.value_param_values.push(0);
+                    result.value_param_texts.push("");
+                    result.value_param_kinds.push("i64");
+                }
+            } else {
+                result.value_param_values.push(0);
+                result.value_param_texts.push("");
+                result.value_param_kinds.push("i64");
+            }
+            vni = vni + 1;
+        }
+
+        if (!ast_func.is_extern && ast_func.body.is_some()) {
+            // Use class_scope as parent if available (for methods in specialized generic classes)
+            // so that class type params (e.g., T=i32) are visible in the method body
+            if (class_scope.is_some()) {
+                let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), mangled_name, full_name + ".<body>", new Option<BoundScope>.some(class_scope.some));
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+                    let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+                    let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+                    // D6: a value-template arg is a VALUE, not a type — skip binding it
+                    // as a type symbol (the body substitutes it via
+                    // value_param_names/values in bind_body_for_def).
+                    if (!arg_is_value(arg)) {
+                        let arg_type: BoundType = arg_as_bound_type(arg);
+                        let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                        param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                        func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    }
+                    pi = pi + 1;
+                }
+                result.scope = new Option<BoundScope>.some(func_scope);
+            } else {
+                let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), mangled_name, full_name + ".<body>", new Option<BoundScope>.some(parent_scope));
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(tmpl.generic_params.size()) && pi < cast<i64>(type_args.size())) {
+                    let param_name: string = tmpl.generic_params.at(cast<u64>(pi)).some;
+                    let arg: BoundTypeArg = type_args.at(cast<u64>(pi)).some;
+                    // D6: a value-template arg is a VALUE, not a type — skip binding it
+                    // as a type symbol (the body substitutes it via
+                    // value_param_names/values in bind_body_for_def).
+                    if (!arg_is_value(arg)) {
+                        let arg_type: BoundType = arg_as_bound_type(arg);
+                        let param_sym: mut BoundTypeSymbol = new BoundTypeSymbol(param_name, full_name + "." + param_name);
+                        param_sym.bound_type = arg_type.with_mutability(arg_type.mutability);
+                        func_scope.add_symbol(new BoundSymbol.type_sym(param_sym));
+                    }
+                    pi = pi + 1;
+                }
+                result.scope = new Option<BoundScope>.some(func_scope);
+            }
+        }
+
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(mangled_name, full_name);
+        sym.is_extern = ast_func.is_extern;
+        sym.is_static = result.is_static;
+        sym.is_pure = ast_func.is_pure;
+        sym.is_new = ast_func.is_new;
+        result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        // add_symbol would overwrite full_name, so we set enclosing_scope manually
+        // and push directly to preserve the correct full_name.
+        // The symbol must be reachable from CALL SITES, which resolve `name__args`
+        // up their scope chain (function -> ... -> file namespace -> global). A
+        // class-method template's enclosing scope is the CLASS scope — not on any
+        // call site's chain — so register the symbol in the class's containing
+        // namespace (the file namespace for top-level classes) instead.
+        // Free-function templates keep their own enclosing scope (parent_scope is
+        // already the file/namespace scope).
+        if (parent_scope.kind is ScopeKind.ClassScope && parent_scope.parent.is_some()) {
+            let ns_parent: mut BoundScope = parent_scope.parent.some;
+            sym.enclosing_scope = new Option<BoundScope>.some(ns_parent);
+            ns_parent.symbols.push(new BoundSymbol.function_sym(sym));
+        } else {
+            sym.enclosing_scope = new Option<BoundScope>.some(parent_scope);
+            parent_scope.symbols.push(new BoundSymbol.function_sym(sym));
+        }
+
+        return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
+    }
+
+    // Find the specialized class scope for a method, if its parent class has been specialized.
+    // This is needed so that class type params (e.g., T=i32) are visible in method specializations.
+    fun find_specialized_class_scope(this, defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_specialized_class_scope");
+        let orig_name: string = this.model.some.interfaces_pass.extract_template_name(method_name);
+        // Find the template class that owns this method
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = def.class_def;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(cls.methods.size())) {
+                    let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                    if (md is BoundDefinition.function_def) {
+                        if (md.function_def.name == orig_name) {
+                            if (cls.is_generic_template) {
+                                let spec_scope: Option<BoundScope> = this.find_class_specialization_scope(defs, cls.name);
+                                if (spec_scope.is_some()) {
+                                    return spec_scope;
+                                }
+                            }
+                        }
+                    }
+                    mi = mi + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundScope>.none();
+    }
+
+    fun find_class_specialization_scope(this, defs: _utils.List<BoundDefinition>, template_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_class_specialization_scope");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = def.class_def;
+                if (!cls.is_generic_template && cls.scope.is_some()) {
+                    // Check if this class name starts with template_name + "$"
+                    // (new mangle) or the legacy "__" separator.
+                    if (string_find(cls.name, template_name + "$") == 0 || string_find(cls.name, template_name + "__") == 0) {
+                        return cls.scope;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundScope>.none();
+    }
+
+    fun find_method_class_scope(this, existing_defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, method_name: string) -> Option<BoundScope> {
+        _utils.trace_enter("Enter find_method_class_scope");
+        let orig_name: string = this.model.some.interfaces_pass.extract_template_name(method_name);
+        // Search existing defs
+        let result: Option<BoundScope> = this.find_specialized_class_scope(existing_defs, method_name);
+        if (result.is_some()) {
+            return result;
+        }
+        // Search new (current batch) defs
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(new_defs.size())) {
+            let sd: BoundDefinition = new_defs.at(cast<u64>(mi)).some;
+            if (sd is BoundDefinition.class_def) {
+                let sd_cls: BoundClassDefinition = sd.class_def;
+                if (sd_cls.scope.is_some()) {
+                    let sdi: mut i64 = 0;
+                    while (sdi < cast<i64>(sd_cls.methods.size())) {
+                        let smd: BoundDefinition = sd_cls.methods.at(cast<u64>(sdi)).some;
+                        if (smd is BoundDefinition.function_def) {
+                            if (smd.function_def.name == orig_name) {
+                                return sd_cls.scope;
+                            }
+                        }
+                        sdi = sdi + 1;
+                    }
+                }
+            }
+            mi = mi + 1;
+        }
+        return new Option<BoundScope>.none();
+    }
+
+    fun build_specialized_full_name(this, tmpl: BoundFunctionDefinition, mangled_name: string, class_scope: Option<BoundScope>) -> string {
+        _utils.trace_enter("Enter build_specialized_full_name");
+        if (class_scope.is_some()) {
+            return class_scope.some.full_name + "." + mangled_name;
+        }
+        return this.replace_name_in_full_name(tmpl.full_name, tmpl.name, mangled_name);
+    }
+
+    // Find the parent class for a method by extracting the class's full_name
+    // from the function's full_name: everything before the last '.' — e.g.
+    // "<global>._ns_f.Foo__i32.foo__i64" -> "<global>._ns_f.Foo__i32" (the
+    // specialized class def's full_name, see build_specialized_full_name /
+    // specialize_class_def). Matching by full_name (not simple name) keeps
+    // file-local and specialized classes findable.
+    fun find_parent_class_for_method(this, defs: _utils.List<BoundDefinition>, new_defs: _utils.List<BoundDefinition>, func_full_name: string) -> Option<BoundClassDefinition> {
+        _utils.trace_enter("Enter find_parent_class_for_method");
+        // Find the last dot: the prefix is the enclosing class's full_name.
+        let last_dot: mut i64 = -1;
+        let search_pos: mut i64 = 0;
+        let full_len: i64 = string_length(func_full_name);
+        while (search_pos < full_len) {
+            let found: i64 = string_find_from(func_full_name, ".", search_pos);
+            if (found < 0) {
+                search_pos = full_len;
+            } else {
+                last_dot = found;
+                search_pos = found + 1;
+            }
+        }
+        if (last_dot >= 0) {
+            let class_full_name: string = string_substring(func_full_name, 0, last_dot);
+            // Search in existing defs
+            let i: mut i64 = 0;
+            while (i < cast<i64>(defs.size())) {
+                let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+                if (def is BoundDefinition.class_def) {
+                    if (def.class_def.full_name == class_full_name) {
+                        return new Option<BoundClassDefinition>.some(def.class_def);
+                    }
+                }
+                i = i + 1;
+            }
+            // Also search in new_defs (current batch)
+            let j: mut i64 = 0;
+            while (j < cast<i64>(new_defs.size())) {
+                let def: BoundDefinition = new_defs.at(cast<u64>(j)).some;
+                if (def is BoundDefinition.class_def) {
+                    if (def.class_def.full_name == class_full_name) {
+                        return new Option<BoundClassDefinition>.some(def.class_def);
+                    }
+                }
+                j = j + 1;
+            }
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    // Fix the 'this' parameter type for a specialized class method
+    fun fix_this_param_type(this, func: mut BoundFunctionDefinition, cls: BoundClassDefinition) {
+        _utils.trace_enter("Enter fix_this_param_type");
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            let bp: mut BoundFunctionParameter = func.parameters.at(cast<u64>(pi)).some;
+            if (bp.is_this) {
+                if (func.is_new) {
+                    bp.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
+                } else {
+                    bp.bound_type = cls.bound_type;
+                }
+                // Also update the function type on the symbol
+                if (func.symbol.is_some()) {
+                    let sym: mut BoundFunctionSymbol = func.symbol.some;
+                    let param_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                    let pj: mut i64 = 0;
+                    while (pj < cast<i64>(func.parameters.size())) {
+                        param_types.push(func.parameters.at(cast<u64>(pj)).some.bound_type);
+                        pj = pj + 1;
+                    }
+                    sym.bound_type = this.model.some.type_registry.make_function_type(func.return_type, param_types, false);
+                    func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+                }
+                return;
+            }
+            pi = pi + 1;
+        }
+    }
+
+}
+
+}

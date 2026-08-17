@@ -1,9 +1,9 @@
 # NewInstanceCompiledIntoConsumer
 ## Description
-The lib ships `std.Vector<i64>` only; the consumer uses `std.Vector<Key>` where `Key` is a consumer-defined class. `std.Vector__Key` is NOT in the lib's shipped instances, so it is monomorphized INTO the consumer (C++-style template embedding — the lib's verbatim `export class Vector<T>` source carries the template body). Pass4-only.
+The lib ships `std.Vector<i64>` only; the consumer uses `std.Vector<Key>` where `Key` is a consumer-defined class. `std.Vector__Key` is NOT in the lib's shipped instances, so it is monomorphized INTO the consumer (C++-style template embedding — the lib's verbatim `export class Vector<T>` source carries the template body). Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

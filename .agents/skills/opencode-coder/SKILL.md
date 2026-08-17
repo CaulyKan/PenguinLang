@@ -7,6 +7,12 @@ description: 把有复杂度的编码任务或缺陷修复委派给本机 openco
 
 把实际的编码/修 bug 工作委派给本机的 **opencode** CLI（SST 出品的开源 coding agent）。你担任"技术负责人"：分析、出计划、指挥、审查、迭代、收尾。opencode 干"写代码"的活；你干"判断和把关"的活。
 
+## 关于模型
+模型成本从低到高为：`opencode-go/mimo-v2.5` < `opencode-go/deepseek-v4-flash` < 不使用opencode。因此：
+* 首先默认使用`opencode-go/mimo-v2.5`
+* 如果超时后发现opencode输出或完成后review判断质量不理想，换成`opencode-go/deepseek-v4-flash`重试任务
+* 如果还不行，停止任务并向用户汇报。不允许使用任何未指定的模型。
+
 ## 核心契约（务必遵守）
 
 1. **你是负责人，opencode 是执行者。** 你不写大段实现代码（除非任务被判定为"极简"，见第 1 步）；你把工作切成阶段，逐阶段派给 opencode。
@@ -14,7 +20,7 @@ description: 把有复杂度的编码任务或缺陷修复委派给本机 openco
 3. **每个阶段都要 git 快照 + git 审查。** 派活前记录 git 状态；opencode 返回后用 git diff 审查它的改动。不可接受的改动用 git 回滚后重派。
 4. **错误只重试一次。** opencode 报错（网络/余额/鉴权类）→ 重试一次；仍错 → 立即停止并向用户报告，不无限重试。
 5. **多轮迭代用 `-c` 续接同一会话。** 同一任务的后续阶段用 `opencode run -c ...`，复用 opencode 的会话上下文与 DeepSeek 上下文缓存（实测续轮明显更便宜）。
-6. **始终用 `deepseek/deepseek-v4-flash` 模型**（= deepseek-v4-flash，用户的硬性要求）。**不要**用 `deepseek-v4-pro` / `deepseek-reasoner`——无论任务多难。opencode 的默认模型不一定是 flash，所以命令里**每次都显式传** `-m deepseek/deepseek-v4-flash`。
+
 
 ---
 
@@ -77,7 +83,7 @@ git stash create > /tmp/oc-stash-<stage>.txt 2>/dev/null || true   # 可选：�
 ```bash
 timeout 900 opencode run \
   --dir "$PWD" \
-  -m deepseek/deepseek-v4-flash \
+  -m opencode-go/deepseek-v4-flash \
   --auto \
   --title "stage-<N>-<简短阶段名>" \
   "<阶段任务提示词，见下方模板>" \
@@ -91,7 +97,7 @@ echo "EXIT=$?"
 | 参数                           | 作用                                                                                                                                                                                                  |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--dir <path>`                 | 工作区根（opencode 在该目录下运行，只能改这里的文件）                                                                                                                                                 |
-| `-m, --model <provider/model>` | **固定 `deepseek/deepseek-v4-flash`**（用户硬性要求，不要用 pro/reasoner）。每次都要显式传，opencode 默认模型不保证是 flash                                                                           |
+| `-m, --model <provider/model>` | **固定 `opencode-go/deepseek-v4-flash`**（用户硬性要求，不要用 pro/reasoner）。每次都要显式传，opencode 默认模型不保证是 flash                                                                        |
 | `--auto`                       | 自动批准未被显式 deny 的权限请求（等价 reasonix 的自动批准；`opencode.json` 里显式 `deny` 的规则仍生效，`--auto` 不覆盖）。更严格的管控可改用项目 `opencode.json` 的 `permission` 键配 allow/ask/deny |
 | `--title <name>`               | 给会话命名，方便之后在 `opencode session list` 里定位它                                                                                                                                               |
 | `-c, --continue`               | 续接最近一次会话（保留上下文，续轮更便宜）                                                                                                                                                            |
@@ -146,7 +152,7 @@ git diff                 # 逐文件看；大改时按文件分批看
 
 可选二次意见（便宜，让 opencode 自己审自己的 diff）：
 ```bash
-opencode run -c -m deepseek/deepseek-v4-flash --auto \
+opencode run -c -m opencode-go/deepseek-v4-flash --auto \
   "用 git diff 审查你刚才完成的改动：正确性、越界改动、风格、测试是否真的加了且能跑。按问题严重程度列出。" \
   > /tmp/oc-review-<stage>.log 2>&1
 ```
@@ -205,7 +211,7 @@ opencode providers login [url]     # 登录/配置 provider
 ```
 
 - 配置优先级：项目 `opencode.json` > `~/.config/opencode/opencode.json`；凭据存于 `~/.local/share/opencode/auth.json`（`opencode providers login` 管理）。
-- **模型固定 `deepseek/deepseek-v4-flash`**——用户要求始终用 flash，**不要切 `deepseek-v4-pro` 或 `deepseek-reasoner`**。opencode 默认模型不保证是 flash，命令里每次都要显式 `-m deepseek/deepseek-v4-flash`。
+- **模型固定 `opencode-go/deepseek-v4-flash`**——用户要求始终用 flash，**不要切 `deepseek-v4-pro` 或 `deepseek-reasoner`**。opencode 默认模型不保证是 flash，命令里每次都要显式 `-m opencode-go/deepseek-v4-flash`。
 - 权限：headless run 用 `--auto` 自动批准"询问"类权限（显式 `deny` 仍生效）；更严格的管控在 `opencode.json` 的 `permission` 键配置 allow/ask/deny。
 - 自定义 agent（类似"运行档位"概念）可放 `.opencode/agent/*.md` 定义，本技能不强制要求。
 - 无 `--max-steps`：用 shell `timeout` 做单次运行的硬阀门（超时退出码 124）。

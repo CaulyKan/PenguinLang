@@ -1,9 +1,9 @@
 # StdArrayValueParam
 ## Description
-Build a `.penguin-lib` shipping `std.Array<i32,5>` — a mixed type+value class template (`export class Array<T,N>` using `#sizeof` + pointer IR). A seed instantiates `Array<i32,5>`; the consumer uses the shipped instance, exercising the value-template-param path across the lib boundary. Pass4-only.
+Build a `.penguin-lib` shipping `std.Array<i32,5>` — a mixed type+value class template (`export class Array<T,N>` using `#sizeof` + pointer IR). A seed instantiates `Array<i32,5>`; the consumer uses the shipped instance, exercising the value-template-param path across the lib boundary. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

@@ -1,0 +1,593 @@
+// Pass 6 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: for each class/enum, build a BoundVTable per interface
+// implementation (interface method -> concrete method symbol mapping), merging
+// inherited interface vtables (transitive interface inheritance), handling
+// `impl for` primitive implementations and injected (#specializing) impls.
+namespace emperor {
+
+class InterfacesPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_interface_implementation
+    fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_interface_implementation");
+        let ast_count: i64 = cast<i64>(unit.definitions.size());
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            if (i < ast_count) {
+                let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                let vt_scope: mut BoundScope = if (this.model.some.top_level_in_global) {
+                    result.global_scope
+                } else {
+                    top_level_def_scope(ast_def, result.global_scope)
+                };
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_def(ast_def, bound_def, vt_scope));
+            } else {
+                let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+                result.definitions.set(cast<u64>(i), this.build_vtables_for_specialized_def(bound_def, def_lookup_scope(bound_def, result.global_scope)));
+            }
+            i = i + 1;
+        }
+        // Phase 2: merge inherited interface vtables (transitive interface
+        // inheritance). A class implementing IBar<u8> (which itself implements
+        // IFoo<u8> via a nested impl) must also carry an IFoo<u8> vtable. Done
+        // after Phase 1 so specialized interfaces' own vtables exist first.
+        // Walks the bound tree recursively (classes may be nested in namespaces).
+        let m: mut i64 = 0;
+        while (m < cast<i64>(result.definitions.size())) {
+            let mdef: BoundDefinition = result.definitions.at(cast<u64>(m)).some;
+            this.merge_inherited_vtables_for_def(mdef, def_lookup_scope(mdef, result.global_scope));
+            m = m + 1;
+        }
+    }
+
+    fun merge_inherited_vtables_for_def(mut this, def: BoundDefinition, global_scope: BoundScope) {
+        _utils.trace_enter("Enter merge_inherited_vtables_for_def");
+        // Pass 6 phase 2 (shares current_pass_index=6 with build_vtables_for_def,
+        // which runs first on the same defs): use `>` so the phase-1 marker (6)
+        // does not skip this merge; phase 1 uses `>=` to stay skipped on re-run.
+        if (this.model.some.processed_beyond(def)) { return; }
+        if (def is BoundDefinition.class_def) {
+            this.merge_container_vtables(def.class_def.vtables, def.class_def.interface_impls, global_scope);
+        }
+        if (def is BoundDefinition.enum_def) {
+            this.merge_container_vtables(def.enum_def.vtables, def.enum_def.interface_impls, global_scope);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            for (let child in ns.children) {
+                this.merge_inherited_vtables_for_def(child, global_scope);
+            }
+        }
+        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+    }
+
+    // Transitive interface-inheritance merge. A worklist is seeded from the
+    // container's own impls (their interface_types carry generic args, e.g.
+    // IBar<u8>), then each is resolved to its specialized def and its nested-impl
+    // vtables copied into the container; copied vtables' interface types are
+    // added back to the worklist so multi-level chains (IBaz -> IBar -> IFoo) are
+    // flattened to any depth.
+    fun merge_container_vtables(mut this, container_vtables: mut _utils.List<BoundVTable>, seed_impls: _utils.List<BoundDefinition>, global_scope: BoundScope) {
+        _utils.trace_enter("Enter merge_container_vtables");
+        let worklist: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        for (let sd in seed_impls) {
+            if (sd is BoundDefinition.impl_def) {
+                worklist.push(sd.impl_def.interface_type);
+            }
+        }
+        let processed: mut _utils.List<string> = new _utils.List<string>();
+        let wi: mut i64 = 0;
+        while (wi < cast<i64>(worklist.size())) {
+            let iface_type: BoundType = worklist.at(cast<u64>(wi)).some;
+            wi = wi + 1;
+            let iface_name: string = iface_type.display_name();
+            let already_processed: mut bool = false;
+            for (let pn in processed) {
+                if (pn == iface_name) { already_processed = true; }
+            }
+            if (already_processed) { continue; }
+            processed.push(iface_name);
+            let src_opt: Option<BoundInterfaceDefinition> = this.specialized_interface_for_type(iface_type, global_scope);
+            if (src_opt.is_none()) { continue; }
+            let src: BoundInterfaceDefinition = src_opt.some;
+            for (let svt in src.vtables) {
+                if (!this.has_vtable_for_interface(container_vtables, svt.interface_type)) {
+                    let new_vt: mut BoundVTable = new BoundVTable();
+                    new_vt.interface_type = svt.interface_type;
+                    for (let slot in svt.slots) {
+                        let ns: mut BoundVTableSlot = new BoundVTableSlot();
+                        ns.interface_method = slot.interface_method;
+                        ns.implementation_method = slot.implementation_method;
+                        new_vt.slots.push(ns);
+                    }
+                    container_vtables.push(new_vt);
+                    worklist.push(svt.interface_type);
+                }
+            }
+        }
+    }
+
+    // Resolve the (possibly specialized) interface def for a BoundType that
+    // references an interface (e.g. IBar<u8>). Returns the template for
+    // non-generic types, or none if not an interface.
+    fun specialized_interface_for_type(this, iface_type: BoundType, global_scope: BoundScope) -> Option<BoundInterfaceDefinition> {
+        _utils.trace_enter("Enter specialized_interface_for_type");
+        if (iface_type.type_definition.is_none()) { return new Option<BoundInterfaceDefinition>.none(); }
+        let td: BoundDefinition = iface_type.type_definition.some;
+        if (!(td is BoundDefinition.interface_def)) { return new Option<BoundInterfaceDefinition>.none(); }
+        let tmpl: BoundInterfaceDefinition = td.interface_def;
+        if (cast<i64>(iface_type.generic_args.size()) > 0) {
+            let mangled: string = MonomorphizePass.mangle_generic_name(tmpl.full_name, iface_type.generic_args);
+            let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+            if (spec_sym.is_some()) {
+                if (spec_sym.some is BoundSymbol.type_sym) {
+                    if (let spec_td := spec_sym.some.type_sym.bound_type.type_definition.some) {
+                        if (spec_td is BoundDefinition.interface_def) {
+                            return new Option<BoundInterfaceDefinition>.some(spec_td.interface_def);
+                        }
+                    }
+                }
+            }
+        }
+        return new Option<BoundInterfaceDefinition>.some(tmpl);
+    }
+
+    fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter build_vtables_for_specialized_def");
+        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (bound_def is BoundDefinition.class_def) {
+            let cls: mut BoundClassDefinition = bound_def.class_def;
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(cls.name));
+            if (ast_def.is_some() && ast_def.some is Definition.class_def) {
+                this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
+            }
+            this.build_injected_impl_vtables_for_class(cls, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(cls);
+        }
+        if (bound_def is BoundDefinition.enum_def) {
+            let e: mut BoundEnumDefinition = bound_def.enum_def;
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(e.name));
+            if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
+                this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
+            }
+            this.build_injected_impl_vtables_for_enum(e, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.enum_def(e);
+        }
+        if (bound_def is BoundDefinition.interface_def) {
+            let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(iface.name));
+            if (ast_def.is_some()) {
+                if (ast_def.some is Definition.interface_def) {
+                    this.build_interface_vtables(ast_def.some.interface_def, iface, global_scope);
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.interface_def(iface);
+        }
+        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        return bound_def;
+    }
+
+    // #specializing: build vtables for impls injected by a callback. These impls
+    // are NOT in the AST template (build_class_vtables scans the template's
+    // members), so build each injected impl's vtable from its stored AST fragment.
+    fun build_injected_impl_vtables_for_class(mut this, cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_injected_impl_vtables_for_class");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        if (cls.scope.is_none()) { return; }
+        for (let impl_def in cls.interface_impls) {
+            if (impl_def is BoundDefinition.impl_def) {
+                let bi: BoundInterfaceImplementation = impl_def.impl_def;
+                if (bi.source_impl_def.is_some()) {
+                    if (bi.source_impl_def.some is Definition.impl_def) {
+                        let ast_impl: InterfaceImplementation = bi.source_impl_def.some.impl_def;
+                        // Resolve the interface by SIMPLE name (like build_class_vtables)
+                        // so the emitted interface_id global is `IJsonSerializable` —
+                        // matching how the CALLER computes it. bi.interface_type (with
+                        // generic args) stays on the bound impl for monomorphization
+                        // collection / interface-inheritance merging.
+                        let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(ast_impl.type_spec.some, global_scope, ast_impl.location);
+        } else {
+            iface_type = m.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+        }
+                        if (!this.has_vtable_for_interface(cls.vtables, iface_type)) {
+                            let vtable: mut BoundVTable = new BoundVTable();
+                            vtable.interface_type = iface_type;
+                            this.build_vtable_slots(ast_impl, vtable, global_scope, cls.scope.some);
+                            cls.vtables.push(vtable);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun build_injected_impl_vtables_for_enum(mut this, e: mut BoundEnumDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_injected_impl_vtables_for_enum");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        if (e.scope.is_none()) { return; }
+        for (let impl_def in e.interface_impls) {
+            if (impl_def is BoundDefinition.impl_def) {
+                let bi: BoundInterfaceImplementation = impl_def.impl_def;
+                if (bi.source_impl_def.is_some()) {
+                    if (bi.source_impl_def.some is Definition.impl_def) {
+                        let ast_impl: InterfaceImplementation = bi.source_impl_def.some.impl_def;
+                        let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(ast_impl.type_spec.some, global_scope, ast_impl.location);
+        } else {
+            iface_type = m.resolve_type_name(ast_impl.type_name, global_scope, ast_impl.location);
+        }
+                        if (!this.has_vtable_for_interface(e.vtables, iface_type)) {
+                            let vtable: mut BoundVTable = new BoundVTable();
+                            vtable.interface_type = iface_type;
+                            this.build_vtable_slots(ast_impl, vtable, global_scope, e.scope.some);
+                            e.vtables.push(vtable);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun extract_template_name(this, mangled_name: string) -> string {
+        _utils.trace_enter("Enter extract_template_name");
+        // New format: `Name$<base62>` — slice at the first `$` (absolute, since
+        // `$` is not a valid identifier char). Legacy `__` format fallback kept
+        // during migration.
+        let dollar: i64 = string_find(mangled_name, "$");
+        if (dollar >= 0) {
+            return string_substring(mangled_name, 0, dollar);
+        }
+        let pos: i64 = string_find(mangled_name, "__");
+        if (pos >= 0) {
+            return string_substring(mangled_name, 0, pos);
+        }
+        return mangled_name;
+    }
+
+
+    fun build_vtables_for_def(mut this, ast_def: Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter build_vtables_for_def");
+        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
+            let cls: mut BoundClassDefinition = bound_def.class_def;
+            this.build_class_vtables(ast_def.class_def, cls, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(cls);
+        }
+        if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
+            let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
+            this.build_interface_vtables(ast_def.interface_def, iface, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.interface_def(iface);
+        }
+        if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
+            let e: mut BoundEnumDefinition = bound_def.enum_def;
+            this.build_enum_vtables(ast_def.enum_def, e, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.enum_def(e);
+        }
+        if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
+            let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            this.process_impl_for(ast_def.impl_for_def, impl_for, global_scope, global_scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.impl_for_def(impl_for);
+        }
+        if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
+            let ns: mut BoundNamespaceDefinition = bound_def.namespace_def;
+            let ns_scope: mut BoundScope = ns.scope.some;
+            let k: mut i64 = 0;
+            while (k < cast<i64>(ns.children.size())) {
+                let bound_child: BoundDefinition = ns.children.at(cast<u64>(k)).some;
+                let ast_child: Option<Definition> = this.find_matching_ast_child(ast_def.namespace_def, bound_child);
+                if (ast_child.is_some()) {
+                    ns.children.set(cast<u64>(k), this.build_vtables_for_def(ast_child.some, bound_child, ns_scope));
+                }
+                k = k + 1;
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.namespace_def(ns);
+        }
+        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        return bound_def;
+    }
+
+    fun find_matching_ast_child(this, ast_ns: NamespaceDefinition, bound_child: BoundDefinition) -> Option<Definition> {
+        _utils.trace_enter("Enter find_matching_ast_child");
+        for (let ast_child in ast_ns.children) {
+            if (ast_child is Definition.function_def && bound_child is BoundDefinition.function_def) {
+                if (ast_child.function_def.name == bound_child.function_def.name) {
+                    return new Option<Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is Definition.class_def && bound_child is BoundDefinition.class_def) {
+                if (ast_child.class_def.name == bound_child.class_def.name) {
+                    return new Option<Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is Definition.interface_def && bound_child is BoundDefinition.interface_def) {
+                if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                    return new Option<Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is Definition.enum_def && bound_child is BoundDefinition.enum_def) {
+                if (ast_child.enum_def.name == bound_child.enum_def.name) {
+                    return new Option<Definition>.some(ast_child);
+                }
+            }
+            if (ast_child is Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                return new Option<Definition>.some(ast_child);
+            }
+            if (ast_child is Definition.initial_routine && bound_child is BoundDefinition.initial_routine) {
+                return new Option<Definition>.some(ast_child);
+            }
+            if (ast_child is Definition.global_var && bound_child is BoundDefinition.global_var_def) {
+                if (ast_child.global_var.name == bound_child.global_var_def.name) {
+                    return new Option<Definition>.some(ast_child);
+                }
+            }
+        }
+        return new Option<Definition>.none();
+    }
+
+    fun build_class_vtables(mut this, ast_cls: ClassDefinition, bound_cls: mut BoundClassDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_class_vtables");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        let class_scope: mut BoundScope = bound_cls.scope.some;
+        for (let member in ast_cls.members) {
+            if (member is Definition.impl_def) {
+                let impl_entry: InterfaceImplementation = member.impl_def;
+                let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = m.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
+                // A class may have several `impl IFoo<u8>` blocks; build only one
+                // vtable per interface (build_vtable_slots scans the whole class
+                // scope for overrides, so one pass covers all blocks).
+                if (!this.has_vtable_for_interface(bound_cls.vtables, iface_type)) {
+                    let vtable: mut BoundVTable = new BoundVTable();
+                    vtable.interface_type = iface_type;
+                    this.build_vtable_slots(impl_entry, vtable, global_scope, class_scope);
+                    bound_cls.vtables.push(vtable);
+                }
+            }
+        }
+    }
+
+    fun has_vtable_for_interface(this, vtables: _utils.List<BoundVTable>, iface_type: BoundType) -> bool {
+        _utils.trace_enter("Enter has_vtable_for_interface");
+        for (let vt in vtables) {
+            if (vt.interface_type.display_name() == iface_type.display_name()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fun build_enum_vtables(mut this, ast_enum: EnumDefinition, bound_enum: mut BoundEnumDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_enum_vtables");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        let enum_scope: mut BoundScope = bound_enum.scope.some;
+        for (let member in ast_enum.members) {
+            if (member is Definition.impl_def) {
+                let impl_entry: InterfaceImplementation = member.impl_def;
+                let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = m.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
+                if (!this.has_vtable_for_interface(bound_enum.vtables, iface_type)) {
+                    let vtable: mut BoundVTable = new BoundVTable();
+                    vtable.interface_type = iface_type;
+                    this.build_vtable_slots(impl_entry, vtable, global_scope, enum_scope);
+                    bound_enum.vtables.push(vtable);
+                }
+            }
+        }
+    }
+
+    fun build_interface_vtables(mut this, ast_iface: InterfaceDefinition, bound_iface: mut BoundInterfaceDefinition, global_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_interface_vtables");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        // Generic interface templates are not processed here: their nested
+        // `impl IFoo<T>` blocks reference the unresolved type param T. They are
+        // specialized per instantiation (IBar<u8> -> IBar__u8) and the
+        // specialized defs build the concrete nested-impl vtables.
+        if (cast<i64>(bound_iface.generic_params.size()) > 0) {
+            return;
+        }
+        let iface_scope: mut BoundScope = bound_iface.scope.some;
+        for (let member in ast_iface.members) {
+            if (member is Definition.impl_def) {
+                let impl_entry: InterfaceImplementation = member.impl_def;
+                let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (impl_entry.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(impl_entry.type_spec.some, global_scope, impl_entry.location);
+        } else {
+            iface_type = m.resolve_type_name(impl_entry.type_name, global_scope, impl_entry.location);
+        }
+                let vtable: mut BoundVTable = new BoundVTable();
+                vtable.interface_type = iface_type;
+                this.build_vtable_slots(impl_entry, vtable, global_scope, iface_scope);
+                bound_iface.vtables.push(vtable);
+            }
+        }
+    }
+
+    // For a generic interface impl (impl IFoo<u8>), resolve the specialized
+    // interface def (IFoo__u8) so default-method slots point to the specialized
+    // (emitted) default rather than the unemitted template. Returns the template
+    // for non-generic impls or if the specialization can't be found.
+    // Type args are resolved in `arg_scope` (the impl's enclosing scope) so a
+    // nested interface impl like IBar<T> { impl IFoo<T> {...} } resolves T from
+    // IBar's scope; the specialized def is looked up in global_scope.
+    fun resolve_specialized_interface(this, tmpl_iface: BoundInterfaceDefinition, impl_entry: InterfaceImplementation, arg_scope: BoundScope, global_scope: BoundScope) -> BoundInterfaceDefinition {
+        _utils.trace_enter("Enter resolve_specialized_interface");
+        if (impl_entry.type_spec.is_some()) {
+            if (cast<i64>(impl_entry.type_spec.some.generic_args.size()) > 0) {
+                let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                for (let ga in impl_entry.type_spec.some.generic_args) {
+                    args.push(this.model.some.resolve_types_pass.resolve_single_generic_arg(ga, arg_scope));
+                }
+                let mangled: string = MonomorphizePass.mangle_generic_name(tmpl_iface.full_name, args);
+                let spec_sym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some()) {
+                    if (spec_sym.some is BoundSymbol.type_sym) {
+                        if (let spec_td := spec_sym.some.type_sym.bound_type.type_definition.some) {
+                            if (spec_td is BoundDefinition.interface_def) {
+                                return spec_td.interface_def;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return tmpl_iface;
+    }
+
+    fun build_vtable_slots(mut this, impl_entry: InterfaceImplementation, vtable: mut BoundVTable, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
+        _utils.trace_enter("Enter build_vtable_slots");
+        // Build one vtable slot per non-constructor interface method, in interface
+        // declaration order (matches resolve_vtable_slot's index computation). Each
+        // slot points to the class's override if it provides one, otherwise to the
+        // interface's default method — for a generic interface, the specialized
+        // default (ns_IFoo__u8_bar) so the slot references an emitted function.
+        // Use the already-resolved vtable.interface_type rather than a name lookup
+        // (the interface may be nested in a namespace the bare lookup can't reach).
+        if (vtable.interface_type.type_definition.is_none()) { return; }
+        let tmpl_td: BoundDefinition = vtable.interface_type.type_definition.some;
+        if (!(tmpl_td is BoundDefinition.interface_def)) { return; }
+        let tmpl_iface: BoundInterfaceDefinition = tmpl_td.interface_def;
+        let spec_iface: BoundInterfaceDefinition = this.resolve_specialized_interface(tmpl_iface, impl_entry, impl_scope, global_scope);
+        for (let md in tmpl_iface.methods) {
+            if (md is BoundDefinition.function_def) {
+                if (md.function_def.name != "new") {
+                    let slot: mut BoundVTableSlot = new BoundVTableSlot();
+                    if (md.function_def.symbol.is_some()) {
+                        slot.interface_method = new Option<BoundFunctionSymbol>.some(md.function_def.symbol.some);
+                    }
+                    let mname: string = md.function_def.name;
+                    let override_sym: Option<BoundSymbol> = impl_scope.lookup_symbol(mname);
+                    if (override_sym.is_some()) {
+                        if (override_sym.some is BoundSymbol.function_sym) {
+                            slot.implementation_method = new Option<BoundFunctionSymbol>.some(override_sym.some.function_sym);
+                        }
+                    } else if (spec_iface.scope.is_some()) {
+                        let def_sym: Option<BoundSymbol> = spec_iface.scope.some.lookup_symbol(mname);
+                        if (def_sym.is_some()) {
+                            if (def_sym.some is BoundSymbol.function_sym) {
+                                // Skip extern interface methods with no user override
+                                // (e.g. ICopy.copy) — the LLVM backend handles these
+                                // natively (e.g. value-type struct copy) and the extern
+                                // function body is never generated, so the vtable entry
+                                // would reference an undefined symbol.
+                                if (!def_sym.some.function_sym.is_extern) {
+                                    slot.implementation_method = new Option<BoundFunctionSymbol>.some(def_sym.some.function_sym);
+                                }
+                            }
+                        }
+                    }
+                    vtable.slots.push(slot);
+                }
+            }
+        }
+        this.model.some.trace("build vtable slots: " + impl_scope.full_name + " implements " + vtable.interface_type.display_name() + " (" + cast<string>(vtable.slots.size()) + " slots)");
+    }
+
+    fun process_impl_for(mut this, ast_impl: InterfaceForImplementation, bound_impl: mut BoundInterfaceForImplementation, global_scope: mut BoundScope, impl_scope: mut BoundScope) {
+        _utils.trace_enter("Enter process_impl_for");
+        // resolve_impl_base_type/resolve_type_name take `mut this`; rebind the
+        // (immutably-typed) Option payload to a mutable binding first.
+        let m: mut SemanticModel = this.model.some;
+        // Resolve via the full TypeSpecifier (qualified_parts aware): the parser
+        // stores `ns2.Bar` as name="Bar" + qualified_parts=["ns2"], so resolving
+        // the bare name from the impl scope would miss cross-namespace targets.
+        let iface_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (ast_impl.type_spec.is_some()) {
+            iface_type = m.resolve_impl_base_type(ast_impl.type_spec.some, impl_scope, ast_impl.location);
+        } else {
+            iface_type = m.resolve_type_name(ast_impl.type_name, impl_scope, ast_impl.location);
+        }
+        let for_type: mut BoundType = this.model.some.type_registry.make_error_type();
+        if (ast_impl.for_type_spec.is_some()) {
+            for_type = this.model.some.resolve_type_specifier(ast_impl.for_type_spec.some, impl_scope);
+        } else {
+            for_type = m.resolve_type_name(ast_impl.for_type_name, impl_scope, ast_impl.location);
+        }
+        bound_impl.interface_type = iface_type;
+        bound_impl.for_type = for_type;
+        // Orphan principle: at least one of (interface, target type) must be in
+        // the same namespace as the impl block.
+        if (this.model.some.bind_expressions_pass.check_orphan_impl(iface_type, for_type, impl_scope)) {
+            this.model.some.report_error(new ErrorCode.E_ORPHAN_IMPL(),
+                "impl " + ast_impl.type_name + " for " + ast_impl.for_type_name
+                + " is orphaned - neither the interface nor the target type is "
+                + "defined in the current namespace. At least one must be local.",
+                ast_impl.location);
+        }
+        let vtable: mut BoundVTable = new BoundVTable();
+        vtable.interface_type = iface_type;
+        for (let func in ast_impl.functions) {
+            if (func is Definition.function_def) {
+                let slot: mut BoundVTableSlot = new BoundVTableSlot();
+                let iface_sym: Option<BoundSymbol> = impl_scope.lookup_type_in_scope(ast_impl.type_name);
+                if (iface_sym.is_some()) {
+                    if (iface_sym.some is BoundSymbol.type_sym) {
+                        let iface_def: BoundDefinition = iface_sym.some.type_sym.bound_type.type_definition.some;
+                        if (iface_def is BoundDefinition.interface_def) {
+                            let iface: BoundInterfaceDefinition = iface_def.interface_def;
+                            for (let md in iface.methods) {
+                                if (md is BoundDefinition.function_def) {
+                                    if (md.function_def.name == func.function_def.name) {
+                                        if (md.function_def.symbol.is_some()) {
+                                            slot.interface_method = new Option<BoundFunctionSymbol>.some(md.function_def.symbol.some);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (func.function_def.name != "") {
+                    let impl_sym: Option<BoundSymbol> = impl_scope.lookup_symbol(func.function_def.name);
+                    if (impl_sym.is_some()) {
+                        if (impl_sym.some is BoundSymbol.function_sym) {
+                            slot.implementation_method = new Option<BoundFunctionSymbol>.some(impl_sym.some.function_sym);
+                        }
+                    }
+                }
+                vtable.slots.push(slot);
+            }
+        }
+        bound_impl.vtable = new Option<BoundVTable>.some(vtable);
+    }
+
+}
+
+}

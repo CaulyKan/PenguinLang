@@ -1,0 +1,883 @@
+// Pass 8 (phase 3 of 3) of the SemanticModel pipeline, extracted from
+// SemanticModel.penguin: META CALL binding. This pass binds compile-time #fun
+// invocations (argument binding + JIT evaluation + result splicing), the
+// #sizeof / #__address_of / #__load / #__store pointer intrinsics, meta
+// argument/value evaluation, deferred type-arg handling, the unique-name
+// trampoline and template-instantiation routing. After this split
+// SemanticModel.penguin holds only the shared core.
+namespace emperor {
+
+class BindMetaCallsPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+
+    fun bind_meta_call(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        _utils.trace_enter("Enter bind_meta_call");
+        // Compile-time / runtime pointer intrinsics — dispatched before the #fun
+        // probe so they never enter the meta-JIT path. #sizeof splices an integer
+        // literal (BoundType.byte_size); #__address_of/#__load/#__store lower to
+        // runtime IR via a synthetic BoundFunctionCallExpression whose callee
+        // full_name is a reserved <intrinsic>.* token matched in IRGenerator.
+        if (expr.func_name == "sizeof") { return this.bind_sizeof_intrinsic(expr, scope); }
+        if (expr.func_name == "__address_of") { return this.bind_address_of_intrinsic(expr, scope); }
+        if (expr.func_name == "__load") { return this.bind_load_intrinsic(expr, scope); }
+        if (expr.func_name == "__store") { return this.bind_store_intrinsic(expr, scope); }
+        // #compiler() is only meaningful inside a #fun body, where MetaEngine
+        // rewrites it to `new emperor.CompilerContext()` before unit B compiles.
+        // A stray call in unit A (normal source) reaches here — report a clear
+        // diagnostic instead of the silent passthrough that would otherwise end
+        // in an IRGenerator E_INTERNAL + exit(1).
+        if (expr.func_name == "compiler") {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#compiler() is only available inside a #fun body", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        // Phase 5c: if this is a call to a registered #fun, JIT-execute it at
+        // compile time and splice the result (integer literal, or a returned ast
+        // re-bound at the call site). Only the JIT is reached in native pass2+
+        // (--enable-meta); #funs are registered in collect_meta_function_defs
+        // (pre-rewrite) and pass_build_scopes. If func_name is not a #fun, fall
+        // through to a plain BoundMetaCallExpression (e.g. unknown #attribute, or
+        // built-in meta like #defined/#option which are resolved elsewhere).
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(expr.func_name);
+        if (bmf_opt.is_some()) {
+            let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+            // req1: if a type-typed argument is a template type parameter that is not
+            // yet specialized (it resolves in scope to its dummy placeholder), the call
+            // cannot be JIT-evaluated in this — still generic — body. Defer it: emit a
+            // zero placeholder so the (never-mononmorphized) generic body binds without
+            // error. The specialized body, where T is concrete, re-binds and splices the
+            // real result.
+            if (this.meta_call_has_deferred_type_arg(expr, bmf, scope)) {
+                return this.deferred_meta_call_placeholder(bmf);
+            }
+            let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf, expr, scope);
+            if (spliced.is_some()) {
+                return spliced;
+            }
+            return new Option<BoundExpression>.none();
+        }
+        let bound_args: mut _utils.List<BoundExpression> = this.model.some.bind_expressions_pass.bind_arguments(expr.arguments, scope);
+        // ast params take their argument positionally now — trailing blocks are
+        // only supported for an `unstructured_ast` last param (raw text, bound in
+        // bind_meta_args), so the parsed trailing-block slot is always empty.
+        let result: mut BoundMetaCallExpression = new BoundMetaCallExpression(expr.func_name, bound_args, new Option<Expression>.none(), expr.trailing_definition, expr.location);
+        return new Option<BoundExpression>.some(new BoundExpression.meta_call(result));
+    }
+
+
+    // Phase 5c: JIT-execute a #fun meta call (expression/statement position) and
+    // return the spliced result. Arity 0..3 via the i64 trampolines. By return
+    // kind: ast -> resolve token -> rebind the AST Expression at the call site;
+    // i64/bool -> integer literal; type -> not yet supported (error). `expr` is
+    // the original MetaCallExpression (carries args + trailing_block_raw + location).
+    fun try_splice_meta_fun_call(mut this, bmf: BoundMetaFunctionDefinition, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        this.model.some.meta_rewriter.seed_meta_engine();
+        let args_opt: Option<_utils.List<i64>> = this.bind_meta_args(expr, bmf, scope);
+        if (args_opt.is_none()) {
+            return new Option<BoundExpression>.none();
+        }
+        let args: _utils.List<i64> = args_opt.some;
+        let result_i64: mut i64 = this.model.some.meta_engine.call_meta_function_stub(bmf, args);
+        let ret_kind: mut string = "";
+        if (bmf.return_type.is_some()) {
+            ret_kind = bmf.return_type.some.name;
+        }
+        if (ret_kind == "ast") {
+            let node_opt: Option<Expression> = this.model.some.meta_engine.get_ast_expression(cast<u64>(result_i64));
+            if (node_opt.is_some()) {
+                return this.model.some.bind_expressions_pass.bind_expression(node_opt.some, scope);
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return an expression ast in expression position", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        if (ret_kind == "string") {
+            // Phase 5: the caller-stub stored the #fun's returned string into the
+            // host global active_string_result (returning i64 0). Splice it as a
+            // string literal. (Simple strings only — no quote/escape handling.)
+            let s: string = penguin_meta_get_string_result();
+            let bt: BoundType = this.model.some.type_registry.resolve_type("string").some;
+            let lit: BoundLiteralExpression = new BoundLiteralExpression("\"" + s + "\"", bt, new LiteralKind.StringLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+        }
+        if (ret_kind == "type") {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " type-return splice is not supported in expression position (use a type-specifier position)", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        // bool returns splice as a BOOL literal ("true"/"false"), not an integer
+        // literal — an IntegerLiteral carrying bool type would otherwise emit the
+        // wrong constant through cast<string>.
+        if (ret_kind == "bool") {
+            let bt: BoundType = this.model.some.type_registry.resolve_type("bool").some;
+            let val: mut string = "false";
+            if (result_i64 != 0) { val = "true"; }
+            let lit: BoundLiteralExpression = new BoundLiteralExpression(val, bt, new LiteralKind.BoolLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+        }
+        if (ret_kind == "double" || ret_kind == "f64" || ret_kind == "float" || ret_kind == "f32") {
+            // M6: the caller-stub stored the #fun's returned double into the host
+            // global active_double_result (returning i64 0). Splice it as a double
+            // (f64) literal. Format via cast<string> (VM: DoubleValue.ToString,
+            // native: %g) — the value text is a valid LLVM double constant.
+            let d: f64 = penguin_meta_get_double_result();
+            let bt: BoundType = this.model.some.type_registry.resolve_type("double").some;
+            let text: string = cast<string>(d);
+            let lit: BoundLiteralExpression = new BoundLiteralExpression(text, bt, new LiteralKind.FloatLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+        }
+        // M6-step2 4c: a REFERENCE-typed return (e.g. -> List<i64>) may NOT be
+        // spliced into runtime code — the stub hands back the compile-time address,
+        // which is meaningless in the generated program (dangling). Reference
+        // returns are for compile-time flows only (template args, # introspection).
+        if (string_length(ret_kind) > 0 && ret_kind != "ast"
+            && ret_kind != "i8" && ret_kind != "i16" && ret_kind != "i32" && ret_kind != "i64"
+            && ret_kind != "u8" && ret_kind != "u16" && ret_kind != "u32" && ret_kind != "u64"
+            && ret_kind != "char" && ret_kind != "void") {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta '#" + bmf.name + "' returns a reference type ('" + ret_kind + "'); reference returns cannot be spliced into runtime code; use it as a template argument or introspect it inside another #fun", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let ret_type: BoundType = this.resolve_meta_return_type(bmf);
+        let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(result_i64), ret_type, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+    }
+
+
+    // Phase 5c: JIT-execute a definition-position #fun call (a top-level/member
+    // `#gen()` whose MetaCallDefinition wraps a #fun returning ast) and inject
+    // the returned Definition into `out` so it flows through the normal passes as
+    // if originally in source. Returns true if handled (caller skips the default
+    // push); false to fall through and push the raw def.
+    fun try_splice_meta_fun_def(mut this, d: MetaCallDefinition, out: mut _utils.List<Definition>) -> bool {
+        if (let call := d.call.some) {
+            if (call is Expression.meta_call) {
+                let mc: MetaCallExpression = call.meta_call;
+                let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
+                if (let bmf := bmf_opt.some) {
+                    this.model.some.meta_rewriter.seed_meta_engine();
+                    let args_opt: Option<_utils.List<i64>> = this.bind_meta_args(mc, bmf, this.model.some.global_scope);
+                    if (args_opt.is_none()) {
+                        return true;
+                    }
+                    let args: _utils.List<i64> = args_opt.some;
+                    let result_i64: mut i64 = this.model.some.meta_engine.call_meta_function_stub(bmf, args);
+                    let def_opt: Option<Definition> = this.model.some.meta_engine.get_ast_definition(cast<u64>(result_i64));
+                    if (def_opt.is_some()) {
+                        let single: mut _utils.List<Definition> = new _utils.List<Definition>();
+                        single.push(def_opt.some);
+                        this.model.some.meta_rewriter.collect_resolved_definitions(single, out);
+                        // Stamp the CALLING file onto the spliced defs (they
+                        // parsed with a synthetic "<meta_...>" filename, which
+                        // would otherwise bind them into a synthetic file
+                        // namespace invisible to the user's file).
+                        let owner_file: string = mc.location.filename;
+                        let oi2: mut i64 = 0;
+                        while (oi2 < cast<i64>(out.size())) {
+                            let od: Definition = out.at(cast<u64>(oi2)).some;
+                            set_def_source_file(od, owner_file);
+                            oi2 = oi2 + 1;
+                        }
+                        return true;
+                    }
+                    this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return a definition ast in definition position", mc.location);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+
+    // Phase 5c: build the i64 argument list for a #fun JIT call, binding each
+    // argument per its parameter kind. type/ast args become opaque tokens (small
+    // i64); integer args must be compile-time integer constants. A trailing code
+    // block supplies the last ast-typed parameter when not given positionally.
+    // Returns none (error reported) if an argument cannot be converted.
+    fun bind_meta_args(mut this, expr: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: mut BoundScope) -> Option<_utils.List<i64>> {
+        this.model.some.meta_rewriter.seed_meta_engine();
+        let result: mut _utils.List<i64> = new _utils.List<i64>();
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(expr.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs) {
+            if (pi >= nparams) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " has too many arguments", expr.location);
+                return new Option<_utils.List<i64>>.none();
+            }
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            let arg: Expression = expr.arguments.at(cast<u64>(pi)).some;
+            let v: Option<i64> = this.bind_meta_arg_value(arg, kind, expr.location, scope);
+            if (v.is_none()) {
+                return new Option<_utils.List<i64>>.none();
+            }
+            result.push(v.some);
+            pi = pi + 1;
+        }
+        // Trailing `{ ... }` blocks are supported ONLY for an `unstructured_ast`
+        // last parameter — the block is captured as raw text and delivered as a
+        // string. `ast` parameters take their argument positionally instead.
+        if (expr.trailing_block_raw.is_some()) {
+            if (nparams >= 1 && nargs < nparams) {
+                let last_kind: string = bmf.parameters.at(cast<u64>(nparams - 1)).some.kind;
+                if (last_kind == "unstructured_ast") {
+                    let raw: string = expr.trailing_block_raw.some;
+                    let token: u64 = this.model.some.meta_engine.register_string_value(raw);
+                    result.push(cast<i64>(token));
+                } else {
+                    this.model.some.report_error(new ErrorCode.E_META(), "a trailing '{ ... }' block is only supported for an 'unstructured_ast' last parameter of #" + bmf.name + " (last param kind: '" + last_kind + "')", expr.location);
+                    return new Option<_utils.List<i64>>.none();
+                }
+            }
+        }
+        return new Option<_utils.List<i64>>.some(result);
+    }
+
+
+    // Convert one meta argument to its i64 token/value according to param kind.
+    fun bind_meta_arg_value(mut this, arg: Expression, kind: string, loc: SourceLocation, scope: mut BoundScope) -> Option<i64> {
+        if (kind == "type") {
+            // Accept either a bare type name (Point) or #typeof(Point). Resolve via
+            // the MetaEngine (which consults the global scope for user types, not
+            // just the primitive-only type_registry).
+            let type_name: string = this.meta_type_arg_name(arg);
+            if (type_name != "") {
+                // req1: if type_name is a template type parameter specialized to a
+                // concrete type (visible in the local scope chain), resolve it to that
+                // concrete type's name so the assigned token is identical to
+                // #typeof(ConcreteType). Falls back to the bare name for ordinary
+                // (global) types.
+                let resolve_name: mut string = type_name;
+                let concrete_opt: Option<string> = this.meta_type_arg_concrete_name(type_name, scope);
+                if (concrete_opt.is_some()) {
+                    resolve_name = concrete_opt.some;
+                }
+                let bt_opt: Option<BoundType> = this.model.some.meta_engine.resolve_type_by_name(resolve_name);
+                if (bt_opt.is_some()) {
+                    let token: u64 = this.model.some.meta_engine.get_or_assign_type_token(resolve_name);
+                    return new Option<i64>.some(cast<i64>(token));
+                }
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument '" + type_name + "' is not a known type", loc);
+                return new Option<i64>.none();
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument must be a type name", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "ast") {
+            let token: u64 = this.model.some.meta_engine.register_ast_expression(arg);
+            return new Option<i64>.some(cast<i64>(token));
+        }
+        if (kind == "string") {
+            if (arg is Expression.string_literal) {
+                let val: string = this.model.some.meta_rewriter.meta_strip_quotes(arg.string_literal.value);
+                let token: u64 = this.model.some.meta_engine.register_string_value(val);
+                return new Option<i64>.some(cast<i64>(token));
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta string argument must be a string literal", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "bool") {
+            if (arg is Expression.bool_literal) {
+                if (arg.bool_literal.value == "true") { return new Option<i64>.some(1); }
+                return new Option<i64>.some(0);
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta bool argument must be a bool literal (true/false)", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "double") {
+            // M6: a double literal arg (e.g. scale<2.5>() desugars to #scale(2.5)).
+            // The literal text is parsed to f64 and stored in the double registry;
+            // the caller-stub materializes it via penguin_meta_get_double_value.
+            if (arg is Expression.constant) {
+                let val: f64 = string_to_double(arg.constant.value);
+                let token: u64 = this.model.some.meta_engine.register_double_value(val);
+                return new Option<i64>.some(cast<i64>(token));
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta double argument must be a numeric literal", loc);
+            return new Option<i64>.none();
+        }
+        let bound_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(arg, scope);
+        if (bound_opt.is_some()) {
+            let iv: Option<i64> = this.model.some.bind_expressions_pass.bound_literal_i64_value(bound_opt.some);
+            if (iv.is_some()) {
+                return iv;
+            }
+        }
+        this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta argument of kind '" + kind + "' must be a compile-time constant (integer, bool, string, type, or ast)", loc);
+        return new Option<i64>.none();
+    }
+
+
+    // Resolve a type name (primitive via registry, or user type via scope) to its
+    // BoundType, for use by the #sizeof / #__load / #__store intrinsics.
+    fun resolve_intrinsic_boundtype(mut this, name: string, scope: BoundScope) -> Option<BoundType> {
+        let prim: Option<BoundType> = this.model.some.type_registry.resolve_type(name);
+        if (prim.is_some()) { return prim; }
+        let sym_opt: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(name, scope);
+        if (sym_opt.is_some()) {
+            if (sym_opt.some is BoundSymbol.type_sym) {
+                return new Option<BoundType>.some(sym_opt.some.type_sym.bound_type);
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+
+    fun make_intrinsic_symbol(this, full_name: string) -> BoundFunctionSymbol {
+        return new BoundFunctionSymbol(full_name, full_name);
+    }
+
+
+    // #sizeof(T) -> i64 integer literal = T.byte_size() (compile-time).
+    fun bind_sizeof_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 1) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof expects 1 type argument", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        if (type_name == "") {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof argument must be a type name", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (bt_opt.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let sz: i64 = bt_opt.some.byte_size();
+        let i64_bt: BoundType = this.model.some.type_registry.resolve_type("i64").some;
+        let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(sz), i64_bt, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+    }
+
+
+    // #__address_of(x) -> u64 ; runtime intrinsic -> ADDRESS_OF IR.
+    fun bind_address_of_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) != 1) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__address_of expects 1 argument", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let arg_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(0)).some, scope);
+        if (arg_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(arg_opt.some);
+        let u64_bt: BoundType = this.model.some.type_registry.resolve_type("u64").some;
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.address_of");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(u64_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
+    }
+
+
+    // #__load(T, addr) -> T ; runtime intrinsic -> LOAD_PTR IR.
+    fun bind_load_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 2) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load expects a type and an address", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (elem_bt_opt.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let addr_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
+        if (addr_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(addr_opt.some);
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.load");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(elem_bt_opt.some, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
+    }
+
+
+    // #__store(T, addr, v) ; runtime intrinsic -> STORE_PTR IR.
+    fun bind_store_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (cast<i64>(expr.arguments.size()) < 3) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store expects a type, an address, and a value", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        if (elem_bt_opt.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store: unknown type '" + type_name + "'", expr.location);
+            return new Option<BoundExpression>.none();
+        }
+        let addr_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
+        let val_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(2)).some, scope);
+        if (addr_opt.is_none() || val_opt.is_none()) { return new Option<BoundExpression>.none(); }
+        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        args.push(addr_opt.some);
+        args.push(val_opt.some);
+        let void_bt: BoundType = new BoundType();
+        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.store");
+        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(void_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
+        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
+    }
+
+
+    // req1: extract the type name carried by a meta type-argument expression —
+    // either a bare identifier (Point) or #typeof(Point).
+    fun meta_type_arg_name(this, arg: Expression) -> string {
+        if (arg is Expression.identifier) {
+            return arg.identifier.name;
+        }
+        if (arg is Expression.meta_call) {
+            if (arg.meta_call.func_name == "typeof") {
+                if (cast<i64>(arg.meta_call.arguments.size()) >= 1) {
+                    let inner: Expression = arg.meta_call.arguments.at(cast<u64>(0)).some;
+                    if (inner is Expression.identifier) {
+                        return inner.identifier.name;
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+
+    // req1: resolve a meta type-argument name through the scope chain. If `name`
+    // is a template type parameter that has been specialized to a concrete type
+    // (its scope symbol's bound_type is a real primitive or a user type whose own
+    // name differs from `name`), return that concrete type's display name so the
+    // assigned token is identical to #typeof(ConcreteType). Returns none when
+    // `name` is not a scope-visible template param bound to a concrete type (the
+    // caller then falls back to ordinary global resolution).
+    fun meta_type_arg_concrete_name(this, name: string, scope: BoundScope) -> Option<string> {
+        let sym_opt: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(name, scope);
+        if (sym_opt.is_none()) { return new Option<string>.none(); }
+        if (sym_opt.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym_opt.some.type_sym.bound_type;
+            if (bt.kind is TypeKind.PrimitiveKind && !(bt.primitive is PrimitiveType.VoidType)) {
+                return new Option<string>.some(primitive_type_to_string(bt.primitive));
+            }
+            if (bt.type_definition.is_some()) {
+                let td_name: string = bt.type_definition.some.get_name();
+                // If the resolved type's own name equals the queried name, this is the
+                // unspecialized dummy placeholder (T -> dummy "T"), not a concrete type.
+                if (td_name != name) {
+                    return new Option<string>.some(td_name);
+                }
+            }
+        }
+        return new Option<string>.none();
+    }
+
+
+    // req1: true if a type-typed meta argument is a template type parameter still
+    // in its unspecialized (dummy) form — visible in the local scope but not yet
+    // bound to a concrete type. Such a call cannot be JIT-evaluated yet and must be
+    // deferred until specialization re-binds the body.
+    fun meta_type_arg_is_deferred(this, name: string, scope: BoundScope) -> bool {
+        let sym_opt: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(name, scope);
+        if (sym_opt.is_none()) { return false; }
+        if (sym_opt.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym_opt.some.type_sym.bound_type;
+            if (bt.kind is TypeKind.PrimitiveKind && !(bt.primitive is PrimitiveType.VoidType)) {
+                return false;
+            }
+            if (bt.type_definition.is_some() && bt.type_definition.some.get_name() == name) {
+                // `name` resolves locally to a type whose own name equals `name`. This
+                // is either a real global type (e.g. Point) or an unspecialized
+                // template-param placeholder (T). The placeholder is NOT present in the
+                // global scope — only the real type is — so that distinguishes them.
+                // Anywhere-scan: real types may live in named or file namespaces.
+                let g: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_anywhere(name);
+                if (g.is_some()) {
+                    return false;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    // req1: does this meta call have any type-typed argument that is an
+    // unspecialized template type parameter? Used to defer splicing in generic
+    // template bodies (where T is still the dummy placeholder).
+    fun meta_call_has_deferred_type_arg(this, expr: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: BoundScope) -> bool {
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(expr.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs && pi < nparams) {
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            if (kind == "type") {
+                let arg: Expression = expr.arguments.at(cast<u64>(pi)).some;
+                let name: string = this.meta_type_arg_name(arg);
+                if (name != "") {
+                    if (this.meta_type_arg_is_deferred(name, scope)) {
+                        return true;
+                    }
+                }
+            }
+            pi = pi + 1;
+        }
+        return false;
+    }
+
+
+    // req1: a zero/empty placeholder for a meta call whose type arguments are not
+    // yet specialized. The generic template body is never monomorphized, so this
+    // value is never executed — it only lets the body bind without error. Typed to
+    // match the #fun's declared return type where possible.
+    fun deferred_meta_call_placeholder(this, bmf: BoundMetaFunctionDefinition) -> Option<BoundExpression> {
+        let rt: BoundType = this.resolve_meta_return_type(bmf);
+        if (rt.kind is TypeKind.PrimitiveKind) {
+            if (rt.primitive is PrimitiveType.StringType) {
+                let lit: BoundLiteralExpression = new BoundLiteralExpression("\"\"", rt, new LiteralKind.StringLiteral());
+                return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+            }
+            let ilit: BoundLiteralExpression = new BoundLiteralExpression("0", rt, new LiteralKind.IntegerLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(ilit));
+        }
+        let i64t: BoundType = this.model.some.type_registry.i64_type;
+        let ilit2: BoundLiteralExpression = new BoundLiteralExpression("0", i64t, new LiteralKind.IntegerLiteral());
+        return new Option<BoundExpression>.some(new BoundExpression.literal(ilit2));
+    }
+
+
+    // Resolve a #fun's declared return type to a BoundType for the spliced
+    // literal; falls back to an empty BoundType if it can't be resolved.
+    fun resolve_meta_return_type(this, bmf: BoundMetaFunctionDefinition) -> BoundType {
+        if (bmf.return_type.is_some()) {
+            let rt_name: string = bmf.return_type.some.name;
+            let rt_opt: Option<BoundType> = this.model.some.type_registry.resolve_type(rt_name);
+            if (rt_opt.is_some()) {
+                return rt_opt.some;
+            }
+        }
+        return new BoundType();
+    }
+
+
+    fun find_meta_function(this, name: string) -> Option<BoundMetaFunctionDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.model.some.meta_function_defs.size())) {
+            if (this.model.some.meta_function_defs.at(cast<u64>(i)).some.name == name) {
+                return new Option<BoundMetaFunctionDefinition>.some(this.model.some.meta_function_defs.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundMetaFunctionDefinition>.none();
+    }
+
+
+    // M1/M4: look up a synthesized `_template_<name>` meta function in the isolated
+    // template_meta_function_defs list (NOT meta_function_defs — see the field comment).
+    fun find_template_meta_function(this, name: string) -> Option<BoundMetaFunctionDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.model.some.template_meta_function_defs.size())) {
+            if (this.model.some.template_meta_function_defs.at(cast<u64>(i)).some.name == name) {
+                return new Option<BoundMetaFunctionDefinition>.some(this.model.some.template_meta_function_defs.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundMetaFunctionDefinition>.none();
+    }
+
+
+    // M4 (use-site routing): resolve a template instantiation `Foo<args>` by calling
+    // the synthesized `_template_Foo` meta function via the caller-stub (it returns
+    // the specialized BoundType via the active_type_result channel, exactly like
+    // `#fun -> type`). Returns none when M4 should NOT handle this type (caller falls
+    // back to template+args + the fixpoint). Gated to current_pass_index >= 4 so we
+    // don't race creation during pass 2 type resolution (the fixpoint, pass 3, owns
+    // early creation; M4 handles types referenced from pass 4 onward, mostly lookups
+    // since the fixpoint already specialized them, plus genuine late specialization).
+    // Coexists with the fixpoint: ensure_specialized_type dedups, and the fixpoint's
+    // AST scan is the safety net.
+    // M6-step2: a generic arg written as a compile-time #fun() CALL whose declared
+    // return is a VALUE (not `type`) — e.g. `A<#compute_n()>` where
+    // `#fun compute_n() -> i64`. JIT-evaluates the call and wraps the i64 result
+    // as an int value arg. Returns none when the arg is not a meta call, the
+    // #fun returns `type` (the req2 type path handles it), or the meta runtime
+    // is unavailable (pass1/dotnet — value meta args are native-JIT-only).
+    // Immutable `this` (arg evaluation goes through eval_meta_type_call_args, not
+    // bind_expression — same contract as try_resolve_meta_type_specifier).
+    fun try_eval_meta_value_arg(this, ts: TypeSpecifier, scope: BoundScope) -> Option<BoundTypeArg> {
+        if (ts.meta_call.is_none()) { return new Option<BoundTypeArg>.none(); }
+        if (!meta_runtime_available()) { return new Option<BoundTypeArg>.none(); }
+        let mc: MetaCallExpression = ts.meta_call.some;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(mc.func_name);
+        if (bmf_opt.is_none()) { return new Option<BoundTypeArg>.none(); }
+        let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+        // Discriminate by the DECLARED return type: `type` -> the req2 type path
+        // (try_resolve_meta_type_specifier) owns it; anything else is a value.
+        if (bmf.return_type.is_some()) {
+            if (bmf.return_type.some.name == "type") { return new Option<BoundTypeArg>.none(); }
+        }
+        let args_opt: Option<_utils.List<i64>> = this.model.some.resolve_types_pass.eval_meta_type_call_args(mc, bmf, scope);
+        if (args_opt.is_none()) { return new Option<BoundTypeArg>.none(); }
+        let result: i64 = this.model.some.meta_engine.call_meta_function_stub(bmf, args_opt.some);
+        // M6-step2 4b: a REFERENCE-typed #fun return is an OBJECT value arg —
+        // the i64 is the live address. Mangle/dedup by the IUniqueMangleName canonical
+        // NAME (stable across compilations), not the unstable address. The name
+        // comes from the stdlib trampoline #fun (virtual get_unique_name via the
+        // object-param ABI). Gate: the declared static type must impl IUniqueMangleName.
+        let ret_name: mut string = "";
+        if (bmf.return_type.is_some()) { ret_name = bmf.return_type.some.name; }
+        let is_int_ret: bool = ret_name == "i8" || ret_name == "i16" || ret_name == "i32" || ret_name == "i64"
+            || ret_name == "u8" || ret_name == "u16" || ret_name == "u32" || ret_name == "u64"
+            || ret_name == "bool" || ret_name == "string" || ret_name == "char"
+            || ret_name == "double" || ret_name == "f64" || ret_name == "f32" || ret_name == "float"
+            || ret_name == "";
+        if (!is_int_ret) {
+            // Immutable-this type lookup (resolve_type_name needs mut this).
+            // Qualified-aware: `_utils.List<i64>` parses as name="List" +
+            // qualified_parts=["_utils"], which a bare simple-name lookup
+            // misses under file-namespace isolation (master's global child
+            // scan used to find it). Falls back to the simple-name lookup.
+            let vt_opt: mut Option<BoundType> = new Option<BoundType>.none();
+            if (bmf.return_type.is_some()) {
+                let rt_spec: TypeSpecifier = bmf.return_type.some;
+                let base_ts: mut TypeSpecifier = new TypeSpecifier();
+                base_ts.name = rt_spec.name;
+                let qi: mut i64 = 0;
+                while (qi < cast<i64>(rt_spec.qualified_parts.size())) {
+                    base_ts.qualified_parts.push(rt_spec.qualified_parts.at(cast<u64>(qi)).some);
+                    qi = qi + 1;
+                }
+                let rt_qual: Option<BoundType> = this.model.some.try_resolve_qualified_type(base_ts, scope);
+                if (rt_qual.is_some()) {
+                    vt_opt = new Option<BoundType>.some(rt_qual.some);
+                } else {
+                    let sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ret_name);
+                    if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+                        vt_opt = new Option<BoundType>.some(sym.some.type_sym.bound_type);
+                    }
+                }
+            }
+            if (vt_opt.is_some()) {
+                // A GENERIC return type's IUniqueMangleName impl lives on the
+                // SPECIALIZATION (injected by #specializing blocks at pass 3),
+                // not on the template — resolve the mangled specialization and
+                // gate on that def instead. Falls back to the template when the
+                // specialization does not exist (yet); the check below then
+                // simply reports the not-implemented error.
+                if (bmf.return_type.is_some()) {
+                    if (cast<i64>(bmf.return_type.some.generic_args.size()) > 0) {
+                        let spec_args: _utils.List<BoundTypeArg> = this.model.some.resolve_types_pass.resolve_generic_args(bmf.return_type.some, scope);
+                        // Full base from the template def (mangle encodes it).
+                        let ret_full: mut string = ret_name;
+                        if (vt_opt.some.type_definition.is_some()) {
+                            let rtd: BoundDefinition = vt_opt.some.type_definition.some;
+                            if (rtd is BoundDefinition.class_def) { ret_full = rtd.class_def.full_name; }
+                            if (rtd is BoundDefinition.enum_def) { ret_full = rtd.enum_def.full_name; }
+                            if (rtd is BoundDefinition.interface_def) { ret_full = rtd.interface_def.full_name; }
+                        }
+                        let spec_mangled: string = MonomorphizePass.mangle_generic_name(ret_full, spec_args);
+                        let spec_sym: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(spec_mangled);
+                        if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                            vt_opt = new Option<BoundType>.some(spec_sym.some.type_sym.bound_type);
+                        }
+                    }
+                }
+            }
+            // Gate via the NATIVE umangleable predicate. For a GENERIC return
+            // type the predicate recurses over its TYPE args (List<i64> ⟺ i64,
+            // Result<T,E> ⟺ T and E); for a NON-generic return type (e.g.
+            // StringBuilder) it checks the def's own impl. No dependence on the
+            // specialization/injection having happened yet — early passes work.
+            let gate_ok: mut bool = false;
+            if (vt_opt.is_some()) {
+                if (cast<i64>(bmf.return_type.some.generic_args.size()) > 0) {
+                    let gargs: _utils.List<BoundTypeArg> = this.model.some.resolve_types_pass.resolve_generic_args(bmf.return_type.some, scope);
+                    let gk: mut i64 = 0;
+                    while (gk < cast<i64>(gargs.size())) {
+                        let ga: BoundTypeArg = gargs.at(cast<u64>(gk)).some;
+                        if (!arg_is_value(ga)) {
+                            if (!this.model.some.monomorphize_pass.native_umangleable_type(arg_as_bound_type(ga))) {
+                                gate_ok = false;
+                                gk = cast<i64>(gargs.size());
+                            } else {
+                                gate_ok = true;
+                            }
+                        }
+                        gk = gk + 1;
+                    }
+                } else {
+                    gate_ok = this.model.some.monomorphize_pass.native_umangleable_type(vt_opt.some);
+                }
+            }
+            if (!gate_ok) {
+                // Before pass 4 the specialization carrying the injected impl may
+                // not exist YET (the fixpoint creates it at pass 3) — decline
+                // silently instead of erroring; a later pass re-evaluates and
+                // succeeds. From pass 4 on, the gate is authoritative: report.
+                if (this.model.some.current_pass_index < 4) {
+                    return new Option<BoundTypeArg>.none();
+                }
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "object template argument '#" + mc.func_name + "()' returns '" + ret_name + "', which does not implement IUniqueMangleName; object value-template args need a canonical get_unique_name for stable mangling", mc.location);
+                // Return the raw-address arg so the caller does NOT fall into the
+                // type path (a ref-returning stub yields the ADDRESS; the
+                // type-result channel holds no type and a stale value would be
+                // read as garbage). The reported error fails the compile.
+                return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+            }
+            // Per-type STATIC trampoline: a synthesized #fun taking the object as
+            // its DECLARED static type and calling get_unique_name() statically
+            // (see find_unique_name_trampoline). The old generic virtual
+            // trampoline (penguin_meta_unique_name) dispatched on the UNIT-B
+            // object; an impl injected into the HOST compilation by a
+            // #specializing block lives only in the user program being emitted
+            // and is invisible to unit B, so the virtual dispatch hit a missing
+            // vtable entry and SEGV'd. The static call instead fails unit-B
+            // compilation for such types, which becomes the clean E_UNSUPPORTED
+            // below — only impls written in base-meta-source class bodies
+            // (core_builtin/utils, e.g. StringBuilder) are callable.
+            let un_bmf: Option<BoundMetaFunctionDefinition> = this.find_unique_name_trampoline(bmf.return_type.some, scope, mc.location);
+            if (un_bmf.is_none()) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "object template argument '#" + mc.func_name + "()' returns '" + ret_name + "': its IUniqueMangleName impl is not callable from the meta runtime (only stdlib class-body impls, e.g. StringBuilder, can name object args)", mc.location);
+                return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+            }
+            let un_args: mut _utils.List<i64> = new _utils.List<i64>();
+            un_args.push(result);
+            let _un_ignored: i64 = this.model.some.meta_engine.call_meta_function_stub(un_bmf.some, un_args);
+            let unique_name: string = penguin_meta_get_string_result();
+            if (string_length(unique_name) == 0) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "object template argument '#" + mc.func_name + "()' returns '" + ret_name + "': its IUniqueMangleName impl is not callable from the meta runtime (only stdlib class-body impls, e.g. StringBuilder, can name object args)", mc.location);
+                return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+            }
+            // with_mutability re-wrap yields a MUT BoundType (an immutable ref
+            // can't be assigned to make_object_value_arg's mut param).
+            let vt: mut BoundType = new BoundType();
+            if (vt_opt.is_some()) {
+                vt = vt_opt.some.with_mutability(vt_opt.some.mutability);
+            }
+            return new Option<BoundTypeArg>.some(make_object_value_arg(vt, unique_name, result));
+        }
+        return new Option<BoundTypeArg>.some(make_int_value_arg(result));
+    }
+
+
+    // Synthesize (once per static type, cached by mangled name) the per-type STATIC
+    // unique-name trampoline:
+    //     #fun __unique_name_<mangled type>(v: <type>) -> string {
+    //         return v.get_unique_name();
+    //     }
+    // The STATIC call resolves in unit B only when the impl is written in the
+    // type's class body in a base-meta-source file (core_builtin/utils — e.g.
+    // StringBuilder). An impl injected into the HOST compilation (a
+    // #specializing block) exists only in the user program being emitted and is
+    // invisible to the meta runtime — the static call then fails unit-B
+    // compilation and the caller reports a clean E_UNSUPPORTED instead of the
+    // SEGV a virtual dispatch on the unit-B object would produce (missing
+    // vtable entry).
+    fun find_unique_name_trampoline(this, ret_ts: TypeSpecifier, scope: BoundScope, location: SourceLocation) -> Option<BoundMetaFunctionDefinition> {
+        let spec_args: _utils.List<BoundTypeArg> = this.model.some.resolve_types_pass.resolve_generic_args(ret_ts, scope);
+        // Sanitize the mangled type name (it contains the `$` separator, which
+        // is not a valid identifier char in unit-B source).
+        // Full base from the template def (mangle encodes the qualified name).
+        let tramp_full: mut string = ret_ts.name;
+        let tramp_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(ret_ts.name);
+        if (tramp_sym.is_some() && tramp_sym.some is BoundSymbol.type_sym) {
+            let tbt: BoundType = tramp_sym.some.type_sym.bound_type;
+            if (tbt.type_definition.is_some()) {
+                let ttd: BoundDefinition = tbt.type_definition.some;
+                if (ttd is BoundDefinition.class_def) { tramp_full = ttd.class_def.full_name; }
+                if (ttd is BoundDefinition.enum_def) { tramp_full = ttd.enum_def.full_name; }
+                if (ttd is BoundDefinition.interface_def) { tramp_full = ttd.interface_def.full_name; }
+            }
+        }
+        let tramp_name: string = "__unique_name_" + this.model.some.meta_engine.meta_sanitize(MonomorphizePass.mangle_generic_name(tramp_full, spec_args));
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.model.some.unique_name_trampoline_defs.size())) {
+            if (this.model.some.unique_name_trampoline_defs.at(cast<u64>(ci)).some.name == tramp_name) {
+                return new Option<BoundMetaFunctionDefinition>.some(this.model.some.unique_name_trampoline_defs.at(cast<u64>(ci)).some);
+            }
+            ci = ci + 1;
+        }
+        let bmf: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(tramp_name, tramp_name);
+        let mp: mut MetaParameter = new MetaParameter();
+        mp.name = "v";
+        mp.kind = "object";
+        mp.param_type = new Option<TypeSpecifier>.some(ret_ts);
+        bmf.parameters.push(mp);
+        let rt: mut TypeSpecifier = new TypeSpecifier();
+        rt.name = "string";
+        bmf.return_type = new Option<TypeSpecifier>.some(rt);
+        bmf.location = location;
+        let mut body_block = this.model.some.build_scopes_pass.parse_code_block_text("return v.get_unique_name();", location);
+        if (body_block.is_none()) { return new Option<BoundMetaFunctionDefinition>.none(); }
+        bmf.body = body_block;
+        this.model.some.unique_name_trampoline_defs.push(bmf);
+        return new Option<BoundMetaFunctionDefinition>.some(bmf);
+    }
+
+
+    fun try_resolve_template_instantiation(this, type_name: string, generic_args: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        if (cast<i64>(generic_args.size()) == 0) { return new Option<BoundType>.none(); }
+        // Only activate in JIT-linked binaries (Full project build). Without this,
+        // the routing would fire for common template instantiations and call the JIT
+        // in non-linked builds (VM / pass1 / dotnet test) where penguin_jit_* throws.
+        if (!meta_runtime_available()) { return new Option<BoundType>.none(); }
+        if (this.model.some.current_pass_index < 4) { return new Option<BoundType>.none(); }
+        // OOM guard — M4's real remit: route ONLY instantiations with a value/object
+        // template arg. Type-only instantiations are fully handled by the fixpoint
+        // (pass 3), so routing them too is redundant AND OOMs the bootstrap — the
+        // compiler source has thousands of type-only List/Option uses, each of which
+        // would JIT-call _template_X. Value/object args are exactly the case the
+        // fixpoint handles incompletely (substitute_value_params only does field
+        // initializers), and they are rare, so the JIT volume stays low.
+        // A meta-call arg counts as a value arg only if it VALUE-returns (the
+        // helper discriminates by declared return type; type-returning #args stay
+        // on the type path). Resolve args ONCE here (single JIT evaluation per
+        // meta-call arg) and derive has_value_arg from the result.
+        let has_value_arg: mut bool = false;
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(generic_args.size())) {
+            let arg_ts: TypeSpecifier = generic_args.at(cast<u64>(ci)).some;
+            if (arg_ts.is_value_arg) {
+                has_value_arg = true;
+                args.push(make_int_value_arg(string_to_int(arg_ts.value_arg_text)));
+            } else {
+                let mv: Option<BoundTypeArg> = this.try_eval_meta_value_arg(arg_ts, scope);
+                if (mv.is_some()) {
+                    has_value_arg = true;
+                    args.push(mv.some);
+                } else {
+                    args.push(make_type_arg(this.model.some.resolve_type_specifier(arg_ts, scope)));
+                }
+            }
+            ci = ci + 1;
+        }
+        if (!has_value_arg) { return new Option<BoundType>.none(); }
+        let meta_name: string = "_template_" + type_name;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_template_meta_function(meta_name);
+        if (bmf_opt.is_none()) { return new Option<BoundType>.none(); }
+        // Caller-stub args: value args bake their integer value (param kind i64);
+        // type args bake their type token (param kind type → the stub marshals via
+        // get_type). The body ignores its params; the responder reads the real
+        // BoundTypeArgs from the side-channel below.
+        let tokens: mut _utils.List<i64> = new _utils.List<i64>();
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(args.size())) {
+            let arg: BoundTypeArg = args.at(cast<u64>(ai)).some;
+            if (arg is BoundTypeArg.value_arg) {
+                tokens.push(arg.value_arg.as_i64());
+            } else {
+                let tname: string = this.model.some.monomorphize_pass.bound_type_meta_name(arg_as_bound_type(arg));
+                let token: u64 = this.model.some.meta_engine.get_or_assign_type_token(tname);
+                tokens.push(cast<i64>(token));
+            }
+            ai = ai + 1;
+        }
+        // Side-channel: the real BoundTypeArgs for the responder.
+        penguin_meta_set_specialize_args(type_name, args);
+        // JIT-call _template_X (lazily compiled; body calls penguin_meta_specialize).
+        let _ignored: i64 = this.model.some.meta_engine.call_meta_function_stub(bmf_opt.some, tokens);
+        let bt: BoundType = penguin_meta_get_type_result();
+        if (bt.type_definition.is_none() && (bt.kind is TypeKind.PrimitiveKind) && (bt.primitive is PrimitiveType.VoidType)) {
+            return new Option<BoundType>.none();
+        }
+        return new Option<BoundType>.some(bt);
+    }
+
+
+}
+
+}

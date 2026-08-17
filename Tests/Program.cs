@@ -336,7 +336,6 @@ public static class Program
             [CompilerKind.EmperorPenguinPass1] = new EmperorOnVmBackend(bpDll, Path.Combine(repoRoot, "EmperorPenguin", "EmperorPenguin.penguins")),
             [CompilerKind.EmperorPenguinPass2] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass2"), CompilerKind.EmperorPenguinPass2),
             [CompilerKind.EmperorPenguinPass3] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass3"), CompilerKind.EmperorPenguinPass3),
-            [CompilerKind.EmperorPenguinPass4] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass4"), CompilerKind.EmperorPenguinPass4),
         };
     }
 
@@ -356,7 +355,7 @@ public static class Program
     }
 
     public static readonly CompilerKind[] AllCompilers =
-        { CompilerKind.BabyPenguin, CompilerKind.BabyPenguinCs, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3, CompilerKind.EmperorPenguinPass4 };
+        { CompilerKind.BabyPenguin, CompilerKind.BabyPenguinCs, CompilerKind.EmperorPenguinPass1, CompilerKind.EmperorPenguinPass2, CompilerKind.EmperorPenguinPass3 };
 }
 
 // ───────────────────────── Memory gate ─────────────────────────
@@ -425,8 +424,7 @@ public static class MemGate
     /// <summary>Estimated peak RSS of one (test, compiler) combo; see class comment.</summary>
     public static long EstimateReservation(MarkdownTestCase test, CompilerKind compiler)
     {
-        if (compiler is CompilerKind.EmperorPenguinPass2 or CompilerKind.EmperorPenguinPass3
-                             or CompilerKind.EmperorPenguinPass4)
+        if (compiler is CompilerKind.EmperorPenguinPass2 or CompilerKind.EmperorPenguinPass3)
             return UsesMeta(test) ? HeavyBytes : LightBytes;
         if (compiler == CompilerKind.EmperorPenguinPass1)
             return Pass1Bytes;
@@ -611,7 +609,6 @@ public sealed class Options
             else if (part.Contains("pass1") || part.Equals("pass-1", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass1);
             else if (part.Contains("pass2") || part.Equals("pass-2", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass2);
             else if (part.Contains("pass3") || part.Equals("pass-3", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass3);
-            else if (part.Contains("pass4") || part.Equals("pass-4", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass4);
             else { Console.Error.WriteLine($"Unknown compiler '{part}'"); return null; }
         }
         return set;
@@ -625,7 +622,7 @@ public sealed class Options
         Usage: dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 
         Options:
-          --compilers babypenguin,pass1,pass2,pass3,pass4[,all]
+          --compilers babypenguin,pass1,pass2,pass3[,all]
                                   Limit to these compilers (default: each test's Apply To).
           --filter <glob|substr>  Select Tests/ files, e.g. CalculationTest/* or AddTest.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
@@ -652,7 +649,7 @@ public sealed class Options
 
 // ───────────────────────── Model ─────────────────────────
 
-public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3, EmperorPenguinPass4 }
+public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3 }
 
 public enum Status { Pass, Fail, Skip, Error }
 
@@ -665,7 +662,6 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "pass1",
         CompilerKind.EmperorPenguinPass2 => "pass2",
         CompilerKind.EmperorPenguinPass3 => "pass3",
-        CompilerKind.EmperorPenguinPass4 => "pass4",
         _ => throw new InvalidOperationException(),
     };
     public static string Display(this CompilerKind c) => c switch
@@ -675,7 +671,6 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "Emperor Pass1",
         CompilerKind.EmperorPenguinPass2 => "Emperor Pass2",
         CompilerKind.EmperorPenguinPass3 => "Emperor Pass3",
-        CompilerKind.EmperorPenguinPass4 => "Emperor Pass4",
         _ => throw new InvalidOperationException(),
     };
 }
@@ -917,7 +912,7 @@ public static class MarkdownTestParser
             // (VM/cs-driven, no dyn-lib) cannot express them.
             foreach (var t in tc.ApplyTo)
                 if (t.Compiler is CompilerKind.BabyPenguin or CompilerKind.BabyPenguinCs or CompilerKind.EmperorPenguinPass1)
-                    throw new FormatException($"Multi-stage test '{tc.Name}' (## Build N) may only Apply To EmperorPenguin Pass2/Pass3/Pass4, not {t.Compiler}.");
+                    throw new FormatException($"Multi-stage test '{tc.Name}' (## Build N) may only Apply To EmperorPenguin Pass2/Pass3, not {t.Compiler}.");
         }
 
         return tc;
@@ -1013,7 +1008,6 @@ public static class MarkdownTestParser
             else if (l.Contains("pass1") || l.Contains("pass 1")) kind = CompilerKind.EmperorPenguinPass1;
             else if (l.Contains("pass2") || l.Contains("pass 2")) kind = CompilerKind.EmperorPenguinPass2;
             else if (l.Contains("pass3") || l.Contains("pass 3")) kind = CompilerKind.EmperorPenguinPass3;
-            else if (l.Contains("pass4") || l.Contains("pass 4")) kind = CompilerKind.EmperorPenguinPass4;
             if (kind == null) continue;
             // Optional "(SKIP if '<compiler>' PASS)" — skip this compiler when the guard passes.
             CompilerKind? skipIf = null;
@@ -1026,7 +1020,6 @@ public static class MarkdownTestParser
                 else if (g.Contains("pass1") || g.Contains("pass 1")) skipIf = CompilerKind.EmperorPenguinPass1;
                 else if (g.Contains("pass2") || g.Contains("pass 2")) skipIf = CompilerKind.EmperorPenguinPass2;
                 else if (g.Contains("pass3") || g.Contains("pass 3")) skipIf = CompilerKind.EmperorPenguinPass3;
-                else if (g.Contains("pass4") || g.Contains("pass 4")) skipIf = CompilerKind.EmperorPenguinPass4;
             }
             result.Add(new ApplyTarget(kind.Value, skipIf));
         }
@@ -1720,8 +1713,6 @@ public static class BootstrapGuard
             return $"'tmp/pass2' not found. EmperorPenguin Pass2 requires a bootstrapped native binary.\nRun './penguin -b' first.";
         if (set.Contains(CompilerKind.EmperorPenguinPass3) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass3")))
             return $"'tmp/pass3' not found. EmperorPenguin Pass3 requires a bootstrapped native binary.\nRun './penguin -b' first.";
-        if (set.Contains(CompilerKind.EmperorPenguinPass4) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass4")))
-            return $"'tmp/pass4' not found. EmperorPenguin Pass4 requires a bootstrapped native binary.\nRun './penguin -b' first.";
         return null;
     }
 }

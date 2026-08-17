@@ -1,0 +1,912 @@
+// Pass 2 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: index-aligned traversal of AST + bound definitions,
+// resolving each definition's return/parameter/field TypeSpecifiers to
+// BoundTypes (class/enum/interface/namespace/impl_for/method pairs), including
+// generic-arg resolution and #template value-param substitution (N -> concrete
+// constants) for specialized value-template bodies.
+namespace emperor {
+
+class ResolveTypesPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_resolve_types
+    fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_resolve_types");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+            let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
+            if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Resolving " + this.model.some.def_display_name(bound_def)); }
+            // Pair against the scope the def was bound into (file namespace for
+            // top-level defs, global for namespaces) so sibling file-local types
+            // resolve unqualified.
+            let pair_scope: mut BoundScope = if (this.model.some.top_level_in_global) {
+                result.global_scope
+            } else {
+                top_level_def_scope(ast_def, result.global_scope)
+            };
+            let updated: BoundDefinition = this.resolve_pair(ast_def, bound_def, pair_scope);
+            result.definitions.set(cast<u64>(i), updated);
+            i = i + 1;
+        }
+    }
+
+    fun resolve_pair(mut this, ast_def: Definition, bound_def: BoundDefinition, scope: BoundScope) -> BoundDefinition {
+        _utils.trace_enter("Enter resolve_pair");
+        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
+            let bf: mut BoundFunctionDefinition = bound_def.function_def;
+            this.resolve_function_pair(ast_def.function_def, bf, scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.function_def(bf);
+        }
+        if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
+            let bc: mut BoundClassDefinition = bound_def.class_def;
+            this.resolve_class_pair(ast_def.class_def, bc, scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.class_def(bc);
+        }
+        if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
+            let be: mut BoundEnumDefinition = bound_def.enum_def;
+            this.resolve_enum_types(be, scope, ast_def.enum_def);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.enum_def(be);
+        }
+        if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
+            let bi: mut BoundInterfaceDefinition = bound_def.interface_def;
+            this.resolve_interface_pair(ast_def.interface_def, bi, scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.interface_def(bi);
+        }
+        if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
+            let bn: mut BoundNamespaceDefinition = bound_def.namespace_def;
+            this.resolve_namespace_pair(ast_def.namespace_def, bn, scope);
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.namespace_def(bn);
+        }
+        // Primitive interface impls: resolve each mangled method's parameter and
+        // return types (`this` -> the primitive for_type). Bound methods and AST
+        // functions are index-aligned (both loops skip non-function entries).
+        // for_type is probed without emitting an error — legacy empty impls like
+        // `impl ICopy<float> for float;` name non-types and are left as-is.
+        if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
+            let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
+            let ast_impl: InterfaceForImplementation = ast_def.impl_for_def;
+            let for_type_opt: Option<BoundType> = this.model.some.type_registry.resolve_type(ast_impl.for_type_name);
+            if (let ft := for_type_opt.some) {
+                if (ft.kind is TypeKind.PrimitiveKind && !(ft.primitive is PrimitiveType.VoidType)) {
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(impl_for.methods.size())) {
+                        let md: BoundDefinition = impl_for.methods.at(cast<u64>(mi)).some;
+                        if (md is BoundDefinition.function_def) {
+                            if (mi < cast<i64>(ast_impl.functions.size())) {
+                                let ast_func: Definition = ast_impl.functions.at(cast<u64>(mi)).some;
+                                if (ast_func is Definition.function_def) {
+                                    this.resolve_impl_for_method(ast_func.function_def, md.function_def, ft, scope);
+                                }
+                            }
+                            impl_for.methods.set(cast<u64>(mi), new BoundDefinition.function_def(md.function_def));
+                        }
+                        mi = mi + 1;
+                    }
+                    return new BoundDefinition.impl_for_def(impl_for);
+                }
+            }
+            return new BoundDefinition.impl_for_def(impl_for);
+        }
+        if (bound_def is BoundDefinition.initial_routine) {
+            let init: mut BoundInitialRoutineDefinition = bound_def.initial_routine;
+            if (init.scope.is_some() && init.symbol.is_some()) {
+                let sym: mut BoundFunctionSymbol = init.symbol.some;
+                sym.bound_type = this.model.some.type_registry.make_function_type(
+                    this.model.some.type_registry.void_type, new _utils.List<BoundType>(), false);
+                init.symbol = new Option<BoundFunctionSymbol>.some(sym);
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.initial_routine(init);
+        }
+        if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
+            let gv: mut BoundGlobalVariableDefinition = bound_def.global_var_def;
+            if (let ts := ast_def.global_var.type_spec.some) {
+                gv.bound_type = this.model.some.resolve_type_specifier(ts, scope);
+                if (gv.variable_symbol.is_some()) {
+                    let sym: mut BoundVariableSymbol = gv.variable_symbol.some;
+                    sym.bound_type = gv.bound_type;
+                    gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
+                }
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.global_var_def(gv);
+        }
+        if (bound_def is BoundDefinition.type_ref_def && ast_def is Definition.type_ref_def) {
+            let tr: mut BoundTypeReferenceDefinition = bound_def.type_ref_def;
+            if (tr.type_symbol.is_some() && ast_def.type_ref_def.type_spec.is_some()) {
+                let tsym: mut BoundTypeSymbol = tr.type_symbol.some;
+                let alias_t: mut BoundType = new BoundType();
+                alias_t.kind = new TypeKind.TypeReferenceKind();
+                alias_t.generic_args.push(
+                    make_type_arg(this.model.some.resolve_type_specifier(ast_def.type_ref_def.type_spec.some, scope)));
+                tsym.bound_type = alias_t;
+                tr.type_symbol = new Option<BoundTypeSymbol>.some(tsym);
+            }
+            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            return new BoundDefinition.type_ref_def(tr);
+        }
+        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        return bound_def;
+    }
+
+    fun resolve_function_pair(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_function_pair");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.model.some.type_registry.void_type;
+        // For generic functions, use the function's own scope (has template params registered)
+        let resolve_scope: BoundScope = if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            bound_func.scope.some
+        } else {
+            scope
+        };
+        if (let rt := ast_func.return_type.some) {
+            ret = this.model.some.resolve_type_specifier(rt, resolve_scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+            if (let ts := p.type_spec.some) {
+                bp.bound_type = this.model.some.resolve_type_specifier(ts, resolve_scope);
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
+            }
+            bound_func.parameters.push(bp);
+            func_type_params.push(bp.bound_type);
+            pi = pi + 1;
+        }
+        let is_async: bool = ast_func.is_async;
+        sym.bound_type = this.model.some.type_registry.make_function_type(ret, func_type_params, is_async);
+        sym.is_async = is_async;
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    // Resolve an `impl <iface> for <primitive>` method's parameter/return types
+    // (pass 2). `this` without an explicit type spec gets the primitive target
+    // type, mirroring resolve_class_method_pair's class-`this` handling.
+    fun resolve_impl_for_method(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, for_type: BoundType, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_impl_for_method");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.model.some.type_registry.void_type;
+        if (ast_func.return_type.is_some()) {
+            ret = this.model.some.resolve_type_specifier(ast_func.return_type.some, scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+            if (p.type_spec.is_some()) {
+                bp.bound_type = this.model.some.resolve_type_specifier(p.type_spec.some, scope);
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
+            } else if (p.is_this) {
+                // Primitive for_types are always Immutable (make_primitive sets
+                // Mutability.Immutable). The `this` parameter's bound type mirrors
+                // the receiver's declared mutability: Mutable when the parameter is
+                // `mut this`, otherwise the primitive's own (Immutable) mutability,
+                // re-wrapped via with_mutability to yield a mutable-typed value.
+                if (p.is_mutable) {
+                    bp.bound_type = for_type.with_mutability(new Mutability.Mutable());
+                } else {
+                    bp.bound_type = for_type.with_mutability(new Mutability.Immutable());
+                }
+            }
+            bound_func.parameters.push(bp);
+            func_type_params.push(bp.bound_type);
+            pi = pi + 1;
+        }
+        sym.bound_type = this.model.some.type_registry.make_function_type(ret, func_type_params, false);
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    fun resolve_class_method_pair(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, cls: mut BoundClassDefinition) {
+        _utils.trace_enter("Enter resolve_class_method_pair");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.model.some.type_registry.void_type;
+        // For generic methods, use the method's own scope (has its own template params registered)
+        let resolve_scope: BoundScope = if (bound_func.is_generic_template && bound_func.scope.is_some()) {
+            bound_func.scope.some
+        } else {
+            scope
+        };
+        if (ast_func.return_type.is_some()) {
+            ret = this.model.some.resolve_type_specifier(ast_func.return_type.some, resolve_scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+            if (p.type_spec.is_some()) {
+                bp.bound_type = this.model.some.resolve_type_specifier(p.type_spec.some, resolve_scope);
+                // Propagate type-level mutability to parameter-level (BabyPenguin conflates them)
+                if (bp.bound_type.mutability is Mutability.Mutable) {
+                    bp.is_mutable = true;
+                }
+            } else if (p.is_this) {
+                if (bound_func.is_new || p.is_mutable) {
+                    bp.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
+                } else {
+                    bp.bound_type = cls.bound_type;
+                }
+            }
+            bound_func.parameters.push(bp);
+            func_type_params.push(bp.bound_type);
+            pi = pi + 1;
+        }
+        let is_async: bool = ast_func.is_async;
+        sym.bound_type = this.model.some.type_registry.make_function_type(ret, func_type_params, is_async);
+        sym.is_async = is_async;
+
+        // Note: p.is_this check was removed because p is scoped inside the while loop.
+        // The fix-up for generic methods happens via fix_this_param_type below.
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    fun resolve_class_pair(mut this, ast_cls: ClassDefinition, bound_cls: mut BoundClassDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_class_pair");
+        let class_scope: BoundScope = bound_cls.scope.some;
+        for (let ast_member in ast_cls.members) {
+            if (ast_member is Definition.class_field) {
+                let field_idx: mut i64 = 0;
+                while (field_idx < cast<i64>(bound_cls.fields.size())) {
+                    let bd: BoundDefinition = bound_cls.fields.at(cast<u64>(field_idx)).some;
+                    if (bd is BoundDefinition.class_field && bd.class_field.name == ast_member.class_field.name) {
+                        let field: mut BoundClassFieldDefinition = bd.class_field;
+                        if (ast_member.class_field.type_spec.is_some()) {
+                            field.bound_type = this.model.some.resolve_type_specifier(ast_member.class_field.type_spec.some, class_scope);
+                        }
+                        if (field.field_symbol.is_some()) {
+                            let fsym: mut BoundVariableSymbol = field.field_symbol.some;
+                            fsym.bound_type = field.bound_type;
+                            field.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
+                        }
+                        bound_cls.fields.set(cast<u64>(field_idx), new BoundDefinition.class_field(field));
+                    }
+                    field_idx = field_idx + 1;
+                }
+            }
+            if (ast_member is Definition.function_def) {
+                let j: mut i64 = 0;
+                while (j < cast<i64>(bound_cls.methods.size())) {
+                    let md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
+                    if (md is BoundDefinition.function_def && md.function_def.name == ast_member.function_def.name) {
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        this.resolve_class_method_pair(ast_member.function_def, mf, class_scope, bound_cls);
+                        bound_cls.methods.set(cast<u64>(j), new BoundDefinition.function_def(mf));
+                    }
+                    j = j + 1;
+                }
+            }
+            if (ast_member is Definition.impl_def) {
+                let ast_impl: InterfaceImplementation = ast_member.impl_def;
+                let k: mut i64 = 0;
+                while (k < cast<i64>(bound_cls.interface_impls.size())) {
+                    let bd_impl: BoundDefinition = bound_cls.interface_impls.at(cast<u64>(k)).some;
+                    if (bd_impl is BoundDefinition.impl_def) {
+                        let bound_iface_impl: mut BoundInterfaceImplementation = bd_impl.impl_def;
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(ast_impl.functions.size())) {
+                            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                            if (ast_func_def is Definition.function_def) {
+                                let mi: mut i64 = 0;
+                                while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                    let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                                        this.resolve_class_method_pair(ast_func_def.function_def, bm, class_scope, bound_cls);
+                                        bound_iface_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                                    }
+                                    mi = mi + 1;
+                                }
+                            }
+                            fi = fi + 1;
+                        }
+                        bound_cls.interface_impls.set(cast<u64>(k), new BoundDefinition.impl_def(bound_iface_impl));
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+    }
+
+    fun resolve_enum_types(mut this, e: mut BoundEnumDefinition, scope: BoundScope, ast_enum: EnumDefinition) {
+        _utils.trace_enter("Enter resolve_enum_types");
+        let enum_scope: BoundScope = e.scope.some;
+        // Resolve enum member payload types (deferred from pass 1 to allow
+        // forward references: e.g. enum B { a: A } where class A follows B).
+        let mi: mut i64 = 0;
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(ast_enum.members.size())) {
+            let ast_member: Definition = ast_enum.members.at(cast<u64>(ai)).some;
+            if (ast_member is Definition.enum_member) {
+                let member: mut BoundEnumMemberDefinition = e.members.at(cast<u64>(mi)).some;
+                if (ast_member.enum_member.type_spec.is_some()) {
+                    let resolved: mut BoundType = this.model.some.resolve_type_specifier(ast_member.enum_member.type_spec.some, enum_scope);
+                    member.member_type = resolved;
+                    if (member.member_symbol.is_some()) {
+                        let msym: mut BoundEnumMemberSymbol = member.member_symbol.some;
+                        msym.member_type = resolved;
+                        member.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                    }
+                } else {
+                    // No type spec: this is a tag-only variant (like `none`)
+                    member.member_type = e.bound_type;
+                    if (member.member_symbol.is_some()) {
+                        let msym: mut BoundEnumMemberSymbol = member.member_symbol.some;
+                        msym.member_type = e.bound_type;
+                        member.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                    }
+                }
+                e.members.set(cast<u64>(mi), member);
+                mi = mi + 1;
+            }
+            ai = ai + 1;
+        }
+        // Resolve interface implementation method types
+        let ai2: mut i64 = 0;
+        while (ai2 < cast<i64>(ast_enum.members.size())) {
+            let ast_member: Definition = ast_enum.members.at(cast<u64>(ai2)).some;
+            if (ast_member is Definition.impl_def) {
+                let ast_impl: InterfaceImplementation = ast_member.impl_def;
+                let k: mut i64 = 0;
+                while (k < cast<i64>(e.interface_impls.size())) {
+                    let bd_impl: BoundDefinition = e.interface_impls.at(cast<u64>(k)).some;
+                    if (bd_impl is BoundDefinition.impl_def) {
+                        let bound_iface_impl: mut BoundInterfaceImplementation = bd_impl.impl_def;
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(ast_impl.functions.size())) {
+                            let ast_func_def: Definition = ast_impl.functions.at(cast<u64>(fi)).some;
+                            if (ast_func_def is Definition.function_def) {
+                                let mi: mut i64 = 0;
+                                while (mi < cast<i64>(bound_iface_impl.methods.size())) {
+                                    let bound_method: BoundDefinition = bound_iface_impl.methods.at(cast<u64>(mi)).some;
+                                    if (bound_method is BoundDefinition.function_def && bound_method.function_def.name == ast_func_def.function_def.name) {
+                                        let bm: mut BoundFunctionDefinition = bound_method.function_def;
+                                        this.resolve_enum_method_pair(ast_func_def.function_def, bm, enum_scope, e);
+                                        bound_iface_impl.methods.set(cast<u64>(mi), new BoundDefinition.function_def(bm));
+                                    }
+                                    mi = mi + 1;
+                                }
+                            }
+                            fi = fi + 1;
+                        }
+                        e.interface_impls.set(cast<u64>(k), new BoundDefinition.impl_def(bound_iface_impl));
+                    }
+                    k = k + 1;
+                }
+            }
+            ai2 = ai2 + 1;
+        }
+        // Resolve direct enum method types
+        let di: mut i64 = 0;
+        while (di < cast<i64>(e.methods.size())) {
+            let md: BoundDefinition = e.methods.at(cast<u64>(di)).some;
+            if (md is BoundDefinition.function_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ast_enum.members.size())) {
+                    let ast_member: Definition = ast_enum.members.at(cast<u64>(mi)).some;
+                    if (ast_member is Definition.function_def) {
+                        if (ast_member.function_def.name == md.function_def.name) {
+                            let bm: mut BoundFunctionDefinition = md.function_def;
+                            this.resolve_enum_method_pair(ast_member.function_def, bm, enum_scope, e);
+                            e.methods.set(cast<u64>(di), new BoundDefinition.function_def(bm));
+                        }
+                    }
+                    mi = mi + 1;
+                }
+            }
+            di = di + 1;
+        }
+    }
+
+    fun resolve_enum_method_pair(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, e: mut BoundEnumDefinition) {
+        _utils.trace_enter("Enter resolve_enum_method_pair");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.model.some.type_registry.void_type;
+        if (ast_func.return_type.is_some()) {
+            ret = this.model.some.resolve_type_specifier(ast_func.return_type.some, scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        // Skip parameter resolution if already done (e.g. during specialize_enum_def)
+        if (cast<i64>(bound_func.parameters.size()) == 0) {
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(ast_func.parameters.size())) {
+                let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+                let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+                if (p.type_spec.is_some()) {
+                    bp.bound_type = this.model.some.resolve_type_specifier(p.type_spec.some, scope);
+                } else if (p.is_this) {
+                    bp.bound_type = e.bound_type;
+                }
+                bound_func.parameters.push(bp);
+                func_type_params.push(bp.bound_type);
+                pi = pi + 1;
+            }
+        } else {
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(bound_func.parameters.size())) {
+                func_type_params.push(bound_func.parameters.at(cast<u64>(pi)).some.bound_type);
+                pi = pi + 1;
+            }
+        }
+        let is_async: bool = ast_func.is_async;
+        sym.bound_type = this.model.some.type_registry.make_function_type(ret, func_type_params, is_async);
+        sym.is_async = is_async;
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    fun resolve_interface_pair(mut this, ast_iface: InterfaceDefinition, bound_iface: mut BoundInterfaceDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_interface_pair");
+        let iface_scope: BoundScope = bound_iface.scope.some;
+        for (let ast_member in ast_iface.members) {
+            if (ast_member is Definition.function_def) {
+                let j: mut i64 = 0;
+                while (j < cast<i64>(bound_iface.methods.size())) {
+                    let md: BoundDefinition = bound_iface.methods.at(cast<u64>(j)).some;
+                    if (md is BoundDefinition.function_def && md.function_def.name == ast_member.function_def.name) {
+                        let mf: mut BoundFunctionDefinition = md.function_def;
+                        this.resolve_interface_method_pair(ast_member.function_def, mf, iface_scope, bound_iface);
+                        bound_iface.methods.set(cast<u64>(j), new BoundDefinition.function_def(mf));
+                    }
+                    j = j + 1;
+                }
+            }
+        }
+    }
+
+    fun resolve_interface_method_pair(mut this, ast_func: FunctionDefinition, bound_func: mut BoundFunctionDefinition, scope: BoundScope, iface: mut BoundInterfaceDefinition) {
+        _utils.trace_enter("Enter resolve_interface_method_pair");
+        let sym: mut BoundFunctionSymbol = bound_func.symbol.some;
+        let ret: mut BoundType = this.model.some.type_registry.void_type;
+        if (ast_func.return_type.is_some()) {
+            ret = this.model.some.resolve_type_specifier(ast_func.return_type.some, scope);
+        }
+        sym.return_type = ret;
+        bound_func.return_type = ret;
+        // Idempotent: clear existing parameters first (this is called both from the
+        // ordinary pass-2 resolve AND from specialize_interface_def for specialized
+        // interfaces' default methods; the latter may re-run on an already-populated
+        // bound method, which would otherwise duplicate e.g. `%this`).
+        bound_func.parameters = new _utils.List<BoundFunctionParameter>();
+        let func_type_params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+            let bp: mut BoundFunctionParameter = new BoundFunctionParameter(p.name, pi, p.is_mutable, p.is_this);
+            if (p.type_spec.is_some()) {
+                bp.bound_type = this.model.some.resolve_type_specifier(p.type_spec.some, scope);
+            } else if (p.is_this) {
+                bp.bound_type = iface.bound_type;
+            }
+            bound_func.parameters.push(bp);
+            func_type_params.push(bp.bound_type);
+            pi = pi + 1;
+        }
+        let is_async: bool = ast_func.is_async;
+        sym.bound_type = this.model.some.type_registry.make_function_type(ret, func_type_params, is_async);
+        sym.is_async = is_async;
+        bound_func.symbol = new Option<BoundFunctionSymbol>.some(sym);
+    }
+
+    fun resolve_namespace_pair(mut this, ast_ns: NamespaceDefinition, bound_ns: mut BoundNamespaceDefinition, scope: BoundScope) {
+        _utils.trace_enter("Enter resolve_namespace_pair");
+        let ns_scope: BoundScope = bound_ns.scope.some;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ast_ns.children.size())) {
+            let ast_child: Definition = ast_ns.children.at(cast<u64>(i)).some;
+            let j: mut i64 = 0;
+            while (j < cast<i64>(bound_ns.children.size())) {
+                let bound_child: BoundDefinition = bound_ns.children.at(cast<u64>(j)).some;
+                if (ast_child is Definition.function_def && bound_child is BoundDefinition.function_def) {
+                    if (ast_child.function_def.name == bound_child.function_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.class_def && bound_child is BoundDefinition.class_def) {
+                    if (ast_child.class_def.name == bound_child.class_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.enum_def && bound_child is BoundDefinition.enum_def) {
+                    if (ast_child.enum_def.name == bound_child.enum_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.interface_def && bound_child is BoundDefinition.interface_def) {
+                    if (ast_child.interface_def.name == bound_child.interface_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.impl_for_def && bound_child is BoundDefinition.impl_for_def) {
+                    // impl_for_defs have no name to match on; namespace children are
+                    // index-aligned from pass 1 (bind_namespace_def binds in order).
+                    if (i == j) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.namespace_def && bound_child is BoundDefinition.namespace_def) {
+                    if (ast_child.namespace_def.name == bound_child.namespace_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                if (ast_child is Definition.global_var && bound_child is BoundDefinition.global_var_def) {
+                    if (ast_child.global_var.name == bound_child.global_var_def.name) {
+                        bound_ns.children.set(cast<u64>(j), this.resolve_pair(ast_child, bound_child, ns_scope));
+                    }
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    // M6-step2: resolve ONE generic-arg TypeSpecifier to a BoundTypeArg. Covers
+    // all three arg forms: integer-literal value arg (A<5>), value-returning
+    // meta-call arg (A<#compute_n()> — JIT-evaluated at ANY pass; the per-arg
+    // volume is tiny so no OOM gate), and type arg (recursively resolved). All
+    // generic-arg resolution sites route through here so the forms behave
+    // uniformly (field types, new positions, impl interfaces, fixpoint collection).
+    fun resolve_single_generic_arg(this, arg_ts: TypeSpecifier, scope: BoundScope) -> BoundTypeArg {
+        if (arg_ts.is_value_arg) {
+            return make_int_value_arg(string_to_int(arg_ts.value_arg_text));
+        }
+        if (arg_ts.meta_call.is_some()) {
+            let mv: Option<BoundTypeArg> = this.model.some.bind_meta_calls_pass.try_eval_meta_value_arg(arg_ts, scope);
+            if (mv.is_some()) { return mv.some; }
+        }
+        return make_type_arg(this.model.some.resolve_type_specifier(arg_ts, scope));
+    }
+
+    fun resolve_generic_args(this, type_spec: TypeSpecifier, scope: BoundScope) -> mut _utils.List<BoundTypeArg> {
+        _utils.trace_enter("Enter resolve_generic_args");
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        for (let ga in type_spec.generic_args) {
+            args.push(this.resolve_single_generic_arg(ga, scope));
+        }
+        return args;
+    }
+
+    fun apply_mutability(this, bt: BoundType, is_mutable: bool) -> mut BoundType {
+        _utils.trace_enter("Enter apply_mutability");
+        if (is_mutable) {
+            return bt.with_mutability(new Mutability.Mutable());
+        }
+        return bt;
+    }
+
+    // req5: substitute non-type (value) template params (N) with their concrete
+    // constant values (5) inside an expression. Used when binding the members of
+    // a specialized value-template class so `foo: i32 = N` becomes `= 5`. Returns
+    // a new expression; the original (shared template) AST is not mutated.
+    fun substitute_value_params(mut this, expr: Expression, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Expression {
+        if (cast<i64>(names.size()) == 0) { return expr; }
+        if (expr is Expression.identifier) {
+            let id: IdentifierExpression = expr.identifier;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(names.size())) {
+                if (names.at(cast<u64>(i)).some == id.name) {
+                    return this.model.some.meta_rewriter.make_value_literal(values.at(cast<u64>(i)).some, texts.at(cast<u64>(i)).some, kinds.at(cast<u64>(i)).some);
+                }
+                i = i + 1;
+            }
+            return expr;
+        }
+        if (expr is Expression.binary) {
+            let b: BinaryExpression = expr.binary;
+            let r: mut BinaryExpression = new BinaryExpression();
+            for (let op in b.operators) { r.operators.push(op); }
+            for (let opd in b.operands) { r.operands.push(this.substitute_value_params(opd, names, values, texts, kinds)); }
+            return new Expression.binary(r);
+        }
+        if (expr is Expression.unary) {
+            let u: UnaryExpression = expr.unary;
+            let r: mut UnaryExpression = new UnaryExpression();
+            r.operator_value = u.operator_value;
+            if (let un_operand := u.operand.some) { r.operand = new Option<Expression>.some(this.substitute_value_params(un_operand, names, values, texts, kinds)); }
+            return new Expression.unary(r);
+        }
+        if (expr is Expression.parenthesized) {
+            let e: ParenthesizedExpression = expr.parenthesized;
+            let r: mut ParenthesizedExpression = new ParenthesizedExpression();
+            if (let par_inner := e.inner.some) { r.inner = new Option<Expression>.some(this.substitute_value_params(par_inner, names, values, texts, kinds)); }
+            return new Expression.parenthesized(r);
+        }
+        if (expr is Expression.function_call) {
+            let f: FunctionCallExpression = expr.function_call;
+            let r: mut FunctionCallExpression = new FunctionCallExpression();
+            if (let fc_callee := f.callee.some) { r.callee = new Option<Expression>.some(this.substitute_value_params(fc_callee, names, values, texts, kinds)); }
+            // f.arguments is a FunctionCallArguments wrapper (no iter()), so the
+            // index loop matches the original walk of its .at(i) accessor.
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(f.arguments.size())) { r.arguments.push(this.substitute_value_params(f.arguments.at(cast<u64>(ai)).some, names, values, texts, kinds)); ai = ai + 1; }
+            return new Expression.function_call(r);
+        }
+        if (expr is Expression.member_access) {
+            let m: MemberAccessExpression = expr.member_access;
+            let r: mut MemberAccessExpression = new MemberAccessExpression();
+            if (let ma_base := m.base_expr.some) { r.base_expr = new Option<Expression>.some(this.substitute_value_params(ma_base, names, values, texts, kinds)); }
+            r.member_name = m.member_name;
+            return new Expression.member_access(r);
+        }
+        if (expr is Expression.if_expr) {
+            let e: IfExpression = expr.if_expr;
+            let r: mut IfExpression = new IfExpression();
+            if (let if_cond := e.condition.some) { r.condition = new Option<Expression>.some(this.substitute_value_params(if_cond, names, values, texts, kinds)); }
+            if (let if_then := e.then_block.some) { r.then_block = new Option<Expression>.some(this.substitute_value_params(if_then, names, values, texts, kinds)); }
+            if (let if_else := e.else_block.some) { r.else_block = new Option<Expression>.some(this.substitute_value_params(if_else, names, values, texts, kinds)); }
+            return new Expression.if_expr(r);
+        }
+        if (expr is Expression.while_expr) {
+            let e: WhileExpression = expr.while_expr;
+            let r: mut WhileExpression = new WhileExpression();
+            if (let wh_cond := e.condition.some) { r.condition = new Option<Expression>.some(this.substitute_value_params(wh_cond, names, values, texts, kinds)); }
+            if (let wh_body := e.body.some) { r.body = new Option<Expression>.some(this.substitute_value_params(wh_body, names, values, texts, kinds)); }
+            return new Expression.while_expr(r);
+        }
+        if (expr is Expression.cast_expr) {
+            let c: CastExpression = expr.cast_expr;
+            let r: mut CastExpression = new CastExpression();
+            r.type_name = c.type_name;
+            r.target_type = c.target_type;
+            r.location = c.location;
+            if (let cast_inner := c.inner.some) { r.inner = new Option<Expression>.some(this.substitute_value_params(cast_inner, names, values, texts, kinds)); }
+            return new Expression.cast_expr(r);
+        }
+        if (expr is Expression.meta_call) {
+            let mc: MetaCallExpression = expr.meta_call;
+            let r: mut MetaCallExpression = new MetaCallExpression();
+            r.func_name = mc.func_name;
+            r.trailing_block_raw = mc.trailing_block_raw;
+            r.trailing_definition = mc.trailing_definition;
+            r.location = mc.location;
+            for (let marg in mc.arguments) { r.arguments.push(this.substitute_value_params(marg, names, values, texts, kinds)); }
+            return new Expression.meta_call(r);
+        }
+        if (expr is Expression.new_expr) {
+            let n: NewExpression = expr.new_expr;
+            let r: mut NewExpression = new NewExpression();
+            r.type_name = n.type_name;
+            for (let garg in n.generic_args) { r.generic_args.push(garg); }
+            for (let narg in n.arguments) { r.arguments.push(this.substitute_value_params(narg, names, values, texts, kinds)); }
+            return new Expression.new_expr(r);
+        }
+        if (expr is Expression.code_block) {
+            let cb: CodeBlockExpression = expr.code_block;
+            let r: mut CodeBlockExpression = new CodeBlockExpression();
+            for (let st in cb.statements) {
+                r.statements.push(this.substitute_value_params_in_statement(st, names, values, texts, kinds));
+            }
+            if (let cb_trailing := cb.trailing_expr.some) {
+                r.trailing_expr = new Option<Expression>.some(this.substitute_value_params(cb_trailing, names, values, texts, kinds));
+            }
+            return new Expression.code_block(r);
+        }
+        return expr;
+    }
+
+    // req5/M3: substitute value-template params (N) -> concrete constants inside a
+    // STATEMENT (reached from a method body's code block). Mirrors the expression
+    // walker above; recurses into the statement's contained expressions and nested
+    // statements (if/while/for bodies). Statements with no expression payload
+    // (break/continue/emit/…) are returned unchanged.
+    fun substitute_value_params_in_statement(mut this, stmt: Statement, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Statement {
+        if (cast<i64>(names.size()) == 0) { return stmt; }
+        if (stmt is Statement.return_stmt) {
+            let s: ReturnStatement = stmt.return_stmt;
+            let r: mut ReturnStatement = new ReturnStatement();
+            if (let ret_value := s.value.some) { r.value = new Option<Expression>.some(this.substitute_value_params(ret_value, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.return_stmt(r);
+        }
+        if (stmt is Statement.expression) {
+            let s: ExpressionStatement = stmt.expression;
+            let r: mut ExpressionStatement = new ExpressionStatement();
+            if (let expr_stmt := s.expression.some) { r.expression = new Option<Expression>.some(this.substitute_value_params(expr_stmt, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.expression(r);
+        }
+        if (stmt is Statement.block_expr) {
+            let s: BlockExpressionStatement = stmt.block_expr;
+            let r: mut BlockExpressionStatement = new BlockExpressionStatement();
+            if (let blk_expr := s.expression.some) { r.expression = new Option<Expression>.some(this.substitute_value_params(blk_expr, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.block_expr(r);
+        }
+        if (stmt is Statement.assignment) {
+            let s: AssignmentStatement = stmt.assignment;
+            let r: mut AssignmentStatement = new AssignmentStatement();
+            if (let asg_target := s.target.some) { r.target = new Option<Expression>.some(this.substitute_value_params(asg_target, names, values, texts, kinds)); }
+            r.operator_value = s.operator_value;
+            if (let asg_value := s.value.some) { r.value = new Option<Expression>.some(this.substitute_value_params(asg_value, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.assignment(r);
+        }
+        if (stmt is Statement.let_decl) {
+            let s: LetDeclarationStatement = stmt.let_decl;
+            let r: mut LetDeclarationStatement = new LetDeclarationStatement();
+            r.is_mutable = s.is_mutable;
+            r.variable_name = s.variable_name;
+            r.variable_type = s.variable_type;
+            r.type_spec = s.type_spec;
+            if (let let_init := s.initializer.some) { r.initializer = new Option<Expression>.some(this.substitute_value_params(let_init, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.let_decl(r);
+        }
+        if (stmt is Statement.if_stmt) {
+            let s: IfStatement = stmt.if_stmt;
+            let r: mut IfStatement = new IfStatement();
+            if (let if_cond := s.condition.some) { r.condition = new Option<Expression>.some(this.substitute_value_params(if_cond, names, values, texts, kinds)); }
+            if (let if_then := s.then_statement.some) { r.then_statement = new Option<Statement>.some(this.substitute_value_params_in_statement(if_then, names, values, texts, kinds)); }
+            if (let if_else := s.else_statement.some) { r.else_statement = new Option<Statement>.some(this.substitute_value_params_in_statement(if_else, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.if_stmt(r);
+        }
+        if (stmt is Statement.while_stmt) {
+            let s: WhileStatement = stmt.while_stmt;
+            let r: mut WhileStatement = new WhileStatement();
+            if (let wh_cond := s.condition.some) { r.condition = new Option<Expression>.some(this.substitute_value_params(wh_cond, names, values, texts, kinds)); }
+            if (let wh_body := s.body.some) { r.body = new Option<Statement>.some(this.substitute_value_params_in_statement(wh_body, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.while_stmt(r);
+        }
+        if (stmt is Statement.for_stmt) {
+            let s: ForStatement = stmt.for_stmt;
+            let r: mut ForStatement = new ForStatement();
+            r.variable_name = s.variable_name;
+            r.variable_type = s.variable_type;
+            r.type_spec = s.type_spec;
+            r.is_mutable = s.is_mutable;
+            if (let for_iter := s.iterable.some) { r.iterable = new Option<Expression>.some(this.substitute_value_params(for_iter, names, values, texts, kinds)); }
+            if (let for_body := s.body.some) { r.body = new Option<Statement>.some(this.substitute_value_params_in_statement(for_body, names, values, texts, kinds)); }
+            r.location = s.location;
+            return new Statement.for_stmt(r);
+        }
+        return stmt;
+    }
+
+    // req5/M3: build a shallow copy of a FunctionDefinition with its body run
+    // through substitute_value_params (value-template params N -> concrete
+    // constants), so a specialized value-template class's METHOD bodies get N
+    // substituted (e.g. `fun get() -> i32 { return N; }` -> `return 5`). Field
+    // initializers are substituted separately at the field-default binding; this
+    // extends substitution to method bodies. The shared template AST is NOT
+    // mutated — a fresh FunctionDefinition is returned. With no value params, the
+    // original definition is returned unchanged (so non-value-template classes are
+    // unaffected).
+    fun substitute_function_body_value_params(mut this, fdef: FunctionDefinition, names: _utils.List<string>, values: _utils.List<i64>, texts: _utils.List<string>, kinds: _utils.List<string>) -> Definition {
+        if (cast<i64>(names.size()) == 0) { return new Definition.function_def(fdef); }
+        if (fdef.body.is_none()) { return new Definition.function_def(fdef); }
+        let r: mut FunctionDefinition = new FunctionDefinition(fdef.name);
+        for (let param in fdef.parameters) {
+            r.parameters.push(param);
+        }
+        r.return_type = fdef.return_type;
+        r.body = new Option<Expression>.some(this.substitute_value_params(fdef.body.some, names, values, texts, kinds));
+        r.is_extern = fdef.is_extern;
+        r.is_pure = fdef.is_pure;
+        r.is_not_pure = fdef.is_not_pure;
+        r.is_async = fdef.is_async;
+        r.is_not_async = fdef.is_not_async;
+        r.is_new = fdef.is_new;
+        r.template_decl = fdef.template_decl;
+        r.location = fdef.location;
+        return new Definition.function_def(r);
+    }
+
+    // type-specifier position (e.g. `let x: #int_by_bits(32) = 5;`), JIT-execute
+    // the #fun (it returns a type token as i64) and resolve the token to a
+    // BoundType via MetaEngine. Returns none when type_spec is not a meta-call
+    // type so the caller falls through to normal resolution.
+    fun try_resolve_meta_type_specifier(this, type_spec: TypeSpecifier, scope: BoundScope) -> Option<BoundType> {
+        if (type_spec.meta_call.is_none()) {
+            return new Option<BoundType>.none();
+        }
+        let mc: MetaCallExpression = type_spec.meta_call.some;
+        let bmf_opt: Option<BoundMetaFunctionDefinition> = this.model.some.bind_meta_calls_pass.find_meta_function(mc.func_name);
+        if (bmf_opt.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type call '#" + mc.func_name + "' is not a #fun", mc.location);
+            return new Option<BoundType>.none();
+        }
+        let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+        // meta_engine is a `mut` field seeded once in bind(); its JIT methods
+        // mutate the engine, not the (immutable) SemanticModel `this`. Args are
+        // evaluated directly (literal/type/ast) instead of via the mut-this
+        // bind_expression path, so this stays callable from immutable type resolution.
+        let args_opt: Option<_utils.List<i64>> = this.eval_meta_type_call_args(mc, bmf, scope);
+        if (args_opt.is_none()) {
+            return new Option<BoundType>.none();
+        }
+        let args: _utils.List<i64> = args_opt.some;
+        // Phase 5: `#fun -> type` returns a real BoundType; the caller-stub stored
+        // it into the host global active_type_result (returning i64 0 to the
+        // arity-0 trampoline). Read it back here. (The host can't recover a non-i64
+        // reference from the trampoline return, hence the global return channel.)
+        let _ignored: i64 = this.model.some.meta_engine.call_meta_function_stub(bmf, args);
+        let bt: BoundType = penguin_meta_get_type_result();
+        if (bt.type_definition.is_none() && (bt.kind is TypeKind.PrimitiveKind) && (bt.primitive is PrimitiveType.VoidType)) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta '#" + mc.func_name + "' did not return a known type", mc.location);
+            return new Option<BoundType>.none();
+        }
+        return new Option<BoundType>.some(bt);
+    }
+
+    // Immutable-`this` argument evaluation for a type-position meta call (see
+    // try_resolve_meta_type_specifier). Handles type/ast/integer-literal args.
+    fun eval_meta_type_call_args(this, mc: MetaCallExpression, bmf: BoundMetaFunctionDefinition, scope: BoundScope) -> Option<_utils.List<i64>> {
+        let result: mut _utils.List<i64> = new _utils.List<i64>();
+        let nparams: i64 = cast<i64>(bmf.parameters.size());
+        let nargs: i64 = cast<i64>(mc.arguments.size());
+        let pi: mut i64 = 0;
+        while (pi < nargs) {
+            if (pi >= nparams) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " has too many arguments", mc.location);
+                return new Option<_utils.List<i64>>.none();
+            }
+            let kind: string = bmf.parameters.at(cast<u64>(pi)).some.kind;
+            let arg: Expression = mc.arguments.at(cast<u64>(pi)).some;
+            let v: Option<i64> = this.eval_meta_arg_i64(arg, kind, mc.location);
+            if (v.is_none()) {
+                return new Option<_utils.List<i64>>.none();
+            }
+            result.push(v.some);
+            pi = pi + 1;
+        }
+        return new Option<_utils.List<i64>>.some(result);
+    }
+
+    fun eval_meta_arg_i64(this, arg: Expression, kind: string, loc: SourceLocation) -> Option<i64> {
+        if (kind == "type") {
+            if (arg is Expression.identifier) {
+                let type_name: string = arg.identifier.name;
+                let bt_opt: Option<BoundType> = this.model.some.type_registry.resolve_type(type_name);
+                if (bt_opt.is_some()) {
+                    let token: u64 = this.model.some.meta_engine.get_or_assign_type_token(type_name);
+                    return new Option<i64>.some(cast<i64>(token));
+                }
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument '" + type_name + "' is not a known type", loc);
+                return new Option<i64>.none();
+            }
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type argument must be a type name", loc);
+            return new Option<i64>.none();
+        }
+        if (kind == "ast") {
+            let token: u64 = this.model.some.meta_engine.register_ast_expression(arg);
+            return new Option<i64>.some(cast<i64>(token));
+        }
+        // integer literal arg (ConstantExpression holds the raw token text).
+        if (arg is Expression.constant) {
+            return new Option<i64>.some(string_to_int(arg.constant.value));
+        }
+        this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta type-call argument must be a compile-time integer literal, type, or ast", loc);
+        return new Option<i64>.none();
+    }
+
+}
+
+}

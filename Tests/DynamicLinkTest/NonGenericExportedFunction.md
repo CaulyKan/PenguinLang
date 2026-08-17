@@ -1,9 +1,9 @@
 # NonGenericExportedFunction
 ## Description
-A lib with only NON-generic `export fun` declarations (`foo.answer()` / `foo.double()`, marked `export`). The consumer declares them (is_lib_export via the merged lib source) and links to the lib symbols at runtime — no generics involved, exercising the plain function-over-lib-boundary path + the `export` keyword. Pass4-only.
+A lib with only NON-generic `export fun` declarations (`foo.answer()` / `foo.double()`, marked `export`). The consumer declares them (is_lib_export via the merged lib source) and links to the lib symbols at runtime — no generics involved, exercising the plain function-over-lib-boundary path + the `export` keyword. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

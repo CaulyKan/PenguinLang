@@ -1,9 +1,9 @@
 # RecursiveDeps
 ## Description
-Three-stage build verifying recursive dependency loading: Build 1 ships `std.penguin-lib` (Vector<i64>); Build 2 ships `mid.penguin-lib` — `namespace mid` referencing `std.Vector<i64>`, built WITH `--lib std.penguin-lib` (its metadata records `deps: ["std"]`, and mid's .so has undefined std refs, NOT linked); Build 3 is an exe given ONLY `--lib mid.penguin-lib` — the loader recursively resolves and loads `std` (deps-first). Pass4-only.
+Three-stage build verifying recursive dependency loading: Build 1 ships `std.penguin-lib` (Vector<i64>); Build 2 ships `mid.penguin-lib` — `namespace mid` referencing `std.Vector<i64>`, built WITH `--lib std.penguin-lib` (its metadata records `deps: ["std"]`, and mid's .so has undefined std refs, NOT linked); Build 3 is an exe given ONLY `--lib mid.penguin-lib` — the loader recursively resolves and loads `std` (deps-first). Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

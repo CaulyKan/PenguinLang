@@ -1,9 +1,9 @@
 # ConsumerRedefinesLibSymbol
 ## Description
-A consumer that REDEFINES a name a loaded lib ships (both define `foo.answer`, which the lib EXPORTS) is a hard ERROR: the semantic layer detects the duplicate definition (`E_DUPLICATE_SYMBOL`, "consumers may not redefine it") instead of silently shadowing. Pass4-only.
+A consumer that REDEFINES a name a loaded lib ships (both define `foo.answer`, which the lib EXPORTS) is a hard ERROR: the semantic layer detects the duplicate definition (`E_DUPLICATE_SYMBOL`, "consumers may not redefine it") instead of silently shadowing. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

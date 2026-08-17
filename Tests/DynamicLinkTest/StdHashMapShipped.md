@@ -1,9 +1,9 @@
 # StdHashMapShipped
 ## Description
-Build a `.penguin-lib` shipping `std.HashMap<i64,i64>` (from `hashmap.penguin` `export class HashMap<K,V>` + dependency `vector.penguin`; a seed instantiates `HashMap<i64,i64>`), then a consumer that puts/gets/removes/iterates. The HashMap instance + its transitive closure (Vector<u8>/Vector<i64>, _HashMapIterator, Option) are shipped and declared in the consumer. Pass4-only.
+Build a `.penguin-lib` shipping `std.HashMap<i64,i64>` (from `hashmap.penguin` `export class HashMap<K,V>` + dependency `vector.penguin`; a seed instantiates `HashMap<i64,i64>`), then a consumer that puts/gets/removes/iterates. The HashMap instance + its transitive closure (Vector<u8>/Vector<i64>, _HashMapIterator, Option) are shipped and declared in the consumer. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

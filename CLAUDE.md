@@ -56,9 +56,9 @@ cd MagellanicPenguin\vscode && npm run package
 ```
 
 ## AI development workflow
-1. When creating a plan, write to .ai_workspace/plans
-2. Use skills in .ai_workspace/skills
-3. Write project memory in .ai_workspace/memory
+1. When creating a plan, write to .agents/plans
+2. Use skills in .agents/skills
+3. Write project memory in .agents/memory
 4. When developing a new feature, create a branch with feature name, make commit at every milestones
 
 ## Important Tips
@@ -236,7 +236,7 @@ sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/ll
 ```
 EmperorPenguin/src/
   ast/           -- AST layer (Parser 1808 lines, Lexer 964 lines, AST 1210 lines, Token 170 lines, SourceLocation 19 lines)
-  bound/         -- Semantic analysis layer (SemanticModel 4260 lines, BoundTreePrinter 490 lines, BoundDefinition 248 lines, ...)
+  bound/         -- Semantic analysis layer (SemanticModel core ~705 lines + one file per pass: SemanticBuildScopes ~1010, SemanticResolveTypes ~940, SemanticMonomorphize ~2120, SemanticBindBodies ~1230, SemanticBindExpressions ~2280, SemanticBindMetaCalls ~870, SemanticMetaRewrite ~790, SemanticInterfaces ~610, SemanticClassifyValueTypes ~480, SemanticValidateControlFlow ~300, SemanticBindSymbols ~160, SemanticConstructors ~150, SemanticShared ~190; plus Bound* data files)
   ir/            -- IR generation layer (IRGenerator 1278 lines, IRInstruction 600 lines, IRBuilder 203 lines, ...)
   llvm/          -- LLVM IR emission (LLVMEmitter 2553 lines)
   project/       -- Project file parsing, glob resolution (Project.penguin 396 lines)
@@ -272,19 +272,36 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 | `BoundCompilationUnit.penguin`   | `SemanticError`, `BoundCompilationUnit` with definitions, global_scope, type_registry, errors                                                                                                               |
 | `BoundTreePrinter.penguin`       | Debug printer for bound tree visualization                                                                                                                                                                  |
 | `EmperorPenguinCompiler.penguin` | Top-level compiler entry: `compile_sources()` orchestrates the full pipeline                                                                                                                                |
-| `SemanticModel.penguin`          | Multi-pass binding orchestrator (4260 lines)                                                                                                                                                                |
+| `SemanticModel.penguin`          | Shared core (~705 lines): model fields (registry/scope/errors/meta state), builtin registration, `bind()` orchestrating all passes, cross-pass `catch_up_def`, `report_*`, `already_processed`/`processed_beyond` guards, shared `resolve_type_specifier` family, `trace()` (-vvv) |
+| `SemanticShared.penguin`         | Free helpers + data classes: `FunctionInstantiation`, `SpecializingBlockInfo`, file-namespace naming (`file_ns_name`), def source-file dispatch (`set_def_source_file`/`ast_def_filename`), `top_level_def_scope`, `def_lookup_scope` |
+| `SemanticMetaRewrite.penguin`    | `MetaRewriter` — pre-pass subsystem, single entry `run_prepass(unit)`: option store, `#define`/`#if`/`#while` splicing (def-level + stmt-level), `#fun`/`#class` collection, JIT `seed_meta_engine` |
+| `SemanticBuildScopes.penguin`    | `BuildScopesPass` — pass 1 (`run(unit, result)`): bind each AST def into per-file/global scopes, `bind_definition` dispatcher + per-def binders, dyn-lib export marking, `#specializing` text helpers |
+| `SemanticResolveTypes.penguin`   | `ResolveTypesPass` — pass 2: index-aligned AST/bound type resolution + `#template` value-param substitution |
+| `SemanticMonomorphize.penguin`   | `MonomorphizePass` — pass 3: iterative generic specialization fixpoint, instantiation collection (types + functions, merged from the old file-tail split), name mangling, `#specializing` injection, injected-impl resolution |
+| `SemanticBindSymbols.penguin`    | `BindSymbolsPass` — pass 4: parameter symbol binding |
+| `SemanticConstructors.penguin`   | `ConstructorsPass` — pass 5: default/explicit constructor generation |
+| `SemanticInterfaces.penguin`     | `InterfacesPass` — pass 6: vtable building & inheritance merge, `impl for` processing |
+| `SemanticClassifyValueTypes.penguin` | `ClassifyValueTypesPass` — pass 7: ICopy/IRef classification + interface-usage validation (two entries: `run` + `validate_interface_usage`) |
+| `SemanticBindBodies.penguin`     | `BindBodiesPass` — pass 8a: pass entry `run(unit, result)` (current_unit lifecycle), `bind_body_for_def`/`_specialized_def`, `bind_statement` dispatch chain, try-bind statements |
+| `SemanticBindExpressions.penguin`| `BindExpressionsPass` — pass 8b: expression binding (literals/identifiers, binary/unary/logical, member access, function calls, try-bind/cast/new, control-flow expressions) |
+| `SemanticBindMetaCalls.penguin`  | `BindMetaCallsPass` — pass 8c: `#fun` meta-call binding & JIT splicing, sizeof/address_of/load/store intrinsics, unique-name trampolines, template instantiation routing |
+| `SemanticValidateControlFlow.penguin` | `ValidateControlFlowPass` — pass 9: return-path completeness, break/continue validation, return-type checks |
+
+Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-reference (MetaEngine.owner_model precedent, breaks the class-field default-construction cycle), single `run()` entry, per-def processors keep their original names for `catch_up_def` replay. `SemanticModel` holds all pass instances, wired in its constructor. Any new `src/bound/*.penguin` file must be added to BOTH `EmperorPenguin.penguins` and `EmperorPenguinFull.penguins`.
 
 ### Compiler Pipeline (SemanticModel) — All 9 Passes Implemented
 
-1. **Pass 1 — Build Scopes** (`pass_build_scopes`): AST → BoundDefinitions + BoundScope tree + symbol registration. Handles all definition types: functions, classes, enums, interfaces, namespaces, initial routines, implementations, type references, global variables
-2. **Pass 2 — Resolve Types** (`pass_resolve_types`): Walks AST and bound trees in parallel; resolves `ast.TypeSpecifier` → `BoundType` for return types, parameters, fields. Handles generics, qualified names, function types, mutability
-3. **Pass 3 — Monomorphize** (`pass_monomorphize`): Generic instantiation for classes, enums, functions. Name mangling (`Foo__i32`, `identity__string`). Iterative approach for transitive dependencies (up to 10 iterations). Fixes up `this` parameter types for specialized methods
-4. **Pass 4 — Bind Symbols** (`pass_bind_symbols`): Binds parameter symbols and completes symbol information for functions and fields
-5. **Pass 5 — Constructors** (`pass_constructors`): Creates default constructors if none exist; processes explicit constructors marked with `is_new`
-6. **Pass 6 — Interface Implementation** (`pass_interface_implementation`): Builds vtables for interface implementations. Handles both class and enum interface implementations. Processes `impl for` syntax
-7. **Pass 7 — Classify Value Types** (`pass_classify_value_types`): Determines which classes are value types (ICopy) vs reference types (IRef). Classifies based on implemented interfaces and field types
-8. **Pass 8 — Bind Expressions** (`pass_bind_expressions`): Binds all expression and statement types — literals, identifiers, binary/unary ops, function calls, member access, if/while, code blocks, casts, new expressions. Implements type checking, boxing/unboxing for interface casts, generic method calls
-9. **Pass 9 — Validate Control Flow** (`pass_validate_control_flow`): Ensures non-void functions return on all paths. Validates break/continue in loops. Type checks return values
+`SemanticModel.bind()` first runs `MetaRewriter.run_prepass(unit)` (meta flattening), then the passes (each a collaborator class with a single `run()` entry):
+
+1. **Pass 1 — Build Scopes** (`BuildScopesPass.run`): AST → BoundDefinitions + BoundScope tree + symbol registration. Handles all definition types: functions, classes, enums, interfaces, namespaces, initial routines, implementations, type references, global variables
+2. **Pass 2 — Resolve Types** (`ResolveTypesPass.run`): Walks AST and bound trees in parallel; resolves `ast.TypeSpecifier` → `BoundType` for return types, parameters, fields. Handles generics, qualified names, function types, mutability
+3. **Pass 3 — Monomorphize** (`MonomorphizePass.run`): Generic instantiation for classes, enums, functions. Name mangling (`Foo__i32`, `identity__string`). Iterative approach for transitive dependencies (up to 10 iterations). Fixes up `this` parameter types for specialized methods. Newly specialized defs are replayed through passes 4-8 by the core `catch_up_def`
+4. **Pass 4 — Bind Symbols** (`BindSymbolsPass.run`): Binds parameter symbols and completes symbol information for functions and fields
+5. **Pass 5 — Constructors** (`ConstructorsPass.run`): Creates default constructors if none exist; processes explicit constructors marked with `is_new`
+6. **Pass 6 — Interface Implementation** (`InterfacesPass.run`): Builds vtables for interface implementations. Handles both class and enum interface implementations. Processes `impl for` syntax
+7. **Pass 7 — Classify Value Types** (`ClassifyValueTypesPass.run` + `.validate_interface_usage`): Determines which classes are value types (ICopy) vs reference types (IRef). Classifies based on implemented interfaces and field types
+8. **Pass 8 — Bind Expressions** (`BindBodiesPass.run`, dispatching to `BindExpressionsPass` and `BindMetaCallsPass`): Binds all expression and statement types — literals, identifiers, binary/unary ops, function calls, member access, if/while, code blocks, casts, new expressions. Implements type checking, boxing/unboxing for interface casts, generic method calls
+9. **Pass 9 — Validate Control Flow** (`ValidateControlFlowPass.run`): Ensures non-void functions return on all paths. Validates break/continue in loops. Type checks return values
 
 ### IR Layer (`src/ir/`)
 

@@ -1,9 +1,9 @@
 # MetaFunFromLib
 ## Description
-The lib ships `std.HashMap<i64,i64>`; its verbatim source embeds the `#fun require_ihash` compile-time key check. The consumer uses `std.HashMap<string, i64>` — a NEW instance NOT shipped by the lib — so it is monomorphized into the consumer, whose compile-time call `#require_ihash(#typeof(string))` JIT-runs the LIB's `#fun require_ihash` on the consumer side. Verifies meta #fun bodies travel with the lib source and JIT correctly in the consumer. Pass4-only.
+The lib ships `std.HashMap<i64,i64>`; its verbatim source embeds the `#fun require_ihash` compile-time key check. The consumer uses `std.HashMap<string, i64>` — a NEW instance NOT shipped by the lib — so it is monomorphized into the consumer, whose compile-time call `#require_ihash(#typeof(string))` JIT-runs the LIB's `#fun require_ihash` on the consumer side. Verifies meta #fun bodies travel with the lib source and JIT correctly in the consumer. Pass3-only.
 
 ## Apply To
-* EmperorPenguin Pass4
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

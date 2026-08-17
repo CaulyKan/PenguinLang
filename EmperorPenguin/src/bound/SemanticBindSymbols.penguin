@@ -1,0 +1,137 @@
+// Pass 4 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
+// Responsibilities: bind symbols (parameters -> function symbols, class/enum/
+// namespace/interface member recursion) so every bound def's symbols are
+// registered before expression binding.
+namespace emperor {
+
+class BindSymbolsPass {
+    // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // 唯一入口：原 pass_bind_symbols
+    fun run(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter pass_bind_symbols");
+        for (let def in result.definitions) {
+            this.bind_symbols_for_def(def);
+        }
+    }
+
+    fun bind_symbols_for_def(mut this, def: BoundDefinition) {
+        _utils.trace_enter("Enter bind_symbols_for_def");
+        if (this.model.some.already_processed(def)) { return; }
+        if (def is BoundDefinition.function_def) {
+            this.bind_function_symbols(def.function_def);
+        }
+        if (def is BoundDefinition.class_def) {
+            this.bind_class_symbols(def.class_def);
+        }
+        if (def is BoundDefinition.enum_def) {
+            let e: BoundEnumDefinition = def.enum_def;
+            for (let member in e.members) {
+                if (member.member_symbol.is_some()) {
+                    let sym: mut BoundEnumMemberSymbol = member.member_symbol.some;
+                    sym.bound_type = e.bound_type;
+                }
+            }
+            // Bind symbols for direct enum methods
+            for (let emd in e.methods) {
+                this.bind_symbols_for_def(emd);
+            }
+            for (let impl_def in e.interface_impls) {
+                if (impl_def is BoundDefinition.impl_def) {
+                    let iface_impl: BoundInterfaceImplementation = impl_def.impl_def;
+                    for (let eimd in iface_impl.methods) {
+                        this.bind_symbols_for_def(eimd);
+                    }
+                }
+            }
+        }
+        if (def is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = def.interface_def;
+            for (let imd in iface.methods) {
+                this.bind_symbols_for_def(imd);
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            for (let child in ns.children) {
+                this.bind_symbols_for_def(child);
+            }
+        }
+        // Primitive interface impls: mirror resolved parameters onto each mangled
+        // method's symbol (so function_is_method / IRGenerator receiver handling
+        // see the `this` parameter) and register param symbols in the method scope.
+        if (def is BoundDefinition.impl_for_def) {
+            let impl_for: BoundInterfaceForImplementation = def.impl_for_def;
+            for (let fmd in impl_for.methods) {
+                if (fmd is BoundDefinition.function_def) {
+                    this.bind_function_symbols(fmd.function_def);
+                }
+            }
+        }
+        if (def is BoundDefinition.initial_routine) {
+            this.bind_function_symbols_for_init(def.initial_routine);
+        }
+        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+    }
+
+    fun bind_function_symbols(mut this, func: BoundFunctionDefinition) {
+        _utils.trace_enter("Enter bind_function_symbols");
+        // Mirror the resolved parameters onto the function symbol so callers
+        // (e.g. bind_function_call's method-vs-free check, IRGenerator) can tell
+        // whether this is a true method (first param `this`) without a separate
+        // lookup. The symbol's `parameters` field is otherwise only populated
+        // for externs.
+        if (func.symbol.is_some()) {
+            let sym: mut BoundFunctionSymbol = func.symbol.some;
+            for (let param in func.parameters) {
+                sym.parameters.push(param);
+            }
+        }
+        if (func.scope.is_none()) { return; }
+        let func_scope: mut BoundScope = func.scope.some;
+        for (let param2 in func.parameters) {
+            let param_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            param_sym.name = param2.name;
+            param_sym.full_name = func.full_name + "." + param2.name;
+            param_sym.bound_type = param2.bound_type;
+            param_sym.variable_kind = new VariableSymbolKind.Param();
+            param_sym.is_mutable = param2.is_mutable;
+            param_sym.parameter_index = param2.index;
+            param_sym.enclosing_scope = new Option<BoundScope>.some(func_scope);
+            func_scope.add_symbol(new BoundSymbol.variable(param_sym));
+        }
+    }
+
+    fun bind_function_symbols_for_init(mut this, init: BoundInitialRoutineDefinition) {
+        _utils.trace_enter("Enter bind_function_symbols_for_init");
+        if (init.scope.is_none()) { return; }
+    }
+
+    fun bind_class_symbols(mut this, cls: BoundClassDefinition) {
+        _utils.trace_enter("Enter bind_class_symbols");
+        if (cls.scope.is_none()) { return; }
+        for (let md in cls.methods) {
+            this.bind_symbols_for_def(md);
+        }
+        for (let cd in cls.constructors) {
+            this.bind_symbols_for_def(cd);
+        }
+        for (let impl_def in cls.interface_impls) {
+            if (impl_def is BoundDefinition.impl_def) {
+                let iface_impl: BoundInterfaceImplementation = impl_def.impl_def;
+                for (let cmd in iface_impl.methods) {
+                    this.bind_symbols_for_def(cmd);
+                }
+            }
+        }
+    }
+
+}
+
+}
