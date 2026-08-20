@@ -353,7 +353,7 @@ initial {
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
-", @"%enum.Option = type { ptr, i32 }
+", @"%enum.Option = type { ptr, i64 }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
@@ -402,7 +402,7 @@ initial {
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
-", @"%enum.Option = type { ptr, i32, i64 }
+", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
@@ -454,7 +454,7 @@ initial {
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
-", @"%enum.Option = type { ptr, i32, i64 }
+", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
@@ -501,7 +501,7 @@ initial {
     let llvm_ir: string = emitter.lower(module, result);
     println(llvm_ir);
 }
-", @"%enum.Option = type { ptr, i32, i64 }
+", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,

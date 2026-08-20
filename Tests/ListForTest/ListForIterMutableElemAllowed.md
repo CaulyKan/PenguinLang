@@ -1,7 +1,8 @@
 # ListForIterMutableElemAllowed
 ## Description
-For-loop over mut List<mut Foo>.iter() (elements mutable) calling a 'mut this' method -> must
-compile and mutate. List<mut Foo> means elements are mutable. Green on all compilers.
+For-loop over mut List<mut Foo>.iter() (elements mutable) calling a 'mut this' method: must
+compile; the loop variable is a COPY of the value-class element (value-copy semantics —
+`List<mut T> ≡ List<T>` for value elements), so the mutation does not stick — prints 12.
 
 ## Apply To
 * BabyPenguin
@@ -37,5 +38,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `1112`
+ExpectedStdout: EQUALS `12`
 ExpectedStderr: DISCARD

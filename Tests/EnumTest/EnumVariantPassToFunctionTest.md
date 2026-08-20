@@ -1,6 +1,10 @@
 # EnumVariantPassToFunctionTest
 ## Description
-Pass enum variant value to a function that modifies it.
+Pass an enum variant payload to a function that modifies its parameter: the
+by-value parameter is a COPY (value-copy semantics — `mut` on a plain parameter
+is a permission to mutate the local copy, not to write through; only method
+receivers `mut this` alias the caller's slot). `setX(e.a, 55)` does not change
+the enum's payload — prints 0.
 
 ## Apply To
 * BabyPenguin
@@ -45,5 +49,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `55`
+ExpectedStdout: EQUALS `0`
 ExpectedStderr: DISCARD

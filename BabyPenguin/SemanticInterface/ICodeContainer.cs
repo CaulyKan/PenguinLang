@@ -232,6 +232,19 @@ namespace BabyPenguin.SemanticInterface
                             }
                             else
                             {
+                                // Writing through a non-lvalue base (call /
+                                // cast / new / postfix result) would silently
+                                // mutate a discarded copy under value-copy
+                                // semantics — reject at compile time.
+                                if (baseEffective is FunctionCallExpression
+                                    or CastExpression
+                                    or NewExpression
+                                    or PostfixExpression)
+                                {
+                                    throw new BabyPenguinException(
+                                        $"Cannot assign to member of non-lvalue expression '{baseEffective.BuildText()}' (result of a call/cast is a temporary copy)",
+                                        baseEffective.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                                }
                                 target = AddExpression(currentExpr, false);
                             }
 

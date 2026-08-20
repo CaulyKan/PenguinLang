@@ -38,6 +38,10 @@ class ClassLayout {
     sizeof_object: mut i64 = 0;
     has_metadata: bool = false;
     interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
+    // True while the layout's fields/size are being computed (on-demand
+    // recursive layout building). llvm_type_size on a building layout means a
+    // value-type layout cycle — reported as E_SIZE_CYCLE.
+    is_building: mut bool = false;
 
     fun new(mut this, type_name: string, is_value_type: bool, has_metadata: bool) {
         _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ", is_value_type=" + cast<string>(is_value_type) + ", has_metadata=" + cast<string>(has_metadata) + ")");
@@ -84,6 +88,8 @@ class EnumLayout {
     payload_llvm_type: string = "";
     has_payload: bool = false;
     interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
+    // See ClassLayout.is_building.
+    is_building: mut bool = false;
 
     fun new(mut this, type_name: string) {
         _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ")");
@@ -154,6 +160,11 @@ class TypeIdConstant {
 class FuncParamTypes {
     func_name: string = "";
     param_types: mut _utils.List<string> = new _utils.List<string>();
+    // True when the callee's first parameter is named "this" — the receiver.
+    // The write-chain pre-scan uses this to decide whether a CALL's arg0 is a
+    // method receiver (must alias the caller's slot) or a plain by-value
+    // argument (copy).
+    first_param_is_this: mut bool = false;
 
     fun new(mut this, func_name: string) {
         _utils.trace_enter("Enter new(func_name=" + cast<string>(func_name) + ")");
@@ -184,10 +195,53 @@ class LLVMEmitter {
     // and entry_allocas collects alloca instructions for the entry block.
     body_sb: mut StringBuilder = new StringBuilder();
     entry_allocas: mut StringBuilder = new StringBuilder();
+    // Per-function: names emitted as entry-block allocas (registers that ARE
+    // storage). Used by enum_value_storage_ptr to resolve a mut payload access
+    // to the enum's own storage instead of a materialized copy.
+    entry_alloca_names: mut _utils.List<string> = new _utils.List<string>();
+    // Per-function: RDMBR/RDENUM result registers that must ALIAS the slot
+    // they read (lvalue addressing) — the result is consumed as the owner of
+    // a WRMBR, as a method-call receiver, or through a chain of such uses
+    // (see scan_write_chains). Everything else reads a COPY (value-copy
+    // semantics: binding / extraction / by-value argument).
+    write_chain_regs: mut _utils.List<string> = new _utils.List<string>();
+    // Per-function: ASSIGN destinations that must ALIAS their source instead
+    // of copying (receiver materialization feeding a call, and the unbox
+    // idiom `let self: mut Self = cast<mut Self>(this)` whose WRMBR owner is
+    // the assigned register).
+    alias_assign_regs: mut _utils.List<string> = new _utils.List<string>();
+    // Per-function: value-class parameters (except `this`) copied into local
+    // storage at function entry — maps "%" + param name to the copy alloca.
+    // `this` receivers are deliberately absent: they point at the caller's
+    // slot so mut-this writes go through.
+    value_param_copies: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    // Per-function: struct SSA values produced by coerce_operand's ptr→struct
+    // load, mapped back to the POINTER they were loaded from. Lets storage-
+    // resolving paths (write-chain payload extraction) recover the enum's
+    // STORAGE from a register that was resolved (and loaded) through the
+    // alias map.
+    struct_value_sources: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    // Per-function: struct values produced by RDMBR of an INLINE field (a
+    // `load %class./%enum.` from a field slot), mapped back to the FIELD
+    // ADDRESS they were loaded from. A chained write whose WRMBR base is such
+    // a register (`this.tail.link = x` lowers to WRMBR(RDMBR(this, tail),
+    // link, x)) must write THROUGH to the real field — the loaded copy's own
+    // alloca would silently swallow the store. Cleared on ASSIGN to the
+    // register (the reg then holds unrelated content).
+    struct_field_sources: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
     cond_counter: mut i64 = 0;
     current_ret_type: mut string = "void";
     class_layouts: mut _utils.List<ClassLayout> = new _utils.List<ClassLayout>();
     enum_layouts: mut _utils.List<EnumLayout> = new _utils.List<EnumLayout>();
+    // Completion order of layout building (leaves finish first). LLVM textual
+    // IR requires a named struct to be DEFINED before it is referenced by
+    // another `= type`, and on-demand recursive building may interleave
+    // class/enum layouts — so emission follows this order, which is a valid
+    // topological order of the type-nesting graph. Entries are llvm struct
+    // type names ("%class.X" / "%enum.X").
+    layout_done_order: mut _utils.List<string> = new _utils.List<string>();
+    // Names of layouts currently being built (for the E_SIZE_CYCLE chain dump).
+    building_stack: mut _utils.List<string> = new _utils.List<string>();
     tmp_counter: mut i64 = 0;
     has_iref_class: mut bool = false;
     needs_int_to_string: mut bool = false;
@@ -201,6 +255,9 @@ class LLVMEmitter {
     has_boxing: mut bool = false;
     has_main: mut bool = false;
     needs_memset: mut bool = false;
+    // Raw @llvm.memcpy calls outside the boxing paths (LOAD_PTR/RDENUM of
+    // value-class elements) — gates the memcpy declaration.
+    needs_memcpy: mut bool = false;
     icmp_results: mut _utils.List<string> = new _utils.List<string>();
     type_id_constants: mut _utils.List<TypeIdConstant> = new _utils.List<TypeIdConstant>();
     emitted_interface_ids: mut _utils.List<string> = new _utils.List<string>();
@@ -242,6 +299,7 @@ class LLVMEmitter {
         _utils.trace_enter("Enter emit_entry_alloca(name=" + cast<string>(name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
         this.entry_allocas.append("  " + name + " = alloca " + llvm_type + "\n");
         this.entry_allocas.append("  store " + llvm_type + " zeroinitializer, ptr " + name + "\n");
+        this.entry_alloca_names.push(name);
     }
 
     // Allocate a new debug metadata ID (returns just the number string, e.g. "0", "1")
@@ -622,9 +680,16 @@ class LLVMEmitter {
         let i: mut i64 = 0;
         while (i < cast<i64>(module.global_variables.size())) {
             let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(i)).some;
-            let llvm_type: string = this.ir_type_to_llvm(gv.ir_type);
+            let llvm_type: mut string = this.ir_type_to_llvm(gv.ir_type);
+            // A value-class global stores the STRUCT INLINE (value-copy
+            // semantics; mutability never changes storage). Reference classes
+            // and strings keep pointer storage.
+            if (llvm_type == "ptr") {
+                let vc: string = this.value_class_struct_type(gv.ir_type);
+                if (string_length(vc) > 0) { llvm_type = vc; }
+            }
             let global_name: string = "@" + this.sanitize_name(gv.name);
-            if (gv.initializer_value == "null") {
+            if (gv.initializer_value == "null" && llvm_type == "ptr") {
                 this.sb.append(global_name + " = global " + llvm_type + " null\n");
             } else if (this.is_int_type(gv.ir_type)) {
                 this.sb.append(global_name + " = global " + llvm_type + " " + gv.initializer_value + "\n");
@@ -703,7 +768,7 @@ class LLVMEmitter {
         if (this.has_iref_class || this.has_boxing) {
             target.append("declare ptr @_emperor_alloc_impl(i32)\n");
         }
-        if (this.has_boxing) {
+        if (this.has_boxing || this.needs_memcpy) {
             target.append("declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n");
         }
         if (has_layouts || needs_its) {
@@ -735,6 +800,19 @@ class LLVMEmitter {
         if (this.has_main) {
             target.append("declare void @_emperor_gc_init(ptr)\n");
             target.append("declare void @_emperor_gc_add_root(ptr)\n");
+            // The std container's extern (__builtin._gc_scan_add) may already
+            // have emitted this declaration — emitting it twice is a redefinition.
+            let scan_add_declared: mut bool = false;
+            let ei2: mut i64 = 0;
+            while (ei2 < cast<i64>(this.extern_map.size())) {
+                if (this.extern_map.at(cast<u64>(ei2)).some.llvm_value == "@_emperor_gc_scan_add") {
+                    scan_add_declared = true;
+                }
+                ei2 = ei2 + 1;
+            }
+            if (!scan_add_declared) {
+                target.append("declare void @_emperor_gc_scan_add(i64, i64)\n");
+            }
             target.append("declare void @_emperor_args_init(i32, ptr)\n");
             target.append("declare void @_emperor_boost_stack()\n");
         }
@@ -753,6 +831,9 @@ class LLVMEmitter {
             while (ppi < cast<i64>(func.parameters.size())) {
                 let pp: IRParameter = func.parameters.at(cast<u64>(ppi)).some;
                 fpt.param_types.push(this.ir_type_to_llvm(pp.ir_type));
+                if (ppi == 0 && pp.name == "this") {
+                    fpt.first_param_is_this = true;
+                }
                 ppi = ppi + 1;
             }
             this.func_param_types.push(fpt);
@@ -811,6 +892,12 @@ class LLVMEmitter {
         this.cond_counter = 0;
         this.current_ret_type = func.return_type;
         this.param_names = new _utils.List<string>();
+        this.entry_alloca_names = new _utils.List<string>();
+        this.write_chain_regs = new _utils.List<string>();
+        this.alias_assign_regs = new _utils.List<string>();
+        this.value_param_copies = new _utils.List<RegMapping>();
+        this.struct_value_sources = new _utils.List<RegMapping>();
+        this.struct_field_sources = new _utils.List<RegMapping>();
 
         // Determine if this function returns an aggregate that needs sret (RVO)
         let use_sret: bool = !func.is_extern && this.needs_sret(func.return_type);
@@ -844,6 +931,10 @@ class LLVMEmitter {
 
         // Pre-scan for mutable registers (reassigned multiple times)
         this.scan_mutable_regs(func);
+
+        // Pre-scan for write chains (WRMBR owners / method receivers that must
+        // alias their slot instead of copying — see scan_write_chains).
+        this.scan_write_chains(func);
 
         // Initialize debug info for this function
         this.debug_begin_function(func.name, func.location);
@@ -903,6 +994,33 @@ class LLVMEmitter {
                     this.register_llvm_type("%" + p.name, "ptr");
                 }
                 bi = bi + 1;
+            }
+        }
+
+        // Value-copy semantics for value-class parameters: the ABI passes a
+        // POINTER (ref<X> -> ptr), so a plain `mut` parameter would alias the
+        // caller's storage and writes would leak back. Copy the pointee into
+        // local storage at entry. `this` receivers are deliberately excluded —
+        // they point at the caller's slot so mut-this methods (and
+        // constructors) write through; method bodies already address `this`
+        // as ptr-to-struct.
+        if (!func.is_extern) {
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(func.parameters.size())) {
+                let p: IRParameter = func.parameters.at(cast<u64>(ci)).some;
+                if (p.name != "this") {
+                    let vc_struct: string = this.value_class_struct_type(p.ir_type);
+                    if (string_length(vc_struct) > 0) {
+                        let copy_name: string = "%" + p.name + ".copy";
+                        let vc_size: i64 = this.llvm_type_size(vc_struct);
+                        this.sb.append("  " + copy_name + " = alloca " + vc_struct + "\n");
+                        this.sb.append("  call void @llvm.memcpy.p0.p0.i32(ptr " + copy_name + ", ptr %" + p.name + ", i32 " + cast<string>(vc_size) + ", i1 false)\n");
+                        this.needs_memcpy = true;
+                        this.value_param_copies.push(new RegMapping("%" + p.name, copy_name));
+                        this.register_llvm_type(copy_name, "ptr");
+                    }
+                }
+                ci = ci + 1;
             }
         }
 
@@ -998,12 +1116,23 @@ class LLVMEmitter {
             // Initialize GC
             this.sb.append("  %_gc_sp = call ptr @llvm.frameaddress(i32 0)\n");
             this.sb.append("  call void @_emperor_gc_init(ptr %_gc_sp)\n");
-            // Register global reference-type variables as GC roots
+            // Register global reference-type variables as GC roots. A
+            // value-class global stores its STRUCT inline, so a single-slot
+            // root would only cover the metadata word — register the whole
+            // struct as a conservative SCAN REGION instead (every
+            // pointer-looking field, e.g. strings, stays reachable).
             let gi: mut i64 = 0;
             while (gi < cast<i64>(module.global_variables.size())) {
                 let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
-                if (this.is_string_type(gv.ir_type) || this.is_ref_type(gv.ir_type)) {
-                    let global_name: string = "@" + this.sanitize_name(gv.name);
+                let global_name: string = "@" + this.sanitize_name(gv.name);
+                let vc_struct: string = this.value_class_struct_type(gv.ir_type);
+                if (string_length(vc_struct) > 0) {
+                    let vc_size: i64 = this.llvm_type_size(vc_struct);
+                    // Match the std extern's ABI (_gc_scan_add(addr: u64, size: i64)).
+                    let addr_tmp: string = this.next_tmp();
+                    this.sb.append("  " + addr_tmp + " = ptrtoint ptr " + global_name + " to i64\n");
+                    this.sb.append("  call void @_emperor_gc_scan_add(i64 " + addr_tmp + ", i64 " + cast<string>(vc_size) + ")\n");
+                } else if (this.is_string_type(gv.ir_type) || this.is_ref_type(gv.ir_type)) {
                     this.sb.append("  call void @_emperor_gc_add_root(ptr " + global_name + ")\n");
                 }
                 gi = gi + 1;
@@ -1042,76 +1171,83 @@ class LLVMEmitter {
 
     // --- Layout building ---
 
+    // On-demand recursive layout building. Enum payloads may be value-type
+    // classes and class fields may be enums (or classes declared later in the
+    // unit), so layouts are built lazily and mutually recursively: resolving a
+    // field/payload type ENSURES the referenced layout exists first. A layout
+    // re-entered while still building means an infinite value-type layout
+    // (e.g. `impl IValueType class Node { next: Option<Node>; }`) — reported
+    // as E_SIZE_CYCLE instead of recursing forever or silently sizing the
+    // payload as a pointer.
     fun build_layout_tables(mut this, unit: BoundCompilationUnit) {
         _utils.trace_enter("Enter build_layout_tables");
-        // Pass 1: build all enum layouts first (classes may reference them)
         let di: mut i64 = 0;
         while (di < cast<i64>(unit.definitions.size())) {
             let def: BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
-            this.build_enum_layouts_for_def(def);
-            di = di + 1;
-        }
-        // Pass 2: build class layouts (can now reference enum layouts)
-        di = 0;
-        while (di < cast<i64>(unit.definitions.size())) {
-            let def: BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
-            this.build_class_layouts_for_def(def);
+            this.build_layouts_for_def(def);
             di = di + 1;
         }
     }
 
-    fun build_enum_layouts_for_def(mut this, def: BoundDefinition) {
-        _utils.trace_enter("Enter build_enum_layouts_for_def");
+    fun build_layouts_for_def(mut this, def: BoundDefinition) {
         if (def is BoundDefinition.enum_def) {
             if (cast<i64>(def.enum_def.generic_params.size()) == 0) {
-                this.build_enum_layout(def.enum_def);
+                this.ensure_enum_layout(def.enum_def);
             }
         }
-        if (def is BoundDefinition.namespace_def) {
-            let ns: BoundNamespaceDefinition = def.namespace_def;
-            let i: mut i64 = 0;
-            while (i < cast<i64>(ns.children.size())) {
-                this.build_enum_layouts_for_def(ns.children.at(cast<u64>(i)).some);
-                i = i + 1;
-            }
-        }
-    }
-
-    fun build_class_layouts_for_def(mut this, def: BoundDefinition) {
-        _utils.trace_enter("Enter build_class_layouts_for_def");
         if (def is BoundDefinition.class_def) {
             if (!def.class_def.is_generic_template) {
-                this.build_class_layout(def.class_def);
+                this.ensure_class_layout(def.class_def);
             }
         }
         if (def is BoundDefinition.namespace_def) {
             let ns: BoundNamespaceDefinition = def.namespace_def;
             let i: mut i64 = 0;
             while (i < cast<i64>(ns.children.size())) {
-                this.build_class_layouts_for_def(ns.children.at(cast<u64>(i)).some);
+                this.build_layouts_for_def(ns.children.at(cast<u64>(i)).some);
                 i = i + 1;
             }
         }
     }
 
-    fun build_class_layout(mut this, cls: BoundClassDefinition) {
-        _utils.trace_enter("Enter build_class_layout");
-        let is_value: mut bool = true;
-        if (cls.is_value_class.is_some()) {
-            is_value = cls.is_value_class.some;
+    // Report a value-type layout size cycle and abort (the emitter has no
+    // source-location error channel — mirrors the E_INTERNAL pattern above).
+    fun size_cycle_error(this, type_name: string) {
+        let chain: mut string = "";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.building_stack.size())) {
+            if (string_length(chain) > 0) { chain = chain + " -> "; }
+            chain = chain + this.building_stack.at(cast<u64>(i)).some;
+            i = i + 1;
+        }
+        if (string_length(chain) > 0) { chain = chain + " -> "; }
+        chain = chain + type_name;
+        __builtin.eprintln("error[E_SIZE_CYCLE]: Cannot compute size of '" + type_name + "': the value-type layout recursively contains itself (" + chain + ")");
+        __builtin.exit(1);
+    }
 
-        }
-        // Both ICopy and IRef classes have metadata pointers
-        let has_metadata: bool = true;
-        if (!is_value) {
-            this.has_iref_class = true;
-        }
+    fun ensure_class_layout(mut this, cls: BoundClassDefinition) -> Option<ClassLayout> {
+        _utils.trace_enter("Enter ensure_class_layout");
         // Layout name must match the IR type references (`ref<X>`): a SPECIALIZED
         // def's name IS the mangle (short prefix), so use it directly; a template
         // def uses the global-prefix-stripped full name.
         let layout_name: mut string = this.strip_global_prefix(cls.full_name);
         if (cls.is_specialized) { layout_name = cls.name; }
+        let existing: Option<ClassLayout> = this.find_class_layout(layout_name);
+        if (existing.is_some()) {
+            if (existing.some.is_building) { this.size_cycle_error(existing.some.type_name); }
+            return existing;
+        }
+        let is_value: bool = this.effective_class_value(cls);
+        // Both ICopy and IRef classes have metadata pointers
+        let has_metadata: bool = true;
+        if (!is_value) {
+            this.has_iref_class = true;
+        }
         let layout: mut ClassLayout = new ClassLayout(layout_name, is_value, has_metadata);
+        layout.is_building = true;
+        this.class_layouts.push(layout);
+        this.building_stack.push(layout_name);
 
         let offset: mut i64 = 0;
         if (has_metadata) {
@@ -1123,7 +1259,7 @@ class LLVMEmitter {
             let fdef: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
             if (fdef is BoundDefinition.class_field) {
                 let cf: BoundClassFieldDefinition = fdef.class_field;
-                let field_llvm_type: string = this.bound_type_to_llvm_type(cf.bound_type);
+                let field_llvm_type: string = this.field_type_to_llvm(cf.bound_type);
                 let field_size: i64 = this.llvm_type_size(field_llvm_type);
                 let field_align: i64 = this.llvm_type_align(field_llvm_type);
                 let aligned_offset: i64 = this.align_up(offset, field_align);
@@ -1156,22 +1292,29 @@ class LLVMEmitter {
             vi = vi + 1;
         }
 
-        // Skip if already added (dedup for classes that appear in multiple definitions)
-        let existing: Option<ClassLayout> = this.find_class_layout(layout.type_name);
-        if (existing.is_some()) { return; }
-        this.class_layouts.push(layout);
+        layout.is_building = false;
+        this.building_stack.pop();
+        this.layout_done_order.push(layout.llvm_struct_type);
+        return new Option<ClassLayout>.some(layout);
     }
 
-    fun build_enum_layout(mut this, enum_def: BoundEnumDefinition) {
-        _utils.trace_enter("Enter build_enum_layout");
+    fun ensure_enum_layout(mut this, enum_def: BoundEnumDefinition) -> Option<EnumLayout> {
+        _utils.trace_enter("Enter ensure_enum_layout");
         // Layout name must match IR type references (`enum<X>`); specialized
         // defs use their mangle name directly (short prefix).
         let layout_name: mut string = this.strip_global_prefix(enum_def.full_name);
         if (enum_def.is_specialized) { layout_name = enum_def.name; }
+        let existing: Option<EnumLayout> = this.find_enum_layout(layout_name);
+        if (existing.is_some()) {
+            if (existing.some.is_building) { this.size_cycle_error(existing.some.type_name); }
+            return existing;
+        }
         let layout: mut EnumLayout = new EnumLayout(layout_name);
+        layout.is_building = true;
+        this.enum_layouts.push(layout);
+        this.building_stack.push(layout_name);
         let has_payload: mut bool = false;
         let payload_type: mut string = "";
-        let enum_name: string = enum_def.name;
 
         let mi: mut i64 = 0;
         while (mi < cast<i64>(enum_def.members.size())) {
@@ -1179,13 +1322,20 @@ class LLVMEmitter {
             let mt: BoundType = member.member_type;
             let is_void: bool = mt.kind is TypeKind.PrimitiveKind
                 && mt.primitive is PrimitiveType.VoidType;
-            let is_self_enum: bool = mt.kind is TypeKind.EnumKind
-                && mt.display_name() == enum_name;
+            // Tag-only sentinel: member_type == the enum's own type (set by
+            // resolve_enum_types). Compare by def full_name — display_name()
+            // is mutability-prefixed, so a `mut`-typed field of the same enum
+            // would not match and the sentinel would nest the enum in itself.
+            let is_self_enum: mut bool = false;
+            if (mt.kind is TypeKind.EnumKind && mt.type_definition.is_some()
+                && mt.type_definition.some is BoundDefinition.enum_def) {
+                is_self_enum = enum_def.full_name == mt.type_definition.some.enum_def.full_name;
+            }
             if (is_void || is_self_enum) {
                 let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, "");
                 layout.variants.push(variant);
             } else {
-                let member_llvm_type: string = this.bound_type_to_llvm_type(mt);
+                let member_llvm_type: string = this.field_type_to_llvm(mt);
                 let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, member_llvm_type);
                 variant.payload_bound_type = new Option<BoundType>.some(mt);
                 layout.variants.push(variant);
@@ -1219,10 +1369,184 @@ class LLVMEmitter {
             vi = vi + 1;
         }
 
-        // Skip if already added (dedup)
-        let existing_enum: Option<EnumLayout> = this.find_enum_layout(layout.type_name);
-        if (existing_enum.is_some()) { return; }
-        this.enum_layouts.push(layout);
+        layout.is_building = false;
+        this.building_stack.pop();
+        this.layout_done_order.push(layout.llvm_struct_type);
+        return new Option<EnumLayout>.some(layout);
+    }
+
+    // Map a field/enum-payload BoundType to its LLVM type DURING layout
+    // building: composite types first ENSURE the referenced layout exists
+    // (recursively), so a value-type class payload/field nests inline instead
+    // of silently degrading to "ptr" when its layout has not been built yet.
+    // Outside layout building use bound_type_to_llvm_type (query-only).
+    fun field_type_to_llvm(mut this, bt: BoundType) -> string {
+        // Storage layout is MUTABILITY-INDEPENDENT (mut is a compile-time
+        // permission only): a value-class field/payload nests the struct
+        // INLINE whether bound mut or immutable; reference classes and
+        // strings are pointers either way. Copies happen at the value-model
+        // boundaries (emit_assign / emit_rdmbr / emit_rdenum / emit_arg);
+        // chain writes and method receivers address the slot directly via the
+        // write-chain pre-scan (scan_write_chains).
+        if (bt.kind is TypeKind.ClassKind) {
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = bt.type_definition.some.class_def;
+                if (cls.is_generic_template && cast<i64>(bt.generic_args.size()) > 0) {
+                    // Unspecialized reference (template def + generic args):
+                    // resolve the specialized def via the unified mangle.
+                    let spec_cls: Option<BoundClassDefinition> = this.lookup_specialized_class(this.resolve_type_layout_name(bt));
+                    if (spec_cls.is_some()) {
+                        return this.class_def_field_llvm(spec_cls.some);
+                    }
+                    return "ptr";
+                }
+                return this.class_def_field_llvm(cls);
+            }
+            return "ptr";
+        }
+        if (bt.kind is TypeKind.EnumKind) {
+            // An inline enum payload that transitively contains the owning
+            // structure is an infinite value layout — reported as
+            // E_SIZE_CYCLE by the layout builder; use a reference class or
+            // Box<T> for deliberate indirection.
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = bt.type_definition.some.enum_def;
+                if (cast<i64>(e.generic_params.size()) > 0 && cast<i64>(bt.generic_args.size()) > 0) {
+                    let spec_e: Option<BoundEnumDefinition> = this.lookup_specialized_enum(this.resolve_type_layout_name(bt));
+                    if (spec_e.is_some()) {
+                        return this.enum_def_field_llvm(spec_e.some);
+                    }
+                    return "i64";
+                }
+                return this.enum_def_field_llvm(e);
+            }
+            return "i64";
+        }
+        return this.bound_type_to_llvm_type(bt);
+    }
+
+    fun class_def_field_llvm(mut this, cls: BoundClassDefinition) -> string {
+        if (cls.is_generic_template) { return "ptr"; }
+        // A REFERENCE class field is a pointer — type it WITHOUT ensuring the
+        // class layout: a ref class may legally contain itself through an enum
+        // payload (linked list), and re-entering its in-progress layout would
+        // falsely report a size cycle. Only INLINE (value-type) nesting needs
+        // the layout, and that is where a cycle is genuinely infinite.
+        if (!this.effective_class_value(cls)) { return "ptr"; }
+        let ensured: Option<ClassLayout> = this.ensure_class_layout(cls);
+        if (ensured.is_some()) {
+            if (ensured.some.is_value_type) {
+                return ensured.some.llvm_struct_type;
+            }
+            return "ptr";
+        }
+        return "ptr";
+    }
+
+    // The value/ref classification of a class def as the EMITTER must see it.
+    // Some specialization paths hand the emitter a DUPLICATE bound def (same
+    // full_name, full fields, but never walked by the classification pass, so
+    // is_value_class is none). Resolve the classification through the unit tree
+    // def registered under the same name before falling back to value (the
+    // historical default).
+    fun effective_class_value(this, cls: BoundClassDefinition) -> bool {
+        if (cls.is_value_class.is_some()) { return cls.is_value_class.some; }
+        if (this.current_unit.is_some()) {
+            let found: Option<bool> = this.find_classified_value_in_unit(this.current_unit.some.definitions, cls);
+            if (found.is_some()) {
+                return found.some;
+            }
+        }
+        return true;
+    }
+
+    // A same-named def that pass 7 actually classified (duplicates created by
+    // on-demand specialization paths can carry is_value_class none while the
+    // canonical def in the tree is classified). Prefer any classified def over
+    // defaulting an unclassified duplicate to value — the two readers
+    // (byte_size via the def, this fallback) must agree or List slot strides
+    // diverge from the emitted struct layouts (buffer overflow).
+    // A SPECIALIZED def is identified by its mangled NAME (full_name still
+    // names the template), so match those by name.
+    fun find_classified_value_in_unit(this, defs: _utils.List<BoundDefinition>, cls: BoundClassDefinition) -> Option<bool> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let d: BoundClassDefinition = def.class_def;
+                let matches: bool = if (cls.is_specialized) {
+                    d.is_specialized && d.name == cls.name
+                } else {
+                    d.full_name == cls.full_name
+                };
+                if (matches && d.is_value_class.is_some()) {
+                    return new Option<bool>.some(d.is_value_class.some);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let nested: Option<bool> = this.find_classified_value_in_unit(def.namespace_def.children, cls);
+                if (nested.is_some()) { return nested; }
+            }
+            i = i + 1;
+        }
+        return new Option<bool>.none();
+    }
+
+    fun find_class_def_in_unit(this, defs: _utils.List<BoundDefinition>, full_name: string) -> Option<BoundClassDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                if (def.class_def.full_name == full_name) {
+                    return new Option<BoundClassDefinition>.some(def.class_def);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let nested: Option<BoundClassDefinition> = this.find_class_def_in_unit(def.namespace_def.children, full_name);
+                if (nested.is_some()) { return nested; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    fun enum_def_field_llvm(mut this, e: BoundEnumDefinition) -> string {
+        if (cast<i64>(e.generic_params.size()) == 0) {
+            let ensured: Option<EnumLayout> = this.ensure_enum_layout(e);
+            if (ensured.is_some()) {
+                return ensured.some.llvm_struct_type;
+            }
+        }
+        __builtin.eprintln("error[E_INTERNAL]: Enum layout not found in field_type_to_llvm"); __builtin.exit(1);
+        return "i64";
+    }
+
+    // Resolve a specialized class def by its layout name (the unified mangle)
+    // via the compilation unit's global scope.
+    fun lookup_specialized_class(this, layout_name: string) -> Option<BoundClassDefinition> {
+        if (this.current_unit.is_none()) { return new Option<BoundClassDefinition>.none(); }
+        let sym: Option<BoundSymbol> = this.current_unit.some.global_scope.lookup_type_in_scope(layout_name);
+        if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym.some.type_sym.bound_type;
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                return new Option<BoundClassDefinition>.some(bt.type_definition.some.class_def);
+            }
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    // Resolve a specialized enum def by its layout name (the unified mangle)
+    // via the compilation unit's global scope.
+    fun lookup_specialized_enum(this, layout_name: string) -> Option<BoundEnumDefinition> {
+        if (this.current_unit.is_none()) { return new Option<BoundEnumDefinition>.none(); }
+        let sym: Option<BoundSymbol> = this.current_unit.some.global_scope.lookup_type_in_scope(layout_name);
+        if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym.some.type_sym.bound_type;
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.enum_def) {
+                return new Option<BoundEnumDefinition>.some(bt.type_definition.some.enum_def);
+            }
+        }
+        return new Option<BoundEnumDefinition>.none();
     }
 
     fun find_class_layout(this, type_name: string) -> Option<ClassLayout> {
@@ -1322,8 +1646,11 @@ class LLVMEmitter {
     }
 
     fun extract_type_name(this, ir_type: string) -> string {
-        _utils.trace_enter("Enter extract_type_name(ir_type=" + cast<string>(ir_type) + ")");
-        // Parse "ref<X>" or "enum<X>" → "X"
+        _utils.trace_enter("Enter extract_type_name(ir_type=" + ir_type + ")");
+        // Parse "ref<X>", "mut ref<X>" or "enum<X>" → "X"
+        if (this.string_starts_with(ir_type, "mut ref<")) {
+            return string_substring(ir_type, 8, string_length(ir_type) - 9);
+        }
         if (this.string_starts_with(ir_type, "ref<")) {
             return string_substring(ir_type, 4, string_length(ir_type) - 5);
         }
@@ -1331,6 +1658,41 @@ class LLVMEmitter {
             return string_substring(ir_type, 5, string_length(ir_type) - 6);
         }
         return ir_type;
+    }
+
+    // True for BOTH "ref<X>" and "mut ref<X>" — mutability is a compile-time
+    // permission and never changes storage decisions.
+    fun is_any_ref_ir_type(this, ir_type: string) -> bool {
+        return this.string_starts_with(ir_type, "ref<") || this.string_starts_with(ir_type, "mut ref<");
+    }
+
+    // Strip the harmless "mut " permission prefix the IR layer keeps on
+    // mutable bindings ("mut ref<X>" -> "ref<X>"). Storage decisions must be
+    // mutability-independent.
+    fun strip_mut_ir_prefix(this, ir_type: string) -> string {
+        if (string_length(ir_type) >= 4) {
+            if (string_substring(ir_type, 0, 4) == "mut ") {
+                return string_substring(ir_type, 4, string_length(ir_type) - 4);
+            }
+        }
+        return ir_type;
+    }
+
+    // If `ir_type` ("ref<X>" / "mut ref<X>") names a VALUE class, return its
+    // inline LLVM struct type ("%class.X") — the storage type for value-copy
+    // slots (mutable-reg allocas, globals, binding copies). Reference
+    // classes / strings / unknown return "" (pointer storage).
+    fun value_class_struct_type(this, ir_type: string) -> string {
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (!this.string_starts_with(t, "ref<")) { return ""; }
+        let type_name: string = this.extract_type_name(t);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_some()) {
+            if (found.some.is_value_type) {
+                return found.some.llvm_struct_type;
+            }
+        }
+        return "";
     }
 
     fun is_value_class_ref(this, ir_type: string) -> bool {
@@ -1361,7 +1723,7 @@ class LLVMEmitter {
     // Get the LLVM struct type used for sret, for both value-type classes and
     // enums.
     fun get_sret_llvm_type(this, ir_type: string) -> string {
-        _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + cast<string>(ir_type) + ")");
+        _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + ir_type + ")");
         if (this.string_starts_with(ir_type, "ref<")) {
             let type_name: string = this.extract_type_name(ir_type);
             let found: Option<ClassLayout> = this.find_class_layout(type_name);
@@ -1393,36 +1755,71 @@ class LLVMEmitter {
 
     fun emit_type_definitions(mut this) {
         _utils.trace_enter("Enter emit_type_definitions");
-        // Emit ICopy class struct types (with metadata ptr at field 0)
-        let ci: mut i64 = 0;
-        while (ci < cast<i64>(this.class_layouts.size())) {
-            let layout: ClassLayout = this.class_layouts.at(cast<u64>(ci)).some;
-            if (layout.is_value_type) {
-                this.sb.append(layout.llvm_struct_type + " = type { ptr");
-                let fi: mut i64 = 0;
-                while (fi < cast<i64>(layout.fields.size())) {
-                    this.sb.append(", " + layout.fields.at(cast<u64>(fi)).some.llvm_type);
-                    fi = fi + 1;
+        // Emit value-class struct types (with metadata ptr at field 0) and enum
+        // struct types ({ ptr, i32, payload? }) interleaved in layout COMPLETION
+        // order — a valid topological order of the type-nesting graph, so a
+        // struct nesting another (inline value-class field / value-class enum
+        // payload) is always emitted after its dependency.
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(this.layout_done_order.size())) {
+            let struct_name: string = this.layout_done_order.at(cast<u64>(ti)).some;
+            if (this.string_starts_with(struct_name, "%class.")) {
+                let name: string = string_substring(struct_name, 7, string_length(struct_name) - 7);
+                let found: Option<ClassLayout> = this.find_class_layout(name);
+                if (found.is_some()) {
+                    let layout: ClassLayout = found.some;
+                    if (layout.is_value_type) {
+                        this.sb.append(layout.llvm_struct_type + " = type { ptr");
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(layout.fields.size())) {
+                            this.sb.append(", " + layout.fields.at(cast<u64>(fi)).some.llvm_type);
+                            fi = fi + 1;
+                        }
+                        this.sb.append(" }\n");
+                    }
                 }
-                this.sb.append(" }\n");
             }
-            ci = ci + 1;
-        }
-
-        // Emit enum struct types: { ptr metadata, i32 variant, payload? }
-        let ei: mut i64 = 0;
-        while (ei < cast<i64>(this.enum_layouts.size())) {
-            let layout: EnumLayout = this.enum_layouts.at(cast<u64>(ei)).some;
-            this.sb.append(layout.llvm_struct_type + " = type { ptr, i32");
-            if (layout.has_payload) {
-                this.sb.append(", " + layout.payload_llvm_type);
+            if (this.string_starts_with(struct_name, "%enum.")) {
+                let name: string = string_substring(struct_name, 6, string_length(struct_name) - 6);
+                let found: Option<EnumLayout> = this.find_enum_layout(name);
+                if (found.is_some()) {
+                    let layout: EnumLayout = found.some;
+                    // The payload union MUST be an opaque byte array. Typing it
+                    // as the largest variant's class struct lets the optimizer
+                    // split whole-enum copies (load/store %enum.X of List slots,
+                    // byval argument forwarding) at THAT variant's field
+                    // boundaries — a nested enum tag (i32) becomes a 4-byte
+                    // copy that truncates an 8-byte pointer field of a
+                    // DIFFERENT variant occupying the same union offset
+                    // (List<IRInstruction> pushes lost ir_type pointers this
+                    // way; the read side then segfaulted in string concat).
+                    // A byte array forces byte-preserving copies for every
+                    // variant; typed loads/stores through the slot pointer
+                    // still work (LLVM pointers are untyped).
+                    //
+                    // The tag field type depends on the payload's alignment so
+                    // the alignment-1 byte array lands exactly where the old
+                    // typed layout put the payload (and semantic byte_size
+                    // stays in sync):
+                    //   align-8 payload  -> i64 tag, payload at offset 16
+                    //       (pointer-bearing payloads MUST be 8-aligned for the
+                    //       GC's word-aligned conservative scan to see them)
+                    //   smaller payload  -> i32 tag, payload at offset 12
+                    //       (pure primitives: no pointers inside to miss)
+                    let tag_type: mut string = "i64";
+                    this.sb.append(layout.llvm_struct_type + " = type { ptr, " + tag_type);
+                    if (layout.has_payload) {
+                        let pay_bytes: i64 = this.llvm_type_size(layout.payload_llvm_type);
+                        this.sb.append(", [" + cast<string>(pay_bytes) + " x i8]");
+                    }
+                    this.sb.append(" }\n");
+                }
             }
-            this.sb.append(" }\n");
-            ei = ei + 1;
+            ti = ti + 1;
         }
 
         // Emit metadata globals for all classes (both ICopy and IRef)
-        ci = 0;
+        let ci: mut i64 = 0;
         while (ci < cast<i64>(this.class_layouts.size())) {
             let layout: ClassLayout = this.class_layouts.at(cast<u64>(ci)).some;
             if (cast<i64>(layout.interface_vtables.size()) > 0) {
@@ -1451,7 +1848,7 @@ class LLVMEmitter {
         }
 
         // Emit metadata globals for enums — always use full metadata format
-        ei = 0;
+        let ei: mut i64 = 0;
         while (ei < cast<i64>(this.enum_layouts.size())) {
             let layout: EnumLayout = this.enum_layouts.at(cast<u64>(ei)).some;
             this.emit_full_enum_metadata(layout);
@@ -1761,24 +2158,28 @@ class LLVMEmitter {
         if (this.string_starts_with(llvm_type, "%class.")) {
             let name: string = string_substring(llvm_type, 7, string_length(llvm_type) - 7);
             let found: Option<ClassLayout> = this.find_class_layout(name);
-            if (found.is_some()) { return found.some.sizeof_object; }
+            if (found.is_some()) {
+                if (found.some.is_building) { this.size_cycle_error(found.some.type_name); }
+                return found.some.sizeof_object;
+            }
         }
         if (this.string_starts_with(llvm_type, "%enum.")) {
             let name: string = string_substring(llvm_type, 6, string_length(llvm_type) - 6);
             let found_enum: Option<EnumLayout> = this.find_enum_layout(name);
             if (found_enum.is_some()) {
-                // Enum struct = { ptr metadata, i32 tag, payload? }
-                // metadata ptr: 8 bytes, tag i32: 4 bytes, padding: 4 bytes, payload: variable
-                let base_size: i64 = 16; // ptr(8) + i32(4) + padding(4)
+                if (found_enum.some.is_building) { this.size_cycle_error(found_enum.some.type_name); }
+                // Enum struct = { ptr metadata, i32|i64 tag, [N x i8] payload }.
+                // The tag is i64 exactly when the payload is 8-aligned, so the
+                // alignment-1 byte array sits where the old typed layout put
+                // the payload: align_up(12, payload_align). Keep this in sync
+                // with emit_type_definitions and BoundType.byte_size_rec.
                 if (found_enum.some.has_payload) {
                     if (string_length(found_enum.some.payload_llvm_type) > 0) {
                         let payload_size: i64 = this.llvm_type_size(found_enum.some.payload_llvm_type);
-                        let payload_align: i64 = this.llvm_type_align(found_enum.some.payload_llvm_type);
-                        let aligned_base: i64 = this.align_up(base_size, payload_align);
-                        return aligned_base + payload_size;
+                        return this.align_up(16 + payload_size, 8);
                     }
                 }
-                return base_size;
+                return 16;
             }
         }
         return 8;
@@ -1929,8 +2330,8 @@ class LLVMEmitter {
             return id;
         }
 
-        // ref<Name> → pointer to DICompositeType(Name)
-        if (this.string_starts_with(ir_type, "ref<")) {
+        // ref<Name> / mut ref<Name> → pointer to DICompositeType(Name)
+        if (this.is_any_ref_ir_type(ir_type)) {
             let name: string = this.extract_type_name(ir_type);
             let id: string = this.next_debug_id();
             this.debug_type_cache_set(ir_type, id);  // reserve before building composite (recursion-safe)
@@ -2005,16 +2406,18 @@ class LLVMEmitter {
         this.debug_type_cache_set(cache_key, id);
 
         let member_ids: mut _utils.List<string> = new _utils.List<string>();
-        let tag_type_id: string = this.get_debug_type("i32");
+        let tag_type_id: string = this.get_debug_type("i64");
         let tag_member: string = this.next_debug_id();
-        this.debug_metadata.push("!" + tag_member + " = !DIDerivedType(tag: DW_TAG_member, name: \"tag\", scope: !" + id + ", baseType: !" + tag_type_id + ", size: 32, offset: 64)");
+        // The tag field is i64 (emit_type_definitions), at byte 8.
+        this.debug_metadata.push("!" + tag_member + " = !DIDerivedType(tag: DW_TAG_member, name: \"tag\", scope: !" + id + ", baseType: !" + tag_type_id + ", size: 64, offset: 64)");
         member_ids.push(tag_member);
         if (layout.has_payload) {
             if (string_length(layout.payload_llvm_type) > 0) {
                 let payload_ir: string = this.llvm_type_to_debug_ir(layout.payload_llvm_type);
                 let payload_type_id: string = this.get_debug_type(payload_ir);
-                let payload_align: i64 = this.llvm_type_align(layout.payload_llvm_type);
-                let payload_offset: i64 = this.align_up(16, payload_align);
+                // payload sits at fixed offset 16 (after ptr + i64 tag) —
+                // mirrors llvm_type_size / emit_type_definitions.
+                let payload_offset: i64 = 16;
                 let payload_size: i64 = this.llvm_type_size(layout.payload_llvm_type);
                 let payload_member: string = this.next_debug_id();
                 this.debug_metadata.push("!" + payload_member + " = !DIDerivedType(tag: DW_TAG_member, name: \"payload\", scope: !" + id + ", baseType: !" + payload_type_id + ", size: " + cast<string>(payload_size * 8) + ", offset: " + cast<string>(payload_offset * 8) + ")");
@@ -2202,21 +2605,48 @@ class LLVMEmitter {
         let llvm_type: string = this.ir_type_to_llvm(ir_type);
         if (this.is_mutable_reg(result_name)) {
             let alloca_name: string = this.get_alloca_name(result_name);
-            this.emit_line("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name);
+            // The alloca may be STRUCT-backed (mutable value-class/enum
+            // binding): a scalar zero constant must store as a struct
+            // zeroinitializer, not a raw value (the try-bind defensive zero).
+            let alloca_type: string = this.get_llvm_type(result_name);
+            if (this.string_starts_with(alloca_type, "%class.") || this.string_starts_with(alloca_type, "%enum.")) {
+                this.emit_line("  store " + alloca_type + " zeroinitializer, ptr " + alloca_name);
+            } else {
+                this.emit_line("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name);
+            }
         } else if (this.string_starts_with(llvm_type, "%enum.")) {
             // Enum struct values cannot use add; map directly
             this.reg_map.push(new RegMapping(result_name, inst.value));
         } else {
             this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + inst.value);
         }
-        this.register_llvm_type(result_name, llvm_type);
+        // Preserve a struct-backed mutable reg's STORAGE type — registering
+        // the IR-derived "ptr" over it would corrupt later stores.
+        let final_type: string = this.get_llvm_type(result_name);
+        if (this.string_starts_with(final_type, "%class.") || this.string_starts_with(final_type, "%enum.")) {
+            this.register_llvm_type(result_name, final_type);
+        } else {
+            this.register_llvm_type(result_name, llvm_type);
+        }
     }
 
     fun emit_arg(mut this, inst: IRArg) {
         _utils.trace_enter("Enter emit_arg(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
         let param_name: string = "%" + inst.param_name;
-        this.reg_map.push(new RegMapping(result_name, param_name));
+        // A value-class parameter was copied into local storage at function
+        // entry (see emit_function): route the body's uses of the parameter at
+        // the COPY so mutations stay local. `this` receivers have no copy and
+        // alias the caller's slot directly.
+        let target: mut string = param_name;
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.value_param_copies.size())) {
+            if (this.value_param_copies.at(cast<u64>(ci)).some.ir_name == param_name) {
+                target = this.value_param_copies.at(cast<u64>(ci)).some.llvm_value;
+            }
+            ci = ci + 1;
+        }
+        this.reg_map.push(new RegMapping(result_name, target));
         let llvm_type: string = this.ir_type_to_llvm(inst.result.get_ir_type());
         // For byval aggregate parameters (>16 bytes), the LLVM IR parameter is a
         // pointer; register it as "ptr" so coerce_operand / materialize_enum_ptr
@@ -2225,6 +2655,10 @@ class LLVMEmitter {
             this.register_llvm_type(param_name, "ptr");
         } else if (llvm_type != "") {
             this.register_llvm_type(param_name, llvm_type);
+        }
+        // A value-class parameter's COPY storage is a pointer to its struct.
+        if (target != param_name) {
+            this.register_llvm_type(target, "ptr");
         }
     }
 
@@ -2240,13 +2674,59 @@ class LLVMEmitter {
             return;
         }
         if (this.is_mutable_reg(dest_name)) {
-            // Mutable: store to alloca slot
+            // Mutable: store to alloca slot. The alloca type comes from
+            // scan_mutable_regs (a value-class mutable binding's alloca holds
+            // the STRUCT — reassignment copies memberwise; coerce_operand
+            // emits the ptr->struct load when the source is a pointer). Only
+            // STRUCT registrations are authoritative — scalar registrations
+            // are derivable from the IR type, and on temp/named display-name
+            // collisions the latest scalar registration may belong to the
+            // OTHER register.
             let alloca_name: string = this.get_alloca_name(dest_name);
-            let coerced: string = this.coerce_operand(src_resolved, llvm_type);
-            this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name);
+            let store_type: mut string = llvm_type;
+            let reg_alloca_type: string = this.get_llvm_type(dest_name);
+            if (this.string_starts_with(reg_alloca_type, "%class.") || this.string_starts_with(reg_alloca_type, "%enum.")) {
+                store_type = reg_alloca_type;
+            }
+            let coerced: string = this.coerce_operand(src_resolved, store_type);
+            this.emit_line("  store " + store_type + " " + coerced + ", ptr " + alloca_name);
+            // The register now holds unrelated content — its inline-field
+            // provenance (struct_field_sources) is stale and must not divert
+            // later member writes to the old field slot.
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(this.struct_field_sources.size())) {
+                if (this.struct_field_sources.at(cast<u64>(pi)).some.ir_name == dest_name) {
+                    this.struct_field_sources.remove(cast<u64>(pi));
+                } else {
+                    pi = pi + 1;
+                }
+            }
         } else if (llvm_type == "ptr") {
-            // pointer assignment: map dest to source directly
-            this.reg_map.push(new RegMapping(dest_name, src_resolved));
+            // Value-class binding (ref<X> value class): COPY into fresh storage
+            // (value-copy semantics) — unless the write-chain scan marked this
+            // ASSIGN as an alias (receiver materialization, the unbox idiom
+            // `let self: mut Self = cast<mut Self>(this)` whose body writes
+            // through to the box). Reference classes alias the pointer either
+            // way (copying a pointer IS sharing).
+            let vc_struct: string = this.value_class_struct_type(ir_type);
+            if (string_length(vc_struct) > 0 && !this.is_alias_assign(dest_name)) {
+                let src_ptr: string = this.materialize_enum_ptr(src_resolved, vc_struct);
+                let vc_size: i64 = this.llvm_type_size(vc_struct);
+                // The copy gets its own storage. A suffixed name avoids
+                // colliding with a TEMP register that shares the display
+                // name (user variable "t2" vs temp index 2 both display as
+                // "%t2"); consumers reach it through the reg_map alias.
+                let copy_alloca: string = dest_name + ".val";
+                this.emit_entry_alloca(copy_alloca, vc_struct);
+                this.needs_memcpy = true;
+                this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + copy_alloca + ", ptr " + src_ptr + ", i32 " + cast<string>(vc_size) + ", i1 false)");
+                this.reg_map.push(new RegMapping(dest_name, copy_alloca));
+                this.register_llvm_type(dest_name, "ptr");
+                this.register_llvm_type(copy_alloca, "ptr");
+            } else {
+                // pointer assignment: map dest to source directly
+                this.reg_map.push(new RegMapping(dest_name, src_resolved));
+            }
         } else if (this.string_starts_with(llvm_type, "%enum.")) {
             // enum struct assignment: coerce ptr->struct if needed, then map
             let coerced: string = this.coerce_operand(src_resolved, llvm_type);
@@ -2261,7 +2741,21 @@ class LLVMEmitter {
                 this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
             }
         }
-        this.register_llvm_type(dest_name, llvm_type);
+        // Register the destination's value-model type. For a mutable reg the
+        // STORAGE type (struct-backed value class) must survive — re-registering
+        // the IR-derived "ptr" would clobber it (get_llvm_type resolves to the
+        // LATEST entry). For a value-class copy the binding is a ptr to its own
+        // fresh storage, so "ptr" is right.
+        if (this.is_mutable_reg(dest_name)) {
+            let reg_alloca_type: string = this.get_llvm_type(dest_name);
+            if (this.string_starts_with(reg_alloca_type, "%class.") || this.string_starts_with(reg_alloca_type, "%enum.")) {
+                this.register_llvm_type(dest_name, reg_alloca_type);
+            } else {
+                this.register_llvm_type(dest_name, llvm_type);
+            }
+        } else {
+            this.register_llvm_type(dest_name, llvm_type);
+        }
     }
 
     fun emit_cast(mut this, inst: IRCast) {
@@ -2278,6 +2772,17 @@ class LLVMEmitter {
             this.ir_type_to_llvm(from_ir_type)
         };
         let to_llvm: string = this.ir_type_to_llvm(inst.to_type);
+
+        // A pointer-typed cast whose operand resolved to a STRUCT VALUE
+        // (mutable reg / struct SSA holding a value class or enum) must first
+        // be materialized to a pointer — bitcast/getelementptr on a struct
+        // SSA value is invalid IR.
+        if (from_llvm == "ptr") {
+            let actual_type: string = this.get_llvm_type(operand_resolved);
+            if (this.string_starts_with(actual_type, "%class.") || this.string_starts_with(actual_type, "%enum.")) {
+                operand_resolved = this.struct_value_to_ptr(inst.operand, actual_type);
+            }
+        }
 
         // If operand is an icmp result (i1) and target is string, use bool_to_string
         if (this.is_string_type(inst.to_type) && this.is_icmp_value(operand_resolved)) {
@@ -2346,7 +2851,11 @@ class LLVMEmitter {
             
             let tag_tmp: string = this.next_tmp();
             this.emit_line("  " + tag_tmp + " = extractvalue " + from_llvm + " " + coerced_operand + ", 1");
-            this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + tag_tmp + ")");
+            // The tag field is declared i64 (see emit_type_definitions), so
+            // narrow the extracted tag back to i32.
+            let tag_i32: string = this.next_tmp();
+            this.emit_line("  " + tag_i32 + " = trunc i64 " + tag_tmp + " to i32");
+            this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + tag_i32 + ")");
             return;
         }
 
@@ -2354,6 +2863,10 @@ class LLVMEmitter {
         if (from_llvm == to_llvm) {
             if (from_llvm == "ptr") {
                 this.emit_line("  " + result_name + " = getelementptr i8, ptr " + operand_resolved + ", i64 0");
+                // Register the identity-cast result as a pointer: downstream
+                // coerce_operand calls (e.g. a struct store of this value)
+                // need the registered type to emit the ptr->struct load.
+                this.register_llvm_type(result_name, "ptr");
             } else {
                 this.emit_line("  " + result_name + " = add " + to_llvm + " 0, " + operand_resolved);
             }
@@ -2502,13 +3015,32 @@ class LLVMEmitter {
     fun member_base_ptr(mut this, val: IRValue) -> string {
         _utils.trace_enter("Enter member_base_ptr");
         let name: string = val.display();
+        // A register holding the RESULT of an inline-field RDMBR is a loaded
+        // copy — a chained write through it must target the FIELD SLOT it was
+        // loaded from, not the copy's own storage.
+        let si: mut i64 = 0;
+        while (si < cast<i64>(this.struct_field_sources.size())) {
+            let src: RegMapping = this.struct_field_sources.at(cast<u64>(si)).some;
+            if (src.ir_name == name) { return src.llvm_value; }
+            si = si + 1;
+        }
         if (this.is_mutable_reg(name)) {
             let reg_llvm: string = this.get_llvm_type(name);
             if (this.string_starts_with(reg_llvm, "%class.") || this.string_starts_with(reg_llvm, "%enum.")) {
                 return this.get_alloca_name(name);
             }
         }
-        return this.resolve_value(val);
+        let resolved: string = this.resolve_value(val);
+        // The value may resolve to a STRUCT SSA value (e.g. an unmarked
+        // GLOBAL_LOAD of a value-class global): GEP needs a pointer, so
+        // materialize the struct into a temp alloca (a copy — reads see the
+        // current value; writes through it are non-lvalue and rejected by
+        // the binder).
+        let resolved_type: string = this.get_llvm_type(resolved);
+        if (this.string_starts_with(resolved_type, "%class.") || this.string_starts_with(resolved_type, "%enum.")) {
+            return this.materialize_enum_ptr(resolved, resolved_type);
+        }
+        return resolved;
     }
 
     // Return a POINTER to a value-class/enum struct, for passing as a call argument
@@ -2550,22 +3082,56 @@ class LLVMEmitter {
                 // holding a value-class struct resolves to a loaded struct value, so
                 // gep its alloca instead.
                 let base_ptr: string = this.member_base_ptr(inst.obj);
+                // An INLINE struct field (value class or enum) nests its storage
+                // inside the owner: whether a read COPIES (binding / extraction /
+                // by-value argument — value-copy semantics) or ALIASES the field
+                // slot (write-chain lvalue addressing: `w.p.x = 9`, receiver of a
+                // mut-this call) is decided by the write-chain pre-scan, NOT by
+                // mutability.
+                let field_inline_struct: bool = this.string_starts_with(fl.llvm_type, "%class.") || this.string_starts_with(fl.llvm_type, "%enum.");
+                if (field_inline_struct && this.is_write_chain_reg(result_name)) {
+                    // Lvalue addressing: hand out the FIELD SLOT address itself.
+                    let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
+                    this.reg_map.push(new RegMapping(result_name, field_ptr));
+                    this.register_llvm_type(result_name, "ptr");
+                    return;
+                }
                 // Use the field's actual LLVM type from the layout (may differ from ir_type for value-type class fields)
                 if (fl.llvm_type != "ptr" && llvm_type == "ptr") {
-                    // Value-type class field stored inline, but IR expects a ref (ptr).
-                    // Return the pointer to the inline field (GEP result) instead of loading the struct.
-                    if (!layout.is_value_type) {
-                        // IRef: byte-offset GEP, return the field pointer directly
-                        this.emit_line("  " + result_name + " = getelementptr i8, ptr " + base_ptr + ", i32 " + cast<string>(fl.byte_offset));
-                    } else {
-                        // ICopy: struct field index GEP, return the field pointer directly
-                        this.emit_line("  " + result_name + " = getelementptr " + layout.llvm_struct_type + ", ptr " + base_ptr + ", i32 0, i32 " + cast<string>(fl.field_index));
+                    // Value-type class/enum field stored inline, IR expects a ref (ptr):
+                    // the read is a COPY — fresh storage + memcpy out of the field slot
+                    // (value-copy semantics: `let q = w.p` must not alias w's field).
+                    let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
+                    if (this.string_starts_with(fl.llvm_type, "%class.")) {
+                        let vc_layout: Option<ClassLayout> = this.find_class_layout_by_llvm(fl.llvm_type);
+                        if (vc_layout.is_some()) {
+                            // Suffix the copy storage so it cannot collide with
+                            // another register sharing the display name.
+                            let copy_alloca: string = result_name + ".f";
+                            this.emit_entry_alloca(copy_alloca, vc_layout.some.llvm_struct_type);
+                            this.needs_memcpy = true;
+                            this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + copy_alloca + ", ptr " + field_ptr + ", i32 " + cast<string>(vc_layout.some.sizeof_object) + ", i1 false)");
+                            this.reg_map.push(new RegMapping(result_name, copy_alloca));
+                            this.register_llvm_type(result_name, "ptr");
+                            this.register_llvm_type(copy_alloca, "ptr");
+                            return;
+                        }
                     }
-                    this.register_llvm_type(result_name, "ptr");
+                    // Inline enum field read through a ptr expectation: load the
+                    // struct value (a copy).
+                    this.emit_line("  " + result_name + " = load " + fl.llvm_type + ", ptr " + field_ptr);
+                    this.register_llvm_type(result_name, fl.llvm_type);
+                    return;
                 } else {
                     let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                     this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
                     this.register_llvm_type(result_name, llvm_type);
+                    // Struct field loads feed chained member reads through
+                    // member_base_ptr's provenance lookup — a later write must not
+                    // be swallowed by the loaded copy.
+                    if (this.string_starts_with(llvm_type, "%class.") || this.string_starts_with(llvm_type, "%enum.")) {
+                        this.struct_field_sources.push(new RegMapping(result_name, field_ptr));
+                    }
                 }
                 return;
             }
@@ -2581,6 +3147,29 @@ class LLVMEmitter {
             let payload_ptr: string = this.next_tmp();
             this.emit_line("  " + payload_ptr + " = getelementptr " + obj_llvm_type + ", ptr " + alloca_name + ", i32 0, i32 2");
             let payload_type: string = this.get_enum_payload_type(obj_llvm_type);
+            if (this.string_starts_with(payload_type, "%class.")) {
+                // Inline value-class payload: payload_ptr already points at the
+                // nested struct storage — use it as the member base directly.
+                let payload_class_found: Option<ClassLayout> = this.find_class_layout_by_llvm(payload_type);
+                if (let cls_layout := payload_class_found.some) {
+                    let cls_field: Option<FieldLayout> = this.find_class_field_layout_llvm(cls_layout, field_name);
+                    if (let fl := cls_field.some) {
+                        let field_ptr: string = this.next_tmp();
+                        if (cls_layout.is_value_type) {
+                            this.emit_line("  " + field_ptr + " = getelementptr " + cls_layout.llvm_struct_type + ", ptr " + payload_ptr + ", i32 0, i32 " + cast<string>(fl.field_index));
+                        } else {
+                            this.emit_line("  " + field_ptr + " = getelementptr i8, ptr " + payload_ptr + ", i32 " + cast<string>(fl.byte_offset));
+                        }
+                        this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + field_ptr);
+                        this.register_llvm_type(result_name, llvm_type);
+                        return;
+                    }
+                }
+                // Field not found on the payload class — read through the payload.
+                this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + payload_ptr);
+                this.register_llvm_type(result_name, llvm_type);
+                return;
+            }
             let payload_val: string = this.next_tmp();
             this.emit_line("  " + payload_val + " = load " + payload_type + ", ptr " + payload_ptr);
             this.register_llvm_type(payload_val, payload_type);
@@ -2630,12 +3219,12 @@ class LLVMEmitter {
 
             if (let fl := found_field.some) {
                 let store_type: string = fl.llvm_type;
-                let coerced_value: string = this.coerce_operand(value_resolved, store_type);
                 // Field store needs a POINTER to the object storage; a mutable reg
                 // holding a value-class struct resolves to a loaded struct value, so
                 // gep its alloca instead.
                 let base_ptr: string = this.member_base_ptr(inst.obj);
                 let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
+                let coerced_value: string = this.coerce_operand(value_resolved, store_type);
                 this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
                 return;
             }
@@ -2670,9 +3259,27 @@ class LLVMEmitter {
     fun emit_load_ptr(mut this, inst: IRLoadPtr) {
         _utils.trace_enter("Enter emit_load_ptr");
         let result_name: string = inst.result.display();
-        let llvm_ty: string = this.ir_type_to_llvm(inst.load_type);
+        // Normalize the harmless "mut " permission prefix: element slots are
+        // laid out mutability-independently (List<mut T> stride == List<T>).
+        let load_type: string = this.strip_mut_ir_prefix(inst.load_type);
+        let llvm_ty: mut string = this.ir_type_to_llvm(load_type);
         let ptr_tmp: string = this.next_tmp();
         this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
+        if (this.string_starts_with(load_type, "ref<")) {
+            // A VALUE-CLASS slot holds the struct inline, but the compiler's
+            // value model represents value-class values as pointers to their
+            // struct storage — so the load is a COPY: fresh storage + memcpy
+            // out of the element slot (element access is by value; write back
+            // with set()/__store).
+            let layout: Option<ClassLayout> = this.find_class_layout(this.extract_type_name(load_type));
+            if (layout.is_some() && layout.some.is_value_type) {
+                this.emit_line("  " + result_name + " = alloca " + layout.some.llvm_struct_type + ", align 8");
+                this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + ptr_tmp + ", i32 " + cast<string>(layout.some.sizeof_object) + ", i1 false)");
+                this.needs_memcpy = true;
+                this.register_llvm_type(result_name, "ptr");
+                return;
+            }
+        }
         this.emit_line("  " + result_name + " = load " + llvm_ty + ", ptr " + ptr_tmp);
         this.register_llvm_type(result_name, llvm_ty);
     }
@@ -2680,7 +3287,19 @@ class LLVMEmitter {
     // STORE_PTR: inttoptr i64 addr to ptr ; store T value, ptr.
     fun emit_store_ptr(mut this, inst: IRStorePtr) {
         _utils.trace_enter("Enter emit_store_ptr");
-        let llvm_ty: string = this.ir_type_to_llvm(inst.store_type);
+        // Normalize the harmless "mut " permission prefix (slot layout is
+        // mutability-independent).
+        let store_type_norm: string = this.strip_mut_ir_prefix(inst.store_type);
+        let llvm_ty: mut string = this.ir_type_to_llvm(store_type_norm);
+        // A VALUE-class store must copy the WHOLE struct into the slot (the
+        // value resolves to a pointer to its storage — storing the pointer
+        // would leak a stack address into the buffer).
+        if (this.string_starts_with(store_type_norm, "ref<")) {
+            let layout: Option<ClassLayout> = this.find_class_layout(this.extract_type_name(store_type_norm));
+            if (layout.is_some() && layout.some.is_value_type) {
+                llvm_ty = layout.some.llvm_struct_type;
+            }
+        }
         let coerced: string = this.coerce_operand(this.resolve_value(inst.value), llvm_ty);
         let ptr_tmp: string = this.next_tmp();
         this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
@@ -2724,6 +3343,15 @@ class LLVMEmitter {
                 let zext_tmp: string = this.next_tmp();
                 this.emit_line("  " + zext_tmp + " = zext i1 " + val_resolved + " to " + llvm_type);
                 val_resolved = zext_tmp;
+            }
+            // Value-class return (llvm ptr in the value model): the resolved
+            // value may be a loaded STRUCT (mutable reg / struct SSA) — return
+            // a pointer to its storage instead.
+            if (llvm_type == "ptr") {
+                let actual_type: string = this.get_llvm_type(val_resolved);
+                if (this.string_starts_with(actual_type, "%class.") || this.string_starts_with(actual_type, "%enum.")) {
+                    val_resolved = this.struct_value_to_ptr(inst.value, actual_type);
+                }
             }
             this.emit_line("  ret " + llvm_type + " " + val_resolved);
         }
@@ -3101,40 +3729,12 @@ class LLVMEmitter {
                 let pay_ptr: string = this.next_tmp();
                 this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 2");
 
-                // If payload type is "ptr" and the value is a value-type class,
-                // we must heap-allocate a copy to prevent dangling stack pointers.
-                // Value types have copy semantics, so storing a ptr to a stack value
-                // would violate that when the creating function returns.
                 if (pay_type == "ptr") {
-                    let heap_copied: mut bool = false;
-                    if (let pbt := variant_payload_bound_type.some) {
-                        // Check if the payload is a class type (not string, not primitive)
-                        if (pbt.kind is TypeKind.ClassKind) {
-                            if (pbt.type_definition.is_some()) {
-                                let class_full_name: string = pbt.type_definition.some.class_def.full_name;
-                                let class_name: string = this.strip_global_prefix(class_full_name);
-                                let payload_class_layout: Option<ClassLayout> = this.find_class_layout(class_name);
-                                if (payload_class_layout.is_some()) {
-                                    if (payload_class_layout.some.is_value_type) {
-                                        // Heap-allocate a copy of the value type
-                                        this.has_iref_class = true;
-                                        let heap_ptr: string = this.next_tmp();
-                                        this.emit_line("  " + heap_ptr + " = call ptr @_emperor_alloc_impl(i32 " + cast<string>(payload_class_layout.some.sizeof_object) + ")");
-                                        let struct_type: string = payload_class_layout.some.llvm_struct_type;
-                                        // Load struct from stack ptr, store to heap ptr
-                                        let loaded: string = this.next_tmp();
-                                        this.emit_line("  " + loaded + " = load " + struct_type + ", ptr " + pay_val);
-                                        this.emit_line("  store " + struct_type + " " + loaded + ", ptr " + heap_ptr);
-                                        this.emit_line("  store ptr " + heap_ptr + ", ptr " + pay_ptr);
-                                        heap_copied = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (!heap_copied) {
-                        this.emit_line("  store " + pay_type + " " + pay_val + ", ptr " + pay_ptr);
-                    }
+                    // Pointer payload (reference class / string): the slot
+                    // stores the pointer as-is. Value-class payloads are
+                    // INLINE (%class.X / %enum.X below) — mutability never
+                    // changes the storage decision.
+                    this.emit_line("  store ptr " + pay_val + ", ptr " + pay_ptr);
                 } else {
                     // If the variant's payload type differs from the struct field type
                     // (e.g. i32 vs ptr for Result<u32,string>.ok), convert via inttoptr
@@ -3312,38 +3912,30 @@ class LLVMEmitter {
         let operand_resolved: string = this.resolve_value(inst.operand);
         let type_name: string = inst.target_type_name;
 
-        // Try class layout first, then enum layout
-        let found_cls: Option<ClassLayout> = this.find_class_layout(type_name);
-        if (let layout := found_cls.some) {
-            this.emit_entry_alloca(result_name, layout.llvm_struct_type);
-            this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + operand_resolved + ", i32 " + cast<string>(layout.sizeof_object) + ", i1 false)");
-            this.register_llvm_type(result_name, "ptr");
-            return;
-        }
-
-        let found_enum: Option<EnumLayout> = this.find_enum_layout(type_name);
-        if (let layout := found_enum.some) {
-            this.emit_line("  " + result_name + " = load " + layout.llvm_struct_type + ", ptr " + operand_resolved);
-            this.register_llvm_type(result_name, layout.llvm_struct_type);
-            return;
-        }
+        // UNBOX IS AN ALIAS VIEW, not a copy: the vtable-stub idiom
+        // `let self: mut Self = cast<mut Self>(this)` must see the BOX's own
+        // storage so mut-this interface methods write through to the object
+        // callers observe. (BOX, the value->interface direction, copies —
+        // emit_box memcpy's into a fresh heap box.) Both class and enum
+        // targets hand out the box pointer; member access / payload
+        // extraction GEP through it, and whole-value uses coerce_operand
+        // ptr->struct as usual.
+        this.reg_map.push(new RegMapping(result_name, operand_resolved));
+        this.register_llvm_type(result_name, "ptr");
     }
 
     fun compute_enum_struct_size(mut this, layout: EnumLayout) -> i64 {
         _utils.trace_enter("Enter compute_enum_struct_size(layout=" + layout.to_string() + ")");
-        // ptr (8 bytes) + i32 variant tag (4 bytes) = 12, aligned to 8 = 16
-        // if has payload, add payload size + alignment
-        let base_size: mut i64 = 16;
-        if (layout.has_payload) {
-            let payload_size: i64 = this.llvm_type_size(layout.payload_llvm_type);
-            base_size = base_size + payload_size;
-            // align to 8
-            let remainder: i64 = base_size % 8;
-            if (remainder > 0) {
-                base_size = base_size + 8 - remainder;
-            }
+        // { ptr metadata(8) @0, i32|i64 tag @8, payload @align_up(12, align) },
+        // total size aligned to 8 — mirrors llvm_type_size /
+        // emit_type_definitions (the tag is i64 exactly for 8-aligned payloads,
+        // so the alignment-1 byte-array member lands at the same offset the old
+        // typed layout used).
+        if (!layout.has_payload || string_length(layout.payload_llvm_type) == 0) {
+            return 16;
         }
-        return base_size;
+        let payload_size: i64 = this.llvm_type_size(layout.payload_llvm_type);
+        return this.align_up(16 + payload_size, 8);
     }
 
 
@@ -3506,6 +4098,57 @@ class LLVMEmitter {
         return tmp_alloca;
     }
 
+    fun is_entry_alloca_name(this, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.entry_alloca_names.size())) {
+            if (this.entry_alloca_names.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // Resolve an enum operand to its STORAGE pointer (the alloca / .addr that
+    // holds the enum struct) WITHOUT loading or copying it — "" when the
+    // operand is a materialized struct value with no addressable storage.
+    // Mutable-reg .addr allocas and entry-alloca'd registers (NEW_ENUM / sret
+    // results) qualify; reg_map aliases are followed one hop (ASSIGN pushes
+    // the fully-resolved source). Used by write-chain payload extraction so
+    // the extracted reference points INTO the enum's own storage (writes
+    // stick).
+    fun enum_value_storage_ptr(this, val: IRValue, resolved: string) -> string {
+        let name: string = val.display();
+        if (this.is_mutable_reg(name)) {
+            return this.get_alloca_name(name);
+        }
+        if (this.is_entry_alloca_name(name)) {
+            return name;
+        }
+        if (this.is_entry_alloca_name(resolved)) {
+            return resolved;
+        }
+        // The resolved value may be a struct SSA value that coerce_operand
+        // LOADED from a pointer — follow back to that pointer.
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.struct_value_sources.size())) {
+            let src: RegMapping = this.struct_value_sources.at(cast<u64>(i)).some;
+            if (src.ir_name == resolved) {
+                if (this.is_entry_alloca_name(src.llvm_value)) {
+                    return src.llvm_value;
+                }
+            }
+            i = i + 1;
+        }
+        let j: mut i64 = 0;
+        while (j < cast<i64>(this.reg_map.size())) {
+            let mapping: RegMapping = this.reg_map.at(cast<u64>(j)).some;
+            if (mapping.ir_name == resolved && this.is_entry_alloca_name(mapping.llvm_value)) {
+                return mapping.llvm_value;
+            }
+            j = j + 1;
+        }
+        return "";
+    }
+
     // Resolve the LLVM struct type of an enum value for payload extraction.
     // Prefer the IR-derived type; fall back to the registered LLVM type only when the
     // IR type is not an enum (e.g. for non-enum struct operands). This is needed because
@@ -3516,6 +4159,26 @@ class LLVMEmitter {
             return ir_llvm_type;
         }
         return this.get_llvm_type(enum_resolved);
+    }
+
+    // If `payload_ir_type` (a variant's payload IR type, e.g. "ref<Point>" /
+    // "mut ref<Point>") names a VALUE-type class, return its layout — the
+    // variant's payload is stored INLINE in the enum's union slot. Reference
+    // classes return none (their payload is a pointer in the slot). The
+    // "mut " permission prefix is stripped first: layout is
+    // mutability-independent.
+    fun value_class_payload_layout(this, payload_ir_type: string) -> Option<ClassLayout> {
+        let t: string = this.strip_mut_ir_prefix(payload_ir_type);
+        if (this.string_starts_with(t, "ref<")) {
+            let name: string = this.extract_type_name(t);
+            let found: Option<ClassLayout> = this.find_class_layout(name);
+            if (found.is_some()) {
+                if (found.some.is_value_type) {
+                    return found;
+                }
+            }
+        }
+        return new Option<ClassLayout>.none();
     }
 
     fun emit_rdenum(mut this, inst: IRRdenum) {
@@ -3555,13 +4218,116 @@ class LLVMEmitter {
         if (payload_load_type == "void" && layout.has_payload && string_length(layout.payload_llvm_type) > 0) {
             payload_load_type = layout.payload_llvm_type;
         }
+        // Slot lvalue addressing (write-chain, see scan_write_chains): the
+        // extraction result is consumed as the owner of a WRMBR, as a
+        // method-call receiver, or through a chain of such uses (`e.a.x = 9`,
+        // `e.a.increment()`). The payload reference must point INTO the
+        // enum's own storage so the write reaches the real slot — resolve
+        // the operand to the enum's storage instead of materializing a
+        // whole-enum copy (materialize would sever the write-back).
+        if (this.is_write_chain_reg(result_name)) {
+            let storage: string = this.enum_value_storage_ptr(inst.enum_value, enum_resolved);
+            let base: string = if (string_length(storage) > 0) {
+                storage
+            } else {
+                this.materialize_enum_ptr(enum_resolved, layout.llvm_struct_type)
+            };
+            let mpay_ptr: string = this.next_tmp();
+            this.emit_line("  " + mpay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + base + ", i32 0, i32 2");
+            // Decide inline-slot aliasing vs pointer load by the VARIANT's own
+            // registered payload storage (EnumVariantLayout.payload_llvm_type —
+            // the same source emit_new_enum's store uses), so the read always
+            // mirrors the write — and independently of mutability:
+            //   "%class.X"/"%enum.X" — the variant's value payload nests
+            //               INLINE: the extracted reference IS the slot inside
+            //               the enum storage (SSA names cannot alias directly —
+            //               map the register).
+            //   "ptr"      — the slot holds a pointer (a reference-class
+            //               payload): load the aliased object pointer. A mixed
+            //               enum must NOT use the union-level
+            //               layout.payload_llvm_type here: it is typed after
+            //               the largest INLINE variant, so a reference variant
+            //               would alias the union slack and the write would be
+            //               silently lost.
+            let variant_payload_type: mut string = "";
+            let vri: mut i64 = 0;
+            while (vri < cast<i64>(layout.variants.size())) {
+                let vl: EnumVariantLayout = layout.variants.at(cast<u64>(vri)).some;
+                if (vl.name == inst.variant_name) {
+                    variant_payload_type = vl.payload_llvm_type;
+                }
+                vri = vri + 1;
+            }
+            let variant_inline: bool = this.string_starts_with(variant_payload_type, "%class.") || this.string_starts_with(variant_payload_type, "%enum.");
+            if (variant_inline) {
+                if (this.is_mutable_reg(result_name)) {
+                    // Unreachable in practice (multi-def regs are excluded from
+                    // write chains); defensively copy the payload value into
+                    // the mutable slot so reads stay correct.
+                    let loaded: string = this.next_tmp();
+                    this.emit_line("  " + loaded + " = load " + variant_payload_type + ", ptr " + mpay_ptr);
+                    this.emit_line("  store " + variant_payload_type + " " + loaded + ", ptr " + this.get_alloca_name(result_name));
+                } else {
+                    this.reg_map.push(new RegMapping(result_name, mpay_ptr));
+                }
+                this.register_llvm_type(result_name, "ptr");
+            } else if (variant_payload_type == "ptr") {
+                let loaded: string = this.next_tmp();
+                this.emit_line("  " + loaded + " = load ptr, ptr " + mpay_ptr);
+                if (this.is_mutable_reg(result_name)) {
+                    this.emit_line("  store ptr " + loaded + ", ptr " + this.get_alloca_name(result_name));
+                } else {
+                    this.reg_map.push(new RegMapping(result_name, loaded));
+                }
+                this.register_llvm_type(result_name, "ptr");
+            } else {
+                // Primitive (or absent) payload: the receiver/extraction is a
+                // plain VALUE — no slot to alias (a primitive has no members;
+                // a mut-this method on it cannot write through).
+                let prim_type: string = if (string_length(payload_load_type) > 0) { payload_load_type } else { variant_payload_type };
+                this.emit_line("  " + result_name + " = load " + prim_type + ", ptr " + mpay_ptr);
+                this.register_llvm_type(result_name, prim_type);
+            }
+            return;
+        }
         // enum_resolved may be an enum struct value or a pointer to one (sret alloca).
         // If it is a pointer, GEP the payload directly; otherwise alloca+store first.
-        let tmp_name: string = this.materialize_enum_ptr(enum_resolved, layout.llvm_struct_type);
+        // When the operand's STORAGE is resolvable, re-load the CURRENT value
+        // from it: the alias-mapped resolved value may be a struct loaded
+        // BEFORE a write-chain receiver mutated the payload inline (stale).
+        let fresh_base: string = this.enum_value_storage_ptr(inst.enum_value, enum_resolved);
+        let current_value: mut string = enum_resolved;
+        if (string_length(fresh_base) > 0) {
+            current_value = this.next_tmp();
+            this.emit_line("  " + current_value + " = load " + layout.llvm_struct_type + ", ptr " + fresh_base);
+            this.register_llvm_type(current_value, layout.llvm_struct_type);
+        }
+        let tmp_name: string = this.materialize_enum_ptr(current_value, layout.llvm_struct_type);
 
         // GEP field 2 (payload)
         let pay_ptr: string = this.next_tmp();
         this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + tmp_name + ", i32 0, i32 2");
+        // Inline value-class payload: the unwrapped VALUE is the payload storage
+        // itself (value model = ptr-to-struct), so copy the struct out of the
+        // union slot. Decide by the VARIANT's own payload type
+        // (inst.payload_type), NOT the union field type: a mixed enum may union
+        // a value-class variant (which sizes the slot as %class.X) with
+        // reference-class variants (whose payloads are pointers in the same
+        // slot) — unwrapping a ref variant must load the pointer, not memcpy.
+        let variant_cls: Option<ClassLayout> = this.value_class_payload_layout(inst.payload_type);
+        if (variant_cls.is_some()) {
+            // Suffix the copy storage so it cannot collide with another
+            // register sharing the display name, and route consumers through
+            // the reg_map alias.
+            let copy_alloca: string = result_name + ".f";
+            this.emit_entry_alloca(copy_alloca, variant_cls.some.llvm_struct_type);
+            this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + copy_alloca + ", ptr " + pay_ptr + ", i32 " + cast<string>(variant_cls.some.sizeof_object) + ", i1 false)");
+            this.needs_memcpy = true;
+            this.reg_map.push(new RegMapping(result_name, copy_alloca));
+            this.register_llvm_type(result_name, "ptr");
+            this.register_llvm_type(copy_alloca, "ptr");
+            return;
+        }
         this.emit_line("  " + result_name + " = load " + payload_load_type + ", ptr " + pay_ptr);
         this.register_llvm_type(result_name, payload_load_type);
     }
@@ -3574,8 +4340,24 @@ class LLVMEmitter {
     fun emit_global_load(mut this, inst: IRGlobalLoad) {
         _utils.trace_enter("Enter emit_global_load(inst=" + inst.display() + ")");
         let result_name: string = inst.result.display();
-        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         let global_name: string = "@" + this.sanitize_name(inst.global_name);
+        // A value-class global stores the STRUCT inline. A write-chain load
+        // (`g.x = 9` lowers to GLOBAL_LOAD + WRMBR) must address the global
+        // itself (lvalue addressing); every other read LOADS the struct — a
+        // copy (value-copy semantics). Reference/string globals load ptr as
+        // before.
+        let vc_struct: string = this.value_class_struct_type(inst.ir_type);
+        if (string_length(vc_struct) > 0) {
+            if (this.is_write_chain_reg(result_name)) {
+                this.reg_map.push(new RegMapping(result_name, global_name));
+                this.register_llvm_type(result_name, "ptr");
+                return;
+            }
+            this.emit_line("  " + result_name + " = load " + vc_struct + ", ptr " + global_name);
+            this.register_llvm_type(result_name, vc_struct);
+            return;
+        }
+        let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
         this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + global_name);
         this.register_llvm_type(result_name, llvm_type);
     }
@@ -3584,7 +4366,13 @@ class LLVMEmitter {
         _utils.trace_enter("Enter emit_global_store(inst=" + inst.display() + ")");
         let value_resolved: string = this.resolve_value(inst.value);
         let value_type: string = inst.value.get_ir_type();
-        let llvm_type: string = this.ir_type_to_llvm(value_type);
+        let llvm_type: mut string = this.ir_type_to_llvm(value_type);
+        // A value-class global stores the STRUCT inline: coerce the value
+        // (ptr->struct load) and store the whole struct.
+        if (llvm_type == "ptr") {
+            let vc: string = this.value_class_struct_type(value_type);
+            if (string_length(vc) > 0) { llvm_type = vc; }
+        }
         let coerced: string = this.coerce_operand(value_resolved, llvm_type);
         let global_name: string = "@" + this.sanitize_name(inst.global_name);
         this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + global_name);
@@ -3880,16 +4668,47 @@ class LLVMEmitter {
 
     fun scan_mutable_regs(mut this, func: IRFunction) {
         _utils.trace_enter("Enter scan_mutable_regs(func=" + func.to_string() + ")");
-        // Collect all register names that appear as definition targets
+        // Collect all register names that appear as definition targets. Kinds
+        // are tracked alongside: a TEMP register ("%t2" = temp index 2) and a
+        // NAMED register (user variable "t2") share a DISPLAY name but are
+        // distinct registers — a name defined by BOTH kinds is "mixed" and
+        // must not get struct-sized storage (the defs disagree on type; the
+        // pre-existing ptr-slot model is the only consistent lowering).
         let all_defs: mut _utils.List<string> = new _utils.List<string>();
+        let all_def_kinds: mut _utils.List<string> = new _utils.List<string>();
+        let mixed_kind_names: mut _utils.List<string> = new _utils.List<string>();
         let ii: mut i64 = 0;
         while (ii < cast<i64>(func.instructions.size())) {
             let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
             if (inst is IRInstruction.const_inst) {
-                all_defs.push(inst.const_inst.result.display());
+                let dname: string = inst.const_inst.result.display();
+                let dkind: string = if (inst.const_inst.result is IRValue.temp_reg) { "t" } else { "n" };
+                let ki: mut i64 = 0;
+                while (ki < cast<i64>(all_defs.size())) {
+                    if (all_defs.at(cast<u64>(ki)).some == dname && all_def_kinds.at(cast<u64>(ki)).some != dkind) {
+                        if (!this.list_contains(mixed_kind_names, dname)) {
+                            mixed_kind_names.push(dname);
+                        }
+                    }
+                    ki = ki + 1;
+                }
+                all_defs.push(dname);
+                all_def_kinds.push(dkind);
             }
             if (inst is IRInstruction.assign) {
-                all_defs.push(inst.assign.dest.display());
+                let dname: string = inst.assign.dest.display();
+                let dkind: string = if (inst.assign.dest is IRValue.temp_reg) { "t" } else { "n" };
+                let ki: mut i64 = 0;
+                while (ki < cast<i64>(all_defs.size())) {
+                    if (all_defs.at(cast<u64>(ki)).some == dname && all_def_kinds.at(cast<u64>(ki)).some != dkind) {
+                        if (!this.list_contains(mixed_kind_names, dname)) {
+                            mixed_kind_names.push(dname);
+                        }
+                    }
+                    ki = ki + 1;
+                }
+                all_defs.push(dname);
+                all_def_kinds.push(dkind);
             }
             ii = ii + 1;
         }
@@ -3952,7 +4771,16 @@ class LLVMEmitter {
                     if (inst.const_inst.result.display() == name) {
                         let res: IRValue = inst.const_inst.result;
                         let it: string = res.get_ir_type();
-                        let lt: string = this.ir_type_to_llvm(it);
+                        let lt: mut string = this.ir_type_to_llvm(it);
+                        // A value-class mutable binding's alloca holds the
+                        // STRUCT (value-copy semantics: reassignment stores
+                        // the whole struct), not a pointer to it. Mixed-kind
+                        // display names (temp + named register collision) are
+                        // excluded — their defs disagree on type.
+                        if (lt == "ptr" && !this.list_contains(mixed_kind_names, name)) {
+                            let vc: string = this.value_class_struct_type(it);
+                            if (string_length(vc) > 0) { lt = vc; }
+                        }
                         let sz: i64 = this.llvm_type_size(lt);
                         if (sz > best_size) {
                             best_llvm = lt;
@@ -3968,7 +4796,11 @@ class LLVMEmitter {
                     if (inst.assign.dest.display() == name) {
                         let res: IRValue = inst.assign.dest;
                         let it: string = res.get_ir_type();
-                        let lt: string = this.ir_type_to_llvm(it);
+                        let lt: mut string = this.ir_type_to_llvm(it);
+                        if (lt == "ptr" && !this.list_contains(mixed_kind_names, name)) {
+                            let vc: string = this.value_class_struct_type(it);
+                            if (string_length(vc) > 0) { lt = vc; }
+                        }
                         let sz: i64 = this.llvm_type_size(lt);
                         if (sz > best_size) {
                             best_llvm = lt;
@@ -3999,6 +4831,219 @@ class LLVMEmitter {
         return false;
     }
 
+    // True when the RDMBR/RDENUM producing `name` is part of a write chain:
+    // its result must ALIAS the slot it read (lvalue addressing) instead of
+    // copying. Populated by scan_write_chains.
+    fun is_write_chain_reg(this, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.write_chain_regs.size())) {
+            if (this.write_chain_regs.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // True when the ASSIGN defining `name` must ALIAS its source (receiver
+    // materialization feeding a call, unbox-idiom binds).
+    fun is_alias_assign(this, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.alias_assign_regs.size())) {
+            if (this.alias_assign_regs.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // The result register an instruction defines, if any (for the write-chain
+    // def table). Mirrors the BabyPenguin MarkWriteChains def collection.
+    fun inst_defined_reg(this, inst: IRInstruction) -> Option<IRValue> {
+        if (inst is IRInstruction.const_inst) { return new Option<IRValue>.some(inst.const_inst.result); }
+        if (inst is IRInstruction.arg) { return new Option<IRValue>.some(inst.arg.result); }
+        if (inst is IRInstruction.assign) { return new Option<IRValue>.some(inst.assign.dest); }
+        if (inst is IRInstruction.cast_inst) { return new Option<IRValue>.some(inst.cast_inst.result); }
+        if (inst is IRInstruction.binop) { return new Option<IRValue>.some(inst.binop.result); }
+        if (inst is IRInstruction.unaryop) { return new Option<IRValue>.some(inst.unaryop.result); }
+        if (inst is IRInstruction.rdmbr) { return new Option<IRValue>.some(inst.rdmbr.result); }
+        if (inst is IRInstruction.new_inst) { return new Option<IRValue>.some(inst.new_inst.result); }
+        if (inst is IRInstruction.new_enum) { return new Option<IRValue>.some(inst.new_enum.result); }
+        if (inst is IRInstruction.isenum) { return new Option<IRValue>.some(inst.isenum.result); }
+        if (inst is IRInstruction.rdenum) { return new Option<IRValue>.some(inst.rdenum.result); }
+        if (inst is IRInstruction.isinstance) { return new Option<IRValue>.some(inst.isinstance.result); }
+        if (inst is IRInstruction.box) { return new Option<IRValue>.some(inst.box.result); }
+        if (inst is IRInstruction.unbox) { return new Option<IRValue>.some(inst.unbox.result); }
+        if (inst is IRInstruction.global_load) { return new Option<IRValue>.some(inst.global_load.result); }
+        if (inst is IRInstruction.call) { return new Option<IRValue>.some(inst.call.result_value); }
+        if (inst is IRInstruction.call_indirect) { return new Option<IRValue>.some(inst.call_indirect.result_value); }
+        if (inst is IRInstruction.call_virt) { return new Option<IRValue>.some(inst.call_virt.result_value); }
+        return new Option<IRValue>.none();
+    }
+
+    // Value-copy semantics: RDMBR/RDENUM results COPY on extraction (binding,
+    // argument, plain read). When the result is instead consumed as the OWNER
+    // of a WRMBR (`w.p.x = 9`, `e.a.b.x += 1`) or as a method-call RECEIVER
+    // (`e.a.increment()` with mut this), it must ALIAS the slot (lvalue
+    // addressing, no copy) so the write reaches the real storage. Mirrors the
+    // BabyPenguin IRGenerator.MarkWriteChains reference implementation:
+    // scan backwards from every WRMBR owner and receiver, mark the defining
+    // RDMBR/RDENUM and continue through its object register so nested chains
+    // alias at every level; ASSIGNs on the path alias instead of forking a
+    // copy (receiver materialization). Only SINGLE-definition TEMP registers
+    // qualify — named registers are bindings (copies by construction) and
+    // multi-def registers are mutable bindings. GLOBAL_LOAD terminates a
+    // chain without marking (the emitter's global handling resolves the
+    // storage address separately).
+    fun scan_write_chains(mut this, func: IRFunction) {
+        this.write_chain_regs = new _utils.List<string>();
+        this.alias_assign_regs = new _utils.List<string>();
+        let n: i64 = cast<i64>(func.instructions.size());
+
+        // Def table: single-def register (name + kind) -> defining
+        // instruction index. A TEMP register ("%t2" = temp index 2) and a
+        // NAMED register (user variable "t2") share a DISPLAY name but are
+        // distinct registers, so entries are keyed by (name, kind).
+        let def_names: mut _utils.List<string> = new _utils.List<string>();
+        let def_kinds: mut _utils.List<string> = new _utils.List<string>();
+        let def_idxs: mut _utils.List<i64> = new _utils.List<i64>();
+        let multi_defs: mut _utils.List<string> = new _utils.List<string>();
+        let di: mut i64 = 0;
+        while (di < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(di)).some;
+            let res: Option<IRValue> = this.inst_defined_reg(inst);
+            if (res.is_some()) {
+                let name: string = res.some.display();
+                let kind: string = if (res.some is IRValue.temp_reg) { "t" } else { "n" };
+                if (string_length(name) > 1 && string_char_at(name, 0) == "%") {
+                    let prev: mut i64 = -1;
+                    let si: mut i64 = 0;
+                    while (si < cast<i64>(def_names.size())) {
+                        if (def_names.at(cast<u64>(si)).some == name && def_kinds.at(cast<u64>(si)).some == kind) { prev = si; }
+                        si = si + 1;
+                    }
+                    if (prev >= 0) {
+                        // Second definition: the register is mutable.
+                        def_idxs.set(cast<u64>(prev), -1);
+                        multi_defs.push(name);
+                    } else {
+                        def_names.push(name);
+                        def_kinds.push(kind);
+                        def_idxs.push(di);
+                    }
+                }
+            }
+            di = di + 1;
+        }
+
+        // Unbox alias handoff: emit_unbox produces an ALIAS VIEW of the box
+        // (mirrors the reference VM storing CAST results without copy). The
+        // ASSIGN binding an UNBOX result directly must therefore alias too —
+        // copying here would sever every mut-this interface method stub
+        // (`let self: mut Self = cast<mut Self>(this)`).
+        {
+            let ui: mut i64 = 0;
+            while (ui < n) {
+                let inst: IRInstruction = func.instructions.at(cast<u64>(ui)).some;
+                if (inst is IRInstruction.assign) {
+                    let src_name: string = inst.assign.src.display();
+                    let src_kind: string = if (inst.assign.src is IRValue.temp_reg) { "t" } else { "n" };
+                    let src_idx: mut i64 = -1;
+                    let ni: mut i64 = 0;
+                    while (ni < cast<i64>(def_names.size())) {
+                        if (def_names.at(cast<u64>(ni)).some == src_name && def_kinds.at(cast<u64>(ni)).some == src_kind) { src_idx = def_idxs.at(cast<u64>(ni)).some; }
+                        ni = ni + 1;
+                    }
+                    if (src_idx >= 0 && src_idx < n) {
+                        let src_inst: IRInstruction = func.instructions.at(cast<u64>(src_idx)).some;
+                        if (src_inst is IRInstruction.unbox) {
+                            this.alias_assign_regs.push(inst.assign.dest.display());
+                        }
+                    }
+                }
+                ui = ui + 1;
+            }
+        }
+
+        // Seeds: WRMBR owners, method receivers (CALL/CALL_VOID arg0 when the
+        // callee's first parameter is `this`; CALL_VIRT's lookup object).
+        let work: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        let wi: mut i64 = 0;
+        while (wi < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(wi)).some;
+            if (inst is IRInstruction.wrmbr) {
+                work.push(inst.wrmbr.obj);
+            }
+            if (inst is IRInstruction.call) {
+                if (cast<i64>(inst.call.args.size()) > 0) {
+                    let fpt: Option<FuncParamTypes> = this.find_func_param_types(inst.call.func_name);
+                    if (fpt.is_some() && fpt.some.first_param_is_this) {
+                        work.push(inst.call.args.at(cast<u64>(0)).some);
+                    }
+                }
+            }
+            if (inst is IRInstruction.call_void) {
+                if (cast<i64>(inst.call_void.args.size()) > 0) {
+                    let fpt: Option<FuncParamTypes> = this.find_func_param_types(inst.call_void.func_name);
+                    if (fpt.is_some() && fpt.some.first_param_is_this) {
+                        work.push(inst.call_void.args.at(cast<u64>(0)).some);
+                    }
+                }
+            }
+            if (inst is IRInstruction.call_virt) {
+                work.push(inst.call_virt.obj);
+            }
+            wi = wi + 1;
+        }
+
+        // Propagate to defining instructions (worklist, no recursion).
+        let visited: mut _utils.List<string> = new _utils.List<string>();
+        while (cast<i64>(work.size()) > 0) {
+            let val: IRValue = work.at(cast<u64>(cast<i64>(work.size()) - 1)).some;
+            work.pop();
+            // Only TEMP registers qualify: named registers are bindings and
+            // must keep their copy semantics (`let q = e.a; q.x = 9` writes
+            // q's own copy, not e's payload).
+            if (!(val is IRValue.temp_reg)) { continue; }
+            let name: string = val.display();
+            let seen: mut bool = false;
+            let vi: mut i64 = 0;
+            while (vi < cast<i64>(visited.size())) {
+                if (visited.at(cast<u64>(vi)).some == name) { seen = true; }
+                vi = vi + 1;
+            }
+            if (seen) { continue; }
+            visited.push(name);
+            let is_multi: mut bool = false;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(multi_defs.size())) {
+                if (multi_defs.at(cast<u64>(mi)).some == name) { is_multi = true; }
+                mi = mi + 1;
+            }
+            if (is_multi) { continue; }
+            let def_idx: mut i64 = -1;
+            let ni: mut i64 = 0;
+            while (ni < cast<i64>(def_names.size())) {
+                if (def_names.at(cast<u64>(ni)).some == name && def_kinds.at(cast<u64>(ni)).some == "t") { def_idx = def_idxs.at(cast<u64>(ni)).some; }
+                ni = ni + 1;
+            }
+            if (def_idx < 0 || def_idx >= n) { continue; }
+            let def_inst: IRInstruction = func.instructions.at(cast<u64>(def_idx)).some;
+            if (def_inst is IRInstruction.rdmbr) {
+                this.write_chain_regs.push(name);
+                work.push(def_inst.rdmbr.obj);
+            } else if (def_inst is IRInstruction.rdenum) {
+                this.write_chain_regs.push(name);
+                work.push(def_inst.rdenum.enum_value);
+            } else if (def_inst is IRInstruction.assign) {
+                this.alias_assign_regs.push(name);
+                work.push(def_inst.assign.src);
+            } else if (def_inst is IRInstruction.global_load) {
+                // Marked (emit_global_load hands out the global's address for
+                // lvalue addressing) but the chain terminates — the global IS
+                // the storage.
+                this.write_chain_regs.push(name);
+            }
+        }
+    }
+
     fun get_alloca_name(this, name: string) -> string {
         _utils.trace_enter("Enter get_alloca_name(name=" + cast<string>(name) + ")");
         let i: mut i64 = 0;
@@ -4027,8 +5072,8 @@ class LLVMEmitter {
         if (ir_type == "void") { return "void"; }
         if (ir_type == "ptr") { return "ptr"; }
         if (ir_type == "funptr") { return "ptr"; }
-        // ref<...> → ptr
-        if (this.string_starts_with(ir_type, "ref<")) { return "ptr"; }
+        // ref<...> / mut ref<...> → ptr
+        if (this.is_any_ref_ir_type(ir_type)) { return "ptr"; }
         // enum<...> → struct type if layout available, else i64
         if (this.string_starts_with(ir_type, "enum<")) {
             let type_name: string = this.extract_type_name(ir_type);
@@ -4218,6 +5263,10 @@ class LLVMEmitter {
             let tmp: string = this.next_tmp();
             this.sb.append("  " + tmp + " = load " + expected_llvm + ", ptr " + resolved + "\n");
             this.register_llvm_type(tmp, expected_llvm);
+            // Remember where this struct value was loaded FROM, so storage-
+            // resolving paths (mut-ref payload extraction) can alias the
+            // original instead of the detached SSA copy.
+            this.struct_value_sources.push(new RegMapping(tmp, resolved));
             return tmp;
         }
         // Insert truncation or extension
@@ -4334,11 +5383,24 @@ class LLVMEmitter {
 
     fun is_ref_type(this, ir_type: string) -> bool {
         _utils.trace_enter("Enter is_ref_type(ir_type=" + cast<string>(ir_type) + ")");
-        if (string_length(ir_type) >= 5) {
+        // bound_type_to_ir_type spells MUTABLE class bindings "mut ref<X>" —
+        // strip that prefix before matching, or every `mut` reference-class
+        // GLOBAL (e.g. the meta host's pending_specialize_args / active_model)
+        // is silently skipped by emit_main's GC-root registration and swept by
+        // the collector the moment no live stack frame references it: the
+        // global then dangles (meta JIT path read a freed List → SIGSEGV /
+        // silently re-specialized with garbage value args).
+        let t: mut string = ir_type;
+        if (string_length(t) >= 4) {
+            if (string_substring(t, 0, 4) == "mut ") {
+                t = string_substring(t, 4, string_length(t) - 4);
+            }
+        }
+        if (string_length(t) >= 5) {
             let prefix: string = "ref<";
             let i: mut i64 = 0;
             while (i < 4) {
-                if (string_char_at(ir_type, i) != string_char_at(prefix, i)) { return false; }
+                if (string_char_at(t, i) != string_char_at(prefix, i)) { return false; }
                 i = i + 1;
             }
             return true;

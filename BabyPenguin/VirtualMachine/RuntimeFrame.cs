@@ -187,15 +187,22 @@ namespace BabyPenguin.VirtualMachine
 
                     case IRArgInst ai:
                         {
+                            // Value-copy semantics: plain parameters copy value
+                            // types on entry. The receiver (`this`) is by-ref —
+                            // methods mutate the caller's object (C# struct
+                            // mutating-method style); constructors receive the
+                            // freshly allocated object.
                             if (ai.ParamIndex < _arguments.Count)
-                                Store(ai.Result, MaybeCopy(_arguments[ai.ParamIndex], ai.IrType));
+                                Store(ai.Result, ai.ParamName == "this" ? _arguments[ai.ParamIndex] : CopyValue(_arguments[ai.ParamIndex]));
                         }
                         break;
 
                     case IRAssignInst ai:
                         {
                             var src = Resolve(ai.Src);
-                            Store(ai.Dest, MaybeCopy(src, ai.Dest.GetIrType()));
+                            // Alias-chain assignments materialize receivers /
+                            // write-chain temps and must share, not copy.
+                            Store(ai.Dest, ai.IsAliasChain ? src : CopyValue(src));
                         }
                         break;
 
@@ -231,7 +238,9 @@ namespace BabyPenguin.VirtualMachine
                             // Set owner for function pointers (fat pointer / method reference)
                             if (fieldVal is FunctionRuntimeValue frv && frv.Owner is NotInitializedRuntimeValue)
                                 frv.Owner = obj;
-                            Store(ri.Result, MaybeCopy(fieldVal, ri.IrType));
+                            // Write-chain reads alias the slot (lvalue addressing);
+                            // every other read copies value types (binding copy).
+                            Store(ri.Result, ri.IsWriteChain ? fieldVal : CopyValue(fieldVal));
                         }
                         break;
 
@@ -486,14 +495,21 @@ namespace BabyPenguin.VirtualMachine
                         {
                             var enumVal = Resolve(ri.EnumValue);
                             var payload = ExtractEnumPayload(enumVal);
-                            Store(ri.Result, payload);
+                            // Write-chain extractions alias the payload slot
+                            // (`e.a.x = 42` writes in place); binding
+                            // extractions (`let q = e.a`) copy value payloads.
+                            Store(ri.Result, ri.IsWriteChain ? payload : CopyValue(payload));
                         }
                         break;
 
                     case IRGlobalLoadInst gi:
                         {
+                            // Globals share their storage object in the
+                            // register: binding boundaries (ASSIGN/ARG/RDMBR)
+                            // copy, and member writes go through the shared
+                            // object. Copying here would orphan writes.
                             if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
-                                Store(gi.Result, MaybeCopy(globalSym.Value, gi.IrType));
+                                Store(gi.Result, globalSym.Value);
                             else
                                 Store(gi.Result, new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)));
                         }
@@ -710,6 +726,8 @@ namespace BabyPenguin.VirtualMachine
                 if (Global.GCEnabled)
                 {
                     Global.GlobalInstructionCount++;
+                    if (Environment.GetEnvironmentVariable("BP_STEP") != null && _function.Name.Contains(Environment.GetEnvironmentVariable("BP_STEP")!))
+                        Console.Error.WriteLine($"[STEP] {_function.Name} ip={_ip} {_function.Instructions[_ip].Display()}");
                     if (Global.GlobalInstructionCount % Global.GCCheckInterval == 0)
                     {
                         if (Global.AllObjects.Count > Global.GCThreshold)
@@ -730,15 +748,22 @@ namespace BabyPenguin.VirtualMachine
 
                     case IRArgInst ai:
                         {
+                            // Value-copy semantics: plain parameters copy value
+                            // types on entry. The receiver (`this`) is by-ref —
+                            // methods mutate the caller's object (C# struct
+                            // mutating-method style); constructors receive the
+                            // freshly allocated object.
                             if (ai.ParamIndex < _arguments.Count)
-                                Store(ai.Result, MaybeCopy(_arguments[ai.ParamIndex], ai.IrType));
+                                Store(ai.Result, ai.ParamName == "this" ? _arguments[ai.ParamIndex] : CopyValue(_arguments[ai.ParamIndex]));
                         }
                         break;
 
                     case IRAssignInst ai:
                         {
                             var src = Resolve(ai.Src);
-                            Store(ai.Dest, MaybeCopy(src, ai.Dest.GetIrType()));
+                            // Alias-chain assignments materialize receivers /
+                            // write-chain temps and must share, not copy.
+                            Store(ai.Dest, ai.IsAliasChain ? src : CopyValue(src));
                         }
                         break;
 
@@ -773,7 +798,7 @@ namespace BabyPenguin.VirtualMachine
                             var fieldVal = ReadField(obj, ri.FieldName);
                             if (fieldVal is FunctionRuntimeValue frv && frv.Owner is NotInitializedRuntimeValue)
                                 frv.Owner = obj;
-                            Store(ri.Result, MaybeCopy(fieldVal, ri.IrType));
+                            Store(ri.Result, ri.IsWriteChain ? fieldVal : CopyValue(fieldVal));
                         }
                         break;
 
@@ -909,14 +934,21 @@ namespace BabyPenguin.VirtualMachine
                         {
                             var enumVal = Resolve(ri.EnumValue);
                             var payload = ExtractEnumPayload(enumVal);
-                            Store(ri.Result, payload);
+                            // Write-chain extractions alias the payload slot
+                            // (`e.a.x = 42` writes in place); binding
+                            // extractions (`let q = e.a`) copy value payloads.
+                            Store(ri.Result, ri.IsWriteChain ? payload : CopyValue(payload));
                         }
                         break;
 
                     case IRGlobalLoadInst gi:
                         {
+                            // Globals share their storage object in the
+                            // register: binding boundaries (ASSIGN/ARG/RDMBR)
+                            // copy, and member writes go through the shared
+                            // object. Copying here would orphan writes.
                             if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
-                                Store(gi.Result, MaybeCopy(globalSym.Value, gi.IrType));
+                                Store(gi.Result, globalSym.Value);
                             else
                                 Store(gi.Result, new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable)));
                         }
@@ -1196,10 +1228,15 @@ namespace BabyPenguin.VirtualMachine
 
         // === Value operations ===
 
-        private IRuntimeValue MaybeCopy(IRuntimeValue val, string _)
+        /// <summary>
+        /// Value-copy semantics: storing a value into a binding / parameter /
+        /// field / extraction copies value types memberwise (value classes,
+        /// enums with value payloads, primitives); reference classes are
+        /// shared like a copied pointer. `mut` never affects this.
+        /// </summary>
+        private IRuntimeValue CopyValue(IRuntimeValue val)
         {
-            // All values are shared (reference semantics) like the old VM.
-            return val;
+            return RuntimeValueCopier.CopyIfValueSemantic(val, Global);
         }
 
         private IRuntimeValue MakeValue(string literal, string irType)
@@ -1253,6 +1290,12 @@ namespace BabyPenguin.VirtualMachine
         {
             if (fromType == toType) return operand;
 
+            // Value-class -> interface boxing COPIES the struct (native
+            // emit_box heap-copies into a fresh GC allocation); later mutation
+            // of the original is not visible through the interface value.
+            if (fromType.StartsWith("struct<") && toType.StartsWith("ref<"))
+                return RuntimeValueCopier.CopyIfValueSemantic(operand, Global);
+
             if (toType == "ref<string>" || toType == "string")
             {
                 var strType = Model.BasicTypeNodes.GetCachedImmutableType("ref<string>") ?? Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
@@ -1290,7 +1333,7 @@ namespace BabyPenguin.VirtualMachine
         private IRuntimeValue EvalBinOp(string op, IRuntimeValue left, IRuntimeValue right, string irType)
         {
             if (left is not BasicRuntimeValue lbv || right is not BasicRuntimeValue rbv)
-                throw new BabyPenguinRuntimeException("Cannot evaluate binary op on non-basic values", code: ErrorCode.E_RUNTIME_INVALID_OP);
+                throw new BabyPenguinRuntimeException($"Cannot evaluate binary op on non-basic values (op={op} irType={irType} left={left.GetType().Name}:{left.TypeInfo?.FullName()} right={right.GetType().Name}:{right.TypeInfo?.FullName()} func={CodeContainer?.FullName()})", code: ErrorCode.E_RUNTIME_INVALID_OP);
 
             // Determine result type from irType (matches original behavior)
             var resultTypeInfo = GetResultTypeInfo(irType);
@@ -1857,14 +1900,18 @@ namespace BabyPenguin.VirtualMachine
         {
             if (obj is ReferenceRuntimeValue refVal)
             {
-                refVal.Fields[fieldName] = value;
+                // Storing into a field copies value types (native inlines the
+                // struct into the field slot); reference types share.
+                refVal.Fields[fieldName] = RuntimeValueCopier.CopyIfValueSemantic(value, Global);
                 return;
             }
             if (obj is EnumRuntimeValue enumVal)
             {
                 if (fieldName == "_containing_value")
                 {
-                    enumVal.ContainingValue = value;
+                    // Value-class payloads copy on store (native inlines the
+                    // struct into the enum); reference payloads share.
+                    enumVal.ContainingValue = RuntimeValueCopier.CopyIfValueSemantic(value, Global);
                     return;
                 }
                 enumVal.FieldsValue.Fields[fieldName] = value;
@@ -1939,7 +1986,12 @@ namespace BabyPenguin.VirtualMachine
         {
             var fieldsRef = CreatePooledRef(type);
             fieldsRef.Fields["_value"] = new BasicRuntimeValue(Model.BasicTypeNodes.I32.ToType(Mutability.Immutable)) { I32Value = variantIdx };
-            return new EnumRuntimeValue(type, fieldsRef, payload);
+            // Value-class payloads are stored INLINE in EmperorPenguin (struct
+            // copy at construction), so mutating the source after `new E.v(p)`
+            // must not alias the stored payload. Copy value-semantic payloads;
+            // reference payloads stay shared (native copies the pointer).
+            var stored = payload != null ? RuntimeValueCopier.CopyIfValueSemantic(payload, Global) : null;
+            return new EnumRuntimeValue(type, fieldsRef, stored);
         }
 
         /// <summary>

@@ -110,6 +110,24 @@ namespace BabyPenguin.VirtualMachine
 
         public static void AddList(BabyPenguinVM vm)
         {
+            // List/Queue element semantics mirror EmperorPenguin's bare-T slots
+            // (#__load/#__store), uniformly through CopyIfValueSemantic:
+            //  - value-class elements copy memberwise (inline struct storage);
+            //  - enum elements copy the wrapper/tag only — reference-class
+            //    payloads stay SHARED. The previous `val.Clone()` deep-copied
+            //    enum payloads, silently detaching objects that callers kept
+            //    aliased (e.g. the compiler's at()/mutate/set() round-trips
+            //    over List<BoundDefinition> lost writes seen through
+            //    side references);
+            //  - reference-class elements are passed through (shared);
+            //  - primitives copy their wrapper (assignment copies data).
+            // Element access is uniformly a COPY for value types (mut no
+            // longer grants slot aliasing); write-back goes through set().
+            Func<IRuntimeValue, IRuntimeValue> store = v =>
+                RuntimeValueCopier.CopyIfValueSemantic(v, vm.Global);
+            Func<IRuntimeValue, ITypeNode, IRuntimeValue> extract = (v, _) =>
+                RuntimeValueCopier.CopyIfValueSemantic(v, vm.Global);
+
             foreach (var listType in vm.Model.ResolveTypeNode("_utils.List<?>")!.GenericInstances)
             {
                 vm.Global.RegisterExternFunction(listType.FullName() + ".new", (result, args) =>
@@ -126,8 +144,7 @@ namespace BabyPenguin.VirtualMachine
                     var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
                     if (items != null && index >= 0 && index < items.Count)
                     {
-                        var val = items[index];
-                        enumResult.ContainingValue = val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val;
+                        enumResult.ContainingValue = extract(items[index], listType);
                         enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
@@ -141,8 +158,7 @@ namespace BabyPenguin.VirtualMachine
                 {
                     var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
-                    var val = args[1];
-                    items.Add(val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val);
+                    items.Add(store(args[1]));
                 });
 
                 vm.Global.RegisterExternFunction(listType.FullName() + ".pop", (result, args) =>
@@ -154,7 +170,7 @@ namespace BabyPenguin.VirtualMachine
                     {
                         var last = items[^1];
                         items.RemoveAt(items.Count - 1);
-                        enumResult.ContainingValue = last;
+                        enumResult.ContainingValue = extract(last, listType);
                         enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
@@ -187,10 +203,9 @@ namespace BabyPenguin.VirtualMachine
                     var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
                     var index = (int)args[1].As<BasicRuntimeValue>().U64Value;
-                    var val = args[2];
                     if (index >= 0 && index < items.Count)
                     {
-                        items[index] = val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val;
+                        items[index] = store(args[2]);
                     }
                 });
             }
@@ -207,8 +222,7 @@ namespace BabyPenguin.VirtualMachine
                 {
                     var queue = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
                     var items = (queue.ExternImplenmentationValue as List<IRuntimeValue>)!;
-                    var val = args[1];
-                    items.Add(val is BasicRuntimeValue || val is EnumRuntimeValue ? val.Clone() : val);
+                    items.Add(store(args[1]));
                 });
 
                 vm.Global.RegisterExternFunction(queueType.FullName() + ".dequeue", (result, args) =>
@@ -220,7 +234,7 @@ namespace BabyPenguin.VirtualMachine
                     {
                         var first = items[0];
                         items.RemoveAt(0);
-                        enumResult.ContainingValue = first;
+                        enumResult.ContainingValue = extract(first, queueType);
                         enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else
@@ -237,7 +251,7 @@ namespace BabyPenguin.VirtualMachine
                     var enumResult = result!.As<EnumRuntimeSymbol>().EnumValue;
                     if (items != null && items.Count > 0)
                     {
-                        enumResult.ContainingValue = items[0] is BasicRuntimeValue || items[0] is EnumRuntimeValue ? items[0].Clone() : items[0];
+                        enumResult.ContainingValue = extract(items[0], queueType);
                         enumResult.FieldsValue.Fields["_value"].As<BasicRuntimeValue>().I32Value = 0;
                     }
                     else

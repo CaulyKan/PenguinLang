@@ -278,6 +278,16 @@ class ResolveTypesPass {
                         let field: mut BoundClassFieldDefinition = bd.class_field;
                         if (ast_member.class_field.type_spec.is_some()) {
                             field.bound_type = this.model.some.resolve_type_specifier(ast_member.class_field.type_spec.some, class_scope);
+                            // resolve_type_specifier yields the TEMPLATE def +
+                            // generic_args for a generic field type. On a
+                            // SPECIALIZED class that stale form makes the
+                            // classifier skip the variant-payload cycle check
+                            // (templates are exempt) and diverges byte_size()
+                            // from the emitted layout — rewrite to the
+                            // specialized sibling type (idempotent).
+                            if (bound_cls.is_specialized) {
+                                field.bound_type = this.model.some.monomorphize_pass.resolve_field_specialization(field.bound_type, this.model.some.global_scope);
+                            }
                         }
                         if (field.field_symbol.is_some()) {
                             let fsym: mut BoundVariableSymbol = field.field_symbol.some;
@@ -346,6 +356,13 @@ class ResolveTypesPass {
                 let member: mut BoundEnumMemberDefinition = e.members.at(cast<u64>(mi)).some;
                 if (ast_member.enum_member.type_spec.is_some()) {
                     let resolved: mut BoundType = this.model.some.resolve_type_specifier(ast_member.enum_member.type_spec.some, enum_scope);
+                    // Same as specialized class fields: a generic payload type
+                    // must resolve past the template-with-args form to the
+                    // specialized sibling, or the classifier's cycle check and
+                    // byte_size() walk the template graph.
+                    if (e.is_specialized) {
+                        resolved = this.model.some.monomorphize_pass.resolve_field_specialization(resolved, this.model.some.global_scope);
+                    }
                     member.member_type = resolved;
                     if (member.member_symbol.is_some()) {
                         let msym: mut BoundEnumMemberSymbol = member.member_symbol.some;

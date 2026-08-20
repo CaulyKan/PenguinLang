@@ -46,6 +46,13 @@ namespace BabyPenguin.VirtualMachine
     // 3. ASSIGN - variable assignment
     public sealed class IRAssignInst : IRInstruction
     {
+        /// <summary>
+        /// Set when this assignment materializes a receiver / write-chain
+        /// temp (`c.increment()` evaluates its receiver through an ASSIGN):
+        /// the destination must ALIAS the source instead of copying a value
+        /// type, and the alias chain continues at the source register.
+        /// </summary>
+        public bool IsAliasChain { get; set; }
         public IRValue Dest { get; }
         public IRValue Src { get; }
         public IRSourceLocation Location { get; }
@@ -133,6 +140,13 @@ namespace BabyPenguin.VirtualMachine
         public string FieldName { get; }
         public string IrType { get; }
         public IRSourceLocation Location { get; }
+
+        /// <summary>
+        /// Set when the result register is consumed (transitively) as the owner
+        /// of a WRMBR or as a method-call receiver: the read must ALIAS the
+        /// slot (slot lvalue addressing) instead of copying a value-type field.
+        /// </summary>
+        public bool IsWriteChain { get; set; }
 
         public IRRdmbrInst(IRValue result, IRValue obj, string fieldName, string irType, IRSourceLocation location)
         {
@@ -457,6 +471,9 @@ namespace BabyPenguin.VirtualMachine
         public string VariantName { get; }
         public string PayloadType { get; }
         public IRSourceLocation Location { get; }
+
+        /// <summary>See <see cref="IRRdmbrInst.IsWriteChain"/>.</summary>
+        public bool IsWriteChain { get; set; }
 
         public IRRdenumInst(IRValue result, IRValue enumValue, string variantName, string payloadType, IRSourceLocation location)
         {

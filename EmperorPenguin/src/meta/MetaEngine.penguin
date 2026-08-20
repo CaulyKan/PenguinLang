@@ -155,7 +155,7 @@ class MetaEngine {
     // self-contained (~4271 lines: core_builtin + utils + bound type layer + AST
     // type layer + ErrorCode). Weak-dedup in penguin_jit means re-emitted defs
     // resolve to the host's strong exports (emperor_BoundType_fields, …).
-    fun base_meta_sources(this) -> _utils.List<SourceInput> {
+    fun base_meta_sources(this) -> mut _utils.List<SourceInput> {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
         result.push(new SourceInput("core_builtin.penguin", _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin")));
         result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));

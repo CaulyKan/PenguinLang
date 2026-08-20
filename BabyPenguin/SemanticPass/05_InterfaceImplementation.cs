@@ -445,8 +445,35 @@ namespace BabyPenguin.SemanticPass
             // String: reference type, not value-like
             if (typeNode.IsStringType) return false;
 
-            // Enums are value types
-            if (typeNode.IsEnumType) return true;
+            // Enums are value types — but only when their variant payload types
+            // are themselves value-like. A payload class that (transitively)
+            // contains this enum again is an infinite value layout: the cycle
+            // makes the containing class reference-like (mirrors the
+            // EmperorPenguin classifier, which walks specialized variant
+            // payloads for the same reason).
+            if (typeNode.IsEnumType)
+            {
+                if (typeNode is IEnumNode enumNode && visiting.Add(enumNode.FullName()))
+                {
+                    try
+                    {
+                        foreach (var decl in enumNode.EnumDeclarations)
+                        {
+                            var payloadType = decl.TypeInfo;
+                            if (payloadType == null || payloadType.TypeNode == null) continue;
+                            // Skip the tag-only sentinel (payload == the enum itself)
+                            if (payloadType.TypeNode == typeNode) continue;
+                            if (!IsTypeValueLike(payloadType, visiting))
+                                return false;
+                        }
+                    }
+                    finally
+                    {
+                        visiting.Remove(enumNode.FullName());
+                    }
+                }
+                return true;
+            }
 
             // Classes: check if they implement IValueType (explicit or auto)
             if (typeNode.IsClassType && typeNode is IClassNode classNode)

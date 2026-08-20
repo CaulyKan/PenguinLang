@@ -51,206 +51,160 @@ namespace _utils {
         return result;
     }
 
-    #template(T: type)
-    class _ListNode {
-        value: mut __builtin.Option<T> = new __builtin.Option<T>.none();
-        next: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-        prev: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-    }
-
-    #template(T: type)
-    class _ListIterator {
-        current: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-
-        fun new(mut this, start: __builtin.Option<_ListNode<T>>) {
-            this.current = start;
-        }
-
-        fun next(mut this) -> __builtin.Option<T> {
-            if (let cur := this.current.some) {
-                let result: __builtin.Option<T> = cur.value;
-                this.current = cur.next;
-                return result;
-            }
-            return new __builtin.Option<T>.none();
-        }
-
-        fun iter(this) -> _ListIterator<T> {
-            return new _ListIterator<T>(this.current);
-        }
-    }
-
+    // Contiguous-buffer List (the std.Vector design: one _malloc'd element
+    // buffer, doubling growth, #sizeof/#__load/#__store intrinsics), replacing
+    // the old per-element _ListNode linked list — one allocation per grow
+    // instead of one per element, and O(1) random access without the old
+    // head/tail/cursor walk. The public surface (push/at/set/pop/remove/size/
+    // iter/iter_mut and their signatures) is unchanged, so callers are
+    // untouched.
+    //
+    // Each slot stores a bare T (loaded/stored via #__load(T)/#__store(T)),
+    // NOT Option<T>: value-type elements nest INLINE in the buffer (their
+    // whole struct is copied in/out by the pointer intrinsics — value
+    // semantics, no per-element boxing), and reference-type elements store
+    // their pointer. at()/pop()/next() wrap the loaded element in a fresh
+    // Option<T>.some on return, which for value-type payloads is an inline
+    // struct copy — no heap allocation. The buffer is raw malloc memory that
+    // may hold GC references, so it is registered as a GC scan region right
+    // after allocation and unregistered before free/grow-replace; dispose_mem
+    // is also wired into the GC finalizer (IReferenceType + IMemoryDispose),
+    // so unreachable lists release their buffer automatically.
     #template(T: type)
     class List {
-        head: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-        tail: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-        count: mut u64 = 0;
-        // Access cursor: caches the node + index most recently returned by node_at, so
-        // sequential / short-distance access (the parser's token-stream pattern) is O(1)
-        // instead of re-walking from the head every call (which made parse O(n^2)).
-        // This is pure internal cache state — callers only ever use at()/set(); the node
-        // structure is never exposed upward. Invalidated by pop()/remove().
-        cursor_node: mut __builtin.Option<_ListNode<T>> = new __builtin.Option<_ListNode<T>>.none();
-        cursor_index: mut u64 = 0;
+        impl __builtin.IReferenceType;
+        impl __builtin.IMemoryDispose;
+        buf: mut u64 = 0;
+        len: mut u64 = 0;
+        cap: mut u64 = 0;
 
         fun new(mut this) {}
 
-        fun push(mut this, value: T) {
-            let node: mut _ListNode<T> = new _ListNode<T>();
-            node.value = new __builtin.Option<T>.some(value);
-            node.prev = new __builtin.Option<_ListNode<T>>.none();
-            if (this.count == 0) {
-                this.head = new __builtin.Option<_ListNode<T>>.some(node);
-                this.tail = new __builtin.Option<_ListNode<T>>.some(node);
-            } else {
-                node.prev = new __builtin.Option<_ListNode<T>>.some(this.tail.some);
-                let t: mut _ListNode<T> = this.tail.some;
-                t.next = new __builtin.Option<_ListNode<T>>.some(node);
-                this.tail = new __builtin.Option<_ListNode<T>>.some(node);
-            }
-            this.count = this.count + 1;
+        fun slot_size(this) -> u64 {
+            return cast<u64>(#sizeof(T));
         }
 
-        // Return the node at `index`, updating the access cursor. Assumes index < count
-        // (callers gate on that). Picks the closest starting point — head, tail, or the
-        // cached cursor — and walks forward (via next) or backward (via prev), so cost is
-        // O(distance) from the nearest of those three. For sequential + short-backtrack
-        // access this is O(1) amortized.
-        fun node_at(this, index: u64) -> _ListNode<T> {
-            let start_node: mut _ListNode<T> = this.head.some;
-            let start_index: mut u64 = 0;
-            let forward: mut bool = true;
-            let best: mut u64 = index;
-            // From tail, walking backward.
-            let dist_tail: u64 = this.count - 1 - index;
-            if (dist_tail < best) {
-                start_node = this.tail.some;
-                start_index = this.count - 1;
-                forward = false;
-                best = dist_tail;
+        fun slot_addr(this, index: u64) -> u64 {
+            return this.buf + index * this.slot_size();
+        }
+
+        // Reallocate to new_cap slots, copying existing elements over. The new
+        // buffer is registered as a GC scan region BEFORE elements (which may
+        // be GC references) land in it, and the old region is removed before
+        // the old buffer is freed — the collector must never scan freed memory.
+        fun _grow(mut this, new_cap: u64) {
+            let bytes: u64 = new_cap * this.slot_size();
+            let new_buf: u64 = __builtin._malloc(bytes);
+            __builtin._gc_scan_add(new_buf, cast<i64>(bytes));
+            let i: mut u64 = 0;
+            while (i < this.len) {
+                #__store(T, new_buf + i * this.slot_size(), #__load(T, this.buf + i * this.slot_size()));
+                i = i + 1;
             }
-            // From the cached cursor, walking forward or backward.
-            if (this.cursor_node.is_some()) {
-                let dist_c: mut u64 = 0;
-                let fwd_c: mut bool = true;
-                if (index >= this.cursor_index) {
-                    dist_c = index - this.cursor_index;
-                    fwd_c = true;
-                } else {
-                    dist_c = this.cursor_index - index;
-                    fwd_c = false;
-                }
-                if (dist_c < best) {
-                    start_node = this.cursor_node.some;
-                    start_index = this.cursor_index;
-                    forward = fwd_c;
-                    best = dist_c;
-                }
+            if (this.buf != 0) {
+                __builtin._gc_scan_remove(this.buf);
+                __builtin._mfree(this.buf);
             }
-            let cur: mut _ListNode<T> = start_node;
-            let ci: mut u64 = start_index;
-            if (forward) {
-                while (ci < index) {
-                    cur = cur.next.some;
-                    ci = ci + 1;
-                }
-            } else {
-                while (ci > index) {
-                    cur = cur.prev.some;
-                    ci = ci - 1;
-                }
+            this.buf = new_buf;
+            this.cap = new_cap;
+        }
+
+        fun push(mut this, value: T) {
+            if (this.len == this.cap) {
+                let new_cap: u64 = if (this.cap == 0) { 8 } else { this.cap * 2 };
+                this._grow(new_cap);
             }
-            this.cursor_node = new __builtin.Option<_ListNode<T>>.some(cur);
-            this.cursor_index = index;
-            return cur;
+            #__store(T, this.slot_addr(this.len), value);
+            this.len = this.len + 1;
         }
 
         fun at(this, index: u64) -> __builtin.Option<T> {
-            if (index >= this.count) {
+            if (index >= this.len) {
                 return new __builtin.Option<T>.none();
             }
-            return this.node_at(index).value;
+            return new __builtin.Option<T>.some(#__load(T, this.slot_addr(index)));
         }
 
         fun set(mut this, index: u64, value: T) {
-            if (index >= this.count) {
+            if (index >= this.len) {
                 return;
             }
-            let node: mut _ListNode<T> = this.node_at(index);
-            node.value = new __builtin.Option<T>.some(value);
+            #__store(T, this.slot_addr(index), value);
         }
 
         fun pop(mut this) -> __builtin.Option<T> {
-            if (this.count == 0) {
+            if (this.len == 0) {
                 return new __builtin.Option<T>.none();
             }
-            let result: __builtin.Option<T> = this.tail.some.value;
-            if (this.count == 1) {
-                this.head = new __builtin.Option<_ListNode<T>>.none();
-                this.tail = new __builtin.Option<_ListNode<T>>.none();
-                this.count = 0;
-                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
-                this.cursor_index = 0;
-                return result;
-            }
-            // Doubly-linked: the new tail is the old tail's prev (O(1), no walk).
-            let old_tail: _ListNode<T> = this.tail.some;
-            let new_tail: mut _ListNode<T> = old_tail.prev.some;
-            new_tail.next = new __builtin.Option<_ListNode<T>>.none();
-            this.tail = new __builtin.Option<_ListNode<T>>.some(new_tail);
-            this.count = this.count - 1;
-            this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
-            this.cursor_index = 0;
-            return result;
+            this.len = this.len - 1;
+            return new __builtin.Option<T>.some(#__load(T, this.slot_addr(this.len)));
         }
 
+        // Shift [index+1, len) left one slot, then shrink. Same observable
+        // behavior as the old linked-list unlink (elements keep their order).
         fun remove(mut this, index: u64) {
-            if (index >= this.count) {
+            if (index >= this.len) {
                 return;
             }
-            if (this.count == 1) {
-                this.head = new __builtin.Option<_ListNode<T>>.none();
-                this.tail = new __builtin.Option<_ListNode<T>>.none();
-                this.count = 0;
-                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
-                this.cursor_index = 0;
-                return;
+            let i: mut u64 = index;
+            while (i + 1 < this.len) {
+                #__store(T, this.slot_addr(i), #__load(T, this.slot_addr(i + 1)));
+                i = i + 1;
             }
-            if (index == 0) {
-                let new_head: mut _ListNode<T> = this.head.some.next.some;
-                new_head.prev = new __builtin.Option<_ListNode<T>>.none();
-                this.head = new __builtin.Option<_ListNode<T>>.some(new_head);
-                this.count = this.count - 1;
-                this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
-                this.cursor_index = 0;
-                return;
-            }
-            let target: _ListNode<T> = this.node_at(index);
-            let target_prev: mut _ListNode<T> = target.prev.some;
-            let target_next_opt: __builtin.Option<_ListNode<T>> = target.next;
-            if (target_next_opt.is_some()) {
-                let target_next: mut _ListNode<T> = target_next_opt.some;
-                target_next.prev = new __builtin.Option<_ListNode<T>>.some(target_prev);
-                target_prev.next = new __builtin.Option<_ListNode<T>>.some(target_next);
-            } else {
-                target_prev.next = new __builtin.Option<_ListNode<T>>.none();
-                this.tail = new __builtin.Option<_ListNode<T>>.some(target_prev);
-            }
-            this.count = this.count - 1;
-            this.cursor_node = new __builtin.Option<_ListNode<T>>.none();
-            this.cursor_index = 0;
+            this.len = this.len - 1;
         }
 
         fun size(this) -> u64 {
-            return this.count;
+            return this.len;
         }
 
         fun iter(this) -> _ListIterator<T> {
-            return new _ListIterator<T>(this.head);
+            return new _ListIterator<T>(this);
         }
 
         fun iter_mut(this) -> mut _ListIterator<T> {
-            return new _ListIterator<T>(this.head);
+            return new _ListIterator<T>(this);
+        }
+
+        fun dispose_mem(mut this) {
+            if (this.buf != 0) {
+                __builtin._gc_scan_remove(this.buf);
+                __builtin._mfree(this.buf);
+                this.buf = 0;
+            }
+        }
+    }
+
+    // Iterator over List<T>. It holds a reference to the List and re-reads
+    // buf/len on every next() rather than snapshotting them, on purpose:
+    //  - the GC traces iterator -> list -> scan region, so iterating a
+    //    temporary list (e.g. `for (x in f())`) keeps its buffer alive;
+    //  - a push() during iteration may reallocate the buffer — the fresh
+    //    buf is picked up instead of dereferencing a freed snapshot;
+    //  - len is re-read, so elements appended or popped during iteration
+    //    are seen/hidden exactly as they were with the linked list.
+    #template(T: type)
+    class _ListIterator {
+        impl __builtin.IReferenceType;
+        list: List<T>;
+        cursor: mut u64 = 0;
+
+        fun new(mut this, list: List<T>) {
+            this.list = list;
+            this.cursor = 0;
+        }
+
+        fun next(mut this) -> __builtin.Option<T> {
+            if (this.cursor >= this.list.len) {
+                return new __builtin.Option<T>.none();
+            }
+            let result: T = #__load(T, this.list.slot_addr(this.cursor));
+            this.cursor = this.cursor + 1;
+            return new __builtin.Option<T>.some(result);
+        }
+
+        fun iter(this) -> _ListIterator<T> {
+            return this;
         }
     }
 

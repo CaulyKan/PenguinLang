@@ -436,6 +436,19 @@ fun mangle_specialization(full_base_name: string, generic_args: _utils.List<Boun
     return sb.to_string();
 }
 
+// Sentinel: byte_size cannot be computed — the value-type layout recursively
+// contains itself (E_SIZE_CYCLE at the callers that can report).
+fun byte_size_cycle_sentinel() -> i64 { return -1; }
+
+fun byte_size_visiting_contains(visiting: _utils.List<string>, key: string) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(visiting.size())) {
+        if (visiting.at(cast<u64>(i)).some == key) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
 class BoundType {
     kind: TypeKind = new TypeKind.PrimitiveKind();
     primitive: PrimitiveType = new PrimitiveType.VoidType();
@@ -598,6 +611,24 @@ class BoundType {
                 return mangled == cb.name;
             }
         }
+        if (td_a.some is BoundDefinition.enum_def && td_b.some is BoundDefinition.enum_def) {
+            // Same unification for ENUMS (e.g. Option<T>): a template+args enum
+            // (type_def = the generic Option definition, carries generic_args)
+            // and its specialized def (Option<i64>, no args) are the same
+            // instantiation. Needed wherever a specialized enum's BoundType
+            // flows from its specialization type SYMBOL — e.g. the
+            // #__load(Option<T>, ...) intrinsic resolves through the mangled
+            // symbol — and meets a declared template+args type (a method's
+            // return type).
+            let ea: BoundEnumDefinition = td_a.some.enum_def;
+            let eb: BoundEnumDefinition = td_b.some.enum_def;
+            if (cast<i64>(ea.generic_params.size()) > 0 && cast<i64>(eb.generic_params.size()) == 0
+                && cast<i64>(this.generic_args.size()) > 0
+                && cast<i64>(other.generic_args.size()) == 0) {
+                let mangled: string = mangle_specialization(ea.full_name, this.generic_args);
+                return mangled == eb.name;
+            }
+        }
         return false;
     }
 
@@ -727,7 +758,35 @@ class BoundType {
     // Compile-time byte-size mirroring LLVMEmitter.llvm_type_size /
     // build_class_layout / build_enum_layout, so #sizeof(T) agrees with the
     // actual LLVM object size. Keep in sync with the emitter's layout rules.
+    //
+    // The enum struct is `{ ptr metadata, i32 tag, payload }`: the payload sits
+    // at align_up(12, payload_align) and the total size is align_up(end, 8)
+    // (mirroring LLVM struct layout — NOT 16 + payload).
+    //
+    // Returns -1 (see byte_size_cycle_sentinel) when the size cannot be
+    // computed because the value-type layout recursively contains itself
+    // (e.g. `impl IValueType` class Node with field `Option<Node>`); callers
+    // surface that as E_SIZE_CYCLE.
     fun byte_size(this) -> i64 {
+        let visiting: mut _utils.List<string> = new _utils.List<string>();
+        return this.byte_size_rec(visiting);
+    }
+
+    // True when `other` is an enum type whose DEFINITION is this type's own
+    // enum definition (the tag-only variant sentinel). Compared by def full
+    // name because display_name() is mutability-prefixed and defs may be
+    // duplicated by specialization paths.
+    fun is_same_enum_def(this, other: BoundType) -> bool {
+        if (other.kind is TypeKind.EnumKind
+            && this.type_definition.is_some() && other.type_definition.is_some()
+            && this.type_definition.some is BoundDefinition.enum_def
+            && other.type_definition.some is BoundDefinition.enum_def) {
+            return this.type_definition.some.enum_def.full_name == other.type_definition.some.enum_def.full_name;
+        }
+        return false;
+    }
+
+    fun byte_size_rec(this, visiting: mut _utils.List<string>) -> i64 {
         if (this.kind is TypeKind.PrimitiveKind) {
             if (this.primitive is PrimitiveType.I8) { return 1; }
             if (this.primitive is PrimitiveType.U8) { return 1; }
@@ -742,27 +801,57 @@ class BoundType {
         }
         if (this.kind is TypeKind.InterfaceKind) { return 8; }
         if (this.kind is TypeKind.ClassKind) {
-            if (this.is_value_type()) {
+            // Storage size is MUTABILITY-INDEPENDENT (mut is a compile-time
+            // permission only): a mut value-class binding occupies the same
+            // inline struct as an immutable one, so #sizeof strides and List
+            // slots always agree with the emitted struct fields
+            // (LLVMEmitter.field_type_to_llvm).
+            // An UNCLASSIFIED def (is_value_class none — e.g. a duplicate def
+            // handed to #sizeof by a specialization path) defaults to the FULL
+            // inline size, mirroring LLVMEmitter.ensure_class_layout's default:
+            // under-sizing here while the emitter stores the whole struct
+            // would overflow List slots (heap corruption). A slot larger than
+            // its store is merely wasteful, never unsafe.
+            let as_value: mut bool = true;
+            if (this.type_definition.is_some()
+                && this.type_definition.some is BoundDefinition.class_def
+                && this.type_definition.some.class_def.is_value_class.is_some()) {
+                as_value = this.type_definition.some.class_def.is_value_class.some;
+            }
+            if (as_value) {
                 // Value class: metadata ptr (8) + aligned fields, final align_up(.,8).
+                let key: string = serialize_bound_type(this);
+                if (byte_size_visiting_contains(visiting, key)) { return byte_size_cycle_sentinel(); }
+                visiting.push(key);
                 let offset: mut i64 = 8;
                 let flds: _utils.List<BoundClassFieldDefinition> = this.fields();
                 let fi: mut i64 = 0;
+                let cycled: mut bool = false;
                 while (fi < cast<i64>(flds.size())) {
                     let f: BoundClassFieldDefinition = flds.at(cast<u64>(fi)).some;
-                    let fsize: i64 = f.bound_type.byte_size();
+                    let fsize: i64 = f.bound_type.byte_size_rec(visiting);
+                    if (fsize == byte_size_cycle_sentinel()) { cycled = true; break; }
                     let falign: i64 = this.byte_align(f.bound_type);
                     offset = this.byte_align_up(offset, falign) + fsize;
                     fi = fi + 1;
                 }
+                visiting.pop();
+                if (cycled) { return byte_size_cycle_sentinel(); }
                 return this.byte_align_up(offset, 8);
             }
             return 8;
         }
         if (this.kind is TypeKind.EnumKind) {
-            let base: i64 = 16;
+            let key: string = serialize_bound_type(this);
+            if (byte_size_visiting_contains(visiting, key)) { return byte_size_cycle_sentinel(); }
+            visiting.push(key);
+            // Largest payload wins (mirrors build_enum_layout's max-size pick,
+            // first strictly-greater replaces).
+            let largest_bt: mut Option<BoundType> = new Option<BoundType>.none();
             let largest: mut i64 = 0;
             let vs: _utils.List<BoundEnumMemberDefinition> = this.variants();
             let vi: mut i64 = 0;
+            let cycled: mut bool = false;
             while (vi < cast<i64>(vs.size())) {
                 let vm: BoundEnumMemberDefinition = vs.at(cast<u64>(vi)).some;
                 let mt: BoundType = vm.member_type;
@@ -770,18 +859,31 @@ class BoundType {
                 // Tag-only variants (like Option.none) carry member_type == the
                 // enum's OWN type — a sentinel set by resolve_enum_types, NOT a
                 // recursive payload. Skip them like void (mirrors the
-                // build_enum_layout is_self_enum check). Without this, #sizeof on
-                // an enum with a tag-only variant infinite-recurses in byte_size
-                // (Vector<Enum> segfault).
-                let is_self: bool = mt.kind is TypeKind.EnumKind && mt.display_name() == this.display_name();
+                // build_enum_layout is_self_enum check). Compare by the enum
+                // DEF's full name — display_name() includes a mutability prefix,
+                // so a `mut`-typed field of the same enum would not match.
+                let is_self: bool = this.is_same_enum_def(mt);
                 if (!is_void && !is_self) {
-                    let sz: i64 = mt.byte_size();
-                    if (sz > largest) { largest = sz; }
+                    let sz: i64 = mt.byte_size_rec(visiting);
+                    if (sz == byte_size_cycle_sentinel()) { cycled = true; break; }
+                    if (largest_bt.is_none() || sz > largest) {
+                        largest = sz;
+                        largest_bt = new Option<BoundType>.some(mt);
+                    }
                 }
                 vi = vi + 1;
             }
-            if (largest == 0) { return base; }
-            return this.byte_align_up(base, 8) + largest;
+            visiting.pop();
+            if (cycled) { return byte_size_cycle_sentinel(); }
+            if (largest_bt.is_none()) { return 16; }
+            // The payload sits at align_up(12, payload_align), matching the
+            // emitted struct { ptr, i32|i64 tag, [N x i8] } (LLVMEmitter
+            // emit_type_definitions declares the tag i64 exactly for 8-aligned
+            // payloads so the alignment-1 byte array lands at 16; smaller
+            // payloads stay packed at 12). All three size computations
+            // (this, llvm_type_size, compute_enum_struct_size) must agree or
+            // List strides diverge from the emitted structs.
+            return this.byte_align_up(16 + largest, 8);
         }
         return 8;
     }

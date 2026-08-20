@@ -2,6 +2,13 @@
 ## Description
 R4 composite: `#derive_zero(#typeof(Vec3))` — iterates `t.fields()` (names via AST fallback), builds a function that creates a zeroed instance, `compiler().create_definition(computed)` injects it. Exercises reflection + computed string codegen + def-splice in combination. `zero_v()` creates Vec3(0,0,0). Requires native Pass2/Pass3.
 
+**RED SENTINEL (known regression on feature/value-enum-size, not on master)**:
+same derive-pipeline breakage as MetaDeriveClone (E_RESOLVE_TYPE on the
+injected definition's types). Green on master (verified 2026-08-19 via
+/tmp/wt-master bootstrap); broken by the branch's generic-meta-args /
+derive-pipeline changes (544e4bb..2c01777 era). Should turn green once that
+regression is fixed. No known-good compiler applies (meta-only syntax).
+
 ## Apply To
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

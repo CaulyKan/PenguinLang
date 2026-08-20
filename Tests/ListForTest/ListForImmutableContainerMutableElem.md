@@ -1,7 +1,8 @@
 # ListForImmutableContainerMutableElem
 ## Description
-Direct for-loop over an IMMUTABLE List<mut Foo> (aliased): container ops forbidden but element
-mutation allowed (mut in the type arg). Green on all compilers.
+Direct for-loop over an IMMUTABLE List<mut Foo> (aliased container): container ops forbidden but
+element mutation allowed (mut in the type arg). The loop variable is a COPY of the value-class
+element (value-copy semantics), so setVal mutates the copy — prints 12.
 
 ## Apply To
 * BabyPenguin
@@ -38,5 +39,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `1112`
+ExpectedStdout: EQUALS `12`
 ExpectedStderr: DISCARD

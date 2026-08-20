@@ -371,4 +371,56 @@ namespace BabyPenguin.VirtualMachine
             return result;
         }
     }
+
+    /// <summary>
+    /// Value-semantics copy matching EmperorPenguin's native inline layout:
+    /// value-class instances are copied memberwise (recursing into value-typed
+    /// fields), while reference-class instances are SHARED (a native struct copy
+    /// copies the pointer, not the pointee). Enum values copy their tag and copy
+    /// the payload only when it is value-typed. ReferenceRuntimeValue.Clone is
+    /// not usable here — it deep-copies reference fields too, which would break
+    /// identity where native code shares the pointer.
+    /// </summary>
+    public static class RuntimeValueCopier
+    {
+        public static IRuntimeValue CopyIfValueSemantic(IRuntimeValue val, RuntimeGlobal? global)
+        {
+            return Copy(val, [], global);
+        }
+
+        private static IRuntimeValue Copy(IRuntimeValue val, Dictionary<ulong, ReferenceRuntimeValue> visited, RuntimeGlobal? global)
+        {
+            switch (val)
+            {
+                case ReferenceRuntimeValue rv:
+                    if (rv.TypeInfo.TypeNode is null
+                        || !IRTypeClassifier.IsValueClassIncludingAuto(rv.TypeInfo.TypeNode))
+                        return rv; // reference class (or unknown) — share, like a copied pointer
+                    if (visited.TryGetValue(rv.RefId, out var existing))
+                        return existing;
+                    var copy = new ReferenceRuntimeValue(rv.TypeInfo, [], global);
+                    visited[rv.RefId] = copy;
+                    foreach (var kvp in rv.Fields)
+                    {
+                        // Methods (function values) and extern backings are shared;
+                        // data fields recurse so nested value classes copy inline.
+                        if (kvp.Value is FunctionRuntimeValue or ExternRuntimeValue)
+                            copy.Fields[kvp.Key] = kvp.Value;
+                        else
+                            copy.Fields[kvp.Key] = Copy(kvp.Value, visited, global);
+                    }
+                    return copy;
+
+                case EnumRuntimeValue ev:
+                    var fields = new ReferenceRuntimeValue(ev.FieldsValue.TypeInfo, [], global);
+                    foreach (var kvp in ev.FieldsValue.Fields)
+                        fields.Fields[kvp.Key] = kvp.Value.Clone();
+                    var containing = ev.ContainingValue != null ? Copy(ev.ContainingValue, visited, global) : null;
+                    return new EnumRuntimeValue(ev.TypeInfo, fields, containing);
+
+                default:
+                    return val.Clone(); // primitives (incl. string payloads: wrapper copies, .NET string shares)
+            }
+        }
+    }
 }

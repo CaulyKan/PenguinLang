@@ -1,6 +1,10 @@
 # EnumVariantAssignToMutableVariableTest
 ## Description
-Assign enum variant value to a mutable variable, modify it, then check the original.
+Assign enum variant payload to a mutable variable and modify it: the extraction
+COPIES the value-class payload (value-copy semantics — mut is a permission, not
+storage identity), so `foo.x = 99` writes foo's own copy and the enum's payload
+is unchanged — prints 0. Chain writes through the slot (`e.a.x = 99`) would
+still stick (lvalue addressing); only BINDING extraction copies.
 
 ## Apply To
 * BabyPenguin
@@ -42,5 +46,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `99`
+ExpectedStdout: EQUALS `0`
 ExpectedStderr: DISCARD

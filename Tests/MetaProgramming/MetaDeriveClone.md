@@ -2,6 +2,15 @@
 ## Description
 R3+R4: `#derive_clone(#typeof(Point))` at top-level — a `#fun` reads `t.fields()` (via the AST fallback, since def-splice runs before types are bound), iterates the field names, builds a clone function source string at compile time, and `compiler().create_definition(computed_string)` generates + injects `fun my_clone(p: mut Point) -> Point { ... }`. The generated function is callable from `initial`. Exercises: AST fallback reflection + computed `compiler().create_definition` + def-splice injection — the full derive- macro pipeline. Requires native Pass2/Pass3.
 
+**RED SENTINEL (known regression on feature/value-enum-size, not on master)**: the
+injected `my_clone` fails with E_RESOLVE_TYPE "Can't resolve type specifier
+'mut Point'" / E_RESOLVE_SYMBOL "Cannot resolve symbol 'my_clone'" on
+Pass2/Pass3 (at 544e4bb the compile succeeded but cloned zeros instead of
+3,4). Green on master (verified 2026-08-19 via /tmp/wt-master bootstrap);
+broken by the branch's generic-meta-args / derive-pipeline changes
+(544e4bb..2c01777 era). Should turn green once the derive pipeline
+regression is fixed. No known-good compiler applies (meta-only syntax).
+
 ## Apply To
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3

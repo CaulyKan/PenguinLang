@@ -2,6 +2,19 @@
 ## Description
 Req 7 + req 3: a class `Wrapped` implements `std.IJsonSerializable<Wrapped>` MANUALLY (no `#impl_json_serializable`), and `Holder` (via `#impl_json_serializable`) has a `w: Wrapped` field AND a `ns: NotSerializable` field whose class does NOT implement IJsonSerializable. The auto-impl reflects over Holder's fields, checks each class field type's implemented interfaces (`compiler().get_current_scope()` -> `t.fields()` -> `f.bound_type.class_def().has_interface("IJsonSerializable")` via the AST-fallback `implemented_interfaces`), serializes `w` via its impl (`value_raw(this.w.json_serialize())`) and SKIPS `ns` entirely (both directions). Requires native Pass2/Pass3.
 
+**RED SENTINEL (known regression on feature/value-enum-size, not on master)**:
+the generated `json_deserialize` assigns `Holder.w` a wrong object —
+`h2.w.n` prints a run-varying address (the `name` string's data read as
+i64) instead of 123; serialization itself is correct. At 544e4bb the first
+symptom was E_RESOLVE_TYPE 'std.IJsonSerializable<Wrapped>' from the
+generated impl (later branch commits fixed the resolve, leaving the
+field-assignment corruption). Green on master (verified 2026-08-19 via a
+master worktree bootstrap). NOTE when re-verifying manually: the std json/
+hashmap/vector Compile.Args must PRECEDE the source file, or the interface
+genuinely fails to resolve. Should turn green once the derive-pipeline
+regression (544e4bb..2c01777 era) is fixed. No known-good compiler applies
+(meta-only syntax).
+
 ## Apply To
 * EmperorPenguin Pass3
 

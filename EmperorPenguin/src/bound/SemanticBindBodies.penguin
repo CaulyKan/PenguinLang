@@ -317,7 +317,11 @@ class BindBodiesPass {
                                         if (am.class_field.initializer.is_some()) {
                                             // req5: substitute value-template params (N) -> their concrete
                                             // constants before binding the field default initializer.
-                                            ast_init = new Option<Expression>.some(this.model.some.resolve_types_pass.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>()));
+                                            // texts/kinds must be the def's parallel lists: passing
+                                            // empty ones makes the N lookup read out-of-range Options
+                                            // (.some of none), and make_value_literal then compares a
+                                            // void value against "bool"/"string" — E_RUNTIME_INVALID_OP.
+                                            ast_init = new Option<Expression>.some(this.model.some.resolve_types_pass.substitute_value_params(am.class_field.initializer.some, bound_cls.value_param_names, bound_cls.value_param_values, bound_cls.value_param_texts, bound_cls.value_param_kinds));
                                         }
                                     }
                                 }
@@ -678,6 +682,19 @@ class BindBodiesPass {
         result.location = while_stmt.location;
         return new Option<BoundStatement>.some(new BoundStatement.while_stmt(result));
     }
+    // Walk a member-access base chain to its innermost base expression
+    // (`a.b.c.x` -> `a`). Used by the non-lvalue chain-write check in
+    // bind_statement.
+    fun chain_root_base(this, base: Option<BoundExpression>) -> Option<BoundExpression> {
+        if (base.is_some() && base.some is BoundExpression.member_access) {
+            let inner: BoundMemberAccessExpression = base.some.member_access;
+            if (inner.base_expr.is_some()) {
+                return this.chain_root_base(inner.base_expr);
+            }
+        }
+        return base;
+    }
+
     fun bind_statement(mut this, stmt: Statement, scope: mut BoundScope) -> Option<BoundStatement> {
         _utils.trace_enter("Enter bind_statement");
         // mut-this core methods (bind_expression / bind_optional_expr /
@@ -758,6 +775,28 @@ class BindBodiesPass {
                     // effective mutability. Skip for `this` (constructor/method init).
                     if (target.some is BoundExpression.member_access) {
                         let ma: BoundMemberAccessExpression = target.some.member_access;
+                        // Non-lvalue chain write: the innermost BASE of a member
+                        // write chain must be addressable storage. Writing
+                        // through a call / cast / new / enum-variant result
+                        // (`l.at(0).x = 9`, `f().p.x = 9`, `cast<IFoo>(x).v = 9`,
+                        // `new C().x = 9`) would silently mutate a discarded
+                        // copy under value-copy semantics — reject at compile
+                        // time (mirrors the BabyPenguin ICodeContainer check).
+                        if (ma.base_expr.is_some()) {
+                            let chain_base: Option<BoundExpression> = this.chain_root_base(ma.base_expr);
+                            if (chain_base.is_some()) {
+                                let cb: BoundExpression = chain_base.some;
+                                let non_lvalue: bool = cb is BoundExpression.function_call
+                                    || cb is BoundExpression.cast_expr
+                                    || cb is BoundExpression.new_expr
+                                    || cb is BoundExpression.enum_variant;
+                                if (non_lvalue) {
+                                    this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                        "Cannot assign to member of non-lvalue expression (base of the member chain is a temporary)",
+                                        stmt.assignment.location);
+                                }
+                            }
+                        }
                         if (ma.base_expr.is_some() && ma.member_symbol.is_some()) {
                             let ms: BoundSymbol = ma.member_symbol.some;
                             if (ms is BoundSymbol.variable && ms.variable.variable_kind is VariableSymbolKind.Field) {
@@ -812,8 +851,8 @@ class BindBodiesPass {
                                 }
                                 if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
                                     this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
-                                        "Cannot assign immutable value to mutable variable",
-                                        new SourceLocation("", 0, 0));
+                                        "Cannot assign immutable value to mutable variable (assignment to " + value_type.display_name() + ")",
+                                        stmt.assignment.location);
                                 }
                             }
                             let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, effective_op, value, value_type);
@@ -949,6 +988,17 @@ class BindBodiesPass {
                     if (stmt.let_decl.type_spec.is_some()) {
                         let resolved: mut BoundType = this.model.some.resolve_type_specifier(stmt.let_decl.type_spec.some, scope);
                         decl_type = resolved;
+                        // Implicit value-type -> interface conversion on binding
+                        // BOXES (copies): the interface value is an independent
+                        // box, so later mutation of either side is not visible
+                        // to the other (mirrors explicit cast<> and the
+                        // reference VM; without this the interface binding
+                        // would alias the value's storage and mut-this
+                        // interface calls would write through).
+                        if (decl_type.kind is TypeKind.InterfaceKind && init_type.is_value_type()) {
+                            let box_cast: BoundCastExpression = m.bind_expressions_pass.build_cast_bound(initializer.some, decl_type);
+                            initializer = new Option<BoundExpression>.some(new BoundExpression.cast_expr(box_cast));
+                        }
                     }
                     // Reference type mutability compatibility: `let b: mut Ref = a`
                     // where `a` is an immutable binding must fail E_MUTABILITY (an
@@ -976,8 +1026,8 @@ class BindBodiesPass {
                         }
                         if (target_mut is Mutability.Mutable && val_mut is Mutability.Immutable) {
                             this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
-                                "Cannot assign immutable value to mutable variable",
-                                new SourceLocation("", 0, 0));
+                                "Cannot assign immutable value to mutable variable (let-decl of " + decl_type.display_name() + ")",
+                                stmt.let_decl.location);
                         }
                     }
                     // Numeric coercion for non-literal initializers: literals

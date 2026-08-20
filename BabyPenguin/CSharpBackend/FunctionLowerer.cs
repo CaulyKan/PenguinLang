@@ -53,7 +53,15 @@ namespace BabyPenguin.CSharpBackend
             }
 
             foreach (var kv in paramByIndex)
-                _sb.AppendLine($"    r_{kv.Value.RegIndex} = p_{kv.Key};");
+            {
+                // Value-copy semantics: plain parameters copy value types on
+                // entry; the receiver (`this`) is by-ref (mutating methods
+                // write the caller's object; constructors get the fresh one).
+                var init = kv.Value.Name == "this" || !kv.Value.IrType.StartsWith("struct<")
+                    ? $"p_{kv.Key}"
+                    : $"({_emitter.CsType(kv.Value.IrType)})(object)BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics(p_{kv.Key})";
+                _sb.AppendLine($"    r_{kv.Value.RegIndex} = {init};");
+            }
 
             foreach (var inst in f.Instructions)
                 LowerInstruction(inst);
@@ -140,9 +148,21 @@ namespace BabyPenguin.CSharpBackend
                         _funptr[Reg(a.Dest)] = new FuncRef(kc.Value);
                         break;
                     }
-                    Line($"r_{Reg(a.Dest)} = {_emitter.Operand(a.Src)};");
+                    var assignSrc = _emitter.Operand(a.Src);
+                    if (!a.IsAliasChain)
+                        assignSrc = CopyVal(a.Src, assignSrc);
+                    Line($"r_{Reg(a.Dest)} = {assignSrc};");
                     break;
-                case IRCastInst c: Line($"r_{Reg(c.Result)} = {CastExpr(c.Operand, c.FromType, c.ToType)};"); break;
+                case IRCastInst c:
+                    {
+                        var castExpr = CastExpr(c.Operand, c.FromType, c.ToType);
+                        // Value-class -> interface boxing copies (native emit_box
+                        // heap-copies); unbox keeps the view aliased.
+                        if (c.FromType.StartsWith("struct<") && c.ToType.StartsWith("ref<"))
+                            castExpr = $"BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics({castExpr})";
+                        Line($"r_{Reg(c.Result)} = {castExpr};");
+                    }
+                    break;
                 case IRBinOpInst b: Line($"r_{Reg(b.Result)} = ({_emitter.CsType(b.IrType)})({_emitter.Operand(b.Left)} {CSharpEmitter.BinOp(b.Op)} {_emitter.Operand(b.Right)});"); break;
                 case IRUnaryOpInst u: Line($"r_{Reg(u.Result)} = ({_emitter.CsType(u.IrType)})({CSharpEmitter.UnaryOp(u.Op)}{_emitter.Operand(u.Operand)});"); break;
                 case IRRdmbrInst r:
@@ -160,9 +180,22 @@ namespace BabyPenguin.CSharpBackend
                         }
                         break;
                     }
-                    Line($"r_{Reg(r.Result)} = {_emitter.Operand(r.Obj)}.{_emitter.Mangler.Mangle(r.FieldName)};");
+                    var fieldRead = $"{_emitter.Operand(r.Obj)}.{_emitter.Mangler.Mangle(r.FieldName)}";
+                    if (!r.IsWriteChain)
+                        fieldRead = CopyVal(r.Result, fieldRead);
+                    Line($"r_{Reg(r.Result)} = {fieldRead};");
                     break;
-                case IRWrmbrInst w: Line($"{_emitter.Operand(w.Obj)}.{_emitter.Mangler.Mangle(w.FieldName)} = {_emitter.Operand(w.Value)};"); break;
+                case IRWrmbrInst w:
+                    {
+                        // Enum payload stores (WriteEnumInstruction lowers to WRMBR
+                        // "_containing_value") copy value-class payloads — native inlines
+                        // the struct into the enum, so later mutations of the source
+                        // must not alias the stored payload.
+                        var valueText = _emitter.Operand(w.Value);
+                        valueText = CopyVal(w.Value, valueText);
+                        Line($"{_emitter.Operand(w.Obj)}.{_emitter.Mangler.Mangle(w.FieldName)} = {valueText};");
+                    }
+                    break;
                 case IRBrInst b: Line($"goto L_{_emitter.Mangler.Mangle(b.Target.Name)};"); break;
                 case IRBrCondInst b: Line($"if ({_emitter.Operand(b.Cond)}) goto L_{_emitter.Mangler.Mangle(b.TrueLabel.Name)}; else goto L_{_emitter.Mangler.Mangle(b.FalseLabel.Name)};"); break;
                 case IRRetInst r:
@@ -181,7 +214,17 @@ namespace BabyPenguin.CSharpBackend
                     break;
                 case IRNewEnumInst n:
                     Line($"r_{Reg(n.Result)}._value = {n.VariantIdx};");
-                    if (n.Payload != null) Line($"r_{Reg(n.Result)}._containing_value = (object){_emitter.Operand(n.Payload)};");
+                    if (n.Payload != null)
+                    {
+                        // Value-class payloads are stored INLINE in EmperorPenguin (struct
+                        // copy at construction), so mutating the source after `new E.v(p)`
+                        // must not alias the stored payload. Copy value-semantic payloads;
+                        // reference payloads stay shared (native copies the pointer).
+                        var payloadText = _emitter.Operand(n.Payload);
+                        if (n.Payload.GetIrType().StartsWith("struct<"))
+                            payloadText = $"BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics({payloadText})";
+                        Line($"r_{Reg(n.Result)}._containing_value = (object){payloadText};");
+                    }
                     break;
                 case IRIsEnumInst i: Line($"r_{Reg(i.Result)} = ({_emitter.Operand(i.EnumValue)}._value == {_emitter.Operand(i.VariantIdx)});"); break;
                 case IRRdenumInst r:
@@ -190,7 +233,12 @@ namespace BabyPenguin.CSharpBackend
                     if (__rdt == "void")
                         Line("// RDENUM void payload (skip)");
                     else
-                        Line($"r_{Reg(r.Result)} = ({__rdt})(object){_emitter.Operand(r.EnumValue)}._containing_value;");
+                    {
+                        var payloadRead = $"({__rdt})(object){_emitter.Operand(r.EnumValue)}._containing_value";
+                        if (!r.IsWriteChain)
+                            payloadRead = CopyVal(r.Result, payloadRead);
+                        Line($"r_{Reg(r.Result)} = {payloadRead};");
+                    }
                 }
                 break;
                 case IRGlobalLoadInst g: Line($"r_{Reg(g.Result)} = G.{_emitter.Mangler.Mangle(g.GlobalName)};"); break;
@@ -322,6 +370,15 @@ namespace BabyPenguin.CSharpBackend
                 (toType.StartsWith("ref<") || toType.StartsWith("struct<") || toType.StartsWith("enum<")))
                 return op;
             return $"({toCs}){op}";
+        }
+
+        /// <summary>Wrap in CopyValueSemantics when the IR type is a value class/enum.</summary>
+        private string CopyVal(IRValue v, string operandText)
+        {
+            var t = v.GetIrType();
+            if (t.StartsWith("struct<") || t.StartsWith("enum<"))
+                return $"({_emitter.CsType(t)})(object)BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics({operandText})";
+            return operandText;
         }
 
         private static int Reg(IRValue v) => v switch

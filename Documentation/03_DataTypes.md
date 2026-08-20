@@ -91,6 +91,54 @@ For **reference types**, `ICopy<T>` is not auto-generated. A reference type that
 | `IValueType` + manual `ICopy<Self>` | — | (nothing) |
 | `IReferenceType` | — | (nothing) |
 
+### Value-Copy Semantics in Practice
+
+Value types (primitives, enums, `IValueType` classes) **copy at every value-model
+boundary**; `mut` is a **compile-time permission only** and never changes how a
+value is stored, laid out, or shared:
+
+*   **Binding & assignment copy**: `let b = a;` (or `let mut b = a;`) gives `b`
+    its own independent copy of the value. Mutating `b` is never visible
+    through `a` — regardless of any `mut` on either side.
+    ```penguin
+    let mut a = new Point(1, 2);
+    let mut b = a;   // b is a COPY of a
+    b.x = 9;         // writes b's own storage
+    print(cast<string>(a.x)); // 1 — a is unchanged
+    ```
+*   **Parameters copy, receivers alias**: a plain `mut` parameter
+    (`fun f(p : mut Point)`) receives a **copy** — `mut` there only permits
+    mutating the local copy. The exception is the method receiver: `mut this`
+    methods (`fun set(mut this, ...)`) are called on the caller's actual slot,
+    so their writes go through (`e.a.increment()` mutates `e`'s payload).
+*   **Extraction copies, chain writes address the slot**: extracting an inline
+    member (`let q = w.p;`, `let q = o.some;`) produces a copy. Writing through
+    the chain (`w.p.x = 42;`, `o.some.x = 9;`, `o.some.increment();`) is
+    *lvalue addressing* — it writes directly into the slot inside `w`/`o`
+    without an intermediate copy, so the write sticks.
+*   **Non-lvalue chain writes are rejected**: if the base of a write chain is a
+    temporary (`makeWrap().p.x = 9;`, `list.at(0).x = 9;`,
+    `cast<IFoo>(x).v = 9;`), the compiler reports `error[E_MUTABILITY]` — the
+    write would land in a discarded copy.
+*   **Container elements copy**: `List<T>` element access (`at()`, for-loop
+    variables) copies value-type elements (`List<mut T>` and `List<T>` share
+    the same element layout for value types). To make a mutation stick, write
+    it back explicitly with `set()`.
+    ```penguin
+    let x : mut Foo = a.at(i).some;
+    x.setVal(x.getVal() + 10);
+    a.set(i, x);     // without this, the mutation stays in the copy
+    ```
+*   **Casting a value type to an interface boxes (copies)**:
+    `let i : IMyInterface = cast<IMyInterface>(p);` copies `p` into a fresh
+    box; later changes to `p` are not visible through `i`. The same applies to
+    implicit value-type-to-interface conversions at bindings and call
+    arguments.
+*   **Recursive value layouts are an error**: a value class/enum whose inline
+    field graph contains itself has no finite layout; the compiler reports
+    `error[E_SIZE_CYCLE]`. Use a reference type or `Box<T>` for deliberate
+    indirection.
+
 ## Mutability
 Penguin-lang features a strong, explicit, and fine-grained mutability system enforced at compile time. This design aims to prevent accidental mutations and promote safer, more predictable code.
 
@@ -212,6 +260,10 @@ Function parameters can specify their expected mutability.
 *   **`this` Mutability in Methods**: Methods can specify mutability of instance (`this`) they are called on.
     *   `fun myMethod(this)`: This method can only be called on immutable or mutable instance. It cannot modify instance.
     *   `fun myMutableMethod(mut this)`: This method can only be called on a mutable instance. It is allowed to modify instance.
+    Note the asymmetry with plain parameters: a `mut` **parameter** receives a
+    copy of the caller's value (mutating it never escapes the callee), while a
+    `mut this` **receiver** is called on the caller's actual object — its
+    writes are visible to the caller.
     ```penguin
     class Example {
         value : i32 = 0;
@@ -246,7 +298,9 @@ Penguin-lang provides several built-in data structures.
     }
     ```
 *   **`Result<T, E>`**: Used for returning and propagating errors. It can be either `Ok(T)` or `Error(E)`.
-*   **`List<T>`**: A growable, heap-allocated list.
+*   **`List<T>`**: A growable, heap-allocated list. Element access (`at()`,
+    for-loop variables) **copies** value-type elements — write mutations back
+    with `set()` (see *Value-Copy Semantics in Practice*).
 *   **`Queue<T>`**: A queue.
 
 ## `Self` Type

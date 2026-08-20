@@ -35,7 +35,7 @@ namespace BabyPenguin.VirtualMachine
 
             if (typeNode.IsClassType)
             {
-                if (IsValueClass(typeNode))
+                if (IsValueClassIncludingAuto(typeNode))
                     return $"struct<{typeNode.FullName()}>";
                 return $"ref<{typeNode.FullName()}>";
             }
@@ -134,6 +134,32 @@ namespace BabyPenguin.VirtualMachine
             foreach (var intf in classNode.ImplementedInterfaces)
             {
                 if (intf.FullName() == "__builtin.IValueType")
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Value-class check INCLUDING auto-classification: pass 05 adds an
+        /// IValueType VTable to classes whose fields are all value-like without
+        /// touching ImplementedInterfaces, so IsValueClass alone misses them.
+        /// Used where runtime value semantics (copy on store into enums /
+        /// containers) must match EmperorPenguin's inline value layout.
+        /// </summary>
+        public static bool IsValueClassIncludingAuto(ITypeNode typeNode)
+        {
+            if (typeNode is not IClassNode classNode) return false;
+
+            foreach (var intf in classNode.ImplementedInterfaces)
+            {
+                if (intf.FullName() == "__builtin.IValueType")
+                    return true;
+            }
+
+            foreach (var vt in classNode.VTables)
+            {
+                if (vt.Interface.FullName() == "__builtin.IValueType")
                     return true;
             }
 

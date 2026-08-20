@@ -189,7 +189,11 @@ namespace __builtin {
         return cast<mut IIterator<i64>>(new RangeIterator(start, end));
     }
 
+    // An atomic cell is a SHARED mutable cell by design (scheduler state,
+    // object ids): it must stay reference-typed so that value-copy semantics
+    // (copying a field read / parameter) shares the cell instead of forking it.
     class AtomicI64 {
+        impl IReferenceType;
         value: mut i64;
         fun new(mut this, value: i64) {
             this.value = value;

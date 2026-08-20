@@ -29,6 +29,30 @@ namespace BabyPenguin.CSharpBackend.Runtime
             return clone;
         }
 
+        /// <summary>
+        /// Value-semantics copy for enum payloads / container slots (mirrors the VM's
+        /// RuntimeValueCopier and EmperorPenguin's inline struct layout): instances of
+        /// value classes (marked IValueSemantics at lowering time) are copied memberwise,
+        /// recursing into value-class fields; everything else — reference-class instances,
+        /// strings, boxed primitives — is shared, like a copied pointer.
+        /// </summary>
+        public static object? CopyValueSemantics(object? o)
+            => CopyValueSemantics(o, new System.Collections.Generic.Dictionary<object, object>());
+
+        private static object? CopyValueSemantics(object? o, System.Collections.Generic.Dictionary<object, object> visited)
+        {
+            if (o == null) return null;
+            if (o is not IValueSemantics) return o;
+            if (visited.TryGetValue(o, out var existing)) return existing;
+            var t = o.GetType();
+            var clone = System.Activator.CreateInstance(t);
+            visited[o] = clone!;
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            foreach (var f in t.GetFields(flags))
+                f.SetValue(clone, CopyValueSemantics(f.GetValue(o), visited));
+            return clone;
+        }
+
         // Interface virtual dispatch: (concrete runtime type, interface-method mangled name) -> impl MethodInfo.
         // Populated by the generated __InitVtables() from each class's VTables.
         private static System.Collections.Generic.Dictionary<(System.Type, string), System.Reflection.MethodInfo>? _vtable;
@@ -75,6 +99,16 @@ namespace BabyPenguin.CSharpBackend.Runtime
     public interface IHasMeta
     {
         Meta __meta { get; }
+    }
+
+    /// <summary>
+    /// Marker implemented by lowered VALUE classes (explicit or auto IValueType). The runtime
+    /// value-semantics copier (GlobalState.CopyValueSemantics) clones these memberwise (recursing
+    /// into value-class fields) while sharing everything else, matching EmperorPenguin's inline
+    /// struct layout and the VM's RuntimeValueCopier.
+    /// </summary>
+    public interface IValueSemantics
+    {
     }
 
     /// <summary>

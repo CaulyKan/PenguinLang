@@ -1002,6 +1002,15 @@ class BindExpressionsPass {
                     arg_i = arg_i + 1;
                     continue;
                 }
+                // Implicit value-type -> interface argument conversion BOXES
+                // (copies) — the callee's mut-this writes must not reach the
+                // caller's storage (mirrors explicit cast<> and the VM).
+                if (param_type.kind is TypeKind.InterfaceKind && arg_type.is_value_type()) {
+                    let box_cast: BoundCastExpression = this.build_cast_bound(arg_expr, param_type);
+                    args.set(cast<u64>(arg_i), new BoundExpression.cast_expr(box_cast));
+                    arg_i = arg_i + 1;
+                    continue;
+                }
                 let is_int_lit: bool = if (arg_expr is BoundExpression.literal) {
                     arg_expr.literal.literal_kind is LiteralKind.IntegerLiteral
                 } else if (arg_expr is BoundExpression.unary) {

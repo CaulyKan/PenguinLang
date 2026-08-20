@@ -455,6 +455,7 @@ class IRGenerator {
         let is_ptr: mut bool = false;
         if (ir_type == "ptr") { is_ptr = true; }
         if (string_length(ir_type) >= 4 && string_substring(ir_type, 0, 4) == "ref<") { is_ptr = true; }
+        if (string_length(ir_type) >= 8 && string_substring(ir_type, 0, 8) == "mut ref<") { is_ptr = true; }
         if (is_ptr) { zero_val = "null"; }
         this.builder.emit_const_direct(a_reg, zero_val, loc);
         this.builder.emit_assign(a_reg, this.lower_expression(expr.extract.some), loc);
@@ -705,6 +706,35 @@ class IRGenerator {
         while (ai < cast<i64>(expr.arguments.size())) {
             args.push(this.lower_expression(expr.arguments.at(cast<u64>(ai)).some));
             ai = ai + 1;
+        }
+        // The print family is declared `print(text: string)` but the reference
+        // compiler (BabyPenguin VM + C# backend) accepts ANY basic value and
+        // stringifies it at runtime. Match that here: wrap a primitive
+        // non-string argument in an int/bool/float→string CAST so the emitted
+        // call passes a real string instead of a mistyped scalar operand
+        // (`call void @_emperor_print(i32 %t)` is invalid IR).
+        if (expr.callee_symbol.is_some() && expr.callee_symbol.some is BoundSymbol.function_sym) {
+            let csym: BoundFunctionSymbol = expr.callee_symbol.some.function_sym;
+            let cname: string = csym.name;
+            if (csym.is_extern
+                && (cname == "print" || cname == "println" || cname == "eprint" || cname == "eprintln")
+                && cast<i64>(args.size()) == 1) {
+                let arg: IRValue = args.at(cast<u64>(0)).some;
+                let arg_ir: string = arg.get_ir_type();
+                let is_string: bool = arg_ir == "ref<string>";
+                let is_aggregate: mut bool = false;
+                if (string_length(arg_ir) >= 4 && string_substring(arg_ir, 0, 4) == "ref<") { is_aggregate = true; }
+                if (string_length(arg_ir) >= 5 && string_substring(arg_ir, 0, 5) == "enum<") { is_aggregate = true; }
+                if (string_length(arg_ir) >= 7 && string_substring(arg_ir, 0, 7) == "struct<") { is_aggregate = true; }
+                if (arg_ir == "funptr" || arg_ir == "void" || arg_ir == "unknown") { is_aggregate = true; }
+                if (!is_string && !is_aggregate) {
+                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                    let casted: IRValue = this.builder.emit_cast(arg, arg_ir, "ref<string>", loc);
+                    let replaced: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                    replaced.push(casted);
+                    args = replaced;
+                }
+            }
         }
         // Track if this is a method call on a generic type for name mangling
         let has_generic_receiver: mut bool = false;
@@ -1668,6 +1698,13 @@ class IRGenerator {
 
                 // Regular member access (class fields)
                 if (member_expr.base_expr.is_some()) {
+                    // Chain writes through an enum payload extraction
+                    // (`e.a.x = 10`, payload declared immutable) lower as a
+                    // plain RDENUM + WRMBR pair: the LLVM emitter's
+                    // write-chain pre-scan (scan_write_chains) recognizes the
+                    // WRMBR owner and addresses the payload SLOT directly
+                    // (lvalue addressing, no copy), so no forced-mut payload
+                    // spelling is needed here.
                     let obj: IRValue = this.lower_expression(member_expr.base_expr.some);
                     this.builder.emit_wrmbr(obj, member_expr.member_name, val, loc);
                     return;
@@ -1794,12 +1831,18 @@ class IRGenerator {
                 // NON-GENERIC: the SHORT name — `ref<X>` is resolved against the
                 // layout table whose keys are global-prefix-stripped full names,
                 // so a qualified spelling here would never match.
+                // MUTABLE class bindings carry a "mut ref<X>" spelling: their
+                // storage is a POINTER (reference semantics — aliased writes),
+                // while immutable value-class bindings are inline struct copies.
+                // Every string consumer normalizes via extract_type_name /
+                // ir_type_to_llvm, which both accept the "mut " prefix.
                 let base_name: string = td.get_name();
+                let prefix: string = (if (bt.mutability is Mutability.Mutable) { "mut ref<" } else { "ref<" });
                 if (cast<i64>(bt.generic_args.size()) > 0) {
                     let base_full: string = (if (td is BoundDefinition.class_def) { td.class_def.full_name } else { base_name });
-                    return "ref<" + this.mangle_generic_name(base_full, bt.generic_args) + ">";
+                    return prefix + this.mangle_generic_name(base_full, bt.generic_args) + ">";
                 }
-                return "ref<" + base_name + ">";
+                return prefix + base_name + ">";
             }
             return "ref<unknown>";
         }

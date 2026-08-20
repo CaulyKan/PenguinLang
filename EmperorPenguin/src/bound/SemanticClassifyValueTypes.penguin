@@ -363,6 +363,46 @@ class ClassifyValueTypesPass {
                     }
                 }
             }
+            // Same containment question for VARIANT payloads: a specialized enum
+            // bound type carries no generic_args (R2), so the arg loop above is
+            // vacuous for e.g. Option<Node>. An enum whose variant payload is a
+            // class that (transitively) inline-contains the enum itself is an
+            // infinite value layout — the payload class must be reference-like.
+            // This is also what keeps AST-shaped graphs finite:
+            //   enum Expression { binary: BinaryExpression; ... }
+            //   class BinaryExpression { left: Option<Expression>; ... }
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = bt.type_definition.some.enum_def;
+                if (cast<i64>(e.generic_params.size()) == 0) {
+                    // Mutual enum recursion (enum A { b: B; } enum B { a: A; })
+                    // would loop forever here; assume value-like and let the
+                    // emitter's layout cycle check report the genuine E_SIZE_CYCLE.
+                    if (!this.is_in_visiting(e.full_name, visiting)) {
+                        visiting.push(e.full_name);
+                        let all_value: mut bool = true;
+                        for (let member in e.members) {
+                            let mt: BoundType = member.member_type;
+                            let is_void: bool = mt.kind is TypeKind.PrimitiveKind && mt.primitive is PrimitiveType.VoidType;
+                            // Tag-only sentinel (member_type == the enum's own
+                            // type): compared by def full_name because
+                            // display_name() is mutability-prefixed.
+                            let is_self: mut bool = false;
+                            if (mt.kind is TypeKind.EnumKind && mt.type_definition.is_some()
+                                && mt.type_definition.some is BoundDefinition.enum_def) {
+                                is_self = e.full_name == mt.type_definition.some.enum_def.full_name;
+                            }
+                            if (!is_void && !is_self) {
+                                if (!this.is_type_value_like(mt, visiting)) {
+                                    all_value = false;
+                                    break;
+                                }
+                            }
+                        }
+                        visiting.pop();
+                        if (!all_value) { return false; }
+                    }
+                }
+            }
             return true;
         }
         if (bt.kind is TypeKind.ClassKind) {

@@ -93,6 +93,12 @@ class BoundClassDefinition {
     // and method bodies of the specialized class.
     value_param_names: mut _utils.List<string> = new _utils.List<string>();
     value_param_values: mut _utils.List<i64> = new _utils.List<i64>();
+    // D6 parallel lists (see BoundFunctionDefinition.value_param_texts):
+    // source text + static kind of each value param, consumed by
+    // substitute_value_params when binding specialized field initializers.
+    // Class value params are i64-only today, so kinds default to "i64".
+    value_param_texts: mut _utils.List<string> = new _utils.List<string>();
+    value_param_kinds: mut _utils.List<string> = new _utils.List<string>();
     is_value_class: mut Option<bool> = new Option<bool>.none();
     constructor: Option<BoundFunctionDefinition> = new Option<BoundFunctionDefinition>.none();
     ast_source: Option<Definition> = new Option<Definition>.none();

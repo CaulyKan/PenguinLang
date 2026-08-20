@@ -314,6 +314,113 @@ class BindMetaCallsPass {
     // Resolve a type name (primitive via registry, or user type via scope) to its
     // BoundType, for use by the #sizeof / #__load / #__store intrinsics.
     fun resolve_intrinsic_boundtype(mut this, name: string, scope: BoundScope) -> Option<BoundType> {
+        return this.resolve_intrinsic_boundtype_ge(name, new _utils.List<TypeSpecifier>(), scope);
+    }
+
+    // Same, but honoring generic type arguments written at the intrinsic's type
+    // operand (e.g. #sizeof(Option<T>) / #__load(Option<T>, addr)). The bare name
+    // resolves to the GENERIC DEFINITION's BoundType; with generic_specs present
+    // the definition is specialized by resolving each argument in `scope` and
+    // looking up the specialization's type symbol via the same
+    // mangle_generic_name + global-scope lookup path used for generic function
+    // calls (see bind_function_call's is_generic_call) and umangleable checks
+    // (MonomorphizePass). If the specialization symbol is not registered yet but
+    // every argument is CONCRETE (not a template placeholder), the
+    // specialization is created on demand (ensure_specialized_def +
+    // catch_up_def) — otherwise #sizeof(Option<i32>) in a program that never
+    // instantiates Option<i32> would silently fall back to the unspecialized
+    // template's placeholder layout (payload sized as a pointer). Placeholder
+    // args (template bodies pre-specialization) keep the template fallback;
+    // those bodies are re-bound with concrete args during specialization
+    // catch-up.
+    fun resolve_intrinsic_boundtype_ge(mut this, name: string, generic_specs: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        let base: Option<BoundType> = this.resolve_intrinsic_boundtype_base(name, scope);
+        if (base.is_none()) { return base; }
+        if (cast<i64>(generic_specs.size()) == 0) { return base; }
+        if (base.some.type_definition.is_none()) { return base; }
+        let td: BoundDefinition = base.some.type_definition.some;
+        let def_full: mut string = "";
+        if (td is BoundDefinition.class_def) { def_full = td.class_def.full_name; }
+        if (td is BoundDefinition.enum_def) { def_full = td.enum_def.full_name; }
+        if (td is BoundDefinition.interface_def) { def_full = td.interface_def.full_name; }
+        if (def_full == "") { return base; }
+        let type_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let all_concrete: mut bool = true;
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(generic_specs.size())) {
+            let arg_bt: mut BoundType = this.model.some.resolve_type_specifier(generic_specs.at(cast<u64>(gi)).some, scope);
+            if (this.is_placeholder_type_arg(arg_bt)) { all_concrete = false; }
+            type_args.push(make_type_arg(arg_bt));
+            gi = gi + 1;
+        }
+        let mangled: string = MonomorphizePass.mangle_generic_name(def_full, type_args);
+        let spec_sym: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled);
+        if (spec_sym.is_none() && all_concrete) {
+            // On-demand specialization: create it (idempotent) and append it to
+            // the unit so the running pass loop binds its method bodies in due
+            // order — NO reentrant catch_up_def here (replaying body binding in
+            // the middle of an expression bind corrupts the binding state).
+            // The member/field types are resolved at creation, which is all the
+            // size/layout queries below need.
+            let m: mut SemanticModel = this.model.some;
+            let inst: BoundType = base.some.with_generic_args(type_args);
+            let spec: Option<BoundDefinition> = m.monomorphize_pass.ensure_specialized_def(inst, m.global_scope);
+            if (spec.is_some() && m.current_unit.is_some()) {
+                m.current_unit.some.definitions.push(spec.some);
+            }
+            let now: Option<BoundSymbol> = m.global_scope.lookup_type_in_scope(mangled);
+            if (now.is_some() && now.some is BoundSymbol.type_sym) {
+                let spec_bt: BoundType = now.some.type_sym.bound_type;
+                if (spec_bt.type_definition.is_some()) {
+                    return new Option<BoundType>.some(spec_bt);
+                }
+            }
+            return base;
+        }
+        if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+            let spec_bt: BoundType = spec_sym.some.type_sym.bound_type;
+            if (spec_bt.type_definition.is_some()) {
+                return new Option<BoundType>.some(spec_bt);
+            }
+        }
+        return base;
+    }
+
+    // A template placeholder type argument: build_scopes binds each template
+    // type param in the template's own scope to a DUMMY BoundClassDefinition
+    // (no scope, no fields). Such args appear when a template body referencing
+    // e.g. #sizeof(Option<T>) is bound pre-specialization; they must not trigger
+    // on-demand specialization (the specialized re-binding resolves T for real).
+    fun is_placeholder_type_arg(this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.ClassKind) {
+            if (bt.type_definition.is_some()) {
+                let td: BoundDefinition = bt.type_definition.some;
+                if (td is BoundDefinition.class_def) {
+                    return td.class_def.scope.is_none();
+                }
+            }
+        }
+        return false;
+    }
+
+    // Extract the generic type arguments of a meta type operand (the `<...>`
+    // part of e.g. Option<T>), parsed by the expression parser into
+    // IdentifierExpression.generic_args. Empty for bare type names.
+    fun meta_type_arg_generic_specs(this, arg: Expression) -> _utils.List<TypeSpecifier> {
+        let result: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+        if (arg is Expression.identifier) {
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(arg.identifier.generic_args.size())) {
+                result.push(arg.identifier.generic_args.at(cast<u64>(gi)).some);
+                gi = gi + 1;
+            }
+        }
+        return result;
+    }
+
+    // Bare-name resolution (no generic arguments): primitive via registry,
+    // otherwise the scope-visible type symbol's BoundType.
+    fun resolve_intrinsic_boundtype_base(mut this, name: string, scope: BoundScope) -> Option<BoundType> {
         let prim: Option<BoundType> = this.model.some.type_registry.resolve_type(name);
         if (prim.is_some()) { return prim; }
         let sym_opt: Option<BoundSymbol> = this.model.some.bind_expressions_pass.resolve_type_by_name(name, scope);
@@ -342,12 +449,19 @@ class BindMetaCallsPass {
             this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof argument must be a type name", expr.location);
             return new Option<BoundExpression>.none();
         }
-        let bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        let type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
+        let bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, type_specs, scope);
         if (bt_opt.is_none()) {
             this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#sizeof: unknown type '" + type_name + "'", expr.location);
             return new Option<BoundExpression>.none();
         }
         let sz: i64 = bt_opt.some.byte_size();
+        if (sz == byte_size_cycle_sentinel()) {
+            this.model.some.report_error(new ErrorCode.E_SIZE_CYCLE(),
+                "Cannot compute size of '" + bt_opt.some.display_name() + "': the value-type layout recursively contains itself",
+                expr.location);
+            return new Option<BoundExpression>.none();
+        }
         let i64_bt: BoundType = this.model.some.type_registry.resolve_type("i64").some;
         let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(sz), i64_bt, new LiteralKind.IntegerLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
@@ -378,7 +492,8 @@ class BindMetaCallsPass {
             return new Option<BoundExpression>.none();
         }
         let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
-        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        let load_type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, load_type_specs, scope);
         if (elem_bt_opt.is_none()) {
             this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load: unknown type '" + type_name + "'", expr.location);
             return new Option<BoundExpression>.none();
@@ -400,7 +515,8 @@ class BindMetaCallsPass {
             return new Option<BoundExpression>.none();
         }
         let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
-        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype(type_name, scope);
+        let store_type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
+        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, store_type_specs, scope);
         if (elem_bt_opt.is_none()) {
             this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store: unknown type '" + type_name + "'", expr.location);
             return new Option<BoundExpression>.none();

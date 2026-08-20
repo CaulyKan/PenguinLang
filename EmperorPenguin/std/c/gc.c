@@ -6,6 +6,18 @@
 #include <stdio.h>
 #include <setjmp.h>
 
+/* Conservative stack/region scanning reads every word in range, including
+ * sanitizer stack redzones — exempt it from ASan so instrumented builds of
+ * the runtime don't abort on a benign read. */
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define EMPEROR_NO_ASAN __attribute__((no_sanitize("address")))
+#  endif
+#endif
+#ifndef EMPEROR_NO_ASAN
+#  define EMPEROR_NO_ASAN
+#endif
+
 /* ---- GC Header ---- */
 
 typedef struct GCHeader {
@@ -92,15 +104,67 @@ static void gc_ptr_set_insert(GCPtrSet* set, void* p) {
     set->count++;
 }
 
-static int gc_ptr_set_contains(GCPtrSet* set, void* p) {
-    if (set->capacity == 0) return 0;
-    size_t mask = set->capacity - 1;
-    size_t i = gc_ptr_set_index(p, mask);
-    while (set->slots[i]) {
-        if (set->slots[i] == p) return 1;
-        i = (i + 1) & mask;
+/* gc_ptr_set_contains was removed when marking switched to interior-aware
+ * block resolution (gc_resolve_block); the set itself is still rebuilt during
+ * sweep as the exact-match index for fast-path lookups. */
+
+/* ---- Interior-pointer resolution ----
+ * Inline value-type layouts (value-class fields nested inside heap objects,
+ * enum payloads, ref<ValueClass> bindings) produce pointers INTO the middle
+ * of a GC allocation, not to its base. Exact-pointer matching then misses the
+ * owner, the object is swept while still referenced through that interior
+ * pointer, and the program corrupts the heap (tcache reuse overwrites the
+ * still-used object). The sorted-starts index resolves any candidate address
+ * to its owning block (greatest start <= candidate, candidate < start+size)
+ * with one binary search, so marking treats interior pointers as roots of
+ * their owner — conservative (may retain a dead block a stray integer points
+ * into) but never frees a live one. Rebuilt once per collection; allocation
+ * between rebuilds is fine because a fresh block cannot be pointed to by a
+ * stale interior pointer (it did not exist when the pointer was created). */
+static void** _emperor_gc_sorted = NULL;
+static size_t _emperor_gc_sorted_count = 0;
+static size_t _emperor_gc_sorted_capacity = 0;
+
+static int gc_ptr_cmp(const void* a, const void* b) {
+    void* pa = *(void* const*)a;
+    void* pb = *(void* const*)b;
+    return pa < pb ? -1 : (pa > pb ? 1 : 0);
+}
+
+static int gc_rebuild_sorted(void) {
+    size_t n = 0;
+    for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) n++;
+    if (n > _emperor_gc_sorted_capacity) {
+        size_t new_capacity = n * 2;
+        void** grown = (void**)realloc(_emperor_gc_sorted, new_capacity * sizeof(void*));
+        if (!grown) { _emperor_gc_sorted_count = 0; return 0; }
+        _emperor_gc_sorted = grown;
+        _emperor_gc_sorted_capacity = new_capacity;
     }
-    return 0;
+    size_t i = 0;
+    for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next)
+        _emperor_gc_sorted[i++] = (char*)h + sizeof(GCHeader);
+    qsort(_emperor_gc_sorted, n, sizeof(void*), gc_ptr_cmp);
+    _emperor_gc_sorted_count = n;
+    return 1;
+}
+
+/* Resolve a candidate address to its owning block's user pointer, or NULL.
+ * Exact bases resolve too (candidate == start). */
+static void* gc_resolve_block(void* candidate) {
+    if (_emperor_gc_sorted_count == 0) return NULL;
+    char* c = (char*)candidate;
+    size_t lo = 0, hi = _emperor_gc_sorted_count;
+    /* find greatest index with sorted[idx] <= candidate */
+    while (lo + 1 < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((char*)_emperor_gc_sorted[mid] <= c) lo = mid;
+        else hi = mid;
+    }
+    if ((char*)_emperor_gc_sorted[lo] > c) return NULL;
+    GCHeader* h = (GCHeader*)((char*)_emperor_gc_sorted[lo] - sizeof(GCHeader));
+    if (c < (char*)_emperor_gc_sorted[lo] + h->size) return _emperor_gc_sorted[lo];
+    return NULL;
 }
 
 /* ---- Platform-specific stack pointer ---- */
@@ -221,7 +285,7 @@ static int gc_mark_stack_push(GCHeader* h) {
 }
 
 /* obj must be a validated tracked pointer (or NULL). */
-static void _emperor_gc_mark_object(void* obj) {
+static EMPEROR_NO_ASAN void _emperor_gc_mark_object(void* obj) {
     if (!obj || _emperor_gc_mark_failed) return;
     GCHeader* header = (GCHeader*)((char*)obj - sizeof(GCHeader));
     if (header->marked) return;
@@ -249,8 +313,9 @@ static void _emperor_gc_mark_object(void* obj) {
         size_t word_count = (size_t)cur->size / sizeof(void*);
         for (size_t i = 0; i < word_count; i++) {
             void* candidate = ptr[i];
-            if (gc_ptr_set_contains(&_emperor_gc_tracked, candidate)) {
-                GCHeader* child = (GCHeader*)((char*)candidate - sizeof(GCHeader));
+            void* owner = gc_resolve_block(candidate);
+            if (owner) {
+                GCHeader* child = (GCHeader*)((char*)owner - sizeof(GCHeader));
                 if (!child->marked) {
                     child->marked = 1;
                     if (!gc_mark_stack_push(child)) { _emperor_gc_mark_failed = 1; return; }
@@ -260,12 +325,13 @@ static void _emperor_gc_mark_object(void* obj) {
     }
 }
 
-static void _emperor_gc_mark_conservative(void* stack_bottom, void* stack_top) {
+static EMPEROR_NO_ASAN void _emperor_gc_mark_conservative(void* stack_bottom, void* stack_top) {
     void** ptr = (void**)stack_top;
     while (ptr < (void**)stack_bottom) {
         void* candidate = *ptr;
-        if (gc_ptr_set_contains(&_emperor_gc_tracked, candidate)) {
-            _emperor_gc_mark_object(candidate);
+        void* owner = gc_resolve_block(candidate);
+        if (owner) {
+            _emperor_gc_mark_object(owner);
         }
         ptr++;
     }
@@ -342,7 +408,7 @@ static size_t _emperor_gc_sweep(void) {
  * finalizer-triggered allocations defer the next automatic collection. */
 static int _emperor_gc_collecting = 0;
 
-void _emperor_gc_collect(void) {
+EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
     if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
     _emperor_gc_collecting = 1;
 
@@ -364,6 +430,15 @@ void _emperor_gc_collect(void) {
 
     void* stack_top = _emperor_gc_get_stack_pointer();
 
+    /* Resolve interior pointers to their owning block during marking (see
+     * gc_resolve_block). If the sorted index cannot be rebuilt (allocation
+     * failure), retain everything this cycle instead of risking a partial
+     * marking that the exact-match fallback would silently miss. */
+    if (!gc_rebuild_sorted()) {
+        _emperor_gc_collecting = 0;
+        return;
+    }
+
     for (int i = 0; i < _emperor_gc_global_root_count; i++) {
         void* obj = *(void**)_emperor_gc_global_roots[i];
         _emperor_gc_mark_object(obj);
@@ -376,8 +451,9 @@ void _emperor_gc_collect(void) {
         char** end = (char**)(_emperor_gc_scan_regions[r].base + _emperor_gc_scan_regions[r].bytes);
         for (; p < end; p++) {
             void* candidate = *p;
-            if (gc_ptr_set_contains(&_emperor_gc_tracked, candidate)) {
-                _emperor_gc_mark_object(candidate);
+            void* owner = gc_resolve_block(candidate);
+            if (owner) {
+                _emperor_gc_mark_object(owner);
             }
         }
     }

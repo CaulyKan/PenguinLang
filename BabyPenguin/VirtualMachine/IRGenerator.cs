@@ -360,6 +360,139 @@ namespace BabyPenguin.VirtualMachine
                     builder.EmitGlobalStore(globalName, reg, loc);
                 }
             }
+
+            MarkWriteChains(irFunc, cc.Symbols.Where(s => s.IsTemp).Select(s => s.FullName()).ToHashSet());
+        }
+
+        /// <summary>
+        /// Value-copy semantics: RDMBR/RDENUM results deep-copy value types
+        /// (binding / extraction copies). When the result register is instead
+        /// consumed as the OWNER of a WRMBR (`w.p.x = 9`, `e.a.b.x += 1`) or as
+        /// a method-call receiver (`e.a.increment()` with mut this), it must
+        /// ALIAS the slot (lvalue addressing, no copy). Scan backwards from
+        /// every WRMBR owner / call-funcptr receiver: mark the defining
+        /// RDMBR/RDENUM as a write chain and continue through its object
+        /// register so nested chains alias at every level. Only
+        /// single-definition TEMP registers qualify — named registers are
+        /// bindings (copies by construction). GLOBAL_LOAD never copies, so it
+        /// terminates a chain without marking.
+        /// </summary>
+        private static void MarkWriteChains(IRFunction func, HashSet<string> tempNames)
+        {
+            // Temps materialize as named registers (allocated in the cc.Symbols
+            // loop) — identify them by their symbol name, not the C# type.
+            bool IsTempReg(IRValue v) =>
+                v is IRTempRegister || (v is IRNamedRegister nr && tempNames.Contains(nr.Name));
+
+            static int RegIndex(IRValue v) => v switch
+            {
+                IRTempRegister t => t.Index,
+                IRNamedRegister n => n.Index,
+                _ => -1,
+            };
+
+            var defs = new Dictionary<int, IRInstruction>();
+            var multiDef = new HashSet<int>();
+            foreach (var inst in func.Instructions)
+            {
+                var def = inst switch
+                {
+                    IRConstInst ci => ci.Result,
+                    IRArgInst ai => ai.Result,
+                    IRAssignInst ai => ai.Dest,
+                    IRCastInst ci => ci.Result,
+                    IRBinOpInst bi => bi.Result,
+                    IRUnaryOpInst ui => ui.Result,
+                    IRRdmbrInst ri => ri.Result,
+                    IRNewInst ni => ni.Result,
+                    IRNewEnumInst nei => nei.Result,
+                    IRIsEnumInst isi => isi.Result,
+                    IRRdenumInst ri => ri.Result,
+                    IRIsInstanceInst isi => isi.Result,
+                    IRGlobalLoadInst gi => gi.Result,
+                    IRCallInst ci => ci.ResultValue,
+                    IRCallFuncPtrInst ci => ci.ResultValue,
+                    _ => null,
+                };
+                if (def != null && IsTempReg(def))
+                {
+                    var idx = RegIndex(def);
+                    if (!defs.TryAdd(idx, inst))
+                        multiDef.Add(idx);
+                }
+            }
+
+            // Unbox (ref -> struct) casts alias the boxed object — the
+            // vtable-stub idiom `let self: mut Self = cast<mut Self>(this)`
+            // writes through to the box. The ASSIGN materializing the cast
+            // operand must not fork the box first.
+            foreach (var inst in func.Instructions)
+            {
+                if (inst is IRCastInst c
+                    && c.FromType.StartsWith("ref<") && c.ToType.StartsWith("struct<")
+                    && IsTempReg(c.Operand)
+                    && RegIndex(c.Operand) is var oi && !multiDef.Contains(oi)
+                    && defs.TryGetValue(oi, out var d) && d is IRAssignInst a)
+                {
+                    a.IsAliasChain = true;
+                }
+            }
+
+            var marked = new HashSet<int>();
+            var work = new Stack<IRValue>();
+
+            IRValue? ReceiverSeed(IRValue funcPtr) =>
+                IsTempReg(funcPtr)
+                    && defs.TryGetValue(RegIndex(funcPtr), out var d)
+                    && d is IRRdmbrInst r
+                    ? r.Obj
+                    : null;
+
+            foreach (var inst in func.Instructions)
+            {
+                IRValue? seed = inst switch
+                {
+                    IRWrmbrInst w => w.Obj,
+                    // Method receiver: the fat-pointer RDMBR reads the method
+                    // off the receiver object; that object must alias its slot.
+                    IRCallFuncPtrInst c => ReceiverSeed(c.FuncPtr),
+                    IRCallFuncPtrVoidInst c => ReceiverSeed(c.FuncPtr),
+                    IRCallVirtInst v => v.Obj,
+                    _ => null,
+                };
+                if (seed != null)
+                    work.Push(seed);
+            }
+
+            while (work.Count > 0)
+            {
+                var val = work.Pop();
+                if (!IsTempReg(val))
+                    continue;
+                var idx = RegIndex(val);
+                if (multiDef.Contains(idx) || !defs.TryGetValue(idx, out var def))
+                    continue;
+                if (!marked.Add(idx))
+                    continue;
+                switch (def)
+                {
+                    case IRRdmbrInst r:
+                        r.IsWriteChain = true;
+                        work.Push(r.Obj);
+                        break;
+                    case IRRdenumInst e:
+                        e.IsWriteChain = true;
+                        work.Push(e.EnumValue);
+                        break;
+                    case IRAssignInst a:
+                        // Receiver materialization (`c.increment()` evaluates
+                        // its receiver through ASSIGN): alias instead of copy
+                        // and continue the chain at the source register.
+                        a.IsAliasChain = true;
+                        work.Push(a.Src);
+                        break;
+                }
+            }
         }
 
         private static string TranslateBinaryOp(BinaryOperatorEnum op) => op switch

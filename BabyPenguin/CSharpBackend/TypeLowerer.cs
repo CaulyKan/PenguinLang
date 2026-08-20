@@ -60,7 +60,11 @@ namespace BabyPenguin.CSharpBackend
         {
             var name = CsName(cls.FullName());
             var sb = new StringBuilder();
-            sb.AppendLine($"public sealed class {name} : BabyPenguin.CSharpBackend.Runtime.IHasMeta");
+            // Value classes (explicit or auto IValueType) carry the marker so the runtime
+            // value-semantics copier can clone them at enum-payload/container insertions.
+            var bases = "BabyPenguin.CSharpBackend.Runtime.IHasMeta"
+                + (IRTypeClassifier.IsValueClassIncludingAuto(cls) ? ", BabyPenguin.CSharpBackend.Runtime.IValueSemantics" : "");
+            sb.AppendLine($"public sealed class {name} : {bases}");
             sb.AppendLine("{");
             // Build interface map entries so Meta.Is() can check interface implementation
             var ifaceEntries = new List<string>();

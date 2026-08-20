@@ -12,6 +12,12 @@ class MonomorphizePass {
     // 破除 SemanticModel <-> 本 pass 的类环。
     model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
 
+    // The compilation unit pass 3's run() is currently fixpointing. On-demand
+    // specializations (resolve_field_specialization) must be APPENDED to it so
+    // passes 4-9 process them (symbol binding, constructors, vtables, bodies).
+    // model.current_unit is only set during pass 8, so it cannot be used here.
+    active_result: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
+
     fun new(mut this, model: mut SemanticModel) {
         this.model = new Option<SemanticModel>.some(model);
     }
@@ -152,6 +158,7 @@ class MonomorphizePass {
         // catch_up_def takes `mut this`: rebind the (immutably-typed)
         // Option payload to a mutable binding first.
         let m: mut SemanticModel = this.model.some;
+        this.active_result = new Option<BoundCompilationUnit>.some(result);
         // Iterative monomorphization: specialize, resolve, then re-collect from
         // the newly resolved definitions for transitive instantiations.
         let total_specialized: mut i64 = 0;
@@ -1201,8 +1208,93 @@ class MonomorphizePass {
         return new Option<BoundType>.none();
     }
 
-    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {
-        _utils.trace_enter("Enter specialize_class_def");
+    // Rewrite a generic field type ("template def + generic_args") to its
+    // SPECIALIZED sibling type, creating the specialization on demand. The
+    // specialized BoundType (R2) carries the substituted definition and no
+    // generic_args, so classification/byte_size/emitter all walk the same
+    // substituted graph. Non-generic or already-specialized types pass through.
+    fun resolve_field_specialization(mut this, bt: BoundType, global_scope: mut BoundScope) -> mut BoundType {
+        if (bt.kind is TypeKind.EnumKind || bt.kind is TypeKind.ClassKind || bt.kind is TypeKind.InterfaceKind) {
+            if (bt.type_definition.is_some() && cast<i64>(bt.generic_args.size()) > 0) {
+                let td: BoundDefinition = bt.type_definition.some;
+                let def_full: mut string = "";
+                let is_generic_def: mut bool = false;
+                if (td is BoundDefinition.class_def) {
+                    def_full = td.class_def.full_name;
+                    is_generic_def = cast<i64>(td.class_def.generic_params.size()) > 0;
+                }
+                if (td is BoundDefinition.enum_def) {
+                    def_full = td.enum_def.full_name;
+                    is_generic_def = cast<i64>(td.enum_def.generic_params.size()) > 0;
+                }
+                if (td is BoundDefinition.interface_def) {
+                    def_full = td.interface_def.full_name;
+                    is_generic_def = cast<i64>(td.interface_def.generic_params.size()) > 0;
+                }
+                if (is_generic_def && def_full != "") {
+                    let mangled: string = mangle_generic_name(def_full, bt.generic_args);
+                    let found: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+                    if (found.is_none()) {
+                        // Create the sibling specialization now so the field type
+                        // is never left stale (the fixpoint does not re-process
+                        // already-created defs). ensure_specialized_def is
+                        // idempotent and skips catch-up reentrancy.
+                        let inst: BoundType = bt;
+                        let spec: Option<BoundDefinition> = this.ensure_specialized_def(inst, global_scope);
+                        if (spec.is_some()) {
+                            // Complete the specialization exactly like the
+                            // fixpoint loop does for its own: align AST/bound
+                            // member types via resolve_pair (the copied methods
+                            // keep unresolved template signatures — `v: T` —
+                            // and pass 8 fails with "Cannot resolve symbol"
+                            // without it), then register the def so passes 4-9
+                            // process it (symbol binding, constructors,
+                            // vtables, bodies, classification). During pass 3
+                            // the unit to append to is THIS pass's result
+                            // (model.current_unit is unset until pass 8); the
+                            // pass-8 meta path uses current_unit. Without the
+                            // push the def exists in the scope (call sites
+                            // resolve, IR calls its _new) but never gets a
+                            // constructor — undefined symbol at link time.
+                            //
+                            // NO eager classify here: at this point the
+                            // referencing field/payload has NOT been assigned
+                            // the spec type yet, so a cycle walk still sees
+                            // the TEMPLATE graph (which deliberately skips
+                            // the variant-payload cycle check for
+                            // generic_params > 0) and can settle a recursive
+                            // spec as a VALUE class prematurely. Pass 7
+                            // classifies every def in result.definitions
+                            // against the fully substituted graph.
+                            let tmpl_short: mut string = "";
+                            if (td is BoundDefinition.class_def) { tmpl_short = td.class_def.name; }
+                            if (td is BoundDefinition.enum_def) { tmpl_short = td.enum_def.name; }
+                            if (td is BoundDefinition.interface_def) { tmpl_short = td.interface_def.name; }
+                            let ast_def2: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_short);
+                            if (ast_def2.is_some()) {
+                                this.model.some.resolve_types_pass.resolve_pair(ast_def2.some, spec.some, global_scope);
+                            }
+                            if (this.active_result.is_some()) {
+                                this.active_result.some.definitions.push(spec.some);
+                            } else if (this.model.some.current_unit.is_some()) {
+                                this.model.some.current_unit.some.definitions.push(spec.some);
+                            }
+                        }
+                    }
+                    let resolved: Option<BoundSymbol> = global_scope.lookup_type_in_scope(mangled);
+                    if (resolved.is_some() && resolved.some is BoundSymbol.type_sym) {
+                        let spec_bt: BoundType = resolved.some.type_sym.bound_type;
+                        if (spec_bt.type_definition.is_some()) {
+                            return spec_bt;
+                        }
+                    }
+                }
+            }
+        }
+        return bt;
+    }
+
+    fun specialize_class_def(mut this, tmpl: BoundClassDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, global_scope: mut BoundScope) -> Option<BoundDefinition> {        _utils.trace_enter("Enter specialize_class_def");
         let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is Definition.class_def)) { return new Option<BoundDefinition>.none(); }
@@ -1240,6 +1332,11 @@ class MonomorphizePass {
         while (vni < cast<i64>(tmpl.value_param_names.size())) {
             let vpname: string = tmpl.value_param_names.at(cast<u64>(vni)).some;
             result.value_param_names.push(vpname);
+            // D6: parallel text/kind lists (class value params are i64-only —
+            // empty text, "i64" kind), so substitute_value_params can build
+            // the typed literal for field initializers.
+            result.value_param_texts.push("");
+            result.value_param_kinds.push("i64");
             let idx: mut i64 = -1;
             let gpi: mut i64 = 0;
             while (gpi < cast<i64>(tmpl.generic_params.size())) {
@@ -1292,7 +1389,20 @@ class MonomorphizePass {
                         fsym.is_mutable = true;
                         field.mutability = new Mutability.Mutable();
                     }
-                    field.bound_type = this.model.some.resolve_type_specifier(ast_field.type_spec.some, class_scope);
+                    // resolve_type_specifier resolves a generic field type (e.g.
+                    // `link: LinkedListLink<T>`) to the TEMPLATE definition with
+                    // generic_args attached. Left as-is, the specialized class
+                    // carries a stale template-shaped field type: classification
+                    // skips the variant-payload cycle check for templates
+                    // (generic_params > 0), byte_size() sizes the template graph
+                    // while the emitter lays out the specialized one — divergent
+                    // List slot strides (buffer overflow) and false E_SIZE_CYCLE
+                    // on recursive structures. Rewrite the field to the SPECIALIZED
+                    // sibling type, creating it on demand (idempotent, no
+                    // catch_up reentrancy).
+                    field.bound_type = this.resolve_field_specialization(
+                        this.model.some.resolve_type_specifier(ast_field.type_spec.some, class_scope),
+                        global_scope);
                 } else {
                     fsym.is_mutable = true;
                     field.mutability = new Mutability.Mutable();
@@ -1426,7 +1536,14 @@ class MonomorphizePass {
             if (member is Definition.enum_member) {
                 let payload_type: mut BoundType = this.model.some.type_registry.void_type;
                 if (member.enum_member.type_spec.is_some()) {
-                    payload_type = this.model.some.resolve_type_specifier(member.enum_member.type_spec.some, enum_scope);
+                    // Same as specialized class fields: resolve a generic payload
+                    // (e.g. `next: LinkedListNode<T>`) past the template-with-args
+                    // form to the specialized sibling type, creating it on demand.
+                    // The specialized payload graph is what classification's
+                    // cycle check and byte_size() must walk.
+                    payload_type = this.resolve_field_specialization(
+                        this.model.some.resolve_type_specifier(member.enum_member.type_spec.some, enum_scope),
+                        global_scope);
                 }
                 let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
                 let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);

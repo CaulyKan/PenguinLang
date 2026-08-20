@@ -120,16 +120,16 @@ namespace BabyPenguin.CSharpBackend
             string body = (kind, op) switch
             {
                 ("list", "new") => "a_0.__impl = new __builtin___ExternImpl(); a_0.__impl.__backing = new System.Collections.Generic.List<object>();",
-                ("list", "push") => "((System.Collections.Generic.List<object>)a_0.__impl.__backing).Add(a_1);",
-                ("list", "at") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count){__r._value=0; __r._containing_value=L[i];} else __r._value=1;"),
+                ("list", "push") => $"((System.Collections.Generic.List<object>)a_0.__impl.__backing).Add({ValueArgCopy(info, 1)});",
+                ("list", "at") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count){__r._value=0; __r._containing_value=" + ElemExtract(info) + "(L[i]);} else __r._value=1;"),
                 ("list", "pop") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; if (L.Count>0){var v=L[L.Count-1]; L.RemoveAt(L.Count-1); __r._value=0; __r._containing_value=v;} else __r._value=1;"),
                 ("list", "remove") => "{ var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count) L.RemoveAt(i); }",
                 ("list", "size") => "return (ulong)((System.Collections.Generic.List<object>)a_0.__impl.__backing).Count;",
-                ("list", "set") => "{ var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count) L[i]=a_2; }",
+                ("list", "set") => $"{{ var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count) L[i]={ValueArgCopy(info, 2)}; }}",
                 ("queue", "new") => "a_0.__impl = new __builtin___ExternImpl(); a_0.__impl.__backing = new System.Collections.Generic.List<object>();",
-                ("queue", "enqueue") => "((System.Collections.Generic.List<object>)a_0.__impl.__backing).Add(a_1);",
+                ("queue", "enqueue") => $"((System.Collections.Generic.List<object>)a_0.__impl.__backing).Add({ValueArgCopy(info, 1)});",
                 ("queue", "dequeue") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; if (L.Count>0){var v=L[0]; L.RemoveAt(0); __r._value=0; __r._containing_value=v;} else __r._value=1;"),
-                ("queue", "peek") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; if (L.Count>0){__r._value=0; __r._containing_value=L[0];} else __r._value=1;"),
+                ("queue", "peek") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; if (L.Count>0){__r._value=0; __r._containing_value=" + ElemExtract(info) + "(L[0]);} else __r._value=1;"),
                 ("queue", "size") => "return (ulong)((System.Collections.Generic.List<object>)a_0.__impl.__backing).Count;",
                 ("sb", "new") => "a_0.__impl = new __builtin___ExternImpl(); a_0.__impl.__backing = new System.Text.StringBuilder();",
                 ("sb", "append") => "((System.Text.StringBuilder)a_0.__impl.__backing).Append(a_1);",
@@ -150,6 +150,32 @@ namespace BabyPenguin.CSharpBackend
         {
             var rt = _emitter.CsType(info.RetIrType);
             return $"var __r = new {rt}(); {fillBody}; return __r;";
+        }
+
+        /// <summary>
+        /// Insert-path element for collection externs: value-class elements (IR type struct&lt;…&gt;)
+        /// are isolated copies so later mutations of the source do not alias the slot — matching
+        /// the VM externs and EmperorPenguin's bare-slot #__store. Extraction paths (at/pop/…)
+        /// deliberately keep sharing the stored object for write-back aliasing.
+        /// </summary>
+        private static string ValueArgCopy(ExternInfo info, int argIndex)
+        {
+            var arg = $"a_{argIndex}";
+            if (argIndex < info.ArgIrTypes.Length && info.ArgIrTypes[argIndex].StartsWith("struct<"))
+                return $"BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics({arg})";
+            return arg;
+        }
+
+        /// <summary>
+        /// Extraction-path wrapper for at/peek results: element access is
+        /// uniformly a COPY for value types (`List<mut T>` is `List<T>` for
+        /// value elements — mut no longer grants slot aliasing); write-back
+        /// goes through set(). CopyValueSemantics shares reference-class
+        /// objects either way.
+        /// </summary>
+        private static string ElemExtract(ExternInfo info)
+        {
+            return "BabyPenguin.CSharpBackend.Runtime.GlobalState.CopyValueSemantics";
         }
 
         private static readonly HashSet<string> CsPrimitives = new()

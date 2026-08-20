@@ -26,6 +26,7 @@ public enum ErrorCode
     // ── Interface / value-type ──
     E_UNSIZED_INTERFACE,   // Using interface as field without Box
     E_VALUE_TYPE_CONFLICT, // Class implements both ICopy and IRef
+    E_SIZE_CYCLE,          // Value-type size recursively contains itself
     E_INTERFACE_IMPL,      // Missing/mismatched interface method impl
     E_ORPHAN_IMPL,         // Impl block is orphan (neither type nor interface is local)
 
