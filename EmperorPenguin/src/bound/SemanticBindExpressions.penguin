@@ -792,6 +792,28 @@ class BindExpressionsPass {
                         }
                     }
                 }
+                // Chained namespace access (depth >= 2, e.g. std.io.probe): the
+                // inner member access (std.io) bound above as a member access
+                // carrying the nested namespace symbol in member_symbol —
+                // continue the namespace-qualified lookup from THAT scope.
+                // Without this branch only one dot of namespace qualification
+                // resolves and every deeper call falls to the void fallback.
+                if (bound_base.some is BoundExpression.member_access) {
+                    let inner_ma: BoundMemberAccessExpression = bound_base.some.member_access;
+                    if (let inner_sym := inner_ma.member_symbol.some) {
+                        if (inner_sym is BoundSymbol.namespace_sym) {
+                            let inner_ns_scope: Option<BoundScope> = inner_sym.namespace_sym.namespace_scope;
+                            if (inner_ns_scope.is_some()) {
+                                let found: Option<BoundSymbol> = inner_ns_scope.some.lookup_symbol(expr.member_name);
+                                if (found.is_some()) {
+                                    let bt: BoundType = this.resolve_symbol_type(found.some);
+                                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                }
+                            }
+                        }
+                    }
+                }
                 // Member not found: if base is a concrete type (class, enum),
                 // report E_RESOLVE_SYMBOL instead of silently creating an empty
                 // member access (which causes E_INTERNAL in the IR generator).

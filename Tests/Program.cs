@@ -934,7 +934,12 @@ public static class MarkdownTestParser
         {
             case "args": stage.Args = Stripped(); break;
             case "env": stage.Env = ParseEnv(Stripped()); break;
-            case "stdin": if (isRun) stage.Stdin = Stripped(); break;
+            case "stdin":
+                // Interpret C-style escapes so multi-line stdin is expressible
+                // on one line (`Stdin: `a\nb\n``); order matters (\r\n first).
+                if (isRun) stage.Stdin = Stripped()
+                    .Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\\r", "\n").Replace("\\t", "\t").Replace("\\\\", "\\");
+                break;
             case "expectedexitcode": stage.ExpectedExitCode = Stripped().Trim(); break;
             case "kind": stage.Kind = Stripped().Trim().ToLowerInvariant(); break;
             case "name": stage.Name = Stripped().Trim(); break;

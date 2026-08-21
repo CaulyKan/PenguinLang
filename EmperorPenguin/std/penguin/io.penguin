@@ -1,0 +1,354 @@
+// io standard library for EmperorPenguin-compiled programs: console
+// (stdin/stdout/stderr), stream file handles (std.io.File), whole-file
+// helpers and filesystem queries. Loaded automatically by main.penguin
+// alongside core_builtin.penguin.
+//
+// The extern declarations live HERE, in namespace std.io: the UNIVERSAL
+// extern->C rule maps every extern in ANY namespace (std or user code) to
+// @<full dotted name with '.' as '_'> — std.io.file_open backs onto
+// std_io_file_open in std/c/core_builtin.c, and a user's mylib.foo would back
+// onto mylib_foo the same way. Global-scope externs keep their literal symbol
+// (extern fun abs -> @abs, real libc); only __builtin/_utils retain the
+// historical _emperor_<tail> runtime symbols. Unreferenced externs are
+// dropped from the IR, so a program that never touches io pays nothing.
+//
+// NOTE: namespaced externs must be called QUALIFIED (std.io.file_open) —
+// IR preserves call-site spelling, so a bare call would emit the bare symbol
+// and fail to link.
+//
+// This file must stay parsable by the compiler's own front end at every
+// bootstrap stage (pass1 runs it on the BabyPenguin VM): stick to the
+// core_builtin.penguin construct set (plain classes with mut fields, enum
+// payloads, IIterator impls, nested namespaces, namespace functions, string
+// builtins).
+
+namespace std {
+namespace io {
+
+    // --- console / stdin (C: io_read_line_stream over stdin) ---
+    extern fun stdin_read_line() -> mut string;
+    extern fun stdin_eof() -> bool;
+    extern fun stdin_read_all() -> mut string;
+
+    // --- stream file handles: FILE* carried as u64, 0 = invalid/closed ---
+    extern fun file_open(path: string, mode: string) -> u64;
+    extern fun file_close(handle: u64);
+    extern fun file_write(handle: u64, text: string) -> bool;
+    extern fun file_read_line(handle: u64) -> mut string;
+    extern fun file_read_all(handle: u64) -> mut string;
+    extern fun file_eof(handle: u64) -> bool;
+    extern fun file_flush(handle: u64);
+    extern fun file_seek(handle: u64, pos: i64) -> bool;
+    extern fun file_tell(handle: u64) -> i64;
+
+    // --- whole-file / filesystem with real success reporting ---
+    extern fun file_write_text(path: string, text: string) -> bool;
+    extern fun file_append_text(path: string, text: string) -> bool;
+    extern fun file_remove(path: string) -> bool;
+    extern fun file_rename(from: string, to: string) -> bool;
+
+    // --- queries backed by the legacy C runtime helpers (aliased on the C
+    // side under their std.io mangled names) ---
+    extern fun file_read_text(path: string) -> mut string;
+    extern fun file_exists(path: string) -> bool;
+    extern fun dir_exists(path: string) -> bool;
+    extern fun file_size(path: string) -> i64;
+    extern fun dir_get_entries(path: string) -> string;
+    extern fun file_mkdir(path: string) -> bool;
+
+    // ---- console ----
+
+    fun print(text: string) {
+        __builtin.print(text);
+    }
+
+    fun println(text: string) {
+        __builtin.println(text);
+    }
+
+    fun eprint(text: string) {
+        __builtin.eprint(text);
+    }
+
+    fun eprintln(text: string) {
+        __builtin.eprintln(text);
+    }
+
+    // Read one line from stdin (newline stripped, '\r' tolerated). Returns
+    // none at end of input. The two-phase eof protocol mirrors the C reader:
+    // eof is checked before reading (stream already exhausted) and again only
+    // when the read came back empty, so a final line without a trailing
+    // newline is delivered exactly once and an empty line mid-stream is
+    // delivered as some("").
+    fun read_line() -> __builtin.Option<string> {
+        if (std.io.stdin_eof()) {
+            return new __builtin.Option<string>.none();
+        }
+        let line: string = std.io.stdin_read_line();
+        if (string_length(line) == 0 && std.io.stdin_eof()) {
+            return new __builtin.Option<string>.none();
+        }
+        return new __builtin.Option<string>.some(line);
+    }
+
+    // Read all of stdin (from the current position) as one string.
+    fun read_all() -> string {
+        return std.io.stdin_read_all();
+    }
+
+    // ---- stream file handle ----
+
+    // A File wraps a C FILE* (stored as u64; 0 = closed or failed open).
+    // IReferenceType forces reference semantics — closing through one binding
+    // closes the same stream for every alias (no struct-copy surprises).
+    // IMemoryDispose hooks the GC finalizer, so a File that becomes
+    // unreachable is closed on sweep; explicit close() is still the
+    // recommended pattern.
+    class File {
+        impl __builtin.IReferenceType;
+        impl __builtin.IMemoryDispose;
+        handle: mut u64 = 0;
+
+        fun new(mut this) {}
+
+        // Open `path` with C fopen mode semantics ("r", "w", "a", "r+", ...).
+        // On failure the returned File is simply not open — check is_open().
+        fun open(mut this, path: string, mode: string) -> bool {
+            this.close();
+            this.handle = std.io.file_open(path, mode);
+            return this.handle != 0;
+        }
+
+        fun is_open(this) -> bool {
+            return this.handle != 0;
+        }
+
+        fun write(mut this, text: string) -> bool {
+            if (this.handle == 0) { return false; }
+            return std.io.file_write(this.handle, text);
+        }
+
+        fun write_line(mut this, text: string) -> bool {
+            return this.write(text + "\n");
+        }
+
+        fun flush(mut this) {
+            if (this.handle != 0) {
+                std.io.file_flush(this.handle);
+            }
+        }
+
+        // Absolute reposition from the start of the file.
+        fun seek(mut this, pos: i64) -> bool {
+            if (this.handle == 0) { return false; }
+            return std.io.file_seek(this.handle, pos);
+        }
+
+        fun tell(this) -> i64 {
+            if (this.handle == 0) { return -1; }
+            return std.io.file_tell(this.handle);
+        }
+
+        // Same EOF contract as std.io.read_line: none exactly when the stream
+        // is exhausted; a final unterminated line is delivered exactly once.
+        fun read_line(mut this) -> __builtin.Option<string> {
+            if (this.handle == 0) { return new __builtin.Option<string>.none(); }
+            if (std.io.file_eof(this.handle)) {
+                return new __builtin.Option<string>.none();
+            }
+            let line: string = std.io.file_read_line(this.handle);
+            if (string_length(line) == 0 && std.io.file_eof(this.handle)) {
+                return new __builtin.Option<string>.none();
+            }
+            return new __builtin.Option<string>.some(line);
+        }
+
+        // Everything from the current position to end of file.
+        fun read_all(mut this) -> string {
+            if (this.handle == 0) { return ""; }
+            return std.io.file_read_all(this.handle);
+        }
+
+        fun close(mut this) {
+            if (this.handle != 0) {
+                std.io.file_close(this.handle);
+                this.handle = 0;
+            }
+        }
+
+        fun dispose_mem(mut this) {
+            this.close();
+        }
+    }
+
+    // Namespace-level open (File.open as a constructor-ish factory; mirrors
+    // the `range()` free-function precedent in core_builtin). A failed open is
+    // reported through is_open(), not stderr — probing paths is a normal use.
+    fun open(path: string, mode: string) -> mut File {
+        let f: mut File = new File();
+        f.open(path, mode);
+        return f;
+    }
+
+    // ---- whole-file helpers ----
+
+    // Returns none only when the path does not exist (or is not a regular
+    // file); an existing-but-unreadable file reads back as some("").
+    fun read_text(path: string) -> __builtin.Option<string> {
+        if (!std.io.file_exists(path)) {
+            return new __builtin.Option<string>.none();
+        }
+        return new __builtin.Option<string>.some(std.io.file_read_text(path));
+    }
+
+    fun write_text(path: string, text: string) -> bool {
+        return std.io.file_write_text(path, text);
+    }
+
+    fun append_text(path: string, text: string) -> bool {
+        return std.io.file_append_text(path, text);
+    }
+
+    fun size(path: string) -> i64 {
+        return std.io.file_size(path);
+    }
+
+    // ---- filesystem queries / mutations ----
+
+    fun exists(path: string) -> bool {
+        return std.io.file_exists(path) || std.io.dir_exists(path);
+    }
+
+    fun is_file(path: string) -> bool {
+        return std.io.file_exists(path);
+    }
+
+    fun is_dir(path: string) -> bool {
+        return std.io.dir_exists(path);
+    }
+
+    fun mkdir(path: string) -> bool {
+        return std.io.file_mkdir(path);
+    }
+
+    fun remove(path: string) -> bool {
+        return std.io.file_remove(path);
+    }
+
+    fun rename(from: string, to: string) -> bool {
+        return std.io.file_rename(from, to);
+    }
+
+    // Directory listing as a '\n'-joined string (empty when not a directory).
+    // Iterate it with std.io.split_lines.
+    fun dir_entries(path: string) -> string {
+        return std.io.dir_get_entries(path);
+    }
+
+    // ---- line iterators (for-in support) ----
+
+    // Iterates the '\n'-separated lines of an in-memory string: a trailing
+    // empty piece is dropped, empty lines mid-string yield some(""), and a
+    // line-final '\r' is stripped for CRLF tolerance. Same shape as
+    // __builtin.RangeIterator — bare next() for direct use, iter() +
+    // impl IIterator so `for (let line in ...)` desugars onto it.
+    class StringLineIterator {
+        src: string = "";
+        pos: mut i64 = 0;
+
+        fun new(mut this, src: string) {
+            this.src = src;
+            this.pos = 0;
+        }
+
+        fun next(mut this) -> __builtin.Option<string> {
+            if (this.pos >= string_length(this.src)) {
+                return new __builtin.Option<string>.none();
+            }
+            let nl: i64 = string_find_from(this.src, "\n", this.pos);
+            let line: mut string = "";
+            if (nl < 0) {
+                line = string_substring(this.src, this.pos, string_length(this.src) - this.pos);
+                this.pos = string_length(this.src);
+            } else {
+                line = string_substring(this.src, this.pos, nl - this.pos);
+                this.pos = nl + 1;
+            }
+            if (string_length(line) > 0) {
+                let tail: string = string_substring(line, string_length(line) - 1, 1);
+                if (tail == "\r") {
+                    line = string_substring(line, 0, string_length(line) - 1);
+                }
+            }
+            return new __builtin.Option<string>.some(line);
+        }
+
+        fun iter(this) -> StringLineIterator {
+            return this;
+        }
+
+        impl __builtin.IIterator<string> {
+            fun next(mut this) -> __builtin.Option<string> {
+                if (this.pos >= string_length(this.src)) {
+                    return new __builtin.Option<string>.none();
+                }
+                let nl: i64 = string_find_from(this.src, "\n", this.pos);
+                let line: mut string = "";
+                if (nl < 0) {
+                    line = string_substring(this.src, this.pos, string_length(this.src) - this.pos);
+                    this.pos = string_length(this.src);
+                } else {
+                    line = string_substring(this.src, this.pos, nl - this.pos);
+                    this.pos = nl + 1;
+                }
+                if (string_length(line) > 0) {
+                    let tail: string = string_substring(line, string_length(line) - 1, 1);
+                    if (tail == "\r") {
+                        line = string_substring(line, 0, string_length(line) - 1);
+                    }
+                }
+                return new __builtin.Option<string>.some(line);
+            }
+        }
+    }
+
+    // Streaming iterator over stdin — pulls one std.io.read_line() per next(),
+    // so it never holds the whole input in memory. Exhausts exactly like
+    // std.io.read_line.
+    class StdinLineIterator {
+        fun new(mut this) {}
+
+        fun next(mut this) -> __builtin.Option<string> {
+            return std.io.read_line();
+        }
+
+        fun iter(this) -> StdinLineIterator {
+            return this;
+        }
+
+        impl __builtin.IIterator<string> {
+            fun next(mut this) -> __builtin.Option<string> {
+                return std.io.read_line();
+            }
+        }
+    }
+
+    // Iterate the lines of a file (whole file is read first — for streaming
+    // use std.io.File.read_line or std.io.stdin_lines()).
+    fun lines(path: string) -> mut StringLineIterator {
+        let content: string = std.io.file_read_text(path);
+        return new StringLineIterator(content);
+    }
+
+    // Iterate the '\n'-separated lines of any string (e.g. std.io.dir_entries).
+    fun split_lines(text: string) -> mut StringLineIterator {
+        return new StringLineIterator(text);
+    }
+
+    // Iterate stdin lazily, one line per next().
+    fun stdin_lines() -> mut StdinLineIterator {
+        return new StdinLineIterator();
+    }
+
+}
+}

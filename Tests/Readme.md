@@ -138,7 +138,7 @@ Each stage is a list of `Key: value` lines. Values may be wrapped in backticks
 |---|---|---|
 | `Args` | both | Extra args. Routed per backend — see *Argument routing*. |
 | `Env` | both | `KEY=VAL` tokens, whitespace-separated, e.g. `` `FOO=1 BAR=2` ``. |
-| `Stdin` | Run only | Text piped to the program's stdin. |
+| `Stdin` | Run only | Text piped to the program's stdin. C-style escapes are interpreted (`\n` newline, `\t` tab, `\r`, `\\`), so multi-line input is written inline: `` Stdin: `a\nb\n` ``. |
 | `ExpectedExitCode` | both | `0`, any integer, `NONZERO` (any non-zero), or `ANY`. Default `0`. |
 | `ExpectedStdout` | both | `DISCARD`, or `EQUALS \`literal\``. |
 | `ExpectedStderr` | both | Same as `ExpectedStdout`. |

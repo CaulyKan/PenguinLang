@@ -41,6 +41,11 @@ initial {
     }
 
     let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
+    // io stdlib (console/stdin/stdout, io.File handles, whole-file + fs ops) —
+    // auto-loaded on the same path as core_builtin, so every compiled program
+    // sees the `io` namespace. Unreferenced externs are dropped by the emitter,
+    // so non-io programs pay nothing for it.
+    let io_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/io.penguin");
 
     // Build intermediates go into a per-process unique temp directory so that
     // parallel EmperorPenguin invocations never collide on a shared path.
@@ -63,6 +68,7 @@ initial {
 
     let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
+    inputs.push(new SourceInput("io.penguin", io_source));
 
     // Lib sources first (deps-first order from load_lib_chain), then user
     // sources. For a lib build, lib_source_text accumulates the lib's OWN source

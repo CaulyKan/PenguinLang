@@ -1,0 +1,54 @@
+// io standard library tour (EmperorPenguin native: compile with
+// `./penguin -3 Examples/io_tour.penguin`). The `io` namespace is
+// auto-loaded next to core_builtin for every EmperorPenguin-compiled program.
+
+fun write_config(path: string) -> bool {
+    // Stream handle: std.io.open(path, mode) with C fopen modes; check is_open().
+    let f: mut std.io.File = std.io.open(path, "w");
+    if (!f.is_open()) {
+        return false;
+    }
+    f.write_line("width=800");
+    f.write_line("height=600");
+    f.write("title=io tour");   // final line without trailing newline
+    f.flush();
+    f.close();                   // a dropped File is also closed by the GC
+    return true;
+}
+
+initial {
+    // console
+    std.io.println("== io tour ==");
+
+    // whole-file helpers
+    if (write_config("tour.conf")) {
+        std.io.println("wrote tour.conf (" + cast<string>(std.io.size("tour.conf")) + " bytes)");
+    }
+    let content = std.io.read_text("tour.conf");
+    if (content.is_some()) {
+        std.io.println("raw: " + content.some);
+    }
+
+    // for-in line iteration (CRLF-tolerant, drops the trailing empty piece)
+    for (let line in std.io.lines("tour.conf")) {
+        std.io.println("cfg: " + line);
+    }
+
+    // filesystem
+    if (std.io.mkdir("tour_dir")) {
+        std.io.write_text("tour_dir/a.txt", "aaa");
+        std.io.write_text("tour_dir/b.txt", "bbb");
+        for (let name in std.io.split_lines(std.io.dir_entries("tour_dir"))) {
+            std.io.println("entry: " + name);
+        }
+    }
+
+    // stdin (uncomment to read interactively):
+    // let first = std.io.read_line();
+    // if (first.is_some()) { std.io.println("you said: " + first.some); }
+
+    std.io.remove("tour_dir/a.txt");
+    std.io.remove("tour_dir/b.txt");
+    std.io.remove("tour.conf");
+    std.io.println("done");
+}

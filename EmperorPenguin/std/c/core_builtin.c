@@ -688,6 +688,203 @@ char* _emperor_dir_get_entries(const char* path) {
 #endif
 }
 
+/* --- io standard library (std/penguin/io.penguin) ---
+ * Symbol naming follows the UNIVERSAL extern rule: an extern declared in a
+ * namespace maps to <dotted name with '.' as '_'>, so std.io.file_open backs
+ * onto std_io_file_open here. Applies to user namespaces identically
+ * (mylib.foo -> mylib_foo); only __builtin/_utils keep the historical
+ * _emperor_<tail> runtime symbols. */
+
+/* Shared line reader for stdin and io.File handles. Reads with fgetc (at most
+ * one byte past the last line) so the feof()-based EOF protocol on the
+ * PenguinLang side is exact: eof() is consulted BEFORE a read (stream already
+ * exhausted) and AGAIN when a read returned an empty string — a final line
+ * without a trailing newline reads back non-empty and sets eof, so the NEXT
+ * call's pre-check reports none instead of losing that line. '\r' is dropped
+ * everywhere for CRLF tolerance. Returns a GC-allocated string. */
+static char* io_read_line_stream(FILE* f) {
+    if (!f) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    size_t cap = 128, len = 0;
+    char* buf = (char*)_emperor_gc_alloc((int)cap, 1);
+    if (!buf) return buf;
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == '\n') break;
+        if (c == '\r') continue;
+        if (len + 2 > cap) {
+            cap *= 2;
+            char* grown = (char*)_emperor_gc_alloc((int)cap, 1);
+            if (!grown) break;
+            memcpy(grown, buf, len);
+            buf = grown;
+        }
+        buf[len++] = (char)c;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+/* Whole remaining stream (from the current position) as one GC string. */
+static char* io_read_all_stream(FILE* f) {
+    size_t cap = 4096, len = 0;
+    char* buf = (char*)_emperor_gc_alloc((int)cap, 1);
+    if (!buf) return buf;
+    for (;;) {
+        size_t got = fread(buf + len, 1, cap - len - 1, f);
+        len += got;
+        if (got == 0) break;
+        if (cap - len < 2) {
+            cap *= 2;
+            char* grown = (char*)_emperor_gc_alloc((int)cap, 1);
+            if (!grown) break;
+            memcpy(grown, buf, len);
+            buf = grown;
+        }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+/* console / stdin */
+char* std_io_stdin_read_line(void) {
+    return io_read_line_stream(stdin);
+}
+
+char std_io_stdin_eof(void) {
+    return (char)(feof(stdin) ? 1 : 0);
+}
+
+char* std_io_stdin_read_all(void) {
+    return io_read_all_stream(stdin);
+}
+
+/* File handles: FILE* passed through PenguinLang as i64/u64 (0 = invalid). */
+long long std_io_file_open(const char* path, const char* mode) {
+    if (!path || !mode || !mode[0]) return 0;
+    FILE* f = fopen(path, mode);
+    if (!f) return 0;
+    return (long long)(intptr_t)f;
+}
+
+void std_io_file_close(long long handle) {
+    if (handle != 0) {
+        fclose((FILE*)(intptr_t)handle);
+    }
+}
+
+char std_io_file_write(long long handle, const char* s) {
+    if (handle == 0 || !s) return 0;
+    return fputs(s, (FILE*)(intptr_t)handle) >= 0 ? 1 : 0;
+}
+
+char* std_io_file_read_line(long long handle) {
+    if (handle == 0) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    return io_read_line_stream((FILE*)(intptr_t)handle);
+}
+
+char std_io_file_eof(long long handle) {
+    if (handle == 0) return 1;
+    return (char)(feof((FILE*)(intptr_t)handle) ? 1 : 0);
+}
+
+void std_io_file_flush(long long handle) {
+    if (handle != 0) {
+        fflush((FILE*)(intptr_t)handle);
+    }
+}
+
+char* std_io_file_read_all(long long handle) {
+    if (handle == 0) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    return io_read_all_stream((FILE*)(intptr_t)handle);
+}
+
+char std_io_file_seek(long long handle, long long pos) {
+    if (handle == 0 || pos < 0) return 0;
+    return fseek((FILE*)(intptr_t)handle, (long)pos, SEEK_SET) == 0 ? 1 : 0;
+}
+
+long long std_io_file_tell(long long handle) {
+    if (handle == 0) return -1;
+    return (long long)ftell((FILE*)(intptr_t)handle);
+}
+
+/* Whole-file / filesystem helpers with real success reporting (the legacy
+ * _emperor_file_write_text & co are void and cannot report failure). */
+char std_io_file_write_text(const char* path, const char* text) {
+    if (!path) return 0;
+    FILE* f = fopen(path, "w");
+    if (!f) return 0;
+    int ok = 1;
+    if (text && text[0]) {
+        ok = (fputs(text, f) >= 0);
+    }
+    ok = (fclose(f) == 0) && ok;
+    return (char)(ok ? 1 : 0);
+}
+
+char std_io_file_append_text(const char* path, const char* text) {
+    if (!path) return 0;
+    FILE* f = fopen(path, "a");
+    if (!f) return 0;
+    int ok = 1;
+    if (text && text[0]) {
+        ok = (fputs(text, f) >= 0);
+    }
+    ok = (fclose(f) == 0) && ok;
+    return (char)(ok ? 1 : 0);
+}
+
+char std_io_file_remove(const char* path) {
+    if (!path) return 0;
+    return remove(path) == 0 ? 1 : 0;
+}
+
+char std_io_file_rename(const char* from, const char* to) {
+    if (!from || !to) return 0;
+    return rename(from, to) == 0 ? 1 : 0;
+}
+
+/* Query helpers reused from the legacy (pre-std.io) runtime entry points.
+ * The std.io externs above declare these under their mangled names
+ * (std.io.file_read_text -> std_io_file_read_text); the legacy
+ * _utils externs of the compiler itself still bind the original symbols, so
+ * both names must resolve. Thin aliases — single implementation stays put. */
+char* std_io_file_read_text(const char* path) {
+    return _emperor_file_read_text(path);
+}
+
+char std_io_file_exists(const char* path) {
+    return _emperor_file_exists(path);
+}
+
+char std_io_dir_exists(const char* path) {
+    return _emperor_dir_exists(path);
+}
+
+long long std_io_file_size(const char* path) {
+    return _emperor_file_size(path);
+}
+
+char* std_io_dir_get_entries(const char* path) {
+    return _emperor_dir_get_entries(path);
+}
+
+char std_io_file_mkdir(const char* path) {
+    return _emperor_mkdir(path);
+}
+
 /* --- StringBuilder --- */
 
 /* Layout must match EmperorPenguin's StringBuilder class: a metadata ptr at

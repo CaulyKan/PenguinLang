@@ -552,6 +552,11 @@ class LLVMEmitter {
                     let etail: string = this.compute_extern_tail(ef.name);
                     this.extern_map.push(new RegMapping(etail, "@_emperor_" + this.sanitize_name(etail)));
                 }
+                // Every OTHER extern — any namespace, std or user code — needs
+                // no map entry: llvm_func_name's fallthrough applies the
+                // UNIVERSAL rule @<sanitize(full dotted name)>, e.g.
+                // std.io.file_open -> @std_io_file_open, mylib.foo -> @mylib_foo,
+                // a global `extern fun abs` -> @abs (literal libc symbol).
             }
             ei = ei + 1;
         }
@@ -5160,14 +5165,23 @@ class LLVMEmitter {
     fun llvm_func_name(this, name: string) -> string {
         _utils.trace_enter("Enter llvm_func_name(name=" + cast<string>(name) + ")");
         let key: string = this.strip_global_prefix(name);
-        // Externs (precomputed in lower()) map to their C-runtime symbol; every
-        // other name (user functions/methods/ctors/vtable slots) is plain
-        // "@<sanitized>". Discriminating via the extern map (built from
-        // is_extern) — not by namespace — is what keeps real functions that live
-        // in __builtin/_utils (List.push, Option.is_some, ...) untouched.
-        // The probe is the normalized tail, so a builtin call reaches the same
-        // entry whether the call-site emitted the short form ("println") or the
-        // qualified form ("__builtin.println").
+        // Extern symbol resolution — two rules, no special cases per library:
+        //   1. __builtin/_utils runtime externs: the extern map (precomputed in
+        //      lower() from is_extern) keys them by normalized tail, so a
+        //      builtin call resolves identically from the short form ("println")
+        //      and the qualified form ("__builtin.println") to @_emperor_<tail>.
+        //   2. EVERY other extern — std.io.*, emperor.*, any USER namespace —
+        //      maps by the universal rule to @<sanitize(full dotted name)>:
+        //      std.io.file_open -> @std_io_file_open, mylib.foo -> @mylib_foo,
+        //      and a global-scope `extern fun abs` -> @abs (literal libc
+        //      symbol — sanitize of a bare name is the name itself). The C
+        //      side just implements the mangled name.
+        // Discriminating via the extern map (built from is_extern) — not by
+        // namespace — is what keeps real functions that live in
+        // __builtin/_utils (List.push, Option.is_some, ...) untouched.
+        // Because IR preserves call-site spelling, a namespaced extern must
+        // be called QUALIFIED (std.io.file_open) — a bare call would emit the
+        // bare symbol and fail to link.
         let tail: string = this.compute_extern_tail(name);
         let i: mut i64 = 0;
         while (i < cast<i64>(this.extern_map.size())) {

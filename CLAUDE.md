@@ -220,6 +220,13 @@ BabyPenguin emits a register-based IR with 25+ instruction types:
 - `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`: Iterator interfaces. `IIterable.iter()` is the read-only path (element type T as stored, callable on immutable containers); `iter_mut()` is the mutable path. For-loop desugaring picks `iter()`/`iter_mut()` by the loop variable's mutability (`let x` → `iter`, `let x : mut T`/`let mut x` → `iter_mut`); an `in` expression that is already an iterator is used as-is.
 - `Pair<K,V>`: Key-value pair class
 
+### io Standard Library (`EmperorPenguin/std/penguin/io.penguin`, EmperorPenguin native only)
+Auto-loaded by `main.penguin` next to `core_builtin.penguin` for every EmperorPenguin-compiled program. Lives in `namespace std { namespace io {...} }` — nested-namespace member access (`std.io.x()`) is supported at every depth (bind_member_access chains through member-access bases carrying namespace symbols). Its externs are declared INSIDE `std.io` and route via the **universal extern→C rule**: an extern in ANY namespace (std or user code) maps to `@<full dotted name with '.' as '_'>` (`std.io.file_open` → `std_io_file_open` in `std/c/core_builtin.c`, user `mylib.foo` → `mylib_foo`); a bare top-level extern maps to its own literal name (`extern fun abs` → `@abs`, real libc — top-level externs are exempt from the per-file `_ns_` namespace); only `__builtin`/`_utils` keep the historical `_emperor_<tail>` runtime symbols. Unreferenced externs are free. Namespaced externs must be called QUALIFIED (IR preserves call-site spelling). NOT implemented in the BabyPenguin VM — io tests are Pass2/Pass3-only.
+- Console: `std.io.print/println/eprint/eprintln`, `std.io.read_line() -> Option<string>` (none at exact EOF; final unterminated line delivered once; empty line = some("")), `std.io.read_all() -> string`, `std.io.stdin_lines()` lazy iterator
+- `std.io.File` (IReferenceType + IMemoryDispose — the GC closes an unreachable handle): `std.io.open(path, mode) -> mut File` (fopen modes; check `is_open()`), `write/write_line -> bool`, `read_line -> Option<string>`, `read_all -> string`, `seek(pos) -> bool` (absolute), `tell -> i64`, `flush`, `close`, `dispose_mem`
+- Whole-file / fs: `std.io.read_text(path) -> Option<string>` (none only when path missing), `std.io.write_text/append_text -> bool`, `std.io.size -> i64` (-1 = missing), `std.io.exists/is_file/is_dir -> bool`, `std.io.mkdir/remove/rename -> bool`, `std.io.dir_entries(path) -> string` ('\n'-joined)
+- Line iterators (for-in ready, RangeIterator shape): `std.io.lines(path)`, `std.io.split_lines(text)` (CRLF-tolerant, drops trailing empty piece), `std.io.stdin_lines()`
+
 ## EmperorPenguin Architecture
 
 EmperorPenguin is the self-hosting compiler (written in PenguinLang, compiled/run by BabyPenguin VM). It processes `.penguin` source files through a multi-pass pipeline and emits LLVM IR as its final output.
@@ -344,8 +351,11 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 
 | File                               | Contents                                                                                                                                                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core_builtin.penguin` (129 lines) | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>` |
-| `utils.penguin` (188 lines)        | `_utils` namespace: `List<T>` (linked list), `Queue<T>` (linked queue), file I/O externs, `exec()` helper, `dir_get_entries()`                                                                                                                     |
+| `core_builtin.penguin`             | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IHash`, `IUniqueMangleName`, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>`, `Range`/`RangeIterator` |
+| `io.penguin`                       | `std.io` nested-namespace stdlib (auto-loaded with core_builtin; externs in `std.io` route to `std_io_*` via the universal extern→C rule — any namespaced extern maps to `<ns>_<name>`, bare top-level externs keep literal libc symbols): console (`std.io.read_line`/`read_all`/`stdin_lines`), `std.io.File` handles, whole-file/fs helpers, `std.io.lines`/`split_lines` iterators. See *io Standard Library* above |
+| `array.penguin`, `vector.penguin`, `hashmap.penguin`, `json.penguin`, `dynlib.penguin`, `metaconfig.penguin` | Pass3-only bootstrap-deferred stdlib modules — NOT auto-loaded; compiled into the compiler via `EmperorPenguinFull.penguins` or passed per-test via `Compile.Args` (e.g. `std.Array<T,N>`) |
+
+(`_utils` with `List<T>`/`Queue<T>` and the file I/O externs lives in `EmperorPenguin/src/utils.penguin` — a compiler source, part of every bootstrap, not part of user-program compilations.)
 
 ### Project Handling (`src/project/`)
 

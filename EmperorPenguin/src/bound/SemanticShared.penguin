@@ -131,6 +131,14 @@ fun ast_def_filename(def: Definition) -> string {
 // against this file's anonymous namespace.
 fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut BoundScope {
     if (def is Definition.namespace_def) { return global_scope; }
+    // An extern DECLARATION is exempt from the file namespace: it references
+    // a C symbol, which is global by nature, and the universal extern->C rule
+    // maps a bare top-level extern to its own name (@abs -> real libc abs).
+    // File isolation would wrap it as _ns_<file>_<hash>_abs — an unstable
+    // symbol no C side can implement — making user externs unusable.
+    if (def is Definition.function_def) {
+        if (def.function_def.is_extern) { return global_scope; }
+    }
     // Defs with no source file or a SYNTHETIC source name (meta-spliced
     // definitions from #create_definition / #make_*() — the parser names them
     // "<meta_create_definition>" etc.) bind into the global scope: they are
