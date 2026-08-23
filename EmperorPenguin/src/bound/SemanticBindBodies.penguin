@@ -1303,6 +1303,21 @@ class BindBodiesPass {
         if (stmt is Statement.meta_continue_stmt) {
             return new Option<BoundStatement>.some(new BoundStatement.meta_continue_stmt(new BoundMetaContinueStatement(stmt.meta_continue_stmt.location)));
         }
+        if (stmt is Statement.connect_stmt) {
+            // connect is only legal (and only meaningful) inside a construct
+            // block — bound with the port/connect lowering. Report explicitly
+            // instead of silently emitting nothing.
+            this.model.some.report_error(new ErrorCode.E_WIRING(),
+                "connect is only allowed inside a construct block",
+                stmt.connect_stmt.location);
+            return new Option<BoundStatement>.none();
+        }
+        if (stmt is Statement.try_stmt) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                "try/catch is not supported by this compiler yet",
+                stmt.try_stmt.location);
+            return new Option<BoundStatement>.none();
+        }
         return new Option<BoundStatement>.none();
     }
 

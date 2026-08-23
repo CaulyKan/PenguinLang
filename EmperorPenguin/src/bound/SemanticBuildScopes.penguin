@@ -237,6 +237,21 @@ class BuildScopesPass {
         if (def is Definition.type_ref_def) {
             return this.bind_type_ref_def(def.type_ref_def, scope);
         }
+        if (def is Definition.port_def) {
+            // input/output port members get their bound representation with the
+            // connect/construct lowering; until then report explicitly instead
+            // of silently dropping the declaration.
+            this.model.some.report_error(new ErrorCode.E_WIRING(),
+                "port declaration '" + def.port_def.name + "' is not supported by this compiler yet",
+                def.port_def.location);
+            return new Option<BoundDefinition>.none();
+        }
+        if (def is Definition.construct_def) {
+            this.model.some.report_error(new ErrorCode.E_WIRING(),
+                "construct blocks are not supported by this compiler yet",
+                def.construct_def.location);
+            return new Option<BoundDefinition>.none();
+        }
         if (def is Definition.global_var) {
             return this.bind_global_var_def(def.global_var, scope);
         }
@@ -668,6 +683,21 @@ class BuildScopesPass {
                 if (let bi := bound_impl.some) {
                     result.interface_impls.push(bi);
                 }
+            }
+            if (member is Definition.port_def) {
+                this.model.some.report_error(new ErrorCode.E_WIRING(),
+                    "port declaration '" + member.port_def.name + "' is not supported by this compiler yet",
+                    member.port_def.location);
+            }
+            if (member is Definition.construct_def) {
+                this.model.some.report_error(new ErrorCode.E_WIRING(),
+                    "construct blocks are not supported by this compiler yet",
+                    member.construct_def.location);
+            }
+            if (member is Definition.initial_routine) {
+                this.model.some.report_error(new ErrorCode.E_ASYNC_INVALID(),
+                    "class-level initial routines are not supported by this compiler yet",
+                    member.initial_routine.location);
             }
         }
         result.ast_source = new Option<Definition>.some(new Definition.class_def(def));

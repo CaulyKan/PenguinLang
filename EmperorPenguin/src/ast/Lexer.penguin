@@ -112,6 +112,42 @@ namespace emperor {
                     this.advance_chars(8);
                     continue;
                 }
+                if (this.match_keyword("construct")) {
+                    tokens.push(new Token(new TokenType.ConstructKw(), "construct", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 9;
+                    this.advance_chars(9);
+                    continue;
+                }
+                if (this.match_keyword("output")) {
+                    tokens.push(new Token(new TokenType.Output(), "output", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 6;
+                    this.advance_chars(6);
+                    continue;
+                }
+                if (this.match_keyword("catch")) {
+                    tokens.push(new Token(new TokenType.CatchKw(), "catch", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("input")) {
+                    tokens.push(new Token(new TokenType.Input(), "input", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 5;
+                    this.advance_chars(5);
+                    continue;
+                }
+                if (this.match_keyword("tick")) {
+                    tokens.push(new Token(new TokenType.Tick(), "tick", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 4;
+                    this.advance_chars(4);
+                    continue;
+                }
+                if (this.match_keyword("try")) {
+                    tokens.push(new Token(new TokenType.TryKw(), "try", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 3;
+                    this.advance_chars(3);
+                    continue;
+                }
                 if (this.match_keyword("__signal")) {
                     tokens.push(new Token(new TokenType.InternalSignal(), "__signal", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 8;
@@ -192,12 +228,6 @@ namespace emperor {
                 }
                 if (this.match_string("!pure")) {
                     tokens.push(new Token(new TokenType.NotPure(), "!pure", new SourceLocation(this.filename, this.line, this.col)));
-                    this.col = this.col + 5;
-                    this.advance_chars(5);
-                    continue;
-                }
-                if (this.match_keyword("event")) {
-                    tokens.push(new Token(new TokenType.EventKw(), "event", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
@@ -288,12 +318,6 @@ namespace emperor {
                 }
                 if (this.match_keyword("enum")) {
                     tokens.push(new Token(new TokenType.Enum(), "enum", new SourceLocation(this.filename, this.line, this.col)));
-                    this.col = this.col + 4;
-                    this.advance_chars(4);
-                    continue;
-                }
-                if (this.match_keyword("emit")) {
-                    tokens.push(new Token(new TokenType.Emit(), "emit", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
@@ -508,10 +532,10 @@ namespace emperor {
                     this.advance_chars(2);
                     continue;
                 }
-                if (this.match_keyword("on")) {
-                    tokens.push(new Token(new TokenType.On(), "on", new SourceLocation(this.filename, this.line, this.col)));
-                    this.col = this.col + 2;
-                    this.advance_chars(2);
+                if (this.match_keyword("connect")) {
+                    tokens.push(new Token(new TokenType.Connect(), "connect", new SourceLocation(this.filename, this.line, this.col)));
+                    this.col = this.col + 7;
+                    this.advance_chars(7);
                     continue;
                 }
                 if (ch == "(") {

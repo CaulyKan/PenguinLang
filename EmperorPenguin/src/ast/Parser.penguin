@@ -299,7 +299,7 @@ fun _mark_ast_exported(def: Definition) {
                     let bs: BlockExpressionStatement = new BlockExpressionStatement();
                     bs.expression = new Option<Expression>.some(expr);
                     node.statements.push(new Statement.block_expr(bs));
-                } else if (next.token_type is TokenType.Hash || next.token_type is TokenType.Let || next.token_type is TokenType.For || next.token_type is TokenType.Return || next.token_type is TokenType.Break || next.token_type is TokenType.Continue || next.token_type is TokenType.Emit || next.token_type is TokenType.Yield || next.token_type is TokenType.InternalSignal || next.token_type is TokenType.Semicolon) {
+                } else if (next.token_type is TokenType.Hash || next.token_type is TokenType.Let || next.token_type is TokenType.For || next.token_type is TokenType.Return || next.token_type is TokenType.Break || next.token_type is TokenType.Continue || next.token_type is TokenType.TryKw || next.token_type is TokenType.Connect || next.token_type is TokenType.Yield || next.token_type is TokenType.InternalSignal || next.token_type is TokenType.Semicolon) {
                     let stmt = this.parse_statement();
                     node.statements.push(stmt);
                 } else if (next.token_type is TokenType.Impl && this.in_specializing) {
@@ -555,11 +555,17 @@ fun _mark_ast_exported(def: Definition) {
             } else if (this.stream.peek_type() is TokenType.Wait) {
             this.stream.expect(new TokenType.Wait());
             let wait_inner: mut Option<Expression> = new Option<Expression>.none();
-            if (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RParen) && !(this.stream.peek_type() is TokenType.RBrace)) {
+            if (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RParen) && !(this.stream.peek_type() is TokenType.RBrace) && !(this.stream.peek_type() is TokenType.Tick)) {
                 wait_inner = new Option<Expression>.some(this.parse_expression());
             }
             let wait_expr: WaitExpression = new WaitExpression();
             wait_expr.expression = wait_inner;
+            // `wait <n> tick` — timer wait; `tick` is a keyword so the expression
+            // parser stops right before it.
+            if (this.stream.peek_type() is TokenType.Tick) {
+                this.stream.advance();
+                wait_expr.is_tick_unit = true;
+            }
             return new Expression.wait_expr(wait_expr);
             } else {
                 results.push(this.parse_primaryExpression());
@@ -1332,8 +1338,6 @@ fun _mark_ast_exported(def: Definition) {
                 let next: Token = this.stream.peek();
                 if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync || next.token_type is TokenType.Hash) {
                     node.members.push(this.parse_functionDefinition());
-                } else if (next.token_type is TokenType.EventKw) {
-                    node.members.push(this.parse_eventDefinition());
                 } else if (next.token_type is TokenType.Impl) {
                     node.members.push(this.parse_interfaceImplementation());
                 } else {
@@ -1476,10 +1480,12 @@ fun _mark_ast_exported(def: Definition) {
                     node.members.push(this.parse_metaDeclaration(true));
                 } else if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync) {
                     node.members.push(this.parse_functionDefinition());
-                } else if (next.token_type is TokenType.On) {
-                    node.members.push(this.parse_onRoutine());
-                } else if (next.token_type is TokenType.EventKw) {
-                    node.members.push(this.parse_eventDefinition());
+                } else if (next.token_type is TokenType.Initial) {
+                    node.members.push(this.parse_initialRoutine());
+                } else if (next.token_type is TokenType.ConstructKw) {
+                    node.members.push(this.parse_constructBlock());
+                } else if (next.token_type is TokenType.Input || next.token_type is TokenType.Output) {
+                    node.members.push(this.parse_portDeclaration());
                 } else if (next.token_type is TokenType.Impl) {
                     node.members.push(this.parse_interfaceImplementation());
                 } else {
@@ -1524,10 +1530,6 @@ fun _mark_ast_exported(def: Definition) {
                     node.members.push(this.parse_metaDeclaration(true));
                 } else if (next.token_type is TokenType.Fun || next.token_type is TokenType.Pure || next.token_type is TokenType.NotPure || next.token_type is TokenType.Extern || next.token_type is TokenType.Async || next.token_type is TokenType.NotAsync) {
                     node.members.push(this.parse_functionDefinition());
-                } else if (next.token_type is TokenType.On) {
-                    node.members.push(this.parse_onRoutine());
-                } else if (next.token_type is TokenType.EventKw) {
-                    node.members.push(this.parse_eventDefinition());
                 } else if (next.token_type is TokenType.Impl) {
                     node.members.push(this.parse_interfaceImplementation());
                 } else {
@@ -1645,8 +1647,11 @@ fun _mark_ast_exported(def: Definition) {
                 es.location = start_loc;
                 return new Statement.expression(es);
             }
-            if (next.token_type is TokenType.Emit) {
-                return this.parse_emitEventStatement();
+            if (next.token_type is TokenType.TryKw) {
+                return this.parse_tryStatement();
+            }
+            if (next.token_type is TokenType.Connect) {
+                return this.parse_connectStatement();
             }
             if (next.token_type is TokenType.Yield) {
                 return this.parse_yieldStatement();
@@ -1855,23 +1860,75 @@ fun _mark_ast_exported(def: Definition) {
             return new Statement.signal_stmt(node);
         }
 
-        // emitEventStatement: 'emit' expression '(' expression? ')' ';';
+        // connectStatement: 'connect' '(' expression ',' expression ')' ';';
         // Classification: Sequence
-        fun parse_emitEventStatement(this) -> Statement {
+        fun parse_connectStatement(this) -> Statement {
             let start_loc: SourceLocation = this.cur_loc();
-            this.stream.expect(new TokenType.Emit());
-            let event_expr: Expression = this.parse_expression();
+            this.stream.expect(new TokenType.Connect());
             this.stream.expect(new TokenType.LParen());
-            let node: mut EmitEventStatement = new EmitEventStatement();
-            node.event_expr = new Option<Expression>.some(event_expr);
-            if (!(this.stream.peek_type() is TokenType.RParen)) {
-                let arg: Expression = this.parse_expression();
-                node.argument = new Option<Expression>.some(arg);
-            }
+            let node: mut ConnectStatement = new ConnectStatement();
+            node.source = new Option<Expression>.some(this.parse_expression());
+            this.stream.expect(new TokenType.Comma());
+            node.sink = new Option<Expression>.some(this.parse_expression());
             this.stream.expect(new TokenType.RParen());
             this.stream.expect(new TokenType.Semicolon());
             node.location = start_loc;
-            return new Statement.emit_event(node);
+            return new Statement.connect_stmt(node);
+        }
+
+        // tryStatement: 'try' statement 'catch' '(' identifier (':' typeSpecifier)? ')' statement;
+        // Classification: Sequence
+        fun parse_tryStatement(this) -> Statement {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.TryKw());
+            let node: mut TryStatement = new TryStatement();
+            node.try_block = new Option<Statement>.some(this.parse_statement());
+            this.stream.expect(new TokenType.CatchKw());
+            this.stream.expect(new TokenType.LParen());
+            let name_token: Token = this.stream.advance();
+            node.catch_var_name = name_token.text;
+            if (this.stream.match(new TokenType.Colon())) {
+                let ts: TypeSpecifier = this.parse_typeSpecifier();
+                node.catch_type_spec = new Option<TypeSpecifier>.some(ts);
+            }
+            this.stream.expect(new TokenType.RParen());
+            node.catch_block = new Option<Statement>.some(this.parse_statement());
+            node.location = start_loc;
+            return new Statement.try_stmt(node);
+        }
+
+        // portDeclaration: ('input' | 'output') identifier ':' typeSpecifier ('=' expression)? ';';
+        // Classification: Sequence
+        fun parse_portDeclaration(this) -> Definition {
+            let is_input: bool = this.stream.peek_type() is TokenType.Input;
+            this.stream.advance();
+            let name_token: Token = this.stream.advance();
+            let node: mut PortDefinition = new PortDefinition(name_token.text);
+            node.is_input = is_input;
+            node.location = this.tok_loc(name_token);
+            node.source_file = name_token.location.filename;
+            this.stream.expect(new TokenType.Colon());
+            let ts: TypeSpecifier = this.parse_typeSpecifier();
+            node.type_spec = new Option<TypeSpecifier>.some(ts);
+            if (this.stream.match(new TokenType.Assign())) {
+                let default_expr: Expression = this.parse_expression();
+                node.default_expr = new Option<Expression>.some(default_expr);
+            }
+            this.stream.expect(new TokenType.Semicolon());
+            return new Definition.port_def(node);
+        }
+
+        // constructBlock: 'construct' codeBlockExpression;
+        // Classification: Sequence
+        fun parse_constructBlock(this) -> Definition {
+            let start_loc: SourceLocation = this.cur_loc();
+            this.stream.expect(new TokenType.ConstructKw());
+            let body: Expression = this.parse_codeBlockExpression();
+            let node: mut ConstructDefinition = new ConstructDefinition();
+            node.body = new Option<Expression>.some(body);
+            node.location = start_loc;
+            node.source_file = this.stream.peek().location.filename;
+            return new Definition.construct_def(node);
         }
 
         // compilationUnit: namespaceDeclaration* EOF;
@@ -1971,11 +2028,8 @@ fun _mark_ast_exported(def: Definition) {
             if (next.token_type is TokenType.Impl) {
                 return this.parse_interfaceImplementation();
             }
-            if (next.token_type is TokenType.EventKw) {
-                return this.parse_eventDefinition();
-            }
-            if (next.token_type is TokenType.On) {
-                return this.parse_onRoutine();
+            if (next.token_type is TokenType.ConstructKw) {
+                return this.parse_constructBlock();
             }
             if (next.token_type is TokenType.Semicolon) {
                 this.stream.advance();
@@ -2661,24 +2715,6 @@ fun _mark_ast_exported(def: Definition) {
             return "object";
         }
 
-        // eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
-        // Classification: Sequence
-        fun parse_eventDefinition(this) -> Definition {
-            this.stream.expect(new TokenType.EventKw());
-            let name_token: Token = this.stream.advance();
-            let node: EventDefinition = new EventDefinition(name_token.text);
-            node.source_file = name_token.location.filename;
-            if (this.stream.match(new TokenType.Colon())) {
-                let type_token: Token = this.stream.advance();
-                let ts: TypeSpecifier = new TypeSpecifier();
-                ts.location = this.tok_loc(type_token);
-                ts.name = type_token.text;
-                node.event_type = new Option<TypeSpecifier>.some(ts);
-            }
-            this.stream.expect(new TokenType.Semicolon());
-            return new Definition.event_def(node);
-        }
-
         // initialRoutine: 'initial' identifier? codeBlockExpression;
         // Classification: Sequence
         fun parse_initialRoutine(this) -> Definition {
@@ -2694,39 +2730,6 @@ fun _mark_ast_exported(def: Definition) {
             node.location = start_loc;
             node.source_file = this.stream.peek().location.filename;
             return new Definition.initial_routine(node);
-        }
-
-        // onRoutine: 'on' expression ('(' declarationWithoutInitializer? ')')? codeBlockExpression;
-        // Classification: Sequence
-        fun parse_onRoutine(this) -> Definition {
-            this.stream.expect(new TokenType.On());
-            let node: OnRoutineDefinition = new OnRoutineDefinition();
-            node.location = this.cur_loc();
-            node.source_file = this.stream.peek().location.filename;
-            let event_token: Token = this.stream.advance();
-            let event_id: IdentifierExpression = new IdentifierExpression(event_token.text);
-            if (this.stream.peek_type() is TokenType.Dot) {
-                let base_id: IdentifierExpression = new IdentifierExpression(event_token.text);
-                this.stream.expect(new TokenType.Dot());
-                let member_token: Token = this.stream.advance();
-                let ma: MemberAccessExpression = new MemberAccessExpression();
-                ma.base_expr = new Option<Expression>.some(new Expression.identifier(base_id));
-                ma.member_name = member_token.text;
-                node.event_expr = new Option<Expression>.some(new Expression.member_access(ma));
-            } else {
-                node.event_name = event_token.text;
-                node.event_expr = new Option<Expression>.some(new Expression.identifier(event_id));
-            }
-            if (this.stream.peek_type() is TokenType.LParen) {
-                this.stream.expect(new TokenType.LParen());
-                if (!(this.stream.peek_type() is TokenType.RParen)) {
-                    this.parse_declarationWithoutInitializer();
-                }
-                this.stream.expect(new TokenType.RParen());
-            }
-            let body: Expression = this.parse_codeBlockExpression();
-            node.body = new Option<Expression>.some(body);
-            return new Definition.on_routine_def(node);
         }
 
         // namespaceDefinition: 'namespace' identifier '{' namespaceDeclaration* '}';

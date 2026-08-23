@@ -65,9 +65,7 @@ namespace emperor {
         UnsafeCast;
         Else;
         ElifKw;
-        Emit;
         Enum;
-        EventKw;
         Extern;
         Export;
         False;
@@ -88,7 +86,6 @@ namespace emperor {
         Mut;
         Namespace;
         New;
-        On;
         Pure;
         Return;
         SelfKw;
@@ -106,6 +103,14 @@ namespace emperor {
         Wait;
         While;
         Yield;
+        // RTL ports / concurrency vocabulary
+        Connect;
+        ConstructKw;
+        Tick;
+        TryKw;
+        CatchKw;
+        Input;
+        Output;
     }
 
 

@@ -87,6 +87,21 @@ class BindExpressionsPass {
             // expression that writes the payload when the check succeeds.
             return this.bind_try_bind(expr.try_bind, scope);
         }
+        if (expr is Expression.wait_expr) {
+            // wait is a scheduler suspension point — bound by the concurrency
+            // lowering (delta-round park). Report explicitly instead of
+            // silently emitting nothing.
+            this.model.some.report_error(new ErrorCode.E_ASYNC_INVALID(),
+                "'wait' is not supported by this compiler yet",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
+        }
+        if (expr is Expression.spawn_async) {
+            this.model.some.report_error(new ErrorCode.E_ASYNC_INVALID(),
+                "'async <call>' spawn is not supported by this compiler yet",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
+        }
         return new Option<BoundExpression>.none();
     }
 

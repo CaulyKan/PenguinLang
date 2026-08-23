@@ -84,8 +84,8 @@ fun set_def_source_file(def: Definition, fname: string) {
     else if (def is Definition.impl_for_def) { def.impl_for_def.source_file = fname; }
     else if (def is Definition.type_ref_def) { def.type_ref_def.source_file = fname; }
     else if (def is Definition.global_var) { def.global_var.source_file = fname; }
-    else if (def is Definition.event_def) { def.event_def.source_file = fname; }
-    else if (def is Definition.on_routine_def) { def.on_routine_def.source_file = fname; }
+    else if (def is Definition.port_def) { def.port_def.source_file = fname; }
+    else if (def is Definition.construct_def) { def.construct_def.source_file = fname; }
     else if (def is Definition.meta_function_def) { def.meta_function_def.source_file = fname; }
     else if (def is Definition.meta_class_def) { def.meta_class_def.source_file = fname; }
     else if (def is Definition.meta_if_def) { def.meta_if_def.source_file = fname; }
@@ -114,8 +114,8 @@ fun ast_def_filename(def: Definition) -> string {
     if (def is Definition.impl_for_def) { return def.impl_for_def.source_file; }
     if (def is Definition.type_ref_def) { return def.type_ref_def.source_file; }
     if (def is Definition.global_var) { return def.global_var.source_file; }
-    if (def is Definition.event_def) { return def.event_def.source_file; }
-    if (def is Definition.on_routine_def) { return def.on_routine_def.source_file; }
+    if (def is Definition.port_def) { return def.port_def.source_file; }
+    if (def is Definition.construct_def) { return def.construct_def.source_file; }
     if (def is Definition.meta_function_def) { return def.meta_function_def.source_file; }
     if (def is Definition.meta_class_def) { return def.meta_class_def.source_file; }
     if (def is Definition.meta_if_def) { return def.meta_if_def.source_file; }
