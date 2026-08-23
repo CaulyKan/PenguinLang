@@ -4,6 +4,7 @@ Multiple initial routines execute in sequence.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

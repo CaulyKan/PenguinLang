@@ -4,6 +4,7 @@ Call an async function which uses wait; execution resumes after the function com
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

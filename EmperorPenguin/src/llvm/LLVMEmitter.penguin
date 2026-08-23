@@ -252,6 +252,7 @@ class LLVMEmitter {
     needs_vtable_lookup: mut bool = false;
     needs_isinstance: mut bool = false;
     needs_check_class: mut bool = false;
+    needs_sched_run: mut bool = false;
     has_boxing: mut bool = false;
     has_main: mut bool = false;
     needs_memset: mut bool = false;
@@ -519,6 +520,7 @@ class LLVMEmitter {
         this.needs_double_to_string = false;
         this.needs_string_equal = false;
         this.needs_vtable_lookup = false;
+        this.needs_sched_run = false;
         this.needs_isinstance = false;
         this.needs_check_class = false;
         this.has_boxing = false;
@@ -794,6 +796,10 @@ class LLVMEmitter {
         }
         if (this.needs_vtable_lookup) {
             target.append("declare ptr @_emperor_vtable_lookup(ptr, ptr, i32)\n");
+        }
+        if (this.needs_sched_run) {
+            target.append("declare void @_emperor_co_spawn_fn0(ptr)\n");
+            target.append("declare i32 @_emperor_sched_run()\n");
         }
         if (this.needs_isinstance) {
             target.append("declare i32 @_emperor_isinstance(ptr, ptr)\n");
@@ -1164,12 +1170,26 @@ class LLVMEmitter {
                 ini = ini + 1;
             }
             let i: mut i64 = 0;
+            let spawned: mut bool = false;
             while (i < cast<i64>(module.entry_functions.size())) {
                 let entry: IRFunction = module.entry_functions.at(cast<u64>(i)).some;
-                this.sb.append("  call void " + this.llvm_func_name(entry.name) + "()\n");
+                // Initial routines run as coroutines on their own stacks: a
+                // wait inside an initial (or anything it calls) parks that
+                // coroutine instead of being a compile error. With no waits,
+                // the scheduler drains the ready queue FIFO to completion —
+                // sequentially equivalent to the old direct calls.
+                this.sb.append("  call void @_emperor_co_spawn_fn0(ptr " + this.llvm_func_name(entry.name) + ")\n");
+                spawned = true;
                 i = i + 1;
             }
-            this.sb.append("  ret i32 0\n");
+            if (spawned) {
+                this.needs_sched_run = true;
+                let run_tmp: string = this.next_tmp();
+                this.sb.append("  " + run_tmp + " = call i32 @_emperor_sched_run()\n");
+                this.sb.append("  ret i32 " + run_tmp + "\n");
+            } else {
+                this.sb.append("  ret i32 0\n");
+            }
             this.sb.append("}\n");
         }
     }

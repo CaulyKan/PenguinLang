@@ -4,6 +4,7 @@ Two jobs wait different tick counts. The shorter timer fires first and _sim_now(
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

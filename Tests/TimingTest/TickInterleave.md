@@ -4,6 +4,7 @@ Two initial routines wait different tick counts. The shorter timer fires first, 
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

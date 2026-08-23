@@ -4,6 +4,7 @@ Wait on an async future.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

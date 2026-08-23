@@ -145,7 +145,7 @@ class InterfacesPass {
         if (this.model.some.already_processed(bound_def)) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(cls.name));
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, this.extract_template_name(cls.name), cls.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.class_def) {
                 this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
             }
@@ -155,7 +155,7 @@ class InterfacesPass {
         }
         if (bound_def is BoundDefinition.enum_def) {
             let e: mut BoundEnumDefinition = bound_def.enum_def;
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(e.name));
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, this.extract_template_name(e.name), e.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
@@ -165,7 +165,7 @@ class InterfacesPass {
         }
         if (bound_def is BoundDefinition.interface_def) {
             let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, this.extract_template_name(iface.name));
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, this.extract_template_name(iface.name), iface.ast_source);
             if (ast_def.is_some()) {
                 if (ast_def.some is Definition.interface_def) {
                     this.build_interface_vtables(ast_def.some.interface_def, iface, global_scope);

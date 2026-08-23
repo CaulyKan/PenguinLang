@@ -430,6 +430,19 @@ EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
 
     void* stack_top = _emperor_gc_get_stack_pointer();
 
+    /* Coroutine scheduler interop (scheduler.c): when a collection triggers on
+     * a coroutine's mmap'd stack, the raw stack pointer belongs to a different
+     * memory region and [main_bottom, sp) would span unrelated mappings. Scan
+     * the main stack only up to the watermark recorded at the last switch
+     * (with a setjmp register flush, so main's callee-saved registers are on
+     * its stack and covered); the coroutine's own stack — including every
+     * other coroutine's — is a registered scan region below. */
+    extern void* _emperor_gc_main_watermark;
+    extern int _emperor_gc_on_coroutine;
+    if (_emperor_gc_on_coroutine && _emperor_gc_main_watermark) {
+        stack_top = _emperor_gc_main_watermark;
+    }
+
     /* Resolve interior pointers to their owning block during marking (see
      * gc_resolve_block). If the sorted index cannot be rebuilt (allocation
      * failure), retain everything this cycle instead of risking a partial

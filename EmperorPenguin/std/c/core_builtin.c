@@ -106,6 +106,19 @@ void _emperor_eprintln(const char *s) {
 }
 
 void _emperor_exit(int code) {
+    /* exit() inside a coroutine (initial routine / async spawn) must unwind
+     * to the scheduler instead of terminating the process mid-switch: the
+     * scheduler ends the program with this code after flushing its loop.
+     * _emperor_gc_on_coroutine (scheduler.c) is non-zero exactly while a
+     * coroutine is running; zero for plain programs → direct exit. */
+    {
+        extern int _emperor_gc_on_coroutine;
+        extern void _emperor_sched_exit(int);
+        if (_emperor_gc_on_coroutine) {
+            _emperor_sched_exit(code);
+            return;
+        }
+    }
     exit(code);
 }
 

@@ -4,6 +4,7 @@ A for loop waits N ticks per iteration where N varies at runtime; the output seq
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

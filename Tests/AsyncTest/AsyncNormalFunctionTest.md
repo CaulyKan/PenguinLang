@@ -4,6 +4,7 @@ Async call to a normal (non-async) function.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

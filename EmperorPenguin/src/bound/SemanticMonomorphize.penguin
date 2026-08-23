@@ -1658,8 +1658,66 @@ class MonomorphizePass {
             }
             i = i + 1;
         }
+        // Nested generic instantiations referenced by the resolved signatures
+        // (e.g. IFuture<R>'s `poll -> FutureState<R>`) must be specialized too.
+        // The pass-3 fixpoint cannot see them for specializations created on
+        // demand at pass 8 (spawn/wait synthesis: the template AST only spells
+        // FutureState<T>): without this the default method's body binds against
+        // a template+args type with no emitted layout, which lowers to a bare
+        // i64. Only the pass-8 path registers here — during pass 3 the
+        // implementing class's own AST already supplies the nested
+        // instantiation, and pre-registering it would make the fixpoint's
+        // is_instantiation_already_exists check skip emitting it.
+        if (this.model.some.current_unit.is_some()) {
+            let ni: mut i64 = 0;
+            while (ni < cast<i64>(result.methods.size())) {
+                let md: BoundDefinition = result.methods.at(cast<u64>(ni)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.ensure_nested_specialization(md.function_def.return_type, global_scope);
+                    let npi: mut i64 = 0;
+                    while (npi < cast<i64>(md.function_def.parameters.size())) {
+                        this.ensure_nested_specialization(md.function_def.parameters.at(cast<u64>(npi)).some.bound_type, global_scope);
+                        npi = npi + 1;
+                    }
+                }
+                ni = ni + 1;
+            }
+        }
         result.ast_source = new Option<Definition>.some(new Definition.interface_def(ast_iface));
         return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(result));
+    }
+
+    // Ensure the generic instantiation carried by `bt` (template def + concrete
+    // args) exists as a specialized def AND is registered in the current
+    // compilation unit, so it is replayed through the remaining passes and its
+    // layout is emitted. Recurses into the generic args (IFuture<List<i32>>
+    // also needs List<i32>). Self-referential shapes terminate: the def's type
+    // symbol is registered in the global scope before its members resolve, so
+    // the re-entrant ensure hits the already-exists check.
+    fun ensure_nested_specialization(mut this, bt: BoundType, global_scope: mut BoundScope) {
+        if (bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = bt.type_definition.some;
+        let is_generic: mut bool = false;
+        if (td is BoundDefinition.class_def) { is_generic = cast<i64>(td.class_def.generic_params.size()) > 0; }
+        if (td is BoundDefinition.enum_def) { is_generic = cast<i64>(td.enum_def.generic_params.size()) > 0; }
+        if (td is BoundDefinition.interface_def) { is_generic = cast<i64>(td.interface_def.generic_params.size()) > 0; }
+        if (is_generic && cast<i64>(bt.generic_args.size()) > 0) {
+            let spec: Option<BoundDefinition> = this.ensure_specialized_def(bt, global_scope);
+            let m: mut SemanticModel = this.model.some;
+            if (spec.is_some() && m.current_unit.is_some()) {
+                let unit: mut BoundCompilationUnit = m.current_unit.some;
+                unit.definitions.push(spec.some);
+                m.catch_up_def_before_bodies(spec.some, unit);
+            }
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(i)).some;
+            if (!arg_is_value(arg)) {
+                this.ensure_nested_specialization(arg_as_bound_type(arg), global_scope);
+            }
+            i = i + 1;
+        }
     }
     fun collect_function_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
         _utils.trace_enter("Enter collect_function_instantiations_from_ast");

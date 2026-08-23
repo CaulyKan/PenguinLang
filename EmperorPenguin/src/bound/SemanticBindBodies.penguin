@@ -22,9 +22,11 @@ class BindBodiesPass {
         _utils.trace_enter("Enter pass_bind_expressions");
         this.model.some.current_unit = new Option<BoundCompilationUnit>.some(result);
         let ast_count: i64 = cast<i64>(unit.definitions.size());
-        let total: i64 = cast<i64>(result.definitions.size());
         let i: mut i64 = 0;
-        while (i < total) {
+        // Dynamic bound: spawn-site synthesis (bind_spawn_async) appends defs
+        // DURING body binding; their own bodies bind here in the loop — never
+        // re-entrantly inside an expression bind (which corrupts resolution).
+        while (i < cast<i64>(result.definitions.size())) {
             if (i < ast_count) {
                 let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
@@ -50,7 +52,7 @@ class BindBodiesPass {
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
             let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_cls.name);
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_cls.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.class_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
@@ -60,7 +62,7 @@ class BindBodiesPass {
         if (bound_def is BoundDefinition.enum_def) {
             let bound_enum: BoundEnumDefinition = bound_def.enum_def;
             let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_enum.name);
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_enum.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
@@ -70,7 +72,7 @@ class BindBodiesPass {
         if (bound_def is BoundDefinition.function_def) {
             let bound_func: BoundFunctionDefinition = bound_def.function_def;
             let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_func.name);
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, new Option<Definition>.none());
             if (ast_def.is_some() && ast_def.some is Definition.function_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
@@ -80,7 +82,7 @@ class BindBodiesPass {
         if (bound_def is BoundDefinition.interface_def) {
             let bound_iface: BoundInterfaceDefinition = bound_def.interface_def;
             let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_iface.name);
-            let ast_def: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, template_name);
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_iface.ast_source);
             if (ast_def.is_some()) {
                 if (ast_def.some is Definition.interface_def) {
                     return this.bind_body_for_def(ast_def.some, bound_def, result);

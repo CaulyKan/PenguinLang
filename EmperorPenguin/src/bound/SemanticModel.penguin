@@ -99,6 +99,10 @@ class SemanticModel {
     // arg_as_bound_type from json.penguin #funs), which file namespaces
     // would hide.
     top_level_in_global: bool = false;
+    // Spawn-site counter: every `async f(args)` desugar synthesizes a ctx
+    // class (__SpawnCtx_<n>) + site block; the counter gives each site a
+    // unique class name within the compilation.
+    spawn_site_counter: mut i64 = 0;
 
     fun new(mut this) {
 
@@ -589,6 +593,30 @@ class SemanticModel {
             this.classify_value_types_pass.validate_interface_usage_def(def);
         }
         if (saved >= 8) { this.current_pass_index = 8; this.bind_bodies_pass.bind_body_for_specialized_def(def, result); }
+        this.current_pass_index = saved;
+    }
+
+    // Same replay but WITHOUT the pass-8 body binding: used by bind-time def
+    // synthesis (bind_spawn_async). Signature-level passes (symbols, ctors,
+    // vtables, classification) are safe to run nested inside an expression
+    // bind; body binding is not — the appended def's bodies are bound later
+    // by the (dynamic) pass-8 run loop.
+    fun catch_up_def_before_bodies(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter catch_up_def_before_bodies");
+        let saved: i64 = this.current_pass_index;
+        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
+        if (saved >= 4) { this.current_pass_index = 4; this.bind_symbols_pass.bind_symbols_for_def(def); }
+        if (saved >= 5) { this.current_pass_index = 5; this.constructors_pass.init_constructors_for_def(def, def_scope); }
+        if (saved >= 6) {
+            this.current_pass_index = 6;
+            this.interfaces_pass.build_vtables_for_specialized_def(def, def_scope);
+            this.interfaces_pass.merge_inherited_vtables_for_def(def, def_scope);
+        }
+        if (saved >= 7) {
+            this.current_pass_index = 7;
+            this.classify_value_types_pass.classify_def(def, new _utils.List<string>());
+            this.classify_value_types_pass.validate_interface_usage_def(def);
+        }
         this.current_pass_index = saved;
     }
 

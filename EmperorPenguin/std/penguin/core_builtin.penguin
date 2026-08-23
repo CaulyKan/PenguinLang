@@ -35,6 +35,129 @@ namespace __builtin {
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
 
+    // --- Coroutine scheduler runtime (scheduler.c) ---
+    // Stackful coroutines: initial routines and `async f()` spawns each run on
+    // their own stack; `wait` parks the current coroutine for one delta round.
+    extern fun _co_wait();
+    extern fun _sim_now() -> i64;
+    extern fun _sim_delta() -> i64;
+    extern fun _sim_activity();
+    extern fun _sim_settled() -> bool;
+    // Register a timer deadline; readiness is observed by _TimerWait.poll.
+    extern fun _timer_at(deadline: i64);
+    // Spawn a coroutine whose entry is a __ICoroutineEntry object (the
+    // async-spawn desugar's ctx class implements it).
+    extern fun _co_spawn_entry(entry: mut __ICoroutineEntry);
+    // Throw a runtime error: caught by the innermost enclosing try/catch of
+    // the current coroutine, or reported and exited if uncaught.
+    extern fun __throw_runtime_error(message: string, code: i64);
+    extern fun __throw_get_msg() -> string;
+    extern fun __throw_get_code() -> i64;
+
+    // The coroutine entry interface: __enter runs on the spawned coroutine's
+    // own stack (void return, single receiver — a stable C-side vtable call).
+    interface __ICoroutineEntry {
+        impl IReferenceType;
+        fun __enter(mut this);
+    }
+
+    #template(T: type)
+    enum FutureState {
+        not_ready;
+        ready: T;
+        finished;
+        ready_finished: T;
+    }
+
+    // A waitable value: poll probes readiness (non-consuming from the
+    // waiter's perspective — implementations decide cursor semantics);
+    // do_wait parks one delta round between polls until a delivering state.
+    #template(T: type)
+    interface IFuture {
+        impl IReferenceType;
+        fun poll(this) -> mut FutureState<T>;
+
+        !async fun do_wait(mut this) -> T {
+            let state: mut FutureState<T> = new FutureState<T>.not_ready();
+            while (true) {
+                __builtin._co_wait();
+                state = this.poll();
+                if (state is FutureState<T>.ready_finished) {
+                    break;
+                }
+                if (state is FutureState<T>.finished) {
+                    break;
+                }
+            }
+            if (state is FutureState<T>.ready_finished) {
+                __builtin._sim_activity();
+            }
+            // A `finished` (already-consumed) future returns its stale payload
+            // slot — BabyPenguin returns an uninitialized default there.
+            return state.ready_finished;
+        }
+    }
+
+    // Timer future: `wait n tick` desugars to _after(n).do_wait() — the
+    // deadline is registered with the scheduler; the clock advances when the
+    // simulation is otherwise idle.
+    class _TimerWait {
+        impl IReferenceType;
+        finished: mut bool = false;
+        result_tick: mut i64 = 0;
+
+        impl IFuture<i64> {
+            fun poll(this) -> mut FutureState<i64> {
+                if (__builtin._sim_now() >= this.result_tick) {
+                    return new FutureState<i64>.ready_finished(this.result_tick);
+                }
+                return new FutureState<i64>.not_ready();
+            }
+        }
+    }
+
+    fun _after(n: i64) -> mut _TimerWait {
+        let t: mut _TimerWait = new _TimerWait();
+        t.result_tick = __builtin._sim_now() + n;
+        __builtin._timer_at(t.result_tick);
+        return t;
+    }
+
+    // The future behind every `async f(args)` spawn: the synthesized ctx
+    // class's __enter calls complete() with the function's result.
+    #template(R: type)
+    class __SpawnFuture {
+        impl IReferenceType;
+        done: mut bool = false;
+        result: mut Option<R> = new Option<R>.none();
+
+        fun complete(mut this, v: R) {
+            this.result = new Option<R>.some(v);
+            this.done = true;
+        }
+
+        impl IFuture<R> {
+            fun poll(this) -> mut FutureState<R> {
+                if (this.done && this.result.is_some()) {
+                    return new FutureState<R>.ready_finished(this.result.some);
+                }
+                return new FutureState<R>.not_ready();
+            }
+        }
+    }
+
+    // Unit future for void spawns: `let f = async set_x();` yields one; it
+    // cannot be waited (void has no deliverable value — BabyPenguin's
+    // IFuture<void> gap is intentionally not emulated).
+    class __SpawnUnitFuture {
+        impl IReferenceType;
+        done: mut bool = false;
+
+        fun complete_unit(mut this) {
+            this.done = true;
+        }
+    }
+
     // JIT compilation API (backed by libpenguin_jit / LLVM ORC)
     extern fun penguin_jit_create() -> u64;
     extern fun penguin_jit_add_module(ctx: u64, name: string, ir_text: string) -> i32;

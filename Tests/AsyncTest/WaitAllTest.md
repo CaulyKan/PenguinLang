@@ -4,6 +4,7 @@ Explicit wait on an async function call.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

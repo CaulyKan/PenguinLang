@@ -4,6 +4,7 @@ Return from initial block stops execution of that block; subsequent initial bloc
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

@@ -4,6 +4,7 @@ Wait in initial block yields control to other initial routines.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

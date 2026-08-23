@@ -4,6 +4,7 @@ Async function with arguments.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

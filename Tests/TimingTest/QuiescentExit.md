@@ -4,6 +4,7 @@ All initial routines complete after their timers fire; the scheduler quiesces an
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

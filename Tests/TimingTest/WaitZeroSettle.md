@@ -4,6 +4,7 @@ An async function assigned to a global variable; waiting 0 ticks settles it, so 
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

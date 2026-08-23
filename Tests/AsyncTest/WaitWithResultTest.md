@@ -4,6 +4,7 @@ Wait on async function that returns a value.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

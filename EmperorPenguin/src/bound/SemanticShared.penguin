@@ -155,8 +155,7 @@ fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut Bo
 // defs, the namespace's own scope for namespaces, the variable symbol's
 // enclosing scope for globals; fallback is the global scope. Used where a
 // pass iterates bound defs and needs the def's lookup context.
-fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {
-    if (def is BoundDefinition.class_def) {
+fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {    if (def is BoundDefinition.class_def) {
         if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
             return def.class_def.scope.some.parent.some;
         }
@@ -192,6 +191,17 @@ fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut 
         }
     }
     return global_scope;
+}
+
+// Replay-pass AST lookup: the unit's definitions first (normal defs); when
+// the def is a bind-time synthesized one (async-spawn ctx classes — see
+// BindExpressionsPass.bind_spawn_async) it is not in the unit, and its AST
+// rides on ast_source.
+fun replay_find_ast_def(model: SemanticModel, template_name: string, ast_source: Option<Definition>) -> Option<Definition> {
+    let found: Option<Definition> = model.monomorphize_pass.find_ast_def_by_name(model.ast_definitions, template_name);
+    if (found.is_some()) { return found; }
+    if (ast_source.is_some()) { return ast_source; }
+    return new Option<Definition>.none();
 }
 
 }
