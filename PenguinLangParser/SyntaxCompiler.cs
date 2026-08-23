@@ -86,7 +86,6 @@ namespace PenguinLangParser
         Function,
         LambdaFunction,
         InitialRoutine,
-        OnRoutine,
         CodeBlock,
         Enum,
         Interface,

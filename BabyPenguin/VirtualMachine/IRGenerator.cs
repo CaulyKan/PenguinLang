@@ -102,9 +102,13 @@ namespace BabyPenguin.VirtualMachine
                 }
             }
 
-            // Translate instructions
+            // Translate instructions, recording the IR instruction count at each
+            // semantic instruction boundary (translation is not 1:1 — conditional
+            // gotos expand, signals are dropped) so catch-region ranges can be mapped.
+            var irIndexAt = new int[cc.Instructions.Count + 1];
             for (int ip = 0; ip < cc.Instructions.Count; ip++)
             {
+                irIndexAt[ip] = irFunc.Instructions.Count;
                 var inst = cc.Instructions[ip];
                 var loc = MakeLoc(inst.SourceLocation);
 
@@ -320,6 +324,17 @@ namespace BabyPenguin.VirtualMachine
                         }
                         break;
                 }
+            }
+
+            irIndexAt[cc.Instructions.Count] = irFunc.Instructions.Count;
+
+            // Translate semantic catch regions into IR index space. Semantic
+            // regions are innermost-first already; preserve that order.
+            foreach (var region in cc.CodeContainerData.CatchRegions)
+            {
+                var startIP = irIndexAt[region.StartIndex];
+                var handlerIP = irIndexAt[region.HandlerIndex];
+                irFunc.CatchRegions.Add(new IRFunction.CatchRegion(startIP, handlerIP, handlerIP, symbolRegs[region.CatchSymbol.FullName()]));
             }
 
             IRValue ResolveReg(ISymbol symbol)

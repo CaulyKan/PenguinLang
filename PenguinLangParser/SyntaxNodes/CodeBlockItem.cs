@@ -62,7 +62,10 @@ namespace PenguinLangParser.SyntaxNodes
             return Type switch
             {
                 CodeBlockItemType.Statement => Statement!.BuildText(),
-                CodeBlockItemType.Declaration => Declaration!.BuildText() + ";",
+                // The grammar requires the letKeyword for block-level
+                // declarations (`letKeyword declaration ';'`), so the
+                // regenerated text must carry the `let` (and `mut`) prefix.
+                CodeBlockItemType.Declaration => (Declaration!.SuggestMutableTypeInfer ? "let mut " : "let ") + Declaration!.BuildText() + ";",
                 CodeBlockItemType.TypeReference => TypeReference!.BuildText() + ";",
                 _ => throw new NotImplementedException($"Unsupported CodeBlockItemType: {Type}")
             };

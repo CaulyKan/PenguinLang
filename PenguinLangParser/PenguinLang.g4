@@ -39,6 +39,7 @@ postfixExpression:
 	| postfixExpression '(' expression? (',' expression)* ')'
 	| 'new' typeSpecifier '(' expression? (',' expression)* ')'
 	| 'async' expression
+	| 'wait' expression 'tick'
 	| 'wait' expression?;
 
 unaryExpression:
@@ -165,7 +166,6 @@ interfaceDefinition:
 		(declaration ';')
 		| functionDefinition
 		| interfaceImplementation
-		| eventDefinition
 	)* '}';
 
 interfaceImplementation:
@@ -183,19 +183,29 @@ interfaceForImplementation:
 classDefinition:
 	(templateDeclaration)? 'class' identifier '{' (
 		(classDeclaration ';')
+		| portDeclaration
 		| functionDefinition
 		| interfaceImplementation
-		| eventDefinition
-		| onRoutine
+		| initialRoutine
+		| constructBlock
 	)* '}';
+
+// RTL-style module port: input is module-read-only (a bound ISource view),
+// output is module-written via write()/assignment sugar (a bound ISink view).
+portDeclaration:
+	('input' | 'output') identifier ':' typeSpecifier (
+		'=' expression
+	)? ';';
+
+// Top-level or class-level elaboration block: the only place `connect` is
+// legal. Runs before any initial routine of the enclosing scope.
+constructBlock: 'construct' codeBlockExpression;
 
 enumDefinition:
 	(templateDeclaration)? 'enum' identifier '{' (
 		enumDeclaration
 		| functionDefinition
 		| interfaceImplementation
-		| eventDefinition
-		| onRoutine
 	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
@@ -221,10 +231,19 @@ statement:
 	| assignmentStatement
 	| jumpStatement
 	| returnStatement
-	| yieldStatement
-	| signalStatement
-	| emitEventStatement
-	| ';';
+| yieldStatement
+| signalStatement
+| tryStatement
+| connectStatement
+| ';';
+
+tryStatement:
+	'try' statement 'catch' '(' declaration ')' statement;
+
+// Wire a source (output port / channel) to a sink (input port / channel) by
+// inserting a fresh wire between them. Legal only inside a construct block.
+connectStatement:
+	'connect' '(' expression ',' expression ')' ';';
 
 assignmentStatement:
 	postfixExpression assignmentOperator expression ';';
@@ -254,8 +273,6 @@ yieldStatement: 'yield' expression? ';';
 
 signalStatement: '__signal' expression;
 
-emitEventStatement: 'emit' expression '(' expression? ')' ';';
-
 compilationUnit: namespaceDeclaration* EOF;
 
 namespaceDeclaration:
@@ -269,8 +286,7 @@ namespaceDeclaration:
 		| enumDefinition
 		| interfaceDefinition
 		| interfaceForImplementation
-		| eventDefinition
-		| onRoutine
+		| constructBlock
 		| ';'
 	);
 
@@ -294,12 +310,7 @@ functionDefinition:
 		'(' parameterList ')'
 	)? ('->' typeSpecifier)? (codeBlockExpression | ';');
 
-eventDefinition: 'event' identifier (':' typeSpecifier)? ';';
-
 initialRoutine: 'initial' identifier? codeBlockExpression;
-
-onRoutine:
-	'on' expression ('(' declarationWithoutInitializer? ')')? codeBlockExpression;
 
 namespaceDefinition:
 	'namespace' identifier '{' namespaceDeclaration* '}';

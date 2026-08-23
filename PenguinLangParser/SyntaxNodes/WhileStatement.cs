@@ -31,7 +31,7 @@ namespace PenguinLangParser.SyntaxNodes
 
         public override string BuildText()
         {
-            return $"while {Condition!.BuildText()} {BodyStatement!.BuildText()}";
+            return $"while ({Condition!.BuildText()}) {BodyStatement!.BuildText()}";
         }
     }
 }

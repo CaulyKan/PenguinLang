@@ -47,7 +47,8 @@ initial {
 	}
 }
 
-on a == 5 {
+initial {
+	wait a == 5;
 	println("a is 5");
 }
 ```
@@ -94,46 +95,26 @@ Note that BabyPenguin (which is a minimal implementation of penguin-lang used to
 
 
 ## Event Asynchronization
-Events must be value-typed and are by default run asynchronously and in parallel. For example:
+Events are first-class values (`Event<T>`, payload must be value-typed) consumed by wait loops. For example:
 ```
-event A : i32;
+let A : mut Event<i32> = new Event<i32>();
 
 initial {
 	for (let mut i : i32 in range(0, 10)) {
-		emit A(i);
+		A.emit(i);
 	}
 }
 
-on A(x) {
-	print(cast<string>(x));
-}
-```
-The output order is uncertain, because the runtime is free to parallelize event handlers if there is no dependency.
-
-To ensure the order of event handlers, you can use `!pure` keyword to mark the event handler as 'pure', which means it has no side effect and is not a 'pure function'. 
-```
-on !pure A(x) {
-	print(cast<string>(x));   // guaranteed to receive events in order
-}
-```
-
-However, the compiler can automatically detect if a function is pure or not, such as visiting a mutable variable or calling a non-pure function.
-```
-on A(x) {
-	global_var = x;
-	print(cast<string>(x));   // guaranteed to receive events in order
-}
-```
-
-Another way is to use initial and wait syntax, the order of events are guaranteed, however not all events are guaranteed to be received, because `wait` only waits for next event.
-```
 initial {
 	while (true) {
-		let x : i32 = wait A;  // guaranteed to be receive events in order
+		let x : i32 = wait A;
 		print(cast<string>(x));
 	}
 }
 ```
+The subscription loop receives events in emission order. An `emit` yields one delta after broadcasting, so a re-parking loop keeps up with back-to-back emissions; a value emitted while nobody is parked is lost (broadcast, not queueing — use a `Fifo` channel when every value must be preserved regardless of consumer pacing, see `11_PortsChannelsEvents.md`).
+
+Multiple parked wait loops all receive every emission (broadcast); within one delta they wake in spawn order under the cooperative scheduler.
 
 
 ## Folking

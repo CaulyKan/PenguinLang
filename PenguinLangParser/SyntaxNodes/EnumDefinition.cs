@@ -25,12 +25,6 @@ namespace PenguinLangParser.SyntaxNodes
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                     .Select(x => Build<InterfaceImplementation>(walker, x))
                     .ToList();
-                Events = context.children.OfType<EventDefinitionContext>()
-                    .Select(x => Build<EventDefinition>(walker, x))
-                    .ToList();
-                OnRoutines = context.children.OfType<OnRoutineContext>()
-                    .Select(x => Build<OnRoutineDefinition>(walker, x))
-                    .ToList();
 
                 walker.PopScope();
             }
@@ -79,12 +73,6 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public List<InterfaceImplementation> InterfaceImplementations { get; private set; } = [];
 
-        [ChildrenNode]
-        public List<EventDefinition> Events { get; set; } = [];
-
-        [ChildrenNode]
-        public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
-
         public override string ToShortString() => Name;
 
         public override string BuildText()
@@ -101,14 +89,6 @@ namespace PenguinLangParser.SyntaxNodes
                 parts.Add(GenericDefinitions.BuildText());
             }
             parts.Add("{\n");
-            if (Events.Count > 0)
-            {
-                parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
-            }
-            if (OnRoutines.Count > 0)
-            {
-                parts.Add(string.Join("\n", OnRoutines.Select(i => i.BuildText())));
-            }
             if (InterfaceImplementations.Count > 0)
             {
                 parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildText())));

@@ -24,13 +24,15 @@ namespace PenguinLangParser.SyntaxNodes
                 InterfaceImplementations = context.children.OfType<InterfaceImplementationContext>()
                    .Select(x => Build<InterfaceImplementation>(walker, x))
                    .ToList();
-                Events = context.children.OfType<EventDefinitionContext>()
-                    .Select(x => Build<EventDefinition>(walker, x))
-                    .ToList();
-
-                OnRoutines = context.children.OfType<OnRoutineContext>()
-                    .Select(x => Build<OnRoutineDefinition>(walker, x))
-                    .ToList();
+                Ports = context.children.OfType<PortDeclarationContext>()
+                   .Select(x => Build<PortDefinition>(walker, x))
+                   .ToList();
+                InitialRoutines = context.children.OfType<InitialRoutineContext>()
+                   .Select(x => Build<InitialRoutineDefinition>(walker, x))
+                   .ToList();
+                Constructs = context.children.OfType<ConstructBlockContext>()
+                   .Select(x => Build<ConstructDefinition>(walker, x))
+                   .ToList();
                 walker.PopScope();
             }
             else throw new NotImplementedException();
@@ -58,13 +60,13 @@ namespace PenguinLangParser.SyntaxNodes
         public List<FunctionDefinition> Functions { get; set; } = [];
 
         [ChildrenNode]
-        public List<EventDefinition> Events { get; set; } = [];
-
-        [ChildrenNode]
-        public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
+        public List<PortDefinition> Ports { get; set; } = [];
 
         [ChildrenNode]
         public List<InitialRoutineDefinition> InitialRoutines { get; set; } = [];
+
+        [ChildrenNode]
+        public List<ConstructDefinition> Constructs { get; set; } = [];
 
         [SexpValue]
         public bool IsAnonymous => false;
@@ -92,14 +94,6 @@ namespace PenguinLangParser.SyntaxNodes
             parts.Add("class");
             parts.Add(ClassIdentifier!.BuildText());
             parts.Add("{\n");
-            if (Events.Count > 0)
-            {
-                parts.Add(string.Join("\n", Events.Select(i => i.BuildText())));
-            }
-            if (OnRoutines.Count > 0)
-            {
-                parts.Add(string.Join("\n", OnRoutines.Select(i => i.BuildText())));
-            }
             if (InterfaceImplementations.Count > 0)
             {
                 parts.Add(string.Join(", ", InterfaceImplementations.Select(impl => impl.BuildText())));
@@ -108,6 +102,10 @@ namespace PenguinLangParser.SyntaxNodes
             {
                 parts.Add(string.Join("\n", Declarations.Select(decl => decl.BuildText())));
             }
+            if (Ports.Count > 0)
+            {
+                parts.Add(string.Join("\n", Ports.Select(port => port.BuildText())));
+            }
             if (Functions.Count > 0)
             {
                 parts.Add(string.Join("\n", Functions.Select(func => func.BuildText())));
@@ -115,6 +113,10 @@ namespace PenguinLangParser.SyntaxNodes
             if (InitialRoutines.Count > 0)
             {
                 parts.Add(string.Join("\n", InitialRoutines.Select(routine => routine.BuildText())));
+            }
+            if (Constructs.Count > 0)
+            {
+                parts.Add(string.Join("\n", Constructs.Select(c => c.BuildText())));
             }
             parts.Add("}\n");
             return string.Join(" ", parts);

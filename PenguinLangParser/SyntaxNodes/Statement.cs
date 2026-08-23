@@ -15,7 +15,8 @@ namespace PenguinLangParser.SyntaxNodes
             ReturnStatement,
             YieldStatement,
             SignalStatement,
-            EmitEventStatement,
+            TryStatement,
+            ConnectStatement,
         }
 
         public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
@@ -69,10 +70,15 @@ namespace PenguinLangParser.SyntaxNodes
                     StatementType = Type.SignalStatement;
                     SignalStatement = Build<SignalStatement>(walker, context.signalStatement());
                 }
-                else if (context.emitEventStatement() is not null)
+                else if (context.tryStatement() is not null)
                 {
-                    StatementType = Type.EmitEventStatement;
-                    EmitEventStatement = Build<EmitEventStatement>(walker, context.emitEventStatement());
+                    StatementType = Type.TryStatement;
+                    TryStatement = Build<TryStatement>(walker, context.tryStatement());
+                }
+                else if (context.connectStatement() is not null)
+                {
+                    StatementType = Type.ConnectStatement;
+                    ConnectStatement = Build<ConnectStatement>(walker, context.connectStatement());
                 }
                 else if (context.codeBlockExpression() is not null)
                 {
@@ -130,7 +136,10 @@ namespace PenguinLangParser.SyntaxNodes
         public SignalStatement? SignalStatement { get; set; }
 
         [ChildrenNode]
-        public EmitEventStatement? EmitEventStatement { get; set; }
+        public TryStatement? TryStatement { get; set; }
+
+        [ChildrenNode]
+        public ConnectStatement? ConnectStatement { get; set; }
 
         public override string ToShortString() => "";
 
@@ -149,7 +158,8 @@ namespace PenguinLangParser.SyntaxNodes
                 Type.ReturnStatement => ReturnStatement!.BuildText(),
                 Type.YieldStatement => YieldStatement!.BuildText(),
                 Type.SignalStatement => SignalStatement!.BuildText(),
-                Type.EmitEventStatement => EmitEventStatement!.BuildText(),
+                Type.TryStatement => TryStatement!.BuildText(),
+                Type.ConnectStatement => ConnectStatement!.BuildText(),
                 _ => throw new NotImplementedException($"Unsupported StatementType: {StatementType}")
             };
         }

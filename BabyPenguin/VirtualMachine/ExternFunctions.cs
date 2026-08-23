@@ -25,6 +25,9 @@ namespace BabyPenguin.VirtualMachine
             AddStringBuilder(vm);
             AddStringHelpers(vm);
             AddBitShift(vm);
+            AddSimScheduler(vm);
+            AddThrowRuntimeError(vm);
+            AddSimActivity(vm);
             // AddMap(vm);
         }
 
@@ -55,6 +58,38 @@ namespace BabyPenguin.VirtualMachine
             });
 
             vm.Global.RegisterExternFunction("__builtin.exit", Exit);
+        }
+
+        /// <summary>
+        /// Throws a catchable BabyPenguinRuntimeException from penguin code. If no
+        /// enclosing try/catch region catches it, it propagates to the top level and
+        /// is reported as error[&lt;code&gt;] with exit code 1 (unchanged uncaught path).
+        /// </summary>
+        public static void AddThrowRuntimeError(BabyPenguinVM vm)
+        {
+            vm.Global.RegisterExternFunction("__builtin.__throw_runtime_error", ThrowRuntimeError);
+        }
+
+        /// <summary>
+        /// Marks "a transaction actually flowed through a wait" in the current
+        /// delta round (do_wait/do_wait_any call it on every ready poll). The
+        /// SimScheduler compares the counter between rounds: unchanged + no
+        /// timers + no progress ⇒ every pending job is polling not-ready and a
+        /// (deterministic) next round would be identical ⇒ quiescent.
+        /// </summary>
+        public static void AddSimActivity(BabyPenguinVM vm)
+        {
+            vm.Global.RegisterExternFunction("__builtin._sim_activity", (result, args) =>
+            {
+                vm.Global.SimActivityCounter++;
+            });
+        }
+
+        private static IEnumerable<RuntimeBreak> ThrowRuntimeError(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
+        {
+            var message = args[0].As<BasicRuntimeValue>().StringValue;
+            var code = args.Count > 1 ? args[1].As<BasicRuntimeValue>().I64Value : (long)ErrorCode.E_RUNTIME_INVALID_OP;
+            throw new BabyPenguinRuntimeException(message, code: (ErrorCode)code) { PenguinLevel = true };
         }
 
         private static IEnumerable<RuntimeBreak> Exit(RuntimeFrame frame, IRuntimeSymbol? resultVar, List<IRuntimeValue> args)
@@ -668,6 +703,85 @@ namespace BabyPenguin.VirtualMachine
                 var value = args[0].As<BasicRuntimeValue>().I64Value;
                 var shift = args[1].As<BasicRuntimeValue>().I64Value;
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = value >> (int)shift;
+            });
+        }
+
+        private static void AddSimScheduler(BabyPenguinVM vm)
+        {
+            // __builtin._sim_now() -> i64 : returns current simulation tick
+            vm.Global.RegisterExternFunction("__builtin._sim_now", (result, args) =>
+            {
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = SimScheduler.Instance.CurrentTick;
+            });
+
+            // __builtin._sim_delta() -> i64 : monotonic delta-round counter
+            // (wires merge same-round writes into the final value).
+            vm.Global.RegisterExternFunction("__builtin._sim_delta", (result, args) =>
+            {
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = SimScheduler.Instance.CurrentRound;
+            });
+
+            // __builtin._sim_settled() -> bool : true when the previous
+            // completed round carried no transaction activity and none has
+            // happened in the current round so far — settle-point port reads
+            // park (bare `wait`) until this holds, then read the slot.
+            vm.Global.RegisterExternFunction("__builtin._sim_settled", (result, args) =>
+            {
+                var scheduler = SimScheduler.Instance;
+                result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue =
+                    scheduler.LastRoundQuiet && vm.Global.SimActivityCounter == scheduler.RoundStartActivity;
+            });
+
+            // __builtin._after(n: i64) -> IFuture<i64> : create a timer future
+            vm.Global.RegisterExternFunction("__builtin._after", (result, args) =>
+            {
+                var n = args[0].As<BasicRuntimeValue>().I64Value;
+                var deadlineTick = SimScheduler.Instance.CurrentTick + n;
+
+                // Create a _TimerWait object (ref type implementing IFuture<i64>)
+                var timerWaitType = vm.Model.ResolveTypeNode("__builtin._TimerWait");
+                if (timerWaitType == null)
+                    throw new BabyPenguinRuntimeException("__builtin._TimerWait type not found", code: ErrorCode.E_RUNTIME_LOOKUP);
+
+                var typeInfo = timerWaitType.ToType(Mutability.Mutable);
+                var fields = new Dictionary<string, IRuntimeValue>();
+
+                // Create field defaults for _TimerWait
+                var clsNode = timerWaitType as IClassNode;
+                if (clsNode != null)
+                {
+                    foreach (var field in clsNode.Symbols.Where(s => s.IsVariable && !s.IsStatic))
+                    {
+                        if (field.TypeInfo.IsSimpleValueType || field.TypeInfo.IsStringType)
+                            fields[field.Name] = new BasicRuntimeValue(field.TypeInfo);
+                        else if (field.TypeInfo.IsClassType)
+                            fields[field.Name] = new NotInitializedRuntimeValue(field.TypeInfo);
+                        else
+                            fields[field.Name] = new NotInitializedRuntimeValue(field.TypeInfo);
+                    }
+                }
+
+                var timerWaitObj = new ReferenceRuntimeValue(typeInfo, fields, vm.Global);
+
+                // Set result_tick = deadlineTick
+                if (timerWaitObj.Fields.TryGetValue("result_tick", out var rtField) && rtField is BasicRuntimeValue rtVal)
+                    rtVal.I64Value = deadlineTick;
+
+                // Set finished = false
+                if (timerWaitObj.Fields.TryGetValue("finished", out var finField) && finField is BasicRuntimeValue finVal)
+                    finVal.BoolValue = false;
+
+                // Register timer
+                SimScheduler.Instance.EnqueueTimerFuture(deadlineTick, timerWaitObj);
+
+                result!.AssignFrom(timerWaitObj);
+            });
+
+            // __builtin._run() : drive the simulation scheduler to completion
+            vm.Global.RegisterExternFunction("__builtin._run", (frame, result, args) =>
+            {
+                SimScheduler.Instance.Run(vm, frame);
+                return [];
             });
         }
     }

@@ -74,17 +74,6 @@ namespace BabyPenguin.SemanticPass
 
         public void ElaborateGlobalSymbol(ISemanticNode obj)
         {
-            void addEventSymbol(ISymbolContainer container, EventDefinition evt)
-            {
-                var typeName = evt.EventType?.TypeName ?? "void";
-                var type = Model.ResolveType(typeName, scope: container)
-                    ?? throw new BabyPenguinException($"Cant resolve type '{typeName}' for event '{evt.Name}'", evt.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-                var eventType = Model.ResolveType($"__builtin.Event<{type.FullName()}>")
-                    ?? throw new BabyPenguinException($"Can't resolve type __builtin.Event<{type.FullName()}>", null, code: ErrorCode.E_BUILTIN_MISSING);
-
-                container.Symbols.Add(new EventSymbol(container, false, evt.Name, eventType, type, evt.SourceLocation, evt.Name, false, null, container is not INamespace, null));
-            }
-
             switch (obj)
             {
                 case INamespace ns:
@@ -95,11 +84,6 @@ namespace BabyPenguin.SemanticPass
                             {
                                 var typeName = decl.TypeSpecifier?.Name ?? "";
                                 ns.AddVariableSymbol(decl.Name, false, typeName, decl.SourceLocation, null, false, decl);
-                            }
-
-                            foreach (var evt in syntaxNode.Events)
-                            {
-                                addEventSymbol(ns, evt);
                             }
                         }
                     }
@@ -118,11 +102,6 @@ namespace BabyPenguin.SemanticPass
                                 var typeName = member.TypeSpecifier?.Name ?? "";
                                 cls.AddVariableSymbol(member.Name, false, typeName, member.SourceLocation, null, true, member, member.IsMutable);
                             }
-
-                            foreach (var evt in syntaxNode.Events)
-                            {
-                                addEventSymbol(cls, evt);
-                            }
                         }
                     }
                     break;
@@ -140,12 +119,6 @@ namespace BabyPenguin.SemanticPass
                                 intf.HasDeclartion = true;
                                 var typeName = member.TypeSpecifier?.Name ?? "";
                                 intf.AddVariableSymbol(member.Name, false, typeName, member.SourceLocation, null, true, member);
-                            }
-
-                            foreach (var evt in syntaxNode.Events)
-                            {
-                                intf.HasDeclartion = true;
-                                addEventSymbol(intf, evt);
                             }
                         }
                     }
@@ -201,33 +174,6 @@ namespace BabyPenguin.SemanticPass
                                     initialRoutine, initialRoutine.SourceLocation, false);
 
                                 initialRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
-                            }
-                        }
-                    }
-                    break;
-                case IOnRoutine onRoutine:
-                    {
-                        var parent = onRoutine.Parent as IRoutineContainer;
-                        if (parent is ITypeNode parentType && parentType.IsGeneric && !parentType.IsSpecialized)
-                        {
-                            Model.Reporter.Write(DiagnosticLevel.Debug, $"Symbol elaboration for on routine '{onRoutine.Name}' is skipped now because it is generic");
-                        }
-                        else
-                        {
-                            if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode)
-                            {
-                                var eventParamDecl = syntaxNode.Parameter;
-                                var eventType = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: onRoutine) ?? throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-                                onRoutine.EventType = eventType;
-
-                                var funcSymbol = (onRoutine.Parent as ISymbolContainer)!.AddOnRoutineSymbol(
-                                    onRoutine, onRoutine.SourceLocation, false);
-
-                                onRoutine.FunctionSymbol = (FunctionSymbol)funcSymbol;
-
-                                onRoutine.EventReceiverSymbol = (onRoutine.Parent as ISymbolContainer)!.AddVariableSymbol($"__{onRoutine.Name}_receiver", false,
-                                    $"__builtin._AsyncEventReceiver<{eventType.FullName()}>", syntaxNode.Parameter!.SourceLocation,
-                                    null, parent is not INamespace, null);
                             }
                         }
                     }
@@ -319,6 +265,18 @@ namespace BabyPenguin.SemanticPass
                 }
                 else
                 {
+                    // Top-level construct blocks are hidden __construct_* functions;
+                    // their lets hoist into the enclosing namespace (same symbol
+                    // space as ordinary top-level lets) so initial routines can
+                    // see the modules/channels the elaboration wired up.
+                    IFunction? constructFunc = obj as IFunction;
+                    var isConstruct = constructFunc != null && constructFunc.Name.StartsWith(SemanticScopingPass.ConstructPrefix)
+                        && constructFunc.Parent is INamespace;
+                    // Class-level constructs hoist their lets into the class as
+                    // instance fields (submodules, channel objects).
+                    var isClassConstruct = constructFunc != null && constructFunc.Name.StartsWith(SemanticScopingPass.ClassConstructPrefix)
+                        && constructFunc.Parent is ITypeNode;
+
                     container.CodeSyntaxNode?.TraverseChildren((node, _) =>
                     {
                         if (node is CodeBlockItem item)
@@ -326,7 +284,18 @@ namespace BabyPenguin.SemanticPass
                             if (item.Type == CodeBlockItem.CodeBlockItemType.Declaration)
                             {
                                 var typeName = item.Declaration!.TypeSpecifier?.Name ?? "";
-                                container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, null, false, item.Declaration, declaringScopeId: item.ScopeId);
+                                if (isConstruct)
+                                {
+                                    var ns = (INamespace)constructFunc!.Parent!;
+                                    ns.AddVariableSymbol(item.Declaration.Name, false, typeName, item.SourceLocation, null, false, item.Declaration, declaringScopeId: 0);
+                                }
+                                // class-construct lets stay function locals: submodules
+                                // are referenced bare inside the wiring block only
+                                // (class members are invisible to bare identifiers)
+                                else
+                                {
+                                    container.AddVariableSymbol(item.Declaration.Name, true, typeName, item.SourceLocation, null, false, item.Declaration, declaringScopeId: item.ScopeId);
+                                }
                             }
                         }
                         else if (node is ForStatement forStatement)
@@ -335,6 +304,15 @@ namespace BabyPenguin.SemanticPass
                             // the type is inferred from the iterator element at codegen time.
                             var typeName = forStatement.Declaration!.TypeSpecifier?.Name ?? "";
                             container.AddVariableSymbol(forStatement.Declaration.Name, true, typeName, forStatement.Declaration.SourceLocation, null, false, forStatement.Declaration, declaringScopeId: forStatement.ScopeId);
+                        }
+                        else if (node is TryStatement tryStatement)
+                        {
+                            // Catch variable: always __builtin.RuntimeError; the runtime
+                            // binds the error object when dispatching to the handler.
+                            var catchDecl = tryStatement.CatchDeclaration!;
+                            if (catchDecl.TypeSpecifier != null && catchDecl.TypeSpecifier.Name != "__builtin.RuntimeError")
+                                throw new BabyPenguinException($"Catch variable must be of type __builtin.RuntimeError, but got '{catchDecl.TypeSpecifier.Name}'", catchDecl.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                            container.AddVariableSymbol(catchDecl.Name, true, "__builtin.RuntimeError", catchDecl.SourceLocation, null, false, catchDecl, declaringScopeId: tryStatement.CatchScopeId);
                         }
                         else if (node is TryBindExpression tryBind && tryBind.TypeSpecifier != null)
                         {

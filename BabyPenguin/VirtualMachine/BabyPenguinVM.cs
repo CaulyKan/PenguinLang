@@ -120,6 +120,16 @@ namespace BabyPenguin.VirtualMachine
     public class BabyPenguinRuntimeException(string message, ErrorCode code = ErrorCode.E_RUNTIME_INVALID_OP) : Exception(message)
     {
         public ErrorCode Code { get; } = code;
+
+        /// <summary>
+        /// True when the error was raised by PROGRAM code through
+        /// __builtin.__throw_runtime_error (panic and channel errors): the
+        /// numeric code is a Penguin-level value, not a compiler ErrorCode,
+        /// and an uncaught one must be reported as an "uncaught runtime
+        /// error" (with the program's buffered output flushed first) rather
+        /// than mislabeled with whatever ErrorCode the number collides with.
+        /// </summary>
+        public bool PenguinLevel { get; init; }
     }
 
     public class RuntimeGlobal
@@ -233,6 +243,15 @@ namespace BabyPenguin.VirtualMachine
                 if (sym.Value != null)
                     stack.Push(sym.Value);
 
+            // Root: SimScheduler timer futures
+            foreach (var future in SimScheduler.Instance.GetTimerFutures())
+                stack.Push(future);
+
+            // Root: jobs parked in the C# ready queue (they are no longer
+            // reachable from the Penguin-level pending_jobs queue)
+            foreach (var job in SimScheduler.Instance.GetReadyJobs())
+                stack.Push(job);
+
             // Root: frame chain (current frame → parent → ... → root)
             var frame = currentFrame;
             while (frame != null)
@@ -264,6 +283,14 @@ namespace BabyPenguin.VirtualMachine
                                 foreach (var item in seq)
                                     if (item is IRuntimeValue rv)
                                         stack.Push(rv);
+                            }
+                            // Traverse RuntimeFrame stored in ExternImplenmentationValue
+                            // (suspended routine frames inside RoutineContext.__impl)
+                            if (refVal.ExternImplenmentationValue is RuntimeFrame suspendedFrame)
+                            {
+                                foreach (var sv in suspendedFrame.GetAllValues())
+                                    if (sv != null)
+                                        stack.Push(sv);
                             }
                         }
                         break;
@@ -334,6 +361,14 @@ namespace BabyPenguin.VirtualMachine
         public int ExitCode { get; set; } = 0;
 
         public bool HasExited { get; set; } = false;
+
+        /// <summary>
+        /// Number of transactions delivered through a wait (do_wait/do_wait_any
+        /// call __builtin._sim_activity on every ready poll) plus channel/event
+        /// writes. SimScheduler treats it as a strong liveness signal on top of
+        /// its state-snapshot quiescence detection.
+        /// </summary>
+        public long SimActivityCounter { get; set; } = 0;
 
         public string[] CommandLineArgs { get; set; } = Array.Empty<string>();
 

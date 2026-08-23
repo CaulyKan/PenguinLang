@@ -8,6 +8,20 @@ namespace BabyPenguin.SemanticPass
 
         public int PassIndex { get; } = passIndex;
 
+        /// <summary>Hidden member functions generated for class-level initial
+        /// routines (spawned by the class constructor, pass 04).</summary>
+        public const string ClassInitialPrefix = "__initial_";
+
+        /// <summary>Hidden member functions generated for class-level construct
+        /// blocks (invoked by the constructor before initial spawn, pass 04).
+        /// Declarations inside become instance fields (pass 03).</summary>
+        public const string ClassConstructPrefix = "__class_construct_";
+
+        /// <summary>Hidden functions generated for top-level construct blocks
+        /// (synchronously invoked by _main before any initial job, pass 08).
+        /// Declarations inside are hoisted to the enclosing namespace (pass 03).</summary>
+        public const string ConstructPrefix = "__construct_";
+
         public void Process(ISemanticNode obj)
         {
             if (obj.PassIndex >= PassIndex)
@@ -43,13 +57,18 @@ namespace BabyPenguin.SemanticPass
                             ns.AddInitialRoutine(initialRoutine);
                         }
 
-                        foreach (var onRoutineNode in namespaceSyntax.OnRoutines)
+                        foreach (var constructNode in namespaceSyntax.Constructs.Select((c, i) => (c, i)))
                         {
-                            var onRoutine = new OnRoutine(Model, onRoutineNode);
-                            if (ns.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{ns.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
-                            ns.AddOnRoutine(onRoutine);
+                            // Elaboration block: a hidden synchronous function whose
+                            // lets are hoisted to this namespace; _main invokes all
+                            // constructs before spawning any initial routine.
+                            var bodyText = constructNode.c.Body?.BuildText() ?? "{}";
+                            var funcDef = new FunctionDefinition();
+                            funcDef.FromString($"fun {ConstructPrefix}{constructNode.i}() {bodyText}", Model.Reporter);
+                            var function = new Function(Model, funcDef);
+                            ns.AddFunction(function);
                         }
+
 
                         foreach (var func in namespaceSyntax.Functions)
                         {
@@ -83,19 +102,20 @@ namespace BabyPenguin.SemanticPass
                     {
                         foreach (var initialRoutineNode in classSyntax.InitialRoutines)
                         {
-                            var initialRoutine = new InitialRoutine(Model, initialRoutineNode);
-                            if (cls.InitialRoutines.Any(c => c.Name == initialRoutine.Name))
-                                throw new BabyPenguinException($"Initial routine '{initialRoutine.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
-                            cls.AddInitialRoutine(initialRoutine);
+                            // Class-level initial routines become hidden member
+                            // functions taking `mut this` (their bodies access
+                            // module fields/ports); the generated constructor
+                            // spawns them after wiring (pass 04). The body is
+                            // re-parsed through a synthetic function definition.
+                            var bodyText = initialRoutineNode.CodeBlockExpression?.BuildText() ?? "{}";
+                            var funcDef = new FunctionDefinition();
+                            funcDef.FromString($"fun {ClassInitialPrefix}{initialRoutineNode.Name}(mut this) {bodyText}", Model.Reporter);
+                            var function = new Function(Model, funcDef);
+                            if (cls.Functions.Any(c => c.Name == function.Name))
+                                throw new BabyPenguinException($"Initial routine '{initialRoutineNode.Name}' already exists in class '{cls.Name}'.", initialRoutineNode.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
+                            cls.AddFunction(function);
                         }
 
-                        foreach (var onRoutineNode in classSyntax.OnRoutines)
-                        {
-                            var onRoutine = new OnRoutine(Model, onRoutineNode);
-                            if (cls.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{cls.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
-                            cls.AddOnRoutine(onRoutine);
-                        }
 
                         foreach (var func in classSyntax.Functions)
                         {
@@ -103,6 +123,19 @@ namespace BabyPenguin.SemanticPass
                             if (cls.Functions.Any(c => c.Name == function.Name))
                                 throw new BabyPenguinException($"Function '{function.Name}' already exists in class '{cls.Name}'.", func.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
                             cls.AddFunction(function);
+                        }
+
+                        foreach (var constructNode in classSyntax.Constructs.Select((c, i) => (c, i)))
+                        {
+                            // Class-level elaboration block: a hidden member function
+                            // taking `mut this`, invoked by the constructor BEFORE the
+                            // initial routines spawn (wiring precedues process start);
+                            // its lets become instance fields (pass 03).
+                            var bodyText = constructNode.c.Body?.BuildText() ?? "{}";
+                            var funcDef = new FunctionDefinition();
+                            funcDef.FromString($"fun {ClassConstructPrefix}{constructNode.i}(mut this) {bodyText}", Model.Reporter);
+                            var constructFunction = new Function(Model, funcDef);
+                            cls.AddFunction(constructFunction);
                         }
                     }
                     break;
@@ -131,13 +164,6 @@ namespace BabyPenguin.SemanticPass
                             enm.AddInitialRoutine(initialRoutine);
                         }
 
-                        foreach (var onRoutineNode in enumSyntax.OnRoutines)
-                        {
-                            var onRoutine = new OnRoutine(Model, onRoutineNode);
-                            if (enm.InitialRoutines.Any(c => c.Name == onRoutine.Name))
-                                throw new BabyPenguinException($"On routine '{onRoutine.Name}' already exists in namespace '{enm.Name}'.", onRoutine.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
-                            enm.AddOnRoutine(onRoutine);
-                        }
 
                         foreach (var func in enumSyntax.Functions)
                         {

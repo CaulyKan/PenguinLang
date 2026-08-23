@@ -160,6 +160,21 @@ namespace BabyPenguin.SemanticInterface
             if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
                 InferVariableType(symbol);
 
+            // Static topology bookkeeping: a module (ported class) instantiated
+            // in a construct body joins the pool checked for unconnected
+            // inputs. Only direct `let x = new C()` initializers are tracked —
+            // aliases and nested instantiations are beyond the static view.
+            if (item.InitializeExpression is NewExpression
+                && this is IFunction declFunc
+                && (declFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ConstructPrefix)
+                    || declFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ClassConstructPrefix)))
+            {
+                var declSymbol = symbol is MutableSymbolProxy declProxy ? declProxy.Symbol : symbol;
+                var declClass = declSymbol.TypeInfo.WithMutability(Mutability.Auto).FullName();
+                if (PortRegistry.ClassHasPorts(declClass))
+                    CodeContainerData.NewedModules.Add((declSymbol, declClass, item.SourceLocation));
+            }
+
             if (item.InitializeExpression != null && generateCode)
                 AddExpression(item.InitializeExpression, true, symbol);
 
@@ -171,7 +186,47 @@ namespace BabyPenguin.SemanticInterface
         public class CodeContainerStorage
         {
             public Stack<CurrentWhileLoopInfo> CurrentWhileLoop { get; } = new Stack<CurrentWhileLoopInfo>();
+
+            /// <summary>
+            /// try/catch protected ranges of this container, in semantic-instruction
+            /// indices. Registered innermost-first (nested tries compile their inner
+            /// region before the enclosing one registers). Translated into
+            /// IRFunction.CatchRegions by the IR generator.
+            /// </summary>
+            public List<SemanticCatchRegion> CatchRegions { get; } = [];
+
+            /// <summary>
+            /// Implicit wire-net hubs already materialized in this construct
+            /// (new + seed emitted once per hub per construct body).
+            /// </summary>
+            public HashSet<ISymbol> InitializedNets { get; } = [];
+
+            /// <summary>
+            /// Static port-topology bookkeeping for construct bodies:
+            /// every input-port connect sink, as (owner symbol full name +
+            /// port, location). Pooling all construct functions of one scope
+            /// gives the multi-driver and unconnected-input audits their
+            /// view.
+            /// </summary>
+            public List<(string SinkKey, SourceLocation Location)> ConnectedInputSinks { get; } = [];
+
+            /// <summary>
+            /// Modules instantiated by a `let x = new C()` in this construct
+            /// (C declares ports): (symbol, class full name, location). Each
+            /// instantiation's inputs must be connected in the same pool or
+            /// carry defaults.
+            /// </summary>
+            public List<(ISymbol Symbol, string ClassFullName, SourceLocation Location)> NewedModules { get; } = [];
         }
+
+        /// <summary>
+        /// A try/catch protected range at the semantic-instruction level:
+        /// instructions [StartIndex, HandlerIndex) form the try body (plus the
+        /// branch that skips the handler); HandlerIndex is the first instruction
+        /// of the catch body. CatchSymbol is the catch variable the runtime error
+        /// object is bound to when the handler is entered.
+        /// </summary>
+        public sealed record SemanticCatchRegion(int StartIndex, int HandlerIndex, ISymbol CatchSymbol);
 
         public record CurrentWhileLoopInfo(string BeginLabel, string EndLabel)
         {
@@ -297,11 +352,38 @@ namespace BabyPenguin.SemanticInterface
                                 if (!isMemberAccess)
                                 {
                                     AddAssignmentExpression(new(rightVar), target, false, null, item.SourceLocation);
+                                    EmitNetWriteHook(target, null, rightVar, item.SourceLocation);
                                 }
                                 else
                                 {
+                                    // RTL port permission matrix + output-write sugar.
+                                    if (isMemberAccess && member != null && PortRegistry.Find(target.TypeInfo.WithMutability(Mutability.Auto).FullName(), member.Name) is PortMeta portMeta)
+                                    {
+                                        if (portMeta.IsInput)
+                                            throw new BabyPenguinException($"Cannot write to input port '{member.Name}' — inputs are wired exclusively through connect", item.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                                        if (target.Name != "this")
+                                            throw new BabyPenguinException($"Cannot drive output port '{member.Name}' of another module from outside '{target.TypeInfo.WithMutability(Mutability.Auto).FullName()}'", item.SourceLocation, code: ErrorCode.E_MUTABILITY);
+
+                                        DriverRegistry.AddBodyDriver(target.TypeInfo.WithMutability(Mutability.Auto).FullName(), member.Name, Name, item.SourceLocation);
+
+                                        // `this.y = v` desugars to `this.y.write(v)` — the
+                                        // assignment is a potential suspension point (fan-out
+                                        // hub writes every subscribed wire).
+                                        var payloadAuto = portMeta.PayloadType.WithMutability(Mutability.Auto);
+                                        // write is declared on ISink (IChannel inherits it)
+                                        var writeSym = Model.ResolveSymbol($"__builtin.ISink<{payloadAuto.FullName()}>.write")
+                                            ?? throw new BabyPenguinException($"Cant resolve __builtin.ISink<{payloadAuto.FullName()}>.write", item.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                                        var channelTemp = AllocTempSymbol(member.TypeInfo, item.SourceLocation);
+                                        AddInstruction(new ReadMemberInstruction(item.SourceLocation, member, target, channelTemp, false));
+                                        var methodRef = AllocTempSymbol(writeSym.TypeInfo, item.SourceLocation);
+                                        AddInstruction(new ReadMemberInstruction(item.SourceLocation, writeSym, channelTemp, methodRef, true));
+                                        AddInstruction(new FunctionCallInstruction(item.SourceLocation, methodRef, [rightVar], null));
+                                        break;
+                                    }
+
                                     var isInitial = this.Name == "new" && target.Name == "this";
                                     AddAssignmentExpression(new(rightVar), member!, isInitial, target, item.SourceLocation);
+                                    EmitNetWriteHook(target, member!, rightVar, item.SourceLocation);
                                 }
                             }
                             else
@@ -323,9 +405,16 @@ namespace BabyPenguin.SemanticInterface
                                     var temp = AllocTempSymbol(target.TypeInfo, item.SourceLocation);
                                     AddInstruction(new BinaryOperationInstruction(item.SourceLocation, op, target, rightVar, temp));
                                     AddAssignmentExpression(new(temp), target, false, null, item.SourceLocation);
+                                    EmitNetWriteHook(target, null, temp, item.SourceLocation);
                                 }
                                 else
                                 {
+                                    // Compound assignment on a port would write the
+                                    // channel field itself — the permission matrix
+                                    // (inputs connect-only, outputs write-only-by-
+                                    // owner) has no read-modify-write form.
+                                    if (member != null && PortRegistry.Find(target.TypeInfo.WithMutability(Mutability.Auto).FullName(), member.Name) != null)
+                                        throw new BabyPenguinException($"Compound assignment is not supported on port '{member.Name}' — use write()/assignment on the output, connect on the input", item.SourceLocation, code: ErrorCode.E_MUTABILITY);
                                     var tempBeforeCalc = AddExpression((MemberAccessExpression)lhsEffective, false);
                                     var tempAfterCalc = AllocTempSymbol(ResolveBinaryOperationType(op, [tempBeforeCalc.TypeInfo, rightVar.TypeInfo], item.SourceLocation), item.SourceLocation);
                                     AddInstruction(new BinaryOperationInstruction(item.SourceLocation, op, tempBeforeCalc, rightVar, tempAfterCalc));
@@ -333,6 +422,7 @@ namespace BabyPenguin.SemanticInterface
                                         AddInstruction(new WriteEnumInstruction(item.SourceLocation, tempAfterCalc, target));
                                     else
                                         AddInstruction(new WriteMemberInstruction(item.SourceLocation, member!, tempAfterCalc, target));
+                                    EmitNetWriteHook(target, member!, tempAfterCalc, item.SourceLocation);
                                 }
                                 break;
                             }
@@ -652,33 +742,658 @@ namespace BabyPenguin.SemanticInterface
                         }
                     }
                     break;
-                case Statement.Type.EmitEventStatement:
+                case Statement.Type.TryStatement:
                     {
-                        var emitEventStatement = item.EmitEventStatement!;
-                        if (emitEventStatement.EventExpression == null)
-                            throw new BabyPenguinException($"Event expression is required", emitEventStatement.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
-                        var eventSymbol = AddExpression(emitEventStatement.EventExpression, false);
-                        var notifySymbol = Model.ResolveSymbol($"{eventSymbol.TypeInfo.FullName()}.notify") ??
-                            throw new BabyPenguinException($"Can't resolve 'notify' method of event type '{eventSymbol.TypeInfo.FullName()}'", emitEventStatement.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
-                        var paramSymbol = emitEventStatement.ArgumentExpression == null ?
-                            AllocTempSymbol(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), emitEventStatement.SourceLocation) :
-                            AddExpression(emitEventStatement.ArgumentExpression, false);
+                        var tryStatement = item.TryStatement!;
+                        var catchDecl = tryStatement.CatchDeclaration!;
+                        if (catchDecl.InitializeExpression != null)
+                            throw new BabyPenguinException("catch variable declaration cannot have an initializer", catchDecl.SourceLocation, code: ErrorCode.E_PARSE);
+                        if (catchDecl.TypeSpecifier != null && catchDecl.TypeSpecifier.Name != "__builtin.RuntimeError")
+                            throw new BabyPenguinException($"Catch variable must be of type __builtin.RuntimeError, but got '{catchDecl.TypeSpecifier.Name}'", catchDecl.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
 
-                        if (eventSymbol.TypeInfo.TypeNode?.GenericType?.FullName() != "__builtin.Event<?>")
-                            throw new BabyPenguinException($"This emit event statement requires event type to be __builtin.Event<?>, but got '{eventSymbol.TypeInfo}'", emitEventStatement.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
-                        if (paramSymbol.TypeInfo.FullName() != eventSymbol.TypeInfo.GenericArguments.First().FullName())
+                        // Registered by pass 03; the fallback covers containers that
+                        // skipped elaboration (defensive — same registration as there).
+                        var catchVar = Model.ResolveShortSymbol(catchDecl.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: tryStatement.CatchScopeId)
+                            ?? AddVariableSymbol(catchDecl.Name, true, new Or<string, IType>("__builtin.RuntimeError"), catchDecl.SourceLocation, null, false, catchDecl, declaringScopeId: tryStatement.CatchScopeId);
+
+                        var startIndex = Instructions.Count;
+                        AddStatement(tryStatement.TryBlock!);
+                        // Normal path: skip the handler.
+                        var endLabel = CreateLabel();
+                        AddInstruction(new GotoInstruction(item.SourceLocation, endLabel));
+                        var handlerIndex = Instructions.Count;
+                        // The handler body: the runtime has already stored the error
+                        // object into the catch variable's register before jumping here.
+                        AddStatement(tryStatement.CatchBlock!);
+                        AddInstruction(new NopInstuction(item.SourceLocation.EndLocation).WithLabel(endLabel));
+
+                        CodeContainerData.CatchRegions.Add(new SemanticCatchRegion(startIndex, handlerIndex, catchVar));
+                        break;
+                    }
+                case Statement.Type.ConnectStatement:
+                    {
+                        // connect(src, sink): wire a source into an input port.
+                        // The sink is a port member access (`f.x` / `this.x`) or
+                        // a bare MultiInput binding; the source is an output
+                        // port (fan-out hub subscribe), a channel-typed
+                        // expression, an Event (broadcast hub wire), a mut
+                        // variable net (implicit wire), or this module's own
+                        // input (a passthrough line).
+                        var conn = item.ConnectStatement!;
+                        if (this is not IFunction connFunc
+                            || (!connFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ConstructPrefix)
+                                && !connFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ClassConstructPrefix)))
+                            throw new BabyPenguinException("connect is only allowed inside a construct block", item.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
+
+                        ISymbol ownerSym;
+                        ISymbol sinkMember;
+                        PortMeta? sinkMeta;
+                        ISymbol? bareMultiInputSym = null;
+                        if (conn.Sink is MemberAccessExpression sinkMa)
                         {
-                            var temp = AllocTempSymbol(eventSymbol.TypeInfo.GenericArguments.First(), emitEventStatement.SourceLocation);
-                            AddCastExpression(new(paramSymbol), temp, emitEventStatement.SourceLocation);
-                            paramSymbol = temp;
+                            ownerSym = AddExpression(sinkMa.BaseExpression!, false);
+                            ResolveMemberAccessExpressionSymbol(sinkMa, out _, out sinkMember!);
+                            sinkMeta = PortRegistry.Find(ownerSym.TypeInfo.WithMutability(Mutability.Auto).FullName(), sinkMember.Name);
+                        }
+                        else if (TryResolveBareMultiInput(conn.Sink!, out bareMultiInputSym))
+                        {
+                            // A bare MultiInput binding as the sink (top-level
+                            // `let mi` / `this.mi` field): connect registers a
+                            // source view on it, same as the port form.
+                            ownerSym = bareMultiInputSym;
+                            sinkMember = bareMultiInputSym;
+                            sinkMeta = null;
+                        }
+                        else
+                        {
+                            throw new BabyPenguinException($"connect sink must be a port member access or a MultiInput, but got '{conn.Sink.BuildText()}'", item.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                         }
 
-                        AddInstruction(new FunctionCallInstruction(emitEventStatement.SourceLocation, notifySymbol, [eventSymbol, paramSymbol], null));
+                        // An output SINK is a passthrough line (connect(inner.y,
+                        // this.y)): this output's hub becomes the source hub
+                        // itself — one driver, transparent forwarding. The source
+                        // is read RAW (a port member access yields its hub object,
+                        // not the bare-read payload).
+                        if (sinkMeta != null && !sinkMeta.IsInput)
+                        {
+                            DriverRegistry.AddWireDriver(ownerSym.TypeInfo.WithMutability(Mutability.Auto).FullName(), sinkMember.Name, item.SourceLocation);
+                            var hubRef = ReadSourceRaw(conn.Source!, item.SourceLocation);
+                            AddInstruction(new WriteMemberInstruction(item.SourceLocation, sinkMember, hubRef, ownerSym));
+                            break;
+                        }
+
+                        // Input sink bookkeeping for the static topology checks:
+                        // multi-driver detection (an input has exactly one
+                        // connect) and the unconnected-input audit pool with
+                        // this construct's module instantiations. The key is
+                        // resolved from the base expression's DECLARATION
+                        // symbol (AddExpression yields temp registers), so
+                        // connect sites and `let` declarations agree.
+                        if (sinkMeta != null && sinkMeta.IsInput)
+                        {
+                            ISymbol keyOwner;
+                            if (conn.Sink is MemberAccessExpression recMa
+                                && recMa.BaseExpression!.GetEffectiveExpression() is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } recBase)
+                            {
+                                keyOwner = Model.ResolveShortSymbol(recBase.Identifier!.Name, s => !s.IsFunction, scope: this) ?? ownerSym;
+                            }
+                            else
+                            {
+                                keyOwner = ownerSym;
+                            }
+                            keyOwner = keyOwner is MutableSymbolProxy keyProxy ? keyProxy.Symbol : keyOwner;
+                            CodeContainerData.ConnectedInputSinks.Add((keyOwner.FullName() + "." + sinkMember.Name, item.SourceLocation));
+                        }
+
+                        // ---- source wiring ----
+                        ISymbol wiredSym;
+                        if (conn.Source!.GetEffectiveExpression() is MemberAccessExpression srcInMa
+                            && IsPortMemberAccess(srcInMa, out _, out var srcPortMember, out var srcPortMeta)
+                            && srcPortMeta.IsInput)
+                        {
+                            // Own input passthrough: connect(this.x, inner.x).
+                            // Someone else's input is a permission violation.
+                            if (srcInMa.BaseExpression is not PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } srcBase
+                                || srcBase.Identifier!.Name != "this")
+                                throw new BabyPenguinException($"Cannot use input port '{srcPortMember.Name}' of another module as a connect source — inputs are wired, not read", item.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                            wiredSym = EmitInputPassthrough(item.SourceLocation, srcPortMember, srcPortMeta);
+                        }
+                        else if (conn.Source is MemberAccessExpression srcMa
+                            && TryResolveOutputHubSubscribe(srcMa, out var instanceSym, out var portFieldSymbol, out var subscribeSymbol, out var wireType))
+                        {
+                            // An output port carries a fan-out hub: subscribe()
+                            // grants THIS input its own wire (independent
+                            // delivery cursor — repeated connects fan out).
+                            // hubTemp = f1.y (the _Fanout hub object)
+                            var hubType = Model.ResolveType("__builtin._Fanout<" + portFieldSymbol.TypeInfo.GenericArguments.First().WithMutability(Mutability.Auto).FullName() + ">")
+                                ?? throw new BabyPenguinException("Cant resolve _Fanout type", item.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                            var hubTemp = AllocTempSymbol(hubType.WithMutability(Mutability.Mutable), item.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(item.SourceLocation, portFieldSymbol, instanceSym, hubTemp, false));
+                            // wireTemp = hubTemp.subscribe()
+                            var wireTemp = AllocTempSymbol(wireType, item.SourceLocation);
+                            var methodRef = AllocTempSymbol(subscribeSymbol.TypeInfo, item.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(item.SourceLocation, subscribeSymbol, hubTemp, methodRef, true));
+                            AddInstruction(new FunctionCallInstruction(item.SourceLocation, methodRef, [], wireTemp));
+                            wiredSym = wireTemp;
+                        }
+                        else if (TryEmitEventWire(item.SourceLocation, conn.Source, out var eventWire))
+                        {
+                            // An Event source: connect(ev, f.x) grants the input
+                            // a permanent wire fed by every emit (broadcast hub,
+                            // independent cursor per connected input).
+                            wiredSym = eventWire;
+                        }
+                        else if (TryEmitNetSource(item.SourceLocation, conn.Source, out var netWire))
+                        {
+                            // mut variable net: connect(x, f.in) — a hidden
+                            // _Fanout hub seeded with the variable's current
+                            // value; assignment compilation writes through to it.
+                            wiredSym = netWire;
+                        }
+                        else
+                        {
+                            // Any other channel-typed expression binds directly.
+                            wiredSym = AddExpression(conn.Source!, false);
+                        }
+
+                        // A MultiInput sink aggregates N sources: connect
+                        // registers the source view (mi.add(view)) instead of
+                        // rebinding the field — `wait mi` then returns the next
+                        // transaction across every registered source.
+                        if (sinkMember.TypeInfo.TypeNode?.GenericType?.FullName() == "__builtin.MultiInput<?>")
+                        {
+                            var payloadType = sinkMember.TypeInfo.GenericArguments.First();
+                            var sourceViewType = Model.ResolveType("__builtin.ISource<" + payloadType.WithMutability(Mutability.Auto).FullName() + ">")
+                                ?? throw new BabyPenguinException("Cant resolve ISource type", item.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                            if (!wiredSym.TypeInfo.CanImplicitlyCastTo(sourceViewType.WithMutability(Mutability.Mutable)))
+                                throw new BabyPenguinException($"connect: cannot wire source of type '{wiredSym.TypeInfo.FullName()}' into '{sinkMember.TypeInfo.FullName()}'", item.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                            var viewSym = AllocTempSymbol(sourceViewType.WithMutability(Mutability.Mutable), item.SourceLocation);
+                            AddCastExpression(new(wiredSym), viewSym, item.SourceLocation);
+
+                            ISymbol miSym;
+                            if (bareMultiInputSym != null)
+                            {
+                                miSym = bareMultiInputSym;
+                            }
+                            else
+                            {
+                                miSym = AllocTempSymbol(sinkMember.TypeInfo.WithMutability(Mutability.Mutable), item.SourceLocation);
+                                AddInstruction(new ReadMemberInstruction(item.SourceLocation, sinkMember, ownerSym, miSym, false));
+                            }
+                            var addSymbol = Model.ResolveSymbol($"{sinkMember.TypeInfo.WithMutability(Mutability.Auto).FullName()}.add", predicate: i => i.IsFunction, checkImportedNamespaces: false)
+                                ?? throw new BabyPenguinException($"Cant resolve 'add' method of type '{sinkMember.TypeInfo.FullName()}'", item.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                            var addRef = AllocTempSymbol(addSymbol.TypeInfo, item.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(item.SourceLocation, addSymbol, miSym, addRef, true));
+                            // The fat pointer carries the MultiInput as its owner; the VM
+                            // prepends it as `this`, so only the source view is passed.
+                            AddInstruction(new FunctionCallInstruction(item.SourceLocation, addRef, [viewSym], null));
+                            break;
+                        }
+
+                        // A passthrough input sink (its field holds a _LateSource
+                        // relay): the outer connect BINDS the source into the
+                        // relay instead of overwriting the field — the inner
+                        // wiring already references the relay.
+                        if (sinkMeta != null && sinkMeta.IsInput
+                            && PassthroughRegistry.Find(ownerSym.TypeInfo.WithMutability(Mutability.Auto).FullName(), sinkMember.Name))
+                        {
+                            var payloadAuto = sinkMeta.PayloadType.WithMutability(Mutability.Auto);
+                            var chanType = Model.ResolveType($"__builtin.IChannel<{payloadAuto.FullName()}>")
+                                ?? throw new BabyPenguinException($"Cant resolve __builtin.IChannel<{payloadAuto.FullName()}>", item.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                            var viewSym = AllocTempSymbol(chanType.WithMutability(Mutability.Mutable), item.SourceLocation);
+                            AddCastExpression(new(wiredSym), viewSym, item.SourceLocation);
+                            var curSym = AllocTempSymbol(sinkMember.TypeInfo, item.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(item.SourceLocation, sinkMember, ownerSym, curSym, false));
+                            var bindSymbol = Model.ResolveSymbol($"__builtin._LateSource<{payloadAuto.FullName()}>.bind")
+                                ?? throw new BabyPenguinException($"Cant resolve __builtin._LateSource<{payloadAuto.FullName()}>.bind", item.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                            var bindRef = AllocTempSymbol(bindSymbol.TypeInfo, item.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(item.SourceLocation, bindSymbol, curSym, bindRef, true));
+                            AddInstruction(new FunctionCallInstruction(item.SourceLocation, bindRef, [viewSym], null));
+                            break;
+                        }
+
+                        if (!wiredSym.TypeInfo.CanImplicitlyCastTo(sinkMember.TypeInfo))
+                            throw new BabyPenguinException($"connect: cannot wire source of type '{wiredSym.TypeInfo.FullName()}' into '{sinkMember.TypeInfo.FullName()}'", item.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                        AddInstruction(new WriteMemberInstruction(item.SourceLocation, sinkMember, wiredSym, ownerSym));
                         break;
                     }
                 default:
                     throw new NotImplementedException();
             }
+        }
+
+        /// <summary>
+        /// If a connect source is an OUTPUT port member access (`f1.y`), resolve
+        /// the hub owner instance, the hub's subscribe() method symbol and the
+        /// per-subscriber wire type (mut LatestChannel&lt;T&gt;). Returns false for
+        /// any other source shape (plain channels bind directly).
+        /// </summary>
+        private bool TryResolveOutputHubSubscribe(MemberAccessExpression srcMa, out ISymbol instanceSym, out ISymbol portFieldSymbol, out ISymbol subscribeSymbol, out IType wireType)
+        {
+            instanceSym = null!;
+            portFieldSymbol = null!;
+            subscribeSymbol = null!;
+            wireType = null!;
+            try
+            {
+                ResolveMemberAccessExpressionSymbol(srcMa, out var ownerType, out var member);
+                if (ownerType == null) return false;
+                var meta = PortRegistry.Find(ownerType.WithMutability(Mutability.Auto).FullName(), member.Name);
+                if (meta == null || meta.IsInput) return false;
+
+                instanceSym = AddExpression(srcMa.BaseExpression!, false);
+                portFieldSymbol = member;
+                var payloadAuto = meta.PayloadType.WithMutability(Mutability.Auto);
+                subscribeSymbol = Model.ResolveSymbol($"__builtin._Fanout<{payloadAuto.FullName()}>.subscribe")
+                    ?? throw new BabyPenguinException($"Cant resolve __builtin._Fanout<{payloadAuto.FullName()}>.subscribe", srcMa.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                var latestType = Model.ResolveType($"__builtin.LatestChannel<{payloadAuto.FullName()}>")
+                    ?? throw new BabyPenguinException($"Cant resolve __builtin.LatestChannel<{payloadAuto.FullName()}>", srcMa.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                wireType = latestType.WithMutability(Mutability.Mutable);
+                return true;
+            }
+            catch (BabyPenguinException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// A bare identifier sink that names a MultiInput binding (top-level
+        /// `let mi : mut MultiInput&lt;T&gt;`) — connect(src, mi) registers a
+        /// source view on it without member-access syntax. Returns false for
+        /// any other sink shape.
+        /// </summary>
+        private bool TryResolveBareMultiInput(ISyntaxExpression sink, out ISymbol miSym)
+        {
+            miSym = null!;
+            if (sink.GetEffectiveExpression() is not PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } pe)
+                return false;
+            var sym = Model.ResolveShortSymbol(pe.Identifier!.Name, s => !s.IsClassMember, scope: this, expressionScopeId: pe.ScopeId);
+            if (sym == null) return false;
+            if (sym.TypeInfo.TypeNode?.GenericType?.FullName() != "__builtin.MultiInput<?>")
+                return false;
+            miSym = sym;
+            return true;
+        }
+
+        /// <summary>
+        /// An Event source (connect(ev, f.x)): grants the input a permanent
+        /// wire fed by every emit — ev.connect_wire() returns a fresh
+        /// LatestChannel registered on the event (fan-out with independent
+        /// cursors, like an output hub). Returns false for non-Event sources.
+        /// </summary>
+        private bool TryEmitEventWire(SourceLocation location, ISyntaxExpression source, out ISymbol wireSym)
+        {
+            wireSym = null!;
+            IType sourceType;
+            try
+            {
+                sourceType = ResolveExpressionType(source);
+            }
+            catch (BabyPenguinException)
+            {
+                return false;
+            }
+            if (sourceType.TypeNode?.GenericType?.FullName() != "__builtin.Event<?>")
+                return false;
+
+            var payload = sourceType.GenericArguments.First().WithMutability(Mutability.Auto);
+            var evSym = AddExpression(source, false);
+            var connectWireSymbol = Model.ResolveSymbol($"__builtin.Event<{payload.FullName()}>.connect_wire")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.Event<{payload.FullName()}>.connect_wire", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var methodRef = AllocTempSymbol(connectWireSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, connectWireSymbol, evSym, methodRef, true));
+            var latestType = Model.ResolveType($"__builtin.LatestChannel<{payload.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.LatestChannel<{payload.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            wireSym = AllocTempSymbol(latestType.WithMutability(Mutability.Mutable), location);
+            AddInstruction(new FunctionCallInstruction(location, methodRef, [], wireSym));
+            return true;
+        }
+
+        /// <summary>
+        /// Detect a member access that lands on a declared RTL port (input or
+        /// output) and resolve its owner type / field symbol / direction meta.
+        /// Purely symbolic — emits nothing.
+        /// </summary>
+        private bool IsPortMemberAccess(MemberAccessExpression exp, out IType ownerType, out ISymbol memberSym, out PortMeta meta)
+        {
+            ownerType = null!;
+            memberSym = null!;
+            meta = null!;
+            try
+            {
+                ResolveMemberAccessExpressionSymbol(exp, out var ot, out var m);
+                if (ot == null || m == null) return false;
+                var fm = PortRegistry.Find(ot.WithMutability(Mutability.Auto).FullName(), m.Name);
+                if (fm == null) return false;
+                ownerType = ot;
+                memberSym = m;
+                meta = fm;
+                return true;
+            }
+            catch (BabyPenguinException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Read a connect source RAW: a port member access yields its channel
+        /// object (hub / relay), anything else goes through normal expression
+        /// binding. Bare port reads (payload slot) do not apply here.
+        /// </summary>
+        private ISymbol ReadSourceRaw(ISyntaxExpression source, SourceLocation location)
+        {
+            if (source.GetEffectiveExpression() is MemberAccessExpression ma
+                && IsPortMemberAccess(ma, out _, out var member, out _))
+            {
+                var ownerSym = AddExpression(ma.BaseExpression!, false);
+                var tmp = AllocTempSymbol(member.TypeInfo, location);
+                AddInstruction(new ReadMemberInstruction(location, member, ownerSym, tmp, false));
+                return tmp;
+            }
+            return AddExpression(source, false);
+        }
+
+        /// <summary>
+        /// Input passthrough (connect(this.x, inner.x), class construct): the
+        /// input field is rebound to a _LateSource relay initialized with the
+        /// field's current channel (default or never-source); the sink is then
+        /// wired to the relay. The OUTER connect later calls relay.bind(real)
+        /// (dispatched via PassthroughRegistry) — it runs after this construct,
+        /// when the enclosing instance's own input gets connected.
+        /// </summary>
+        private ISymbol EmitInputPassthrough(SourceLocation location, ISymbol portFieldSymbol, PortMeta meta)
+        {
+            var thisSym = Model.ResolveShortSymbol("this", scope: this)
+                ?? throw new BabyPenguinException("Cant resolve 'this' in construct block", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var className = thisSym.TypeInfo.WithMutability(Mutability.Auto).FullName();
+            if (PassthroughRegistry.Find(className, portFieldSymbol.Name))
+                throw new BabyPenguinException($"Input port '{portFieldSymbol.Name}' of '{className}' already has a passthrough line; fan-out from a passed-through input is not supported", location, code: ErrorCode.E_TYPE_MISMATCH);
+            PassthroughRegistry.Register(className, portFieldSymbol.Name);
+
+            var payloadAuto = meta.PayloadType.WithMutability(Mutability.Auto);
+            var lateType = Model.ResolveType($"__builtin._LateSource<{payloadAuto.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin._LateSource<{payloadAuto.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            var lateSym = AllocTempSymbol(lateType.WithMutability(Mutability.Mutable), location);
+            AddInstruction(new NewInstanceInstruction(location, lateSym));
+            var ctorSymbol = Model.ResolveSymbol($"__builtin._LateSource<{payloadAuto.FullName()}>.new")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin._LateSource<{payloadAuto.FullName()}>.new", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            AddInstruction(new FunctionCallInstruction(location, ctorSymbol, [lateSym], null));
+
+            // relay.bind(<current this.x view>) — keeps a declared default
+            // live until the outer connect replaces it with the real source.
+            var chanType = Model.ResolveType($"__builtin.IChannel<{payloadAuto.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.IChannel<{payloadAuto.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            var curSym = AllocTempSymbol(portFieldSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, portFieldSymbol, thisSym, curSym, false));
+            var curView = AllocTempSymbol(chanType.WithMutability(Mutability.Mutable), location);
+            AddCastExpression(new(curSym), curView, location);
+            var bindSymbol = Model.ResolveSymbol($"__builtin._LateSource<{payloadAuto.FullName()}>.bind")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin._LateSource<{payloadAuto.FullName()}>.bind", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var bindRef = AllocTempSymbol(bindSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, bindSymbol, lateSym, bindRef, true));
+            AddInstruction(new FunctionCallInstruction(location, bindRef, [curView], null));
+
+            // Rebind the own field so the module body's waits also go through
+            // the relay (late-bound, re-read on every poll).
+            AddInstruction(new WriteMemberInstruction(location, portFieldSymbol, lateSym, thisSym));
+            return lateSym;
+        }
+
+        /// <summary>
+        /// Mut variable net source (connect(x, f.in) / connect(this.f, ...)):
+        /// lazily materializes the hidden _Fanout hub (created + seeded with
+        /// the variable's current value on first use in this construct), then
+        /// subscribes a fresh wire from it. Returns false when the source is
+        /// not a netted variable.
+        /// </summary>
+        private bool TryEmitNetSource(SourceLocation location, ISyntaxExpression source, out ISymbol wireSym)
+        {
+            wireSym = null!;
+            ISymbol? varSym = null;
+            MemberAccessExpression? fieldForm = null;
+            var eff = source.GetEffectiveExpression();
+            if (eff is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } pe)
+            {
+                varSym = Model.ResolveShortSymbol(pe.Identifier!.Name, s => !s.IsClassMember, scope: this);
+            }
+            else if (eff is MemberAccessExpression ma
+                && ma.BaseExpression is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } bpe
+                && bpe.Identifier!.Name == "this")
+            {
+                fieldForm = ma;
+                ResolveMemberAccessExpressionSymbol(ma, out _, out var fieldMember);
+                varSym = fieldMember;
+            }
+            varSym = varSym is MutableSymbolProxy proxy ? proxy.Symbol : varSym;
+            if (varSym == null || !Model.VariableNets.TryGetValue(varSym, out var hubSym))
+                return false;
+
+            var payload = hubSym.TypeInfo.GenericArguments.First().WithMutability(Mutability.Auto);
+            var hubMutableType = hubSym.TypeInfo.WithMutability(Mutability.Mutable);
+            var hubSymResolved = Model.ResolveSymbol($"__builtin._Fanout<{payload.FullName()}>.new")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin._Fanout<{payload.FullName()}>.new", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+
+            if (CodeContainerData.InitializedNets.Add(hubSym))
+            {
+                // hub = new _Fanout<T>()
+                var hubTmp = AllocTempSymbol(hubMutableType, location);
+                AddInstruction(new NewInstanceInstruction(location, hubTmp));
+                AddInstruction(new FunctionCallInstruction(location, hubSymResolved, [hubTmp], null));
+                WriteNetHub(location, hubSym, hubTmp);
+                // seed: the variable's connect-time value becomes the hub's
+                // deliverable seed (Q3: connect-time initial value counts as
+                // one delivery — a subscriber's first wait wakes at time 0;
+                // the first real assignment transaction supersedes it).
+                var curVal = AllocTempSymbol(varSym.TypeInfo.WithMutability(Mutability.Auto), location);
+                if (fieldForm != null)
+                {
+                    var thisSym = Model.ResolveShortSymbol("this", scope: this)
+                        ?? throw new BabyPenguinException("Cant resolve 'this' in construct block", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                    AddInstruction(new ReadMemberInstruction(location, varSym, thisSym, curVal, false));
+                }
+                else
+                {
+                    AddInstruction(new AssignmentInstruction(location, varSym, curVal));
+                }
+                var deliverSym = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), location);
+                AddInstruction(new AssignLiteralToSymbolInstruction(location, deliverSym, Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), "true"));
+                var setSeedSymbol = Model.ResolveSymbol($"__builtin._Fanout<{payload.FullName()}>.set_seed")
+                    ?? throw new BabyPenguinException($"Cant resolve __builtin._Fanout<{payload.FullName()}>.set_seed", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                var seedRef = AllocTempSymbol(setSeedSymbol.TypeInfo, location);
+                AddInstruction(new ReadMemberInstruction(location, setSeedSymbol, hubTmp, seedRef, true));
+                AddInstruction(new FunctionCallInstruction(location, seedRef, [curVal, deliverSym], null));
+            }
+
+            // hub object back into a temp, then subscribe a fresh wire.
+            var hubRead = AllocTempSymbol(hubMutableType, location);
+            ReadNetHub(location, hubSym, hubRead);
+            var subscribeSymbol = Model.ResolveSymbol($"__builtin._Fanout<{payload.FullName()}>.subscribe")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin._Fanout<{payload.FullName()}>.subscribe", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var latestType = Model.ResolveType($"__builtin.LatestChannel<{payload.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.LatestChannel<{payload.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            var methodRef = AllocTempSymbol(subscribeSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, subscribeSymbol, hubRead, methodRef, true));
+            wireSym = AllocTempSymbol(latestType.WithMutability(Mutability.Mutable), location);
+            AddInstruction(new FunctionCallInstruction(location, methodRef, [], wireSym));
+            return true;
+        }
+
+        /// <summary>Store the freshly created hub object into its variable
+        /// (namespace-level net) or field (class-field net).</summary>
+        private void WriteNetHub(SourceLocation location, ISymbol hubSym, ISymbol value)
+        {
+            if (hubSym.IsClassMember)
+            {
+                var thisSym = Model.ResolveShortSymbol("this", scope: this)
+                    ?? throw new BabyPenguinException("Cant resolve 'this' in construct block", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                AddInstruction(new WriteMemberInstruction(location, hubSym, value, thisSym));
+            }
+            else
+            {
+                AddInstruction(new AssignmentInstruction(location, value, hubSym));
+            }
+        }
+
+        /// <summary>Read the hub object (per receiver for field nets).</summary>
+        private void ReadNetHub(SourceLocation location, ISymbol hubSym, ISymbol target, ISymbol? receiver = null)
+        {
+            if (hubSym.IsClassMember)
+            {
+                var thisSym = receiver ?? Model.ResolveShortSymbol("this", scope: this)
+                    ?? throw new BabyPenguinException("Cant resolve 'this'", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                AddInstruction(new ReadMemberInstruction(location, hubSym, thisSym, target, false));
+            }
+            else
+            {
+                AddInstruction(new AssignmentInstruction(location, hubSym, target));
+            }
+        }
+
+        /// <summary>Emit `channel.write(value)` through the ISink interface.</summary>
+        private void EmitChannelWriteCall(SourceLocation location, ISymbol channelSym, IType payloadAutoType, ISymbol valueSym)
+        {
+            var writeSym = Model.ResolveSymbol($"__builtin.ISink<{payloadAutoType.FullName()}>.write")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.ISink<{payloadAutoType.FullName()}>.write", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var methodRef = AllocTempSymbol(writeSym.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, writeSym, channelSym, methodRef, true));
+            AddInstruction(new FunctionCallInstruction(location, methodRef, [valueSym], null));
+        }
+
+        /// <summary>
+        /// Assignment hook for implicit nets: after `x = v` (or `obj.f = v`)
+        /// writes the variable, also deliver v to the net hub so connected
+        /// inputs observe the new value. No-op for non-netted symbols.
+        /// </summary>
+        private void EmitNetWriteHook(ISymbol target, ISymbol? memberSym, ISymbol valueSym, SourceLocation location)
+        {
+            var key = memberSym ?? target;
+            key = key is MutableSymbolProxy proxy ? proxy.Symbol : key;
+            if (!Model.VariableNets.TryGetValue(key, out var hubSym)) return;
+
+            var payload = hubSym.TypeInfo.GenericArguments.First().WithMutability(Mutability.Auto);
+            var hubRead = AllocTempSymbol(hubSym.TypeInfo.WithMutability(Mutability.Mutable), location);
+            ReadNetHub(location, hubSym, hubRead, receiver: memberSym != null ? target : null);
+            EmitChannelWriteCall(location, hubRead, payload, valueSym);
+        }
+
+        /// <summary>
+        /// Emit the do_wait dance on a future value: cast to the IFuture
+        /// interface, fetch do_wait, call it into `to`.
+        /// </summary>
+        private void EmitFutureDoWait(ISymbol futureValueSym, ITypeNode futureInterfaceType, ISymbol to, SourceLocation location)
+        {
+            var futureSymbol = AllocTempSymbol(futureInterfaceType.ToType(Mutability.Mutable), location);
+            AddCastExpression(new(futureValueSym), futureSymbol, location);
+            var doWaitFuncSymbol = Model.ResolveSymbol($"{futureInterfaceType.FullName()}.do_wait", i => i.IsFunction) ??
+                throw new BabyPenguinException($"Cant find do_wait function for future type '{futureInterfaceType.FullName()}'", location, code: ErrorCode.E_ASYNC_INVALID);
+            var doWaitSymbol = AllocTempSymbol(doWaitFuncSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, doWaitFuncSymbol, futureSymbol, doWaitSymbol, true));
+            AddInstruction(new FunctionCallInstruction(location, doWaitSymbol, [], to));
+        }
+
+        /// <summary>True for the ISink write/try_write interface methods.</summary>
+        private static bool IsSinkWriteMethod(ISymbol member)
+        {
+            var parent = member.Parent as ITypeNode;
+            return parent != null
+                && parent.FullName().StartsWith("__builtin.ISink<")
+                && (member.Name == "write" || member.Name == "try_write");
+        }
+
+        /// <summary>
+        /// Bare port read (Q1: settle point): first park until propagation at
+        /// the current simulation time has settled (the _sim_settled loop —
+        /// one bare-wait per scheduler round, re-checked like every other
+        /// parked waiter), then read the channel's CURRENT slot as the
+        /// payload value (`f.y`, `this.x`). The slot always holds a value on
+        /// seeded ports (declared default or type zero); a seedless channel
+        /// that never delivered still raises the clear runtime error.
+        /// Construct bodies may not read ports — a settle point is a
+        /// suspension, and construct blocks must not wait.
+        /// </summary>
+        private void EmitPortSlotRead(ISymbol ownerSymbol, ISymbol portFieldSymbol, PortMeta meta, ISymbol to, SourceLocation location)
+        {
+            if (this is IFunction readFunc
+                && (readFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ConstructPrefix)
+                    || readFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ClassConstructPrefix)))
+                throw new BabyPenguinException($"Cannot read port '{portFieldSymbol.Name}' inside a construct block — a port read is a settle point (it waits for the current time to settle), and construct bodies must not wait", location, code: ErrorCode.E_EVENT_INVALID);
+
+            // 1. settle loop: park one delta at a time until the previous
+            //    round carried no transaction activity and the current one
+            //    is quiet so far. The observation counter changes the parked
+            //    frame's fingerprint every round — without it the quiescence
+            //    detector would see two identical signal-free snapshots and
+            //    end the program before this reader ever observes a settled
+            //    round.
+            var settledSymbol = Model.ResolveSymbol("__builtin._sim_settled")
+                ?? throw new BabyPenguinException("Cant resolve __builtin._sim_settled", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var settledVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), location);
+            var spinType = Model.BasicTypeNodes.I64.ToType(Mutability.Immutable);
+            var spinVar = AllocTempSymbol(spinType, location);
+            var oneVar = AllocTempSymbol(spinType, location);
+            AddInstruction(new AssignLiteralToSymbolInstruction(location, spinVar, spinType, "0"));
+            AddInstruction(new AssignLiteralToSymbolInstruction(location, oneVar, spinType, "1"));
+            var settleBegin = CreateLabel();
+            var settleEnd = CreateLabel();
+            AddInstruction(new NopInstuction(location).WithLabel(settleBegin));
+            AddInstruction(new FunctionCallInstruction(location, settledSymbol, [], settledVar));
+            AddInstruction(new GotoInstruction(location, settleEnd, settledVar, true));
+            AddInstruction(new BinaryOperationInstruction(location, BinaryOperatorEnum.Add, spinVar, oneVar, spinVar));
+            AddInstruction(new ReturnInstruction(location, null, ReturnStatus.Blocked));
+            AddInstruction(new GotoInstruction(location, settleBegin));
+            AddInstruction(new NopInstuction(location.EndLocation).WithLabel(settleEnd));
+
+            EmitPortSlotReadRaw(ownerSymbol, portFieldSymbol, meta, to, location);
+        }
+
+        /// <summary>
+        /// Immediate slot read (no settle): the channel's CURRENT value as
+        /// the payload. Used by `wait change(port)` — edge detection
+        /// re-samples the raw level every scheduler round (the
+        /// `let v = x; while (x == v) { wait x; }` idiom it sugars), where
+        /// settle-point granularity would miss single-round pulses.
+        /// </summary>
+        private void EmitPortSlotReadRaw(ISymbol ownerSymbol, ISymbol portFieldSymbol, PortMeta meta, ISymbol to, SourceLocation location)
+        {
+            // 2. raw channel object
+            var payloadAuto = meta.PayloadType.WithMutability(Mutability.Auto);
+            var chTmp = AllocTempSymbol(portFieldSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, portFieldSymbol, ownerSymbol, chTmp, false));
+            // 2. ISource<T> view + current()
+            var sourceType = Model.ResolveType($"__builtin.ISource<{payloadAuto.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.ISource<{payloadAuto.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            var viewTmp = AllocTempSymbol(sourceType.WithMutability(Mutability.Mutable), location);
+            AddCastExpression(new(chTmp), viewTmp, location);
+            var currentSymbol = Model.ResolveSymbol($"__builtin.ISource<{payloadAuto.FullName()}>.current", i => i.IsFunction)
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.ISource<{payloadAuto.FullName()}>.current", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var currentRef = AllocTempSymbol(currentSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, currentSymbol, viewTmp, currentRef, true));
+            var optionType = Model.ResolveType($"__builtin.Option<{payloadAuto.FullName()}>")
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.Option<{payloadAuto.FullName()}>", location, code: ErrorCode.E_RESOLVE_TYPE);
+            var optTmp = AllocTempSymbol(optionType.WithMutability(Mutability.Mutable), location);
+            AddInstruction(new FunctionCallInstruction(location, currentRef, [], optTmp));
+            // 3. none -> clear runtime error; some -> payload into `to`
+            var isSomeSymbol = Model.ResolveSymbol($"__builtin.Option<{payloadAuto.FullName()}>.is_some", i => i.IsFunction)
+                ?? throw new BabyPenguinException($"Cant resolve __builtin.Option<{payloadAuto.FullName()}>.is_some", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var isSomeRef = AllocTempSymbol(isSomeSymbol.TypeInfo, location);
+            AddInstruction(new ReadMemberInstruction(location, isSomeSymbol, optTmp, isSomeRef, true));
+            var chkTmp = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), location);
+            AddInstruction(new FunctionCallInstruction(location, isSomeRef, [], chkTmp));
+            var okLabel = CreateLabel();
+            AddInstruction(new GotoInstruction(location, okLabel, chkTmp, true));
+            var stringType = Model.BasicTypeNodes.String.ToType(Mutability.Immutable);
+            var msgTmp = AllocTempSymbol(stringType, location);
+            AddInstruction(new AssignLiteralToSymbolInstruction(location, msgTmp, stringType, "\"port read before any value was delivered\""));
+            var i64Type = Model.BasicTypeNodes.I64.ToType(Mutability.Immutable);
+            var codeTmp = AllocTempSymbol(i64Type, location);
+            AddInstruction(new AssignLiteralToSymbolInstruction(location, codeTmp, i64Type, "100"));
+            var throwSymbol = Model.ResolveSymbol("__builtin.__throw_runtime_error")
+                ?? throw new BabyPenguinException("Cant resolve __builtin.__throw_runtime_error", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            AddInstruction(new FunctionCallInstruction(location, throwSymbol, [msgTmp, codeTmp], null));
+            AddInstruction(new NopInstuction(location).WithLabel(okLabel));
+            AddInstruction(new ReadEnumInstruction(location, optTmp, to));
         }
 
         // P1 try-bind: `if (let x := opt.some) { ... }` desugars to
@@ -967,8 +1682,16 @@ namespace BabyPenguin.SemanticInterface
                 return;
             }
 
-            // Resolve base expression type
-            var baseType = ResolveExpressionType(expression.BaseExpression!);
+            // Resolve base expression type. A port member base keeps its
+            // CHANNEL type here (symbolic resolution: this.y.write resolves
+            // write on IChannel) — the bare-read payload conversion only
+            // applies to value reads, never to member resolution.
+            IType baseType;
+            if (expression.BaseExpression!.GetEffectiveExpression() is MemberAccessExpression basePortMa
+                && IsPortMemberAccess(basePortMa, out _, out var basePortField, out _))
+                baseType = basePortField.TypeInfo;
+            else
+                baseType = ResolveExpressionType(expression.BaseExpression!);
 
             // If base is a type reference, resolve as static/type member
             if (baseType is TypeReferenceType typeReference)
@@ -1162,7 +1885,16 @@ namespace BabyPenguin.SemanticInterface
                             return (fs.IsAsync ? Model.BasicTypeNodes.AsyncFun : Model.BasicTypeNodes.Fun).Specialize([.. symbol.TypeInfo.GenericArguments.Take(1), .. symbol.TypeInfo.GenericArguments.Skip(2)]).ToType(Mutability.Mutable);
                         }
                         else
+                        {
+                            // A bare port read yields the PAYLOAD (the channel's
+                            // current slot): `f.y + 1`, `let v = f.y` work on T.
+                            // Method accesses (this.y.write) keep the function
+                            // path above; `wait port` reads the channel raw.
+                            if (ownerType != null && !symbol.IsFunction
+                                && PortRegistry.Find(ownerType.WithMutability(Mutability.Auto).FullName(), symbol.Name) is PortMeta portMeta)
+                                return portMeta.PayloadType.WithMutability(Mutability.Auto);
                             return symbol.TypeInfo;
+                        }
                     }
                 case PrimaryExpression exp:
                     switch (exp.PrimaryExpressionType)
@@ -1231,6 +1963,12 @@ namespace BabyPenguin.SemanticInterface
                         if (exp.Expression == null)
                         {
                             return Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+                        }
+                        else if (exp.IsChangeUnit)
+                        {
+                            // `wait change(x)` yields the watched expression's
+                            // NEW value once it differs from the entry sample.
+                            return ResolveExpressionType(exp.ChangeWatchedExpression);
                         }
                         else
                         {
@@ -1485,7 +2223,22 @@ namespace BabyPenguin.SemanticInterface
                 return to;
             }
 
-            var ownerSymbol = AddExpression(exp.BaseExpression!, false);
+            // A method call on a port (this.y.write(v)) needs the CHANNEL
+            // object as its receiver — the bare-read payload conversion must
+            // not apply to method receivers.
+            ISymbol ownerSymbol;
+            if (symbol.IsFunction
+                && exp.BaseExpression!.GetEffectiveExpression() is MemberAccessExpression receiverPortMa
+                && IsPortMemberAccess(receiverPortMa, out _, out var receiverPortField, out _))
+            {
+                var receiverOwner = AddExpression(receiverPortMa.BaseExpression!, false);
+                ownerSymbol = AllocTempSymbol(receiverPortField.TypeInfo, exp.SourceLocation);
+                AddInstruction(new ReadMemberInstruction(exp.SourceLocation, receiverPortField, receiverOwner, ownerSymbol, false));
+            }
+            else
+            {
+                ownerSymbol = AddExpression(exp.BaseExpression!, false);
+            }
             var memberName = ownerSymbol.TypeInfo.FullName() + "." + exp.Member!.Name;
             var member = Model.ResolveSymbol(memberName, scope: this);
 
@@ -1503,6 +2256,38 @@ namespace BabyPenguin.SemanticInterface
 
             if (member == null)
                 throw new BabyPenguinException($"Cant resolve symbol '{exp.Member.Name}'", exp.Member.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+
+            // RTL port access through a member read. Bare reads (f.y, this.x)
+            // yield the channel's CURRENT slot — the payload value; the read
+            // matrix allows outsiders to read outputs, but only the owning
+            // module to read its inputs.
+            if (ownerSymbol.TypeInfo.TypeNode != null && !member.IsFunction
+                && PortRegistry.Find(ownerSymbol.TypeInfo.WithMutability(Mutability.Auto).FullName(), exp.Member!.Name) is PortMeta readMeta)
+            {
+                var isOwnPort = ownerSymbol.Name == "this";
+                if (readMeta.IsInput && !isOwnPort)
+                    throw new BabyPenguinException($"Cannot read input port '{exp.Member.Name}' of another module — inputs are only visible inside their module", exp.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                EmitPortSlotRead(ownerSymbol, member, readMeta, to, exp.SourceLocation);
+                owner = ownerSymbol;
+                ownerBeforeImplicitConversion_ = ownerSymbol;
+                return to;
+            }
+
+            // Write-side matrix for method calls: driving a port through
+            // this.y.write(v) / f.y.write(v) must obey the same rules as the
+            // assignment sugar (inputs are connect-only; outputs are driven
+            // by their owner only).
+            if (member.IsFunction && IsSinkWriteMethod(member)
+                && exp.BaseExpression!.GetEffectiveExpression() is MemberAccessExpression methodPortMa
+                && IsPortMemberAccess(methodPortMa, out _, out var methodPortField, out var methodPortMeta))
+            {
+                var methodOnOwnPort = methodPortMa.BaseExpression is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } mpb && mpb.Identifier!.Name == "this";
+                if (methodPortMeta.IsInput)
+                    throw new BabyPenguinException($"Cannot write input port '{methodPortField.Name}' — inputs are wired exclusively through connect", exp.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                if (!methodOnOwnPort)
+                    throw new BabyPenguinException($"Cannot drive output port '{methodPortField.Name}' of another module from outside '{methodPortMa.BaseExpression!.BuildText()}'", exp.SourceLocation, code: ErrorCode.E_MUTABILITY);
+                DriverRegistry.AddBodyDriver(methodPortMa.BaseExpression is not null ? ResolveExpressionType(methodPortMa.BaseExpression!).WithMutability(Mutability.Auto).FullName() : "", methodPortField.Name, Name, exp.SourceLocation);
+            }
 
             if (ownerSymbol.TypeInfo.IsEnumType && !member.IsFunction)
                 AddInstruction(new ReadEnumInstruction(exp.SourceLocation, ownerSymbol, to));
@@ -2136,6 +2921,64 @@ namespace BabyPenguin.SemanticInterface
                         {
                             AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
                         }
+                        else if (waitExpression.IsChangeUnit)
+                        {
+                            // `wait change(x)` — edge detection: park until the
+                            // watched expression's value differs from its entry
+                            // sample (level re-sampled every scheduler round,
+                            // like the condition form); yields the new value.
+                            // Port expressions sample the RAW slot (no settle):
+                            // the idiom this sugars (`let v = x; while (x == v)
+                            // { wait x; }`) watches the instantaneous level, and
+                            // settle-point granularity would miss single-round
+                            // pulses.
+                            var watched = waitExpression.ChangeWatchedExpression;
+                            ISymbol ReadWatched()
+                            {
+                                if (watched.GetEffectiveExpression() is MemberAccessExpression wma
+                                    && IsPortMemberAccess(wma, out _, out var wMember, out var wMeta))
+                                {
+                                    var wOwner = AddExpression(wma.BaseExpression!, false);
+                                    var wVar = AllocTempSymbol(wMeta.PayloadType.WithMutability(Mutability.Auto), watched.SourceLocation);
+                                    EmitPortSlotReadRaw(wOwner, wMember, wMeta, wVar, watched.SourceLocation);
+                                    return wVar;
+                                }
+                                return AddExpression(watched, false);
+                            }
+                            var sampleVar = ReadWatched();
+                            var beginLabel = CreateLabel();
+                            var endLabel = CreateLabel();
+                            AddInstruction(new NopInstuction(waitExpression.SourceLocation).WithLabel(beginLabel));
+                            var curVar = ReadWatched();
+                            var diffVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), waitExpression.SourceLocation);
+                            AddInstruction(new BinaryOperationInstruction(waitExpression.SourceLocation, BinaryOperatorEnum.NotEqual, sampleVar, curVar, diffVar));
+                            AddInstruction(new GotoInstruction(waitExpression.SourceLocation, endLabel, diffVar, true));
+                            AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
+                            AddInstruction(new GotoInstruction(waitExpression.SourceLocation, beginLabel));
+                            AddInstruction(new NopInstuction(waitExpression.SourceLocation.EndLocation).WithLabel(endLabel));
+                            AddAssignmentExpression(new(curVar), to, isVariableInitialize, null, waitExpression.SourceLocation);
+                        }
+                        else if (waitExpression.Expression.GetEffectiveExpression() is MemberAccessExpression waitMa
+                            && IsPortMemberAccess(waitMa, out _, out var waitPortField, out var waitPortMeta))
+                        {
+                            // `wait <port>` — transaction wait on the port's
+                            // channel object, read RAW (a bare port read would
+                            // yield the payload slot instead of the channel).
+                            // Also enforces the read matrix: only the owning
+                            // module may wait its input; any module may wait
+                            // another's output.
+                            if (waitPortMeta.IsInput
+                                && !(waitMa.BaseExpression is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } waitBase
+                                     && waitBase.Identifier!.Name == "this"))
+                                throw new BabyPenguinException($"Cannot wait on input port '{waitPortField.Name}' of another module — inputs are only visible inside their module", waitExpression.SourceLocation, code: ErrorCode.E_MUTABILITY);
+
+                            var waitOwner = AddExpression(waitMa.BaseExpression!, false);
+                            var chSym = AllocTempSymbol(waitPortField.TypeInfo, waitExpression.SourceLocation);
+                            AddInstruction(new ReadMemberInstruction(waitExpression.SourceLocation, waitPortField, waitOwner, chSym, false));
+                            var waitFutureTypeNode = Model.ResolveType($"__builtin.IFuture<{waitPortMeta.PayloadType.WithMutability(Mutability.Auto).FullName()}>")?.TypeNode
+                                ?? throw new BabyPenguinException($"Cant resolve __builtin.IFuture<{waitPortMeta.PayloadType.WithMutability(Mutability.Auto).FullName()}>", waitExpression.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                            EmitFutureDoWait(chSym, waitFutureTypeNode, to, waitExpression.SourceLocation);
+                        }
                         else
                         {
                             var waitExpType = ResolveExpressionType(waitExpression.Expression);
@@ -2143,13 +2986,23 @@ namespace BabyPenguin.SemanticInterface
                             {
                                 var waitExpressionSymbol = AddExpression(waitExpression.Expression, isVariableInitialize);
                                 var futureType = waitExpType.TypeNode.GetImplementedInterfaceType("__builtin.IFuture<?>", waitExpression.Expression.SourceLocation) ?? throw new BabyPenguinException($"Type '{waitExpType.FullName()}' does not implement __builtin.IFuture<?> interface", waitExpression.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
-                                var futureSymbol = AllocTempSymbol(futureType.ToType(Mutability.Mutable), waitExpression.SourceLocation);
-                                AddCastExpression(new(waitExpressionSymbol), futureSymbol, waitExpression.SourceLocation);
-                                var doWaitFuncSymbol = Model.ResolveSymbol($"{futureType.FullName()}.do_wait", i => i.IsFunction) ??
-                                    throw new BabyPenguinException($"Cant find do_wait function for future type '{waitExpType.FullName()}'", waitExpression.SourceLocation, code: ErrorCode.E_ASYNC_INVALID);
-                                var doWaitSymbol = AllocTempSymbol(doWaitFuncSymbol.TypeInfo, waitExpression.SourceLocation);
-                                AddInstruction(new ReadMemberInstruction(waitExpression.SourceLocation, doWaitFuncSymbol, futureSymbol, doWaitSymbol, true));
-                                AddInstruction(new FunctionCallInstruction(waitExpression.SourceLocation, doWaitSymbol, [], to));
+                                EmitFutureDoWait(waitExpressionSymbol, futureType, to, waitExpression.SourceLocation);
+                            }
+                            else if (waitExpType.IsBoolType)
+                            {
+                                // `wait <condition>`: level-sensitive wait — park for one
+                                // scheduler round, re-evaluate, repeat until the condition
+                                // holds. A condition that never becomes true contributes
+                                // identical rounds and ends at quiescence (like every
+                                // other parked waiter).
+                                var beginLabel = CreateLabel();
+                                var endLabel = CreateLabel();
+                                AddInstruction(new NopInstuction(waitExpression.SourceLocation).WithLabel(beginLabel));
+                                var condVar = AddExpression(waitExpression.Expression, false);
+                                AddInstruction(new GotoInstruction(waitExpression.SourceLocation, endLabel, condVar, true));
+                                AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
+                                AddInstruction(new GotoInstruction(waitExpression.SourceLocation, beginLabel));
+                                AddInstruction(new NopInstuction(waitExpression.SourceLocation.EndLocation).WithLabel(endLabel));
                             }
                             else
                             {

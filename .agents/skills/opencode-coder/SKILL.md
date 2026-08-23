@@ -8,10 +8,10 @@ description: 把有复杂度的编码任务或缺陷修复委派给本机 openco
 把实际的编码/修 bug 工作委派给本机的 **opencode** CLI（SST 出品的开源 coding agent）。你担任"技术负责人"：分析、出计划、指挥、审查、迭代、收尾。opencode 干"写代码"的活；你干"判断和把关"的活。
 
 ## 关于模型
-模型成本从低到高为：`opencode-go/mimo-v2.5` < `opencode-go/deepseek-v4-flash` < 不使用opencode。因此：
-* 首先默认使用`opencode-go/mimo-v2.5`
-* 如果超时后发现opencode输出或完成后review判断质量不理想，换成`opencode-go/deepseek-v4-flash`重试任务
-* 如果还不行，停止任务并向用户汇报。不允许使用任何未指定的模型。
+**永远使用 `opencode-go/deepseek-v4-flash`**（用户硬性要求）：
+* 所有 `opencode run` 调用都必须显式带 `-m opencode-go/deepseek-v4-flash`（opencode 默认模型不保证是 flash）。
+* 不允许使用任何其他模型（包括 `mimo-v2.5`、`deepseek-v4-pro`、`deepseek-reasoner` 等）。
+* 如果 deepseek-v4-flash 质量或可用性不行，停止任务并向用户汇报，不要自行换模型。
 
 ## 核心契约（务必遵守）
 

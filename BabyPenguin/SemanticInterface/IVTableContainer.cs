@@ -58,7 +58,6 @@ namespace BabyPenguin.SemanticInterface
 
         public bool IsMerged { get; set; } = false;
 
-        public List<IOnRoutine> OnRoutines { get; } = [];
     }
 
 }

@@ -9,9 +9,12 @@ initial {
 	wait(2s);
 	print("wall_time: {}, time: {}, hello @2", time.wall_time(), time.now());
 }
-	
-on 1s {
-	print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
+
+initial {
+	while (true) {
+		wait(1s);
+		print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
+	}
 }
 ```
 Above code prints:
@@ -32,11 +35,15 @@ initial {
 	print("wall_time: {}, time: {}, hello @2", time.wall_time(), time.now());
 }
 	
-on 1 tick {
-	print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
+initial {
+	while (true) {
+		wait 1 tick;
+		print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
+	}
 }
 
-on 3 tick {
+initial {
+	wait 3 tick;
 	print("wall_time: {}, time: {}, hello @3", time.wall_time(), time.now());
 }
 ```
@@ -82,7 +89,21 @@ Above code will print
 a=0 @ 0 tick
 a=2 @ 0 tick
 ```
-Waiting for zero-time wont cause simulation time to proceed, it will notify the scheduler to finish all jobs at current simulation time (like `yield` in many other co-routine libraries), update all assignments, then re-schedule current routine. You MUST NOT rely on wait zero-time to wait for value assignments on other routines, and if you have to, use an event.
+Waiting for zero-time wont cause simulation time to proceed, it will notify the scheduler to finish all jobs at current simulation time (like `yield` in many other co-routine libraries), update all assignments, then re-schedule current routine. You MUST NOT rely on wait zero-time to wait for value assignments on other routines, and if you have to, use an event (`Event<T>` broadcast) or a port/channel connection (see `11_PortsChannelsEvents.md`).
+
+## Waiting for conditions and edges
+
+`wait <condition>` is level-sensitive: the routine parks and the condition is re-evaluated every scheduler round until it holds (`wait a == 5`, `wait port == false`).
+
+`wait change(<expr>)` is edge-sensitive: it samples the watched expression's value at entry, parks until the value differs, and yields the NEW value — the classic edge-detection idiom (`let v = x; while (x == v) { wait x; }`) as sugar. Works on plain variables and port reads alike:
+
+```penguin
+initial {
+    let v : i64 = wait change(level);   // wakes on the next value change
+}
+```
+
+A condition (or watched value) that never changes contributes identical scheduler rounds and ends the program at quiescence, like every other parked waiter.
 
 ## Example
 Following is an example of playing chess between two players, which make a good use of custom timing model.

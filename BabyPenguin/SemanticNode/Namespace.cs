@@ -31,7 +31,6 @@ namespace BabyPenguin.SemanticNode
 
         public List<ISymbol> Symbols { get; } = [];
 
-        public List<IOnRoutine> OnRoutines { get; } = [];
 
         public string Name { get; }
 
@@ -39,7 +38,7 @@ namespace BabyPenguin.SemanticNode
 
         public ISemanticScope? Parent { get; set; }
 
-        public IEnumerable<ISemanticScope> Children => Classes.Cast<ISemanticScope>().Concat(Interfaces).Concat(Enums).Concat(Functions).Concat(InitialRoutines).Concat(OnRoutines);
+        public IEnumerable<ISemanticScope> Children => Classes.Cast<ISemanticScope>().Concat(Interfaces).Concat(Enums).Concat(Functions).Concat(InitialRoutines);
 
         public List<NamespaceImport> ImportedNamespaces { get; } = [];
 
@@ -97,6 +96,5 @@ namespace BabyPenguin.SemanticNode
 
         public IEnumerable<ISymbol> Symbols => Namespaces.SelectMany(n => n.Symbols);
 
-        public IEnumerable<IOnRoutine> OnRoutines => Namespaces.SelectMany(n => n.OnRoutines);
     }
 }

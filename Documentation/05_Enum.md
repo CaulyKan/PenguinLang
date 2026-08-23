@@ -43,9 +43,5 @@ enum Option<T> {
 	}
 
 	// however, enums can't have a constructor
-
-	on (this.is_none()) {
-		println("hello none");
-	}
 }
 ```

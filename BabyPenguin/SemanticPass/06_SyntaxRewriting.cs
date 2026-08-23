@@ -29,6 +29,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
+            RegisterVariableNets();
             foreach (var func in Model.FindAll(i => i is IFunction).Cast<IFunction>())
             {
                 IdentifyAsyncFunction(func);
@@ -241,6 +242,120 @@ namespace BabyPenguin.SemanticPass
             });
         }
 
+        /// <summary>
+        /// Implicit wire nets: a `mut` variable used as a connect source
+        /// (connect(x, f.in) / connect(this.f, inner.in)) gets a hidden
+        /// _Fanout hub variable registered here — BEFORE any body binding,
+        /// so assignment compilation (pass 07) can consult the registry no
+        /// matter the definition order. Top-level construct lets hoist to
+        /// the namespace (hub = namespace variable, writable from any
+        /// initial); class fields get a hidden class field. Class-construct
+        /// locals are rejected: they die when the wiring block returns, so a
+        /// net through them could never fire after elaboration.
+        /// </summary>
+        public void RegisterVariableNets()
+        {
+            foreach (var container in Model.FindAll(i => i is IFunction).Cast<IFunction>())
+            {
+                var isTopConstruct = container.Name.StartsWith(SemanticScopingPass.ConstructPrefix) && container.Parent is INamespace;
+                var isClassConstruct = container.Name.StartsWith(SemanticScopingPass.ClassConstructPrefix) && container.Parent is ITypeNode;
+                if (!isTopConstruct && !isClassConstruct) continue;
+                if (container is ISemanticScope scp && scp.FindAncestorIncludingSelf(o => o is ITypeNode t && t.IsGeneric && !t.IsSpecialized) != null)
+                    continue;
+
+                var ownDeclarations = new HashSet<Declaration>();
+                container.CodeSyntaxNode?.TraverseChildren((node, _) =>
+                {
+                    if (node is Declaration d)
+                        ownDeclarations.Add(d);
+                    return true;
+                });
+
+                container.CodeSyntaxNode?.TraverseChildren((node, _) =>
+                {
+                    if (node is Statement { StatementType: Statement.Type.ConnectStatement } stmt)
+                    {
+                        var conn = stmt.ConnectStatement!;
+                        if (conn.Source is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } pe)
+                            RegisterNet(container, pe.Identifier!.Name, pe.SourceLocation, isField: false, ownDeclarations);
+                        else if (conn.Source is MemberAccessExpression srcMa
+                                 && srcMa.BaseExpression is PrimaryExpression { PrimaryExpressionType: PrimaryExpression.Type.Identifier } basePe
+                                 && basePe.Identifier!.Name == "this")
+                            RegisterNet(container, srcMa.Member!.Name, srcMa.SourceLocation, isField: true, ownDeclarations);
+                    }
+                    return true;
+                });
+            }
+        }
+
+        /// <summary>
+        /// Channel-like types (implement ISource/ISink/IChannel) bind DIRECTLY
+        /// as connect sources — implicit nets are for payload-carrying mut
+        /// variables (i64, bool, ...), not for channels themselves. Events
+        /// likewise bind through their own wire mechanism (connect_wire).
+        /// </summary>
+        private static bool IsChannelLikeType(IType type)
+        {
+            if (type.TypeNode?.GenericType?.FullName() == "__builtin.Event<?>")
+                return true;
+            if (type.TypeNode is not IVTableContainer vt) return false;
+            return vt.ImplementedInterfaces.Any(i =>
+                i.FullName().StartsWith("__builtin.ISource<")
+                || i.FullName().StartsWith("__builtin.ISink<")
+                || i.FullName().StartsWith("__builtin.IChannel<"));
+        }
+
+        private void RegisterNet(IFunction constructFunc, string name, SourceLocation location, bool isField, HashSet<Declaration> ownDeclarations)
+        {
+            if (isField)
+            {
+                // Class field source: connect(this.f, ...) — hub is a hidden field.
+                var cls = (ISymbolContainer)constructFunc.Parent!;
+                var clsName = ((ISemanticNode)cls).FullName();
+                var fieldSym = Model.ResolveSymbol($"{clsName}.{name}")
+                    ?? throw new BabyPenguinException($"Cant resolve field '{name}' of class '{clsName}'", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                fieldSym = UnwrapSymbol(fieldSym);
+                if (IsChannelLikeType(fieldSym.TypeInfo)) return;
+                if (Model.VariableNets.ContainsKey(fieldSym)) return;
+                if (fieldSym.TypeInfo.IsMutable != Mutability.Mutable)
+                    throw new BabyPenguinException($"connect source '{name}' must be a mut field (implicit wire nets need mutable storage)", location, code: ErrorCode.E_MUTABILITY);
+                var payload = fieldSym.TypeInfo.WithMutability(Mutability.Auto);
+                var hubName = $"__net_{Model.VariableNetCounter++}_{name}";
+                var hubSym = cls.AddVariableSymbol(hubName, false, new Or<string, IType>($"__builtin._Fanout<{payload.FullName()}>"), location, null, true, null, Mutability.Mutable);
+                Model.VariableNets[fieldSym] = hubSym;
+                Model.Reporter.Write(DiagnosticLevel.Debug, $"Registered implicit net for field '{clsName}.{name}' (hub '{hubName}')");
+            }
+            else
+            {
+                // Top-level construct let: hoisted to the namespace by pass 03.
+                var ns = (INamespace)constructFunc.Parent!;
+                var varSym = Model.ResolveShortSymbol(name, scope: ns)
+                    ?? throw new BabyPenguinException($"Cant resolve symbol '{name}'", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+                varSym = UnwrapSymbol(varSym);
+                if (IsChannelLikeType(varSym.TypeInfo)) return;
+                if (Model.VariableNets.ContainsKey(varSym)) return;
+                if (varSym is not VariableSymbol decl || decl.Declaration?.TypeSpecifier == null)
+                    throw new BabyPenguinException($"connect source '{name}' is a variable net and needs an explicit mut type annotation (let {name} : mut T = ...)", location, code: ErrorCode.E_TYPE_MISMATCH);
+                // Only lets declared INSIDE this construct block become nets —
+                // a top-level global referenced by the wiring is not a net
+                // candidate (nets need the hub initialized during elaboration).
+                if (!ownDeclarations.Contains(decl.Declaration))
+                    throw new BabyPenguinException($"connect source '{name}' must be declared inside the construct block (implicit nets are for construct lets and class fields)", location, code: ErrorCode.E_TYPE_MISMATCH);
+                var payloadType = Model.ResolveType(decl.Declaration.TypeSpecifier.Name, scope: ns)
+                    ?? throw new BabyPenguinException($"Cant resolve type '{decl.Declaration.TypeSpecifier.Name}'", location, code: ErrorCode.E_RESOLVE_TYPE);
+                if (payloadType.IsMutable != Mutability.Mutable)
+                    throw new BabyPenguinException($"connect source '{name}' must be a mut variable (implicit wire nets need mutable storage)", location, code: ErrorCode.E_MUTABILITY);
+                var payload = payloadType.WithMutability(Mutability.Auto);
+                var hubName = $"__net_{Model.VariableNetCounter++}_{name}";
+                var hubSym = ns.AddVariableSymbol(hubName, false, new Or<string, IType>($"__builtin._Fanout<{payload.FullName()}>"), location, null, false, null);
+                Model.VariableNets[varSym] = hubSym;
+                Model.Reporter.Write(DiagnosticLevel.Debug, $"Registered implicit net for '{ns.FullName()}.{name}' (hub '{hubName}')");
+            }
+        }
+
+        private static ISymbol UnwrapSymbol(ISymbol symbol)
+            => symbol is MutableSymbolProxy proxy ? proxy.Symbol : symbol;
+
         public void RewriteWaitExpression(ICodeContainer codeContainer)
         {
             /*
@@ -272,6 +387,25 @@ namespace BabyPenguin.SemanticPass
         private void RewriteWaitExpression(ICodeContainer codeContainer, SyntaxNode parent, WaitExpression waitExpression)
         {
             if (waitExpression.Expression is null) return;
+
+            // `wait change(x)` is instruction-level sugar (edge detection in
+            // the WaitExpression compile) — nothing to rewrite here, and its
+            // `change(x)` operand must NOT be resolved as a call.
+            if (waitExpression.IsChangeUnit) return;
+
+            if (waitExpression.IsTickUnit)
+            {
+                // wait <expr> tick -> __builtin._after(<expr>)
+                var callExp = waitExpression.Build<FunctionCallExpression>(e =>
+                {
+                    e.FromString($"__builtin._after({waitExpression.Expression.BuildText()})", Model.Reporter);
+                });
+                waitExpression.Expression = callExp;
+                waitExpression.IsTickUnit = false;
+                AddRewritedSource(codeContainer.FullName(), Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
+                return;
+            }
+
             var expression = (SyntaxNode)waitExpression.Expression;
 
             SyntaxNode futureExp;
@@ -281,7 +415,7 @@ namespace BabyPenguin.SemanticPass
             {
                 var newExp = waitExpression.Build<NewExpression>(e =>
                 {
-                    e.TypeSpecifier = new TypeSpecifier { TypeName = $"__builtin._OnetimeEventReceiver<{waitType.GenericArguments.First()}>" };
+                    e.TypeSpecifier = new TypeSpecifier { TypeName = $"__builtin._EventSubscription<{waitType.GenericArguments.First()}>" };
                     e.ArgumentsExpression = [waitExpression.Expression];
                 });
                 futureExp = newExp;

@@ -109,7 +109,6 @@ namespace BabyPenguin.SemanticNode
 
         public bool HasDeclartion { get; set; } = false;
 
-        public List<IOnRoutine> OnRoutines { get; } = [];
 
         public Mutability IsMutable => Mutability.Immutable;
     }

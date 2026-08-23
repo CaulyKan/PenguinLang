@@ -72,4 +72,7 @@ public enum ErrorCode
     E_RUNTIME_TYPE,        // Runtime type mismatch (assign/cast)
     E_RUNTIME_LOOKUP,      // Runtime function/field lookup failed
     E_RUNTIME_INVALID_OP,  // Runtime invalid operation
+
+    // ── RTL port topology ──
+    E_WIRING,              // connect topology error (multi-driver input/output, unconnected input)
 }

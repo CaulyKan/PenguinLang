@@ -73,13 +73,9 @@ namespace PenguinLangParser.SyntaxNodes
                  namespaceDeclarationContext.children.OfType<TypeReferenceDeclarationContext>()
                     .Select(x => Build<TypeReferenceDeclaration>(walker, x)));
 
-            Events.AddRange(
-                namespaceDeclarationContext.children.OfType<EventDefinitionContext>()
-                    .Select(x => Build<EventDefinition>(walker, x)));
-
-            OnRoutines.AddRange(
-                namespaceDeclarationContext.children.OfType<OnRoutineContext>()
-                    .Select(x => Build<OnRoutineDefinition>(walker, x)));
+            Constructs.AddRange(
+                namespaceDeclarationContext.children.OfType<ConstructBlockContext>()
+                    .Select(x => Build<ConstructDefinition>(walker, x)));
         }
 
         public override void FromString(string source, ErrorReporter reporter)
@@ -116,13 +112,12 @@ namespace PenguinLangParser.SyntaxNodes
         [ChildrenNode]
         public List<InterfaceForImplementation> InterfaceImplementations { get; set; } = [];
 
-        [ChildrenNode]
-        public List<EventDefinition> Events { get; set; } = [];
+
 
         [ChildrenNode]
-        public List<OnRoutineDefinition> OnRoutines { get; set; } = [];
+        public List<ConstructDefinition> Constructs { get; set; } = [];
 
-        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0 && Events.Count == 0 && OnRoutines.Count == 0;
+        public bool IsEmpty => InitialRoutines.Count == 0 && Declarations.Count == 0 && Functions.Count == 0 && Classes.Count == 0 && Enums.Count == 0 && Interfaces.Count == 0 && InterfaceImplementations.Count == 0 && Constructs.Count == 0;
 
         public string Name { get; set; } = "";
 
@@ -204,19 +199,14 @@ namespace PenguinLangParser.SyntaxNodes
                 parts.Add(interfaceImpl.BuildText());
             }
 
-            foreach (var eventDef in Events)
-            {
-                parts.Add(eventDef.BuildText());
-            }
-
-            foreach (var onRoutine in OnRoutines)
-            {
-                parts.Add(onRoutine.BuildText());
-            }
-
             foreach (var initialRoutine in InitialRoutines)
             {
                 parts.Add(initialRoutine.BuildText());
+            }
+
+            foreach (var construct in Constructs)
+            {
+                parts.Add(construct.BuildText());
             }
 
             if (!IsAnonymous)

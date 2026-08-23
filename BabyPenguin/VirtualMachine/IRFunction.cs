@@ -24,6 +24,17 @@ namespace BabyPenguin.VirtualMachine
         public bool IsExtern { get; set; }
         public List<IRParameter> Parameters { get; } = [];
         public List<IRInstruction> Instructions { get; } = [];
+
+        /// <summary>
+        /// try/catch protected ranges: an instruction pointer in [StartIP, EndIP)
+        /// is protected; on a BabyPenguinRuntimeException the interpreter stores a
+        /// __builtin.RuntimeError object into CatchRegister and jumps to HandlerIP.
+        /// Regions are registered innermost-first for nested tries — scan in order
+        /// and the first match is the innermost enclosing handler.
+        /// </summary>
+        public sealed record CatchRegion(int StartIP, int EndIP, int HandlerIP, IRValue CatchRegister);
+
+        public List<CatchRegion> CatchRegions { get; } = [];
         public string SourceFile { get; set; } = "";
         public int SourceLine { get; set; }
         public int SourceCol { get; set; }

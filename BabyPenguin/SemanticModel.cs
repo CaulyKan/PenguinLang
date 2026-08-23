@@ -18,6 +18,18 @@ namespace BabyPenguin
 
         public BasicTypeNodes BasicTypeNodes { get; }
 
+        /// <summary>
+        /// Implicit wire nets: a `mut` variable used as a connect source
+        /// (connect(x, f.in)) gets a hidden _Fanout hub; every assignment to
+        /// the variable also writes the hub so connected inputs observe the
+        /// new value. Populated by the syntax-rewriting pass (before any body
+        /// binding), consumed by connect and assignment compilation.
+        /// </summary>
+        public Dictionary<ISymbol, ISymbol> VariableNets { get; } = [];
+
+        /// <summary>Counter for hidden hub symbol names (__net_&lt;n&gt;_x).</summary>
+        public int VariableNetCounter { get; set; }
+
         public SemanticModel(bool addBuiltin = true, ErrorReporter? reporter = null)
         {
             Reporter = reporter ?? new ErrorReporter();
@@ -152,6 +164,7 @@ namespace BabyPenguin
 
         private ISymbol? ResolveSymbolUncached(string name, Predicate<ISymbol>? predicate, ISemanticScope? scope, bool isOriginName, bool checkImportedNamespaces, bool requireSymbolTypeInferred)
         {
+            var predicate_ = predicate ?? (s => true);
             var nameComponents = NameComponents.ParseName(name);
             if (nameComponents.Prefix.Count == 0)
                 return ResolveShortSymbol(name, predicate, scope, isOriginName, checkImportedNamespaces, requireSymbolTypeInferred: requireSymbolTypeInferred);
@@ -176,9 +189,17 @@ namespace BabyPenguin
                 {
                     var parentType = variableSymbol.TypeInfo.TypeNode as ISymbolContainer ??
                         throw new BabyPenguinException($"${nameComponents.PrefixString} is expected to be a Type", null, code: ErrorCode.E_RESOLVE_TYPE);
-                    var symbol = ResolveShortSymbol(nameComponents.Name, predicate, parentType, isOriginName, checkImportedNamespaces, prefixSymbol.IsMutable, requireSymbolTypeInferred);
-                    if (symbol != null)
-                        return symbol;
+                    // Instance member access (`obj.member`): the member must
+                    // live on the variable's OWN type — do not walk the scope
+                    // chain out of the class, or a namespace-level name could
+                    // hijack the lookup (e.g. `e.x` grabbing a hoisted
+                    // top-level `x` when the class member is filtered out).
+                    var member = parentType.Symbols
+                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == nameComponents.Name && predicate_(s));
+                    if (member?.IsMutable == Mutability.Auto)
+                        member = new MutableSymbolProxy(member, prefixSymbol.IsMutable);
+                    if (member != null)
+                        return member;
                 }
             }
             return null;
@@ -525,6 +546,12 @@ namespace BabyPenguin
 
         public void Compile()
         {
+            // Static port/driver registries are per-compilation state (ports
+            // register under randomly-suffixed file namespaces, so stale
+            // entries from a previous in-process compilation can only cause
+            // false topology errors and leaks).
+            PortRegistry.Reset();
+
             for (CurrentPassIndex = 0; CurrentPassIndex < Passes.Count; CurrentPassIndex++)
             {
                 var pass = Passes[CurrentPassIndex];
@@ -532,9 +559,14 @@ namespace BabyPenguin
 
                 var report = pass.Report;
                 if (!string.IsNullOrEmpty(report))
-                    Reporter.Write(DiagnosticLevel.Debug, $"Pass {pass.GetType().Name} report:\n" + pass.Report);
+                    Reporter.Write(DiagnosticLevel.Debug, $"Pass {pass.GetType().Name} report:\n" + report);
                 Reporter.Write(DiagnosticLevel.Info, $"Pass {pass.GetType().Name} completed");
             }
+
+            // Static connect-topology checks (multi-driver inputs, unconnected
+            // inputs, output driver uniqueness) — after every construct body
+            // has been bound.
+            PortTopologyValidator.Validate(this);
         }
 
         public List<string> Files { get; } = [];

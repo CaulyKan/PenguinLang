@@ -8,12 +8,6 @@ namespace BabyPenguin.SemanticInterface
             routine.Parent = this;
         }
 
-        void AddOnRoutine(IOnRoutine routine)
-        {
-            OnRoutines.Add(routine);
-            routine.Parent = this;
-        }
-
         void AddFunction(IFunction function)
         {
             Functions.Add(function);
@@ -22,7 +16,6 @@ namespace BabyPenguin.SemanticInterface
 
         List<IInitialRoutine> InitialRoutines { get; }
 
-        List<IOnRoutine> OnRoutines { get; }
 
         List<IFunction> Functions { get; }
     }

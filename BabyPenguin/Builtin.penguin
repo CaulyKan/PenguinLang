@@ -12,6 +12,10 @@ namespace __builtin {
     extern fun __args_count() -> i64;
     extern fun __args_get(index: i64) -> string;
 
+    // Throws a catchable runtime error (BabyPenguinRuntimeException). When uncaught
+    // it propagates to the top level and is reported as error[<code>] with exit code 1.
+    extern fun __throw_runtime_error(message : string, code : i64);
+
     // JIT compilation API — backed by libpenguin_jit / LLVM ORC JIT.
     // These are only available when the final binary is linked with --enable-meta;
     // BabyPenguin's SemanticCompiler accepts them for type-checking but the
@@ -35,7 +39,17 @@ namespace __builtin {
     fun panic(text : string) {
         print("panic: ");
         println(text);
-        exit(1);
+        __throw_runtime_error(text, 1);
+    }
+
+    class RuntimeError {
+        message: string;
+        code: i64;
+
+        fun new(mut this, message: string, code: i64) {
+            this.message = message;
+            this.code = code;
+        }
     }
 
     #template(T: type)
@@ -340,10 +354,12 @@ namespace __builtin {
                 wait;
                 let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
+                    __builtin._sim_activity();
                     result = state.ready_finished;
                     break;
                 }
                 else if (state is FutureState<T>.ready) {
+                    __builtin._sim_activity();
                     result = state.ready;
                     this.switch_state(new RoutineState.ready(), new RoutineState.pending());
                     _main_scheduler.pending_jobs.enqueue(this);
@@ -359,10 +375,12 @@ namespace __builtin {
                 wait;
                 let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
+                    __builtin._sim_activity();
                     this.switch_state(new RoutineState.ready_finished(), new RoutineState.finished());
                     return new Option<T>.some(state.ready_finished);
                 }
                 else if (state is FutureState<T>.ready) {
+                    __builtin._sim_activity();
                     this.switch_state(new RoutineState.ready(), new RoutineState.pending());
                     _main_scheduler.pending_jobs.enqueue(this);
                     return new Option<T>.some(state.ready);
@@ -486,33 +504,56 @@ namespace __builtin {
         }
     }
 
+    // ============ Event (anonymous broadcast) ============
+    //
+    // First-class broadcast hub replacing the old event/emit/on keywords.
+    // An event is an ordinary value: store it in a global, a class field or
+    // a local, pass it to free functions, emit from anywhere. Any number of
+    // waiters may park on one event and every emit reaches ALL of them —
+    // each `wait ev` parks on its own one-slot subscription created by the
+    // compiler's wait-rewrite. Values emitted while nobody is waiting are
+    // lost (broadcast, not queueing — use Fifo for store-and-forward), and
+    // two emits before a waiter re-parks collapse to the last value, like a
+    // wire.
     #template(T: type)
     class Event {
-        receivers : mut _utils.List<IEventReceiver<T>> = new _utils.List<IEventReceiver<T>>();
-
         impl IObjectID;
 
-        fun notify(this, ev: T) {
-            for (let receiver : mut IEventReceiver<T> in this.receivers.iter()) {
-                 receiver.notify(ev);
+        subscribers : mut _utils.List<_EventSubscription<T>> = new _utils.List<_EventSubscription<T>>();
+        // Wires granted to connected input ports (connect(ev, f.x)): unlike
+        // a parked wait's one-shot subscription, a wire stays registered and
+        // its own delivery cursor governs when the consumer sees a value.
+        wires : mut _utils.List<LatestChannel<T>> = new _utils.List<LatestChannel<T>>();
+
+        fun emit(mut this, v: T) {
+            __builtin._sim_activity();
+            for (let s : mut _EventSubscription<T> in this.subscribers.iter()) {
+                s.deliver(v);
+            }
+            for (let w : mut LatestChannel<T> in this.wires.iter()) {
+                w.write(v);
             }
             wait;
         }
 
-        fun add_receiver(mut this, receiver: IEventReceiver<T>) {
-            for (let r : IEventReceiver<T> in this.receivers.iter()) {
-                if (r.equals(receiver))
-                    return;
-            }
-            this.receivers.push(receiver);
+        fun subscribe(mut this, s: _EventSubscription<T>) {
+            this.subscribers.push(s);
         }
 
-        fun remove_receiver(mut this, receiver: IEventReceiver<T>) {
-            for (let i : u64 in range(0, this.receivers.size())) {
-                let r : Option<IEventReceiver<T>> = this.receivers.at(i);
-                if (r.is_some()) {
-                    if (r.some.equals(receiver)) {
-                        this.receivers.remove(i);
+        // The connect desugaring calls this: one fresh wire per connected
+        // input (fan-out with independent cursors, like an output hub).
+        fun connect_wire(mut this) -> mut LatestChannel<T> {
+            let w : mut LatestChannel<T> = new LatestChannel<T>();
+            this.wires.push(w);
+            return w;
+        }
+
+        fun unsubscribe(mut this, s: _EventSubscription<T>) {
+            for (let i : u64 in range(0, this.subscribers.size())) {
+                let cur : Option<_EventSubscription<T>> = this.subscribers.at(i);
+                if (cur.is_some()) {
+                    if (cur.some.equals(s)) {
+                        this.subscribers.remove(i);
                         return;
                     }
                 }
@@ -520,96 +561,936 @@ namespace __builtin {
         }
     }
 
+    // One parked waiter's mailbox: exactly one value slot. The wait-rewrite
+    // creates a fresh subscription per `wait ev`; poll consumes the slot and
+    // deregisters the subscription, so wait loops do not accumulate dead
+    // subscriptions.
     #template(T: type)
-    interface IEventReceiver {
-        ev : mut Event<T>;
-
-        fun notify(mut this, ev: T);
-
-        fun connect(mut this, ev: mut Event<T>) {
-            this.ev.remove_receiver(this);
-            ev.add_receiver(this);
-            this.ev = ev;
-        }
-
+    class _EventSubscription {
         impl IObjectID;
-    }
 
-    #template(T: type)
-    class _AsyncEventReceiver {
-        f : mut async_fun<void, T>;
-
-        fun new(mut this, ev: mut Event<T>, f: mut async_fun<void, T>) {
-            ev.add_receiver(this);
-            (cast<IEventReceiver<T>>(this)).ev = ev;
-            this.f = f;
-        }
-
-        impl IEventReceiver<T> {
-            fun notify(this: mut IEventReceiver<T>, ev: T) {
-                let self: mut Self = cast<mut Self>(this);
-                self.f(ev);
-            }
-        }
-    }
-
-    #template(T: type)
-    class _QueuedEventReceiver {
-        event_queue : mut _utils.Queue<T> = new _utils.Queue<T>();
-
-        fun new(mut this, ev: mut Event<T>) {
-            ev.add_receiver(this);
-            (cast<IEventReceiver<T>>(this)).ev = ev;
-        }
-
-        impl IEventReceiver<T> {
-            fun notify(this: mut IEventReceiver<T>, ev: T) {
-                let self: mut Self = cast<mut Self>(this);
-                self.event_queue.enqueue(ev);
-            }
-        }
-
-        impl IFuture<T> {
-            fun poll(this: IFuture<T>) -> mut FutureState<T> {
-                let self: Self = cast<Self>(this);
-
-                let v : Option<T> = self.event_queue.dequeue();
-                if (v.is_some()) {
-                     return new FutureState<T>.ready(v.some);
-                }
-                else {
-                    return new FutureState<T>.not_ready();
-                }
-            }
-        }
-    }
-
-    #template(T: type)
-    class _OnetimeEventReceiver {
+        ev : mut Event<T>;
         value : mut Option<T> = new Option<T>.none();
 
         fun new(mut this, ev: mut Event<T>) {
-            ev.add_receiver(this);
-            (cast<IEventReceiver<T>>(this)).ev = ev;
+            this.ev = ev;
+            ev.subscribe(this);
         }
 
-        impl IEventReceiver<T> {
-            fun notify(this: mut IEventReceiver<T>, v: T) {
-                let self: mut Self = cast<mut Self>(this);
-                self.value = new Option<T>.some(v);
+        fun deliver(mut this, v: T) {
+            this.value = new Option<T>.some(v);
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
             }
         }
 
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
-                let self: Self = cast<Self>(this);
-
+                let self : mut Self = cast<mut Self>(this);
                 if (self.value.is_some()) {
-                     return new FutureState<T>.ready_finished(self.value.some);
+                    let v : T = self.value.some;
+                    self.value = new Option<T>.none();
+                    self.ev.unsubscribe(self);
+                    return new FutureState<T>.ready_finished(v);
                 }
-                else {
-                    return new FutureState<T>.not_ready();
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    class _TimerWait {
+        finished : mut bool = false;
+        result_tick : mut i64 = 0;
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        impl IFuture<i64> {
+            fun poll(this: IFuture<i64>) -> mut FutureState<i64> {
+                let self: Self = cast<Self>(this);
+                let now : i64 = __builtin._sim_now();
+                if (now >= self.result_tick) {
+                    self.finished = true;
+                    return new FutureState<i64>.ready_finished(self.result_tick);
                 }
+                return new FutureState<i64>.not_ready();
+            }
+        }
+    }
+
+    extern fun _after(n: i64) -> IFuture<i64>;
+    extern fun _sim_now() -> i64;
+    extern fun _run();
+
+    // ============ Channels (RTL-style communication) ============
+    //
+    // A channel is a first-class object that is both a source and a sink of
+    // transactions. `wait <channel>` consumes one transaction (the channel
+    // implements IFuture); `current()` reads the latest delivered slot without
+    // consuming; `write(v)` delivers a transaction and may suspend on a full
+    // backpressuring channel. Every write is a transaction — writing the same
+    // value twice still delivers twice (no value dedup, unlike Verilog).
+    //
+    // close(ch) is supervision shutdown: after close, every pending and future
+    // waiter is woken with a runtime error ("channel closed"), and writes onto
+    // a closed channel raise as well — so closing a top-level channel tears
+    // down every module still waiting on it (their try/catch decides whether
+    // that is an orderly shutdown).
+
+    extern fun _sim_activity();
+    // Monotonic scheduler round counter (one delta round per increment) —
+    // wires merge same-round writes into the final value.
+    extern fun _sim_delta() -> i64;
+    // True when the previous completed round carried no transaction activity
+    // and none has happened in the current round so far: propagation at the
+    // current simulation time has settled.
+    extern fun _sim_settled() -> bool;
+
+    enum FifoPolicy {
+        backpressure;
+        drop;
+
+        fun is_backpressure(this) -> bool {
+            return this is FifoPolicy.backpressure;
+        }
+
+        fun is_drop(this) -> bool {
+            return this is FifoPolicy.drop;
+        }
+    }
+
+    #template(T: type)
+    interface ISource {
+        impl IReferenceType;
+        // Non-blocking probe: take one pending transaction, or none.
+        fun try_poll(mut this) -> Option<T>;
+        // Latest delivered slot, without consuming (none when never written).
+        fun current(this) -> Option<T>;
+    }
+
+    #template(T: type)
+    interface ISink {
+        impl IReferenceType;
+        // Deliver a transaction. On a full backpressuring channel this
+        // suspends until a slot frees up (Go-channel semantics).
+        fun write(mut this, v: T);
+        // Non-blocking escape hatch: false when the channel was full.
+        fun try_write(mut this, v: T) -> bool;
+    }
+
+    #template(T: type)
+    interface IChannel {
+        impl ISource<T>;
+        impl ISink<T>;
+        // A channel is directly waitable: `wait ch` consumes the next
+        // transaction (virtual dispatch to the concrete channel's poll).
+        impl IFuture<T>;
+        fun close(mut this);
+        fun is_closed(this) -> bool;
+    }
+
+    fun _channel_closed_error() {
+        __builtin.__throw_runtime_error("channel closed", 100);
+    }
+
+    #template(T: type)
+    class Fifo {
+        impl IReferenceType;
+
+        queue : mut _utils.Queue<T> = new _utils.Queue<T>();
+        capacity : i64 = 0;
+        policy : FifoPolicy = new FifoPolicy.backpressure();
+        closed : mut bool = false;
+        latest : mut Option<T> = new Option<T>.none();
+
+        fun new(mut this, capacity: i64, policy: mut FifoPolicy) {
+            this.capacity = capacity;
+            this.policy = policy;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun is_full(this) -> bool {
+            return cast<i64>(this.queue.size()) >= this.capacity;
+        }
+
+        fun deliver(mut this, v: T) {
+            __builtin._sim_activity();
+            this.queue.enqueue(v);
+            this.latest = new Option<T>.some(v);
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                if (self.policy.is_drop()) {
+                    // Drop policy: a full channel silently discards the new value.
+                    if (!self.is_full()) {
+                        self.deliver(v);
+                    }
+                    return;
+                }
+                // Backpressure: park (bare wait = one delta) until a slot frees
+                // up; the poll-wakeup below re-checks close in every round.
+                while (self.is_full()) {
+                    wait;
+                    self.check_closed();
+                }
+                self.deliver(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                if (self.is_full()) {
+                    return false;
+                }
+                self.deliver(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                return self.queue.dequeue();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                return self.latest;
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        // `wait fifo` — the next transaction, delivered in FIFO order.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                let v : Option<T> = self.queue.dequeue();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Wire / diagnostic channel: transaction-stream semantics with an
+    // independent delivery cursor. Every write is a transaction; writes in
+    // the SAME delta round collapse to the final value (a wire settles to
+    // one value per delta — "downstream not yet woken between two writes"),
+    // while writes in different rounds are each delivered, in order, to
+    // every consumer whenever it polls — a late consumer never loses
+    // transactions. A connect-time seed value (port default / net's current
+    // value) is delivered at most once and only while no real write has ever
+    // happened: any write supersedes it. `current()` reads the latest
+    // delivered value (or the seed) without consuming.
+    #template(T: type)
+    class LatestChannel {
+        impl IReferenceType;
+
+        // Committed transactions from earlier rounds (consumed entries
+        // dequeue off the front).
+        committed : mut _utils.Queue<T> = new _utils.Queue<T>();
+        // The current round's write; same-round writes replace it while it
+        // is still unconsumed. Flushed to `committed` when a later round
+        // writes (FIFO order across rounds).
+        pending : mut Option<T> = new Option<T>.none();
+        pending_round : mut i64 = -1;
+        ever_written : mut bool = false;
+        last_value : mut Option<T> = new Option<T>.none();
+        // Connect-time initial value: weak one-shot delivery, superseded by
+        // any real transaction. Only wires granted by subscribe() /
+        // connect_wire mark the seed deliverable (Q3: time-0 first-wait
+        // wake-up); an output hub's own slot seed serves current() bare
+        // reads and wire seeding only — `wait port` parks until a real
+        // write.
+        seed : mut Option<T> = new Option<T>.none();
+        seed_taken : mut bool = false;
+        seed_deliver : mut bool = false;
+        closed : mut bool = false;
+
+        fun new(mut this) {}
+
+        fun set_seed(mut this, v: T, deliver: bool) {
+            this.seed = new Option<T>.some(v);
+            this.seed_deliver = deliver;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun push(mut this, v: T) {
+            let d : i64 = __builtin._sim_delta();
+            if (this.pending.is_some() && this.pending_round == d) {
+                // Same delta round, previous write not yet consumed: the
+                // wire settles to the final value.
+                this.pending = new Option<T>.some(v);
+            } else {
+                if (this.pending.is_some()) {
+                    this.committed.enqueue(this.pending.some);
+                }
+                this.pending = new Option<T>.some(v);
+                this.pending_round = d;
+            }
+            this.ever_written = true;
+            this.last_value = new Option<T>.some(v);
+        }
+
+        // Advance the cursor: oldest undelivered transaction, else the
+        // one-shot seed (only before any real write), else none.
+        fun take(mut this) -> Option<T> {
+            let head : Option<T> = this.committed.dequeue();
+            if (head.is_some()) {
+                return head;
+            }
+            if (this.pending.is_some()) {
+                let v : Option<T> = this.pending;
+                this.pending = new Option<T>.none();
+                return v;
+            }
+            if (!this.ever_written && this.seed.is_some() && !this.seed_taken && this.seed_deliver) {
+                this.seed_taken = true;
+                return this.seed;
+            }
+            return new Option<T>.none();
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                __builtin._sim_activity();
+                self.push(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                __builtin._sim_activity();
+                self.push(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                return self.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                if (self.last_value.is_some()) {
+                    return self.last_value;
+                }
+                return self.seed;
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        // v1 waiters share this channel's single cursor (competing
+        // consumers, like any standalone channel). Broadcast fan-out with
+        // per-consumer cursors is what an output port's subscribe() wires
+        // and Event.connect_wire() grant.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                let v : Option<T> = self.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Two-source merge (fan-in): transactions arrive in arrival order across
+    // both sources. Source-only in v1 (writes go to the channels it merges).
+    #template(T: type)
+    class MergeChannel {
+        impl IReferenceType;
+
+        a : mut ISource<T>;
+        b : mut ISource<T>;
+        closed : mut bool = false;
+
+        fun new(mut this, a: mut ISource<T>, b: mut ISource<T>) {
+            this.a = a;
+            this.b = b;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun poll_once(mut this) -> Option<T> {
+            let va : Option<T> = this.a.try_poll();
+            if (va.is_some()) {
+                return va;
+            }
+            return this.b.try_poll();
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                return self.poll_once();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                return self.a.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        // `wait merge` — merge` — the next transaction across either source.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                let v : Option<T> = self.poll_once();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Permanently idle source: the placeholder behind an unconnected input
+    // port without a default. Polls never deliver (wait parks — the routine
+    // contributes identical rounds and ends at quiescence, per the "unbound
+    // input wait blocks, it does not crash" rule), current() is none, and
+    // writes are rejected.
+    #template(T: type)
+    class _NeverSource {
+        impl IReferenceType;
+
+        fun new(mut this) {}
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                return false;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Late-binding relay: the object behind a passed-through input port
+    // (connect(this.x, inner.x)). The class construct wires inner.x to this
+    // view BEFORE the enclosing instance's own input is connected from the
+    // outside; every poll/current/close re-reads the upstream FIELD, so the
+    // real source is picked up whenever the outer connect binds it.
+    #template(T: type)
+    class _LateSource {
+        impl IReferenceType;
+
+        upstream : mut IChannel<T> = new _NeverSource<T>();
+
+        // The outer connect calls this with the real source (wire/channel).
+        fun bind(mut this, src: mut IChannel<T>) {
+            this.upstream = src;
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                return self.upstream.try_poll();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                return self.upstream.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.upstream.close();
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.upstream.is_closed();
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                return self.upstream.poll();
+            }
+        }
+    }
+
+    // Constant payload source: an input port's default when left unconnected.
+    // current() always yields the constant; it never delivers a transaction
+    // (wait parks forever — the port is unconnected) and writes are invalid.
+    #template(T: type)
+    class ConstantSource {
+        impl IReferenceType;
+
+        value : T;
+        closed : mut bool = false;
+
+        fun new(mut this, value: T) {
+            this.value = value;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                return new Option<T>.some(self.value);
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Output-port fanout hub: the module's single driver writes here; every
+    // connected input gets its OWN wire via subscribe() (independent delivery
+    // cursors — each subscriber receives every transaction in order), while
+    // the hub's own slot stream serves direct `wait out_port` /
+    // `out_port.try_poll()` readers at the wiring level (one shared cursor,
+    // competing consumers). The declared default / type zero value lives in
+    // the slot as a weak seed: bare reads before any write return it, and
+    // subscribe() seeds new wires from it (time-0 first-wait wake-up).
+    #template(T: type)
+    class _Fanout {
+        impl IReferenceType;
+
+        wires : mut _utils.List<LatestChannel<T>> = new _utils.List<LatestChannel<T>>();
+        slot : mut LatestChannel<T> = new LatestChannel<T>();
+        closed : mut bool = false;
+
+        fun new(mut this) {}
+
+        // The hub slot's seed: an EXPLICIT declared default (`output p = v`)
+        // is a weak deliverable transaction (time-0 first-wait wake-up,
+        // superseded by any real write); a synthesized type-zero seed only
+        // backs current() bare reads — direct `wait port` parks until the
+        // module actually writes.
+        fun set_seed(mut this, v: T, deliver: bool) {
+            this.slot.set_seed(v, deliver);
+        }
+
+        fun subscribe(mut this) -> mut LatestChannel<T> {
+            let w : mut LatestChannel<T> = new LatestChannel<T>();
+            // Connect-time seeding: whatever the hub slot currently holds
+            // (a variable net's current value, an output port's declared
+            // default or type zero) becomes the new wire's DELIVERABLE seed
+            // — the subscriber's first `wait` wakes immediately at time 0
+            // (Q3), and any real write supersedes it.
+            let cur : Option<T> = this.slot.current();
+            if (cur.is_some()) {
+                w.set_seed(cur.some, true);
+            }
+            this.wires.push(w);
+            return w;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                __builtin._sim_activity();
+                self.slot.push(v);
+                for (let w : mut LatestChannel<T> in self.wires.iter()) {
+                    w.write(v);
+                }
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                __builtin._sim_activity();
+                self.slot.push(v);
+                for (let w : mut LatestChannel<T> in self.wires.iter()) {
+                    w.write(v);
+                }
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                return self.slot.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self : Self = cast<Self>(this);
+                return self.slot.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self : mut Self = cast<mut Self>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self : Self = cast<Self>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        // Directly waitable: consumes the hub's own slot stream (single
+        // shared cursor for wiring-level readers). Module-to-module wiring
+        // goes through subscribe(), which grants each input an independent
+        // cursor.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                self.check_closed();
+                let v : Option<T> = self.slot.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Dynamic fan-in: a port-like object accepting N connects. `wait mi`
+    // returns the next transaction across ANY connected source — the scan
+    // starts where the previous one stopped (rotating), so a busy source
+    // cannot starve the others. Iterate the source views (`for (let src :
+    // ISource<T> in mi)`) when a custom policy (priority, per-source
+    // handling) is needed; try_poll on each view is the non-blocking probe.
+    #template(T: type)
+    class MultiInput {
+        impl IReferenceType;
+
+        sources : mut _utils.List<ISource<T>> = new _utils.List<ISource<T>>();
+
+        // Register a source view (the connect desugaring calls this).
+        fun add(mut this, source: mut ISource<T>) {
+            this.sources.push(source);
+        }
+
+        fun size(this) -> u64 {
+            return this.sources.size();
+        }
+
+        // Non-blocking probe across every registered source, round-robin:
+        // after a hit, the producing source and everything skipped this
+        // round move to the back, so a busy source cannot starve the rest.
+        fun try_poll_any(mut this) -> Option<T> {
+            let n : u64 = this.sources.size();
+            if (n == 0) {
+                return new Option<T>.none();
+            }
+            let skipped : mut u64 = 0;
+            for (let s : mut ISource<T> in this.sources.iter()) {
+                let v : Option<T> = s.try_poll();
+                if (v.is_some()) {
+                    for (let k : u64 in range(0, skipped + 1)) {
+                        let head : Option<ISource<T>> = this.sources.at(0);
+                        if (head.is_some()) {
+                            this.sources.remove(0);
+                            this.sources.push(head.some);
+                        }
+                    }
+                    return v;
+                }
+                skipped = skipped + 1;
+            }
+            return new Option<T>.none();
+        }
+
+        impl IIterable<ISource<T>> {
+            fun iter(this: IIterable<ISource<T>>) -> IIterator<ISource<T>> {
+                let self : Self = cast<Self>(this);
+                return self.sources.iter();
+            }
+
+            fun iter_mut(this: IIterable<ISource<T>>) -> mut IIterator<ISource<T>> {
+                let self : Self = cast<Self>(this);
+                return self.sources.iter_mut();
+            }
+        }
+
+        impl IFutureBase {
+            fun routine_state(this: IFutureBase) -> RoutineState {
+                return new RoutineState.ready();
+            }
+
+            fun switch_state(this: mut IFutureBase, from: RoutineState, to: RoutineState) -> bool {
+                return true;
+            }
+
+            fun start(this: mut IFutureBase) -> bool {
+                return true;
+            }
+        }
+
+        // `wait mi` — the next transaction across any source.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self : mut Self = cast<mut Self>(this);
+                let v : Option<T> = self.try_poll_any();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
             }
         }
     }

@@ -96,28 +96,6 @@ namespace BabyPenguin.SemanticInterface
             return symbol;
         }
 
-        ISymbol AddOnRoutineSymbol(IOnRoutine onRoutine,
-            SourceLocation sourceLocation,
-            bool isClassMember)
-        {
-            var name = onRoutine.Name;
-            var originName = name;
-            var eventParamDecl = (onRoutine.SyntaxNode as OnRoutineDefinition)?.Parameter;
-            var eventParam = eventParamDecl == null ? Model.BasicTypeNodes.Void.ToType(Mutability.Immutable) : Model.ResolveType(eventParamDecl.TypeSpecifier!.Name, scope: this) ??
-                throw new BabyPenguinException($"Cant resolve type '{eventParamDecl.TypeSpecifier.Name}' for event parameter", eventParamDecl.TypeSpecifier.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-            var param = eventParamDecl == null ? new FunctionParameter("___void", eventParam, 0) : new FunctionParameter(eventParamDecl.Identifier!.Name, eventParam, 0);
-            var symbol = new FunctionSymbol(this, onRoutine, false, name, sourceLocation, Model.BasicTypeNodes.Void.ToType(Mutability.Immutable), [param], originName, false, -1, isClassMember, true, false, null, Mutability.Immutable);
-            onRoutine.AddVariableSymbol(param.Name, true, new(param.Type), eventParamDecl?.SourceLocation ?? SourceLocation.Empty(), 0, false, null);
-
-            if (Model.Symbols.Any(s => s.FullName() == symbol.FullName() && !s.IsEnum))
-            {
-                throw new BabyPenguinException($"Symbol '{symbol.FullName()}' already exists", symbol.SourceLocation, code: ErrorCode.E_DUPLICATE_SYMBOL);
-            }
-
-            Symbols.Add(symbol);
-            return symbol;
-        }
-
         ISymbol AddInitialRoutineSymbol(IInitialRoutine initialRoutine,
             SourceLocation sourceLocation,
             bool isClassMember)

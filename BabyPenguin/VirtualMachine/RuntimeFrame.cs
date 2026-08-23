@@ -114,42 +114,33 @@ namespace BabyPenguin.VirtualMachine
                 yield return _returnValue;
         }
 
+        /// <summary>
+        /// Buffered results of one non-yielding execution step, replayed by the
+        /// iterator shell (Run) which is not allowed to `yield return` inside a
+        /// try/catch. Order is preserved: the shell emits Items in order, then
+        /// stops if Stop is set (mirroring `yield return X; yield break;`).
+        /// Jumped marks control transfer (BR/BR_COND) — the shell must not
+        /// increment _ip afterwards.
+        /// </summary>
+        private sealed class IteratorStepBuffer
+        {
+            public readonly List<Or<RuntimeBreak, RuntimeFrameResult>> Items = [];
+            public bool Stop;
+            public bool Jumped;
+        }
+
         public IEnumerable<Or<RuntimeBreak, RuntimeFrameResult>> Run()
         {
-            // Resume child frame if present (for async/coroutine support)
             if (ChildFrame != null)
             {
-                foreach (var resTemp in ChildFrame.Run())
-                {
-                    if (resTemp.IsLeft)
-                    {
-                        yield return resTemp;
-                    }
-                    else
-                    {
-                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Blocked)
-                        {
-                            yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                            yield break;
-                        }
-
-                        if (resTemp.Right!.ReturnValue != null)
-                        {
-                            _pendingCallResult = resTemp.Right.ReturnValue.Value;
-                            LastReturnVar = resTemp.Right.ReturnValue;
-                        }
-
-                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Finished || resTemp.Right!.ReturnStatus == ReturnStatus.YieldFinished)
-                        {
-                            ChildFrame = null;
-                            // For void calls, set a sentinel so CALL_VOID handler knows the call completed
-                            _pendingCallResult ??= new BasicRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
-                        }
-                    }
-                }
+                var resumeBuf = new IteratorStepBuffer();
+                StepResumeChild(resumeBuf);
+                foreach (var y in resumeBuf.Items)
+                    yield return y;
+                if (resumeBuf.Stop)
+                    yield break;
             }
 
-            RuntimeFrameResult? result = null;
             int gcCounter = 0;
             while (_ip < _function.Instructions.Count && !_hasReturned)
             {
@@ -174,6 +165,85 @@ namespace BabyPenguin.VirtualMachine
                     yield return new RuntimeBreak(RuntimeBreakReason.Step, this);
                 }
 
+                var buf = new IteratorStepBuffer();
+                StepOneInstruction(buf);
+                foreach (var y in buf.Items)
+                    yield return y;
+                if (buf.Stop)
+                    yield break;
+            }
+
+            if (!_hasReturned)
+            {
+                yield return new RuntimeFrameResult(null, ReturnStatus.Finished);
+            }
+        }
+
+        /// <summary>
+        /// Resume the suspended child frame (coroutine continuation). Non-iterator
+        /// so it can carry the catch-region try/catch; yields are buffered.
+        /// </summary>
+        private void StepResumeChild(IteratorStepBuffer buf)
+        {
+            try
+            {
+                foreach (var resTemp in ChildFrame!.Run())
+                {
+                    if (resTemp.IsLeft)
+                    {
+                        buf.Items.Add(resTemp);
+                    }
+                    else
+                    {
+                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Blocked)
+                        {
+                            buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Blocked));
+                            buf.Stop = true;
+                            return;
+                        }
+
+                        if (resTemp.Right!.ReturnValue != null)
+                        {
+                            _pendingCallResult = resTemp.Right.ReturnValue.Value;
+                            LastReturnVar = resTemp.Right.ReturnValue;
+                        }
+
+                        if (resTemp.Right!.ReturnStatus == ReturnStatus.Finished || resTemp.Right!.ReturnStatus == ReturnStatus.YieldFinished)
+                        {
+                            ChildFrame = null;
+                            // For void calls, set a sentinel so CALL_VOID handler knows the call completed
+                            _pendingCallResult ??= new BasicRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable));
+                        }
+                    }
+                }
+            }
+            catch (BabyPenguinRuntimeException ex)
+            {
+                if (!TryDispatchCatch(ex)) throw;
+            }
+        }
+
+        /// <summary>
+        /// Execute the single instruction at _ip (non-iterator; yields are
+        /// buffered into buf). BabyPenguinRuntimeExceptions are dispatched to the
+        /// innermost enclosing catch region when one protects the current _ip;
+        /// otherwise they propagate to the caller unchanged.
+        /// </summary>
+        private void StepOneInstruction(IteratorStepBuffer buf)
+        {
+            try
+            {
+                StepOneInstructionCore(buf);
+            }
+            catch (BabyPenguinRuntimeException ex)
+            {
+                if (!TryDispatchCatch(ex)) throw;
+            }
+        }
+
+        private void StepOneInstructionCore(IteratorStepBuffer buf)
+        {
+            {
                 var inst = _function.Instructions[_ip];
 
                 switch (inst)
@@ -255,7 +325,8 @@ namespace BabyPenguin.VirtualMachine
                     case IRBrInst bi:
                         {
                             _ip = _labelMap[bi.Target.Name];
-                            continue;
+                            buf.Jumped = true;
+                            return;
                         }
 
                     case IRBrCondInst bi:
@@ -275,7 +346,8 @@ namespace BabyPenguin.VirtualMachine
                                 if (_labelMap.TryGetValue(bi.TrueLabel.Name, out var trueIp))
                                 {
                                     _ip = trueIp;
-                                    continue;
+                                    buf.Jumped = true;
+                                    return;
                                 }
                             }
                             else
@@ -283,7 +355,8 @@ namespace BabyPenguin.VirtualMachine
                                 if (_labelMap.TryGetValue(bi.FalseLabel.Name, out var falseIp))
                                 {
                                     _ip = falseIp;
-                                    continue;
+                                    buf.Jumped = true;
+                                    return;
                                 }
                             }
                         }
@@ -299,12 +372,14 @@ namespace BabyPenguin.VirtualMachine
                             if (status == ReturnStatus.Blocked || status == ReturnStatus.YieldNotFinished || status == ReturnStatus.YieldFinished)
                             {
                                 _ip++;
-                                yield return new RuntimeFrameResult(retSym, status);
-                                yield break;
+                                buf.Items.Add(new RuntimeFrameResult(retSym, status));
+                                buf.Stop = true;
+                                return;
                             }
                             _hasReturned = true;
-                            yield return new RuntimeFrameResult(retSym, ReturnStatus.Finished);
-                            yield break;
+                            buf.Items.Add(new RuntimeFrameResult(retSym, ReturnStatus.Finished));
+                            buf.Stop = true;
+                            return;
                         }
 
                     case IRRetVoidInst ri:
@@ -314,12 +389,14 @@ namespace BabyPenguin.VirtualMachine
                             if (status == ReturnStatus.Blocked || status == ReturnStatus.YieldNotFinished)
                             {
                                 _ip++;
-                                yield return new RuntimeFrameResult(null, status);
-                                yield break;
+                                buf.Items.Add(new RuntimeFrameResult(null, status));
+                                buf.Stop = true;
+                                return;
                             }
                             _hasReturned = true;
-                            yield return new RuntimeFrameResult(null, ReturnStatus.Finished);
-                            yield break;
+                            buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Finished));
+                            buf.Stop = true;
+                            return;
                         }
 
                     case IRCallInst ci:
@@ -342,8 +419,9 @@ namespace BabyPenguin.VirtualMachine
                                 Store(ci.ResultValue, extResult.Value.Value);
                                 if (extResult.Value.Exited)
                                 {
-                                    yield return new RuntimeBreak(RuntimeBreakReason.Exited, this);
-                                    yield break;
+                                    buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Exited, this));
+                                    buf.Stop = true;
+                                    return;
                                 }
                                 if (extResult.Value.Value != null)
                                 {
@@ -365,14 +443,15 @@ namespace BabyPenguin.VirtualMachine
                                     foreach (var res in childFrame.Run())
                                     {
                                         if (res.IsLeft)
-                                            yield return res;
+                                            buf.Items.Add(res);
                                         else
                                         {
                                             if (res.Right!.ReturnStatus == ReturnStatus.Blocked)
                                             {
                                                 ChildFrame = childFrame;
-                                                yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                                                yield break;
+                                                buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Blocked));
+                                                buf.Stop = true;
+                                                return;
                                             }
                                             if (res.Right.ReturnValue != null)
                                             {
@@ -384,7 +463,7 @@ namespace BabyPenguin.VirtualMachine
                                         }
                                     }
                                     if (isStepOver)
-                                        yield return new RuntimeBreak(RuntimeBreakReason.Step, this);
+                                        buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Step, this));
                                 }
                                 else
                                 {
@@ -408,8 +487,9 @@ namespace BabyPenguin.VirtualMachine
                             var (found, exited) = TryCallExternFunctionVoid(ci.FuncName, args);
                             if (exited)
                             {
-                                yield return new RuntimeBreak(RuntimeBreakReason.Exited, this);
-                                yield break;
+                                buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Exited, this));
+                                buf.Stop = true;
+                                return;
                             }
                             if (!found)
                             {
@@ -424,14 +504,15 @@ namespace BabyPenguin.VirtualMachine
                                     foreach (var res in childFrame.Run())
                                     {
                                         if (res.IsLeft)
-                                            yield return res;
+                                            buf.Items.Add(res);
                                         else
                                         {
                                             if (res.Right!.ReturnStatus == ReturnStatus.Blocked)
                                             {
                                                 ChildFrame = childFrame;
-                                                yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                                                yield break;
+                                                buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Blocked));
+                                                buf.Stop = true;
+                                                return;
                                             }
                                             if (res.Right.ReturnValue != null)
                                                 LastReturnVar = res.Right.ReturnValue;
@@ -440,7 +521,7 @@ namespace BabyPenguin.VirtualMachine
                                         }
                                     }
                                     if (isStepOver)
-                                        yield return new RuntimeBreak(RuntimeBreakReason.Step, this);
+                                        buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Step, this));
                                 }
                                 else
                                 {
@@ -554,8 +635,9 @@ namespace BabyPenguin.VirtualMachine
                                     Store(ci.ResultValue, extResult.Value.Value);
                                     if (extResult.Value.Exited)
                                     {
-                                        yield return new RuntimeBreak(RuntimeBreakReason.Exited, this);
-                                        yield break;
+                                        buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Exited, this));
+                                        buf.Stop = true;
+                                        return;
                                     }
                                     if (extResult.Value.Value != null)
                                     {
@@ -573,17 +655,21 @@ namespace BabyPenguin.VirtualMachine
                                     {
                                         if (res.IsLeft)
                                         {
-                                            yield return res;
+                                            buf.Items.Add(res);
                                             if (res.Left!.Reason == RuntimeBreakReason.Exited)
-                                                yield break;
+                                            {
+                                                buf.Stop = true;
+                                                return;
+                                            }
                                         }
                                         else
                                         {
                                             if (res.Right!.ReturnStatus == ReturnStatus.Blocked)
                                             {
                                                 ChildFrame = childFrame;
-                                                yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                                                yield break;
+                                                buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Blocked));
+                                                buf.Stop = true;
+                                                return;
                                             }
                                             if (res.Right.ReturnValue != null)
                                                 retVal = res.Right.ReturnValue.Value;
@@ -622,8 +708,9 @@ namespace BabyPenguin.VirtualMachine
                                 var (found, exited) = TryCallExternFunctionVoid(funcName, fullArgs);
                                 if (exited)
                                 {
-                                    yield return new RuntimeBreak(RuntimeBreakReason.Exited, this);
-                                    yield break;
+                                    buf.Items.Add(new RuntimeBreak(RuntimeBreakReason.Exited, this));
+                                    buf.Stop = true;
+                                    return;
                                 }
                                 if (found)
                                     break;
@@ -636,17 +723,21 @@ namespace BabyPenguin.VirtualMachine
                                     {
                                         if (res.IsLeft)
                                         {
-                                            yield return res;
+                                            buf.Items.Add(res);
                                             if (res.Left!.Reason == RuntimeBreakReason.Exited)
-                                                yield break;
+                                            {
+                                                buf.Stop = true;
+                                                return;
+                                            }
                                         }
                                         else
                                         {
                                             if (res.Right!.ReturnStatus == ReturnStatus.Blocked)
                                             {
                                                 ChildFrame = childFrame;
-                                                yield return new RuntimeFrameResult(null, ReturnStatus.Blocked);
-                                                yield break;
+                                                buf.Items.Add(new RuntimeFrameResult(null, ReturnStatus.Blocked));
+                                                buf.Stop = true;
+                                                return;
                                             }
                                             if (res.Right.ReturnStatus == ReturnStatus.Finished || res.Right.ReturnStatus == ReturnStatus.YieldFinished)
                                                 ChildFrame = null;
@@ -698,18 +789,8 @@ namespace BabyPenguin.VirtualMachine
                         throw new NotImplementedException($"Instruction {inst.GetType().Name} not yet implemented");
                 }
 
-                _ip++;
-
-                if (result != null)
-                {
-                    yield return result;
-                    break;
-                }
-            }
-
-            if (!_hasReturned && result == null)
-            {
-                yield return new RuntimeFrameResult(null, ReturnStatus.Finished);
+                if (!buf.Jumped)
+                    _ip++;
             }
         }
 
@@ -717,8 +798,64 @@ namespace BabyPenguin.VirtualMachine
         /// Fast-path execution: directly returns the result without using yield/iterator.
         /// Avoids the massive overhead of iterator state machines for normal (non-debug, non-coroutine) execution.
         /// Throws ProgramExitException on __builtin.exit() instead of yielding.
+        /// A BabyPenguinRuntimeException dispatched to a catch region resumes the
+        /// loop at the handler IP; uncaught ones propagate unchanged.
         /// </summary>
         public IRuntimeValue? RunDirect()
+        {
+            while (true)
+            {
+                try
+                {
+                    return RunDirectCore();
+                }
+                catch (BabyPenguinRuntimeException ex)
+                {
+                    if (!TryDispatchCatch(ex)) throw;
+                }
+            }
+        }
+
+        /// <summary>
+        /// If the current instruction pointer lies inside a try/catch region of
+        /// this function, bind the error object to that region's catch variable
+        /// and jump to its handler. Returns false when no region protects _ip
+        /// (the exception must then propagate to the caller).
+        /// Regions are ordered innermost-first, so the first match wins.
+        /// </summary>
+        private bool TryDispatchCatch(BabyPenguinRuntimeException ex)
+        {
+            var regions = _function.CatchRegions;
+            if (regions.Count == 0) return false;
+            foreach (var r in regions)
+            {
+                if (_ip >= r.StartIP && _ip < r.EndIP)
+                {
+                    // The throwing instruction may have been a call: its child
+                    // frame is dead and its pending result must not be re-stored.
+                    ChildFrame = null;
+                    _pendingCallResult = null;
+                    Store(r.CatchRegister, CreateRuntimeErrorObject(ex));
+                    _ip = r.HandlerIP;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private IRuntimeValue CreateRuntimeErrorObject(BabyPenguinRuntimeException ex)
+        {
+            var typeInfo = Model.ResolveTypeNode("__builtin.RuntimeError")?.ToType(Mutability.Mutable)
+                ?? throw new BabyPenguinRuntimeException("__builtin.RuntimeError type not found", code: ErrorCode.E_RUNTIME_LOOKUP);
+            var obj = (ReferenceRuntimeValue)CreateNewObject(typeInfo, []);
+            var stringType = Model.BasicTypeNodes.GetCachedImmutableType("string")!;
+            var i64Type = Model.BasicTypeNodes.GetCachedImmutableType("i64")!;
+            obj.Fields["message"] = new BasicRuntimeValue(stringType) { StringValue = ex.Message };
+            obj.Fields["code"] = new BasicRuntimeValue(i64Type) { I64Value = (long)ex.Code };
+            return obj;
+        }
+
+        private IRuntimeValue? RunDirectCore()
         {
             while (_ip < _function.Instructions.Count && !_hasReturned)
             {
@@ -1072,6 +1209,75 @@ namespace BabyPenguin.VirtualMachine
             }
 
             return _returnValue;
+        }
+
+        /// <summary>
+        /// Compact execution-state fingerprint for the quiescence detector:
+        /// instruction pointer plus a shallow summary of every register. Two
+        /// scheduler rounds with identical job snapshots replay the same
+        /// observable behavior — the simulation is parked. Reference values
+        /// contribute their (typed) field summary so counters stored in objects
+        /// still count as forward motion; freshly allocated temporaries with
+        /// identical contents compare equal, so poll-spin loops do park.
+        /// </summary>
+        internal string GetSnapshot()
+        {
+            var sb = new StringBuilder(64 + _registers.Length * 12);
+            sb.Append(_ip).Append('/').Append(_hasReturned ? 1 : 0);
+            foreach (var reg in _registers)
+            {
+                sb.Append('|');
+                DescribeValue(sb, reg, 0);
+            }
+            return sb.ToString();
+        }
+
+        private static void DescribeValue(StringBuilder sb, IRuntimeValue? v, int depth)
+        {
+            switch (v)
+            {
+                case null:
+                case NotInitializedRuntimeValue:
+                    sb.Append('n');
+                    return;
+                case BasicRuntimeValue b:
+                    sb.Append(b.I64Value).Append(',').Append(b.BoolValue).Append(',').Append(b.DoubleValue).Append(',').Append(b.StringValue);
+                    return;
+                case ReferenceRuntimeValue r:
+                    if (depth >= 2)
+                    {
+                        sb.Append("r").Append(r.RefId);
+                        return;
+                    }
+                    sb.Append('(').Append(r.TypeInfo?.FullName() ?? "?").Append('[');
+                    foreach (var f in r.Fields.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                    {
+                        sb.Append(f.Key).Append('=');
+                        DescribeValue(sb, f.Value, depth + 1);
+                        sb.Append(',');
+                    }
+                    sb.Append("])");
+                    return;
+                case EnumRuntimeValue e:
+                    sb.Append("e#");
+                    if (e.FieldsValue != null && e.FieldsValue.Fields.TryGetValue("_value", out var tag) && tag != null)
+                        sb.Append(tag.ToString());
+                    else
+                        sb.Append('?');
+                    if (e.ContainingValue != null)
+                    {
+                        sb.Append('(');
+                        DescribeValue(sb, e.ContainingValue, depth);
+                        sb.Append(')');
+                    }
+                    return;
+                case FunctionRuntimeValue f:
+                    sb.Append("f").Append(f.FunctionSymbol?.FullName() ?? "?");
+                    return;
+                default:
+                    sb.Append(v.GetType().Name);
+                    return;
+            }
         }
 
         // === Resolve / Store ===

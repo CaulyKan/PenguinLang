@@ -363,7 +363,6 @@ namespace MagellanicPenguin
                     break;
                 case "Function":
                 case "InitialRoutine":
-                case "OnRoutine":
                 case "VTable":
                     items.AddRange(new[]
                     {
@@ -501,8 +500,6 @@ namespace MagellanicPenguin
             else if (scope is ClassNode)
                 kind = SymbolKind.Class;
             else if (scope is InitialRoutine)
-                kind = SymbolKind.Method;
-            else if (scope is OnRoutine)
                 kind = SymbolKind.Method;
             else if (scope is Function)
                 kind = SymbolKind.Function;

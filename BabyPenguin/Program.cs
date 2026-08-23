@@ -49,6 +49,10 @@ namespace BabyPenguin
 
         public static int RunNormal(Options options, string[] args)
         {
+            // Hoisted so an uncaught runtime error can still flush the
+            // program's buffered output before the diagnostic — prints that
+            // happened before the panic must not be swallowed.
+            BabyPenguinVM? vm = null;
             try
             {
                 var compiler = new SemanticCompiler(new ErrorReporter(Console.Out, (DiagnosticLevel)options.Verbose, Console.Error));
@@ -113,7 +117,7 @@ namespace BabyPenguin
                 }
                 else
                 {
-                    var vm = new BabyPenguinVM(model!);
+                    vm = new BabyPenguinVM(model!);
                     // Program args: everything after "--" separator, or empty if no separator
                     if (separatorIndex >= 0)
                     {
@@ -173,7 +177,18 @@ namespace BabyPenguin
             }
             catch (BabyPenguinRuntimeException e)
             {
-                Console.Error.WriteLine($"error[{e.Code}]: {e.Message}");
+                // Program-raised errors (panic / channel errors) carry a
+                // Penguin-level numeric code, not a compiler ErrorCode —
+                // report them as uncaught runtime errors, never mislabeled
+                // with whatever ErrorCode enum value the number collides
+                // with. Buffered output is flushed first (quiet mode never
+                // got to the CollectOutput write on the success path).
+                if (options.Quiet && vm != null)
+                    Console.Write(vm.CollectOutput());
+                if (e.PenguinLevel)
+                    Console.Error.WriteLine($"Uncaught runtime error: {e.Message} (code {(long)e.Code})");
+                else
+                    Console.Error.WriteLine($"error[{e.Code}]: {e.Message}");
                 return 1;
             }
         }

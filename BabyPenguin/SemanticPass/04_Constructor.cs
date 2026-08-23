@@ -127,11 +127,6 @@ namespace BabyPenguin.SemanticPass
 
             if (ns.SyntaxNode is NamespaceDefinition syntaxNode)
             {
-                foreach (var ev in syntaxNode.Events)
-                {
-                    InitializeEventDefinition(constructor!.CodeContainer, ns, ev);
-                }
-
                 foreach (var decl in syntaxNode.Declarations)
                 {
                     if (decl.InitializeExpression != null)
@@ -145,43 +140,9 @@ namespace BabyPenguin.SemanticPass
                         constructor!.CodeContainer.AddExpression(decl.InitializeExpression, true, symbol);
                     }
                 }
-
-                foreach (var onRoutine in ns.OnRoutines)
-                {
-                    ProcessOnRoutine(onRoutine, constructor!.CodeContainer);
-                }
             }
         }
 
-        public void ProcessOnRoutine(IOnRoutine onRoutine, ICodeContainer constructorBody)
-        {
-            if (onRoutine.SyntaxNode is OnRoutineDefinition syntaxNode && syntaxNode.EventExpression != null)
-            {
-                var eventReceiverSymbol = onRoutine.EventReceiverSymbol ?? throw new BabyPenguinException($"Event receiver symbol is null for '{onRoutine.FullName()}'", onRoutine.SourceLocation, code: ErrorCode.E_INTERNAL);
-                var receiverConstructor = Model.ResolveSymbol(onRoutine.EventReceiverSymbol.TypeInfo.FullName() + ".new", checkImportedNamespaces: false) ?? throw new BabyPenguinException($"Event receiver constructor not found for '{onRoutine.EventReceiverSymbol.TypeInfo.FullName()}'", onRoutine.SourceLocation, code: ErrorCode.E_NO_CONSTRUCTOR);
-                constructorBody.AllocTempSymbol(receiverConstructor.TypeInfo, onRoutine.SourceLocation);
-                var eventSymbol = constructorBody.AddExpression(syntaxNode.EventExpression, false);
-
-                if (eventSymbol.TypeNode!.GenericType?.FullName() != "__builtin.Event<?>")
-                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' is not an event", syntaxNode.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
-                if (eventSymbol.TypeInfo.GenericArguments[0].FullName() != onRoutine.EventType?.FullName())
-                    throw new BabyPenguinException($"on '{syntaxNode.EventExpression.Text}' event expects parameter has type '{eventSymbol.TypeInfo.GenericArguments[0].FullName()}', but got '{onRoutine.EventType?.FullName()}'", syntaxNode.EventExpression.SourceLocation, code: ErrorCode.E_EVENT_INVALID);
-
-                if (!eventReceiverSymbol.IsClassMember)
-                {
-                    constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, eventReceiverSymbol));
-                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [eventReceiverSymbol, eventSymbol, onRoutine.FunctionSymbol!], null));
-                }
-                else
-                {
-                    var tempSymbol = constructorBody.AllocTempSymbol(eventReceiverSymbol.TypeInfo, onRoutine.SourceLocation);
-                    constructorBody.AddInstruction(new NewInstanceInstruction(onRoutine.SourceLocation, tempSymbol));
-                    constructorBody.AddInstruction(new FunctionCallInstruction(onRoutine.SourceLocation, receiverConstructor, [tempSymbol, eventSymbol, onRoutine.FunctionSymbol!], null));
-                    var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", onRoutine.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
-                    constructorBody.AddInstruction(new WriteMemberInstruction(onRoutine.SourceLocation, eventReceiverSymbol, tempSymbol, thisSymbol));
-                }
-            }
-        }
 
         public void InitClassConstructor(IClassNode cls)
         {
@@ -220,33 +181,190 @@ namespace BabyPenguin.SemanticPass
             {
                 var constructorBody = (cls.Constructor as ICodeContainer)!;
                 // ResolveUnresolvedSymbols(constructorBody, cls);
-                foreach (var ev in syntaxNode.Events)
-                {
-                    InitializeEventDefinition(constructorBody, cls, ev);
-                }
-
                 foreach (var decl in syntaxNode.Declarations)
                 {
                     InitializeVariable(new(cls), constructorBody, decl);
                 }
 
-                foreach (var onRoutine in cls.OnRoutines)
+                InitializePorts(cls, syntaxNode.Ports, constructorBody);
+
+                InvokeClassConstructs(cls, constructorBody);
+
+                SpawnClassInitialRoutines(cls, constructorBody);
+            }
+        }
+
+        /// <summary>
+        /// RTL ports become reference fields of type mut __builtin.IChannel&lt;T&gt;
+        /// (registered in PortRegistry with their direction). Outputs are wired to
+        /// a private LatestChannel (a write-only-driver port with a zero-value
+        /// slot); inputs with an explicit default bind a ConstantSource, inputs
+        /// without one stay uninitialized (unconnected input — wait fails fast).
+        /// </summary>
+        private void InitializePorts(IClassNode cls, List<PortDefinition> ports, ICodeContainer constructorBody)
+        {
+            var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody);
+            foreach (var port in ports)
+            {
+                var payloadType = Model.ResolveType(port.Type!.Name, scope: cls)
+                    ?? throw new BabyPenguinException($"Cant resolve port type '{port.Type.Name}'", port.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                var payloadAuto = payloadType.WithMutability(Mutability.Auto);
+                var channelType = Model.ResolveType($"__builtin.IChannel<{payloadAuto.FullName()}>")
+                    ?? throw new BabyPenguinException($"Cant resolve __builtin.IChannel<{payloadAuto.FullName()}>", port.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+
+                cls.AddVariableSymbol(port.Name, false, new Or<string, IType>(channelType.WithMutability(Mutability.Mutable)), port.SourceLocation, null, true, null, Mutability.Mutable);
+                PortRegistry.Register(new(cls.FullName(), port.Name, port.IsInput, payloadType, port.DefaultExpression != null));
+
+                var fieldSymbol = Model.ResolveSymbol(cls.FullName() + "." + port.Name)
+                    ?? throw new BabyPenguinException($"Port field '{port.Name}' not registered", port.SourceLocation, code: ErrorCode.E_INTERNAL);
+
+                string channelClass;
+                if (port.IsInput)
                 {
-                    ProcessOnRoutine(onRoutine, constructorBody);
+                    // Defaulted input: a constant source (current() reads the
+                    // default; wait never delivers). No default: a permanently
+                    // idle placeholder — waiting an unbound input parks the
+                    // routine instead of crashing on a null field.
+                    channelClass = port.DefaultExpression == null
+                        ? "__builtin._NeverSource"
+                        : "__builtin.ConstantSource";
                 }
+                else
+                {
+                    // Fan-out hub: keeps the latest slot for direct top-level
+                    // reads and grants every connected input its own wire.
+                    channelClass = "__builtin._Fanout";
+                }
+
+                var concreteType = Model.ResolveType($"{channelClass}<{payloadAuto.FullName()}>")
+                    ?? throw new BabyPenguinException($"Cant resolve {channelClass}<{payloadAuto.FullName()}>", port.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+                var ctorSymbol = Model.ResolveSymbol($"{channelClass}<{payloadAuto.FullName()}>.new")
+                    ?? throw new BabyPenguinException($"Cant resolve {channelClass}.new", port.SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
+
+                var temp = constructorBody.AllocTempSymbol(concreteType.WithMutability(Mutability.Mutable), port.SourceLocation);
+                constructorBody.AddInstruction(new NewInstanceInstruction(port.SourceLocation, temp));
+                var ctorArgs = new List<ISymbol> { temp };
+                if (port.IsInput && port.DefaultExpression != null)
+                {
+                    var defaultSym = constructorBody.AddExpression(port.DefaultExpression!, false);
+                    ctorArgs.Add(defaultSym);
+                }
+                constructorBody.AddInstruction(new FunctionCallInstruction(port.SourceLocation, ctorSymbol, ctorArgs, null));
+                constructorBody.AddInstruction(new WriteMemberInstruction(port.SourceLocation, fieldSymbol, temp, thisSymbol!));
+
+                // An output's initial slot value (Q3): an EXPLICIT declared
+                // default is a weak deliverable seed (time-0 first-wait
+                // wake-up, superseded by the first real write); a payload
+                // type's zero value is current()-only (deterministic bare
+                // reads; `wait port` still parks until a real write). Either
+                // way subscribe() seeds wires from it.
+                if (!port.IsInput)
+                {
+                    ISymbol? seedSym = null;
+                    bool deliver = false;
+                    if (port.DefaultExpression != null)
+                    {
+                        seedSym = constructorBody.AddExpression(port.DefaultExpression!, false);
+                        deliver = true;
+                    }
+                    else if (PortZeroLiteral(payloadAuto) is string zero)
+                    {
+                        seedSym = constructorBody.AllocTempSymbol(payloadAuto, port.SourceLocation);
+                        constructorBody.AddInstruction(new AssignLiteralToSymbolInstruction(port.SourceLocation, seedSym, payloadAuto, zero));
+                    }
+                    if (seedSym != null)
+                    {
+                        var deliverSym = constructorBody.AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), port.SourceLocation);
+                        constructorBody.AddInstruction(new AssignLiteralToSymbolInstruction(port.SourceLocation, deliverSym, Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), deliver ? "true" : "false"));
+                        var setSeedSymbol = Model.ResolveSymbol($"__builtin._Fanout<{payloadAuto.FullName()}>.set_seed")
+                            ?? throw new BabyPenguinException($"Cant resolve __builtin._Fanout<{payloadAuto.FullName()}>.set_seed", port.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+                        var seedRef = constructorBody.AllocTempSymbol(setSeedSymbol.TypeInfo, port.SourceLocation);
+                        constructorBody.AddInstruction(new ReadMemberInstruction(port.SourceLocation, setSeedSymbol, temp, seedRef, true));
+                        constructorBody.AddInstruction(new FunctionCallInstruction(port.SourceLocation, seedRef, [seedSym, deliverSym], null));
+                    }
+                }
+            }
+        }
+
+        /// <summary>Literal text for a payload type's zero value, or null when
+        /// the type has no synthesizable zero (reference-typed payloads keep a
+        /// seedless slot — bare reads before any write still raise the clear
+        /// runtime error).</summary>
+        private static string? PortZeroLiteral(Type.IType t) => t.Type switch
+        {
+            TypeEnum.Bool => "false",
+            TypeEnum.I8 or TypeEnum.I16 or TypeEnum.I32 or TypeEnum.I64 => "0",
+            TypeEnum.U8 or TypeEnum.U16 or TypeEnum.U32 or TypeEnum.U64 => "0",
+            TypeEnum.Float => "0.0",
+            TypeEnum.Double => "0.0",
+            TypeEnum.Char => "0",
+            TypeEnum.String => "\"\"",
+            _ => null,
+        };
+
+        /// <summary>
+        /// Run class-level construct blocks (hidden __class_construct_* member
+        /// functions) after port wiring and BEFORE initial spawn: composition
+        /// (`new` submodules, `connect` lines) completes before any process of
+        /// this instance starts.
+        /// </summary>
+        private void InvokeClassConstructs(IClassNode cls, ICodeContainer constructorBody)
+        {
+            var constructFunctions = cls.Functions
+                .Where(f => f.Name.StartsWith(SemanticScopingPass.ClassConstructPrefix) && f.FunctionSymbol != null)
+                .ToList();
+            if (constructFunctions.Count == 0) return;
+
+            var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody)
+                ?? throw new BabyPenguinException($"Cant resolve 'this' in constructor of '{cls.FullName()}'", cls.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+            foreach (var func in constructFunctions)
+            {
+                constructorBody.AddInstruction(new FunctionCallInstruction(func.SourceLocation.StartLocation, func.FunctionSymbol!, [thisSymbol!], null));
+            }
+        }
+
+        /// <summary>
+        /// Spawn every class-level initial routine (hidden __initial_* member
+        /// functions) at the tail of the constructor: module processes come to
+        /// life when the instance is created. The method reference is read off
+        /// `this` (fat pointer carries the owner as the routine's `this`).
+        /// </summary>
+        private void SpawnClassInitialRoutines(IClassNode cls, ICodeContainer constructorBody)
+        {
+            var initialFunctions = cls.Functions
+                .Where(f => f.Name.StartsWith(SemanticScopingPass.ClassInitialPrefix) && f.FunctionSymbol != null)
+                .ToList();
+            if (initialFunctions.Count == 0) return;
+
+            var thisSymbol = Model.ResolveShortSymbol("this", scope: constructorBody)
+                ?? throw new BabyPenguinException($"Cant resolve 'this' in constructor of '{cls.FullName()}'", cls.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
+            var voidFutureType = Model.ResolveType("__builtin.IFuture<void>")
+                ?? throw new BabyPenguinException("type '__builtin.IFuture<void>' is not found.", null, code: ErrorCode.E_BUILTIN_MISSING);
+
+            foreach (var func in initialFunctions)
+            {
+                var methodRef = constructorBody.AllocTempSymbol(func.FunctionSymbol!.TypeInfo, func.SourceLocation.StartLocation);
+                constructorBody.AddInstruction(new ReadMemberInstruction(func.SourceLocation.StartLocation, func.FunctionSymbol, thisSymbol, methodRef, true));
+                var target = constructorBody.AllocTempSymbol(voidFutureType, func.SourceLocation.StartLocation);
+                constructorBody.SchedulerAddSimpleJob(methodRef, func.SourceLocation.StartLocation, target);
             }
         }
 
         public void InitInterfaceConstructor(IInterfaceNode intf)
         {
+            // Idempotent: specialization catch-up replays this pass while it is
+            // still running; the constructor was already wired on the first
+            // visit and the replayed pass-3 mutates `this` to `mut this`,
+            // which would otherwise fail the parameter re-check below.
+            if (intf.Constructor != null) return;
+
             var sourceLocation = intf.SyntaxNode?.SourceLocation.StartLocation ?? SourceLocation.Empty();
 
             if (intf.Functions.Find(i => i.Name == "new") is IFunction constructorFunc)
             {
                 if (constructorFunc.Parameters.Count > 0 &&
                     constructorFunc.Parameters[0].Type.FullName() == intf.FullName())
-                {
-                    if (constructorFunc.Parameters.Count > 1 || constructorFunc.Parameters[0].Name != "this")
+                {                    if (constructorFunc.Parameters.Count > 1 || constructorFunc.Parameters[0].Name != "this")
                         throw new BabyPenguinException($"Constructor function of interface '{intf.Name}' should have only one parameter 'this' with type '{intf.FullName()}'", sourceLocation, code: ErrorCode.E_INTERNAL);
                     if (constructorFunc.Parameters[0].Type.IsMutable == Mutability.Auto)
                     {
@@ -275,11 +393,6 @@ namespace BabyPenguin.SemanticPass
             {
                 var constructorBody = (intf.Constructor as ICodeContainer)!;
                 // ResolveUnresolvedSymbols(constructorBody, intf);
-
-                foreach (var ev in syntaxNode.Events)
-                {
-                    InitializeEventDefinition(constructorBody, intf, ev);
-                }
 
                 foreach (var varDecl in syntaxNode.Declarations)
                 {
@@ -313,32 +426,6 @@ namespace BabyPenguin.SemanticPass
                     }
                 }
                 constructorBody.AddInstruction(new WriteMemberInstruction(varDecl.SourceLocation, memberSymbol, temp, thisSymbol));
-            }
-        }
-
-        public void InitializeEventDefinition(ICodeContainer constructor, ISymbolContainer parent, EventDefinition eventDefinition)
-        {
-            var eventSymbol = Model.ResolveSymbol(eventDefinition.Name, scope: parent) ?? throw new BabyPenguinException($"Cant resolve symbol '{eventDefinition.Name}'", eventDefinition.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
-            var initializeExpression = new NewExpression()
-            {
-                SourceLocation = eventDefinition.SourceLocation,
-                ScopeId = eventDefinition.ScopeId,
-                TypeSpecifier = new TypeSpecifier
-                {
-                    SourceLocation = eventDefinition.SourceLocation,
-                    ScopeId = eventDefinition.ScopeId,
-                    TypeName = $"__builtin.Event<{eventDefinition.EventType?.Name ?? "void"}>"
-                }
-            };
-            if (eventSymbol.IsClassMember)
-            {
-                var thisSymbol = Model.ResolveShortSymbol("this", scope: constructor) ?? throw new BabyPenguinException($"Cant resolve 'this' symbol", eventDefinition.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
-                var symbol = constructor.AddExpression(initializeExpression, true);
-                constructor.AddInstruction(new WriteMemberInstruction(eventDefinition.SourceLocation, eventSymbol, symbol, thisSymbol));
-            }
-            else
-            {
-                constructor.AddExpression(initializeExpression, true, eventSymbol);
             }
         }
 

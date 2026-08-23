@@ -3,7 +3,7 @@ namespace emperor {
 class SourceInput {
     filename: string = "";
     source: string = "";
-    // Dyn-lib: true when this input is the verbatim source embedded in a loaded
+    // Dyn-lib: true when this source_input is the verbatim source embedded in a loaded
     // .penguin-lib. Its defs are lib-export (declared, linked to the lib) rather
     // than re-compiled into the consumer.
     is_lib: bool = false;
@@ -51,9 +51,9 @@ class EmperorPenguinCompiler {
         this.lib_def_start = 0;
         this.lib_def_count = 0;
         let found_first_lib: mut bool = false;
-        for (let input in inputs) {
-            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + input.filename); }
-            let mut lexer = new Lexer(input.source, input.filename);
+        for (let source_input in inputs) {
+            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + source_input.filename); }
+            let mut lexer = new Lexer(source_input.source, source_input.filename);
             let tokens = lexer.tokenize();
             let mut p = new Parser(tokens);
             let unit: CompilationUnit = p.parse_compilationUnit();
@@ -73,7 +73,7 @@ class EmperorPenguinCompiler {
             // Lib sources are pushed after core_builtin (driver order); record the
             // index range of their defs so the SemanticModel can mark them
             // lib-export by index (GC-safe, no filename string comparison).
-            if (input.is_lib) {
+            if (source_input.is_lib) {
                 if (!found_first_lib) {
                     this.lib_def_start = total_defs;
                     found_first_lib = true;

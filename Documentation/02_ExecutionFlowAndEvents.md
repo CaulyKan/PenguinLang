@@ -16,13 +16,13 @@ Penguin-lang is designed to take control of threading away from the programmer, 
 
 Events
 ---------
-Penguin-lang provides a builtin event system. You can use events to control execution order:
+Penguin-lang provides a builtin event system. An event is a first-class value (`Event<T>`): store it anywhere, pass it to functions, emit from anywhere. You can use events to control execution order:
 ```
-event a_finished;
+let a_finished : mut Event<void> = new Event<void>();
 initial {
 	print("A");
 	wait;
-	emit a_finished;
+	a_finished.emit(void);
 }
 
 initial {
@@ -31,29 +31,35 @@ initial {
 }
 ```
 
-The `wait` keyword will block execution flow until the event happens. The above code will always print `A` then `B`.
+The `wait` keyword will block execution flow until the next emission. The above code will always print `A` then `B`.
 
-You can also use `on` blocks, which are similar to callbacks:
+Subscription is a wait loop (the replacement for the removed `on` callback blocks):
 ```
-event foo;
+let foo : mut Event<void> = new Event<void>();
 
 initial {
-	emit foo();
+	foo.emit(void);
 }
 
-on foo {
-	print("A");
+initial {
+	while (true) {
+		wait foo;
+		print("A");
+	}
 }
 
-on foo {
-	print("B");
+initial {
+	while (true) {
+		wait foo;
+		print("B");
+	}
 }
 ```
-The result of the above code is uncertain, because the two routines can be parallelized.
+Every routine parked on the event receives the value — broadcast, one delivery per parked `wait` per emit.
 
-`on` routines with expressions
+Waiting for conditions
 ----------------
-You can use expressions as conditions for `on` routines:
+`wait` also accepts a plain condition (level-sensitive wait — the replacement for the removed `on <expression>` routines). The routine parks and the condition is re-checked every scheduler round until it holds:
 ```
 let a : mut i32 = 0;
 
@@ -63,34 +69,38 @@ initial {
 	}
 }
 
-on a == 5 {
+initial {
+	wait a == 5;
 	println("a is 5");
 }
 ```
 
 Events with data
 ------------------
-Events can take parameters:
+Events carry a payload type:
 ```
-event foo : i32;
+let foo : mut Event<i32> = new Event<i32>();
 
 initial {
 	for (let i : i32 in range(0, 10))
-		emit foo(i);
+		foo.emit(i);
 }
 
-on foo(i : i32) {
-	print(cast<string>(i));
+initial {
+	while (true) {
+		let i : i32 = wait foo;
+		print(cast<string>(i));
+	}
 }
 ```
 
 Waiting for events
 ------------------
-The `wait` keyword can be used with events that have data:
+The `wait` keyword on a payload event returns the delivered value:
 ```
-event foo : i32;
+let foo : mut Event<i32> = new Event<i32>();
 initial {
-	emit foo(1);
+	foo.emit(1);
 }
 
 initial {
@@ -101,22 +111,4 @@ initial {
 
 In above code, the `wait foo` will block execution flow until `foo` event happens, and then the value of `x` will be assigned to `1`.
 
-There's an important difference between `wait` event and `on` routine. The `wait` event will only receive the next event after the time it started waiting, which means it's possible to miss some events. On the other hand, `on` routine will receive all events in order.
-
-```
-event foo : i32;
-initial {
-	for (let mut i : i32 in range(0,10))
-		emit foo(1);
-}
-
-initial {
-	while (true) {
-		let x = wait foo;	// may miss some events
-	}
-}
-
-on foo(x : i32) {
-	// will receive all events
-}
-```
+Note that a `wait` only receives emissions from the moment it parks: a value emitted while nobody is waiting is lost (broadcast, not queueing). A wait loop therefore sees every value only if it re-parks between emissions — which `emit` guarantees by yielding one delta after every broadcast. When every emission must be preserved regardless of consumer pacing, use a `Fifo` channel instead (see `11_PortsChannelsEvents.md`).
