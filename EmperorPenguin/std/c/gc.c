@@ -223,6 +223,16 @@ void _emperor_gc_add_root(void** root) {
 typedef struct {
     char* base;
     size_t bytes;
+    /* Low bound of the LIVE portion of this region ([live_lo, base+bytes) is
+     * scanned). For raw buffer registrations (container storage, value-class
+     * globals) it stays == base (everything is live). The coroutine scheduler
+     * narrows it to each coroutine's parked stack pointer via
+     * _emperor_gc_scan_set_live, so dead frames below a parked/finished sp —
+     * pure stale garbage that a conservative scan would pin forever — are
+     * excluded (matches the main stack's watermark treatment). The RUNNING
+     * coroutine's region is additionally capped at the collect-time sp in
+     * _emperor_gc_collect. */
+    char* live_lo;
 } GCScanRegion;
 
 static GCScanRegion* _emperor_gc_scan_regions = NULL;
@@ -245,6 +255,7 @@ void _emperor_gc_scan_add(void* base, size_t bytes) {
     }
     _emperor_gc_scan_regions[_emperor_gc_scan_region_count].base = (char*)base;
     _emperor_gc_scan_regions[_emperor_gc_scan_region_count].bytes = bytes;
+    _emperor_gc_scan_regions[_emperor_gc_scan_region_count].live_lo = (char*)base;
     _emperor_gc_scan_region_count++;
 }
 
@@ -253,6 +264,17 @@ void _emperor_gc_scan_remove(void* base) {
         if (_emperor_gc_scan_regions[i].base == (char*)base) {
             _emperor_gc_scan_regions[i] = _emperor_gc_scan_regions[_emperor_gc_scan_region_count - 1];
             _emperor_gc_scan_region_count--;
+            return;
+        }
+    }
+}
+
+/* Narrow a registered region's live range (coroutine stacks: live_lo moves to
+ * the coroutine's parked sp; raising it past dead frames is the point). */
+void _emperor_gc_scan_set_live(void* base, void* live_lo) {
+    for (size_t i = 0; i < _emperor_gc_scan_region_count; i++) {
+        if (_emperor_gc_scan_regions[i].base == (char*)base) {
+            _emperor_gc_scan_regions[i].live_lo = (char*)live_lo;
             return;
         }
     }
@@ -428,7 +450,8 @@ EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
     setjmp(_gc_register_buf);
     __asm__ volatile("" ::: "memory");
 
-    void* stack_top = _emperor_gc_get_stack_pointer();
+    void* raw_co_sp = _emperor_gc_get_stack_pointer();
+    void* stack_top = raw_co_sp;
 
     /* Coroutine scheduler interop (scheduler.c): when a collection triggers on
      * a coroutine's mmap'd stack, the raw stack pointer belongs to a different
@@ -457,11 +480,25 @@ EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
         _emperor_gc_mark_object(obj);
     }
 
-    /* Registered raw buffers (container element storage): scan them like an
-     * extension of the stack so GC references inside raw memory stay live. */
+    /* Registered raw buffers (container element storage) and coroutine
+     * stacks: scan the LIVE portion of each region like an extension of the
+     * stack so GC references inside stay live. Coroutine regions are narrowed
+     * to their parked sp (scheduler); the RUNNING coroutine's region (the one
+     * containing the raw stack pointer) is capped at the collect-time sp so
+     * only its live frames — never its own dead slots below sp — are roots,
+     * exactly like the sequential main-stack model this replaces. */
     for (size_t r = 0; r < _emperor_gc_scan_region_count; r++) {
-        char** p = (char**)_emperor_gc_scan_regions[r].base;
-        char** end = (char**)(_emperor_gc_scan_regions[r].base + _emperor_gc_scan_regions[r].bytes);
+        char* lo = _emperor_gc_scan_regions[r].live_lo;
+        if (lo < _emperor_gc_scan_regions[r].base) lo = _emperor_gc_scan_regions[r].base;
+        char* raw_lo = (char*)raw_co_sp;
+        char* rbase = _emperor_gc_scan_regions[r].base;
+        char* rend = rbase + _emperor_gc_scan_regions[r].bytes;
+        if (_emperor_gc_on_coroutine &&
+            raw_lo >= rbase && raw_lo < rend && raw_lo < lo) {
+            lo = raw_lo;
+        }
+        char** p = (char**)lo;
+        char** end = (char**)rend;
         for (; p < end; p++) {
             void* candidate = *p;
             void* owner = gc_resolve_block(candidate);

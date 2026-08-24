@@ -781,6 +781,12 @@ namespace BabyPenguin.VirtualMachine
             vm.Global.RegisterExternFunction("__builtin._run", (frame, result, args) =>
             {
                 SimScheduler.Instance.Run(vm, frame);
+                // A job's __builtin.exit sets Global.ExitCode and stops the
+                // scheduler (the Exited break is consumed there). Unwind the
+                // same way the direct-execution path does so Run() returns the
+                // program's exit code instead of swallowing it as 0.
+                if (SimScheduler.Instance.Exited)
+                    throw new ProgramExitException();
                 return [];
             });
         }

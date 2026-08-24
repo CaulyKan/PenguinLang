@@ -23,6 +23,9 @@ class LoopLabels {
 class IRGenerator {
     builder: mut IRBuilder = new IRBuilder(new IRFunction("", "", new SourceLocation("", 0, 0)));
     symbol_regs: mut _utils.List<SymbolRegEntry> = new _utils.List<SymbolRegEntry>();
+    // Per-generate() counter allocating try/catch setjmp sites (indexes the C
+    // runtime's jmp_buf table; see lower_try_catch).
+    try_site_counter: mut i64 = 0;
     loop_stack: mut _utils.List<LoopLabels> = new _utils.List<LoopLabels>();
     source_file: mut string = "";
     current_module: mut IRModule = new IRModule(new SourceLocation("", 0, 0));
@@ -70,6 +73,7 @@ class IRGenerator {
 
     fun generate(mut this, unit: BoundCompilationUnit) -> IRModule {
         _utils.trace_enter("Enter generate");
+        this.try_site_counter = 0;
         let module: mut IRModule = new IRModule(unit.location);
         this.source_file = unit.location.filename;
         this.current_module = module;
@@ -185,9 +189,13 @@ class IRGenerator {
                                 if (field_def is BoundDefinition.class_field) {
                                     let field: BoundClassFieldDefinition = field_def.class_field;
                                     if (field.initializer.is_some()) {
-                                        let field_loc: SourceLocation = this.sym_loc_func(def.symbol);
-                                        let init_val: IRValue = this.lower_expression(field.initializer.some);
-                                        this.builder.emit_wrmbr(this_val, field.name, init_val, field_loc);
+                                        // void-as-unit: a void-typed field has no
+                                        // storage slot to initialize.
+                                        if (this.bound_type_to_ir_type(field.bound_type) != "void") {
+                                            let field_loc: SourceLocation = this.sym_loc_func(def.symbol);
+                                            let init_val: IRValue = this.lower_expression(field.initializer.some);
+                                            this.builder.emit_wrmbr(this_val, field.name, init_val, field_loc);
+                                        }
                                     }
                                 }
                                 fi = fi + 1;
@@ -1430,6 +1438,15 @@ class IRGenerator {
         if (expr.base_expr.is_some()) {
             let obj: IRValue = this.lower_expression(expr.base_expr.some);
 
+            // void-as-unit: a member whose type is void (a T-typed field or
+            // enum payload with T=void) has no storage to read — the base is
+            // still lowered (it may be a side-effecting call), the access
+            // itself yields the unit value. Consumers (call args, RET,
+            // assignment sources) all drop void values at LLVM emission.
+            if (this.bound_type_to_ir_type(expr.bound_type) == "void") {
+                return this.builder.void_value();
+            }
+
             // Check if this is enum payload access (e.g., a.some where a is Option<i64>)
             if (let sym := expr.member_symbol.some) {
                 if (sym is BoundSymbol.enum_member) {
@@ -1449,6 +1466,8 @@ class IRGenerator {
             // Regular member access (class fields)
             let base_type: string = this.bound_type_to_ir_type(expr.bound_type);
             if (base_type == "void") {
+                // Unreachable in practice: the void-as-unit guard above returns
+                // before the field path. Kept as an internal assertion.
                 __builtin.eprintln("error[E_INTERNAL]: Member access resolved to void type for: " + expr.member_name);
                 __builtin.exit(1);
                 return this.builder.emit_rdmbr(obj, expr.member_name, "i64", loc);
@@ -1605,6 +1624,9 @@ class IRGenerator {
         if (stmt is BoundStatement.if_stmt) {
             this.lower_if_stmt(stmt.if_stmt);
         }
+        if (stmt is BoundStatement.try_catch) {
+            this.lower_try_catch(stmt.try_catch);
+        }
         if (stmt is BoundStatement.while_stmt) {
             this.lower_while_stmt(stmt.while_stmt);
         }
@@ -1698,6 +1720,12 @@ class IRGenerator {
 
                 // Regular member access (class fields)
                 if (member_expr.base_expr.is_some()) {
+                    // void-as-unit: storing to a void-typed field is a no-op
+                    // (the field has no storage in the LLVM layout); the value
+                    // expression was already lowered above for side effects.
+                    if (this.bound_type_to_ir_type(member_expr.bound_type) == "void") {
+                        return;
+                    }
                     // Chain writes through an enum payload extraction
                     // (`e.a.x = 10`, payload declared immutable) lower as a
                     // plain RDENUM + WRMBR pair: the LLVM emitter's
@@ -1771,6 +1799,91 @@ class IRGenerator {
         let body_expr: Option<BoundExpression> = this.wrap_stmt_option(stmt.body);
         let while_expr: BoundWhileExpression = new BoundWhileExpression(void_type, stmt.condition, body_expr);
         let _: IRValue = this.lower_while_expr(while_expr);
+    }
+
+    // try/catch (sjlj): lower to
+    //   %site = const;  call _try_setup(site)
+    //   %jb = call _try_buf(site);  %r = __sjlj_setjmp(%jb)  [emitter inlines _setjmp]
+    //   br_cond (r == 0) try_arm catch_arm
+    //   try_arm:   <try statements>; call _try_leave(); br end
+    //   catch_arm: %e = new __builtin.RuntimeError(__throw_get_msg(), __throw_get_code())
+    //              <catch statements with e bound>; br end
+    //   end:
+    // The setjmp buffer comes from the C runtime's per-site table; the inline
+    // setjmp keeps the landing pad inside THIS function's live frame.
+    fun lower_try_catch(mut this, stmt: BoundTryCatchStatement) {
+        _utils.trace_enter("Enter lower_try_catch");
+        let loc: SourceLocation = stmt.location;
+        let site: i64 = this.try_site_counter;
+        this.try_site_counter = this.try_site_counter + 1;
+
+        let site_const: IRValue = this.builder.emit_const_i64(cast<string>(site), loc);
+        let setup_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        setup_args.push(site_const);
+        let setup_res: Option<IRValue> = this.builder.emit_call("__builtin._try_setup", setup_args, "void", loc);
+
+        let buf_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        buf_args.push(site_const);
+        let jb_opt: Option<IRValue> = this.builder.emit_call("__builtin._try_buf", buf_args, "mut ref<__builtin.__TryBuf>", loc);
+        if (jb_opt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: try lowering: no buffer value");
+            __builtin.exit(1);
+        }
+        let sj_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        sj_args.push(jb_opt.some);
+        let sj_opt: Option<IRValue> = this.builder.emit_call("__builtin.__sjlj_setjmp", sj_args, "i32", loc);
+        if (sj_opt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: try lowering: no setjmp value");
+            __builtin.exit(1);
+        }
+        let zero: IRValue = this.builder.emit_const_i64("0", loc);
+        let is_normal: IRValue = this.builder.emit_binop("eq", sj_opt.some, zero, "bool", loc);
+
+        let try_lbl: IRLabel = this.builder.func.alloc_label("try_body");
+        let catch_lbl: IRLabel = this.builder.func.alloc_label("catch");
+        let end_lbl: IRLabel = this.builder.func.alloc_label("try_end");
+        this.builder.emit_br_cond(is_normal, try_lbl, catch_lbl, loc);
+
+        this.builder.emit_label(try_lbl);
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(stmt.try_statements.size())) {
+            this.lower_statement(stmt.try_statements.at(cast<u64>(ti)).some);
+            ti = ti + 1;
+        }
+        if (!this.builder.func.has_terminator()) {
+            let leave_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+            let leave_res: Option<IRValue> = this.builder.emit_call("__builtin._try_leave", leave_args, "void", loc);
+            this.builder.emit_br(end_lbl, loc);
+        }
+
+        this.builder.emit_label(catch_lbl);
+        let no_msg_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        let msg_opt: Option<IRValue> = this.builder.emit_call("__builtin.__throw_get_msg", no_msg_args, "ref<string>", loc);
+        let no_code_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        let code_opt: Option<IRValue> = this.builder.emit_call("__builtin.__throw_get_code", no_code_args, "i64", loc);
+        let err_args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        if (msg_opt.is_some()) { err_args.push(msg_opt.some); }
+        if (code_opt.is_some()) { err_args.push(code_opt.some); }
+        let err_val: IRValue = this.builder.emit_new("__builtin.RuntimeError", err_args, loc);
+        if (stmt.catch_var_symbol.is_some()) {
+            // Mirror a `let e : mut __builtin.RuntimeError = ...` exactly: a
+            // NAMED register with the let's ir type — the member-read lowering
+            // keys field-layout lookup on the register's type spelling.
+            let sym: BoundVariableSymbol = stmt.catch_var_symbol.some;
+            let reg: IRValue = this.builder.func.alloc_named_reg(sym.name, "mut ref<__builtin.RuntimeError>", loc.line, loc.col);
+            this.builder.emit_assign(reg, err_val, loc);
+            this.set_symbol_reg(new BoundSymbol.variable(sym), reg);
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(stmt.catch_statements.size())) {
+            this.lower_statement(stmt.catch_statements.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+        if (!this.builder.func.has_terminator()) {
+            this.builder.emit_br(end_lbl, loc);
+        }
+
+        this.builder.emit_label(end_lbl);
     }
 
     fun lower_block(mut this, stmt: BoundBlockStatement) {

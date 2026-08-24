@@ -619,6 +619,31 @@ class BindBodiesPass {
         BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
         return bound_def;
     }
+    // Collect a bound block's statements from either shape the parser
+    // produces for `{...}`: BoundStatement.block, or an expression statement
+    // wrapping a BoundCodeBlockExpression.
+    fun take_bound_block_stmts(mut this, bound: Option<BoundStatement>, out: mut _utils.List<BoundStatement>) {
+        if (bound.is_none()) { return; }
+        if (bound.some is BoundStatement.block) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(bound.some.block.statements.size())) {
+                out.push(bound.some.block.statements.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            return;
+        }
+        if (bound.some is BoundStatement.expression) {
+            let inner: Option<BoundExpression> = bound.some.expression.expression;
+            if (inner.is_some() && inner.some is BoundExpression.code_block) {
+                let i: mut i64 = 0;
+                while (i < cast<i64>(inner.some.code_block.statements.size())) {
+                    out.push(inner.some.code_block.statements.at(cast<u64>(i)).some);
+                    i = i + 1;
+                }
+            }
+        }
+    }
+
     fun bind_optional_stmt(mut this, opt: Option<Statement>, scope: mut BoundScope) -> Option<BoundStatement> {
         _utils.trace_enter("Enter bind_optional_stmt");
         if (opt.is_some()) {
@@ -1315,10 +1340,48 @@ class BindBodiesPass {
             return new Option<BoundStatement>.none();
         }
         if (stmt is Statement.try_stmt) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
-                "try/catch is not supported by this compiler yet",
-                stmt.try_stmt.location);
-            return new Option<BoundStatement>.none();
+            // try/catch binds to a BoundTryCatchStatement; the IR layer
+            // lowers it to an inline _setjmp landing pad in the enclosing
+            // function's own frame (a C-side setjmp wrapper would longjmp
+            // into a dead frame — the classic sjlj pitfall).
+            let ts: TryStatement = stmt.try_stmt;
+            if (ts.catch_type_spec.is_some()) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                    "typed catch clauses are not supported (use catch (e))",
+                    ts.location);
+                return new Option<BoundStatement>.none();
+            }
+            if (ts.try_block.is_none() || ts.catch_block.is_none()) {
+                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                    "try/catch requires both a try and a catch block",
+                    ts.location);
+                return new Option<BoundStatement>.none();
+            }
+            // The catch variable: mut __builtin.RuntimeError.
+            let err_ts: mut TypeSpecifier = new TypeSpecifier();
+            err_ts.qualified_parts.push("__builtin");
+            err_ts.name = "RuntimeError";
+            err_ts.is_mutable = true;
+            let err_bt: mut BoundType = this.model.some.resolve_type_specifier(err_ts, scope);
+            let csym: mut BoundVariableSymbol = new BoundVariableSymbol();
+            csym.name = ts.catch_var_name;
+            csym.full_name = scope.full_name + "." + ts.catch_var_name;
+            csym.bound_type = err_bt;
+            csym.is_mutable = true;
+            csym.location = ts.location;
+            // Bind the try arm in a child scope, the catch arm in a child
+            // scope carrying the error variable.
+            let try_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<try>", scope.full_name + ".<try>", new Option<BoundScope>.some(scope));
+            let bound_try: Option<BoundStatement> = this.bind_statement(ts.try_block.some, try_scope);
+            let catch_scope: mut BoundScope = new BoundScope(new ScopeKind.BlockScope(), "<catch>", scope.full_name + ".<catch>", new Option<BoundScope>.some(scope));
+            catch_scope.add_symbol(new BoundSymbol.variable(csym));
+            let bound_catch: Option<BoundStatement> = this.bind_statement(ts.catch_block.some, catch_scope);
+            let result: mut BoundTryCatchStatement = new BoundTryCatchStatement();
+            this.take_bound_block_stmts(bound_try, result.try_statements);
+            this.take_bound_block_stmts(bound_catch, result.catch_statements);
+            result.catch_var_symbol = new Option<BoundVariableSymbol>.some(csym);
+            result.location = ts.location;
+            return new Option<BoundStatement>.some(new BoundStatement.try_catch(result));
         }
         return new Option<BoundStatement>.none();
     }

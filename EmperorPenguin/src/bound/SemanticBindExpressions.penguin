@@ -247,6 +247,30 @@ class BindExpressionsPass {
             return this.bind_expression(this.mk_block_expr(stmts2, new Option<Expression>.none()), scope);
         }
 
+        // `wait ev` on an Event<T>: one fresh one-slot subscription per wait
+        // (the ctor subscribes; poll delivers once and auto-unsubscribes) —
+        // exactly BabyPenguin's wait-rewrite shape. The do_wait goes through
+        // an explicit cast<mut IFuture<T>> so it dispatches through the
+        // SPECIALIZED interface's default method (a direct member call would
+        // bind the unspecialized template's do_wait).
+        let ev_t: Option<BoundType> = this.find_event_class_type(inner_type);
+        if (ev_t.is_some()) {
+            let sub_new: mut NewExpression = new NewExpression();
+            sub_new.type_name = "__builtin._EventSubscription";
+            sub_new.generic_args.push(this.spawn_type_spec(ev_t.some));
+            sub_new.arguments.push(inner);
+            let ifut_ts: mut TypeSpecifier = new TypeSpecifier();
+            ifut_ts.qualified_parts.push("__builtin");
+            ifut_ts.name = "IFuture";
+            ifut_ts.generic_args.push(this.spawn_type_spec(ev_t.some));
+            ifut_ts.is_mutable = true;
+            let cast_node: mut CastExpression = new CastExpression();
+            cast_node.target_type = new Option<TypeSpecifier>.some(ifut_ts);
+            cast_node.type_name = "IFuture";
+            cast_node.inner = new Option<Expression>.some(new Expression.new_expr(sub_new));
+            return this.bind_expression(this.mk_do_wait_call(new Expression.cast_expr(cast_node)), scope);
+        }
+
         // `wait <call>` on a non-future-typed call: a sequential (interleaved)
         // call — the callee's own waits park the shared stack; the call's
         // result is the wait's value (BabyPenguin implicit-wait semantics).
@@ -309,7 +333,7 @@ class BindExpressionsPass {
                     let iface_t: BoundType = impl_d.impl_def.interface_type;
                     if (iface_t.type_definition.is_some() && iface_t.type_definition.some is BoundDefinition.interface_def) {
                         if (iface_t.type_definition.some.interface_def.name == "IFuture") {
-                            return new Option<BoundType>.some(iface_t);
+                            return new Option<BoundType>.some(this.substitute_template_arg_placeholders(iface_t, bt));
                         }
                     }
                 }
@@ -324,11 +348,78 @@ class BindExpressionsPass {
                     let iface_t2: BoundType = impl_e.impl_def.interface_type;
                     if (iface_t2.type_definition.is_some() && iface_t2.type_definition.some is BoundDefinition.interface_def) {
                         if (iface_t2.type_definition.some.interface_def.name == "IFuture") {
-                            return new Option<BoundType>.some(iface_t2);
+                            return new Option<BoundType>.some(this.substitute_template_arg_placeholders(iface_t2, bt));
                         }
                     }
                 }
                 j = j + 1;
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    // An impl's interface_type resolved against a TEMPLATE class carries the
+    // template's placeholder param types (dummy defs named after the params,
+    // e.g. `wait fifo` on a `Fifo<i64>`-typed value seeing IFuture<Fifo's T>).
+    // Replace each placeholder arg positionally with the receiver's concrete
+    // generic arg so the wait lowering casts to IFuture<i64>, not to an
+    // unresolvable placeholder name.
+    fun substitute_template_arg_placeholders(this, iface_bt: BoundType, recv_bt: BoundType) -> BoundType {
+        if (recv_bt.type_definition.is_none()) { return iface_bt; }
+        let rtd: BoundDefinition = recv_bt.type_definition.some;
+        let params: _utils.List<string> = if (rtd is BoundDefinition.class_def) {
+            rtd.class_def.generic_params
+        } else if (rtd is BoundDefinition.enum_def) {
+            rtd.enum_def.generic_params
+        } else {
+            new _utils.List<string>()
+        };
+        if (cast<i64>(params.size()) == 0 || cast<i64>(recv_bt.generic_args.size()) == 0) { return iface_bt; }
+        let new_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let changed: mut bool = false;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iface_bt.generic_args.size())) {
+            let arg: BoundTypeArg = iface_bt.generic_args.at(cast<u64>(i)).some;
+            let substituted: mut bool = false;
+            if (!arg_is_value(arg)) {
+                let argt: BoundType = arg_as_bound_type(arg);
+                if (argt.type_definition.is_some() && argt.type_definition.some is BoundDefinition.class_def) {
+                    let pname: string = argt.type_definition.some.class_def.name;
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(params.size())) {
+                        if (params.at(cast<u64>(j)).some == pname && j < cast<i64>(recv_bt.generic_args.size())) {
+                            let rarg: BoundTypeArg = recv_bt.generic_args.at(cast<u64>(j)).some;
+                            if (!arg_is_value(rarg)) {
+                                new_args.push(make_type_arg(arg_as_bound_type(rarg)));
+                                substituted = true;
+                                changed = true;
+                            }
+                        }
+                        j = j + 1;
+                    }
+                }
+            }
+            if (!substituted) {
+                new_args.push(arg);
+            }
+            i = i + 1;
+        }
+        if (!changed) { return iface_bt; }
+        return iface_bt.with_generic_args(new_args);
+    }
+
+    // The payload type argument of an Event<X> bound type, or none. Drives
+    // the `wait ev` -> `new _EventSubscription<X>(ev).do_wait()` rewrite.
+    fun find_event_class_type(this, bt: BoundType) -> Option<BoundType> {
+        if (bt.kind is TypeKind.ClassKind) {
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                if (bt.type_definition.some.class_def.name == "Event") {
+                    if (cast<i64>(bt.generic_args.size()) > 0) {
+                        if (!arg_is_value(bt.generic_args.at(cast<u64>(0)).some)) {
+                            return new Option<BoundType>.some(arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some));
+                        }
+                    }
+                }
             }
         }
         return new Option<BoundType>.none();

@@ -53,13 +53,16 @@
  * main stack) instead of scanning down to the coroutine's stack pointer,
  * which lives in an unrelated mmap block. */
 void* _emperor_gc_main_watermark = NULL;
+
+/* gc.c: narrow a registered scan region to its live range. */
+void _emperor_gc_scan_set_live(void* base, void* live_lo);
 int _emperor_gc_on_coroutine = 0;
 
 /* ---- try/catch (sjlj) ---- */
 
 typedef struct EmperorTryFrame {
     struct EmperorTryFrame* prev;
-    jmp_buf jb;
+    jmp_buf* jb; /* points into the per-site table; owned by the site */
 } EmperorTryFrame;
 
 /* Pending error payload for the catch handler: set by throw, read by the
@@ -235,6 +238,10 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
      * the parked sp are stale garbage, which a conservative collector safely
      * over-retains. */
     _emperor_gc_scan_add(block, total);
+    /* No frames exist yet: an empty live range (== region end) excludes the
+     * all-zero never-used pages from conservative scans entirely; the first
+     * park (or the running-sp cap in _emperor_gc_collect) opens it up. */
+    _emperor_gc_scan_set_live(block, block + total);
 #ifndef EMPEROR_NO_UCONTEXT
     if (getcontext(&co->ctx) == -1) {
         fprintf(stderr, "emperor sched: getcontext failed\n");
@@ -296,6 +303,11 @@ void _emperor_co_wait(void) {
     /* record the frozen stack extent for the quiescence fingerprint */
     char marker;
     self->sp_park = (char*)&marker;
+    /* Same extent governs GC scanning: frames below the parked sp are dead,
+     * and a conservative scan of them pins garbage forever (each initial on
+     * its own stack no longer shares the sequential main-stack reuse that
+     * used to hide earlier routines' stale slots). */
+    _emperor_gc_scan_set_live(self->block, self->sp_park);
 #ifndef EMPEROR_NO_UCONTEXT
     swapcontext(&self->ctx, &sched_ctx);
 #else
@@ -340,26 +352,45 @@ void _emperor_sched_exit(int code) {
 }
 
 /* ---- try/catch (sjlj) ----
- * The buffer is 256 bytes of raw malloc'd memory owned by the compiled try
- * statement. try_enter pushes a frame and returns setjmp's value: 0 on the
- * normal path, 1 when a throw longjmps back. try_leave pops on the normal
- * path; throw pops the frame itself, so the catch path must NOT call leave. */
-int _emperor_try_enter(void* jb_raw) {
+ * The compiled function itself calls _setjmp on a buffer from the per-site
+ * table (LLVMEmitter inlines the call — a C-side wrapper's dead frame would
+ * make the longjmp landing undefined: the landing reads a stack slot that
+ * deeper calls have reused). _try_setup pushes {prev, jb} on the current
+ * coroutine's try stack keyed by the site id; _try_leave pops+frees on the
+ * normal path. Throw pops the frame, frees it and _longjmps to the saved
+ * context — which resumes INSIDE the still-live compiled function.
+ * A site's buffer is shared by recursive activations of that same site
+ * (recursing through a try is not re-entrant in v1); distinct sites and
+ * sequential re-entry (a try inside a loop) are safe. */
+#define EMPEROR_TRY_SITES 1024
+static jmp_buf _emperor_try_jb_table[EMPEROR_TRY_SITES];
+
+void* _emperor_try_buf(int64_t site) {
+    return (void*)&_emperor_try_jb_table[(size_t)site & (EMPEROR_TRY_SITES - 1)];
+}
+
+void _emperor_try_setup(int64_t site) {
     EmperorCoroutine* self = sched_current;
     if (!self) {
         fprintf(stderr, "emperor sched: try/catch outside a coroutine\n");
         exit(1);
     }
-    EmperorTryFrame* f = (EmperorTryFrame*)jb_raw;
+    EmperorTryFrame* f = (EmperorTryFrame*)malloc(sizeof(EmperorTryFrame));
+    if (!f) {
+        fprintf(stderr, "emperor sched: try frame allocation failed\n");
+        exit(1);
+    }
     f->prev = self->try_top;
+    f->jb = (jmp_buf*)_emperor_try_buf(site);
     self->try_top = f;
-    return setjmp(f->jb);
 }
 
 void _emperor_try_leave(void) {
     EmperorCoroutine* self = sched_current;
     if (self && self->try_top) {
-        self->try_top = self->try_top->prev;
+        EmperorTryFrame* f = self->try_top;
+        self->try_top = f->prev;
+        free(f);
     }
 }
 
@@ -373,7 +404,9 @@ void _emperor_throw_runtime_error(const char* msg, int64_t code) {
     if (sched_current && sched_current->try_top) {
         EmperorTryFrame* f = sched_current->try_top;
         sched_current->try_top = f->prev;
-        longjmp(f->jb, 1);
+        jmp_buf* jb = f->jb;
+        free(f);
+        _longjmp(*jb, 1);
     }
     fflush(stdout);
     fprintf(stderr, "Uncaught runtime error: %s (code %lld)\n", msg ? msg : "?",

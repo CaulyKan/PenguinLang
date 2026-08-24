@@ -513,7 +513,14 @@ class MonomorphizePass {
     }
 
     fun native_umangleable_type(this, bt: BoundType) -> bool {
-        if (bt.kind is TypeKind.PrimitiveKind) { return true; }
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            // void is a primitive in the type registry but has no VALUE to
+            // name: an `Option<void>`-style payload arg must not inject the
+            // IUniqueMangleName impl (its body would call get_unique_name()
+            // on a void payload, which has no impl).
+            if (bt.primitive is PrimitiveType.VoidType) { return false; }
+            return true;
+        }
         if (bt.type_definition.is_none()) { return false; }
         let td: BoundDefinition = bt.type_definition.some;
         // CORE WRAPPERS: the IUniqueMangleName impl for List/Box/Option/Result/
@@ -842,6 +849,28 @@ class MonomorphizePass {
             let init: BoundInitialRoutineDefinition = def.initial_routine;
             if (init.scope.is_some()) {
                 this.collect_instantiations_from_scope(init.scope.some, instantiations);
+            }
+        }
+        if (def is BoundDefinition.global_var_def) {
+            // A global's DECLARED type can be the only mention of a generic
+            // instantiation (e.g. `let q : mut Fifo<i64> = ...` at file scope —
+            // the initializer's new-expression is not scanned from global-var
+            // defs): collect it or the specialization never gets a layout.
+            // The initializer resolves in the global's OWN scope (a global can
+            // live inside a namespace, e.g. emperor.MetaHost's
+            // List<BoundTypeArg> — resolving its args from the global scope
+            // would mis-report E_RESOLVE_TYPE every fixpoint round).
+            this.try_add_instantiation(def.global_var_def.bound_type, instantiations);
+            if (def.global_var_def.ast_source.is_some() && def.global_var_def.ast_source.some is Definition.global_var) {
+                let ginit: Option<Expression> = def.global_var_def.ast_source.some.global_var.initializer;
+                if (ginit.is_some()) {
+                    let gscope: mut BoundScope = if (def.global_var_def.scope.is_some()) {
+                        def.global_var_def.scope.some
+                    } else {
+                        this.model.some.global_scope
+                    };
+                    this.collect_from_ast_expr_safe(ginit.some, gscope, instantiations);
+                }
             }
         }
         if (def is BoundDefinition.namespace_def) {
