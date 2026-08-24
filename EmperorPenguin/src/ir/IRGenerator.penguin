@@ -300,7 +300,11 @@ class IRGenerator {
         while (mi < cast<i64>(def.methods.size())) {
             let method_def: BoundDefinition = def.methods.at(cast<u64>(mi)).some;
             if (method_def is BoundDefinition.function_def) {
-                if (method_def.function_def.body.is_some()) {
+                // Dyn-lib: a shipped specialized interface's default methods are
+                // marked lib-export and skip body binding — but other defs'
+                // vtables still reference their symbols, so a declaration must be
+                // lowered even without a body.
+                if (method_def.function_def.body.is_some() || method_def.function_def.is_lib_export) {
                     this.lower_function_def(method_def.function_def, module);
                 }
             }
@@ -318,7 +322,7 @@ class IRGenerator {
                 while (mi2 < cast<i64>(nested_impl.methods.size())) {
                     let method_def: BoundDefinition = nested_impl.methods.at(cast<u64>(mi2)).some;
                     if (method_def is BoundDefinition.function_def) {
-                        if (method_def.function_def.body.is_some()) {
+                        if (method_def.function_def.body.is_some() || method_def.function_def.is_lib_export) {
                             this.lower_function_def(method_def.function_def, module);
                         }
                     }
