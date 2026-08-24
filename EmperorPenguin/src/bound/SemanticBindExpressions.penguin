@@ -2166,17 +2166,40 @@ class BindExpressionsPass {
                                                 let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
                                                 if (let spec_def := spec_type.type_definition.some) {
                                                     if (spec_def is BoundDefinition.class_def) {
-                                                        let spec_cls: BoundClassDefinition = spec_def.class_def;
-                                                        let mi: mut i64 = 0;
-                                                        while (mi < cast<i64>(spec_cls.methods.size())) {
-                                                            let md: BoundDefinition = spec_cls.methods.at(cast<u64>(mi)).some;
-                                                            if (md is BoundDefinition.function_def) {
-                                                                if (md.function_def.name == sym.function_sym.name) {
-                                                                    bt = md.function_def.return_type;
-                                                                }
-                                                            }
-                                                            mi = mi + 1;
-                                                        }
+                                                                        let spec_cls: BoundClassDefinition = spec_def.class_def;
+                                                                        let mi: mut i64 = 0;
+                                                                        while (mi < cast<i64>(spec_cls.methods.size())) {
+                                                                            let md: BoundDefinition = spec_cls.methods.at(cast<u64>(mi)).some;
+                                                                            if (md is BoundDefinition.function_def) {
+                                                                                if (md.function_def.name == sym.function_sym.name) {
+                                                                                    bt = md.function_def.return_type;
+                                                                                }
+                                                                            }
+                                                                            mi = mi + 1;
+                                                                        }
+                                                                        // Impl-block methods (impl ISource<T> { fun current
+                                                                        // ... }) live in interface_impls, NOT methods: the
+                                                                        // member symbol resolved from the TEMPLATE class
+                                                                        // carries the unresolved Option<T>-shaped return
+                                                                        // type, so the specialized def is authoritative
+                                                                        // here too.
+                                                                        let ii2: mut i64 = 0;
+                                                                        while (ii2 < cast<i64>(spec_cls.interface_impls.size())) {
+                                                                            let idf: BoundDefinition = spec_cls.interface_impls.at(cast<u64>(ii2)).some;
+                                                                            if (idf is BoundDefinition.impl_def) {
+                                                                                let mi2: mut i64 = 0;
+                                                                                while (mi2 < cast<i64>(idf.impl_def.methods.size())) {
+                                                                                    let md: BoundDefinition = idf.impl_def.methods.at(cast<u64>(mi2)).some;
+                                                                                    if (md is BoundDefinition.function_def) {
+                                                                                        if (md.function_def.name == sym.function_sym.name) {
+                                                                                            bt = md.function_def.return_type;
+                                                                                        }
+                                                                                    }
+                                                                                    mi2 = mi2 + 1;
+                                                                                }
+                                                                            }
+                                                                            ii2 = ii2 + 1;
+                                                                        }
                                                     }
                                                 }
                                             }
@@ -3127,6 +3150,38 @@ class BindExpressionsPass {
         if (type_sym.is_some()) {
             if (type_sym.some is BoundSymbol.type_sym) {
                 let bt: mut BoundType = this.resolve_new_generic_args(expr, scope, type_sym.some.type_sym.bound_type);
+                // On-demand specialization: a generic `new Foo<args>()` whose
+                // specialization def doesn't exist yet — e.g. a generic field
+                // DEFAULT initializer inside a specialized class whose field TYPE
+                // is an interface (resolve_field_specialization ensures the
+                // interface spec, but nothing else references Foo<args>, so no
+                // def/layout/ctor is ever emitted and the NEW lowers to garbage).
+                // Mirrors ensure_specialized_type's late-creation branch but with
+                // catch_up_def_BEFORE_BODIES: binding bodies re-entrantly inside
+                // an expression bind corrupts resolution (see bind_spawn_async) —
+                // the pushed def's bodies are bound later by the dynamic pass-8
+                // loop. bt keeps the template+args shape so downstream lowering
+                // is unchanged.
+                if (cast<i64>(bt.generic_args.size()) > 0 && this.model.some.current_unit.is_some()) {
+                    let full_base: mut string = expr.type_name;
+                    if (bt.type_definition.is_some()) {
+                        let td0: BoundDefinition = bt.type_definition.some;
+                        if (td0 is BoundDefinition.class_def) { full_base = td0.class_def.full_name; }
+                        if (td0 is BoundDefinition.enum_def) { full_base = td0.enum_def.full_name; }
+                        if (td0 is BoundDefinition.interface_def) { full_base = td0.interface_def.full_name; }
+                    }
+                    let mangled_spec: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
+                    let spec_existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled_spec);
+                    if (spec_existing.is_none()) {
+                        let inst_bt: BoundType = type_sym.some.type_sym.bound_type.with_generic_args(bt.generic_args);
+                        let spec_new: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(inst_bt, this.model.some.global_scope);
+                        if (spec_new.is_some()) {
+                            let m0: mut SemanticModel = this.model.some;
+                            m0.catch_up_def_before_bodies(spec_new.some, this.model.some.current_unit.some);
+                            this.model.some.current_unit.some.definitions.push(spec_new.some);
+                        }
+                    }
+                }
                 // If this is an enum type, the full name was a type, not a variant — just instantiate
                 let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
                 let i: mut i64 = 0;

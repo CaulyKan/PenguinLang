@@ -932,7 +932,7 @@ class IRGenerator {
             if (result.is_some()) { return result.some; }
             return this.builder.void_value();
         }
-        __builtin.eprintln("error[E_INTERNAL]: Function call has no callee symbol");
+        __builtin.eprintln("error[E_INTERNAL]: Function call has no callee symbol [in " + this.builder.func.name + " at line " + cast<string>(loc.line) + " col " + cast<string>(loc.col) + " file " + loc.filename + "]");
         __builtin.exit(1);
         return this.builder.void_value();
     }

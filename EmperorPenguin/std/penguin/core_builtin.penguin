@@ -375,6 +375,15 @@ namespace __builtin {
         fun try_write(mut this, v: T) -> bool;
     }
 
+    // EP has no interface inheritance, so IChannel declares only its own
+    // methods (close/is_closed); every concrete channel additionally
+    // implements ISource<T>, ISink<T> and IFuture<T> in separate blocks (the
+    // same class shape as BabyPenguin's channels, whose IChannel surface is
+    // inherited). Port fields are typed `mut IChannel<T>`; method calls on
+    // them that belong to the source/sink surface (write/try_write/current/
+    // try_poll) are rewritten by the compiler to an explicit interface cast
+    // (same-named methods in two impl blocks of one class are not
+    // expressible in EP, so the surface cannot live on IChannel itself).
     #template(T: type)
     interface IChannel {
         impl IReferenceType;
@@ -741,6 +750,246 @@ namespace __builtin {
 
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Late-binding relay: the object behind a passed-through input port
+    // (connect(this.x, inner.x)). The class construct wires inner.x to this
+    // view BEFORE the enclosing instance's own input is connected from the
+    // outside; every poll/current/close re-reads the upstream FIELD, so the
+    // real source is picked up whenever the outer connect binds it.
+    // (EP adaptation: IChannel carries only close/is_closed — source/sink-
+    // surface calls on the upstream field go through explicit interface casts.)
+    #template(T: type)
+    class _LateSource {
+        impl IReferenceType;
+
+        upstream: mut IChannel<T> = new _NeverSource<T>();
+
+        fun new(mut this) {}
+
+        // The outer connect calls this with the real source (wire/channel).
+        fun bind(mut this, src: mut IChannel<T>) {
+            this.upstream = src;
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                return cast<mut ISource<T>>(self.upstream).try_poll();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: _LateSource<T> = cast<_LateSource<T>>(this);
+                return cast<ISource<T>>(self.upstream).current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                self.upstream.close();
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: _LateSource<T> = cast<_LateSource<T>>(this);
+                return self.upstream.is_closed();
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                return cast<mut IFuture<T>>(self.upstream).poll();
+            }
+        }
+    }
+
+    // Constant payload source: an input port's default when left unconnected.
+    // current() always yields the constant; it never delivers a transaction
+    // (wait parks forever — the port is unconnected) and writes are invalid.
+    #template(T: type)
+    class ConstantSource {
+        impl IReferenceType;
+
+        value: T;
+        closed: mut bool = false;
+
+        fun new(mut this, value: T) {
+            this.value = value;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: ConstantSource<T> = cast<ConstantSource<T>>(this);
+                return new Option<T>.some(self.value);
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut ConstantSource<T> = cast<mut ConstantSource<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: ConstantSource<T> = cast<ConstantSource<T>>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Output-port fanout hub: the module's single driver writes here; every
+    // connected input gets its OWN wire via subscribe() (independent delivery
+    // cursors — each subscriber receives every transaction in order), while
+    // the hub's own slot stream serves direct `wait out_port` /
+    // `out_port.try_poll()` readers at the wiring level (one shared cursor,
+    // competing consumers). The declared default / type zero value lives in
+    // the slot as a weak seed: bare reads before any write return it, and
+    // subscribe() seeds new wires from it (time-0 first-wait wake-up).
+    #template(T: type)
+    class _Fanout {
+        impl IReferenceType;
+
+        wires: mut _ChanList<LatestChannel<T>> = new _ChanList<LatestChannel<T>>();
+        slot: mut LatestChannel<T> = new LatestChannel<T>();
+        closed: mut bool = false;
+
+        fun new(mut this) {}
+
+        // The hub slot's seed: an EXPLICIT declared default (`output p = v`)
+        // is a weak deliverable transaction (time-0 first-wait wake-up,
+        // superseded by any real write); a synthesized type-zero seed only
+        // backs current() bare reads — direct `wait port` parks until the
+        // module actually writes.
+        fun set_seed(mut this, v: T, deliver: bool) {
+            this.slot.set_seed(v, deliver);
+        }
+
+        fun subscribe(mut this) -> mut LatestChannel<T> {
+            let w: mut LatestChannel<T> = new LatestChannel<T>();
+            // Connect-time seeding: whatever the hub slot currently holds
+            // (a variable net's current value, an output port's declared
+            // default or type zero) becomes the new wire's DELIVERABLE seed
+            // — the subscriber's first `wait` wakes immediately at time 0
+            // (Q3), and any real write supersedes it.
+            let cur: Option<T> = this.slot.current();
+            if (cur.is_some()) {
+                w.set_seed(cur.some, true);
+            }
+            this.wires.push(w);
+            return w;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun write_all(mut this, v: T) {
+            _sim_activity();
+            this.slot.push(v);
+            let wi: mut i64 = 0;
+            while (wi < this.wires.size()) {
+                let w: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this.wires.at(wi).some);
+                w.write(v);
+                wi = wi + 1;
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                self.write_all(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                self.write_all(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                return self.slot.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: _Fanout<T> = cast<_Fanout<T>>(this);
+                return self.slot.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: _Fanout<T> = cast<_Fanout<T>>(this);
+                return self.closed;
+            }
+        }
+
+        // Directly waitable: consumes the hub's own slot stream (single
+        // shared cursor for wiring-level readers). Module-to-module wiring
+        // goes through subscribe(), which grants each input an independent
+        // cursor.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                let v: Option<T> = self.slot.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
                 return new FutureState<T>.not_ready();
             }
         }
