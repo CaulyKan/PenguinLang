@@ -2,11 +2,9 @@
 ## Description
 close(ch) wakes every parked (and future) waiter with a runtime error; the waiter's try/catch receives the message "channel closed".
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the channel layer (Fifo/LatestChannel/MergeChannel + close semantics) is BabyPenguin-only so far — EmperorPenguin fails here and should turn green once Phase 3 lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -27,7 +25,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

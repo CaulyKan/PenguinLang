@@ -4,6 +4,7 @@ An uncaught panic inside a class-body initial routine runs the program up to the
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,6 +14,12 @@ initial { println("before"); }
 ```
 
 ## Compile
+Args: `--enable-coroutine`
+ExpectedExitCode: ANY
+ExpectedStdout: DISCARD
+ExpectedStderr: DISCARD
+
+## Run
 Args: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: EQUALS `module-start

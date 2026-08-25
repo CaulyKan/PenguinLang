@@ -611,6 +611,30 @@ class BindBodiesPass {
                             gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
                         }
                     }
+                    // E5 topology bookkeeping: a module (ported class)
+                    // instantiated by a construct-hoisted global initializer
+                    // joins the construct pool of its namespace.
+                    if (bound_init.some is BoundExpression.new_expr) {
+                        let cg_key: string = ast_def.global_var.source_file + "|" + ast_def.global_var.name;
+                        let is_construct_global: mut bool = false;
+                        let cgi: mut i64 = 0;
+                        while (cgi < cast<i64>(this.model.some.construct_global_keys.size())) {
+                            if (this.model.some.construct_global_keys.at(cast<u64>(cgi)).some == cg_key) { is_construct_global = true; }
+                            cgi = cgi + 1;
+                        }
+                        if (is_construct_global && init_type.kind is TypeKind.ClassKind && init_type.type_definition.is_some()) {
+                            if (init_type.type_definition.some is BoundDefinition.class_def) {
+                                let newed_cls_full: string = init_type.type_definition.some.class_def.full_name;
+                                if (this.model.some.class_has_ports(newed_cls_full)) {
+                                    let pool: string = m.bind_expressions_pass.top_level_pool_id(gv_scope);
+                                    this.model.some.newed_pool_ids.push(pool);
+                                    this.model.some.newed_class_names.push(newed_cls_full);
+                                    this.model.some.newed_var_names.push(ast_def.global_var.name);
+                                    this.model.some.newed_locs.push(ast_def.global_var.location.to_string());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
@@ -761,6 +785,58 @@ class BindBodiesPass {
         }
         if (stmt is Statement.assignment) {
             if (stmt.assignment.target.is_some()) {
+                // E5 RTL port permission matrix + output-write sugar: an
+                // assignment whose target lands on a declared port field.
+                if (this.model.some.port_sugar_suppressed == 0 && stmt.assignment.value.is_some() && stmt.assignment.target.some is Expression.member_access) {
+                    let tma: MemberAccessExpression = stmt.assignment.target.some.member_access;
+                    let pai: Option<PortAccessInfo> = m.bind_expressions_pass.resolve_port_access(tma, scope);
+                    if (pai.is_some()) {
+                        let info: PortAccessInfo = pai.some;
+                        let compound_op: Option<BinaryOperator> = compound_assignment_to_binary_operator(stmt.assignment.operator_value);
+                        if (compound_op.is_some()) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Compound assignment is not supported on port '" + tma.member_name + "' - use write()/assignment on the output, connect on the input",
+                                stmt.assignment.location);
+                            return new Option<BoundStatement>.none();
+                        }
+                        if (info.is_input) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot write to input port '" + tma.member_name + "' - inputs are wired exclusively through connect",
+                                stmt.assignment.location);
+                            return new Option<BoundStatement>.none();
+                        }
+                        if (!info.base_is_this) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot drive output port '" + tma.member_name + "' of another module from outside '" + info.class_full_name + "'",
+                                stmt.assignment.location);
+                            return new Option<BoundStatement>.none();
+                        }
+                        m.bind_expressions_pass.register_body_driver(info, scope);
+                        // `this.y = v` desugars to `cast<mut ISink<T>>(this.y).write(v)`
+                        // — the assignment is a potential suspension point (the
+                        // fan-out hub writes every subscribed wire).
+                        m.bind_expressions_pass.ensure_generic_iface_spec("ISink", info.payload, scope);
+                        let sink_ts: mut TypeSpecifier = new TypeSpecifier();
+                        sink_ts.qualified_parts.push("__builtin");
+                        sink_ts.name = "ISink";
+                        sink_ts.generic_args.push(m.bind_expressions_pass.spawn_type_spec(info.payload));
+                        sink_ts.is_mutable = true;
+                        let cast_node: mut CastExpression = new CastExpression();
+                        cast_node.target_type = new Option<TypeSpecifier>.some(sink_ts);
+                        cast_node.type_name = "ISink";
+                        cast_node.inner = new Option<Expression>.some(stmt.assignment.target.some);
+                        let wma: mut MemberAccessExpression = new MemberAccessExpression();
+                        wma.base_expr = new Option<Expression>.some(new Expression.cast_expr(cast_node));
+                        wma.member_name = "write";
+                        let wcall: mut FunctionCallExpression = new FunctionCallExpression();
+                        wcall.callee = new Option<Expression>.some(new Expression.member_access(wma));
+                        wcall.arguments.push(stmt.assignment.value.some);
+                        let wes: mut ExpressionStatement = new ExpressionStatement();
+                        wes.expression = new Option<Expression>.some(new Expression.function_call(wcall));
+                        wes.location = stmt.assignment.location;
+                        return this.bind_statement(new Statement.expression(wes), scope);
+                    }
+                }
                 let target: Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.assignment.target.some, scope);
                 if (stmt.assignment.value.is_some()) {
                     let value: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(stmt.assignment.value.some, scope);
@@ -884,12 +960,12 @@ class BindBodiesPass {
                             }
                             let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, target.some.identifier.symbol, effective_op, value, value_type);
                             result.location = stmt.assignment.location;
-                            return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+                            return this.maybe_net_write_hook(new BoundStatement.assignment(result), target, stmt.assignment, scope);
                         }
                     }
                     let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), effective_op, value, value_type);
                     result.location = stmt.assignment.location;
-                    return new Option<BoundStatement>.some(new BoundStatement.assignment(result));
+                    return this.maybe_net_write_hook(new BoundStatement.assignment(result), target, stmt.assignment, scope);
                 }
                 let value_type: BoundType = target.some.get_bound_type();
                 let result: mut BoundAssignmentStatement = new BoundAssignmentStatement(target, new Option<BoundSymbol>.none(), stmt.assignment.operator_value, new Option<BoundExpression>.none(), value_type);
@@ -1080,6 +1156,26 @@ class BindBodiesPass {
                         }
                     }
                     var_sym.bound_type = decl_type;
+                    // E5 topology bookkeeping: a module (ported class)
+                    // instantiated by a direct `let x = new C()` inside a
+                    // construct body joins the pool checked for unconnected
+                    // inputs.
+                    if (initializer.some is BoundExpression.new_expr) {
+                        if (init_type.kind is TypeKind.ClassKind && init_type.type_definition.is_some()) {
+                            if (init_type.type_definition.some is BoundDefinition.class_def) {
+                                let newed_cls_full: string = init_type.type_definition.some.class_def.full_name;
+                                if (this.model.some.class_has_ports(newed_cls_full)) {
+                                    if (m.bind_expressions_pass.in_construct_routine(scope)) {
+                                        let pool: string = m.bind_expressions_pass.construct_pool_id(scope);
+                                        this.model.some.newed_pool_ids.push(pool);
+                                        this.model.some.newed_class_names.push(newed_cls_full);
+                                        this.model.some.newed_var_names.push(stmt.let_decl.variable_name);
+                                        this.model.some.newed_locs.push(stmt.let_decl.location.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let result: mut BoundLetDeclarationStatement = new BoundLetDeclarationStatement(
                         new Option<BoundVariableSymbol>.some(var_sym),
                         initializer, decl_type, new Option<BoundScope>.some(scope));
@@ -1331,25 +1427,28 @@ class BindBodiesPass {
             return new Option<BoundStatement>.some(new BoundStatement.meta_continue_stmt(new BoundMetaContinueStatement(stmt.meta_continue_stmt.location)));
         }
         if (stmt is Statement.connect_stmt) {
-            // connect is only legal (and only meaningful) inside a construct
-            // block — bound with the port/connect lowering. Report explicitly
-            // instead of silently emitting nothing.
-            this.model.some.report_error(new ErrorCode.E_WIRING(),
-                "connect is only allowed inside a construct block",
-                stmt.connect_stmt.location);
-            return new Option<BoundStatement>.none();
+            return this.bind_connect_stmt(stmt.connect_stmt.source, stmt.connect_stmt.sink, stmt.connect_stmt.location, scope);
         }
         if (stmt is Statement.try_stmt) {
             // try/catch binds to a BoundTryCatchStatement; the IR layer
             // lowers it to an inline _setjmp landing pad in the enclosing
             // function's own frame (a C-side setjmp wrapper would longjmp
             // into a dead frame — the classic sjlj pitfall).
+            if (!this.model.some.require_coroutine("try/catch", stmt.try_stmt.location)) {
+                return new Option<BoundStatement>.none();
+            }
             let ts: TryStatement = stmt.try_stmt;
             if (ts.catch_type_spec.is_some()) {
-                this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
-                    "typed catch clauses are not supported (use catch (e))",
-                    ts.location);
-                return new Option<BoundStatement>.none();
+                // `catch (e : __builtin.RuntimeError)` is the native error
+                // surface — accept it as the untyped form; anything else has
+                // no runtime representation.
+                let cts: TypeSpecifier = ts.catch_type_spec.some;
+                if (cts.name != "RuntimeError") {
+                    this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                        "typed catch clauses are not supported (use catch (e) or catch (e : __builtin.RuntimeError))",
+                        ts.location);
+                    return new Option<BoundStatement>.none();
+                }
             }
             if (ts.try_block.is_none() || ts.catch_block.is_none()) {
                 this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
@@ -1384,6 +1483,584 @@ class BindBodiesPass {
             return new Option<BoundStatement>.some(new BoundStatement.try_catch(result));
         }
         return new Option<BoundStatement>.none();
+    }
+
+    // ===== E5 connect lowering / variable nets =====
+
+    // `mut <ns>.<name><T>` type specifier for generated lets/fields.
+    fun mk_builtin_generic_spec(mut this, name: string, payload: BoundType) -> TypeSpecifier {
+        let m: mut SemanticModel = this.model.some;
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = name;
+        ts.generic_args.push(m.bind_expressions_pass.spawn_type_spec(payload));
+        ts.is_mutable = true;
+        return ts;
+    }
+
+    // `cast<mut __builtin.<name><T>>(<inner>)`.
+    fun mk_builtin_cast_expr(mut this, name: string, payload: BoundType, inner: Expression) -> Expression {
+        let ts: TypeSpecifier = this.mk_builtin_generic_spec(name, payload);
+        let cast_node: mut CastExpression = new CastExpression();
+        cast_node.target_type = new Option<TypeSpecifier>.some(ts);
+        cast_node.type_name = name;
+        cast_node.inner = new Option<Expression>.some(inner);
+        return new Expression.cast_expr(cast_node);
+    }
+
+    fun mk_ident_expr(this, name: string) -> Expression {
+        return new Expression.identifier(new IdentifierExpression(name));
+    }
+
+    // `this.<name>`.
+    fun mk_this_member_expr(this, name: string) -> Expression {
+        let ma: mut MemberAccessExpression = new MemberAccessExpression();
+        ma.base_expr = new Option<Expression>.some(this.mk_ident_expr("this"));
+        ma.member_name = name;
+        return new Expression.member_access(ma);
+    }
+
+    fun mk_member_call_expr(this, base: Expression, method: string, args: mut _utils.List<Expression>) -> Expression {
+        let ma: mut MemberAccessExpression = new MemberAccessExpression();
+        ma.base_expr = new Option<Expression>.some(base);
+        ma.member_name = method;
+        let fc: mut FunctionCallExpression = new FunctionCallExpression();
+        fc.callee = new Option<Expression>.some(new Expression.member_access(ma));
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            fc.arguments.push(args.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        return new Expression.function_call(fc);
+    }
+
+    fun mk_expr_stmt(mut this, e: Expression, loc: SourceLocation) -> Statement {
+        let es: mut ExpressionStatement = new ExpressionStatement();
+        es.expression = new Option<Expression>.some(e);
+        es.location = loc;
+        return new Statement.expression(es);
+    }
+
+    // `let <name> : mut __builtin.<cls><T> = <init>;`.
+    fun mk_typed_let_stmt(mut this, name: string, cls: string, payload: BoundType, init: Expression, loc: SourceLocation) -> Statement {
+        let ld: mut LetDeclarationStatement = new LetDeclarationStatement();
+        ld.variable_name = name;
+        ld.variable_type = cls;
+        ld.type_spec = new Option<TypeSpecifier>.some(this.mk_builtin_generic_spec(cls, payload));
+        ld.initializer = new Option<Expression>.some(init);
+        ld.location = loc;
+        return new Statement.let_decl(ld);
+    }
+
+    // A channel-like type (implements ISource/ISink/IChannel) or an Event —
+    // such connect sources bind DIRECTLY; implicit nets are for
+    // payload-carrying mut variables.
+    fun is_channel_like_type(mut this, bt: BoundType, scope: mut BoundScope) -> bool {
+        let m: mut SemanticModel = this.model.some;
+        if (m.bind_expressions_pass.find_event_class_type(bt).is_some()) { return true; }
+        if (bt.type_definition.is_none()) { return false; }
+        let td: BoundDefinition = bt.type_definition.some;
+        if (!(td is BoundDefinition.class_def)) { return false; }
+        let cls: BoundClassDefinition = td.class_def;
+        let vts: _utils.List<BoundVTable> = m.bind_expressions_pass.resolve_container_vtables(bt, cls.vtables, scope);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(vts.size())) {
+            let iface_type: BoundType = vts.at(cast<u64>(i)).some.interface_type;
+            if (iface_type.type_definition.is_some()) {
+                if (iface_type.type_definition.some is BoundDefinition.interface_def) {
+                    let iname: string = iface_type.type_definition.some.interface_def.name;
+                    if (iname == "ISource" || iname == "ISink" || iname == "IChannel") { return true; }
+                }
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // connect(src, sink): wire a source into an input port. The sink is a
+    // port member access (`f.x` / `this.x`) or a bare MultiInput binding; the
+    // source is an output port (fan-out hub subscribe), this module's own
+    // input (a passthrough relay), an Event (broadcast hub wire), a mut
+    // variable net (implicit wire), or any channel-typed expression (direct
+    // bind). An output SINK is a passthrough wire (connect(inner.y, this.y)):
+    // the output's hub field becomes the source hub itself. Compiled by
+    // desugaring to ordinary Penguin statements and binding the block with
+    // port sugar suppressed (the generated field writes and channel-object
+    // reads must see the RAW IChannel fields).
+    fun bind_connect_stmt(mut this, source: Option<Expression>, sink: Option<Expression>, loc: SourceLocation, scope: mut BoundScope) -> Option<BoundStatement> {
+        let m: mut SemanticModel = this.model.some;
+        if (!m.require_coroutine("connect", loc)) {
+            return new Option<BoundStatement>.none();
+        }
+        if (source.is_none() || sink.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_WIRING(), "connect requires a source and a sink", loc);
+            return new Option<BoundStatement>.none();
+        }
+        if (!m.bind_expressions_pass.in_construct_routine(scope)) {
+            this.model.some.report_error(new ErrorCode.E_EVENT_INVALID(),
+                "connect is only allowed inside a construct block", loc);
+            return new Option<BoundStatement>.none();
+        }
+        let pool: string = m.bind_expressions_pass.construct_pool_id(scope);
+        let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+
+        // ---- sink analysis: 1 = input port, 2 = output port (wire), 3 = MultiInput ----
+        let sink_kind: mut i64 = 0;
+        let sink_owner_name: mut string = "?";
+        let sink_class_full: mut string = "";
+        let sink_port: mut string = "";
+        let sink_payload: mut BoundType = new BoundType();
+        let sink_multi_payload: mut BoundType = new BoundType();
+        if (sink.some is Expression.member_access && sink.some.member_access.base_expr.is_some()) {
+            let sma: MemberAccessExpression = sink.some.member_access;
+            let pai: Option<PortAccessInfo> = m.bind_expressions_pass.resolve_port_access(sma, scope);
+            if (pai.is_some()) {
+                sink_class_full = pai.some.class_full_name;
+                sink_port = sma.member_name;
+                sink_payload = pai.some.payload;
+                if (pai.some.is_input) { sink_kind = 1; } else { sink_kind = 2; }
+                if (sma.base_expr.some is Expression.identifier) {
+                    sink_owner_name = sma.base_expr.some.identifier.name;
+                }
+            } else {
+                // MultiInput field sink: `x.mi` / `this.mi` — check the FIELD's
+                // type (not the base's), it must name a MultiInput class.
+                let bb: Option<BoundExpression> = m.bind_expressions_pass.bind_expr_no_port_sugar(sma.base_expr.some, scope);
+                if (bb.is_some()) {
+                    let bt: BoundType = bb.some.get_bound_type();
+                    if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                        let sink_cls: BoundClassDefinition = bt.type_definition.some.class_def;
+                        if (sink_cls.scope.is_some()) {
+                            let fsl: Option<BoundSymbol> = sink_cls.scope.some.lookup_symbol(sma.member_name);
+                            if (fsl.is_some()) {
+                                if (fsl.some is BoundSymbol.variable) {
+                                    let ft2: BoundType = fsl.some.variable.bound_type;
+                                    if (ft2.type_definition.is_some() && ft2.type_definition.some is BoundDefinition.class_def) {
+                                        if (ft2.type_definition.some.class_def.name == "MultiInput" && cast<i64>(ft2.generic_args.size()) == 1) {
+                                            sink_kind = 3;
+                                            sink_multi_payload = arg_as_bound_type(ft2.generic_args.at(cast<u64>(0)).some);
+                                            if (sma.base_expr.some is Expression.identifier) {
+                                                sink_owner_name = sma.base_expr.some.identifier.name;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (sink.some is Expression.identifier) {
+            let resolved: Option<BoundSymbol> = scope.lookup_symbol(sink.some.identifier.name);
+            if (resolved.is_some()) {
+                if (resolved.some is BoundSymbol.variable) {
+                    let bt: BoundType = resolved.some.variable.bound_type;
+                    if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                        if (bt.type_definition.some.class_def.name == "MultiInput" && cast<i64>(bt.generic_args.size()) == 1) {
+                            sink_kind = 3;
+                            sink_multi_payload = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+                        }
+                    }
+                }
+            }
+        }
+        if (sink_kind == 0) {
+            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                "connect sink must be a port member access or a MultiInput", loc);
+            return new Option<BoundStatement>.none();
+        }
+
+        // ---- output sink: passthrough wire (connect(inner.y, this.y)) ----
+        if (sink_kind == 2) {
+            this.model.some.driver_keys.push(sink_class_full + "." + sink_port);
+            this.model.some.driver_wire_locs.push(loc.to_string());
+            this.model.some.driver_body_fns.push("");
+            this.model.some.driver_body_locs.push("");
+            // this.<port> = cast<mut IChannel<T>>(<source>);
+            let assign: mut AssignmentStatement = new AssignmentStatement();
+            assign.target = new Option<Expression>.some(sink.some);
+            assign.operator_value = new AssignmentOperator.Assign();
+            assign.value = new Option<Expression>.some(this.mk_builtin_cast_expr("IChannel", sink_payload, source.some));
+            assign.location = loc;
+            stmts.push(new Statement.assignment(assign));
+            return this.bind_generated_stmts(stmts, scope);
+        }
+
+        // ---- source wiring ----
+        let planned: Option<Expression> = this.plan_connect_source(source.some, scope, loc, stmts);
+        if (planned.is_none()) { return new Option<BoundStatement>.none(); }
+        let src_ast: Expression = planned.some;
+
+        // ---- sink emission ----
+        if (sink_kind == 1) {
+            // Input-sink bookkeeping for the static topology checks.
+            this.model.some.sink_pool_ids.push(pool);
+            this.model.some.sink_keys.push(sink_owner_name + "." + sink_port);
+            this.model.some.sink_locs.push(loc.to_string());
+            // A passthrough input sink (its field holds a _LateSource relay):
+            // the outer connect BINDS the source into the relay instead of
+            // overwriting the field — the inner wiring already references
+            // the relay.
+            let sink_pt_key: string = sink_class_full + "." + sink_port;
+            let sink_is_pt: mut bool = false;
+            let spi: mut i64 = 0;
+            while (spi < cast<i64>(this.model.some.passthrough_keys.size())) {
+                if (this.model.some.passthrough_keys.at(cast<u64>(spi)).some == sink_pt_key) { sink_is_pt = true; }
+                spi = spi + 1;
+            }
+            if (sink_is_pt) {
+                let bind_args2: mut _utils.List<Expression> = new _utils.List<Expression>();
+                bind_args2.push(this.mk_builtin_cast_expr("IChannel", sink_payload, src_ast));
+                stmts.push(this.mk_expr_stmt(this.mk_member_call_expr(this.mk_builtin_cast_expr("_LateSource", sink_payload, sink.some), "bind", bind_args2), loc));
+            } else {
+                let w_assign: mut AssignmentStatement = new AssignmentStatement();
+                w_assign.target = new Option<Expression>.some(sink.some);
+                w_assign.operator_value = new AssignmentOperator.Assign();
+                w_assign.value = new Option<Expression>.some(this.mk_builtin_cast_expr("IChannel", sink_payload, src_ast));
+                w_assign.location = loc;
+                stmts.push(new Statement.assignment(w_assign));
+            }
+        } else if (sink_kind == 3) {
+            // A MultiInput sink aggregates N sources: register the source view
+            // (mi.add(view)) — `wait mi` returns the next transaction across
+            // every registered source.
+            m.bind_expressions_pass.ensure_generic_iface_spec("ISource", sink_multi_payload, scope);
+            let add_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+            add_args.push(this.mk_builtin_cast_expr("ISource", sink_multi_payload, src_ast));
+            stmts.push(this.mk_expr_stmt(this.mk_member_call_expr(sink.some, "add", add_args), loc));
+        }
+        return this.bind_generated_stmts(stmts, scope);
+    }
+
+    // The connect SOURCE plan: analyzes the source expression and appends the
+    // desugared wiring statements (relay creation / hub subscribe / net hub
+    // materialization / event wire) to `stmts`, returning the final source
+    // expression to wire into the sink. None = error (already reported).
+    fun plan_connect_source(mut this, source: Expression, scope: mut BoundScope, loc: SourceLocation, stmts: mut _utils.List<Statement>) -> Option<Expression> {
+        let m: mut SemanticModel = this.model.some;
+        let spai: Option<PortAccessInfo> = m.bind_expressions_pass.resolve_port_access_for_base(source, scope);
+        if (spai.is_some() && spai.some.is_input) {
+            // Own input passthrough: connect(this.x, inner.x). Someone else's
+            // input is a permission violation.
+            if (!spai.some.base_is_this) {
+                this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                    "Cannot use input port '" + spai.some.field_sym.name + "' of another module as a connect source - inputs are wired, not read",
+                    loc);
+                return new Option<Expression>.none();
+            }
+            let pt_key: string = spai.some.class_full_name + "." + spai.some.field_sym.name;
+            let already_pt: mut bool = false;
+            let pti: mut i64 = 0;
+            while (pti < cast<i64>(this.model.some.passthrough_keys.size())) {
+                if (this.model.some.passthrough_keys.at(cast<u64>(pti)).some == pt_key) { already_pt = true; }
+                pti = pti + 1;
+            }
+            if (already_pt) {
+                this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                    "Input port '" + spai.some.field_sym.name + "' of '" + spai.some.class_full_name + "' already has a passthrough line; fan-out from a passed-through input is not supported",
+                    loc);
+                return new Option<Expression>.none();
+            }
+            this.model.some.passthrough_keys.push(pt_key);
+            let relay_n: i64 = this.model.some.connect_relay_counter;
+            this.model.some.connect_relay_counter = relay_n + 1;
+            let relay_name: string = "__conn_relay_" + cast<string>(relay_n);
+            let payload: BoundType = spai.some.payload;
+            // let __conn_relay_n : mut _LateSource<T> = new _LateSource<T>();
+            let new_e: mut NewExpression = new NewExpression();
+            new_e.type_name = "__builtin._LateSource";
+            new_e.generic_args.push(m.bind_expressions_pass.spawn_type_spec(payload));
+            stmts.push(this.mk_typed_let_stmt(relay_name, "_LateSource", payload, new Expression.new_expr(new_e), loc));
+            // __conn_relay_n.bind(cast<mut IChannel<T>>(this.<q>)); — keeps a
+            // declared default live until the outer connect replaces it.
+            let bind_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+            bind_args.push(this.mk_builtin_cast_expr("IChannel", payload, source));
+            stmts.push(this.mk_expr_stmt(this.mk_member_call_expr(this.mk_ident_expr(relay_name), "bind", bind_args), loc));
+            // this.<q> = cast<mut IChannel<T>>(__conn_relay_n); — the module
+            // body's waits also go through the relay.
+            let rebind: mut AssignmentStatement = new AssignmentStatement();
+            rebind.target = new Option<Expression>.some(source);
+            rebind.operator_value = new AssignmentOperator.Assign();
+            rebind.value = new Option<Expression>.some(this.mk_builtin_cast_expr("IChannel", payload, this.mk_ident_expr(relay_name)));
+            rebind.location = loc;
+            stmts.push(new Statement.assignment(rebind));
+            return new Option<Expression>.some(this.mk_ident_expr(relay_name));
+        }
+        if (spai.is_some()) {
+            // An output port carries a fan-out hub: subscribe() grants THIS
+            // input its own wire (independent delivery cursor — repeated
+            // connects fan out).
+            let wire_n: i64 = this.model.some.connect_wire_counter;
+            this.model.some.connect_wire_counter = wire_n + 1;
+            let wire_name: string = "__conn_wire_" + cast<string>(wire_n);
+            let payload2: BoundType = spai.some.payload;
+            m.bind_expressions_pass.ensure_generic_iface_spec("ISource", payload2, scope);
+            let sub_call: Expression = this.mk_member_call_expr(this.mk_builtin_cast_expr("_Fanout", payload2, source), "subscribe", new _utils.List<Expression>());
+            stmts.push(this.mk_typed_let_stmt(wire_name, "LatestChannel", payload2, sub_call, loc));
+            return new Option<Expression>.some(this.mk_ident_expr(wire_name));
+        }
+        // An Event source: connect(ev, f.x) grants the input a permanent wire
+        // fed by every emit (broadcast hub, independent cursor).
+        let ev_t: Option<BoundType> = this.probe_event_type(source, scope);
+        if (ev_t.is_some()) {
+            let wire_n2: i64 = this.model.some.connect_wire_counter;
+            this.model.some.connect_wire_counter = wire_n2 + 1;
+            let wire_name2: string = "__conn_wire_" + cast<string>(wire_n2);
+            let cw_call: Expression = this.mk_member_call_expr(source, "connect_wire", new _utils.List<Expression>());
+            stmts.push(this.mk_typed_let_stmt(wire_name2, "LatestChannel", ev_t.some, cw_call, loc));
+            return new Option<Expression>.some(this.mk_ident_expr(wire_name2));
+        }
+        // A mut variable net: connect(x, f.in) / connect(this.f, ...) — a
+        // hidden _Fanout hub (created + seeded with the variable's current
+        // value on first use in this construct); assignment compilation
+        // writes through to it. Channel-like variables bind DIRECTLY (they
+        // are their own wiring objects) — before the net path, so a user
+        // channel class never gets a spurious hub.
+        let net_var: Option<BoundVariableSymbol> = this.resolve_net_var(source, scope);
+        if (net_var.is_some()) {
+            if (this.is_channel_like_type(net_var.some.bound_type, scope)) {
+                return new Option<Expression>.some(source);
+            }
+        }
+        let hub_name: string = this.net_hub_for(net_var, scope, false);
+        if (string_length(hub_name) > 0) {
+            let net_is_field: bool = this.source_is_this_field(source, scope);
+            // The net's payload is the VARIABLE's own type (i64, ...), not a
+            // channel generic arg.
+            let payload3: BoundType = net_var.some.bound_type;
+            let hub_ast: Expression = this.mk_net_hub_base(net_is_field, hub_name);
+            let var_ast: Expression = this.mk_net_var_base(net_is_field, source, net_var.some.name);
+            let routine: string = m.bind_expressions_pass.enclosing_routine_name(scope);
+            let hub_full: string = this.net_hub_for(net_var, scope, true);
+            let hub_key: string = hub_full + "@" + routine;
+            let created: mut bool = false;
+            let hi: mut i64 = 0;
+            while (hi < cast<i64>(this.model.some.net_hub_keys.size())) {
+                if (this.model.some.net_hub_keys.at(cast<u64>(hi)).some == hub_key) { created = true; }
+                hi = hi + 1;
+            }
+            if (!created) {
+                this.model.some.net_hub_keys.push(hub_key);
+                // <hub> = new _Fanout<T>();
+                let new_hub: mut NewExpression = new NewExpression();
+                new_hub.type_name = "__builtin._Fanout";
+                new_hub.generic_args.push(m.bind_expressions_pass.spawn_type_spec(payload3));
+                let hub_assign: mut AssignmentStatement = new AssignmentStatement();
+                hub_assign.target = new Option<Expression>.some(hub_ast);
+                hub_assign.operator_value = new AssignmentOperator.Assign();
+                hub_assign.value = new Option<Expression>.some(new Expression.new_expr(new_hub));
+                hub_assign.location = loc;
+                stmts.push(new Statement.assignment(hub_assign));
+                // <hub>.set_seed(<var>, true); — the connect-time value counts
+                // as one delivery (a subscriber's first wait wakes at time 0;
+                // a real write supersedes it).
+                let seed_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+                seed_args.push(var_ast);
+                let seed_true: mut BoolLiteralExpression = new BoolLiteralExpression();
+                seed_true.value = "true";
+                seed_args.push(new Expression.bool_literal(seed_true));
+                stmts.push(this.mk_expr_stmt(this.mk_member_call_expr(hub_ast, "set_seed", seed_args), loc));
+            }
+            let wire_n3: i64 = this.model.some.connect_wire_counter;
+            this.model.some.connect_wire_counter = wire_n3 + 1;
+            let wire_name3: string = "__conn_wire_" + cast<string>(wire_n3);
+            let sub_call3: Expression = this.mk_member_call_expr(hub_ast, "subscribe", new _utils.List<Expression>());
+            stmts.push(this.mk_typed_let_stmt(wire_name3, "LatestChannel", payload3, sub_call3, loc));
+            return new Option<Expression>.some(this.mk_ident_expr(wire_name3));
+        }
+        // Not a port/event/net: a bare variable that is not channel-like is a
+        // wiring mistake (a global or a non-construct local); anything else
+        // channel-typed binds directly.
+        if (net_var.is_some()) {
+            if (!this.is_channel_like_type(net_var.some.bound_type, scope)) {
+                this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                    "connect source '" + net_var.some.name + "' must be declared inside the construct block (implicit nets are for construct lets and class fields)",
+                    loc);
+                return new Option<Expression>.none();
+            }
+        }
+        return new Option<Expression>.some(source);
+    }
+
+    // The Event<T> generic argument when `source` is Event-typed, else none.
+    fun probe_event_type(mut this, source: Expression, scope: mut BoundScope) -> Option<BoundType> {
+        let m: mut SemanticModel = this.model.some;
+        let probe: Option<BoundExpression> = m.bind_expressions_pass.bind_expr_no_port_sugar(source, scope);
+        if (probe.is_none()) { return new Option<BoundType>.none(); }
+        return m.bind_expressions_pass.find_event_class_type(probe.some.get_bound_type());
+    }
+
+    // The variable symbol a connect source names: a bare identifier, or a
+    // `this.<field>` member access (ports excluded — they take the
+    // passthrough/subscribe paths).
+    fun resolve_net_var(mut this, source: Expression, scope: mut BoundScope) -> Option<BoundVariableSymbol> {
+        let m: mut SemanticModel = this.model.some;
+        if (source is Expression.identifier) {
+            let rsym: Option<BoundSymbol> = scope.lookup_symbol(source.identifier.name);
+            if (rsym.is_some()) {
+                if (rsym.some is BoundSymbol.variable) {
+                    return new Option<BoundVariableSymbol>.some(rsym.some.variable);
+                }
+            }
+            return new Option<BoundVariableSymbol>.none();
+        }
+        if (source is Expression.member_access && source.member_access.base_expr.is_some()) {
+            let nma: MemberAccessExpression = source.member_access;
+            if (!(nma.base_expr.some is Expression.identifier)) { return new Option<BoundVariableSymbol>.none(); }
+            if (nma.base_expr.some.identifier.name != "this") { return new Option<BoundVariableSymbol>.none(); }
+            if (m.bind_expressions_pass.resolve_port_access(nma, scope).is_some()) { return new Option<BoundVariableSymbol>.none(); }
+            let cls_sym: Option<BoundSymbol> = scope.lookup_symbol("this");
+            if (cls_sym.is_none()) { return new Option<BoundVariableSymbol>.none(); }
+            if (!(cls_sym.some is BoundSymbol.variable)) { return new Option<BoundVariableSymbol>.none(); }
+            let this_type: BoundType = cls_sym.some.variable.bound_type;
+            if (this_type.type_definition.is_none()) { return new Option<BoundVariableSymbol>.none(); }
+            if (!(this_type.type_definition.some is BoundDefinition.class_def)) { return new Option<BoundVariableSymbol>.none(); }
+            let cls2: BoundClassDefinition = this_type.type_definition.some.class_def;
+            if (cls2.scope.is_none()) { return new Option<BoundVariableSymbol>.none(); }
+            let fs2: Option<BoundSymbol> = cls2.scope.some.lookup_symbol(nma.member_name);
+            if (fs2.is_some()) {
+                if (fs2.some is BoundSymbol.variable) {
+                    return new Option<BoundVariableSymbol>.some(fs2.some.variable);
+                }
+            }
+        }
+        return new Option<BoundVariableSymbol>.none();
+    }
+
+    // The hidden net hub for a netted variable (name or full name form),
+    // or "".
+    fun net_hub_for(mut this, net_var: Option<BoundVariableSymbol>, scope: mut BoundScope, want_full: bool) -> string {
+        if (net_var.is_none()) { return ""; }
+        if (want_full) {
+            return this.model.some.find_net_hub(net_var.some, scope);
+        }
+        return this.model.some.find_net_hub_name(net_var.some, scope);
+    }
+
+    // True when the connect source is a `this.<field>` member access (a
+    // class-field net; the hub is a hidden field).
+    fun source_is_this_field(mut this, source: Expression, scope: mut BoundScope) -> bool {
+        if (!(source is Expression.member_access)) { return false; }
+        if (source.member_access.base_expr.is_none()) { return false; }
+        if (!(source.member_access.base_expr.some is Expression.identifier)) { return false; }
+        return source.member_access.base_expr.some.identifier.name == "this";
+    }
+
+    // The hub name for an assignment hook: field nets resolve through the
+    // field's own class scope, locals/globals through the binding scope.
+    fun net_hook_hub_name(mut this, var_sym: BoundVariableSymbol, is_field: bool, scope: mut BoundScope) -> string {
+        let m: mut SemanticModel = this.model.some;
+        if (is_field) {
+            if (var_sym.enclosing_scope.is_some()) {
+                return m.find_net_hub_name(var_sym, var_sym.enclosing_scope.some);
+            }
+            return "";
+        }
+        return m.find_net_hub_name(var_sym, scope);
+    }
+
+    // The hub reference for an assignment hook: `__net_x` for locals/globals,
+    // `<assignment base>.__net_f` for fields (the assignment's own base —
+    // `obj.f = v` from outside writes obj's hub, `this.f = v` inside writes
+    // this instance's).
+    fun net_hub_ref_ast(mut this, is_field: bool, hub_name: string, astmt: AssignmentStatement) -> Expression {
+        if (is_field && astmt.target.is_some() && astmt.target.some is Expression.member_access) {
+            let base_e: Option<Expression> = astmt.target.some.member_access.base_expr;
+            if (base_e.is_some()) {
+                let hma: mut MemberAccessExpression = new MemberAccessExpression();
+                hma.base_expr = new Option<Expression>.some(base_e.some);
+                hma.member_name = hub_name;
+                return new Expression.member_access(hma);
+            }
+        }
+        return this.mk_net_hub_base(is_field, hub_name);
+    }
+
+    fun mk_net_hub_base(mut this, is_field: bool, hub_name: string) -> Expression {
+        if (is_field) { return this.mk_this_member_expr(hub_name); }
+        return this.mk_ident_expr(hub_name);
+    }
+
+    fun mk_net_var_base(mut this, is_field: bool, source: Expression, var_name: string) -> Expression {
+        if (is_field) { return source; }
+        return this.mk_ident_expr(var_name);
+    }
+
+    // Bind the connect desugaring's generated statements with port sugar
+    // suppressed and wrap them in a block.
+    fun bind_generated_stmts(mut this, stmts: mut _utils.List<Statement>, scope: mut BoundScope) -> Option<BoundStatement> {
+        let bound_list: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(stmts.size())) {
+            this.model.some.port_sugar_suppressed = this.model.some.port_sugar_suppressed + 1;
+            let bs: Option<BoundStatement> = this.bind_statement(stmts.at(cast<u64>(i)).some, scope);
+            this.model.some.port_sugar_suppressed = this.model.some.port_sugar_suppressed - 1;
+            if (bs.is_none()) { return new Option<BoundStatement>.none(); }
+            bound_list.push(bs.some);
+            i = i + 1;
+        }
+        let block: mut BoundBlockStatement = new BoundBlockStatement(bound_list, new Option<BoundScope>.some(scope));
+        return new Option<BoundStatement>.some(new BoundStatement.block(block));
+    }
+
+    // E5 implicit-net assignment hook: after `x = v` (or `obj.f = v`) writes a
+    // netted variable, also deliver the variable's new value to the hidden
+    // _Fanout hub so connected inputs observe it (`hub.write(x)` — reading
+    // the variable post-assignment covers compound forms too). No-op for
+    // non-netted symbols.
+    // The variable symbol an assignment target names (identifier or member
+    // access), for the net-hook lookup.
+    fun target_var_symbol(this, target: Option<BoundExpression>) -> Option<BoundVariableSymbol> {
+        if (target.is_none()) { return new Option<BoundVariableSymbol>.none(); }
+        if (target.some is BoundExpression.identifier) {
+            if (target.some.identifier.symbol.is_some()) {
+                if (target.some.identifier.symbol.some is BoundSymbol.variable) {
+                    return new Option<BoundVariableSymbol>.some(target.some.identifier.symbol.some.variable);
+                }
+            }
+            return new Option<BoundVariableSymbol>.none();
+        }
+        if (target.some is BoundExpression.member_access) {
+            if (target.some.member_access.member_symbol.is_some()) {
+                if (target.some.member_access.member_symbol.some is BoundSymbol.variable) {
+                    return new Option<BoundVariableSymbol>.some(target.some.member_access.member_symbol.some.variable);
+                }
+            }
+        }
+        return new Option<BoundVariableSymbol>.none();
+    }
+
+    fun target_is_member(this, target: Option<BoundExpression>) -> bool {
+        if (target.is_none()) { return false; }
+        return target.some is BoundExpression.member_access;
+    }
+
+    fun maybe_net_write_hook(mut this, assignment: BoundStatement, target: Option<BoundExpression>, astmt: AssignmentStatement, scope: mut BoundScope) -> Option<BoundStatement> {
+        let m: mut SemanticModel = this.model.some;
+        let var_sym: Option<BoundVariableSymbol> = this.target_var_symbol(target);
+        let is_field: bool = this.target_is_member(target);
+        if (var_sym.is_none()) { return new Option<BoundStatement>.some(assignment); }
+        // Channel-like variables are their own wiring objects — no hub hook.
+        if (this.is_channel_like_type(var_sym.some.bound_type, scope)) { return new Option<BoundStatement>.some(assignment); }
+        // A field net's hub is a hidden field of the same class: resolve it
+        // through the FIELD's own class scope (an outside assignment
+        // `obj.f = v` binds in a scope that cannot see the class's members),
+        // and reference it through the assignment's base (`obj.__net_f`).
+        let hub_name: string = this.net_hook_hub_name(var_sym.some, is_field, scope);
+        if (string_length(hub_name) == 0) { return new Option<BoundStatement>.some(assignment); }
+        // <base>.__net_f.write(<target AST>) — reads the variable
+        // post-assignment (covers compound forms too).
+        let hub_base: Expression = this.net_hub_ref_ast(is_field, hub_name, astmt);
+        let w_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        w_args.push(astmt.target.some);
+        let hook_call: Expression = this.mk_member_call_expr(hub_base, "write", w_args);
+        let hook_bound: Option<BoundStatement> = this.bind_statement(this.mk_expr_stmt(hook_call, astmt.location), scope);
+        if (hook_bound.is_none()) { return new Option<BoundStatement>.some(assignment); }
+        let both: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+        both.push(assignment);
+        both.push(hook_bound.some);
+        let block: mut BoundBlockStatement = new BoundBlockStatement(both, new Option<BoundScope>.some(scope));
+        return new Option<BoundStatement>.some(new BoundStatement.block(block));
     }
 
 }

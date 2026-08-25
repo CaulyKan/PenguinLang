@@ -2,11 +2,9 @@
 ## Description
 Capacity-2 Fifo with 5 writes: the producer suspends when the channel is full (write parks on bare wait until a slot frees) and resumes as the consumer drains — Go-channel flow control with zero flow-control code in the module bodies.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the channel layer (Fifo/LatestChannel/MergeChannel + close semantics) is BabyPenguin-only so far — EmperorPenguin fails here and should turn green once Phase 3 lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -32,7 +30,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

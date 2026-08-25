@@ -2,11 +2,9 @@
 ## Description
 try/catch inside a loop body: one iteration raises and is caught, the loop continues with subsequent iterations.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): language-level try/catch is not implemented in EmperorPenguin yet — it fails at parse there and should turn green once Phase 3 lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -26,7 +24,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

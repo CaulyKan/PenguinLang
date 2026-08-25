@@ -341,6 +341,43 @@ namespace __builtin {
                 i = i + 1;
             }
         }
+
+        // Iterator surface (for-in desugar is method-shaped): iter()/iter_mut()
+        // grant a cursor over the linked nodes.
+        fun iter(mut this) -> _ChanListIterator<T> {
+            let it: mut _ChanListIterator<T> = new _ChanListIterator<T>(this);
+            return it;
+        }
+
+        fun iter_mut(mut this) -> mut _ChanListIterator<T> {
+            let it: mut _ChanListIterator<T> = new _ChanListIterator<T>(this);
+            return it;
+        }
+    }
+
+    // Cursor over a _ChanList's linked nodes (MultiInput source iteration,
+    // `for (let src in mi.iter())`).
+    #template(T: type)
+    class _ChanListIterator {
+        impl IReferenceType;
+        cur: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+
+        fun new(mut this, list: mut _ChanList<T>) {
+            this.cur = list.head;
+        }
+
+        fun next(mut this) -> Option<T> {
+            if (this.cur.is_none()) {
+                return new Option<T>.none();
+            }
+            let n: _ChanNode<T> = this.cur.some;
+            this.cur = n.next;
+            return new Option<T>.some(n.value);
+        }
+
+        fun iter(this) -> _ChanListIterator<T> {
+            return this;
+        }
     }
 
     enum FifoPolicy {
@@ -1048,6 +1085,16 @@ namespace __builtin {
                 }
                 return new FutureState<T>.not_ready();
             }
+        }
+
+        // `for (let src : mut ISource<T> in mi.iter())` — iterate the
+        // registered source views.
+        fun iter(mut this) -> _ChanListIterator<ISource<T>> {
+            return this.sources.iter();
+        }
+
+        fun iter_mut(mut this) -> mut _ChanListIterator<ISource<T>> {
+            return this.sources.iter_mut();
         }
     }
 

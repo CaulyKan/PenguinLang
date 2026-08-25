@@ -4,6 +4,7 @@ Wire (LatestChannel) collapse semantics per design Q4: two same-value writes whi
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -20,7 +21,7 @@ initial { wait 1 tick; q.write(7); q.write(7); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

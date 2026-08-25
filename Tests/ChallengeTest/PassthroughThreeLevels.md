@@ -4,6 +4,7 @@ Three levels of composition (L3 → L2 → L1) using input passthrough and outpu
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -15,7 +16,7 @@ initial { src.write(10); let r : i64 = wait top.y; println(cast<string>(r)); exi
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

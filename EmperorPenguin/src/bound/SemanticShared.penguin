@@ -11,6 +11,20 @@ class FunctionInstantiation {
     }
 }
 
+// A member access that lands on a declared RTL port field (`X.p` where p is
+// an input/output of X's class): the port's field symbol (typed
+// IChannel<payload>), direction metadata and owning class, plus whether the
+// access goes through a bare `this` base (the permission matrix's "own
+// module" test).
+class PortAccessInfo {
+    field_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+    is_input: bool = false;
+    has_default: bool = false;
+    payload: mut BoundType = new BoundType();
+    class_full_name: string = "";
+    base_is_this: bool = false;
+}
+
 // A compiled `#specializing Bar<T> { ... }` block. The block body becomes a
 // meta (#fun) callback `bmf` (params mirror Bar's template params; each `impl`
 // statement becomes emperor.penguin_meta_activate_impl(<slot>)), and the impl

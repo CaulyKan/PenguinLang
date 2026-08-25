@@ -2,11 +2,9 @@
 ## Description
 `wait change(x)` on a PORT expression (the UART line-watching shape): the watched value is re-sampled through the port's slot every scheduler round, catching both edges of true -> false -> true and returning each new level.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the wait change(x) edge-detection sugar is implemented in BabyPenguin only — EmperorPenguin resolves `change` as an unresolved call and fails there; it should turn green once Phase 3 lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -34,7 +32,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

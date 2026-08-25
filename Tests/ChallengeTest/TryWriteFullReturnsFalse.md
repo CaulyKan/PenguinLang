@@ -4,6 +4,7 @@ try_write on a full backpressuring Fifo returns false without parking (the non-b
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -12,7 +13,7 @@ initial { let ok1 : bool = q.try_write(1); let ok2 : bool = q.try_write(2); prin
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

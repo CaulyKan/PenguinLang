@@ -2,11 +2,9 @@
 ## Description
 An Event wired into input ports (connect(ev, f.x)): every emit feeds each connected input through its own permanent wire (independent cursor) AND still reaches parked wait-subscribers — one emit(20) wakes the direct `wait ev` waiter (prints 20) and both echo modules (20 -> 21 each -> 231).
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports/connect feature set is not implemented in EmperorPenguin yet — it fails there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -48,7 +46,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

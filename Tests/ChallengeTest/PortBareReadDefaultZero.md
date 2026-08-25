@@ -4,6 +4,7 @@ Design (Q3): a port's initial value is its explicit default or the type zero val
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,7 +14,7 @@ initial { let r : i64 = m.y; println(cast<string>(r)); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

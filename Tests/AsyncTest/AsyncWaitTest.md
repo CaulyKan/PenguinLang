@@ -4,7 +4,7 @@ Wait on an async future.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -22,7 +22,7 @@ Wait on an async future.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

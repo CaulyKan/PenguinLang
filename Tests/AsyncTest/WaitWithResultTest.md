@@ -4,7 +4,7 @@ Wait on async function that returns a value.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -21,7 +21,7 @@ Wait on async function that returns a value.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

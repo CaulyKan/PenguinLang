@@ -2,11 +2,9 @@
 ## Description
 Module hierarchy: a composed class wires an inner submodule in its class-level construct — an explicit channel field feeds the inner input, and the inner output is PASSTHROUGH-wired to the composer's own output (connect(inner.y, this.y): the composer's output hub becomes the inner hub, one driver, transparent forwarding). A forwarding process in the composer bridges its own input into the inner channel.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports grammar (input/output declarations, construct/connect) is not implemented in EmperorPenguin yet — it fails at parse there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -52,7 +50,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

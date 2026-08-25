@@ -4,6 +4,7 @@ Timer-driven producer writes one value per increasing tick interval; the consume
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,7 +14,7 @@ initial { let sum : mut i64 = 0; for (let k : i64 in range(0, 3)) { let v : i64 
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

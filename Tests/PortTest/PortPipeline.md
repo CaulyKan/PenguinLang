@@ -2,11 +2,9 @@
 ## Description
 Two Doubler modules wired output→input through a top-level construct: a transaction written into the top channel flows d1.x → d1.y (×2) → d2.x → d2.y (×2) and the top-level initial waits on the final output — 21 becomes 84. This is the design-doc canonical example shape (module loop `wait input; write output` + construct wiring + top-level read).
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports grammar (input/output declarations, construct/connect) is not implemented in EmperorPenguin yet — it fails at parse there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -37,7 +35,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

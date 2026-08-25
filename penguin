@@ -49,10 +49,13 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     fi
     # Pass2 (native) builds pass3 from EmperorPenguinFull.penguins: the json-backed Dynlib +
     # json/vector/hashmap + _utils are part of the compiler, making pass3 the first
-    # dyn-lib-capable compiler (--enable-dl default on).
+    # dyn-lib-capable compiler (--enable-dl default on). --enable-coroutine is passed
+    # ONLY here: pass3 is the first coroutine-capable compiler (ports/channels/scheduler
+    # syntax accepted). Wait-free programs (the compiler itself included) emit identical
+    # binaries with or without the flag, so pass4 (built without it) still md5-converges.
     echo "Running Pass 2 with bootstrapping ..."
     tmp/pass2 EmperorPenguin/EmperorPenguinFull.penguins \
-        -vv -enable-meta -o "tmp/pass3" 2>&1 | ts "%F %T" | tee tmp/pass2.log
+        -vv -enable-meta --enable-coroutine -o "tmp/pass3" 2>&1 | ts "%F %T" | tee tmp/pass2.log
     if [ $? -ne 0 ]; then
         echo "Bootstrap FAILED at pass2 (tmp/pass2 -> tmp/pass3)" >&2
         exit 1

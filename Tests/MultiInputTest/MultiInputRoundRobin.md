@@ -2,11 +2,9 @@
 ## Description
 MultiInput fairness: when both sources have pending transactions, the round-robin scan alternates — source A's queue [1,2] and source B's [9] deliver 1, 9, 2 (a busy source cannot starve the others).
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): MultiInput (dynamic fan-in) exists only in BabyPenguin's builtin so far — EmperorPenguin fails here and should turn green once the ports layer lands there (Phase 3). BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -37,7 +35,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

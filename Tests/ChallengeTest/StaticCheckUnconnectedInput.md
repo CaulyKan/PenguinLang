@@ -4,6 +4,7 @@ Design (Q3): an input port must be connected or carry a default initializer — 
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,7 +14,7 @@ initial { println("no-error"); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
 ExpectedStderr: CONTAINS `is never connected`

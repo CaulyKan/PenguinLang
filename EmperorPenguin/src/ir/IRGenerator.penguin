@@ -213,6 +213,14 @@ class IRGenerator {
         }
         let func_ref: mut IRFunction = this.builder.func;
         module.add_function(func_ref);
+        // E5: hidden top-level construct functions (`<ns>.__construct_<n>`,
+        // from BuildScopes' construct splitting) run synchronously in the
+        // elaboration phase — same init_functions path as global-var
+        // initializers, i.e. before any initial routine spawns. (Class-level
+        // constructs are `__class_construct_` and run inside ctors instead.)
+        if (string_find(def.full_name, ".__construct_") >= 0) {
+            module.init_functions.push(func_ref);
+        }
     }
 
     fun lower_class_def(mut this, def: BoundClassDefinition, module: mut IRModule) {

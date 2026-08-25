@@ -4,6 +4,7 @@ Design (Q9): an output port has exactly one driver — module body code XOR a co
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -23,7 +24,7 @@ initial { wait 1 tick; s.write(1); wait 3 tick; println("survived"); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
 ExpectedStderr: CONTAINS `has two drivers`

@@ -140,6 +140,235 @@ class BindExpressionsPass {
         return new Expression.code_block(cb);
     }
 
+    // ---- E5 port sugar (bare reads, permission matrix, raw channel reads) ----
+
+    // Bind an expression with port sugar suppressed: bare port reads stay
+    // RAW channel-object accesses. Used for member-access receivers (a
+    // method call on `this.y` needs the channel, not the payload slot) and
+    // for the connect desugaring's generated field writes.
+    fun bind_expr_no_port_sugar(mut this, e: Expression, scope: mut BoundScope) -> Option<BoundExpression> {
+        this.model.some.port_sugar_suppressed = this.model.some.port_sugar_suppressed + 1;
+        let r: Option<BoundExpression> = this.bind_expression(e, scope);
+        this.model.some.port_sugar_suppressed = this.model.some.port_sugar_suppressed - 1;
+        return r;
+    }
+
+    // The enclosing routine's scope full name (nearest Function or
+    // InitialRoutine scope up the chain), or "".
+    fun enclosing_routine_name(this, scope: mut BoundScope) -> string {
+        let s: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+        while (s.is_some()) {
+            if (s.some.kind is ScopeKind.FunctionScope || s.some.kind is ScopeKind.InitialRoutineScope) {
+                return s.some.full_name;
+            }
+            s = s.some.parent;
+        }
+        return "";
+    }
+
+    // True when the nearest enclosing routine is a hidden construct function
+    // (top-level `__construct_<n>` or class `__class_construct_<n>`) —
+    // construct bodies must not suspend, so port reads are rejected there.
+    fun in_construct_routine(this, scope: mut BoundScope) -> bool {
+        let r: string = this.enclosing_routine_name(scope);
+        if (string_find(r, ".__construct_") >= 0) { return true; }
+        if (string_find(r, ".__class_construct_") >= 0) { return true; }
+        return false;
+    }
+
+    // The topology-audit pool seen from a file-namespace scope (a
+    // construct-hoisted global's own scope).
+    fun top_level_pool_id(this, scope: mut BoundScope) -> string {
+        return "top:" + scope.full_name;
+    }
+
+    // The topology-audit pool for a construct context: all constructs of one
+    // namespace/class share a pool (their lets/fields share that scope, so
+    // connects and instantiations agree on instance names).
+    fun construct_pool_id(this, scope: mut BoundScope) -> string {
+        let s: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+        while (s.is_some()) {
+            if (s.some.kind is ScopeKind.ClassScope) { return "class:" + s.some.full_name; }
+            if (s.some.kind is ScopeKind.NamespaceScope) { return "top:" + s.some.full_name; }
+            s = s.some.parent;
+        }
+        return "top:<global>";
+    }
+
+    // If `e` is a member access onto a declared port field, its port info.
+    fun resolve_port_access_for_base(mut this, e: Expression, scope: mut BoundScope) -> Option<PortAccessInfo> {
+        if (!(e is Expression.member_access)) { return new Option<PortAccessInfo>.none(); }
+        return this.resolve_port_access(e.member_access, scope);
+    }
+
+    // Resolve a member access that lands on a declared RTL port field
+    // (`X.p`, p an input/output of X's class): binds the base (sugar
+    // suppressed — this is a probe) and returns the port info. Purely
+    // diagnostic; callers decide how to consume the access.
+    fun resolve_port_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<PortAccessInfo> {
+        if (expr.base_expr.is_none()) { return new Option<PortAccessInfo>.none(); }
+        let bound_base: Option<BoundExpression> = this.bind_expr_no_port_sugar(expr.base_expr.some, scope);
+        if (bound_base.is_none()) { return new Option<PortAccessInfo>.none(); }
+        let base_type: BoundType = bound_base.some.get_bound_type();
+        if (base_type.type_definition.is_none()) { return new Option<PortAccessInfo>.none(); }
+        let td: BoundDefinition = base_type.type_definition.some;
+        if (!(td is BoundDefinition.class_def)) { return new Option<PortAccessInfo>.none(); }
+        let cls: BoundClassDefinition = td.class_def;
+        let idx: i64 = this.model.some.find_port_index(cls.full_name, expr.member_name);
+        if (idx < 0) { return new Option<PortAccessInfo>.none(); }
+        let info: mut PortAccessInfo = new PortAccessInfo();
+        info.is_input = this.model.some.port_is_input.at(cast<u64>(idx)).some;
+        info.has_default = this.model.some.port_has_default.at(cast<u64>(idx)).some;
+        info.class_full_name = cls.full_name;
+        if (expr.base_expr.some is Expression.identifier) {
+            if (expr.base_expr.some.identifier.name == "this") { info.base_is_this = true; }
+        }
+        if (cls.scope.is_some()) {
+            let fs: Option<BoundSymbol> = cls.scope.some.lookup_symbol(expr.member_name);
+            if (fs.is_some()) {
+                if (fs.some is BoundSymbol.variable) {
+                    info.field_sym = fs.some.variable;
+                    let ft: BoundType = fs.some.variable.bound_type;
+                    if (cast<i64>(ft.generic_args.size()) == 1) {
+                        info.payload = arg_as_bound_type(ft.generic_args.at(cast<u64>(0)).some);
+                    }
+                }
+            }
+        }
+        return new Option<PortAccessInfo>.some(info);
+    }
+
+    // The RAW port payload read as an expression:
+    // `{ let __port_opt = cast<mut ISource<T>>(<base>).current();
+    //    if (!__port_opt.is_some()) { __builtin.__throw_runtime_error(...); }
+    //    __port_opt.some }` — no settle point; a seedless channel that never
+    // delivered raises the clear runtime error. Backs bare reads (after
+    // their settle loop) and `wait change(port)` sampling.
+    fun mk_checked_raw_port_read(mut this, base_ast: Expression, payload: BoundType, scope: mut BoundScope) -> Expression {
+        this.ensure_generic_iface_spec("ISource", payload, scope);
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        let src_ts: mut TypeSpecifier = new TypeSpecifier();
+        src_ts.qualified_parts.push("__builtin");
+        src_ts.name = "ISource";
+        src_ts.generic_args.push(this.spawn_type_spec(payload));
+        src_ts.is_mutable = true;
+        let cast_node: mut CastExpression = new CastExpression();
+        cast_node.target_type = new Option<TypeSpecifier>.some(src_ts);
+        cast_node.type_name = "ISource";
+        cast_node.inner = new Option<Expression>.some(base_ast);
+        let cur_ma: mut MemberAccessExpression = new MemberAccessExpression();
+        cur_ma.base_expr = new Option<Expression>.some(new Expression.cast_expr(cast_node));
+        cur_ma.member_name = "current";
+        let cur_call: mut FunctionCallExpression = new FunctionCallExpression();
+        cur_call.callee = new Option<Expression>.some(new Expression.member_access(cur_ma));
+        let ld: mut LetDeclarationStatement = new LetDeclarationStatement();
+        ld.variable_name = "__port_opt";
+        ld.initializer = new Option<Expression>.some(new Expression.function_call(cur_call));
+        ld.location = loc;
+        let opt_id: IdentifierExpression = new IdentifierExpression("__port_opt");
+        let is_some_ma: mut MemberAccessExpression = new MemberAccessExpression();
+        is_some_ma.base_expr = new Option<Expression>.some(new Expression.identifier(opt_id));
+        is_some_ma.member_name = "is_some";
+        let is_some_call: mut FunctionCallExpression = new FunctionCallExpression();
+        is_some_call.callee = new Option<Expression>.some(new Expression.member_access(is_some_ma));
+        let not_e: mut UnaryExpression = new UnaryExpression();
+        not_e.operator_value = new UnaryOperator.Not();
+        not_e.operand = new Option<Expression>.some(new Expression.function_call(is_some_call));
+        let throw_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        throw_args.push(new Expression.string_literal(new StringLiteralExpression("\"port read before any value was delivered\"")));
+        throw_args.push(new Expression.constant(new ConstantExpression("100")));
+        let throw_call: Expression = this.mk_builtin_call("__throw_runtime_error", throw_args);
+        let throw_es: mut ExpressionStatement = new ExpressionStatement();
+        throw_es.expression = new Option<Expression>.some(throw_call);
+        throw_es.location = loc;
+        let then_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        then_stmts.push(new Statement.expression(throw_es));
+        let if_stmt: mut IfStatement = new IfStatement();
+        if_stmt.condition = new Option<Expression>.some(new Expression.unary(not_e));
+        let then_block: mut BlockExpressionStatement = new BlockExpressionStatement();
+        then_block.expression = new Option<Expression>.some(this.mk_block_expr(then_stmts, new Option<Expression>.none()));
+        then_block.location = loc;
+        if_stmt.then_statement = new Option<Statement>.some(new Statement.block_expr(then_block));
+        if_stmt.location = loc;
+        let some_id: IdentifierExpression = new IdentifierExpression("__port_opt");
+        let some_ma: mut MemberAccessExpression = new MemberAccessExpression();
+        some_ma.base_expr = new Option<Expression>.some(new Expression.identifier(some_id));
+        some_ma.member_name = "some";
+        let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        stmts.push(new Statement.let_decl(ld));
+        stmts.push(new Statement.if_stmt(if_stmt));
+        return this.mk_block_expr(stmts, new Option<Expression>.some(new Expression.member_access(some_ma)));
+    }
+
+    // The bare port read (Q1 settle point): park one delta at a time until
+    // the current simulation time has settled, then read the channel's
+    // CURRENT slot as the payload value. The spin counter perturbs the
+    // parked frame's fingerprint every round so the quiescence detector
+    // cannot end the program before this reader observes a settled round.
+    fun mk_bare_port_read_expr(mut this, base_ast: Expression, payload: BoundType, scope: mut BoundScope) -> Expression {
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        let spin_ld: mut LetDeclarationStatement = new LetDeclarationStatement();
+        spin_ld.variable_name = "__port_spin";
+        spin_ld.variable_type = "i64";
+        spin_ld.type_spec = new Option<TypeSpecifier>.some(this.mk_plain_spec("i64", true));
+        spin_ld.initializer = new Option<Expression>.some(new Expression.constant(new ConstantExpression("0")));
+        spin_ld.location = loc;
+        // while (!__builtin._sim_settled()) { __port_spin = __port_spin + 1; park; }
+        let settled_call: Expression = this.mk_builtin_call("_sim_settled", new _utils.List<Expression>());
+        let not_settled: mut UnaryExpression = new UnaryExpression();
+        not_settled.operator_value = new UnaryOperator.Not();
+        not_settled.operand = new Option<Expression>.some(settled_call);
+        let spin_id: IdentifierExpression = new IdentifierExpression("__port_spin");
+        let spin_bump: mut AssignmentStatement = new AssignmentStatement();
+        spin_bump.target = new Option<Expression>.some(new Expression.identifier(spin_id));
+        spin_bump.operator_value = new AssignmentOperator.PlusAssign();
+        spin_bump.value = new Option<Expression>.some(new Expression.constant(new ConstantExpression("1")));
+        spin_bump.location = loc;
+        let park_es: mut ExpressionStatement = new ExpressionStatement();
+        park_es.expression = new Option<Expression>.some(this.mk_park_call());
+        park_es.location = loc;
+        let body_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        body_stmts.push(new Statement.assignment(spin_bump));
+        body_stmts.push(new Statement.expression(park_es));
+        let we: mut WhileExpression = new WhileExpression();
+        we.condition = new Option<Expression>.some(new Expression.unary(not_settled));
+        we.body = new Option<Expression>.some(this.mk_block_expr(body_stmts, new Option<Expression>.none()));
+        let ws: mut BlockExpressionStatement = new BlockExpressionStatement();
+        ws.expression = new Option<Expression>.some(new Expression.while_expr(we));
+        ws.location = loc;
+        let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        stmts.push(new Statement.let_decl(spin_ld));
+        stmts.push(new Statement.block_expr(ws));
+        return this.mk_block_expr(stmts, new Option<Expression>.some(this.mk_checked_raw_port_read(base_ast, payload, scope)));
+    }
+
+    // A plain (non-generic) type specifier, e.g. `mut i64` for generated lets.
+    fun mk_plain_spec(this, name: string, is_mutable: bool) -> TypeSpecifier {
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.name = name;
+        ts.is_mutable = is_mutable;
+        return ts;
+    }
+
+    // Register a module-body driver of an output port (topology check).
+    fun register_body_driver(mut this, info: PortAccessInfo, scope: mut BoundScope) {
+        let key: string = info.class_full_name + "." + info.field_sym.name;
+        let fn_name: string = this.enclosing_routine_name(scope);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.model.some.driver_keys.size())) {
+            if (this.model.some.driver_keys.at(cast<u64>(i)).some == key) {
+                if (string_length(this.model.some.driver_body_fns.at(cast<u64>(i)).some) > 0) {
+                    if (this.model.some.driver_body_fns.at(cast<u64>(i)).some == fn_name) { return; }
+                }
+            }
+            i = i + 1;
+        }
+        this.model.some.driver_keys.push(key);
+        this.model.some.driver_wire_locs.push("");
+        this.model.some.driver_body_fns.push(fn_name);
+        this.model.some.driver_body_locs.push(fn_name);
+    }
+
     // `wait change(x)` detection: the operand is a one-argument call to the
     // simple identifier `change` (not a real function — edge-detection sugar;
     // mirrors the BabyPenguin WaitExpression.IsChangeUnit heuristic).
@@ -157,9 +386,33 @@ class BindExpressionsPass {
         return true;
     }
 
-    fun bind_wait_expr(mut this, expr: WaitExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        let m: mut SemanticModel = this.model.some;
+    // The sampled/compared operand of `wait change(x)`: a port reads its RAW
+    // slot (no settle), anything else is the expression as-is.
+    fun wait_change_operand(mut this, watched: Expression, pai: Option<PortAccessInfo>, scope: mut BoundScope) -> Expression {
+        if (pai.is_some()) {
+            return this.mk_checked_raw_port_read(watched, pai.some.payload, scope);
+        }
+        return watched;
+    }
+
+    // A wait operand's type probe: member accesses bind with port sugar
+    // suppressed (a port must stay its IChannel type for the branch below).
+    fun wait_probe_inner(mut this, inner: Expression, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (inner is Expression.member_access) {
+            return this.bind_expr_no_port_sugar(inner, scope);
+        }
+        return this.bind_expression(inner, scope);
+    }
+
+    fun bind_wait_expr(mut this, expr: WaitExpression, scope: mut BoundScope) -> Option<BoundExpression> {        let m: mut SemanticModel = this.model.some;
         let loc: SourceLocation = new SourceLocation("", 0, 0);
+
+        // --enable-coroutine gate; every wait form marks the unit as
+        // suspending (drives emit_main's scheduler-vs-sequential choice).
+        if (!m.require_coroutine("wait", loc)) {
+            return new Option<BoundExpression>.none();
+        }
+        m.has_suspension = true;
 
         // bare `wait` — park the current coroutine for one delta round.
         if (expr.expression.is_none()) {
@@ -187,18 +440,24 @@ class BindExpressionsPass {
         if (this.wait_is_change_unit(expr)) {
             let fc: FunctionCallExpression = inner.function_call;
             let watched: Expression = fc.arguments.at(cast<u64>(0)).some;
+            // A port operand samples the RAW slot (no settle): the idiom this
+            // sugars (`let v = x; while (x == v) { wait x; }`) watches the
+            // instantaneous level, and settle-point granularity would miss
+            // single-round pulses.
+            let pai: Option<PortAccessInfo> = this.resolve_port_access_for_base(watched, scope);
+            let watched_expr: Expression = this.wait_change_operand(watched, pai, scope);
             // let __wait_sample = <x>;
             let ld: mut LetDeclarationStatement = new LetDeclarationStatement();
             ld.is_mutable = false;
             ld.variable_name = "__wait_sample";
-            ld.initializer = new Option<Expression>.some(watched);
+            ld.initializer = new Option<Expression>.some(watched_expr);
             ld.location = loc;
             let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
             stmts.push(new Statement.let_decl(ld));
             // while (<x> == __wait_sample) { __builtin._co_wait(); }
             let sample_id: IdentifierExpression = new IdentifierExpression("__wait_sample");
             let operands: mut _utils.List<Expression> = new _utils.List<Expression>();
-            operands.push(watched);
+            operands.push(watched_expr);
             operands.push(new Expression.identifier(sample_id));
             let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
             operators.push(new BinaryOperator.Equal());
@@ -218,11 +477,14 @@ class BindExpressionsPass {
             ws.location = loc;
             stmts.push(new Statement.block_expr(ws));
             // trailing <x> — the new value
-            return this.bind_expression(this.mk_block_expr(stmts, new Option<Expression>.some(watched)), scope);
+            return this.bind_expression(this.mk_block_expr(stmts, new Option<Expression>.some(watched_expr)), scope);
         }
 
         // Probe the operand's type to pick the condition-loop vs future form.
-        let bound_inner: Option<BoundExpression> = this.bind_expression(inner, scope);
+        // A member-access operand probes with port sugar suppressed so a port
+        // stays its IChannel type here (the port branch below re-binds the
+        // operand itself through the cast path, which reads the channel RAW).
+        let bound_inner: Option<BoundExpression> = this.wait_probe_inner(inner, scope);
         if (bound_inner.is_none()) { return new Option<BoundExpression>.none(); }
         let inner_type: BoundType = bound_inner.some.get_bound_type();
 
@@ -269,6 +531,40 @@ class BindExpressionsPass {
             cast_node.type_name = "IFuture";
             cast_node.inner = new Option<Expression>.some(new Expression.new_expr(sub_new));
             return this.bind_expression(this.mk_do_wait_call(new Expression.cast_expr(cast_node)), scope);
+        }
+
+        // `wait <port>` on a port field (IChannel<T> — own input or someone's
+        // output): the backing channel is directly waitable; cast to
+        // IFuture<T> so do_wait dispatches virtually (hub slot stream for an
+        // output, the connected wire/source for an input). Read matrix: only
+        // the owning module may wait its input; any module may wait another's
+        // output.
+        if (inner_type.kind is TypeKind.InterfaceKind && cast<i64>(inner_type.generic_args.size()) == 1) {
+            if (inner_type.type_definition.is_some() && inner_type.type_definition.some is BoundDefinition.interface_def) {
+                if (inner_type.type_definition.some.interface_def.name == "IChannel") {
+                    let wpai: Option<PortAccessInfo> = this.resolve_port_access_for_base(inner, scope);
+                    if (wpai.is_some()) {
+                        if (wpai.some.is_input && !wpai.some.base_is_this) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot wait on input port '" + wpai.some.field_sym.name + "' of another module - inputs are only visible inside their module",
+                                new SourceLocation("", 0, 0));
+                            return new Option<BoundExpression>.none();
+                        }
+                    }
+                    let port_payload: BoundType = arg_as_bound_type(inner_type.generic_args.at(cast<u64>(0)).some);
+                    this.ensure_generic_iface_spec("IFuture", port_payload, scope);
+                    let fut_ts: mut TypeSpecifier = new TypeSpecifier();
+                    fut_ts.qualified_parts.push("__builtin");
+                    fut_ts.name = "IFuture";
+                    fut_ts.generic_args.push(this.spawn_type_spec(port_payload));
+                    fut_ts.is_mutable = true;
+                    let port_cast: mut CastExpression = new CastExpression();
+                    port_cast.target_type = new Option<TypeSpecifier>.some(fut_ts);
+                    port_cast.type_name = "IFuture";
+                    port_cast.inner = new Option<Expression>.some(inner);
+                    return this.bind_expression(this.mk_do_wait_call(new Expression.cast_expr(port_cast)), scope);
+                }
+            }
         }
 
         // `wait <call>` on a non-future-typed call: a sequential (interleaved)
@@ -533,6 +829,10 @@ class BindExpressionsPass {
     fun bind_spawn_async(mut this, expr: SpawnAsyncExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         let m: mut SemanticModel = this.model.some;
         let loc: SourceLocation = new SourceLocation("", 0, 0);
+        if (!m.require_coroutine("'async' expression", loc)) {
+            return new Option<BoundExpression>.none();
+        }
+        m.has_suspension = true;
         if (expr.expression.is_none()) {
             m.report_error(new ErrorCode.E_ASYNC_INVALID(), "'async' requires a function call", loc);
             return new Option<BoundExpression>.none();
@@ -1422,12 +1722,158 @@ class BindExpressionsPass {
     }
 
 
+    // Ensure the specialized def of a generic interface instantiation
+    // (`__builtin.ISource` + i64 -> ISource$<mangle>) exists — created,
+    // type-resolved, signature-caught-up and registered for body binding.
+    // The virtual call sites (cast<ISink<T>>(port).write) resolve their
+    // signatures through the specialized def; without it the template's
+    // unresolved T-shaped returns poison the call ABI.
+    fun ensure_generic_iface_spec(mut this, iface_short: string, payload: BoundType, scope: mut BoundScope) {
+        if (this.model.some.current_unit.is_none()) { return; }
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = iface_short;
+        ts.generic_args.push(this.spawn_type_spec(payload));
+        let bt: BoundType = this.model.some.resolve_type_specifier(ts, scope);
+        if (bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = bt.type_definition.some;
+        let full_base: mut string = "";
+        let is_generic_iface: mut bool = false;
+        if (td is BoundDefinition.interface_def) {
+            is_generic_iface = cast<i64>(td.interface_def.generic_params.size()) > 0;
+            full_base = td.interface_def.full_name;
+        }
+        if (!is_generic_iface || cast<i64>(bt.generic_args.size()) == 0) { return; }
+        let mangled: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
+        if (this.model.some.global_scope.lookup_type_in_scope(mangled).is_some()) { return; }
+        let spec: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(bt, this.model.some.global_scope);
+        if (spec.is_none()) { return; }
+        let ast_spec: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, iface_short);
+        // Sequence the new def through pass 2 (resolve) + passes 4-7
+        // (catch-up) with the monomorphize-loop's pass-index protocol:
+        // resolve_pair stamps the def with the CURRENT pass index, so binding
+        // it at 8 would mark it fully processed and every catch-up sub-pass
+        // (vtables! classification!) would skip — leaving the class
+        // unclassified (defaults to value type = stack allocation) and
+        // vtable-less. Resolve at index 3, then catch up at 8.
+        let m1: mut SemanticModel = this.model.some;
+        let saved_idx1: i64 = m1.current_pass_index;
+        if (ast_spec.is_some()) {
+            m1.current_pass_index = 3;
+            let resolved_def1: BoundDefinition = this.model.some.resolve_types_pass.resolve_pair(ast_spec.some, spec.some, this.spec_resolve_scope(spec.some));
+            m1.current_pass_index = saved_idx1;
+            m1.catch_up_def_before_bodies(resolved_def1, this.model.some.current_unit.some);
+            this.model.some.current_unit.some.definitions.push(resolved_def1);
+        } else {
+            m1.catch_up_def_before_bodies(spec.some, this.model.some.current_unit.some);
+            this.model.some.current_unit.some.definitions.push(spec.some);
+        }
+    }
+
+    // Bind a member access's base: RAW (port sugar suppressed) when the base
+    // is itself a member access onto a port field (a channel-object receiver).
+    fun bind_member_base(mut this, base: Expression, base_is_port: Option<PortAccessInfo>, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (base_is_port.is_some()) {
+            return this.bind_expr_no_port_sugar(base, scope);
+        }
+        return this.bind_expression(base, scope);
+    }
+
     fun bind_member_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        _utils.trace_enter("Enter bind_member_access");
-        if (expr.base_expr.is_some()) {
-            let bound_base: Option<BoundExpression> = this.bind_expression(expr.base_expr.some, scope);
+        _utils.trace_enter("Enter bind_member_access");        if (expr.base_expr.is_some()) {
+            // E5 receiver-raw rule: when the base of this member access is
+            // itself a member access onto a declared port field, the access
+            // operates on the port's CHANNEL OBJECT (a method call like
+            // `this.y.write(v)` / `f.x.close()`) — bind the base RAW, without
+            // the bare-read payload conversion.
+            let base_is_port: Option<PortAccessInfo> = this.resolve_port_access_for_base(expr.base_expr.some, scope);
+            let bound_base: Option<BoundExpression> = this.bind_member_base(expr.base_expr.some, base_is_port, scope);
             if (bound_base.is_some()) {
                 let base_type: BoundType = bound_base.some.get_bound_type();
+                // E5 bare port READ: `X.p` in value position (p a declared
+                // port of X's class) is the settle-point payload read. The
+                // read matrix lets outsiders read outputs but only the owner
+                // read its inputs; construct bodies may not read ports (a
+                // settle point is a suspension).
+                if (base_is_port.is_none() && this.model.some.port_sugar_suppressed == 0) {
+                    let pai: Option<PortAccessInfo> = this.resolve_port_access(expr, scope);
+                    if (pai.is_some()) {
+                        let info: PortAccessInfo = pai.some;
+                        if (this.in_construct_routine(scope)) {
+                            this.model.some.report_error(new ErrorCode.E_EVENT_INVALID(),
+                                "Cannot read port '" + expr.member_name + "' inside a construct block - a port read is a settle point (it waits for the current time to settle), and construct bodies must not wait",
+                                new SourceLocation("", 0, 0));
+                            return new Option<BoundExpression>.none();
+                        }
+                        if (info.is_input && !info.base_is_this) {
+                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot read input port '" + expr.member_name + "' of another module - inputs are only visible inside their module",
+                                new SourceLocation("", 0, 0));
+                            return new Option<BoundExpression>.none();
+                        }
+                        // The full `X.p` member access AST (the read's channel
+                        // operand), rebuilt fresh — the generated code embeds
+                        // it inside a cast expression.
+                        let port_ma: mut MemberAccessExpression = new MemberAccessExpression();
+                        port_ma.base_expr = expr.base_expr;
+                        port_ma.member_name = expr.member_name;
+                        return this.bind_expression(this.mk_bare_port_read_expr(new Expression.member_access(port_ma), info.payload, scope), scope);
+                    }
+                }
+                // Port-field source/sink surface: EP's IChannel carries only
+                // close/is_closed (no interface inheritance), so write/
+                // try_write/current/try_poll on an IChannel-typed value (a
+                // module's port field) resolve nowhere. Rewrite to an explicit
+                // interface cast — `cast<mut ISink<T>>(x).write(v)` /
+                // `cast<mut ISource<T>>(x).current()` — which dispatches
+                // virtually to the backing channel.
+                if (base_type.kind is TypeKind.InterfaceKind && cast<i64>(base_type.generic_args.size()) == 1) {
+                    if (base_type.type_definition.is_some() && base_type.type_definition.some is BoundDefinition.interface_def) {
+                        if (base_type.type_definition.some.interface_def.name == "IChannel") {
+                            if (expr.member_name == "write" || expr.member_name == "try_write" || expr.member_name == "current" || expr.member_name == "try_poll") {
+                                // Write-side permission matrix for the method form:
+                                // driving a port through `this.y.write(v)` /
+                                // `f.y.write(v)` obeys the assignment-sugar rules
+                                // (inputs are connect-only; outputs are driven by
+                                // their owner only), and counts as a body driver.
+                                if (base_is_port.is_some()) {
+                                    let winfo: PortAccessInfo = base_is_port.some;
+                                    if (expr.member_name == "write" || expr.member_name == "try_write") {
+                                        if (winfo.is_input) {
+                                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                                "Cannot write input port '" + winfo.field_sym.name + "' - inputs are wired exclusively through connect",
+                                                new SourceLocation("", 0, 0));
+                                            return new Option<BoundExpression>.none();
+                                        }
+                                        if (!winfo.base_is_this) {
+                                            this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                                "Cannot drive output port '" + winfo.field_sym.name + "' of another module from outside '" + winfo.class_full_name + "'",
+                                                new SourceLocation("", 0, 0));
+                                            return new Option<BoundExpression>.none();
+                                        }
+                                        this.register_body_driver(winfo, scope);
+                                    }
+                                }
+                                let iface_name: string = if (expr.member_name == "write" || expr.member_name == "try_write") { "ISink" } else { "ISource" };
+                                let payload: BoundType = arg_as_bound_type(base_type.generic_args.at(cast<u64>(0)).some);
+                                this.ensure_generic_iface_spec(iface_name, payload, scope);
+                                let iface_ts: mut TypeSpecifier = new TypeSpecifier();
+                                iface_ts.qualified_parts.push("__builtin");
+                                iface_ts.name = iface_name;
+                                iface_ts.generic_args.push(this.spawn_type_spec(payload));
+                                iface_ts.is_mutable = true;
+                                let cast_node: mut CastExpression = new CastExpression();
+                                cast_node.target_type = new Option<TypeSpecifier>.some(iface_ts);
+                                cast_node.type_name = iface_name;
+                                cast_node.inner = new Option<Expression>.some(expr.base_expr.some);
+                                let rew: mut MemberAccessExpression = new MemberAccessExpression();
+                                rew.base_expr = new Option<Expression>.some(new Expression.cast_expr(cast_node));
+                                rew.member_name = expr.member_name;
+                                return this.bind_member_access(rew, scope);
+                            }
+                        }
+                    }
+                }
                 // Primitive interface-method dispatch: `impl IHash for i64 { ... }`
                 // methods are mangled to `<name>$$<primitive>` at bind time and
                 // recorded in the primitive_impl registry. Resolve `k.hash()` on a
@@ -2134,6 +2580,31 @@ class BindExpressionsPass {
                                 // For generic types, look up the specialized definition
                                 if (cast<i64>(base_type.generic_args.size()) > 0 && base_type.type_definition.is_some()) {
                                     let orig_def: BoundDefinition = base_type.type_definition.some;
+                                    // A GENERIC INTERFACE base (cast<ISource<i64>>(x).current())
+                                    // carries the TEMPLATE def: its methods keep unresolved
+                                    // returns. The specialized interface def holds the
+                                    // resolved signatures.
+                                    if (orig_def is BoundDefinition.interface_def) {
+                                        let gen_iface: BoundInterfaceDefinition = orig_def.interface_def;
+                                        let gsi_name: string = MonomorphizePass.mangle_generic_name(gen_iface.full_name, base_type.generic_args);
+                                        let gsi_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(gsi_name);
+                                        if (gsi_sym.is_some() && gsi_sym.some is BoundSymbol.type_sym) {
+                                            let gsi_type: BoundType = gsi_sym.some.type_sym.bound_type;
+                                            if (gsi_type.type_definition.is_some() && gsi_type.type_definition.some is BoundDefinition.interface_def) {
+                                                let gsi_def: BoundInterfaceDefinition = gsi_type.type_definition.some.interface_def;
+                                                let gsi: mut i64 = 0;
+                                                while (gsi < cast<i64>(gsi_def.methods.size())) {
+                                                    let gmd: BoundDefinition = gsi_def.methods.at(cast<u64>(gsi)).some;
+                                                    if (gmd is BoundDefinition.function_def) {
+                                                        if (gmd.function_def.name == sym.function_sym.name) {
+                                                            bt = gmd.function_def.return_type;
+                                                        }
+                                                    }
+                                                    gsi = gsi + 1;
+                                                }
+                                            }
+                                        }
+                                    }
                                     if (orig_def is BoundDefinition.enum_def) {
                                         let spec_name: string = MonomorphizePass.mangle_generic_name(orig_def.enum_def.full_name, base_type.generic_args);
                                         let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
@@ -2210,9 +2681,26 @@ class BindExpressionsPass {
                                     // Interface type: look up return type from interface definition
                                     if (td is BoundDefinition.interface_def) {
                                         let iface: BoundInterfaceDefinition = td.interface_def;
+                                        // A GENERIC interface base (ISource<i64>) carries the
+                                        // TEMPLATE def + args: its methods keep the unresolved
+                                        // Option<T>-shaped returns. The SPECIALIZED def
+                                        // (ISource$<mangle>) holds the resolved signatures —
+                                        // prefer it when it exists.
+                                        let spec_if: mut Option<BoundInterfaceDefinition> = new Option<BoundInterfaceDefinition>.none();
+                                        if (cast<i64>(base_type.generic_args.size()) > 0) {
+                                            let spec_iname: string = MonomorphizePass.mangle_generic_name(iface.full_name, base_type.generic_args);
+                                            let spec_isym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_iname);
+                                            if (spec_isym.is_some() && spec_isym.some is BoundSymbol.type_sym) {
+                                                let spec_itype: BoundType = spec_isym.some.type_sym.bound_type;
+                                                if (spec_itype.type_definition.is_some() && spec_itype.type_definition.some is BoundDefinition.interface_def) {
+                                                    spec_if = new Option<BoundInterfaceDefinition>.some(spec_itype.type_definition.some.interface_def);
+                                                }
+                                            }
+                                        }
+                                        let method_src: BoundInterfaceDefinition = if (spec_if.is_some()) { spec_if.some } else { iface };
                                         let imi: mut i64 = 0;
-                                        while (imi < cast<i64>(iface.methods.size())) {
-                                            let md: BoundDefinition = iface.methods.at(cast<u64>(imi)).some;
+                                        while (imi < cast<i64>(method_src.methods.size())) {
+                                            let md: BoundDefinition = method_src.methods.at(cast<u64>(imi)).some;
                                             if (md is BoundDefinition.function_def) {
                                                 if (md.function_def.name == sym.function_sym.name) {
                                                     bt = md.function_def.return_type;
@@ -2948,6 +3436,20 @@ class BindExpressionsPass {
     }
 
 
+    // A cast inner's binding: RAW (port sugar suppressed) when the cast
+    // targets a class/interface type and the inner is a member access onto a
+    // port field (a channel-object operation).
+    fun bind_cast_inner(mut this, expr: CastExpression, target_type: BoundType, scope: mut BoundScope) -> Option<BoundExpression> {
+        if (target_type.kind is TypeKind.InterfaceKind || target_type.kind is TypeKind.ClassKind) {
+            if (expr.inner.is_some() && expr.inner.some is Expression.member_access) {
+                if (this.resolve_port_access(expr.inner.some.member_access, scope).is_some()) {
+                    return this.bind_expr_no_port_sugar(expr.inner.some, scope);
+                }
+            }
+        }
+        return this.bind_optional_expr(expr.inner, scope);
+    }
+
     fun bind_cast(mut this, expr: CastExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_cast");
         // mut-this core methods (bind_meta_call / resolve_type_name) need a
@@ -2961,7 +3463,12 @@ class BindExpressionsPass {
         } else {
             target_type = m.resolve_type_name(expr.type_name, scope, expr.location);
         }
-        let inner: Option<BoundExpression> = this.bind_optional_expr(expr.inner, scope);
+        // E5 channel-object cast rule: a cast to a class/interface type whose
+        // inner is a member access onto a declared port field operates on the
+        // port's CHANNEL OBJECT (`cast<mut ISink<T>>(this.y)`,
+        // `cast<mut _Fanout<T>>(f.y)`) — bind the inner RAW, without the
+        // bare-read payload conversion.
+        let inner: Option<BoundExpression> = this.bind_cast_inner(expr, target_type, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
 
         if (inner.is_some() && !expr.is_unsafe) {
@@ -3143,8 +3650,26 @@ class BindExpressionsPass {
     }
 
 
-    fun bind_new_expr(mut this, expr: NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        _utils.trace_enter("Enter bind_new_expr");
+    // The lookup scope for resolving a newly created specialization pair: the
+    // def's own scope when it has one (class/enum/interface/function), else
+    // the global scope.
+    fun spec_resolve_scope(this, def: BoundDefinition) -> BoundScope {
+        if (def is BoundDefinition.function_def && def.function_def.scope.is_some()) {
+            return def.function_def.scope.some;
+        }
+        if (def is BoundDefinition.class_def && def.class_def.scope.is_some()) {
+            return def.class_def.scope.some;
+        }
+        if (def is BoundDefinition.enum_def && def.enum_def.scope.is_some()) {
+            return def.enum_def.scope.some;
+        }
+        if (def is BoundDefinition.interface_def && def.interface_def.scope.is_some()) {
+            return def.interface_def.scope.some;
+        }
+        return this.model.some.global_scope;
+    }
+
+    fun bind_new_expr(mut this, expr: NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {        _utils.trace_enter("Enter bind_new_expr");
         // First, try to resolve the full type_name as a class/struct type
         let type_sym: Option<BoundSymbol> = this.resolve_type_by_name(expr.type_name, scope);
         if (type_sym.is_some()) {
@@ -3164,11 +3689,12 @@ class BindExpressionsPass {
                 // is unchanged.
                 if (cast<i64>(bt.generic_args.size()) > 0 && this.model.some.current_unit.is_some()) {
                     let full_base: mut string = expr.type_name;
+                    let tmpl_short: mut string = expr.type_name;
                     if (bt.type_definition.is_some()) {
                         let td0: BoundDefinition = bt.type_definition.some;
-                        if (td0 is BoundDefinition.class_def) { full_base = td0.class_def.full_name; }
-                        if (td0 is BoundDefinition.enum_def) { full_base = td0.enum_def.full_name; }
-                        if (td0 is BoundDefinition.interface_def) { full_base = td0.interface_def.full_name; }
+                        if (td0 is BoundDefinition.class_def) { full_base = td0.class_def.full_name; tmpl_short = td0.class_def.name; }
+                        if (td0 is BoundDefinition.enum_def) { full_base = td0.enum_def.full_name; tmpl_short = td0.enum_def.name; }
+                        if (td0 is BoundDefinition.interface_def) { full_base = td0.interface_def.full_name; tmpl_short = td0.interface_def.name; }
                     }
                     let mangled_spec: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
                     let spec_existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled_spec);
@@ -3176,9 +3702,29 @@ class BindExpressionsPass {
                         let inst_bt: BoundType = type_sym.some.type_sym.bound_type.with_generic_args(bt.generic_args);
                         let spec_new: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(inst_bt, this.model.some.global_scope);
                         if (spec_new.is_some()) {
+                            // Resolve the pair FIRST (fields/methods/impl-method
+                            // signatures — without it the spec's methods have
+                            // no parameters and `this` never resolves), then
+                            // the signature-level catch-up, then register for
+                            // the dynamic pass-8 body-binding loop. The
+                            // resolve runs at pass index 3 (the monomorphize
+                            // protocol): stamping the def at 8 here would make
+                            // every catch-up sub-pass skip it (already
+                            // processed) — no vtables, no value/ref
+                            // classification (defaults to stack allocation).
+                            let ast_spec: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_short);
                             let m0: mut SemanticModel = this.model.some;
-                            m0.catch_up_def_before_bodies(spec_new.some, this.model.some.current_unit.some);
-                            this.model.some.current_unit.some.definitions.push(spec_new.some);
+                            let saved_idx0: i64 = m0.current_pass_index;
+                            if (ast_spec.is_some()) {
+                                m0.current_pass_index = 3;
+                                let to_register: BoundDefinition = this.model.some.resolve_types_pass.resolve_pair(ast_spec.some, spec_new.some, this.spec_resolve_scope(spec_new.some));
+                                m0.current_pass_index = saved_idx0;
+                                m0.catch_up_def_before_bodies(to_register, this.model.some.current_unit.some);
+                                this.model.some.current_unit.some.definitions.push(to_register);
+                            } else {
+                                m0.catch_up_def_before_bodies(spec_new.some, this.model.some.current_unit.some);
+                                this.model.some.current_unit.some.definitions.push(spec_new.some);
+                            }
                         }
                     }
                 }

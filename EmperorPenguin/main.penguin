@@ -114,6 +114,7 @@ initial {
     _utils.trace_set_verbose(config.verbose);
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = config.verbose;
+    compiler.enable_coroutine = config.coroutine_enabled;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;
     // Dyn-lib routing data: shipped instances (the lib-source boundary is set

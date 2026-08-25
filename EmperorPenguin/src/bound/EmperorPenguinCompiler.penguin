@@ -35,6 +35,10 @@ class EmperorPenguinCompiler {
     // (no per-file anonymous namespaces) so the compiler's own cross-file
     // top-level helpers stay visible. Set by the MetaEngine.
     top_level_in_global: bool = false;
+    // --enable-coroutine: gates the RTL-port/concurrency syntax set (ports,
+    // construct, connect, wait forms, try/catch, async). Off by default;
+    // ./penguin -b passes it only when pass2 compiles pass3.
+    enable_coroutine: bool = false;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -88,6 +92,7 @@ class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        model.enable_coroutine = this.enable_coroutine;
         model.top_level_in_global = this.top_level_in_global;
         // Dyn-lib routing data (index-based lib-source boundary + shipped names).
         model.lib_def_start = this.lib_def_start;

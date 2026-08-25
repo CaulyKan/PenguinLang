@@ -4,6 +4,7 @@ Design (Q1): a port read is a settle point — after 'x = 2' the bare read of f2
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -18,7 +19,7 @@ initial { x = 2; println(cast<string>(f2.y)); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

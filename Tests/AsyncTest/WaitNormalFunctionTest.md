@@ -4,7 +4,7 @@ Wait on a normal (non-async) function call.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -19,7 +19,7 @@ Wait on a normal (non-async) function call.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

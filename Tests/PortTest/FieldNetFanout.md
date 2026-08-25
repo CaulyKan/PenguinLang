@@ -2,11 +2,9 @@
 ## Description
 A class FIELD as a connect source (connect(this.baud, ...)): the hidden net hub is a hidden instance field, the initializer value (9600) seeds it, fan-out reaches both inner consumers, and an outside assignment (b.baud = 7) propagates per instance.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports/connect feature set is not implemented in EmperorPenguin yet — it fails there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -48,7 +46,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

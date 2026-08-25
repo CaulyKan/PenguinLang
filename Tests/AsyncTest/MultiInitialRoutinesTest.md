@@ -4,7 +4,7 @@ Multiple initial routines execute in sequence.
 
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -20,7 +20,7 @@ Multiple initial routines execute in sequence.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

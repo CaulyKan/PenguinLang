@@ -365,31 +365,38 @@ void _emperor_sched_exit(int code) {
 #define EMPEROR_TRY_SITES 1024
 static jmp_buf _emperor_try_jb_table[EMPEROR_TRY_SITES];
 
+/* Try stacks live per execution context: the current coroutine's try_top,
+ * or — when user code runs directly on the main stack (sequential-mode
+ * emit_main: a module with try/catch but no suspension points) — this
+ * fallback stack. The two contexts never interleave user code (the
+ * scheduler owns coroutines; sequential mode never enters it), so a single
+ * fallback is sound. */
+static EmperorTryFrame* _emperor_main_try_top = NULL;
+static EmperorTryFrame** _emperor_try_top_slot(void) {
+    return sched_current ? &sched_current->try_top : &_emperor_main_try_top;
+}
+
 void* _emperor_try_buf(int64_t site) {
     return (void*)&_emperor_try_jb_table[(size_t)site & (EMPEROR_TRY_SITES - 1)];
 }
 
 void _emperor_try_setup(int64_t site) {
-    EmperorCoroutine* self = sched_current;
-    if (!self) {
-        fprintf(stderr, "emperor sched: try/catch outside a coroutine\n");
-        exit(1);
-    }
+    EmperorTryFrame** top = _emperor_try_top_slot();
     EmperorTryFrame* f = (EmperorTryFrame*)malloc(sizeof(EmperorTryFrame));
     if (!f) {
         fprintf(stderr, "emperor sched: try frame allocation failed\n");
         exit(1);
     }
-    f->prev = self->try_top;
+    f->prev = *top;
     f->jb = (jmp_buf*)_emperor_try_buf(site);
-    self->try_top = f;
+    *top = f;
 }
 
 void _emperor_try_leave(void) {
-    EmperorCoroutine* self = sched_current;
-    if (self && self->try_top) {
-        EmperorTryFrame* f = self->try_top;
-        self->try_top = f->prev;
+    EmperorTryFrame** top = _emperor_try_top_slot();
+    if (*top) {
+        EmperorTryFrame* f = *top;
+        *top = f->prev;
         free(f);
     }
 }
@@ -401,9 +408,10 @@ void _emperor_try_leave(void) {
 void _emperor_throw_runtime_error(const char* msg, int64_t code) {
     _emperor_throw_msg = (char*)msg;
     _emperor_throw_code = code;
-    if (sched_current && sched_current->try_top) {
-        EmperorTryFrame* f = sched_current->try_top;
-        sched_current->try_top = f->prev;
+    EmperorTryFrame** top = _emperor_try_top_slot();
+    if (*top) {
+        EmperorTryFrame* f = *top;
+        *top = f->prev;
         jmp_buf* jb = f->jb;
         free(f);
         _longjmp(*jb, 1);

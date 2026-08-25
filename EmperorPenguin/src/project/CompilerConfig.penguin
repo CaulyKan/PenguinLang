@@ -55,6 +55,15 @@ class CompilerConfig {
     // json/vector/hashmap loaded (pass3+) can build/consume .penguin-lib files.
     // Bootstrap pass1/pass2 build with --disable-dl.
     dl_enabled: bool = true;
+    // --enable-coroutine (default off): gates the RTL-port/concurrency syntax
+    // (input/output ports, construct, connect, wait forms, try/catch, async
+    // expressions). Without it those constructs are compile errors and the
+    // emitted main() calls initial routines sequentially (no scheduler). With
+    // it, codegen still only uses the coroutine scheduler when the compiled
+    // module actually contains suspension points, so flag on/off produce
+    // identical binaries for wait-free programs (bootstrap md5 convergence).
+    // In ./penguin -b the flag is passed only when pass2 compiles pass3.
+    coroutine_enabled: bool = false;
 
     fun new(mut this) {}
 
@@ -119,6 +128,8 @@ class CompilerConfig {
                 this.dl_enabled = true;
             } else if (arg == "--disable-dl" || arg == "-disable-dl") {
                 this.dl_enabled = false;
+            } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {
+                this.coroutine_enabled = true;
             } else if (arg == "--lib" || arg == "-lib") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {

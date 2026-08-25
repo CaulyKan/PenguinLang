@@ -6,7 +6,7 @@ Nested generic: Box<Box<i32>>.
 * BabyPenguin CS
 * EmperorPenguin Pass1 (SKIP if 'EmperorPenguin Pass2' PASS)
 * EmperorPenguin Pass2
-* EmperorPenguin Pass3
+* EmperorPenguin Pass1
 
 ## Test Code
 ```
