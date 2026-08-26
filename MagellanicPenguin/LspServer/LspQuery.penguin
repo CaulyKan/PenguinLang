@@ -1,0 +1,413 @@
+// LspQuery: bound-tree queries over the last successful compilation
+// (definition / documentSymbol / completion).
+//
+// Every query runs on the SYMBOL INDEX — a SymEntry tree built by recursively
+// walking emperor.BoundCompilationUnit.definitions (namespaces, classes,
+// enums, interfaces, functions, fields, globals, initial blocks; each bound
+// symbol carries the emperor.SourceLocation of its declaration). EP lexer locations
+// are 1-based line AND 1-based col; LSP positions are 0-based, so conversion
+// happens at the JSON edge (line-1 / col-1), matching diagnostics publishing.
+//
+// v1 semantics mirror the C# server's deliberate simplicity (see
+// MagellanicPenguin/LSP/LSP.cs): documentSymbol lists THIS document's defs
+// (stdlib and other files filtered by location filename; the per-file
+// `_ns_*` wrapper namespaces splice their children to the top level);
+// definition re-lexes the document for the identifier under the cursor and
+// looks it up in the whole-program index (same-file match preferred — no
+// scope resolution); completion returns the language keywords plus every
+// indexed symbol, deduplicated by name. Enum member symbols carry no
+// location in the bound tree, so variants resolve to their enum's location.
+namespace lsp {
+
+// LSP SymbolKind (documentSymbol).
+let SYM_NAMESPACE: i64 = 3;
+let SYM_CLASS: i64 = 5;
+let SYM_METHOD: i64 = 6;
+let SYM_FIELD: i64 = 8;
+let SYM_ENUM: i64 = 10;
+let SYM_INTERFACE: i64 = 11;
+let SYM_FUNCTION: i64 = 12;
+let SYM_VARIABLE: i64 = 13;
+let SYM_ENUM_MEMBER: i64 = 22;
+
+// LSP CompletionItemKind (completion).
+let CIK_METHOD: i64 = 2;
+let CIK_FUNCTION: i64 = 3;
+let CIK_FIELD: i64 = 5;
+let CIK_VARIABLE: i64 = 6;
+let CIK_CLASS: i64 = 7;
+let CIK_INTERFACE: i64 = 8;
+let CIK_MODULE: i64 = 9;
+let CIK_ENUM: i64 = 13;
+let CIK_KEYWORD: i64 = 14;
+let CIK_ENUM_MEMBER: i64 = 20;
+
+class SymEntry {
+    name: string = "";
+    kind: i64 = 0;
+    cik: i64 = 0;
+    // Declaration site in EP lexer basis (1-based line, 1-based col); an
+    // empty filename means "no location" (namespace wrappers).
+    filename: string = "";
+    line: i64 = 0;
+    col: i64 = 0;
+    children: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+
+    fun new(mut this) {}
+}
+
+fun empty_loc() -> emperor.SourceLocation {
+    return new emperor.SourceLocation("", 0, 0);
+}
+
+fun make_entry(name: string, kind: i64, cik: i64, loc: emperor.SourceLocation) -> mut SymEntry {
+    let e: mut SymEntry = new SymEntry();
+    e.name = name;
+    e.kind = kind;
+    e.cik = cik;
+    e.filename = loc.filename;
+    e.line = loc.line;
+    e.col = loc.col;
+    return e;
+}
+
+// One function definition → one entry (skips monomorphized copies so a
+// generic method completes/defines as its template, not Foo__i64 clones).
+fun push_function_entry(def: emperor.BoundFunctionDefinition, kind: i64, cik: i64, out: mut _utils.List<SymEntry>) {
+    if (def.is_specialized) { return; }
+    if (def.symbol.is_none()) { return; }
+    out.push(make_entry(def.name, kind, cik, def.symbol.some.location));
+}
+
+fun push_function_entries(defs: _utils.List<emperor.BoundDefinition>, kind: i64, cik: i64, out: mut _utils.List<SymEntry>) {
+    for (let d in defs) {
+        if (d is emperor.BoundDefinition.function_def) {
+            push_function_entry(d.function_def, kind, cik, out);
+        }
+    }
+}
+
+// Build the symbol tree from a bound unit's definitions. The per-file
+// `_ns_*` wrapper namespaces are spliced away (their children surface at the
+// enclosing level); specialized (monomorphized) defs and impl blocks are
+// skipped — they duplicate their templates.
+fun index_defs(defs: _utils.List<emperor.BoundDefinition>, out: mut _utils.List<SymEntry>) {
+    for (let def in defs) {
+        if (def is emperor.BoundDefinition.namespace_def) {
+            let nd: emperor.BoundNamespaceDefinition = def.namespace_def;
+            if (string_find(nd.name, "_ns_") == 0) {
+                index_defs(nd.children, out);
+            } else {
+                let e: mut SymEntry = make_entry(nd.name, SYM_NAMESPACE, CIK_MODULE, empty_loc());
+                index_defs(nd.children, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.class_def) {
+            let cd: emperor.BoundClassDefinition = def.class_def;
+            if (!cd.is_specialized) {
+                let loc: emperor.SourceLocation = if (cd.type_symbol.is_some()) { cd.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(cd.name, SYM_CLASS, CIK_CLASS, loc);
+                let fi: mut i64 = 0;
+                while (fi < cast<i64>(cd.fields.size())) {
+                    let f: emperor.BoundDefinition = cd.fields.at(cast<u64>(fi)).some;
+                    if (f is emperor.BoundDefinition.class_field) {
+                        let fld: emperor.BoundClassFieldDefinition = f.class_field;
+                        let floc: emperor.SourceLocation = if (fld.field_symbol.is_some()) { fld.field_symbol.some.location } else { empty_loc() };
+                        e.children.push(make_entry(fld.name, SYM_FIELD, CIK_FIELD, floc));
+                    }
+                    fi = fi + 1;
+                }
+                push_function_entries(cd.methods, SYM_METHOD, CIK_METHOD, e.children);
+                push_function_entries(cd.constructors, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.enum_def) {
+            let ed: emperor.BoundEnumDefinition = def.enum_def;
+            if (!ed.is_specialized) {
+                let loc: emperor.SourceLocation = if (ed.type_symbol.is_some()) { ed.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(ed.name, SYM_ENUM, CIK_ENUM, loc);
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ed.members.size())) {
+                    let m: emperor.BoundEnumMemberDefinition = ed.members.at(cast<u64>(mi)).some;
+                    // Member symbols carry no location (bound tree gap) —
+                    // variants resolve to the enum declaration itself.
+                    let mloc: mut emperor.SourceLocation = loc;
+                    if (m.member_symbol.is_some()) {
+                        if (m.member_symbol.some.location.line > 0) {
+                            mloc = m.member_symbol.some.location;
+                        }
+                    }
+                    e.children.push(make_entry(m.name, SYM_ENUM_MEMBER, CIK_ENUM_MEMBER, mloc));
+                    mi = mi + 1;
+                }
+                push_function_entries(ed.methods, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.interface_def) {
+            let id: emperor.BoundInterfaceDefinition = def.interface_def;
+            if (!id.is_specialized) {
+                let loc: emperor.SourceLocation = if (id.type_symbol.is_some()) { id.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(id.name, SYM_INTERFACE, CIK_INTERFACE, loc);
+                push_function_entries(id.methods, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.function_def) {
+            push_function_entry(def.function_def, SYM_FUNCTION, CIK_FUNCTION, out);
+        } else if (def is emperor.BoundDefinition.global_var_def) {
+            let gd: emperor.BoundGlobalVariableDefinition = def.global_var_def;
+            let gloc: emperor.SourceLocation = if (gd.variable_symbol.is_some()) { gd.variable_symbol.some.location } else { empty_loc() };
+            out.push(make_entry(gd.name, SYM_VARIABLE, CIK_VARIABLE, gloc));
+        } else if (def is emperor.BoundDefinition.initial_routine) {
+            let ir: emperor.BoundInitialRoutineDefinition = def.initial_routine;
+            if (ir.symbol.is_some()) {
+                out.push(make_entry("<initial>", SYM_METHOD, CIK_METHOD, ir.symbol.some.location));
+            }
+        }
+        // impl_def / impl_for_def / type_ref / meta_*: not user-visible symbols.
+    }
+}
+
+fun flat_collect(entries: _utils.List<SymEntry>, out: mut _utils.List<SymEntry>) {
+    for (let e in entries) {
+        out.push(e);
+        flat_collect(e.children, out);
+    }
+}
+
+// An LSP position object from 0-based coordinates (already converted).
+fun write_pos0(w: mut std.JsonWriter, line0: i64, char0: i64) {
+    let l: mut i64 = line0;
+    let c: mut i64 = char0;
+    if (l < 0) { l = 0; }
+    if (c < 0) { c = 0; }
+    w.begin_object();
+    w.key("line");
+    w.value_i64(l);
+    w.key("character");
+    w.value_i64(c);
+    w.end_object();
+}
+
+// ---- documentSymbol ----
+
+// Serialize the subtree rooted at `entries` filtered to doc_path: a matching
+// node emits itself (name spans its declaration) plus its matching children;
+// a non-matching wrapper (namespace, foreign-file root) splices its matching
+// descendants through to this level.
+fun write_doc_symbols(w: mut std.JsonWriter, entries: _utils.List<SymEntry>, doc_path: string) {
+    for (let e in entries) {
+        if (e.filename == doc_path && e.line > 0) {
+            let line0: i64 = e.line - 1;
+            let char0: i64 = e.col - 1;
+            w.begin_object();
+            w.key("name");
+            w.value_string(e.name);
+            w.key("kind");
+            w.value_i64(e.kind);
+            w.key("range");
+            w.begin_object();
+            w.key("start");
+            write_pos0(w, line0, char0);
+            w.key("end");
+            write_pos0(w, line0, char0 + string_length(e.name));
+            w.end_object();
+            w.key("selectionRange");
+            w.begin_object();
+            w.key("start");
+            write_pos0(w, line0, char0);
+            w.key("end");
+            write_pos0(w, line0, char0 + string_length(e.name));
+            w.end_object();
+            w.key("children");
+            w.begin_array();
+            write_doc_symbols(w, e.children, doc_path);
+            w.end_array();
+            w.end_object();
+        } else {
+            write_doc_symbols(w, e.children, doc_path);
+        }
+    }
+}
+
+fun query_document_symbol(unit: LspCompilationUnit) -> string {
+    if (unit.last_ok.is_none()) { return "[]"; }
+    let roots: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+    index_defs(unit.last_ok.some.definitions, roots);
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    write_doc_symbols(w, roots, unit.path);
+    w.end_array();
+    return w.to_string();
+}
+
+// ---- definition ----
+
+// The identifier token covering the 0-based (line, character) position, or "".
+fun identifier_at(text: string, filename: string, line: i64, character: i64) -> string {
+    let mut lexer = new emperor.Lexer(text, filename);
+    let tokens: _utils.List<emperor.Token> = lexer.tokenize();
+    let want_line: i64 = line + 1;
+    let want_col: i64 = character + 1;
+    for (let t in tokens) {
+        if (t.token_type is emperor.TokenType.Identifier) {
+            if (t.location.line == want_line) {
+                let c0: i64 = t.location.col;
+                if (want_col >= c0 && want_col < c0 + string_length(t.text)) {
+                    return t.text;
+                }
+            }
+        }
+    }
+    return "";
+}
+
+fun query_definition(unit: LspCompilationUnit, msg: LspMessage) -> string {
+    if (unit.last_ok.is_none()) { return "[]"; }
+    let pos: LspPosition = extract_position(msg.params_json);
+    let name: string = identifier_at(unit.text, unit.path, pos.line, pos.character);
+    if (name == "") { return "[]"; }
+
+    let roots: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+    index_defs(unit.last_ok.some.definitions, roots);
+    let flat: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+    flat_collect(roots, flat);
+
+    let same_file: mut Option<SymEntry> = new Option<SymEntry>.none();
+    let other_file: mut Option<SymEntry> = new Option<SymEntry>.none();
+    for (let e in flat) {
+        if (e.name == name && e.line > 0) {
+            if (e.filename == unit.path) {
+                if (same_file.is_none()) { same_file = new Option<SymEntry>.some(e); }
+            } else {
+                if (other_file.is_none()) { other_file = new Option<SymEntry>.some(e); }
+            }
+        }
+    }
+    let best: Option<SymEntry> = if (same_file.is_some()) { same_file } else { other_file };
+    if (best.is_none()) { return "[]"; }
+
+    let e: SymEntry = best.some;
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    w.begin_object();
+    w.key("uri");
+    w.value_string(path_to_uri(e.filename));
+    w.key("range");
+    w.begin_object();
+    w.key("start");
+    write_pos0(w, e.line - 1, e.col - 1);
+    w.key("end");
+    write_pos0(w, e.line - 1, e.col - 1 + string_length(e.name));
+    w.end_object();
+    w.end_object();
+    w.end_array();
+    return w.to_string();
+}
+
+// ---- completion ----
+
+fun push_keyword(out: mut _utils.List<string>, kw: string) {
+    out.push(kw);
+}
+
+fun keyword_list() -> mut _utils.List<string> {
+    let kws: mut _utils.List<string> = new _utils.List<string>();
+    push_keyword(kws, "namespace");
+    push_keyword(kws, "using");
+    push_keyword(kws, "interface");
+    push_keyword(kws, "class");
+    push_keyword(kws, "enum");
+    push_keyword(kws, "impl");
+    push_keyword(kws, "fun");
+    push_keyword(kws, "initial");
+    push_keyword(kws, "extern");
+    push_keyword(kws, "construct");
+    push_keyword(kws, "input");
+    push_keyword(kws, "output");
+    push_keyword(kws, "connect");
+    push_keyword(kws, "event");
+    push_keyword(kws, "emit");
+    push_keyword(kws, "on");
+    push_keyword(kws, "wait");
+    push_keyword(kws, "async");
+    push_keyword(kws, "spawn");
+    push_keyword(kws, "let");
+    push_keyword(kws, "mut");
+    push_keyword(kws, "auto");
+    push_keyword(kws, "type");
+    push_keyword(kws, "template");
+    push_keyword(kws, "export");
+    push_keyword(kws, "new");
+    push_keyword(kws, "cast");
+    push_keyword(kws, "unsafe_cast");
+    push_keyword(kws, "this");
+    push_keyword(kws, "Self");
+    push_keyword(kws, "is");
+    push_keyword(kws, "in");
+    push_keyword(kws, "for");
+    push_keyword(kws, "if");
+    push_keyword(kws, "else");
+    push_keyword(kws, "elif");
+    push_keyword(kws, "while");
+    push_keyword(kws, "return");
+    push_keyword(kws, "break");
+    push_keyword(kws, "continue");
+    push_keyword(kws, "try");
+    push_keyword(kws, "catch");
+    push_keyword(kws, "yield");
+    push_keyword(kws, "true");
+    push_keyword(kws, "false");
+    push_keyword(kws, "void");
+    push_keyword(kws, "bool");
+    push_keyword(kws, "char");
+    push_keyword(kws, "i8");
+    push_keyword(kws, "i16");
+    push_keyword(kws, "i32");
+    push_keyword(kws, "i64");
+    push_keyword(kws, "u8");
+    push_keyword(kws, "u16");
+    push_keyword(kws, "u32");
+    push_keyword(kws, "u64");
+    push_keyword(kws, "float");
+    push_keyword(kws, "double");
+    push_keyword(kws, "string");
+    return kws;
+}
+
+fun query_completion(unit: LspCompilationUnit, msg: LspMessage) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    let kws: mut _utils.List<string> = keyword_list();
+    for (let kw in kws) {
+        w.begin_object();
+        w.key("label");
+        w.value_string(kw);
+        w.key("kind");
+        w.value_i64(CIK_KEYWORD);
+        w.end_object();
+    }
+    if (unit.last_ok.is_some()) {
+        let roots: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+        index_defs(unit.last_ok.some.definitions, roots);
+        let flat: mut _utils.List<SymEntry> = new _utils.List<SymEntry>();
+        flat_collect(roots, flat);
+        let seen: mut std.HashMap<string, bool> = new std.HashMap<string, bool>();
+        for (let e in flat) {
+            // Namespaces carry no location; qualify by name instead.
+            if (e.kind == SYM_NAMESPACE) { continue; }
+            if (e.name == "" || string_find(e.name, "<") == 0) { continue; }
+            if (seen.contains(e.name)) { continue; }
+            seen.put(e.name, true);
+            w.begin_object();
+            w.key("label");
+            w.value_string(e.name);
+            w.key("kind");
+            w.value_i64(e.cik);
+            w.end_object();
+        }
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+}

@@ -872,6 +872,16 @@ namespace __builtin {
             this.seed_deliver = deliver;
         }
 
+        // Whether current() reflects a REAL transaction or a DECLARED
+        // deliverable seed (variable nets, `output p = v`) — as opposed to a
+        // synthesized type-zero seed that only backs bare reads. subscribe()
+        // consults this to decide whether a newly granted wire should wake
+        // its subscriber at time 0: a module that has not written anything
+        // must not deliver its payload zero as a transaction.
+        fun has_live_value(this) -> bool {
+            return this.ever_written || this.seed_deliver;
+        }
+
         fun check_closed(mut this) {
             if (this.closed) {
                 _channel_closed_error();
@@ -1311,14 +1321,17 @@ namespace __builtin {
 
         fun subscribe(mut this) -> mut LatestChannel<T> {
             let w : mut LatestChannel<T> = new LatestChannel<T>();
-            // Connect-time seeding: whatever the hub slot currently holds
-            // (a variable net's current value, an output port's declared
-            // default or type zero) becomes the new wire's DELIVERABLE seed
-            // — the subscriber's first `wait` wakes immediately at time 0
-            // (Q3), and any real write supersedes it.
+            // Connect-time seeding: a REAL past transaction or a DECLARED
+            // default (a variable net's current value, an output port's
+            // `= v` default) becomes the new wire's DELIVERABLE seed — the
+            // subscriber's first `wait` wakes immediately at time 0 (Q3),
+            // and any real write supersedes it. A synthesized type-zero
+            // seed backs current() bare reads ONLY: delivering it would
+            // wake every subscriber with a garbage empty transaction at
+            // time 0.
             let cur : Option<T> = this.slot.current();
             if (cur.is_some()) {
-                w.set_seed(cur.some, true);
+                w.set_seed(cur.some, this.slot.has_live_value());
             }
             this.wires.push(w);
             return w;

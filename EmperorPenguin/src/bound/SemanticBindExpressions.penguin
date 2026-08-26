@@ -773,6 +773,16 @@ class BindExpressionsPass {
                     "cannot spawn a call whose argument/return type is unresolved here",
                     new SourceLocation("", 0, 0));
             }
+            // The global scope's full_name marker ("<global>.") is a scope
+            // label, not a resolvable namespace — strip it so the produced
+            // specifier resolves from the global scope (a payload enum under
+            // a top-level namespace, e.g. <global>.lsp.LspFrameAction,
+            // otherwise re-fails resolution with "mut <global>.lsp....").
+            if (string_length(full) >= 9) {
+                if (string_substring(full, 0, 9) == "<global>.") {
+                    full = string_substring(full, 9, string_length(full) - 9);
+                }
+            }
             // split full name into qualified parts + the simple name
             let rest: mut string = full;
             let parts: mut _utils.List<string> = new _utils.List<string>();
@@ -2361,6 +2371,20 @@ class BindExpressionsPass {
     }
 
 
+    // The fd park externs (`__builtin._fd_wait_read/_fd_wait_write`) suspend
+    // the current coroutine at runtime — to the scheduler they ARE waits even
+    // though they are plain extern calls syntactically. Mark the unit as
+    // suspending (emit_main then runs initials on the coroutine scheduler)
+    // and apply the same --enable-coroutine gate as the wait forms.
+    fun mark_fd_park_suspension(mut this, sym: BoundFunctionSymbol) {
+        if (sym.full_name == "<global>.__builtin._fd_wait_read" || sym.full_name == "<global>.__builtin._fd_wait_write") {
+            let m: mut SemanticModel = this.model.some;
+            if (m.require_coroutine("fd wait", sym.location)) {
+                m.has_suspension = true;
+            }
+        }
+    }
+
     fun bind_function_call(mut this, expr: FunctionCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_function_call");
         // mut-this core methods (bind_meta_call / resolve_type_name) need a
@@ -2432,6 +2456,7 @@ class BindExpressionsPass {
                             if (this.function_is_method(sym.function_sym)) {
                                 this.model.some.report_error(new ErrorCode.E_CALL_CONVENTION(), "Method '" + sym.function_sym.name + "' has a 'this' parameter and must be called with a receiver (e.g. this." + sym.function_sym.name + "(...)), not bare", sym.function_sym.location);
                             }
+                            this.mark_fd_park_suspension(sym.function_sym);
                             // Resolve generic args from AST callee
                             let resolved_generic_args: mut _utils.List<BoundType> = new _utils.List<BoundType>();
                             let is_generic_call: mut bool = false;
@@ -2517,6 +2542,7 @@ class BindExpressionsPass {
                             }
                         }
                         if (sym is BoundSymbol.function_sym) {
+                            this.mark_fd_park_suspension(sym.function_sym);
                             // A member function whose first parameter is not `this`
                             // may still be called via `receiver.foo(...)` -- the
                             // receiver is simply discarded at the call site (not

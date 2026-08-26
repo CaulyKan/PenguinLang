@@ -72,13 +72,6 @@ class MonomorphizePass {
             let e: BoundEnumDefinition = template_def.enum_def;
             if (cast<i64>(e.generic_params.size()) == 0) { return new Option<BoundDefinition>.none(); }
             let mangled: string = mangle_generic_name(e.full_name, inst.generic_args);
-            let argdump: mut string = "";
-            let di: mut i64 = 0;
-            while (di < cast<i64>(inst.generic_args.size())) {
-                if (di > 0) { argdump = argdump + "|"; }
-                argdump = argdump + serialize_bound_type_arg(inst.generic_args.at(cast<u64>(di)).some);
-                di = di + 1;
-            }
             if (this.is_instantiation_already_exists(mangled, global_scope)) { return new Option<BoundDefinition>.none(); }
             let spec_result: Option<BoundDefinition> = this.specialize_enum_def(e, inst.generic_args, mangled, global_scope);
             if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
@@ -101,9 +94,10 @@ class MonomorphizePass {
         return new Option<BoundDefinition>.none();
     }
 
+
     // M3: type-returning wrapper around ensure_specialized_def — the form the
-    // penguin_meta_specialize responder (and M4 use-site routing) uses. Given a
-    // template name + its generic args, return the specialized type (R2: type_def
+    // penguin_meta_specialize responder (and M4 use-site routing) uses. Given
+    // a template name + its generic args, return the specialized type (R2: type_def
     // = the specialized def, NO generic_args), creating + catch_up-ing the def if
     // it doesn't yet exist. Idempotent.
     fun ensure_specialized_type(mut this, template_name: string, type_args: _utils.List<BoundTypeArg>) -> BoundType {

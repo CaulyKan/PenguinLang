@@ -274,7 +274,18 @@ void _emperor_gc_scan_remove(void* base) {
 void _emperor_gc_scan_set_live(void* base, void* live_lo) {
     for (size_t i = 0; i < _emperor_gc_scan_region_count; i++) {
         if (_emperor_gc_scan_regions[i].base == (char*)base) {
-            _emperor_gc_scan_regions[i].live_lo = (char*)live_lo;
+            /* Parked sp values are captured as &marker of a char local
+             * (scheduler), so they can be UNALIGNED. The collect scan loop
+             * steps (void**)p in 8-byte increments while p < end; with an
+             * unaligned low end the final read can start inside the region
+             * yet extend past base+bytes — across the mmap boundary into an
+             * unmapped page (SIGSEGV). Round DOWN to pointer alignment: a
+             * few extra dead bytes scanned is conservative and safe, an
+             * overhanging read is fatal. */
+            char* lo = (char*)live_lo;
+            lo = (char*)((uintptr_t)lo & ~((uintptr_t)sizeof(void*) - 1));
+            if (lo < _emperor_gc_scan_regions[i].base) lo = _emperor_gc_scan_regions[i].base;
+            _emperor_gc_scan_regions[i].live_lo = lo;
             return;
         }
     }
@@ -497,6 +508,9 @@ EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
             raw_lo >= rbase && raw_lo < rend && raw_lo < lo) {
             lo = raw_lo;
         }
+        /* Same alignment guarantee as _emperor_gc_scan_set_live: every load
+         * must stay word-aligned within [lo, rend). */
+        lo = (char*)((uintptr_t)lo & ~((uintptr_t)sizeof(void*) - 1));
         char** p = (char**)lo;
         char** end = (char**)rend;
         for (; p < end; p++) {

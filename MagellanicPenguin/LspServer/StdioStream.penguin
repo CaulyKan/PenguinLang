@@ -1,0 +1,88 @@
+// The stdio boundary module (design doc's StdioStream).
+//
+// Reader: parks the scheduler's fd integration on stdin readability, drains
+// one chunk per wake into the rx output port. EOF (client closed stdin)
+// simply ends the reader — every upstream module then parks on a dead source
+// and the program ends at quiescence after draining what is in flight.
+//
+// Writer: writes complete pre-serialized frames (headers included) from the
+// tx input port, parking on fd 1 writability when the pipe is full — a slow
+// client throttles the whole upstream pipeline through this loop (end-to-end
+// backpressure, zero flow-control code in any other module).
+//
+// End of session: LSP `exit` must not kill the process before every frame
+// queued ahead of it is on the wire, so the control travels IN the frame
+// stream as the LSP_EXIT sentinel (frame text always starts with
+// "Content-Length:", so it can never collide). Channel order then guarantees
+// all prior frames are written before the writer calls exit(code).
+//
+// Port payloads are strings on purpose: output ports carry injected
+// `_Fanout<T>` field defaults whose on-demand specialization is only
+// exercised green for primitive payloads today (see
+// Tests/PortTest/PortPayloadEnumChannelCycle.md — the compiler-side fix is
+// tracked there). Rich LSP datatypes travel through explicit Fifo channels
+// spelled as class field types instead (pass-3-collected instantiations).
+namespace lsp {
+
+// Outbound-stream control sentinel: "!LSP-EXIT:<code>".
+let LSP_EXIT_SENTINEL: string = "!LSP-EXIT:";
+
+fun is_exit_control(s: string) -> Option<i64> {
+    if (string_find(s, LSP_EXIT_SENTINEL) == 0) {
+        let tail: string = string_substring(s, string_length(LSP_EXIT_SENTINEL), string_length(s) - string_length(LSP_EXIT_SENTINEL));
+        return new Option<i64>.some(string_to_int(tail));
+    }
+    return new Option<i64>.none();
+}
+
+fun make_exit_control(code: i64) -> string {
+    return LSP_EXIT_SENTINEL + cast<string>(code);
+}
+
+// Write a whole string to a non-blocking fd, parking on writability while
+// the pipe is full. Silently drops on a hard write error (fd closed) — there
+// is no better recovery at this layer.
+fun write_all(fd: i64, data: string) {
+    let off: mut i64 = 0;
+    let len: i64 = string_length(data);
+    while (off < len) {
+        let n: i64 = __builtin._write_fd(fd, string_substring(data, off, len - off));
+        if (n < 0) {
+            return;
+        }
+        if (n == 0) {
+            __builtin._fd_wait_write(fd);
+        } else {
+            off = off + n;
+        }
+    }
+}
+
+class StdioStream {
+    output rx : string;
+    input tx : string;
+
+    initial {
+        while (true) {
+            __builtin._fd_wait_read(0);
+            let c: string = __builtin._read_fd(0);
+            if (c == "") {
+                break;
+            }
+            this.rx.write(c);
+        }
+    }
+
+    initial {
+        while (true) {
+            let m: string = wait this.tx;
+            let code: Option<i64> = is_exit_control(m);
+            if (code.is_some()) {
+                __builtin.exit(cast<i32>(code.some));
+            }
+            write_all(1, m);
+        }
+    }
+}
+
+}

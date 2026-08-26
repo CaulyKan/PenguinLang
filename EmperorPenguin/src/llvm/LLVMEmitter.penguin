@@ -3652,7 +3652,7 @@ class LLVMEmitter {
         // 2. Build args string and sret buffer (if needed).
         // Use if-expression value form (trailing expression, no `;`) — PenguinLang
         // locals are not reassignable, and an if whose branches are statements is void.
-        let rest_args: string = this.emit_args(inst.args);
+        let rest_args: string = this.emit_args_virt(inst.args);
         let sret_tmp: string = if (callee_sret_type != "") {
             let tmp: string = this.next_tmp();
             this.emit_entry_alloca(tmp, callee_sret_type);
@@ -3741,6 +3741,48 @@ class LLVMEmitter {
         this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
     }
 
+    // Virtual-call argument emission: the callee is an interface method whose
+    // signature emit_function built with the SAME byval rule as any function —
+    // >16-byte aggregate parameters are `ptr byval(type)`. The plain emit_args
+    // passed the struct VALUE for such parameters (interface dispatch had
+    // simply never been exercised with an enum/value-class payload >16 bytes),
+    // so the callee dereferenced the struct's first field as a pointer and the
+    // payload arrived zeroed/garbage (e.g. ISink<Fifo>.write(enum-with-string)
+    // crashed in string_length on a bits-as-pointer string).
+    fun emit_args_virt(mut this, args: _utils.List<IRValue>) -> string {
+        _utils.trace_enter("Enter emit_args_virt");
+        let sb2: mut StringBuilder = new StringBuilder();
+        let first: mut bool = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            if (arg_type == "void" || resolved == "unknown") {
+                i = i + 1;
+                continue;
+            }
+            if (!first) { sb2.append(", "); }
+            first = false;
+            let byval_type: string = this.resolve_byval_type(arg_type);
+            if (byval_type != "") {
+                let arg_ptr: string = this.materialize_enum_ptr(resolved, byval_type);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
+            } else {
+                let llvm_type: string = this.ir_type_to_llvm(arg_type);
+                let actual_type: string = this.get_llvm_type(resolved);
+                if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
+                    let coerced: string = this.coerce_operand(resolved, llvm_type);
+                    sb2.append(llvm_type + " " + coerced);
+                } else {
+                    sb2.append(llvm_type + " " + resolved);
+                }
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
     fun emit_args_with_first(mut this, args: _utils.List<IRValue>, first_arg: string) -> string {
         _utils.trace_enter("Enter emit_args_with_first(first_arg=" + cast<string>(first_arg) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
@@ -3763,7 +3805,7 @@ class LLVMEmitter {
             let byval_type: string = this.resolve_byval_type(arg_type);
             if (byval_type != "") {
                 let arg_ptr: string = this.materialize_enum_ptr(resolved, byval_type);
-                sb2.append("ptr " + arg_ptr);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
             } else {
                 // Coerce ptr→struct for enum/value-class operands registered as ptr
                 let actual_type: string = this.get_llvm_type(resolved);
@@ -4614,7 +4656,7 @@ class LLVMEmitter {
             let byval_type: string = this.resolve_byval_type(arg_ir_type);
             if (byval_type != "") {
                 let arg_ptr: string = this.materialize_enum_ptr(final_resolved, byval_type);
-                sb2.append("ptr " + arg_ptr);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
             } else {
                 // For ≤16-byte aggregates (enums, value classes), the callee expects
                 // the struct value by register. precompute_function_signatures (Phase 3.0)

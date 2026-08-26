@@ -11,6 +11,7 @@ OTHERS=""
 TESTING=0
 CLEAN=0
 PUBLISH=0
+LSP=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -22,6 +23,7 @@ for arg in "$@"; do
     -b) BOOTSTRAPPING=1 ;;
     -t) TESTING=1 ;;
     -p) PUBLISH=1 ;;
+    -lsp) LSP=1 ;;
     *) OTHERS="$OTHERS $arg" ;;
   esac
 done
@@ -82,6 +84,22 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
         echo "Bootstrap NOT converged: pass3 and pass4 differ." >&2
         exit 1
     fi
+fi
+
+if [ $LSP -eq 1 ]; then
+    echo "Building MagellanicPenguin LSP server (tmp/lsp) ..."
+    echo "============================================================"
+    if [ ! -f tmp/pass3 ]; then
+        echo "tmp/pass3 not found. Run './penguin -b' first." >&2
+        exit 1
+    fi
+    # --enable-coroutine: the server is a ports/channels program end to end
+    # (StdioStream parks on fd 0/1, modules wait wires/Fifos). Milestone-grade
+    # build (the whole 16k-line compiler is embedded as the analysis engine);
+    # e2e tests run it via the test runner's Prebuilt backend without
+    # recompiling (Tests/LspTest/*.md, Compile.Args=tmp/lsp).
+    tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o tmp/lsp
+    exit $?
 fi
 
 if [ $TESTING -eq 1 ]; then
@@ -145,6 +163,24 @@ if [ $PUBLISH -eq 1 ]; then
     # --- Copy emperor_penguin binaries to vscode server directories ---
     cp tmp/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/emperor_penguin
     cp tmp/win64/emperor_penguin.exe MagellanicPenguin/vscode/server/windows/emperor_penguin.exe
+    # --- PenguinLang-native LSP server (linux): built by './penguin -lsp' ---
+    # The extension's client picks PENGUINLANG_LSPSERVER_PATH first, else the
+    # bundled server/<platform>/MagellanicPenguinLSP binary (the C# server on
+    # win32; the native one on linux when present).
+    if [ -f tmp/lsp ]; then
+        mkdir -p MagellanicPenguin/vscode/server/linux
+        cp tmp/lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
+        echo "Copied tmp/lsp -> MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP"
+        # Bundle the stdlib beside the binary: the server's embedded document
+        # compiles look it up at <exe_dir>/EmperorPenguin/std/penguin (one of
+        # load_stdlib_text's candidates), so an installed extension analyzes
+        # documents without the repo.
+        mkdir -p MagellanicPenguin/vscode/server/linux/EmperorPenguin/std
+        cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin
+        echo "Bundled stdlib -> MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin"
+    else
+        echo "tmp/lsp not found; skipping native LSP server (build with './penguin -lsp')"
+    fi
     # Windows meta JIT runtime DLLs ride along in the vscode windows server dir
     # (only the three LLVM DLLs are vendored in thirdparty/mingw-w64-x86_64-llvm-libs/bin;
     # their own deps — libc++/libffi/zlib/zstd/libxml2/winpthread — must be staged

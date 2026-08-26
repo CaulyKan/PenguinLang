@@ -13,6 +13,8 @@
 #else
 #include <dirent.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <sys/resource.h>
 #endif
 
@@ -389,6 +391,69 @@ void _emperor_file_write_text(const char* path, const char* text) {
         fputs(text, f);
     }
     fclose(f);
+}
+
+/* --- Non-blocking fd I/O (external event sources; scheduler.c) ---
+ * Single-syscall helpers for the coroutine fd protocol: the caller parks on
+ * _emperor_fd_wait_read/_write between calls, so these never (need to) block
+ * the scheduler thread. Descriptors are switched to O_NONBLOCK on first use
+ * — a plain blocking write to a full pipe would freeze every coroutine.
+ *
+ * _emperor_read_fd: one read() of up to 32KB into a fresh GC string; a
+ * zero-length result means EOF-after-wake (level-triggered poll only wakes
+ * an empty reader for data or HUP, and read-after-HUP returns 0) or a
+ * spurious EAGAIN (the next wait simply re-parks).
+ * _emperor_write_fd: one write() of the string's bytes; returns the count,
+ * 0 for EAGAIN (caller parks on fd_wait_write and retries), -1 on error. */
+#define EMPEROR_FD_CHUNK (32 * 1024)
+
+static void emperor_fd_set_nonblock(int fd) {
+#ifndef _WIN32
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0 && !(flags & O_NONBLOCK)) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+#else
+    (void)fd;
+#endif
+}
+
+char* _emperor_read_fd(long long fd) {
+#ifdef _WIN32
+    (void)fd;
+    char* r = (char*)_emperor_gc_alloc(1, 1);
+    if (r) r[0] = '\0';
+    return r;
+#else
+    emperor_fd_set_nonblock((int)fd);
+    char* buf = (char*)_emperor_gc_alloc(EMPEROR_FD_CHUNK + 1, 1);
+    if (!buf) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    ssize_t n = read((int)fd, buf, EMPEROR_FD_CHUNK);
+    if (n < 0) n = 0; /* EAGAIN et al.: deliver "" */
+    buf[n] = '\0';
+    return buf;
+#endif
+}
+
+long long _emperor_write_fd(long long fd, const char* data) {
+#ifdef _WIN32
+    (void)fd;
+    (void)data;
+    return -1;
+#else
+    if (!data) return 0;
+    emperor_fd_set_nonblock((int)fd);
+    size_t len = strlen(data);
+    ssize_t n = write((int)fd, data, len);
+    if (n < 0) {
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    }
+    return (long long)n;
+#endif
 }
 
 /* --- Binary file I/O (dynamic-linking support) ---

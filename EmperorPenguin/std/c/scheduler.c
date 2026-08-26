@@ -11,11 +11,12 @@
  *   fire expired timers (entry removal only — readiness is observed by
  *   pollers); when nothing progresses and timers remain, advance the
  *   simulation clock to the earliest deadline; when nothing progresses and no
- *   timers remain, quiescence detection: fingerprint every live coroutine's
- *   frozen stack and exit normally once the fingerprint repeats unchanged for
- *   two consecutive idle rounds (no external event sources in v1, so
- *   "waiting forever" and "deadlock" are indistinguishable — quiescence is a
- *   normal exit, matching BabyPenguin).
+ *   timers remain but fd waiters exist, block in poll() on the registered
+ *   descriptors — fd readiness injects the next delta (external event
+ *   sources); only when nothing progresses, no timers remain and no fd
+ *   waiters exist, quiescence detection runs: fingerprint every live
+ *   coroutine's frozen stack and exit normally once the fingerprint repeats
+ *   unchanged for two consecutive idle rounds.
  *
  * Coroutines interoperate with the conservative GC: each stack block is
  * registered as a scan region (the EmperorCoroutine struct lives at the top
@@ -39,9 +40,11 @@
 
 #if defined(_WIN32)
 #define EMPEROR_NO_UCONTEXT 1
+#define EMPEROR_NO_POLL 1
 #else
 #include <ucontext.h>
 #include <sys/mman.h>
+#include <poll.h>
 #endif
 
 #define EMPEROR_CO_STACK_SIZE (32 * 1024 * 1024)
@@ -78,7 +81,9 @@ enum {
     CO_READY = 1,   /* queued, never ran or re-queued after park */
     CO_RUNNING = 2, /* currently executing */
     CO_PARKED = 3,  /* stopped in wait(), re-queued for next round */
-    CO_FINISHED = 4 /* entry returned; pending free */
+    CO_FINISHED = 4, /* entry returned; pending free */
+    CO_FD_PARKED = 5 /* parked on an fd (fd_waiters list); NOT re-queued —
+                        fd_poll_all enqueues it when the fd turns ready */
 };
 
 typedef struct EmperorCoroutine {
@@ -328,6 +333,135 @@ int _emperor_sim_settled(void) {
     return last_round_quiet && (sim_activity == round_start_activity) ? 1 : 0;
 }
 
+/* ---- External fd event sources ----
+ * A coroutine may park on a file descriptor (readable or writable) instead of
+ * the round queue. Such coroutines are external event sources: while any fd
+ * waiter exists, quiescence no longer exits the program — the scheduler
+ * blocks in poll() over the registered descriptors and the readiness of any
+ * of them injects the next delta round (the waiter is re-queued and the loop
+ * continues). This is the epoll/poll integration point that retires the v1
+ * "quiescence == exit because no external event sources exist" deviation of
+ * rtl-ports-design.md §E for programs that actually wait on fds; programs
+ * that never do keep the exact previous behavior. */
+
+typedef struct EmperorFdWaiter {
+    struct EmperorFdWaiter* next;
+    EmperorCoroutine* co;
+    int fd;
+    int for_write; /* 0 = wait readable, 1 = wait writable */
+} EmperorFdWaiter;
+
+static EmperorFdWaiter* fd_waiters = NULL;
+
+/* Park the current coroutine until the fd turns readable (for_write == 0) or
+ * writable (for_write == 1). HUP/ERR conditions wake read waiters too — the
+ * following read reports EOF, which the caller observes. */
+static void fd_park_current(int fd, int for_write) {
+    EmperorCoroutine* self = sched_current;
+    if (!self) {
+        fprintf(stderr,
+                "Uncaught runtime error: fd wait outside a coroutine (code 100)\n");
+        fflush(stdout);
+        exit(1);
+    }
+    EmperorFdWaiter* w = (EmperorFdWaiter*)malloc(sizeof(EmperorFdWaiter));
+    if (!w) {
+        fprintf(stderr, "emperor sched: fd waiter allocation failed\n");
+        exit(1);
+    }
+    w->co = self;
+    w->fd = fd;
+    w->for_write = for_write;
+    w->next = fd_waiters;
+    fd_waiters = w;
+    self->state = CO_FD_PARKED;
+    char marker;
+    self->sp_park = (char*)&marker;
+    _emperor_gc_scan_set_live(self->block, self->sp_park);
+#ifndef EMPEROR_NO_UCONTEXT
+    swapcontext(&self->ctx, &sched_ctx);
+#elif !defined(EMPEROR_NO_POLL)
+    /* Sequential fallback: block inline (no other coroutine could run anyway)
+     * and resume on this stack. */
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = for_write ? (short)POLLOUT : (short)(POLLIN | POLLHUP | POLLERR);
+    pfd.revents = 0;
+    poll(&pfd, 1, -1);
+    self->state = CO_RUNNING;
+#else
+    /* Windows sequential fallback: no poll; treat the fd as ready (the
+     * single-syscall read/write then reports progress or EOF). */
+    self->state = CO_RUNNING;
+#endif
+    /* The scheduler unlinks the waiter before re-queueing us, so there is
+     * nothing to clean up here on either path. */
+}
+
+void _emperor_fd_wait_read(int64_t fd) { fd_park_current((int)fd, 0); }
+void _emperor_fd_wait_write(int64_t fd) { fd_park_current((int)fd, 1); }
+
+static void fd_unlink(EmperorFdWaiter* w) {
+    EmperorFdWaiter** p = &fd_waiters;
+    while (*p) {
+        if (*p == w) {
+            *p = w->next;
+            free(w);
+            return;
+        }
+        p = &(*p)->next;
+    }
+}
+
+/* Poll every registered fd. Ready waiters are unlinked and their coroutines
+ * queued for the next delta round. Returns how many were woken. timeout_ms
+ * < 0 blocks until an event (or EINTR); 0 is a pure readiness probe. */
+static int fd_poll_all(int timeout_ms) {
+#ifdef EMPEROR_NO_POLL
+    (void)timeout_ms;
+    return 0; /* no external fd events on this platform */
+#else
+    if (!fd_waiters) return 0;
+    size_t n = 0;
+    for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) n++;
+    struct pollfd* pfds = (struct pollfd*)malloc(n * sizeof(struct pollfd));
+    EmperorFdWaiter** order =
+        (EmperorFdWaiter**)malloc(n * sizeof(EmperorFdWaiter*));
+    if (!pfds || !order) {
+        fprintf(stderr, "emperor sched: fd poll allocation failed\n");
+        exit(1);
+    }
+    size_t i = 0;
+    for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) {
+        order[i] = w;
+        pfds[i].fd = w->fd;
+        pfds[i].events =
+            w->for_write ? (short)(POLLOUT) : (short)(POLLIN | POLLHUP | POLLERR);
+        pfds[i].revents = 0;
+        i++;
+    }
+    int rc = poll(pfds, (nfds_t)n, timeout_ms);
+    int woken = 0;
+    if (rc > 0) {
+        for (i = 0; i < n; i++) {
+            short re = pfds[i].revents;
+            if (!re) continue;
+            int wake = order[i]->for_write
+                           ? (re & (POLLOUT | POLLERR | POLLHUP | POLLNVAL)) != 0
+                           : (re & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0;
+            if (!wake) continue;
+            EmperorCoroutine* co = order[i]->co;
+            fd_unlink(order[i]);
+            enqueue(&next_head, &next_tail, co);
+            woken++;
+        }
+    }
+    free(pfds);
+    free(order);
+    return woken; /* rc <= 0 (EINTR / error): caller re-enters */
+#endif /* EMPEROR_NO_POLL */
+}
+
 /* Register a timer deadline (the future object lives in Penguin-land; only
  * the deadline is tracked — readiness is observed by pollers). */
 void _emperor_timer_at(int64_t deadline) {
@@ -514,6 +648,11 @@ int _emperor_sched_run(void) {
             if (co->state == CO_FINISHED) {
                 progress = 1;
                 co_destroy(co);
+            } else if (co->state == CO_FD_PARKED) {
+                /* Parked on an fd: stays in the fd_waiters list; fd_poll_all
+                 * re-queues it when the descriptor turns ready. Re-enqueueing
+                 * here (the round-park default) would double-queue it and run
+                 * the park loop every round. */
             } else {
                 /* CO_PARKED (or CO_READY if it never ran — only possible via
                  * the inline fallback path): re-queue for the next round. */
@@ -539,6 +678,13 @@ int _emperor_sched_run(void) {
             continue;
         }
 
+        /* External fd sources: probe ready descriptors without blocking so
+         * fd events are never starved by (virtual-time) timer bursts. */
+        if (fd_waiters && fd_poll_all(0) > 0) {
+            fp_valid = 0;
+            continue;
+        }
+
         if (timer_count > 0) {
             /* Idle with timers pending: jump the clock to the earliest
              * deadline and let the next round's pollers observe it. */
@@ -547,10 +693,21 @@ int _emperor_sched_run(void) {
             continue;
         }
 
-        /* No progress, no timers: quiescence detection. Transactions that
-         * flowed this round (channel writes, event emits) keep the program
-         * alive; an unchanged fingerprint two rounds in a row is a normal
-         * exit (v1 has no external event sources). */
+        /* No progress, no timers, but fd waiters remain: block until the
+         * next external event. External deltas keep the program alive —
+         * quiescence with external sources pending is NOT an exit (a
+         * server parked on its stdin is a legitimate steady state). */
+        if (fd_waiters) {
+            fd_poll_all(-1);
+            continue;
+        }
+
+        /* No progress, no timers, no external sources: quiescence detection.
+         * Transactions that flowed this round (channel writes, event emits)
+         * keep the program alive; an unchanged fingerprint two rounds in a
+         * row is a normal exit (without fd waiters, "waiting forever" and
+         * "deadlock" are indistinguishable — quiescence is a normal exit,
+         * matching BabyPenguin). */
         if (sim_activity != round_start_activity) {
             fp_valid = 0;
             continue;

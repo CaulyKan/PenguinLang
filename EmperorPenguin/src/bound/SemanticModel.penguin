@@ -969,6 +969,17 @@ class SemanticModel {
             this.classify_value_types_pass.validate_interface_usage_def(def);
         }
         this.current_pass_index = saved;
+        // The def's body is still UNBOUND — that is the whole point of this
+        // replay. But the sub-passes above stamp each processor's pass index
+        // onto the def (classify reaches `saved` == 8 when called from pass
+        // 8), which would make the dynamic pass-8 loop's already_processed
+        // guard skip binding the body entirely (async-site spawn ctx classes
+        // failed exactly this way: `this` never entered the method scope,
+        // E_RESOLVE_SYMBOL six times per `async this.m()` site). Reset to 7:
+        // "everything through classification is done, body pending".
+        if (saved >= 8 && BoundDefinition.get_pass_index(def) >= 8) {
+            BoundDefinition.set_pass_index(def, 7);
+        }
     }
 
     // Resolve an impl block's interface/target type by its QUALIFIED NAME ONLY

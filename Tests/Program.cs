@@ -336,6 +336,7 @@ public static class Program
             [CompilerKind.EmperorPenguinPass1] = new EmperorOnVmBackend(bpDll, Path.Combine(repoRoot, "EmperorPenguin", "EmperorPenguin.penguins")),
             [CompilerKind.EmperorPenguinPass2] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass2"), CompilerKind.EmperorPenguinPass2),
             [CompilerKind.EmperorPenguinPass3] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass3"), CompilerKind.EmperorPenguinPass3),
+            [CompilerKind.Prebuilt] = new PrebuiltExeBackend(),
         };
     }
 
@@ -609,6 +610,7 @@ public sealed class Options
             else if (part.Contains("pass1") || part.Equals("pass-1", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass1);
             else if (part.Contains("pass2") || part.Equals("pass-2", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass2);
             else if (part.Contains("pass3") || part.Equals("pass-3", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass3);
+            else if (part.Contains("prebuilt")) set.Add(CompilerKind.Prebuilt);
             else { Console.Error.WriteLine($"Unknown compiler '{part}'"); return null; }
         }
         return set;
@@ -622,7 +624,7 @@ public sealed class Options
         Usage: dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 
         Options:
-          --compilers babypenguin,pass1,pass2,pass3[,all]
+          --compilers babypenguin,pass1,pass2,pass3,prebuilt
                                   Limit to these compilers (default: each test's Apply To).
           --filter <glob|substr>  Select Tests/ files, e.g. CalculationTest/* or AddTest.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
@@ -649,7 +651,7 @@ public sealed class Options
 
 // ───────────────────────── Model ─────────────────────────
 
-public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3 }
+public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3, Prebuilt }
 
 public enum Status { Pass, Fail, Skip, Error }
 
@@ -662,6 +664,7 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "pass1",
         CompilerKind.EmperorPenguinPass2 => "pass2",
         CompilerKind.EmperorPenguinPass3 => "pass3",
+        CompilerKind.Prebuilt => "prebuilt",
         _ => throw new InvalidOperationException(),
     };
     public static string Display(this CompilerKind c) => c switch
@@ -671,6 +674,7 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "Emperor Pass1",
         CompilerKind.EmperorPenguinPass2 => "Emperor Pass2",
         CompilerKind.EmperorPenguinPass3 => "Emperor Pass3",
+        CompilerKind.Prebuilt => "Prebuilt",
         _ => throw new InvalidOperationException(),
     };
 }
@@ -706,6 +710,18 @@ public sealed record Expectation(string Mode, string? Operand)
             reason = DiffReason(Operand ?? "", actual);
             return false;
         }
+        if (Mode == "ESCAPE")
+        {
+            // Byte-exact comparison after true C-style unescaping of the literal
+            // (\n -> LF, \r -> CR, \t -> TAB, \\ -> backslash). EQUALS cannot
+            // express CR bytes (multi-line literals join with LF only), which
+            // binary-protocol outputs need — e.g. LSP JSON-RPC frames separate
+            // headers from body with a literal CRLF CRLF.
+            var expected = CUnescape(Operand ?? "");
+            if (actual == expected) { reason = ""; return true; }
+            reason = DiffReason(expected, actual);
+            return false;
+        }
         if (Mode == "CONTAINS")
         {
             var op = Operand ?? "";
@@ -715,6 +731,29 @@ public sealed record Expectation(string Mode, string? Operand)
         }
         reason = $"unknown match mode '{Mode}'";
         return false;
+    }
+
+    /// <summary>True C-style unescape (\n, \r, \t, \\) — left-to-right, single pass,
+    /// so a lone or unknown escape keeps its backslash verbatim.</summary>
+    public static string CUnescape(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == '\\' && i + 1 < s.Length)
+            {
+                switch (s[i + 1])
+                {
+                    case 'n': sb.Append('\n'); i++; break;
+                    case 'r': sb.Append('\r'); i++; break;
+                    case 't': sb.Append('\t'); i++; break;
+                    case '\\': sb.Append('\\'); i++; break;
+                    default: sb.Append(s[i]); break;
+                }
+            }
+            else sb.Append(s[i]);
+        }
+        return sb.ToString();
     }
 
     private static string DiffReason(string expected, string actual)
@@ -914,6 +953,16 @@ public static class MarkdownTestParser
                 if (t.Compiler is CompilerKind.BabyPenguin or CompilerKind.BabyPenguinCs or CompilerKind.EmperorPenguinPass1)
                     throw new FormatException($"Multi-stage test '{tc.Name}' (## Build N) may only Apply To EmperorPenguin Pass2/Pass3, not {t.Compiler}.");
         }
+        if (tc.ApplyTo.Any(t => t.Compiler == CompilerKind.Prebuilt))
+        {
+            // Fail fast at parse time: the Prebuilt backend has nothing to compile and
+            // needs the executable path in Compile.Args (the Test Code block is unused
+            // documentation for such tests).
+            if (string.IsNullOrWhiteSpace(tc.Compile?.Args))
+                throw new FormatException($"Prebuilt test '{tc.Name}' requires Compile.Args = <path to the prebuilt executable>.");
+            if (tc.Builds.Count > 0)
+                throw new FormatException($"Prebuilt test '{tc.Name}' cannot use multi-stage (## Build N) sections.");
+        }
 
         return tc;
     }
@@ -935,10 +984,12 @@ public static class MarkdownTestParser
             case "args": stage.Args = Stripped(); break;
             case "env": stage.Env = ParseEnv(Stripped()); break;
             case "stdin":
-                // Interpret C-style escapes so multi-line stdin is expressible
-                // on one line (`Stdin: `a\nb\n``); order matters (\r\n first).
-                if (isRun) stage.Stdin = Stripped()
-                    .Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\\r", "\n").Replace("\\t", "\t").Replace("\\\\", "\\");
+                // True C-style unescape, single pass left-to-right (\n LF, \r CR,
+                // \t TAB, \\ backslash). A Replace CHAIN cannot round-trip escaped
+                // backslashes: "\\n" (backslash + 'n', e.g. inside JSON text on a
+                // Stdin line) would first match the \n rule and collapse into
+                // backslash + newline, corrupting the payload.
+                if (isRun) stage.Stdin = Expectation.CUnescape(Stripped());
                 break;
             case "expectedexitcode": stage.ExpectedExitCode = Stripped().Trim(); break;
             case "kind": stage.Kind = Stripped().Trim().ToLowerInvariant(); break;
@@ -1013,6 +1064,7 @@ public static class MarkdownTestParser
             else if (l.Contains("pass1") || l.Contains("pass 1")) kind = CompilerKind.EmperorPenguinPass1;
             else if (l.Contains("pass2") || l.Contains("pass 2")) kind = CompilerKind.EmperorPenguinPass2;
             else if (l.Contains("pass3") || l.Contains("pass 3")) kind = CompilerKind.EmperorPenguinPass3;
+            else if (l.Contains("prebuilt")) kind = CompilerKind.Prebuilt;
             if (kind == null) continue;
             // Optional "(SKIP if '<compiler>' PASS)" — skip this compiler when the guard passes.
             CompilerKind? skipIf = null;
@@ -1282,6 +1334,43 @@ public sealed class EmperorNativeBackend : ICompilerBackend
         all.Add("-o");
         all.Add(exeFile);
         var psi = new ProcessStartInfo { FileName = _binary, Arguments = ArgumentBuilder.Build(all), WorkingDirectory = repoRoot };
+        EnvHelper.ApplyEnv(psi, compile.Env, workDir);
+        return psi;
+    }
+
+    public ProcessStartInfo BuildRunProcess(string exeFile, StageSpec run, string workDir)
+    {
+        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args, workDir)).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args, workDir))) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
+        EnvHelper.ApplyEnv(psi, run.Env, workDir);
+        return psi;
+    }
+}
+
+/// <summary>
+/// Prebuilt executable: no compile happens — Compile.Args names an already-built
+/// executable (repo-root-relative or absolute; ${WORKDIR}/${PENGUIN_ROOT} expand).
+/// The "compile" stage copies it into the per-combo workdir as out.exe (so run
+/// + artifacts behave exactly like a natively compiled case) and the Run stage
+/// executes it. Lets heavyweight programs — e.g. the 16k-line LSP server built
+/// once per milestone via tmp/pass3 — run through the full md e2e lifecycle
+/// (stdin-fed, byte-exact stdout) without recompiling per test. NOT part of
+/// AllCompilers/--probe (probing every test with a copy backend is meaningless).
+/// </summary>
+public sealed class PrebuiltExeBackend : ICompilerBackend
+{
+    public CompilerKind Kind => CompilerKind.Prebuilt;
+    public bool IsInterpreted => false;
+
+    public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile, string workDir)
+    {
+        var src = EnvHelper.Expand(compile.Args, workDir).Trim();
+        if (src.Length == 0)
+            throw new FormatException("Prebuilt backend requires Compile.Args = <path to the prebuilt executable>.");
+        if (!Path.IsPathRooted(src)) src = Path.Combine(repoRoot, src);
+        // cp keeps the artifact in the per-combo workdir exactly like a real compile.
+        var psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo { FileName = "cmd", Arguments = ArgumentBuilder.Build("/c", "copy", "/y", src, exeFile), WorkingDirectory = repoRoot }
+            : new ProcessStartInfo { FileName = "/bin/cp", Arguments = ArgumentBuilder.Build("--", src, exeFile), WorkingDirectory = repoRoot };
         EnvHelper.ApplyEnv(psi, compile.Env, workDir);
         return psi;
     }
@@ -1757,9 +1846,11 @@ public static class BaselineComparer
     private static CompilerKind ParseKey(string s) => s switch
     {
         "babypenguin" => CompilerKind.BabyPenguin,
+        "baby cs" => CompilerKind.BabyPenguinCs,
         "pass1" => CompilerKind.EmperorPenguinPass1,
         "pass2" => CompilerKind.EmperorPenguinPass2,
         "pass3" => CompilerKind.EmperorPenguinPass3,
+        "prebuilt" => CompilerKind.Prebuilt,
         _ => CompilerKind.BabyPenguin,
     };
 

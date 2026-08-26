@@ -1,0 +1,97 @@
+// LspMain: the session-level module (design doc's static half).
+//
+// Two loops, one per input port (session commands, document traffic):
+//  - session: initialize / initialized / shutdown / exit. `exit` pushes the
+//    out_exit control into the outbound hub — frame order guarantees the
+//    shutdown response (and everything else queued) reaches the wire before
+//    StdioStream calls exit(code) — then the loop retires.
+//  - docs: routing by textDocument.uri. didOpen dynamically instantiates a
+//    LspCompilationUnit (module-as-actor: runtime `new`, its initial spawns
+//    with it) handing it the shared outbound ISink; everything else is
+//    forwarded to the owning unit's cmds Fifo (1:N routing on the inbound
+//    side, N:1 merge on the outbound hub — the dynamic-wiring half of the
+//    design's static/dynamic topology split; channels are not legal connect
+//    sinks in EP v1, so dynamic wiring goes through constructors).
+namespace lsp {
+
+class LspMain {
+    input session : string;
+    input docs : string;
+
+    // Shared outbound hub view (JsonOutputParser's single-consumer Fifo).
+    out_sink: mut __builtin.ISink<LspOutMsg>;
+    units: mut std.HashMap<string, LspCompilationUnit> = new std.HashMap<string, LspCompilationUnit>();
+    shutdown_seen: mut bool = false;
+
+    fun new(mut this, out_sink: mut __builtin.ISink<LspOutMsg>) {
+        this.out_sink = out_sink;
+    }
+
+    fun respond_result(mut this, msg: LspMessage, result_json: string) {
+        let r: mut LspResponse = response_for(msg);
+        r.result_json = result_json;
+        this.out_sink.write(new LspOutMsg.out_response(r));
+    }
+
+    fun respond_error(mut this, msg: LspMessage, code: i64, message: string) {
+        this.out_sink.write(new LspOutMsg.out_error(error_for(msg, code, message)));
+    }
+
+    initial {
+        while (true) {
+            let body: string = wait this.session;
+            let msg: mut LspMessage = parse_message(body);
+            if (msg.method == "initialize") {
+                this.respond_result(msg, initialize_result_json());
+            } else if (msg.method == "initialized") {
+                // Notification; nothing to do.
+            } else if (msg.method == "shutdown") {
+                this.shutdown_seen = true;
+                this.respond_result(msg, "null");
+            } else if (msg.method == "exit") {
+                // LSP spec: 0 after shutdown, 1 otherwise. The control flows
+                // through the hub so pending frames flush first.
+                if (this.shutdown_seen) {
+                    this.out_sink.write(new LspOutMsg.out_exit(0));
+                } else {
+                    this.out_sink.write(new LspOutMsg.out_exit(1));
+                }
+                break;
+            } else if (msg.has_id) {
+                this.respond_error(msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + msg.method);
+            }
+        }
+    }
+
+    initial {
+        while (true) {
+            let body: string = wait this.docs;
+            let msg: mut LspMessage = parse_message(body);
+            let uri: string = extract_uri(msg);
+            if (uri == "") {
+                continue;
+            }
+            if (msg.method == "textDocument/didOpen") {
+                if (this.units.get(uri).is_none()) {
+                    let p: std.JsonValue = std.parse_json(msg.params_json);
+                    let td: __builtin.Option<std.JsonValue> = p.get("textDocument");
+                    let text: mut string = "";
+                    if (td.is_some()) {
+                        text = json_get_string(td.some, "text");
+                    }
+                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text, this.out_sink);
+                    this.units.put(uri, unit);
+                }
+            } else {
+                let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);
+                if (u.is_some()) {
+                    u.some.cmds.write(msg);
+                } else if (msg.has_id) {
+                    this.respond_error(msg, JSONRPC_INVALID_PARAMS, "document not open: " + uri);
+                }
+            }
+        }
+    }
+}
+
+}
