@@ -35,12 +35,35 @@ namespace BabyPenguin.Type
 
         public bool CanImplicitlyCastToWithoutMutability(IType other)
         {
-            if (Interface.FullName() == (other.TypeNode as IInterfaceNode)?.FullName())
+            if (other.TypeNode is IInterfaceNode intfSelf && TypeStructure.SameNode(Interface, intfSelf))
                 return true;
             else if (other.TypeNode is IInterfaceNode intf)
-                return Interface.ImplementedInterfaces.Any(i => i.FullName() == intf.FullName());
+                return ImplementedInterfaceMatches(intf);
             else
                 return false;
+        }
+
+        // See ClassType.ImplementedInterfaceMatches: structural comparison of
+        // built vtables with a declared-impl fallback for specializations whose
+        // CatchUp has not reached the interface pass yet.
+        private bool ImplementedInterfaceMatches(IInterfaceNode intf)
+        {
+            foreach (var implemented in Interface.ImplementedInterfaces)
+            {
+                if (TypeStructure.SameNode(implemented, intf))
+                    return true;
+            }
+            if (Interface.SyntaxNode is InterfaceDefinition syntax)
+            {
+                foreach (var impl in syntax.InterfaceImplementations)
+                {
+                    if (impl.InterfaceType == null) continue;
+                    var node = Model.ResolveTypeNode(impl.InterfaceType.Text, s => s is IInterfaceNode, Interface);
+                    if (node != null && TypeStructure.SameNode(node, intf))
+                        return true;
+                }
+            }
+            return false;
         }
 
         public IType WithMutability(Mutability isMutable)
