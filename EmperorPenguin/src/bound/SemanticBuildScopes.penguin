@@ -1375,6 +1375,14 @@ class BuildScopesPass {
                 let payload_type: mut BoundType = this.model.some.type_registry.void_type;
                 let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
                 let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
+                // Member symbols carry their declaration site (LSP goto-def
+                // lands on the variant, not the enum). Fall back to the enum's
+                // own location when the AST member has none.
+                if (member.enum_member.location.line > 0) {
+                    msym.location = member.enum_member.location;
+                } else {
+                    msym.location = def.location;
+                }
                 m.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
                 enum_scope.add_symbol(new BoundSymbol.enum_member(msym));
                 result.members.push(m);

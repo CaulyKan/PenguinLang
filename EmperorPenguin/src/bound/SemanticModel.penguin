@@ -982,6 +982,25 @@ class SemanticModel {
         }
     }
 
+    // Pass-8-forced variant of catch_up_def_before_bodies for defs created
+    // NESTED inside another def's late catch-up chain (e.g. resolve_field_
+    // specialization creating a sibling field-type specialization while the
+    // caller has temporarily lowered current_pass_index to 3 for resolve_pair).
+    // current_pass_index=8 here means "the compilation's real position is the
+    // pass-8 window (current_unit is set), no matter what index the enclosing
+    // bind nested at" — so the fresh def gets symbols, constructors, vtables
+    // AND classification; without this, a pass-8-window specialization that
+    // only rides resolve_pair + push is never classified (pass 7's global run
+    // is already over) and the emitter defaults it to a VALUE class
+    // (E_SIZE_CYCLE on recursive shapes like _ChanNode.next: Option<_ChanNode>).
+    fun catch_up_def_before_bodies_as_pass8(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter catch_up_def_before_bodies_as_pass8");
+        let saved: i64 = this.current_pass_index;
+        this.current_pass_index = 8;
+        this.catch_up_def_before_bodies(def, result);
+        this.current_pass_index = saved;
+    }
+
     // Resolve an impl block's interface/target type by its QUALIFIED NAME ONLY
     // (no generic args). Vtables key on the interface TEMPLATE (matching the
     // call side's extract_template_name), and in a template context the generic

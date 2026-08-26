@@ -3724,6 +3724,9 @@ class BindExpressionsPass {
                     }
                     let mangled_spec: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
                     let spec_existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled_spec);
+                    if (string_find(mangled_spec, "_Fanout$") == 0 || string_find(mangled_spec, "_ChanList$") == 0) {
+                        __builtin.eprintln("[BN] " + mangled_spec + " exists=" + cast<string>(spec_existing.is_some()) + " idx=" + cast<string>(this.model.some.current_pass_index));
+                    }
                     if (spec_existing.is_none()) {
                         let inst_bt: BoundType = type_sym.some.type_sym.bound_type.with_generic_args(bt.generic_args);
                         let spec_new: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(inst_bt, this.model.some.global_scope);
@@ -3747,9 +3750,14 @@ class BindExpressionsPass {
                                 m0.current_pass_index = saved_idx0;
                                 m0.catch_up_def_before_bodies(to_register, this.model.some.current_unit.some);
                                 this.model.some.current_unit.some.definitions.push(to_register);
+                                // Method-signature instantiations of the new
+                                // spec are invisible to the finished pass-3
+                                // fixpoint — complete them recursively.
+                                this.model.some.monomorphize_pass.late_ensure_def_signatures(to_register, this.model.some.global_scope);
                             } else {
                                 m0.catch_up_def_before_bodies(spec_new.some, this.model.some.current_unit.some);
                                 this.model.some.current_unit.some.definitions.push(spec_new.some);
+                                this.model.some.monomorphize_pass.late_ensure_def_signatures(spec_new.some, this.model.some.global_scope);
                             }
                         }
                     }

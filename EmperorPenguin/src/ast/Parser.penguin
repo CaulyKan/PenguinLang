@@ -30,7 +30,10 @@ fun _mark_ast_exported(def: Definition) {
             let tok: Token = this.stream.peek();
             let err: string = tok.location.to_string() + ": " + message;
             this.errors.push(err);
-            print(err);
+            // No inline print: the message reaches the user through the folded
+            // E_PARSE error list (main.penguin prints those to stderr). An
+            // inline print would pollute STDOUT — fatal when the compiler is
+            // embedded in the LSP server, whose JSON-RPC frames share fd 1.
         }
 
         fun has_errors(this) -> bool {
@@ -984,6 +987,7 @@ fun _mark_ast_exported(def: Definition) {
                 fd.return_type = new Option<TypeSpecifier>.some(ts);
             }
             if (this.stream.match(new TokenType.Assign())) {
+                this.check_initializer_after_assign();
                 let expr = this.parse_expression();
                 fd.body = new Option<Expression>.some(expr);
             }
@@ -1001,10 +1005,28 @@ fun _mark_ast_exported(def: Definition) {
                 node.type_spec = new Option<TypeSpecifier>.some(ts);
             }
             if (this.stream.match(new TokenType.Assign())) {
+                this.check_initializer_after_assign();
                 let init_val: Expression = this.parse_expression();
                 node.initializer = new Option<Expression>.some(init_val);
             }
             return new Definition.class_field(node);
+        }
+
+        // A '=' initializer whose next token cannot START an expression is a
+        // syntax error (`let x = ;`). The primary-expression fallback would
+        // otherwise silently recover with an empty-string constant — empty
+        // diagnostics in the LSP and an unprintable value token in the IR
+        // ("expected value token" at clang time). Report here and let the
+        // existing recovery shape continue (parse_expression still runs).
+        fun check_initializer_after_assign(this) {
+            let next: Token = this.stream.peek();
+            if (next.token_type is TokenType.Semicolon
+                || next.token_type is TokenType.RBrace
+                || next.token_type is TokenType.RParen
+                || next.token_type is TokenType.Comma
+                || this.stream.is_at_end()) {
+                this.report_error("missing initializer after '='");
+            }
         }
 
 
@@ -1545,6 +1567,7 @@ fun _mark_ast_exported(def: Definition) {
         fun parse_enumDeclaration(this) -> Definition {
             let name_token: Token = this.stream.advance();
             let node: EnumMemberDefinition = new EnumMemberDefinition(name_token.text);
+            node.location = this.tok_loc(name_token);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
                 node.type_spec = new Option<TypeSpecifier>.some(ts);
@@ -1612,6 +1635,7 @@ fun _mark_ast_exported(def: Definition) {
                     }
                     let init_val: mut Option<Expression> = new Option<Expression>.none();
                     if (this.stream.match(new TokenType.Assign())) {
+                        this.check_initializer_after_assign();
                         init_val = new Option<Expression>.some(this.parse_expression());
                     }
                     this.stream.expect(new TokenType.Semicolon());
@@ -1949,9 +1973,8 @@ fun _mark_ast_exported(def: Definition) {
                 let def = this.parse_namespaceDeclaration();
                 unit.definitions.push(def);
             }
-            if (this.has_errors()) {
-                print("Parse completed with " + cast<string>(this.errors.size()) + " error(s)");
-            }
+            // Parse errors (if any) flow to the user via the folded E_PARSE
+            // error list (see report_error) — no stdout print here.
             return unit;
         }
 

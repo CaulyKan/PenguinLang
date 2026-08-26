@@ -1293,14 +1293,34 @@ class MonomorphizePass {
                             if (td is BoundDefinition.class_def) { tmpl_short = td.class_def.name; }
                             if (td is BoundDefinition.enum_def) { tmpl_short = td.enum_def.name; }
                             if (td is BoundDefinition.interface_def) { tmpl_short = td.interface_def.name; }
-                            let ast_def2: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_short);
-                            if (ast_def2.is_some()) {
-                                this.model.some.resolve_types_pass.resolve_pair(ast_def2.some, spec.some, global_scope);
-                            }
-                            if (this.active_result.is_some()) {
-                                this.active_result.some.definitions.push(spec.some);
-                            } else if (this.model.some.current_unit.is_some()) {
-                                this.model.some.current_unit.some.definitions.push(spec.some);
+                            if (this.model.some.current_unit.is_some()) {
+                                // Pass-8 window: current_unit is set ONLY during
+                                // pass 8 (active_result stays set from pass 3, so
+                                // checking it first would misroute) — the global
+                                // classify run (pass 7) is already over, so "push
+                                // and the later passes process it" does NOT hold:
+                                // only the dynamic pass-8 body loop remains. The
+                                // shared tail force-completes the def (resolve at
+                                // the monomorphize index, signature-level catch-up
+                                // incl. classification, method-signature
+                                // instantiation walk); without it the emitter
+                                // defaults the class to a VALUE layout and
+                                // recursive shapes die as E_SIZE_CYCLE
+                                // (PortPayloadEnumChannelCycle), and signature
+                                // instantiations lack layouts (bare-i64 ABI).
+                                this.finish_late_spec_def(spec.some, tmpl_short, global_scope);
+                            } else {
+                                // Pre-pass-8 window (pass 2/3 resolution): the
+                                // original protocol — resolve_pair at the
+                                // ambient index and let the later global passes
+                                // (4-9, incl. classify) process the pushed def.
+                                let ast_def2: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_short);
+                                if (ast_def2.is_some()) {
+                                    this.model.some.resolve_types_pass.resolve_pair(ast_def2.some, spec.some, global_scope);
+                                }
+                                if (this.active_result.is_some()) {
+                                    this.active_result.some.definitions.push(spec.some);
+                                }
                             }
                         }
                     }
@@ -1717,6 +1737,163 @@ class MonomorphizePass {
     // also needs List<i32>). Self-referential shapes terminate: the def's type
     // symbol is registered in the global scope before its members resolve, so
     // the re-entrant ensure hits the already-exists check.
+    // ---- Pass-8 late-specialization completion ----
+    // A specialization created during the pass-8 window (after the pass-3
+    // fixpoint and the pass-7 classify run have both finished) must be fully
+    // completed on demand or the emitter sees a half-built def: created
+    // (ensure_specialized_def resolves FIELD types, cascading further creates)
+    // -> resolve_pair at the monomorphize-protocol index 3 (method signatures;
+    // stamping 8 would make every catch-up sub-pass skip — no vtables, no
+    // classification, emitter defaults the class to a VALUE layout,
+    // E_SIZE_CYCLE on recursive shapes) -> registered in the unit ->
+    // catch_up_def_before_bodies_as_pass8 (symbols/ctors/vtables/classify;
+    // bodies stay with the dynamic pass-8 loop) -> RECURSE into the resolved
+    // method SIGNATURES, whose generic instantiations (e.g. _ChanList.at ->
+    // Option<T>) are invisible to both the finished fixpoint and the
+    // field-type cascade (resolve_field_specialization only walks fields) —
+    // without the walk they never get layouts and lower to bare i64
+    // ("%t defined with type 'i64' but expected 'ptr'").
+    fun complete_late_specialization(mut this, bt: BoundType, global_scope: mut BoundScope) {
+        if (bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = bt.type_definition.some;
+        let gp: mut i64 = 0;
+        let full_base: mut string = "";
+        let tmpl_short: mut string = "";
+        if (td is BoundDefinition.class_def) {
+            gp = cast<i64>(td.class_def.generic_params.size());
+            full_base = td.class_def.full_name;
+            tmpl_short = td.class_def.name;
+        }
+        if (td is BoundDefinition.enum_def) {
+            gp = cast<i64>(td.enum_def.generic_params.size());
+            full_base = td.enum_def.full_name;
+            tmpl_short = td.enum_def.name;
+        }
+        if (td is BoundDefinition.interface_def) {
+            gp = cast<i64>(td.interface_def.generic_params.size());
+            full_base = td.interface_def.full_name;
+            tmpl_short = td.interface_def.name;
+        }
+        if (gp > 0 && cast<i64>(bt.generic_args.size()) > 0 && full_base != "") {
+            let mangled: string = mangle_generic_name(full_base, bt.generic_args);
+            if (global_scope.lookup_type_in_scope(mangled).is_none()
+                && this.model.some.current_unit.is_some()) {
+                let spec: Option<BoundDefinition> = this.ensure_specialized_def(bt, global_scope);
+                if (spec.is_some()) {
+                    this.finish_late_spec_def(spec.some, tmpl_short, global_scope);
+                }
+            }
+        }
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(bt.generic_args.size())) {
+            let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(ai)).some;
+            if (!arg_is_value(arg)) {
+                this.complete_late_specialization(arg_as_bound_type(arg), global_scope);
+            }
+            ai = ai + 1;
+        }
+    }
+
+    // The resolve/register/catch-up/signature-recurse tail shared by the
+    // pass-8 creation paths (resolve_field_specialization's nested cascade,
+    // complete_late_specialization).
+    fun finish_late_spec_def(mut this, spec: BoundDefinition, tmpl_short: string, global_scope: mut BoundScope) {
+        let m: mut SemanticModel = this.model.some;
+        if (m.current_unit.is_none()) { return; }
+        let unit8: mut BoundCompilationUnit = m.current_unit.some;
+        let ast_def2: Option<Definition> = this.find_ast_def_by_name(m.ast_definitions, tmpl_short);
+        if (ast_def2.is_some()) {
+            // Resolve at the monomorphize-protocol index (3): resolve_pair
+            // stamps the def with the CURRENT pass index, and late creations
+            // nest inside pass-8 binds — stamping 8 would make the catch-up
+            // sub-passes below skip (classify included), leaving the class
+            // unclassified (emitter defaults it to VALUE).
+            let saved_rp: i64 = m.current_pass_index;
+            m.current_pass_index = 3;
+            m.resolve_types_pass.resolve_pair(ast_def2.some, spec, global_scope);
+            m.current_pass_index = saved_rp;
+        }
+        unit8.definitions.push(spec);
+        m.catch_up_def_before_bodies_as_pass8(spec, unit8);
+        this.late_ensure_def_signatures(spec, global_scope);
+    }
+
+    // Walk a def's method signatures (class methods/constructors/impl blocks,
+    // enum methods, interface methods) ensuring every generic instantiation
+    // they mention exists as a completed specialization.
+    fun late_ensure_def_signatures(mut this, def: BoundDefinition, global_scope: mut BoundScope) {
+        if (def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = def.class_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(cls.methods.size())) {
+                this.late_ensure_fn_signature(cls.methods.at(cast<u64>(i)).some, global_scope);
+                i = i + 1;
+            }
+            let j: mut i64 = 0;
+            while (j < cast<i64>(cls.constructors.size())) {
+                this.late_ensure_fn_signature(cls.constructors.at(cast<u64>(j)).some, global_scope);
+                j = j + 1;
+            }
+            let k: mut i64 = 0;
+            while (k < cast<i64>(cls.interface_impls.size())) {
+                this.late_ensure_impl_signature(cls.interface_impls.at(cast<u64>(k)).some, global_scope);
+                k = k + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = def.enum_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(enm.methods.size())) {
+                this.late_ensure_fn_signature(enm.methods.at(cast<u64>(i)).some, global_scope);
+                i = i + 1;
+            }
+            let k: mut i64 = 0;
+            while (k < cast<i64>(enm.interface_impls.size())) {
+                this.late_ensure_impl_signature(enm.interface_impls.at(cast<u64>(k)).some, global_scope);
+                k = k + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = def.interface_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(iface.methods.size())) {
+                this.late_ensure_fn_signature(iface.methods.at(cast<u64>(i)).some, global_scope);
+                i = i + 1;
+            }
+            let k: mut i64 = 0;
+            while (k < cast<i64>(iface.interface_impls.size())) {
+                this.late_ensure_impl_signature(iface.interface_impls.at(cast<u64>(k)).some, global_scope);
+                k = k + 1;
+            }
+            return;
+        }
+    }
+
+    fun late_ensure_impl_signature(mut this, def: BoundDefinition, global_scope: mut BoundScope) {
+        if (def is BoundDefinition.impl_def) {
+            let i: mut i64 = 0;
+            let mtds: _utils.List<BoundDefinition> = def.impl_def.methods;
+            while (i < cast<i64>(mtds.size())) {
+                this.late_ensure_fn_signature(mtds.at(cast<u64>(i)).some, global_scope);
+                i = i + 1;
+            }
+        }
+    }
+
+    fun late_ensure_fn_signature(mut this, def: BoundDefinition, global_scope: mut BoundScope) {
+        if (def is BoundDefinition.function_def) {
+            let f: BoundFunctionDefinition = def.function_def;
+            this.complete_late_specialization(f.return_type, global_scope);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(f.parameters.size())) {
+                this.complete_late_specialization(f.parameters.at(cast<u64>(i)).some.bound_type, global_scope);
+                i = i + 1;
+            }
+        }
+    }
+
     fun ensure_nested_specialization(mut this, bt: BoundType, global_scope: mut BoundScope) {
         if (bt.type_definition.is_none()) { return; }
         let td: BoundDefinition = bt.type_definition.some;
