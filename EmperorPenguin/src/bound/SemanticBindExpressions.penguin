@@ -3724,9 +3724,6 @@ class BindExpressionsPass {
                     }
                     let mangled_spec: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
                     let spec_existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled_spec);
-                    if (string_find(mangled_spec, "_Fanout$") == 0 || string_find(mangled_spec, "_ChanList$") == 0) {
-                        __builtin.eprintln("[BN] " + mangled_spec + " exists=" + cast<string>(spec_existing.is_some()) + " idx=" + cast<string>(this.model.some.current_pass_index));
-                    }
                     if (spec_existing.is_none()) {
                         let inst_bt: BoundType = type_sym.some.type_sym.bound_type.with_generic_args(bt.generic_args);
                         let spec_new: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(inst_bt, this.model.some.global_scope);

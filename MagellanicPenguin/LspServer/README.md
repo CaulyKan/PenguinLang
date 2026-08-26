@@ -62,9 +62,11 @@ feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
 
 ## Design notes
 
-- **Port payloads are strings only** — output ports' injected `_Fanout<T>` defaults are only
-  green for primitive payloads today (`Tests/PortTest/PortPayloadEnumChannelCycle.md` tracks
-  the compiler fix). Rich datatypes (`LspMessage`, `LspOutMsg`) travel through explicit
+- **Port payloads are strings only** — a deliberate architecture choice (kept after the
+  compiler fix landed: `Tests/PortTest/PortPayloadEnumChannelCycle.md` is green, so rich
+  port payloads are now POSSIBLE, but the explicit-Fifo wiring already works and channels
+  are not legal connect sinks in EP v1, so the demux hands producers constructor-injected
+  hub views either way). Rich datatypes (`LspMessage`, `LspOutMsg`) travel through explicit
   `Fifo` channels spelled as **class field types**, which the pass-3 monomorphize fixpoint
   collects eagerly.
 - **Channels are not legal connect sinks** (deviation F in the design doc) — the outbound
@@ -82,10 +84,32 @@ feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
   test runner's per-combo workdirs and from `vscode/server/linux/` with the bundled
   `EmperorPenguin/std/penguin` tree (`./penguin -p` stages both).
 - **Query semantics are v1-deliberately naive** (same as the C# server): no scope
-  resolution — definition looks up the identifier under the cursor in the whole-program
-  symbol index (same-file match preferred); completion returns keywords + every indexed
-  symbol deduplicated by name. Enum variants resolve to their enum's location (member
-  symbols carry no location in the bound tree yet).
+  resolution — definition/hover look up the identifier under the cursor in the
+  whole-program symbol index (same-file match preferred); completion returns keywords +
+  every indexed symbol deduplicated by name. Enum member symbols carry their declaration
+  locations since the bound tree started populating them (goto-def lands on the variant).
+- **references / rename** are name-level within the requesting document (occurrences by
+  re-lexing; declarations once, honoring `context.includeDeclaration`); rename returns a
+  single-document `WorkspaceEdit`. Cross-file references need other documents' texts —
+  only opened units have them in v1.
+- **hover** shows the symbol's bound signature (`fun name(a: T) -> R` / `name: T` / kind
+  line) from the last error-free compile.
+- **inlay hints** walk the last error-free unit's bound bodies (functions, methods,
+  constructors, initial blocks, nested if/while/lambda blocks) and place `: T` labels
+  after `let`-declared names inside the requested range.
+- **formatting** is lexically faithful whole-document: it re-emits the token stream with
+  normalized spacing/indentation (4 spaces per brace depth, newline after statement
+  semicolons/braces, blank-line preservation capped at one) and PRESERVES comments
+  (pre-scanned from the raw text — the lexer drops them) in source order.
+- **Server survives broken documents**: `recompile()` wraps the embedded compile in
+  try/catch (native sjlj); a compiler panic publishes an "internal compiler error"
+  diagnostic and keeps the last error-free unit, and `TokenStream.advance`'s end-of-input
+  overrun raises a catchable error instead of `exit(1)`.
+- **Build caching**: `./penguin -lsp` keys a content-addressed cache on the resolved
+  source set + stdlib + pass3 — unchanged inputs rebuild in seconds. (A dyn-lib
+  librarization was evaluated and deferred: the LSP walks the compiler's entire bound-tree
+  object graph — enum dispatch, List fields, field reads on lib classes — far beyond the
+  tested lib flows; see the script's comment.)
 
 ## vscode
 

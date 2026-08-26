@@ -85,7 +85,10 @@ class LspCompilationUnit {
     // publishes the panic as a diagnostic, keeps last_ok at the previous
     // error-free unit (queries keep working), and the server SURVIVES
     // (previously the panic killed the whole process and every later
-    // request went unanswered).
+    // request went unanswered). Note: the result lives INSIDE the try — no
+    // fallback BoundCompilationUnit is ever constructed (its default
+    // ctor's field-default chain is unexercised by the compiler itself and
+    // crashes; compile_sources either returns a real unit or throws).
     fun recompile(mut this) {
         let inputs: mut _utils.List<emperor.SourceInput> = new _utils.List<emperor.SourceInput>();
         inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
@@ -94,99 +97,113 @@ class LspCompilationUnit {
 
         let compiler: mut emperor.EmperorPenguinCompiler = new emperor.EmperorPenguinCompiler();
         compiler.enable_coroutine = true;
-        let result: mut emperor.BoundCompilationUnit = new emperor.BoundCompilationUnit();
-        let crashed: mut bool = false;
         let crash_message: mut string = "";
         try {
-            result = compiler.compile_sources(inputs);
+            let result: emperor.BoundCompilationUnit = compiler.compile_sources(inputs);
+            if (!result.has_errors()) {
+                this.last_ok = new __builtin.Option<emperor.BoundCompilationUnit>.some(result);
+            }
+            this.publish_error_diagnostics(result.errors);
         } catch (e) {
-            crashed = true;
             crash_message = e.message;
         }
-
-        if (!crashed && !result.has_errors()) {
-            this.last_ok = new __builtin.Option<emperor.BoundCompilationUnit>.some(result);
+        if (string_length(crash_message) > 0) {
+            this.publish_crash_diagnostic(crash_message);
         }
+    }
 
-        // publishDiagnostics from the semantic errors (parser errors are
-        // already folded into the unit's error list by compile_sources), or
-        // from the caught compiler panic.
+    // publishDiagnostics from the semantic errors (parser errors are already
+    // folded into the unit's error list by compile_sources). EP lexer
+    // locations are 1-based line AND col; LSP positions are 0-based on both
+    // axes.
+    fun publish_error_diagnostics(mut this, errors: _utils.List<emperor.SemanticError>) {
         let w: mut std.JsonWriter = new std.JsonWriter();
         w.begin_object();
         w.key("uri");
         w.value_string(this.uri);
         w.key("diagnostics");
         w.begin_array();
-        if (crashed) {
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(errors.size())) {
+            let err: emperor.SemanticError = errors.at(cast<u64>(ei)).some;
+            let line: mut i64 = err.location.line - 1;
+            let col: mut i64 = err.location.col - 1;
+            if (line < 0) { line = 0; }
+            if (col < 0) { col = 0; }
             w.begin_object();
             w.key("range");
             w.begin_object();
             w.key("start");
             w.begin_object();
             w.key("line");
-            w.value_i64(0);
+            w.value_i64(line);
             w.key("character");
-            w.value_i64(0);
+            w.value_i64(col);
             w.end_object();
             w.key("end");
             w.begin_object();
             w.key("line");
-            w.value_i64(0);
+            w.value_i64(line);
             w.key("character");
-            w.value_i64(1);
+            w.value_i64(col + 1);
             w.end_object();
             w.end_object();
             w.key("severity");
             w.value_i64(1);
             w.key("message");
-            w.value_string("internal compiler error: " + crash_message);
+            w.value_string(err.message);
             w.key("source");
             w.value_string("penguinlang");
             w.end_object();
-        } else {
-            let ei: mut i64 = 0;
-            while (ei < cast<i64>(result.errors.size())) {
-                let err: emperor.SemanticError = result.errors.at(cast<u64>(ei)).some;
-                // EP lexer locations are 1-based line AND col; LSP positions are
-                // 0-based on both axes.
-                let line: mut i64 = err.location.line - 1;
-                let col: mut i64 = err.location.col - 1;
-                if (line < 0) { line = 0; }
-                if (col < 0) { col = 0; }
-                w.begin_object();
-                w.key("range");
-                w.begin_object();
-                w.key("start");
-                w.begin_object();
-                w.key("line");
-                w.value_i64(line);
-                w.key("character");
-                w.value_i64(col);
-                w.end_object();
-                w.key("end");
-                w.begin_object();
-                w.key("line");
-                w.value_i64(line);
-                w.key("character");
-                w.value_i64(col + 1);
-                w.end_object();
-                w.end_object();
-                w.key("severity");
-                w.value_i64(1);
-                w.key("message");
-                w.value_string(err.message);
-                w.key("source");
-                w.value_string("penguinlang");
-                w.end_object();
-                ei = ei + 1;
-            }
+            ei = ei + 1;
         }
         w.end_array();
         w.end_object();
+        this.send_diagnostics(w.sb.to_string());
+    }
 
+    // The caught compiler panic as a single diagnostic at 0:0.
+    fun publish_crash_diagnostic(mut this, message: string) {
+        let w: mut std.JsonWriter = new std.JsonWriter();
+        w.begin_object();
+        w.key("uri");
+        w.value_string(this.uri);
+        w.key("diagnostics");
+        w.begin_array();
+        w.begin_object();
+        w.key("range");
+        w.begin_object();
+        w.key("start");
+        w.begin_object();
+        w.key("line");
+        w.value_i64(0);
+        w.key("character");
+        w.value_i64(0);
+        w.end_object();
+        w.key("end");
+        w.begin_object();
+        w.key("line");
+        w.value_i64(0);
+        w.key("character");
+        w.value_i64(1);
+        w.end_object();
+        w.end_object();
+        w.key("severity");
+        w.value_i64(1);
+        w.key("message");
+        w.value_string("internal compiler error: " + message);
+        w.key("source");
+        w.value_string("penguinlang");
+        w.end_object();
+        w.end_array();
+        w.end_object();
+        this.send_diagnostics(w.sb.to_string());
+    }
+
+    fun send_diagnostics(mut this, params_json: string) {
         let n: mut LspNotification = new LspNotification();
         n.method = "textDocument/publishDiagnostics";
-        n.params_json = w.sb.to_string();
+        n.params_json = params_json;
         this.out_sink.write(new LspOutMsg.out_notification(n));
     }
 
@@ -220,6 +237,16 @@ class LspCompilationUnit {
                 this.respond_result(msg, lsp.query_document_symbol(this));
             } else if (msg.method == "textDocument/completion") {
                 this.respond_result(msg, lsp.query_completion(this, msg));
+            } else if (msg.method == "textDocument/references") {
+                this.respond_result(msg, lsp.query_references(this, msg));
+            } else if (msg.method == "textDocument/hover") {
+                this.respond_result(msg, lsp.query_hover(this, msg));
+            } else if (msg.method == "textDocument/inlayHint") {
+                this.respond_result(msg, lsp.query_inlay_hints(this, msg));
+            } else if (msg.method == "textDocument/rename") {
+                this.respond_result(msg, lsp.query_rename(this, msg));
+            } else if (msg.method == "textDocument/formatting") {
+                this.respond_result(msg, lsp.query_formatting(this, msg));
             } else if (msg.has_id) {
                 this.respond_error(msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + msg.method);
             }

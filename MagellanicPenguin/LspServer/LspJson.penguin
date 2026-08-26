@@ -77,6 +77,64 @@ class LspPosition {
     fun new(mut this) {}
 }
 
+// range.start / range.end lines (0-based) from params (inlayHint).
+class LspRange {
+    start_line: i64 = 0;
+    start_character: i64 = 0;
+    end_line: i64 = 0;
+    end_character: i64 = 0;
+
+    fun new(mut this) {}
+}
+
+fun extract_range(params_json: string) -> LspRange {
+    let r: mut LspRange = new LspRange();
+    let p: std.JsonValue = std.parse_json(params_json);
+    let rng: __builtin.Option<std.JsonValue> = p.get("range");
+    if (rng.is_some()) {
+        let s: __builtin.Option<std.JsonValue> = rng.some.get("start");
+        if (s.is_some()) {
+            let l: __builtin.Option<std.JsonValue> = s.some.get("line");
+            if (l.is_some()) { r.start_line = l.some.as_i64(); }
+            let c: __builtin.Option<std.JsonValue> = s.some.get("character");
+            if (c.is_some()) { r.start_character = c.some.as_i64(); }
+        }
+        let e: __builtin.Option<std.JsonValue> = rng.some.get("end");
+        if (e.is_some()) {
+            let l: __builtin.Option<std.JsonValue> = e.some.get("line");
+            if (l.is_some()) { r.end_line = l.some.as_i64(); }
+            let c: __builtin.Option<std.JsonValue> = e.some.get("character");
+            if (c.is_some()) { r.end_character = c.some.as_i64(); }
+        }
+    }
+    return r;
+}
+
+// A nested string member: params.<key1>.<key2> as string ("" when absent).
+fun json_get_string_at(params_json: string, key1: string, key2: string) -> string {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let outer: __builtin.Option<std.JsonValue> = p.get(key1);
+    if (outer.is_some()) {
+        return json_get_string(outer.some, key2);
+    }
+    return "";
+}
+
+// A nested bool member: params.<key1>.<key2> (false when absent).
+fun json_get_bool_at(params_json: string, key1: string, key2: string) -> bool {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let outer: __builtin.Option<std.JsonValue> = p.get(key1);
+    if (outer.is_some()) {
+        let f: __builtin.Option<std.JsonValue> = outer.some.get(key2);
+        if (f.is_some()) {
+            if (f.some is std.JsonValue.json_bool) {
+                return f.some.json_bool;
+            }
+        }
+    }
+    return false;
+}
+
 fun extract_position(params_json: string) -> LspPosition {
     let pos_result: mut LspPosition = new LspPosition();
     let p: std.JsonValue = std.parse_json(params_json);
@@ -202,6 +260,19 @@ fun initialize_result_json() -> string {
     w.key("documentSymbolProvider");
     w.value_bool(true);
     w.key("definitionProvider");
+    w.value_bool(true);
+    w.key("referencesProvider");
+    w.value_bool(true);
+    w.key("hoverProvider");
+    w.value_bool(true);
+    w.key("inlayHintProvider");
+    w.value_bool(true);
+    w.key("renameProvider");
+    w.begin_object();
+    w.key("prepareProvider");
+    w.value_bool(false);
+    w.end_object();
+    w.key("documentFormattingProvider");
     w.value_bool(true);
     w.end_object();
     w.end_object();

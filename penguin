@@ -98,8 +98,44 @@ if [ $LSP -eq 1 ]; then
     # build (the whole 16k-line compiler is embedded as the analysis engine);
     # e2e tests run it via the test runner's Prebuilt backend without
     # recompiling (Tests/LspTest/*.md, Compile.Args=tmp/lsp).
+    #
+    # Content-addressed cache: the LSP binary depends only on the resolved
+    # source set (LspServer.penguins' sources, resolved relative to the
+    # project dir), the auto-loaded stdlib pair, and the pass3 compiler.
+    # Unchanged inputs rebuild in seconds (cache copy) instead of minutes
+    # (full 16k-line compile + clang). LSP_NO_CACHE=1 forces a rebuild.
+    # (This replaces the planned dyn-lib librarization: the LSP consumer
+    # walks the compiler's ENTIRE bound-tree object graph — enum dispatch,
+    # List fields, field reads on lib classes — a surface far beyond the
+    # tested lib flows (exported functions + generic containers); the
+    # ABI/GC risk outweighs the benefit when a cache already gives
+    # second-level iteration.)
+    LSP_KEY=""
+    if [ -z "$LSP_NO_CACHE" ]; then
+        KEY_INPUT="tmp/pass3 MagellanicPenguin/LspServer/LspServer.penguins"
+        for f in $(sed -n 's/^sources=\[\(.*\)\]/\1/p' MagellanicPenguin/LspServer/LspServer.penguins | tr ',' '\n' | sed 's/"//g; s/^[[:space:]]*//; s/[[:space:]]*$//'); do
+            if [ -f "MagellanicPenguin/LspServer/$f" ]; then
+                KEY_INPUT="$KEY_INPUT MagellanicPenguin/LspServer/$f"
+            elif [ -f "$f" ]; then
+                KEY_INPUT="$KEY_INPUT $f"
+            fi
+        done
+        KEY_INPUT="$KEY_INPUT EmperorPenguin/std/penguin/core_builtin.penguin EmperorPenguin/std/penguin/io.penguin"
+        LSP_KEY=$(md5sum $KEY_INPUT 2>/dev/null | md5sum | cut -d' ' -f1)
+        if [ -n "$LSP_KEY" ] && [ -f "tmp/lsp-cache/$LSP_KEY/lsp" ]; then
+            cp "tmp/lsp-cache/$LSP_KEY/lsp" tmp/lsp
+            echo "LSP cache hit ($LSP_KEY) -> copied to tmp/lsp"
+            exit 0
+        fi
+    fi
     tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o tmp/lsp
-    exit $?
+    rc=$?
+    if [ $rc -eq 0 ] && [ -n "$LSP_KEY" ]; then
+        mkdir -p "tmp/lsp-cache/$LSP_KEY"
+        cp tmp/lsp "tmp/lsp-cache/$LSP_KEY/lsp"
+        echo "LSP cached as $LSP_KEY"
+    fi
+    exit $rc
 fi
 
 if [ $TESTING -eq 1 ]; then
@@ -178,6 +214,21 @@ if [ $PUBLISH -eq 1 ]; then
         mkdir -p MagellanicPenguin/vscode/server/linux/EmperorPenguin/std
         cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin
         echo "Bundled stdlib -> MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin"
+        # Smoke test the BUNDLED server from a foreign cwd (no repo): a full
+        # initialize/shutdown/exit session must answer capabilities and exit 0 —
+        # this proves the exe-dir stdlib discovery works in a deployed layout.
+        SMOKE_DIR=$(mktemp -d)
+        REPO_ROOT="$PWD"
+        printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
+            | (cd "$SMOKE_DIR" && "$REPO_ROOT/MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP" > out.bin 2> err.bin)
+        SMOKE_RC=$?
+        if [ $SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$SMOKE_DIR/out.bin" 2>/dev/null; then
+            echo "Publish FAILED: bundled LSP smoke test (exit=$SMOKE_RC)" >&2
+            rm -rf "$SMOKE_DIR"
+            exit 1
+        fi
+        rm -rf "$SMOKE_DIR"
+        echo "Bundled LSP smoke test passed (initialize/shutdown/exit from a foreign cwd)"
     else
         echo "tmp/lsp not found; skipping native LSP server (build with './penguin -lsp')"
     fi
