@@ -138,8 +138,18 @@ class LLVMCompiler {
             }
         }
 
+        // The 32MB stack flag is linker-flavored: GNU ld style for the
+        // llvm-mingw cross (a CLANG path containing "mingw"), MSVC style
+        // (lld-link /STACK:) for a native Windows LLVM clang — the GNU form
+        // under lld-link dies as LNK1181 "cannot open 33554432.obj".
         if (is_windows) {
-            clang_args.push("-Wl,--stack,33554432");
+            let clang_probe: string = _utils.getenv("CLANG");
+            if (string_length(clang_probe) == 0) { clang_probe = "clang"; }
+            if (string_find(clang_probe, "mingw") >= 0) {
+                clang_args.push("-Wl,--stack,33554432");
+            } else {
+                clang_args.push("-Wl,/STACK:33554432");
+            }
         } else {
             clang_args.push("-Wl,-z,stack-size=33554432");
         }
