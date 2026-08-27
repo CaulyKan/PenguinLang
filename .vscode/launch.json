@@ -14,10 +14,10 @@
             "name": "(gdb) test",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/tmp/testruns/20260714-225800/pass2/BuiltinTest/ExitTest/out.exe",
+            "program": "${workspaceFolder}/build/testruns/20260714-225800/pass2/BuiltinTest/ExitTest/out.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/tmp/testruns/20260714-225800/pass2/BuiltinTest/ExitTest/",
+            "cwd": "${workspaceFolder}/build/testruns/20260714-225800/pass2/BuiltinTest/ExitTest/",
             "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",
@@ -38,7 +38,7 @@
             "name": "(gdb) pass2",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/tmp/pass2",
+            "program": "${workspaceFolder}/build/pass2",
             "args": [
                 "-vv",
                 "${workspaceFolder}/Examples/hello_llvm.penguin"
@@ -105,7 +105,7 @@
             },
             "program": "${workspaceFolder}/BabyPenguin/bin/Debug/net10.0/BabyPenguin.dll",
             "args": [
-                "${workspaceFolder}/EmperorPenguin/EmperorPenguin.penguins",
+                "${workspaceFolder}/EmperorPenguin/EmperorPenguinPass1.penguins",
                 "-r",
                 "report.txt"
             ],
@@ -148,7 +148,7 @@
             "name": "PenguinLang Debug",
             "type": "penguinlang",
             "request": "launch",
-            "program": "${workspaceFolder}/EmperorPenguin/EmperorPenguin.penguins"
+            "program": "${workspaceFolder}/EmperorPenguin/EmperorPenguinPass1.penguins"
         },
     ]
 }

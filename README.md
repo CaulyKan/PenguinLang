@@ -38,3 +38,10 @@ Build And Run:
 * dotnet build
 * dotnet test
 * dotnet run --project .\BabyPenguin -- .\Examples\HelloWorld.penguin
+
+Build the native self-hosting compiler & tooling with the root Makefile (all artifacts land in `build/`):
+* make bootstrap — self-bootstrap EmperorPenguin (build/pass2/3/4 + convergence check)
+* make lsp — the PenguinLang-native LSP server (make lsp TARGET=win for the Windows monolith)
+* make test — the cross-compiler markdown test suite (make baseline_test records a new baseline)
+* make publish — release artifacts: native compilers, LSP servers, self-contained dotnet executables, VSCode extension package (TARGET=win/linux selects one platform; cross compiling is linux→win only, and `make bootstrap` also works natively on Windows)
+* make all — bootstrap + lsp + test

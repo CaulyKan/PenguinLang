@@ -37,7 +37,7 @@ class EmperorPenguinCompiler {
     top_level_in_global: bool = false;
     // --enable-coroutine: gates the RTL-port/concurrency syntax set (ports,
     // construct, connect, wait forms, try/catch, async). Off by default;
-    // ./penguin -b passes it only when pass2 compiles pass3.
+    // the Makefile bootstrap passes it only when pass2 compiles pass3.
     enable_coroutine: bool = false;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {

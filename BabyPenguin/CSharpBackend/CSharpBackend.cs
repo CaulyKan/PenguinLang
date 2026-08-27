@@ -260,7 +260,7 @@ namespace BabyPenguin.CSharpBackend
             var cs = src.ToString();
             prog.Sources.Add(("Generated.cs", cs));
             try { System.IO.File.WriteAllText("/tmp/bp_cs_dump.cs", cs); } catch { }
-            try { System.IO.File.WriteAllText("/home/cauly/Workspace/penguinlang/tmp/bp_cs_dump.cs", cs); } catch { }
+            try { System.IO.File.WriteAllText("build/bp_cs_dump.cs", cs); } catch { }
             return prog;
         }
 

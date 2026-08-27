@@ -22,3 +22,5 @@ nohup.out
 .reasonix
 thirdparty/
 .zcode
+build/
+tmp/

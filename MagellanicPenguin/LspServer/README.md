@@ -51,27 +51,27 @@ and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 ## Build
 
 ```sh
-./penguin -b      # bootstrap tmp/pass3 first (one-time per compiler change)
-./penguin -lsp    # stage 1: tmp/pass3 EmperorPenguin/EmperorPenguinLib.penguins -o tmp/libemperorpenguin.penguin-lib
-                  # stage 2: tmp/pass3 --enable-coroutine LspServer.penguins --lib tmp/libemperorpenguin.penguin-lib -o tmp/lsp
+make bootstrap     # build build/pass3 first (one-time per compiler change)
+make lsp           # stage 1: build/pass3 EmperorPenguin/EmperorPenguinLib.penguins -o build/libemperorpenguin.penguin-lib
+                   # stage 2: build/pass3 --enable-coroutine LspServer.penguins --lib build/libemperorpenguin.penguin-lib -o build/lsp
 ```
 
-The server links the compiler as a shared library: `tmp/lsp` contains only the 10 LSP
+The server links the compiler as a shared library: `build/lsp` contains only the 10 LSP
 modules (~0.8 MB) and calls into `libemperorpenguin.penguin-lib` (~14 MB, built from
 `EmperorPenguinLib.penguins`) for all compiler work — `SONAME libemperorpenguin.penguin-lib`
-+ `rpath $ORIGIN`, so the exe + lib pair in `tmp/` is relocatable and `./penguin -p` copies
-both into `server/linux/`. Both stages have content-addressed caches (keyed on pass3 + the
-respective source sets; the lsp key includes the lib artifact). The test
++ `rpath $ORIGIN`, so the exe + lib pair in `build/` is relocatable and `make publish`
+copies both into `server/linux/`. Both stages have content-addressed caches (keyed on
+pass3 + the respective source sets; the lsp key includes the lib artifact). The test
 runner's **Prebuilt** backend runs the exe without recompiling: `Tests/LspTest/SessionLifecycle.md`
 feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
-(`Apply To: Prebuilt`, `Compile.Args: tmp/lsp`).
+(`Apply To: Prebuilt`, `Run Args: build/lsp`).
 
 ### Windows
 
 ```sh
-./penguin -b          # bootstrap first
-./penguin -lsp -win   # tmp/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins --enable-coroutine \
-                      #   -target=win64 -o tmp/win64-lsp/MagellanicPenguinLSP.exe   (llvm-mingw cross)
+make bootstrap        # bootstrap first
+make lsp TARGET=win   # build/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins --enable-coroutine \
+                      #   -target=win64 -o build/win64-lsp/MagellanicPenguinLSP.exe   (llvm-mingw cross from linux; native on windows)
 ```
 
 The dyn-lib pair is ELF-specific (`SONAME` + `$ORIGIN` rpath + `-rdynamic`
@@ -91,10 +91,10 @@ every switch away). stdin/stdout readiness is level-probed with
 `PeekNamedPipe` (pipes), `GetNumberOfConsoleInputEvents` (console), always
 ready (disk, and write side — anonymous pipes expose no writable-space query,
 and the blocking `write` itself is the backpressure for the LSP's strictly
-ordered single writer). `./penguin -p` deploys the exe + stdlib bundle to
-`server/windows/` and, when `WINE=<path>` (or `wine` on PATH) is available,
-runs the same initialize/shutdown/exit smoke test as the linux side under the
-emulator.
+ordered single writer). `make publish TARGET=win` deploys the exe + stdlib
+bundle to `server/windows/` and, when `WINE=<path>` (or `wine` on PATH) is
+available, runs the same initialize/shutdown/exit smoke test as the linux side
+under the emulator (natively on a windows host).
 
 ## Design notes
 
@@ -118,7 +118,7 @@ emulator.
 - **stdlib discovery** for embedded document compiles (`load_stdlib_text`): cwd first
   (repo-root runs), then an upward walk from the exe dir — so the server works from the
   test runner's per-combo workdirs and from `vscode/server/linux/` with the bundled
-  `EmperorPenguin/std/penguin` tree (`./penguin -p` stages both).
+  `EmperorPenguin/std/penguin` tree (`make publish` stages both).
 - **Query semantics are v1-deliberately naive** (same as the C# server): no scope
   resolution — definition/hover look up the identifier under the cursor in the
   whole-program symbol index (same-file match preferred); completion returns keywords +
@@ -141,7 +141,7 @@ emulator.
   try/catch (native sjlj); a compiler panic publishes an "internal compiler error"
   diagnostic and keeps the last error-free unit, and `TokenStream.advance`'s end-of-input
   overrun raises a catchable error instead of `exit(1)`.
-- **Build caching**: `./penguin -lsp` keys two content-addressed caches (the compiler
+- **Build caching**: `make lsp` keys two content-addressed caches (the compiler
   lib and the LSP exe) on their resolved source sets + stdlib + pass3 — unchanged
   inputs rebuild in seconds. (The earlier dyn-lib deferral was reversed: the lib consumer
   surface the LSP needs — enum dispatch on `BoundDefinition`, `List` field reads, method
@@ -151,6 +151,6 @@ emulator.
 ## vscode
 
 The extension client (`vscode/client/src/extension.ts`) starts `PENGUINLANG_LSPSERVER_PATH`
-if set, else `server/<platform>/MagellanicPenguinLSP(.exe)`. `./penguin -p` copies
-`tmp/lsp` there (linux) together with the bundled stdlib; win32 keeps the C# server until
-the native runtime's Windows fd integration lands.
+if set, else `server/<platform>/MagellanicPenguinLSP(.exe)`. `make publish` copies
+`build/lsp` there (linux) together with the bundled stdlib; the windows server binary
+comes from `make lsp TARGET=win` (cross-compiled from linux or built natively).

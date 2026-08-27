@@ -11,7 +11,7 @@
 
 ## 关键事实
 - GC 曾被 `EMPEROR_GC_DISABLED`（8TB 阈值）禁用两个月；现默认启用（256KB 初始阈值），诊断用环境变量 `EMPEROR_GC_DISABLE=1`。
-- **自举 pass1 产物 tmp/pass2 也是原生二进制**（cs 后端只是宿主，生成物链接同一 std/c runtime）——gc.c 改动会直接影响 pass2 自身，这是重压测试路径。
+- **自举 pass1 产物 build/pass2 也是原生二进制**（cs 后端只是宿主，生成物链接同一 std/c runtime）——gc.c 改动会直接影响 pass2 自身，这是重压测试路径。
 - 普通 `class`（无 impl）= 值类型（栈上）；要进 GC 堆必须 `impl __builtin.IReferenceType`。
 - finalizer：metadata 尾部 destructor 槽位（`void(*)(void*)`）与 `dispose_mem(mut this)` IR 签名精确一致，emitter 直接指向实现函数；仅非值类型 + impl `__builtin.IMemoryDispose` 的类；值类型必须 null（装箱副本 vs 栈原件双重释放）。
 - sweep 两阶段（摘链→终析→释放）保证死对象图内部引用在终析期有效；dispose_mem 必须幂等（HashMap 先 dispose 内层 Vector，内层自己的终析会再跑一次）。
@@ -25,7 +25,7 @@
 ```
 dotnet run --project Tests/PenguinTestRunner.csproj -- --filter AutoDispose --compilers pass3
 dotnet run --project Tests/PenguinTestRunner.csproj -- --filter StdVectorGcElements --compilers pass3
-./penguin -b && md5sum tmp/pass3 tmp/pass4
+make bootstrap && md5sum build/pass3 build/pass4
 ```
 自举收敛 + DynamicLinkTest 11/11 + 全量套件见最终报告。
 

@@ -1,6 +1,6 @@
 # MetaCliDefine
 ## Description
-Phase 5a: `--define DEBUG=1` on the EmperorPenguin command line seeds the compile-time option store, so `#if (#defined("DEBUG"))` takes the then-branch. (Pass2/3 arg routing: `tmp/pass2 --define DEBUG=1 <src> -o <exe>`.)
+Phase 5a: `--define DEBUG=1` on the EmperorPenguin command line seeds the compile-time option store, so `#if (#defined("DEBUG"))` takes the then-branch. (Pass2/3 arg routing: `build/pass2 --define DEBUG=1 <src> -o <exe>`.)
 
 ## Apply To
 * EmperorPenguin Pass2

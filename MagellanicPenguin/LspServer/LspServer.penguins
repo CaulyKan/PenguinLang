@@ -7,8 +7,8 @@
 # prebuilt shared library libemperorpenguin.penguin-lib (built from
 # EmperorPenguin/EmperorPenguinLib.penguins) instead of being compiled into
 # this binary — per-document analysis still runs through the lib's
-# EmperorPenguinCompiler.compile_sources at runtime. Build (see ./penguin -lsp):
-#   tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
+# EmperorPenguinCompiler.compile_sources at runtime. Build (see make lsp):
+#   build/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
 #       --lib <dir>/libemperorpenguin.penguin-lib -o <exe>
 # (core_builtin.penguin + io.penguin are auto-injected; json/vector/hashmap and
 # the compiler's _utils come from the lib's embedded source).

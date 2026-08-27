@@ -19,8 +19,26 @@ There are different phases to bootstrapping a native full-powered emperor pengui
 3. EmperorPenguin pass 3: Recompile EmperorPenguin with EmperorPenguin pass 2, with full features 
 4. EmperorPenguin pass 4: The final full featured EmperorPenguin
 
-To run different EmperorPenguin compiler, use `penguin` script in root folder. e.g. `penguin -1 test.penguin`
-To build self-bootstrapping emperorpenguin, use `penguin -b`
+To run different EmperorPenguin compiler, invoke the bootstrapped binaries in `build/` directly (e.g. `build/pass3 test.penguin`; pass1 = `dotnet run --project BabyPenguin -- -q --backend=cs EmperorPenguin/EmperorPenguinPass1.penguins -- <args>`)
+To build self-bootstrapping emperorpenguin, use `make bootstrap`
+
+## Root Makefile
+
+The `./penguin` shell script is gone — the root `Makefile` drives everything, and all build artifacts live under `build/` (gitignored; the old `tmp/` name is retired):
+
+```bash
+make clean          # remove the build/ tree
+make bootstrap      # self-bootstrap EmperorPenguin -> build/pass2, build/pass3, build/pass4 (+ md5 convergence check)
+make lsp            # PenguinLang-native LSP server -> build/lsp + build/libemperorpenguin.penguin-lib
+make lsp TARGET=win # Windows LSP monolith (linux host: llvm-mingw cross) -> build/win64-lsp/MagellanicPenguinLSP.exe
+make test           # cross-compiler markdown suite (Tests/*.md) via PenguinTestRunner; extra args via TEST_ARGS="..."
+make baseline_test  # same, but records the run as the new baseline (--baseline)
+make publish        # release: native compilers + LSP servers into the vscode extension, dotnet self-contained publishes, vsix
+make all            # bootstrap + lsp + test, in that order (default goal)
+```
+
+- **TARGET=win|linux** selects the compile target (default: host). Cross compiling is linux→win only (`MINGW_PREFIX`/`WIN_CC`/`WIN_CXX`/`WIN_AR`/`WIN_CLANG` overridable, defaults `/opt/llvm-mingw`); a Windows host builds natively — `make bootstrap` works there too (MSYS2 make/clang + the vendored `thirdparty/mingw-w64-x86_64-llvm-libs` package for `-enable-meta`; the bootstrap chain stays Full-monolith on win because the `.penguin-lib` pair is ELF-specific). `make publish` with no TARGET builds BOTH platforms on a linux host, win-only on a Windows host. `bootstrap` always targets the host (the bootstrapped compiler is the build tool).
+- `LSP_NO_CACHE=1` forces LSP rebuilds; `WINE=<path>` supplies the wine binary for the windows publish smoke test.
 
 ## Build and Development Commands
 
@@ -40,18 +58,20 @@ dotnet test --filter "FullyQualifiedName~BuiltinTest.PrintTest"
 # Run the cross-compiler markdown test suite (Tests/*.md) via PenguinTestRunner
 # Fast loop — BabyPenguin only, no bootstrap needed:
 dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin
-# Full matrix (requires ./penguin -b first, to build tmp/pass2 & tmp/pass3):
-dotnet run --project Tests/PenguinTestRunner --                                 # all compilers in each test's Apply To
-dotnet run --project Tests/PenguinTestRunner -- --filter CalculationTest/* --compilers babypenguin,pass1
+# Or through the Makefile (logs to build/test.log; extra args via TEST_ARGS):
+make test TEST_ARGS="--compilers babypenguin"
+# Full matrix (requires make bootstrap first, to build build/pass2 & build/pass3):
+make test                                             # all compilers in each test's Apply To
+make test TEST_ARGS="--filter CalculationTest/* --compilers babypenguin,pass1"
 
 # Run a Penguin program
 dotnet run --project .\BabyPenguin -- .\Examples\HelloWorld.penguin
 
-# Build self-contained executables
-dotnet publish -r win-x64 --self-contained
-dotnet publish -r linux-x64 --self-contained
+# Build self-contained executables + VSCode extension + native compilers (per-TARGET or both)
+make publish
+make publish TARGET=win
 
-# Build VSCode extension
+# Build VSCode extension only
 cd MagellanicPenguin\vscode && npm run package
 ```
 
@@ -79,9 +99,9 @@ Each `*.md` describes a penguin program, the compilers it **Apply To** (`BabyPen
 
 - **Strict single-value**: a combination passes only if *every* compiler in its Apply To matches the expected output exactly. Set Apply To to only the compilers a test is verified on and expand later — use `--probe` to discover whether another compiler now agrees.
 - **Argument routing**: `Compile.Args` are appended in the backend-specific slot — EmperorPenguin (Pass1/2/3) honors them; BabyPenguin ignores them and always runs in `-q` for clean output (see note below).
-- **Bootstrap is manual**: Pass2/Pass3 require native binaries `tmp/pass2`/`tmp/pass3` (built by `./penguin -b`). The runner **never** bootstraps; if a required binary is missing it exits non-zero telling you to run `./penguin -b`. Pass1 and BabyPenguin only need `dotnet`.
+- **Bootstrap is manual**: Pass2/Pass3 require native binaries `build/pass2`/`build/pass3` (built by `make bootstrap`). The runner **never** bootstraps; if a required binary is missing it exits non-zero telling you to run `make bootstrap`. Pass1 and BabyPenguin only need `dotnet`.
 - **Per-case metrics**: each combination records compile and run **duration and peak RSS**.
-- **Artifacts & report**: each run writes `tmp/testruns/<timestamp>/<compiler>/<category>/<test>/` with `source.penguin`, `out.exe`/`combined.ll`/`libcore_builtin.a` (EmperorPenguin only — routed there via per-combo `TMPDIR`), `compile.log`, `run.log`, `result.json`; plus a self-contained, interactive **`summary.html`** (open in a browser). The HTML shows the git commit (with `*` if dirty) and per-compiler pass % (green at 100%, else red); the table groups by test with one row per compiler (status pill + vs-baseline badge + time/RSS + a summary column); filters (search + per-status + per-compiler toggles) drill into the compiler rows; clicking a test opens a full-page detail (source, the expectations shown once, then per-compiler compile/run stages). `tmp/testruns/latest.json` is diffed against to flag new failures / new passes and time & memory regressions.
+- **Artifacts & report**: each run writes `build/testruns/<timestamp>/<compiler>/<category>/<test>/` with `source.penguin`, `out.exe`/`combined.ll`/`libcore_builtin.a` (EmperorPenguin only — routed there via per-combo `TMPDIR`), `compile.log`, `run.log`, `result.json`; plus a self-contained, interactive **`summary.html`** (open in a browser). The HTML shows the git commit (with `*` if dirty) and per-compiler pass % (green at 100%, else red); the table groups by test with one row per compiler (status pill + vs-baseline badge + time/RSS + a summary column); filters (search + per-status + per-compiler toggles) drill into the compiler rows; clicking a test opens a full-page detail (source, the expectations shown once, then per-compiler compile/run stages). `build/testruns/latest.json` is diffed against to flag new failures / new passes and time & memory regressions.
 - **Exit code**: `0` iff all executed (test × compiler) combinations pass; non-zero on any fail/error.
 
 ```bash
@@ -92,9 +112,9 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
   --parallel <n>             # default cores-1
   --timeout-compile <s>      # default 600   --timeout-run <s>   default 60
   --compare-with <path>                    # baseline to diff against: latest|none|<.json path>
-                                           # default tmp/testruns/latest.json
+                                           # default build/testruns/latest.json
   --baseline                               # flag (no value): record this run as the new
-                                           # baseline — writes tmp/testruns/baseline-<ts>.json
+                                           # baseline — writes build/testruns/baseline-<ts>.json
                                            # and copies it to latest.json. The diff compares
                                            # against --compare-with (default latest.json);
                                            # plain runs (no --baseline) never overwrite it
@@ -233,18 +253,18 @@ EmperorPenguin is the self-hosting compiler (written in PenguinLang, compiled/ru
 
 ### Project Configuration
 
-`EmperorPenguin/EmperorPenguin.penguins` defines source roots:
+`EmperorPenguin/EmperorPenguinPass1.penguins` (formerly `EmperorPenguin.penguins`) defines source roots:
 ```
 sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/llvm/*.penguin", "src/project/*.penguin", "main.penguin"]
 ```
 
 Three more project files shape the build:
 
-- `EmperorPenguinFull.penguins` — the same compiler set plus the json-backed Dynlib, json/vector/hashmap/array stdlib and `_utils` (the bootstrap's pass2 monolith, and the `./penguin -p` deployed compiler).
+- `EmperorPenguinPass2.penguins` (formerly `EmperorPenguinFull.penguins`) — the same compiler set plus the json-backed Dynlib, json/vector/hashmap/array stdlib and `_utils` (the bootstrap's pass2 monolith, and the `make publish` deployed compiler).
 - `EmperorPenguinLib.penguins` — Full **minus main.penguin**: the whole compiler as `libemperorpenguin.penguin-lib` (lib mode triggers on the `.penguin-lib` output name). Its metadata embeds every source file verbatim as per-file entries, so consumers declare-not-define the compiler's defs, call into the `.so` for methods, and monomorphize NEW generic instances locally from the embedded templates.
 - `EmperorPenguinExe.penguins` — just `main.penguin`, linked with `--lib <dir>/libemperorpenguin.penguin-lib`. The exe carries the C runtime + optional JIT (the lib's `_emperor_*`/`__builtin.*` refs bind from it via `-rdynamic`) and initializes the lib's globals (re-defined from the embedded source, interposing the `.so`'s copies through the GOT). `link_lib` stamps the lib's basename as SONAME and `link_exe` adds `-rpath,$ORIGIN`, so an exe + `.penguin-lib` pair is relocatable.
 
-`./penguin -b` keeps pass3 as the Full monolith (the first dyn-lib-capable compiler — pass2 comes from the ANTLR-safe stub project and cannot build libs), then builds pass4/pass5 as lib+exe pairs in `tmp/pass4.d`/`tmp/pass5.d` (`tmp/pass4` is a symlink; convergence checks BOTH the exe and lib md5s, and pass5.d is removed on success). Building the compiler lib requires a JIT-capable compiler (build it with `-enable-meta`) — the compiler sources engage the meta engine during their own compilation.
+`make bootstrap` keeps pass3 as the Full monolith (the first dyn-lib-capable compiler — pass2 comes from the ANTLR-safe stub project and cannot build libs), then builds pass4/pass5 as lib+exe pairs in `build/pass4.d`/`build/pass5.d` (`build/pass4` is a symlink; convergence checks BOTH the exe and lib md5s, and pass5.d is removed on success). Building the compiler lib requires a JIT-capable compiler (build it with `-enable-meta`) — the compiler sources engage the meta engine during their own compilation.
 
 ### Source Structure (~16,000 lines total)
 
@@ -302,7 +322,7 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 | `SemanticBindMetaCalls.penguin`  | `BindMetaCallsPass` — pass 8c: `#fun` meta-call binding & JIT splicing, sizeof/address_of/load/store intrinsics, unique-name trampolines, template instantiation routing |
 | `SemanticValidateControlFlow.penguin` | `ValidateControlFlowPass` — pass 9: return-path completeness, break/continue validation, return-type checks |
 
-Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-reference (MetaEngine.owner_model precedent, breaks the class-field default-construction cycle), single `run()` entry, per-def processors keep their original names for `catch_up_def` replay. `SemanticModel` holds all pass instances, wired in its constructor. Any new `src/bound/*.penguin` file must be added to BOTH `EmperorPenguin.penguins` and `EmperorPenguinFull.penguins`.
+Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-reference (MetaEngine.owner_model precedent, breaks the class-field default-construction cycle), single `run()` entry, per-def processors keep their original names for `catch_up_def` replay. `SemanticModel` holds all pass instances, wired in its constructor. Any new `src/bound/*.penguin` file must be added to BOTH `EmperorPenguinPass1.penguins` and `EmperorPenguinPass2.penguins` (and `EmperorPenguinLib.penguins` when it defines bound-tree code).
 
 ### Compiler Pipeline (SemanticModel) — All 9 Passes Implemented
 
@@ -361,7 +381,7 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core_builtin.penguin`             | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IHash`, `IUniqueMangleName`, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>`, `Range`/`RangeIterator` |
 | `io.penguin`                       | `std.io` nested-namespace stdlib (auto-loaded with core_builtin; externs in `std.io` route to `std_io_*` via the universal extern→C rule — any namespaced extern maps to `<ns>_<name>`, bare top-level externs keep literal libc symbols): console (`std.io.read_line`/`read_all`/`stdin_lines`), `std.io.File` handles, whole-file/fs helpers, `std.io.lines`/`split_lines` iterators. See *io Standard Library* above |
-| `array.penguin`, `vector.penguin`, `hashmap.penguin`, `json.penguin`, `dynlib.penguin`, `metaconfig.penguin` | Pass3-only bootstrap-deferred stdlib modules — NOT auto-loaded; compiled into the compiler via `EmperorPenguinFull.penguins` or passed per-test via `Compile.Args` (e.g. `std.Array<T,N>`) |
+| `array.penguin`, `vector.penguin`, `hashmap.penguin`, `json.penguin`, `dynlib.penguin`, `metaconfig.penguin` | Pass3-only bootstrap-deferred stdlib modules — NOT auto-loaded; compiled into the compiler via `EmperorPenguinPass2.penguins` or passed per-test via `Compile.Args` (e.g. `std.Array<T,N>`) |
 
 (`_utils` with `List<T>`/`Queue<T>` and the file I/O externs lives in `EmperorPenguin/src/utils.penguin` — a compiler source, part of every bootstrap, not part of user-program compilations.)
 
@@ -377,7 +397,7 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 ```bash
 # Cross-compiler e2e: run the markdown test suite (see Markdown Test Framework above)
 dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin | tee /tmp/test.log
-# After ./penguin -b: full matrix across all four compilers
+# After make bootstrap: full matrix across all four compilers
 dotnet run --project Tests/PenguinTestRunner -- | tee /tmp/test.log
 
 # In-process unit tests (compiler internals; AST/Bound/IR/LLVM)
@@ -425,5 +445,5 @@ All bound types live in the `bound` namespace. In test code (outside the namespa
 ### Known Limitations (from README)
 
 - **Concurrency/Coroutines**: Parser supports `event`, `emit`, `on`, `wait`, `async`, `folk` but LLVM emitter doesn't generate state machines for stackless coroutines yet
-- **Metaprogramming**: Implemented. `#if`/`#elif`/`#else`/`#while`/`#break`/`#continue` (hardcoded compile-time control flow); `#fun` JIT-executed via LLVM ORC (native pass2+); `#typeof`, `#create_expression`/`#create_definition`, `#define`/`#defined`/`#option`. **Reflection Phase 6 Round 1 shipped** (opaque type-tokens + host callbacks: `#field_count(t)`, `#field_name(t,i)`, `#type_name(t)`, `#is_class(t)`, …). **Phase 6 v2 in progress** (real-pointer reuse: `type = emperor.BoundType`, `t.fields()`/`t.methods()`/`t.variants()` direct; per-call-site caller-stub `#fun` ABI; `#class` meta-only data structures). See `Documentation/10_MetaProgramming.md` and `.claude/plans/meta_plan.md` §0.4. Meta JIT runs only in native pass2/pass3 (`./penguin -b`); `dotnet test` verifies `.penguin` compiles but not the JIT path.
+- **Metaprogramming**: Implemented. `#if`/`#elif`/`#else`/`#while`/`#break`/`#continue` (hardcoded compile-time control flow); `#fun` JIT-executed via LLVM ORC (native pass2+); `#typeof`, `#create_expression`/`#create_definition`, `#define`/`#defined`/`#option`. **Reflection Phase 6 Round 1 shipped** (opaque type-tokens + host callbacks: `#field_count(t)`, `#field_name(t,i)`, `#type_name(t)`, `#is_class(t)`, …). **Phase 6 v2 in progress** (real-pointer reuse: `type = emperor.BoundType`, `t.fields()`/`t.methods()`/`t.variants()` direct; per-call-site caller-stub `#fun` ABI; `#class` meta-only data structures). See `Documentation/10_MetaProgramming.md` and `.claude/plans/meta_plan.md` §0.4. Meta JIT runs only in native pass2/pass3 (`make bootstrap`); `dotnet test` verifies `.penguin` compiles but not the JIT path.
 - **Attributes/Indexers**: Not yet implemented at the Bound layer

@@ -6,10 +6,10 @@
 # library libemperorpenguin.penguin-lib, but that dyn-lib mechanism relies on
 # ELF specifics (SONAME + $ORIGIN rpath + -rdynamic interposition), so the
 # Windows port compiles everything into one self-contained exe. Build
-# (see ./penguin -lsp -win):
+# (see make lsp TARGET=win):
 #   CC=.../x86_64-w64-mingw32-clang CLANG=.../x86_64-w64-mingw32-clang \
-#   tmp/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins \
-#       --enable-coroutine -o tmp/win64-lsp/MagellanicPenguinLSP.exe -target=win64
+#   build/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins \
+#       --enable-coroutine -o build/win64-lsp/MagellanicPenguinLSP.exe -target=win64
 # The entry point is the LSP modules' own top-level construct/initial
 # (LspWiring.penguin) — no main.penguin. Same source-set rules as
 # EmperorPenguinFull.penguins: native parser only (pass2+), never BabyPenguin.

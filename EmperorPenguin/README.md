@@ -707,7 +707,10 @@ Penguin-lang 选择 C++ 风格的模板单态化而不是 Java 风格的类型�
 ```
 EmperorPenguin/
 ├── main.penguin                         # 编译器入口点
-├── EmperorPenguin.penguins              # 项目文件（源文件列表）
+├── EmperorPenguinPass1.penguins         # pass1 项目文件（ANTLR-safe 源集，BabyPenguin 可编译）
+├── EmperorPenguinPass2.penguins         # Full 项目文件（+Dynlib/json/vector/hashmap，pass2+ 专用）
+├── EmperorPenguinLib.penguins           # lib 模式（整个编译器 → libemperorpenguin.penguin-lib）
+├── EmperorPenguinExe.penguins           # exe 模式（main.penguin 链接上面的 lib）
 ├── src/
 │   ├── ast/
 │   │   ├── AST.penguin                  # AST 节点定义 + build_text()

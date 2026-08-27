@@ -46,7 +46,7 @@ in main.penguin) → declare/call `_setjmp(ptr, ptr)` with `ptr null` (the plain
 non-SEH sjlj flavor clang itself uses for C setjmp). Validated by hand-patching
 the win64 LSP's combined.ll + relinking BEFORE the source fix: CrashSurvival
 became byte-exact with Linux. Linux codegen unchanged (flag defaults false).
-The `./penguin -p` smoke tests (linux + wine windows) now ALSO open a broken
+The `make publish` smoke tests (linux + wine windows) now ALSO open a broken
 document and require the 'internal compiler error' survival diagnostic — the
 exact regression class this bug belonged to.
 
@@ -56,10 +56,10 @@ exact regression class this bug belonged to.
   + the whole EmperorPenguinLib source set (dyn-lib pair is ELF-specific:
   SONAME/$ORIGIN/rpath/-rdynamic). Path-relative sources are fine —
   file_ns_name uses only the basename.
-- `./penguin -lsp -win` builds it via tmp/pass4 + llvm-mingw env
+- `make lsp TARGET=win` builds it via build/pass4 + llvm-mingw env
   (WIN_CC/WIN_CXX/WIN_AR/WIN_CLANG overridable) →
-  tmp/win64-lsp/MagellanicPenguinLSP.exe (~12 MB PE32+, imports only
-  KERNEL32 + UCRT). `./penguin -p` deploys it + stdlib bundle to
+  build/win64-lsp/MagellanicPenguinLSP.exe (~12 MB PE32+, imports only
+  KERNEL32 + UCRT). `make publish TARGET=win` deploys it + stdlib bundle to
   server/windows/ and runs the wine smoke when `WINE=<path>` (or wine on
   PATH) is available.
 - vscode client already pointed at server\windows\MagellanicPenguinLSP.exe;
@@ -92,3 +92,46 @@ exact regression class this bug belonged to.
   description rewritten from RED SENTINEL to regression lock, Apply To
   extended to Pass1/2/3. StdioStream.penguin's string-payload note updated:
   strings-on-wire is architecture now, not a compiler workaround.
+
+## Build system migration (2026-08-27, session 4 — ./penguin → Makefile, tmp/ → build/)
+
+The `./penguin` shell script is DELETED; the root `Makefile` is the single entry
+point. ALL build artifacts moved `tmp/` → `build/` (gitignored; pass2/pass3/
+pass4(+.d)/pass5.d, lsp, libemperorpenguin.penguin-lib, lsp-cache, win64,
+win64-lsp, linux, testruns, *.log).
+
+- Targets: `clean bootstrap lsp test baseline_test publish all` (all =
+  bootstrap→lsp→test via recursive sub-makes, no false deps). `TEST_ARGS="..."`
+  passes runner args to test/baseline_test. `LSP_NO_CACHE=1`, `WINE=<path>`,
+  `WIN_CC/WIN_CXX/WIN_AR/WIN_CLANG`, `MINGW_PREFIX`, `LLVM_WIN_PREFIX` behave
+  as before.
+- `TARGET=win|linux` (default host; `publish` with no TARGET builds BOTH on
+  linux, win-only on a win host). Cross is linux→win only. **bootstrap always
+  targets the HOST** — the bootstrapped compiler is the build tool.
+- **Windows native self-bootstrap is now structurally supported** (MSYS2
+  make/clang + the vendored thirdparty/mingw-w64-x86_64-llvm-libs for
+  -enable-meta; the Makefile errors early if the package is missing):
+  - The win bootstrap chain stays Full-MONOLITH (pass2→pass3→pass4→pass5 exe
+    md5 convergence) — the .penguin-lib pair is ELF-specific, so the linux
+    lib+exe split does not apply.
+  - Every win-native stage passes `-target=win64` (PE stack flag, TWO-arg
+    _setjmp — one-arg crashes under mingw, see session 3) and the Makefile
+    exports CC/CXX/AR/CLANG=clang* + CROSS=win64 (steers std/c's Makefile to
+    the Windows-JIT path with thirdparty headers) + PATH+=<pkg>/bin (the
+    libLLVM-22.dll must be loadable at process start).
+- **Compiler fix that unblocked it**: `_utils.exec("${CLANG:-clang}", ...)` in
+  LLVMCompiler.penguin resolved the link compiler via POSIX shell expansion —
+  cmd.exe (system() on win) can't expand `${...}`. Now `_utils.getenv("CLANG")`
+  (new extern; `_emperor_getenv` in core_builtin.c; C# twin in
+  BabyPenguin/Utils.penguin **and** EmperorPenguin/src/utils.penguin — the
+  BabyPenguin twin is the ONLY _utils source at pass1 level-1 because the
+  bootstrap compiles just the Pass1 project pre-`--`; ExternLowerer +
+  ExternFunctions register `_utils_getenv`/`_utils.getenv`). GOTCHA: adding an
+  extern ONLY to EmperorPenguin/src/utils.penguin compiles level-1 with
+  E_RESOLVE_SYMBOL on the first call site — the twin file is load-bearing.
+- Project files renamed by the earlier WIP: `EmperorPenguin.penguins` →
+  `EmperorPenguinPass1.penguins`, `EmperorPenguinFull.penguins` →
+  `EmperorPenguinPass2.penguins` (byte-identical content). All references
+  updated (Tests/Program.cs Pass1 backend, BatchCompiler, BoundTypeRegistryTest,
+  comments). The runner's Pass2/Pass3 backends now expect build/pass2|pass3;
+  LspTest md files use `Run Args: build/lsp`.

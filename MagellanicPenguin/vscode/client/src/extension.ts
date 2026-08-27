@@ -58,7 +58,7 @@ async function startLanguageServer(context: ExtensionContext) {
 	if (!lspCommand || !existsSync(lspCommand)) {
 		window.showErrorMessage(
 			`PenguinLang LSP server not found at "${lspCommand}". ` +
-			`Run './penguin -lsp' (linux) or './penguin -lsp -win' (windows) and './penguin -p' first.`
+			`Run 'make lsp' (linux) or 'make lsp TARGET=win' (windows) and 'make publish' first.`
 		);
 		return;
 	}
@@ -117,7 +117,7 @@ export async function activate(context: ExtensionContext) {
 			// Locate the emperor_penguin binary for the current platform
 			const emperorPath = process.env.PENGUINLANG_EMPEROR_PATH || context.asAbsolutePath(emperorPenguinPath.get(platform()) || '');
 			if (!emperorPath || !existsSync(emperorPath)) {
-				window.showErrorMessage(`EmperorPenguin binary not found at "${emperorPath}". Run './penguin -p' first.`);
+				window.showErrorMessage(`EmperorPenguin binary not found at "${emperorPath}". Run 'make publish' first.`);
 				return;
 			}
 

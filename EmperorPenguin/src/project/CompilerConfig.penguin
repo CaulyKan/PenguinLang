@@ -25,13 +25,13 @@ fun _get_stem(path: string) -> string {
 // `if` in the driver — no meta/#option anywhere in the compiler's own code.
 // Whether the compiler BINARY actually has the json-backed Dynlib code is a
 // build-time property (DynlibStub in the default project vs the json-backed
-// Dynlib in EmperorPenguinFull.penguins, see ./penguin -b).
+// Dynlib in EmperorPenguinPass2.penguins, see make bootstrap).
 class CompilerConfig {
     output_name: mut string = "";
     verbose: mut i64 = 0;
     enable_meta: bool = false;
     // Cross-compile target. "" = native host; "win64"/"windows" = PE/COFF via
-    // llvm-mingw (`./penguin -p` sets -target=win64). The linker flags and
+    // llvm-mingw (`make publish TARGET=win` sets -target=win64). The linker flags and
     // clang selection differ per target; this is the only reliable signal (the
     // default output path is always "<tmp>/out.exe", so the .exe suffix alone
     // cannot be used to detect Windows).
@@ -62,7 +62,7 @@ class CompilerConfig {
     // it, codegen still only uses the coroutine scheduler when the compiled
     // module actually contains suspension points, so flag on/off produce
     // identical binaries for wait-free programs (bootstrap md5 convergence).
-    // In ./penguin -b the flag is passed only when pass2 compiles pass3.
+    // In the Makefile bootstrap the flag is passed only when pass2 compiles pass3.
     coroutine_enabled: bool = false;
 
     fun new(mut this) {}

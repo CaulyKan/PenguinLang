@@ -60,8 +60,8 @@ STUB_OBJ = $(OUTPUT_DIR)/meta_stubs.o
 # host LLVM (mingw clang can't consume Linux LLVM headers cleanly), so without
 # a Windows LLVM the JIT is skipped for cross builds (meta/JIT is then a
 # Linux-only feature for that binary). `IS_CROSS` is set when `CROSS=win64` is
-# passed explicitly or when CC names a mingw cross compiler (as `./penguin -p`
-# does for the win64 publish).
+# passed explicitly or when CC names a mingw cross compiler (as `make
+# publish TARGET=win` does).
 IS_CROSS := $(strip $(or $(CROSS),$(findstring mingw,$(CC))))
 ifneq ($(IS_CROSS),)
   ifneq ($(LLVM_WIN_OK),)

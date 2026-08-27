@@ -441,6 +441,12 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = System.Environment.ProcessPath ?? "";
             });
 
+            vm.Global.RegisterExternFunction("_utils.getenv", (result, args) =>
+            {
+                var name = args[0].As<BasicRuntimeValue>().StringValue;
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = System.Environment.GetEnvironmentVariable(name) ?? "";
+            });
+
             vm.Global.RegisterExternFunction("_utils.mkdir", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;

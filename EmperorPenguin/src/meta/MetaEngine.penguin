@@ -161,7 +161,7 @@ class MetaEngine {
         result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
         // (temporarily removed for bisection)
         // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
-        // EmperorPenguin.penguins), so its emperor.penguin_meta_* extern calls
+        // EmperorPenguinPass1.penguins), so its emperor.penguin_meta_* extern calls
         // resolve against the <meta_externs> injected in compile_meta_function.
         result.push(new SourceInput("meta_runtime.penguin", _utils.file_read_text("EmperorPenguin/src/meta/meta_runtime.penguin")));
         let bound_files: mut _utils.List<string> = new _utils.List<string>();

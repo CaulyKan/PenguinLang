@@ -23,7 +23,7 @@ let STDLIB_IO: string = load_stdlib_text("io.penguin");
 // (dev/test run from the repo root), then exe-relative candidates — a direct
 // sibling layout AND an upward walk from the exe dir (up to 12 parents), so
 // the server still finds the repo when launched from a nested workdir (the
-// test runner copies the exe into tmp/testruns/<ts>/prebuilt/... ) or from
+// test runner copies the exe into build/testruns/<ts>/prebuilt/... ) or from
 // vscode/server/<platform>/ inside a deployed extension.
 fun load_stdlib_text(name: string) -> string {
     let candidates: mut _utils.List<string> = new _utils.List<string>();

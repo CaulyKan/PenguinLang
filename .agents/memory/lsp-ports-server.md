@@ -4,8 +4,8 @@
 架构与构建见 `MagellanicPenguin/LspServer/README.md`；本条记踩坑与关键事实。
 
 ## 关键事实
-- **构建**：`./penguin -lsp`（= `tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o tmp/lsp`，16k 行嵌入编译器，分钟级）。e2e 测试走 runner 的 **Prebuilt backend**（`Apply To: Prebuilt` + `Compile.Args: tmp/lsp`，compile 阶段只是 `cp` 到 workdir）——不重编。
-- **stdlib 定位**（LspCompilationUnit.load_stdlib_text）：cwd 优先，然后从 exe 目录向上走最多 12 层找 `<parent>/EmperorPenguin/std/penguin/`。runner 把 exe 拷进 `tmp/testruns/<ts>/prebuilt/...` 深层 workdir 也能找到；`./penguin -p` 发布时把 stdlib 打包到 `vscode/server/linux/EmperorPenguin/std/penguin`（exe_dir 直接子路径候选命中）。
+- **构建**：`make lsp`（= `build/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o build/lsp`，链接 build/libemperorpenguin.penguin-lib，分钟级；两级内容寻址缓存）。e2e 测试走 runner 的 **Run LSP / Prebuilt backend**（`Apply To: Prebuilt` + `Run Args: build/lsp`，run 阶段只是 `cp` 到 workdir）——不重编。
+- **stdlib 定位**（LspCompilationUnit.load_stdlib_text）：cwd 优先，然后从 exe 目录向上走最多 12 层找 `<parent>/EmperorPenguin/std/penguin/`。runner 把 exe 拷进 `build/testruns/<ts>/prebuilt/...` 深层 workdir 也能找到；`make publish` 发布时把 stdlib 打包到 `vscode/server/linux/EmperorPenguin/std/penguin`（exe_dir 直接子路径候选命中）。
 - **位置基准**：EP lexer 行列都 **1 基准**（line=1, col=1 起）；BP/ANTLR 是行 1 列 0。EP→LSP 一律 `line-1, col-1`（LspQuery 与 diagnostics 均如此）。
 - **exit 时序**：exit 通知 → `out_exit(code)` 控制事务进共享 hub → JsonOutputParser 顺序转发为 `!LSP-EXIT:<code>` 哨兵 → StdioStream 写完之前的帧后 `exit(code)`；stdin EOF（无 exit）→ 静止退出 0。
 - C# LSP 的怪癖不搬：references 假广告、shutdown 后 1s 强杀、logMessage 刷屏。EOF 静止退出 0 是新语义（更干净）。

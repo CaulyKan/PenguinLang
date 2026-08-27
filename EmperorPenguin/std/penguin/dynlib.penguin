@@ -18,10 +18,10 @@ namespace emperor {
 // bytes past the last section, and the footer read uses the portable binary
 // file externs (_utils.file_size / file_read_range / file_append).
 //
-// This file is NOT in the default EmperorPenguin.penguins project — the default
+// This file is NOT in the default EmperorPenguinPass1.penguins project — the default
 // build (pass1 / dotnet tests / pass2) compiles the ANTLR-safe DynlibStub.penguin
 // instead, which disables dyn-lib. The bootstrap's pass2→pass3 / pass3→pass4
-// steps build from EmperorPenguinFull.penguins, which swaps in THIS file plus
+// steps build from EmperorPenguinPass2.penguins, which swaps in THIS file plus
 // json/vector/hashmap (pass3+ only). No meta (#if/#option) anywhere in this
 // module: the compiler's own code is plain penguin.
 // ---------------------------------------------------------------------------

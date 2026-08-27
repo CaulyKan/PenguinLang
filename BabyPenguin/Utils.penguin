@@ -15,6 +15,11 @@ namespace _utils {
     extern fun file_append(file: string, text: string);
     extern fun exe_path() -> string;
 
+    // Environment variable lookup ("" when unset). Used to resolve the link
+    // compiler ($CLANG) in-process — a `${CLANG:-clang}` shell expansion only
+    // works under a POSIX system() shell, not cmd.exe on native Windows.
+    extern fun getenv(name: string) -> string;
+
     // Create a fresh, process-unique temporary directory and return its path.
     // The directory is created atomically so it never conflicts with other
     // callers (including parallel compiler invocations). Cross-platform.
@@ -22,7 +27,7 @@ namespace _utils {
 
     // Returns a guaranteed-unique temporary directory path, already created.
     // Use this for build intermediates so parallel EmperorPenguin runs do not
-    // collide on a shared fixed path like "tmp/".
+    // collide on a shared fixed path like "build/".
     fun get_temp_folder() -> string {
         let dir: string = create_temp_dir("penguin");
         return dir;

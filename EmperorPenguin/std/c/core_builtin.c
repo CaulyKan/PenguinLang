@@ -359,6 +359,22 @@ long long _emperor_exec_cmd(const char* cmd) {
     return (long long)system(cmd);
 }
 
+/* --- Environment --- */
+
+/* "" when unset (GC-allocated, so the caller gets a stable penguin string).
+ * Resolves tool paths (e.g. $CLANG) in-process — a `${VAR:-def}` shell
+ * expansion only works under a POSIX system() shell, not cmd.exe. */
+char* _emperor_getenv(const char* name) {
+    const char* v = (name && name[0]) ? getenv(name) : NULL;
+    size_t len = v ? strlen(v) : 0;
+    char* r = (char*)_emperor_gc_alloc(len + 1, 1);
+    if (r) {
+        if (len) memcpy(r, v, len);
+        r[len] = '\0';
+    }
+    return r;
+}
+
 /* --- File I/O --- */
 
 char* _emperor_file_read_text(const char* path) {

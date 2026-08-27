@@ -147,7 +147,13 @@ class LLVMCompiler {
         clang_args.push(exe_path);
 
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -> " + exe_path); }
-        let exit_code: i64 = _utils.exec("${CLANG:-clang}", clang_args);
+        // The link-time compiler: $CLANG when set (the Makefile's cross/publish
+        // flows export it), else plain clang — resolved in-process, not via a
+        // ${CLANG:-clang} shell expansion (system() runs cmd.exe on native
+        // Windows, which cannot interpret POSIX parameter expansion).
+        let clang_exe: mut string = _utils.getenv("CLANG");
+        if (string_length(clang_exe) == 0) { clang_exe = "clang"; }
+        let exit_code: i64 = _utils.exec(clang_exe, clang_args);
         if (exit_code == 0) {
             if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Output: " + exe_path); }
             return true;
@@ -183,7 +189,7 @@ class LLVMCompiler {
             // SONAME = the lib's basename: consumers record it as DT_NEEDED, and
             // link_exe's -rpath,$ORIGIN finds the lib beside the executable — a
             // deployed exe + .penguin-lib pair is relocatable without
-            // LD_LIBRARY_PATH (and tmp/passN finds its own lib even when another
+            // LD_LIBRARY_PATH (and build/passN finds its own lib even when another
             // build's lib sits in the parent directory).
             let slash: mut i64 = string_find(lib_path, "/");
             let base_start: mut i64 = 0;
@@ -198,7 +204,10 @@ class LLVMCompiler {
         clang_args.push(lib_path);
 
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Link] Running: clang -shared -> " + lib_path); }
-        let exit_code: i64 = _utils.exec("${CLANG:-clang}", clang_args);
+        // $CLANG override, resolved in-process (cmd.exe cannot expand ${...}).
+        let clang_exe: mut string = _utils.getenv("CLANG");
+        if (string_length(clang_exe) == 0) { clang_exe = "clang"; }
+        let exit_code: i64 = _utils.exec(clang_exe, clang_args);
         if (exit_code != 0) {
             __builtin.eprintln("[EmperorPenguin Link] clang -shared failed with exit code " + cast<string>(exit_code));
             return false;
