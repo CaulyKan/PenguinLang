@@ -531,11 +531,12 @@ class SemanticModel {
                     this.report_error(new ErrorCode.E_WIRING(),
                         "Output port '" + key + "' has two drivers: module body code (" + this.join_strings(body_locs, ", ") + ") and a construct wire (" + wire_loc + ") - drive it from exactly one (body XOR connect line); merge multiple streams through a channel",
                         new SourceLocation("", 0, 0));
-                } else if (cast<i64>(body_fns.size()) > 1) {
-                    this.report_error(new ErrorCode.E_WIRING(),
-                        "Output port '" + key + "' is driven by " + cast<string>(body_fns.size()) + " different routines (" + this.join_strings(body_fns, ", ") + ") - an output has exactly one driving routine; merge multiple streams through a channel",
-                        new SourceLocation("", 0, 0));
                 }
+                // NOTE: several routines of the OWNING module writing their own
+                // output is legal (design Q9 granularity: the module's body code
+                // is one driver source, XOR the construct wire). The permission
+                // matrix already forbids any other module's routine from writing
+                // the port, so no per-routine count is needed here.
             }
             di = di + 1;
         }

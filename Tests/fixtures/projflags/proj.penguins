@@ -1,0 +1,4 @@
+[Project]
+name = "projflags"
+sources = ["prog.penguin"]
+flags = ["--enable-coroutine"]

@@ -908,11 +908,17 @@ int _emperor_sched_run(void) {
             continue;
         }
 
-        /* No progress, no timers, but fd waiters remain: block until the
-         * next external event. External deltas keep the program alive —
-         * quiescence with external sources pending is NOT an exit (a
-         * server parked on its stdin is a legitimate steady state). */
+        /* External fd sources: quiescence is NOT an exit — a server parked on
+         * its stdin is a legitimate steady state. Rounds with activity keep
+         * flowing (the pipeline the last fd event fed must drain: reader →
+         * parser → main → serializer → writer, one channel hop per round);
+         * a round with NO activity means every remaining coroutine is parked
+         * replaying identical state (channel waiters re-queue every round,
+         * so queue EMPTINESS can never be the test here — gating on it let
+         * the fingerprint quiescence exit kill a server with live fd
+         * waiters). Block until the next external event. */
         if (fd_waiters) {
+            if (sim_activity != round_start_activity) continue;
             fd_poll_all(-1);
             continue;
         }

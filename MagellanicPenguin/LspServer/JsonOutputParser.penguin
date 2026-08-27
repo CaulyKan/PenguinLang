@@ -1,33 +1,37 @@
-// JsonOutputParser: the outbound fan-in point. Every producer (LspMain, each
-// LspCompilationUnit) writes LspOutMsg values into the SHARED outbound Fifo
-// (N writers on one channel are legal — the design doc's multi-writer
-// merge pattern, "multiple routines writing one channel"): this module is
-// its single consumer, serializing each message into a JSON-RPC frame for
-// StdioStream.tx. The out_exit control rides the same stream (channel order
-// guarantees every frame queued ahead of it reaches the wire first) and is
-// forwarded as the exit sentinel for StdioStream to terminate the process.
+// JsonOutputParser: the outbound fan-in point. Producers are modules with
+// their OWN output ports: LspMain statically (connect(main.responses, ...)),
+// each LspCompilationUnit dynamically via attach() at didOpen — the port
+// hub of an output port is itself a source (slot stream), so a unit's whole
+// result stream merges here (epoll arrival order across streams). This
+// module is the single consumer: it serializes each LspOutMsg into a
+// JSON-RPC frame for StdioStream.tx. The out_exit control rides the same
+// fan-in (a unit frame racing past the exit sentinel would be a protocol
+// violation — didClose precedes exit) and is forwarded as the exit sentinel
+// for StdioStream to terminate the process.
 //
-// (JsonOutputParser.inputs is the MultiInput fan-in the plan described, but
-// EP v1 has no channel-as-connect-sink — deviation F — so producers write
-// the hub Fifo through ISink views handed out at construction instead. Same
-// fan-in topology, wired through constructors rather than connect.)
+// attach() is the one runtime-wiring seam left: EP v1 has no
+// channel-as-connect-sink (design deviation F) and no statement-level
+// construct for runtime port wiring — the module façade keeps ISource out
+// of producer code entirely (Stage-4c closes the seam: a runtime construct
+// connect will replace it).
 namespace lsp {
 
 class JsonOutputParser {
     output out : string;
-    // The shared outbound hub (single consumer: this module's loop).
-    hub: mut __builtin.Fifo<LspOutMsg> = new __builtin.Fifo<LspOutMsg>(256, new __builtin.FifoPolicy.backpressure());
+    // N:1 fan-in over every producer's output-port stream.
+    input inputs : __builtin.MultiInput<LspOutMsg>;
 
     fun new(mut this) {}
 
-    // Producer view of the hub.
-    fun sink(mut this) -> mut __builtin.ISink<LspOutMsg> {
-        return cast<mut __builtin.ISink<LspOutMsg>>(this.hub);
+    // Runtime wiring façade: register another module's output port as a
+    // source of the fan-in (called by LspMain at didOpen).
+    fun attach(mut this, src: mut __builtin.ISource<LspOutMsg>) {
+        this.inputs.add(src);
     }
 
     initial {
         while (true) {
-            let m: LspOutMsg = wait this.hub;
+            let m: LspOutMsg = wait this.inputs;
             if (m is LspOutMsg.out_exit) {
                 this.out.write(make_exit_control(m.out_exit));
             } else if (m is LspOutMsg.out_response) {

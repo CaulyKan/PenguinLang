@@ -1,6 +1,6 @@
 # DocumentSymbol
 ## Description
-textDocument/documentSymbol e2e against the prebuilt LSP server: the document's namespace member tree comes back as DocumentSymbol[] — class Greeter (kind 5) with field name (8) and method greet (6), enum Color (10) with members Red/Green (22) at their own declaration sites (enum member symbols carry real locations since the parser/binder started populating them — variants used to resolve to the enum's location), free function hello (12). The user namespace node itself is spliced away (EP bound namespaces carry no location); stdlib defs are filtered by location filename. Byte-exact via the ESCAPE mode (LSP frame headers contain CR bytes). Server built by './penguin -lsp'.
+textDocument/documentSymbol e2e against the prebuilt LSP server: the document's namespace member tree comes back as DocumentSymbol[] — class Greeter (kind 5) with field name (8) and method greet (6), enum Color (10) with members Red/Green (22) at their own declaration sites (enum member symbols carry real locations since the parser/binder started populating them — variants used to resolve to the enum's location), free function hello (12). The user namespace node itself is spliced away (EP bound namespaces carry no location); stdlib defs are filtered by location filename. Byte-exact via the ESCAPE mode (LSP frame headers contain CR bytes). Server built by 'make lsp'.
 
 ## Apply To
 * Prebuilt
@@ -11,14 +11,8 @@ textDocument/documentSymbol e2e against the prebuilt LSP server: the document's 
 // documentation only for the Prebuilt backend.
 ```
 
-## Compile
-Args: `tmp/lsp`
-ExpectedExitCode: 0
-ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
-
-## Run
-Args: ``
+## Run LSP
+Args: `build/lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 431\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"namespace demo {\\n    class Greeter {\\n        name : string = \\"\\";\\n        fun greet(this) -> string {\\n            return \\"hi \\" + this.name;\\n        }\\n    }\\n    enum Color { Red; Green; }\\n    fun hello() {\\n        let g : mut Greeter = new Greeter();\\n    }\\n}\\n"}}}Content-Length: 127\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

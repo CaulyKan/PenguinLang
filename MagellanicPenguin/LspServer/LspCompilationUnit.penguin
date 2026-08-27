@@ -1,9 +1,10 @@
 // LspCompilationUnit: the per-document module (design doc's dynamic half).
 // Created by LspMain on didOpen (runtime `new` — module-as-actor), wired
-// through its OWN Fifo (cmds: LspMain routes document traffic in) plus the
-// shared outbound ISink (JsonOutputParser's hub). Both are spelled as CLASS
-// FIELD TYPES so their generic instantiations are collected by the pass-3
-// monomorphize fixpoint (see StdioStream.penguin's note on port payload
+// through its OWN Fifo (cmds: LspMain routes document traffic in; a plain
+// class-field channel so its generic instantiation is collected by the
+// pass-3 monomorphize fixpoint) and publishes through its OWN results
+// OUTPUT PORT — LspMain attaches that port's hub into JsonOutputParser's
+// fan-in at creation (see StdioStream.penguin's note on port payload
 // restrictions).
 //
 // Compilation reuses the embedded EmperorPenguin compiler
@@ -64,17 +65,15 @@ class LspCompilationUnit {
     uri: string = "";
     path: string = "";
     text: mut string = "";
+    output results : LspOutMsg;
     cmds: mut __builtin.Fifo<LspMessage> = new __builtin.Fifo<LspMessage>(64, new __builtin.FifoPolicy.backpressure());
-    // Shared outbound hub view (JsonOutputParser's single-consumer Fifo).
-    out_sink: mut __builtin.ISink<LspOutMsg>;
     // Last error-free compilation result (queries survive diagnostics).
     last_ok: mut __builtin.Option<emperor.BoundCompilationUnit> = new __builtin.Option<emperor.BoundCompilationUnit>.none();
 
-    fun new(mut this, uri: string, text: string, out_sink: mut __builtin.ISink<LspOutMsg>) {
+    fun new(mut this, uri: string, text: string) {
         this.uri = uri;
         this.path = uri_to_path(uri);
         this.text = text;
-        this.out_sink = out_sink;
         this.recompile();
     }
 
@@ -204,17 +203,17 @@ class LspCompilationUnit {
         let n: mut LspNotification = new LspNotification();
         n.method = "textDocument/publishDiagnostics";
         n.params_json = params_json;
-        this.out_sink.write(new LspOutMsg.out_notification(n));
+        this.results.write(new LspOutMsg.out_notification(n));
     }
 
     fun respond_result(mut this, msg: LspMessage, result_json: string) {
         let r: mut LspResponse = response_for(msg);
         r.result_json = result_json;
-        this.out_sink.write(new LspOutMsg.out_response(r));
+        this.results.write(new LspOutMsg.out_response(r));
     }
 
     fun respond_error(mut this, msg: LspMessage, code: i64, message: string) {
-        this.out_sink.write(new LspOutMsg.out_error(error_for(msg, code, message)));
+        this.results.write(new LspOutMsg.out_error(error_for(msg, code, message)));
     }
 
     initial {

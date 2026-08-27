@@ -7,34 +7,39 @@
 //    StdioStream calls exit(code) — then the loop retires.
 //  - docs: routing by textDocument.uri. didOpen dynamically instantiates a
 //    LspCompilationUnit (module-as-actor: runtime `new`, its initial spawns
-//    with it) handing it the shared outbound ISink; everything else is
+//    with it) and registers the unit's results output port into the
+//    JsonOutputParser fan-in via its attach() façade; everything else is
 //    forwarded to the owning unit's cmds Fifo (1:N routing on the inbound
-//    side, N:1 merge on the outbound hub — the dynamic-wiring half of the
-//    design's static/dynamic topology split; channels are not legal connect
-//    sinks in EP v1, so dynamic wiring goes through constructors).
+//    side, N:1 merge on the outbound fan-in — the dynamic-wiring half of
+//    the design's static/dynamic topology split).
+//
+// Session responses flow through this module's OWN output port (connected
+// statically to JsonOutputParser.inputs in LspWiring) — no ISink anywhere.
 namespace lsp {
 
 class LspMain {
     input session : string;
     input docs : string;
+    output responses : LspOutMsg;
 
-    // Shared outbound hub view (JsonOutputParser's single-consumer Fifo).
-    out_sink: mut __builtin.ISink<LspOutMsg>;
+    // Outbound fan-in module reference (used only for attach() at didOpen —
+    // the runtime-wiring seam; see JsonOutputParser).
+    out: mut JsonOutputParser;
     units: mut std.HashMap<string, LspCompilationUnit> = new std.HashMap<string, LspCompilationUnit>();
     shutdown_seen: mut bool = false;
 
-    fun new(mut this, out_sink: mut __builtin.ISink<LspOutMsg>) {
-        this.out_sink = out_sink;
+    fun new(mut this, out: mut JsonOutputParser) {
+        this.out = out;
     }
 
     fun respond_result(mut this, msg: LspMessage, result_json: string) {
         let r: mut LspResponse = response_for(msg);
         r.result_json = result_json;
-        this.out_sink.write(new LspOutMsg.out_response(r));
+        this.responses.write(new LspOutMsg.out_response(r));
     }
 
     fun respond_error(mut this, msg: LspMessage, code: i64, message: string) {
-        this.out_sink.write(new LspOutMsg.out_error(error_for(msg, code, message)));
+        this.responses.write(new LspOutMsg.out_error(error_for(msg, code, message)));
     }
 
     initial {
@@ -52,9 +57,9 @@ class LspMain {
                 // LSP spec: 0 after shutdown, 1 otherwise. The control flows
                 // through the hub so pending frames flush first.
                 if (this.shutdown_seen) {
-                    this.out_sink.write(new LspOutMsg.out_exit(0));
+                    this.responses.write(new LspOutMsg.out_exit(0));
                 } else {
-                    this.out_sink.write(new LspOutMsg.out_exit(1));
+                    this.responses.write(new LspOutMsg.out_exit(1));
                 }
                 break;
             } else if (msg.has_id) {
@@ -79,8 +84,9 @@ class LspMain {
                     if (td.is_some()) {
                         text = json_get_string(td.some, "text");
                     }
-                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text, this.out_sink);
+                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text);
                     this.units.put(uri, unit);
+                    this.out.attach(cast<mut __builtin.ISource<LspOutMsg>>(unit.results));
                 }
             } else {
                 let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);

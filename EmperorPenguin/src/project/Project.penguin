@@ -305,10 +305,20 @@ fun resolve_pattern(base_dir: string, pattern: string, result: mut _utils.List<s
 class PenguinProject {
     name: string = "";
     sources: mut _utils.List<string> = new _utils.List<string>();
+    // lib = ["xxx.penguin-lib"]: dependency dyn-libs (relative to the project
+    // dir), equivalent to CLI --lib — consumed by main before load_lib_chain.
+    libs: mut _utils.List<string> = new _utils.List<string>();
+    // flags = ["--enable-coroutine", ...]: compiler options applied as if they
+    // preceded the CLI on the command line (CLI wins on conflict — project
+    // flags are parsed first). Only '-'-prefixed tokens are honored, so a
+    // project file can never inject source files.
+    flags: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {
 
         this.sources = new _utils.List<string>();
+        this.libs = new _utils.List<string>();
+        this.flags = new _utils.List<string>();
     }
 
     fun load(path: string) -> mut PenguinProject {
@@ -371,6 +381,28 @@ class PenguinProject {
                 while (si < cast<i64>(parsed.size())) {
                     this.sources.push(parsed.at(cast<u64>(si)).some);
                     si = si + 1;
+                }
+            }
+
+            if (key == "lib" || key == "libs") {
+                let parsed: _utils.List<string> = parse_string_array(value);
+                let bi: mut i64 = 0;
+                while (bi < cast<i64>(parsed.size())) {
+                    this.libs.push(parsed.at(cast<u64>(bi)).some);
+                    bi = bi + 1;
+                }
+            }
+
+            if (key == "flags") {
+                let parsed: _utils.List<string> = parse_string_array(value);
+                let fi: mut i64 = 0;
+                while (fi < cast<i64>(parsed.size())) {
+                    let tok: string = parsed.at(cast<u64>(fi)).some;
+                    // Only option tokens — a project file must not name sources.
+                    if (string_length(tok) > 0 && string_char_at(tok, 0) == "-") {
+                        this.flags.push(tok);
+                    }
+                    fi = fi + 1;
                 }
             }
         }

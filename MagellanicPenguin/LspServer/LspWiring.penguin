@@ -14,11 +14,12 @@ construct {
     let stdio : mut lsp.StdioStream = new lsp.StdioStream();
     let parser : mut lsp.JsonInputParser = new lsp.JsonInputParser();
     let outp : mut lsp.JsonOutputParser = new lsp.JsonOutputParser();
-    let main : mut lsp.LspMain = new lsp.LspMain(outp.sink());
+    let main : mut lsp.LspMain = new lsp.LspMain(outp);
 
     connect(stdio.rx, parser.chunks);
     connect(parser.session, main.session);
     connect(parser.docs, main.docs);
+    connect(main.responses, outp.inputs);
     connect(outp.out, stdio.tx);
 }
 

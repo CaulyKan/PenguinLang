@@ -17,16 +17,49 @@ initial {
         __builtin.eprintln("Error: no source files specified");
         __builtin.exit(1);
     }
+    // Project-file lib/flags pre-scan: a .penguins may carry lib = [...] and
+    // flags = [...]; both take effect BEFORE the dyn-lib checks below
+    // (project libs flow into lib_paths; relative lib paths resolve against
+    // the project dir). Project flags re-enter parse() after the CLI was
+    // consumed, so on a conflicting toggle/value the PROJECT file wins — keep
+    // project flags to options the command line does not restate. Only
+    // '-'-prefixed tokens are honored (a project file can never inject
+    // source files).
+    {
+        let pscan: mut i64 = 0;
+        while (pscan < cast<i64>(config.source_files.size())) {
+            let pfile: string = config.source_files.at(cast<u64>(pscan)).some;
+            if (string_ends_with(pfile, ".penguins")) {
+                let pproj: mut PenguinProject = PenguinProject.load(pfile);
+                let pdir: string = get_parent_dir(pfile);
+                let plib: mut i64 = 0;
+                while (plib < cast<i64>(pproj.libs.size())) {
+                    let libp : mut string = pproj.libs.at(cast<u64>(plib)).some;
+                    if (string_length(libp) > 0 && string_char_at(libp, 0) != "/") {
+                        libp = path_combine(pdir, libp);
+                    }
+                    config.lib_paths.push(libp);
+                    if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] lib: " + libp); }
+                    plib = plib + 1;
+                }
+                if (cast<i64>(pproj.flags.size()) > 0) {
+                    if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] applying project flags"); }
+                    config.parse(pproj.flags);
+                }
+            }
+            pscan = pscan + 1;
+        }
+    }
     // Dyn-lib capability: --enable-dl (default on) is a plain config bool, and
     // dynlib_available() reports whether THIS compiler binary was built with the
-    // json-backed Dynlib (only the pass3+ binary from EmperorPenguinFull.penguins
+    // json-backed Dynlib (only the pass3+ binary from EmperorPenguinPass2.penguins
     // is). Either being false disables building/consuming .penguin-lib files.
     if (config.is_lib_mode() && (!config.dl_enabled || !dynlib_available())) {
-        __builtin.eprintln("[EmperorPenguin] Error: building a .penguin-lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.eprintln("[EmperorPenguin] Error: building a .penguin-lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinPass2.penguins)");
         __builtin.exit(1);
     }
     if (config.lib_paths.size() > 0 && (!config.dl_enabled || !dynlib_available())) {
-        __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinPass2.penguins)");
         __builtin.exit(1);
     }
 

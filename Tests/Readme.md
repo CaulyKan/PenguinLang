@@ -52,8 +52,9 @@ ExpectedStderr: DISCARD
 | `## Description` | optional | Free text. |
 | `## Apply To` | **required** | Bullet list of compilers (`*` or `-`). At least one. |
 | `## Test Code` | **required** | A fenced code block with the penguin source. |
-| `## Compile` | **required** | Compile-stage expectations. |
+| `## Compile` | **required**¹ | Compile-stage expectations. |
 | `## Run` | optional | Run-stage expectations. Omit for negative/compile-only tests. |
+| `## Run LSP` | optional² | Prebuilt-exe LSP session — **no compile stage** (replaces `## Compile`; the two are mutually exclusive). `Args` names the server binary (e.g. `` `build/lsp` ``, built by `make lsp`); `Stdin` is the JSON-RPC session; `ExpectedStdout` asserts the response frames. Extra key: `StdinClose: false` keeps the stdin pipe OPEN while awaiting exit — for sessions that end via their own `exit` frame, not stdin EOF (the closed form can never exercise the keep-waiting scheduling path). Apply To must be `Prebuilt` only. ¹Omitted by `## Run LSP` tests. ²The runner starts the server from the repo root (the LSP resolves its stdlib cwd-first). |
 
 ### `## Apply To`
 
@@ -65,12 +66,12 @@ Recognized names (matched case-insensitively, by substring):
 |---|---|
 | `BabyPenguin` | C# reference compiler/VM (interprets directly) |
 | `EmperorPenguin Pass1` | EmperorPenguin compiler source run on the BabyPenguin VM (slow) |
-| `EmperorPenguin Pass2` | Native `tmp/pass2` (built by `./penguin -b`) |
-| `EmperorPenguin Pass3` | Native `tmp/pass3` (built by `./penguin -b`) |
+| `EmperorPenguin Pass2` | Native `build/pass2` (built by `make bootstrap`) |
+| `EmperorPenguin Pass3` | Native `build/pass3` (built by `make bootstrap`) |
 
-> Pass2/Pass3 require bootstrapped native binaries (built by `./penguin -b`).
+> Pass2/Pass3 require bootstrapped native binaries (built by `make bootstrap`).
 > Pass3 is the earliest dyn-lib-capable compiler (built from
-> `EmperorPenguinFull.penguins`, which compiles the json-backed Dynlib module +
+> `EmperorPenguinPass2.penguins`, which compiles the json-backed Dynlib module +
 > json/vector/hashmap into the compiler). Dynamic-linking tests
 > (`Tests/DynamicLinkTest/*.md`) run against Pass3.
 
@@ -79,7 +80,7 @@ once more compilers agree (use `--probe` to discover agreement; see *Running*).
 
 > Pass2/Pass3 require bootstrapped native binaries. The runner never bootstraps
 > automatically — if a Pass2/3 binary is missing it exits with an error telling
-> you to run `./penguin -b`. BabyPenguin and Pass1 only need `dotnet`.
+> you to run `make bootstrap`. BabyPenguin and Pass1 only need `dotnet`.
 
 #### Conditional skip (`SKIP if '<compiler>' PASS`)
 
@@ -246,9 +247,9 @@ non-zero and skips the run stage.
 | Backend | Compile command (cwd = repo root) |
 |---|---|
 | BabyPenguin | `dotnet <BabyPenguin.dll> -q <src>` *(ignores Compile.Args)* |
-| Pass1 | `dotnet <BabyPenguin.dll> -q EmperorPenguin/EmperorPenguin.penguins -- <Compile.Args> <src> -o <exe>` |
-| Pass2 | `tmp/pass2 <Compile.Args> <src> -o <exe>` |
-| Pass3 | `tmp/pass3 <Compile.Args> <src> -o <exe>` |
+| Pass1 | `dotnet <BabyPenguin.dll> -q EmperorPenguin/EmperorPenguinPass1.penguins -- <Compile.Args> <src> -o <exe>` |
+| Pass2 | `build/pass2 <Compile.Args> <src> -o <exe>` |
+| Pass3 | `build/pass3 <Compile.Args> <src> -o <exe>` |
 
 `Run.Args` are passed to the produced executable (Pass1/2/3), or become the
 program's args for BabyPenguin.
@@ -334,7 +335,7 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 | `--parallel <n>` | cores−1 | Max concurrent (test × compiler) combinations. |
 | `--timeout-compile <s>` | 600 | Per-case compile timeout. |
 | `--timeout-run <s>` | 60 | Per-case run timeout. |
-| `--compare-with latest\|none\|<path>` | `tmp/testruns/latest.json` | Baseline to diff against. `none` disables the diff; a path selects a specific `summary.json`/`baseline-*.json` file. |
+| `--compare-with latest\|none\|<path>` | `build/testruns/latest.json` | Baseline to diff against. `none` disables the diff; a path selects a specific `summary.json`/`baseline-*.json` file. |
 | `--baseline` | off | Flag (no value): record this run as the new baseline (see below). |
 | `--time-regression-pct <pct>` | 50 | Flag duration regressions above this %. |
 | `--mem-regression-pct <pct>` | 50 | Flag peak-memory regressions above this %. |
@@ -346,10 +347,10 @@ Fast loop (no bootstrap needed):
 dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin
 ```
 
-Full matrix (requires `./penguin -b` first):
+Full matrix (requires `make bootstrap` first):
 
 ```
-./penguin -b
+make bootstrap
 dotnet run --project Tests/PenguinTestRunner
 ```
 
@@ -358,10 +359,10 @@ guard (a required native binary is missing).
 
 ## Artifacts and report
 
-Each run writes to `tmp/testruns/<timestamp>/` (gitignored):
+Each run writes to `build/testruns/<timestamp>/` (gitignored):
 
 ```
-tmp/testruns/<ts>/
+build/testruns/<ts>/
   summary.html          # interactive report — open in a browser
   summary.json          # machine-readable
   <compiler>/<category>/<test>/
@@ -372,8 +373,8 @@ tmp/testruns/<ts>/
     compile.log         # command, exit, stdout/stderr, duration, peak RSS
     run.log             # EmperorPenguin run stage
     result.json         # per-combo outcome, expected/actual, time + memory
-tmp/testruns/latest.json        # baseline for the diff — only overwritten by --baseline runs
-tmp/testruns/baseline-<ts>.json # dated snapshot of a run that recorded a baseline
+build/testruns/latest.json        # baseline for the diff — only overwritten by --baseline runs
+build/testruns/baseline-<ts>.json # dated snapshot of a run that recorded a baseline
 ```
 
 **Recording a baseline:** `latest.json` is never overwritten by a plain run. To (re)baseline,

@@ -1,6 +1,6 @@
 # ParseDiagnostic
 ## Description
-Parser-diagnostic e2e against the prebuilt LSP server: `let x = ;` used to recover SILENTLY (the primary-expression fallback returned an empty-string constant — empty LSP diagnostics, 'expected value token' only at clang time). The parser now reports missing-initializer-after-'=' at the three declaration sites, folds the error with its real file:line:col (parse_error_location lifts the prefix), and publishDiagnostics carries it at the document's 2:13. Byte-exact via ESCAPE. Server built by './penguin -lsp'.
+Parser-diagnostic e2e against the prebuilt LSP server: `let x = ;` used to recover SILENTLY (the primary-expression fallback returned an empty-string constant — empty LSP diagnostics, 'expected value token' only at clang time). The parser now reports missing-initializer-after-'=' at the three declaration sites, folds the error with its real file:line:col (parse_error_location lifts the prefix), and publishDiagnostics carries it at the document's 2:13. Byte-exact via ESCAPE. Server built by 'make lsp'.
 
 ## Apply To
 * Prebuilt
@@ -11,14 +11,8 @@ Parser-diagnostic e2e against the prebuilt LSP server: `let x = ;` used to recov
 // documentation only for the Prebuilt backend.
 ```
 
-## Compile
-Args: `tmp/lsp`
-ExpectedExitCode: 0
-ExpectedStdout: DISCARD
-ExpectedStderr: DISCARD
-
-## Run
-Args: ``
+## Run LSP
+Args: `build/lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 187\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"fun f() {\\n    let x = ;\\n}\\n"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0
