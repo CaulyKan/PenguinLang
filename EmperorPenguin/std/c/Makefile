@@ -10,18 +10,32 @@
 #   `-enable-meta` works in Windows builds (meta JIT links the DLL at runtime).
 #   CC / AR / CFLAGS / CXX can also be set directly from the environment.
 
-# `=` (not `?=`, and only where the env/command line has not set them):
-# GNU make's BUILT-IN CC=cc / AR=ar are "defined", so `?=` keeps them and a
-# native Windows host dies invoking `cc`/`ar` (which do not exist). Plain
-# assignments still lose to env vars and make command-line overrides.
-ifeq ($(CROSS),win64)
-  CC  = /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
-  CXX = /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++
-  AR  = /opt/llvm-mingw/bin/x86_64-w64-mingw32-ar
-else
-  CC  = clang
-  CXX = clang++
-  AR  = llvm-ar
+# Assign ONLY when the variable would otherwise be GNU make's BUILT-IN
+# default (origin "default" = cc/ar): `?=` alone does not fire (built-ins
+# count as defined — a native Windows host then dies invoking `cc`), while a
+# plain `=` would defeat the environment CC/CXX/AR the cross flows export
+# (the runtime would build host-ELF objects into a PE link). origin-based:
+# environment and make command-line values always win; built-ins never run.
+ifeq ($(origin CC),default)
+  ifeq ($(CROSS),win64)
+    CC = /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
+  else
+    CC = clang
+  endif
+endif
+ifeq ($(origin CXX),default)
+  ifeq ($(CROSS),win64)
+    CXX = /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++
+  else
+    CXX = clang++
+  endif
+endif
+ifeq ($(origin AR),default)
+  ifeq ($(CROSS),win64)
+    AR = /opt/llvm-mingw/bin/x86_64-w64-mingw32-ar
+  else
+    AR = llvm-ar
+  endif
 endif
 
 CFLAGS ?= -I../include -g
