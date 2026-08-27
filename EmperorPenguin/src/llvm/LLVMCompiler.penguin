@@ -6,6 +6,9 @@ namespace emperor {
 // (link_exe) paths share the IR/lowering half.
 class LLVMCompiler {
     verbose: mut i64 = 0;
+    // Forwarded to the LLVMEmitter (see there): the sjlj _setjmp call shape
+    // differs on the mingw x64 target (two-argument form).
+    windows_target: mut bool = false;
 
     fun new(mut this) {}
 
@@ -18,6 +21,7 @@ class LLVMCompiler {
 
         let mut emitter = new LLVMEmitter();
         emitter.verbose = this.verbose;
+        emitter.windows_target = this.windows_target;
         let llvm_ir: string = emitter.lower(module, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
 

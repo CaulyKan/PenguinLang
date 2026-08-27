@@ -178,6 +178,13 @@ class FuncParamTypes {
 
 class LLVMEmitter {
     verbose: mut i64 = 0;
+    // Cross-target ABI switch set by the driver (LLVMCompiler, from
+    // CompilerConfig.is_windows_target): the try/catch sjlj landing pad calls
+    // the CRT setjmp. glibc's _setjmp takes (jmp_buf) only; mingw-w64's x64
+    // _setjmp takes (jmp_buf, frame) — the IR must pass an explicit NULL
+    // frame, or the garbage second register becomes the stored SEH frame and
+    // the paired longjmp unwinds through it (access violation).
+    windows_target: mut bool = false;
     string_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
     next_str_id: mut i64 = 0;
     reg_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
@@ -821,7 +828,15 @@ class LLVMEmitter {
         if (this.needs_setjmp) {
             // The try/catch landing pad: glibc's _setjmp (no signal mask),
             // marked returns_twice (#1) so LLVM keeps allocas conservative.
-            target.append("declare i32 @_setjmp(ptr) #1\n");
+            // Windows (mingw-w64): _setjmp is the TWO-argument form —
+            // (jmp_buf, frame) — and the call site passes ptr null (plain
+            // sjlj, no SEH unwinding), matching what clang itself emits for
+            // C `setjmp` in the non-SEH flavor.
+            if (this.windows_target) {
+                target.append("declare i32 @_setjmp(ptr, ptr) #1\n");
+            } else {
+                target.append("declare i32 @_setjmp(ptr) #1\n");
+            }
             target.append("attributes #1 = { returns_twice }\n");
         }
         if (this.needs_isinstance) {
@@ -3476,7 +3491,13 @@ class LLVMEmitter {
                 jb_resolved = this.resolve_value(inst.args.at(cast<u64>(0)).some);
             }
             this.needs_setjmp = true;
-            this.emit_line("  " + result_name + " = call i32 @_setjmp(ptr " + jb_resolved + ") #1");
+            if (this.windows_target) {
+                // mingw-w64 x64 ABI: _setjmp(jmp_buf, frame) — explicit NULL
+                // frame keeps the pairing plain-sjlj (see the declare site).
+                this.emit_line("  " + result_name + " = call i32 @_setjmp(ptr " + jb_resolved + ", ptr null) #1");
+            } else {
+                this.emit_line("  " + result_name + " = call i32 @_setjmp(ptr " + jb_resolved + ") #1");
+            }
             this.register_llvm_type(result_name, "i32");
             return;
         }

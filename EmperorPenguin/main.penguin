@@ -151,6 +151,7 @@ initial {
 
     let lc: mut LLVMCompiler = new LLVMCompiler();
     lc.verbose = config.verbose;
+    lc.windows_target = config.is_windows_target();
     if (config.is_lib_mode()) {
         // A lib may not emit @main / initialized globals.
         if (!validate_lib_defs(result)) {
