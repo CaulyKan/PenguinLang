@@ -143,7 +143,7 @@ class LLVMCompiler {
         // (lld-link /STACK:) for a native Windows LLVM clang — the GNU form
         // under lld-link dies as LNK1181 "cannot open 33554432.obj".
         if (is_windows) {
-            let clang_probe: string = _utils.getenv("CLANG");
+            let clang_probe : mut string = _utils.getenv("CLANG");
             if (string_length(clang_probe) == 0) { clang_probe = "clang"; }
             if (string_find(clang_probe, "mingw") >= 0) {
                 clang_args.push("-Wl,--stack,33554432");
