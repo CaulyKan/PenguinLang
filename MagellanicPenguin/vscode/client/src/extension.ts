@@ -54,14 +54,23 @@ async function restartLanguageServer(context: ExtensionContext) {
 async function startLanguageServer(context: ExtensionContext) {
 	const traceOutputChannel = window.createOutputChannel("PenguinLang Language Server");
 
+	const lspCommand = process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform()) || "");
+	if (!lspCommand || !existsSync(lspCommand)) {
+		window.showErrorMessage(
+			`PenguinLang LSP server not found at "${lspCommand}". ` +
+			`Run './penguin -lsp' (linux) or './penguin -lsp -win' (windows) and './penguin -p' first.`
+		);
+		return;
+	}
+
 	// Server options
 	const serverOptions: ServerOptions = {
 		run: {
-			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
+			command: lspCommand,
 			transport: TransportKind.stdio,
 		},
 		debug: {
-			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
+			command: lspCommand,
 			transport: TransportKind.stdio,
 		}
 	};

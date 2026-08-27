@@ -12,6 +12,7 @@ TESTING=0
 CLEAN=0
 PUBLISH=0
 LSP=0
+LSPWIN=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -24,6 +25,7 @@ for arg in "$@"; do
     -t) TESTING=1 ;;
     -p) PUBLISH=1 ;;
     -lsp) LSP=1 ;;
+    -win) LSPWIN=1 ;;
     *) OTHERS="$OTHERS $arg" ;;
   esac
 done
@@ -130,6 +132,32 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
 fi
 
 if [ $LSP -eq 1 ]; then
+    if [ $LSPWIN -eq 1 ]; then
+        echo "Building Windows LSP server (tmp/win64-lsp/MagellanicPenguinLSP.exe) ..."
+        echo "============================================================"
+        if [ ! -f tmp/pass4 ]; then
+            echo "tmp/pass4 not found. Run './penguin -b' first." >&2
+            exit 1
+        fi
+        # win64 cross build (same env shape as ./penguin -p's win64 compiler):
+        # the LspServerWin monolith = LSP modules + the whole compiler in ONE
+        # self-contained exe — the Linux dyn-lib pair is ELF-specific (SONAME
+        # + $ORIGIN rpath + -rdynamic interposition). No -enable-meta (the
+        # Linux LSP carries no JIT either). Windows coroutines & stdio events
+        # come from the runtime's fiber scheduler + PeekNamedPipe fd
+        # integration (EmperorPenguin/std/c/scheduler.c). The toolchain
+        # prefix defaults to llvm-mingw and can be overridden per-variable
+        # (WIN_CC/WIN_CXX/WIN_AR/WIN_CLANG).
+        mkdir -p tmp/win64-lsp
+        CC=${WIN_CC:-/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang} \
+        CXX=${WIN_CXX:-/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++} \
+        AR=${WIN_AR:-/opt/llvm-mingw/bin/x86_64-w64-mingw32-ar} \
+        CLANG=${WIN_CLANG:-/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang} \
+        OPT=-O2 \
+        tmp/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins \
+            --enable-coroutine -o tmp/win64-lsp/MagellanicPenguinLSP.exe -target=win64
+        exit $?
+    fi
     echo "Building MagellanicPenguin LSP server (tmp/lsp + tmp/libemperorpenguin.penguin-lib) ..."
     echo "============================================================"
     if [ ! -f tmp/pass3 ]; then
@@ -274,6 +302,46 @@ if [ $PUBLISH -eq 1 ]; then
     # --- Copy emperor_penguin binaries to vscode server directories ---
     cp tmp/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/emperor_penguin
     cp tmp/win64/emperor_penguin.exe MagellanicPenguin/vscode/server/windows/emperor_penguin.exe
+    # --- PenguinLang-native LSP server (windows): built by './penguin -lsp -win' ---
+    # Same deployed layout as the linux side: the exe plus the stdlib bundle
+    # beside it (the server's embedded document compiles resolve stdlib via
+    # the exe-dir candidate on every platform). The Windows binary is a
+    # self-contained monolith — no .penguin-lib to ship.
+    if [ -f tmp/win64-lsp/MagellanicPenguinLSP.exe ]; then
+        cp tmp/win64-lsp/MagellanicPenguinLSP.exe MagellanicPenguin/vscode/server/windows/MagellanicPenguinLSP.exe
+        echo "Copied tmp/win64-lsp/MagellanicPenguinLSP.exe -> MagellanicPenguin/vscode/server/windows/"
+        mkdir -p MagellanicPenguin/vscode/server/windows/EmperorPenguin/std
+        cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin
+        echo "Bundled stdlib -> MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin"
+        # Optional runtime smoke test when a Windows emulator is available:
+        # WINE=<wine-binary> ./penguin -p (or wine on PATH). A full session
+        # from a foreign cwd — initialize, a broken-document didOpen (the
+        # parser-panic path exercises the Windows sjlj landing pad) and
+        # shutdown/exit — exercises the fiber scheduler, the PeekNamedPipe
+        # stdio integration and the exe-dir stdlib discovery in the deployed
+        # layout.
+        WINE_BIN="${WINE:-wine}"
+        if command -v "$WINE_BIN" >/dev/null 2>&1; then
+            SMOKE_DIR=$(mktemp -d)
+            REPO_ROOT="$PWD"
+            printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 172\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/broken.penguin","languageId":"penguin","version":1,"text":"fun broken( {"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
+                | (cd "$SMOKE_DIR" && "$WINE_BIN" "$REPO_ROOT/MagellanicPenguin/vscode/server/windows/MagellanicPenguinLSP.exe" > out.bin 2> err.bin)
+            SMOKE_RC=$?
+            if [ $SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$SMOKE_DIR/out.bin" 2>/dev/null \
+                || ! grep -q "internal compiler error" "$SMOKE_DIR/out.bin" 2>/dev/null; then
+                echo "Publish FAILED: Windows LSP smoke test under $WINE_BIN (exit=$SMOKE_RC)" >&2
+                cat "$SMOKE_DIR/err.bin" >&2
+                rm -rf "$SMOKE_DIR"
+                exit 1
+            fi
+            rm -rf "$SMOKE_DIR"
+            echo "Windows LSP smoke test passed (initialize + broken-doc survival + shutdown/exit under $WINE_BIN, foreign cwd)"
+        else
+            echo "(no wine available: skipped the Windows LSP runtime smoke test — the binary is cross-compile/link-validated only; run it on a Windows host or set WINE=<path>)"
+        fi
+    else
+        echo "tmp/win64-lsp/MagellanicPenguinLSP.exe not found; skipping Windows LSP server (build with './penguin -lsp -win')"
+    fi
     # --- PenguinLang-native LSP server (linux): built by './penguin -lsp' ---
     # The extension's client picks PENGUINLANG_LSPSERVER_PATH first, else the
     # bundled server/<platform>/MagellanicPenguinLSP binary (the C# server on
@@ -298,22 +366,25 @@ if [ $PUBLISH -eq 1 ]; then
         cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin
         echo "Bundled stdlib -> MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin"
         # Smoke test the BUNDLED server from a foreign cwd (no repo): a full
-        # initialize/shutdown/exit session must answer capabilities and exit 0 —
-        # this proves the exe-dir stdlib discovery AND the rpath \$ORIGIN lib
-        # load work in a deployed layout.
+        # session must answer capabilities, survive opening a broken document
+        # (the parser-panic path exercises the sjlj try/catch landing pad —
+        # publishing an 'internal compiler error' diagnostic, not dying) and
+        # exit 0 — this proves the exe-dir stdlib discovery AND the rpath
+        # $ORIGIN lib load work in a deployed layout.
         SMOKE_DIR=$(mktemp -d)
         REPO_ROOT="$PWD"
-        printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
+        printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 172\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/broken.penguin","languageId":"penguin","version":1,"text":"fun broken( {"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
             | (cd "$SMOKE_DIR" && "$REPO_ROOT/MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP" > out.bin 2> err.bin)
         SMOKE_RC=$?
-        if [ $SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$SMOKE_DIR/out.bin" 2>/dev/null; then
+        if [ $SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$SMOKE_DIR/out.bin" 2>/dev/null \
+            || ! grep -q "internal compiler error" "$SMOKE_DIR/out.bin" 2>/dev/null; then
             echo "Publish FAILED: bundled LSP smoke test (exit=$SMOKE_RC)" >&2
             cat "$SMOKE_DIR/err.bin" >&2
             rm -rf "$SMOKE_DIR"
             exit 1
         fi
         rm -rf "$SMOKE_DIR"
-        echo "Bundled LSP smoke test passed (initialize/shutdown/exit from a foreign cwd)"
+        echo "Bundled LSP smoke test passed (initialize + broken-doc survival + shutdown/exit from a foreign cwd)"
     else
         echo "tmp/lsp not found; skipping native LSP server (build with './penguin -lsp')"
     fi

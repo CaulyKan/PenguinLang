@@ -16,12 +16,12 @@
 // "Content-Length:", so it can never collide). Channel order then guarantees
 // all prior frames are written before the writer calls exit(code).
 //
-// Port payloads are strings on purpose: output ports carry injected
-// `_Fanout<T>` field defaults whose on-demand specialization is only
-// exercised green for primitive payloads today (see
-// Tests/PortTest/PortPayloadEnumChannelCycle.md — the compiler-side fix is
-// tracked there). Rich LSP datatypes travel through explicit Fifo channels
-// spelled as class field types instead (pass-3-collected instantiations).
+// Port payloads are strings by architecture, not by compiler limitation: the
+// rx/tx streams carry raw wire bytes (frame text), and rich LSP datatypes
+// travel through explicit Fifo channels spelled as class field types
+// (pass-3-collected instantiations). The on-demand port-payload
+// specialization gap that once forced string-only payloads is fixed —
+// locked by Tests/PortTest/PortPayloadEnumChannelCycle.md (Pass1-3 green).
 namespace lsp {
 
 // Outbound-stream control sentinel: "!LSP-EXIT:<code>".

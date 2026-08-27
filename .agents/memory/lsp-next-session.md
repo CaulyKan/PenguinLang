@@ -1,67 +1,94 @@
-# LSP next-session work log (2026-08-27, session 2)
+# LSP next-session work log (2026-08-27, session 3 — win32 native LSP)
 
-Branch feature/ep-lsp-ports. Everything from /tmp/state.txt's "下一期任务需求" is now
-DONE except the win32 fd branch. This session: sentinel fix + dyn-lib librarization
-(THE deferred item — reversed the previous deferral) + vscode packaging fix.
+Branch feature/ep-lsp-ports. The last open item from /tmp/state.txt — the
+win32 fd/coroutine branch — is DONE and runtime-validated under wine. Also
+fixed a Windows-target sjlj ABI bug in the emitter found by that validation.
 
-## Sentinel FIXED: TrailingBoolFieldThroughContainer (was red)
+## Windows native runtime (scheduler.c / core_builtin.c)
 
-Root cause was NOT containers/strides: `-> mut Item` spells the IR return type
-"mut ref<Item>" and `is_value_class_ref` only matched the "ref<" prefix, so
-`needs_sret` was false — the callee did `ret ptr` to its own DEAD stack alloca.
-`items.push(make_item(..., false))` fed that dangling pointer straight into push's
-byval slot; push's frame re-used the same stack addresses and its `mov %rdi,(%rsp)`
-spill wrote the Vector `this` pointer over the struct's last 8 bytes — the trailing
-bool read the pointer's low byte (0x28 → "true"). i64/string fields survived only
-because they sat BELOW the callee frame. Fix: is_value_class_ref + get_sret_llvm_type
-strip the "mut " prefix (LLVMEmitter.penguin) → mutable value-class returns use sret
-(caller-owned buffer). Tests/ValueTypeTest/TrailingBoolFieldThroughContainer.md now
-asserts the fixed behavior (description updated). The LSP formatter still classifies
-comments by text (the workaround works; reverting it would churn goldens for no gain).
+- Coroutines are Win32 FIBERS now (`EMPEROR_WIN_FIBERS`): `CreateFiberEx`
+  (256 KB commit / 32 MB reserve, FIBER_FLAG_FLOAT_SWITCH) + `SwitchToFiber`;
+  the scheduler home is the main thread converted via `ConvertThreadToFiber`
+  (ERROR_ALREADY_FIBER → GetCurrentFiber reuse). The old `_WIN32` sequential
+  no-op fallback is gone (kept only for POSIX-without-ucontext).
+- GC interop carries over unchanged (single-threaded discipline: user code
+  runs on exactly one fiber at a time):
+  - fiber stack registered as a scan region by the TRAMPOLINE at first switch
+    (one `VirtualQuery` on a local gives reservation base = mbi.AllocationBase,
+    committed base = mbi.BaseAddress, top = +RegionSize; initial live range =
+    [committed_base, top) so reserved-uncommitted pages are never scanned;
+    parks narrow to sp as usual, gc.c caps the running fiber at its sp).
+  - the heap-allocated EmperorCoroutine struct is its own scan region (covers
+    entry_arg before first run AND every park's register spill).
+  - `setjmp(self->regs)` immediately before every `SwitchToFiber(sched_fiber)`
+    — SwitchToFiber parks callee-saved registers in scheduler-private memory
+    the conservative scan can't reach; the buffer is never longjmp'd.
+  - fingerprint guards NULL block/stack_hi (fiber that never ran).
+- fd integration: level-probed readiness — pipes via `PeekNamedPipe`
+  (failure e.g. ERROR_BROKEN_PIPE ⇒ treat ready: the read delivers EOF =
+  wake-on-HUP parity), console via `GetNumberOfConsoleInputEvents`, disk
+  always ready; idle blocking is a 2 ms re-probe loop (no epoll-for-pipes on
+  Windows). Write side always ready: anonymous pipes have no writable-space
+  query — the BLOCKING `_write` IS the backpressure, equivalent for the LSP's
+  strictly ordered single writer.
+- `_emperor_read_fd`/`_emperor_write_fd` are real now (were stubs): wait-then-
+  syscall model, `_setmode(fd, _O_BINARY)` (frame bytes must not be CRLF'd),
+  chunked write (≤1 GB pieces for _write's unsigned count).
 
-## dyn-lib librarization SHIPPED (dyn-lib route per user directive)
+## Emitter fix: mingw x64 _setjmp is TWO-argument (LLVMEmitter.penguin)
 
-- EmperorPenguin split into `EmperorPenguinLib.penguins` (Full minus main.penguin →
-  libemperorpenguin.penguin-lib) + `EmperorPenguinExe.penguins` (main.penguin +
-  `--lib`). LspServer.penguins now lists ONLY the 10 LSP modules and links the lib:
-  tmp/lsp is ~0.8 MB (was 11.8 MB monolith), the lib ~14 MB.
-- Compiler changes that made it work:
-  - validate_lib_defs now ALLOWS global vars (MetaHost's active_* globals): the
-    consumer re-defines lib globals from the embedded source and initializes them;
-    on ELF the exe's -rdynamic copies interpose the .so's GOT-mediated refs — one
-    unified state (LibGlobalInterposition.md locks this in).
-  - link_lib stamps `-Wl,-soname,<basename>`; link_exe adds `-Wl,-rpath,'$ORIGIN'`
-    when libs are linked → exe + .penguin-lib pair is relocatable (required the
-    embedded single quotes: _utils.exec goes through a shell).
-  - Lib metadata carries PER-FILE {name,text} entries (LibFile), not one
-    concatenated blob — a single 2.1 MB SourceInput is pathological for the
-    lexer/GC (25+ min vs minutes; per-file also preserves file namespaces so lib
-    symbols are identical to a monolithic compile). Legacy "source" field still
-    read as a fallback.
-- Bootstrap shape: pass1 → pass2 (stub monolith) → pass3 (Full monolith — the FIRST
-  dyn-lib-capable compiler; pass2 cannot build libs, chicken-and-egg) → pass4
-  (lib+exe in tmp/pass4.d, tmp/pass4 symlink) → pass5 (convergence twin, removed).
-  Convergence checks exe AND lib md5s.
-- GOTCHA: building the compiler lib requires a JIT-CAPABLE compiler — the compiler
-  sources engage the meta engine during their own compilation. "-enable-meta" on the
-  INVOCATION is not enough; the compiler binary must have been BUILT with it
-  (meta_stubs.o otherwise → "penguin_jit_create failed").
-- ./penguin -lsp: two content-addressed caches (lib key = pass3 + Lib sources +
-  stdlib; lsp key = pass3 + LSP sources + the lib artifact). The lib lands beside
-  tmp/lsp for $ORIGIN. LSP_NO_CACHE=1 forces rebuilds.
-- ./penguin -p bundles libemperorpenguin.penguin-lib next to the native LSP and
-  smoke-tests initialize/shutdown/exit from a foreign cwd (proves stdlib discovery
-  AND the rpath lib load in a deployed layout).
-- vscode: package.json "package" no longer cpy's the dotnet LSP into server/linux
-  (it CLOBBERED the staged native binary — the "打包新 LSP" bug); windows keeps the
-  C# LSP; the broken `../MagellanicPenguin/bin/Debug` prepublish cpy removed;
-  version 0.0.6; *.vsix ignored; server/{linux,windows} wiped of stale artifacts
-  (gitignored dirs, restaged by -p + npm package).
-- New DynamicLinkTest: LibGlobalInterposition.md, LibValueClassReturn.md (the sret
-  ABI across the lib boundary, i.e. the sentinel shape cross-lib).
+Found via win64 CrashSurvival dying with c0000005 after longjmp: the emitter
+emitted glibc-shaped `call i32 @_setjmp(ptr jb)`, but mingw-w64's x64
+`_setjmp(jmp_buf, void* frame)` read garbage RDX as the SEH frame and the
+paired `longjmp` unwound through it. Fix: `LLVMEmitter.windows_target` field
+(set from `CompilerConfig.is_windows_target()` via `LLVMCompiler.windows_target`
+in main.penguin) → declare/call `_setjmp(ptr, ptr)` with `ptr null` (the plain
+non-SEH sjlj flavor clang itself uses for C setjmp). Validated by hand-patching
+the win64 LSP's combined.ll + relinking BEFORE the source fix: CrashSurvival
+became byte-exact with Linux. Linux codegen unchanged (flag defaults false).
+The `./penguin -p` smoke tests (linux + wine windows) now ALSO open a broken
+document and require the 'internal compiler error' survival diagnostic — the
+exact regression class this bug belonged to.
 
-## Still open
+## Windows LSP delivery
 
-- win32 native LSP (fd #ifdef stubs) — untouched.
-- Deployed emperor_penguin stays a Full monolith (self-contained); only the LSP is
-  lib-linked in the vscode bundle.
+- `MagellanicPenguin/LspServer/LspServerWin.penguins`: MONOLITH = LSP modules
+  + the whole EmperorPenguinLib source set (dyn-lib pair is ELF-specific:
+  SONAME/$ORIGIN/rpath/-rdynamic). Path-relative sources are fine —
+  file_ns_name uses only the basename.
+- `./penguin -lsp -win` builds it via tmp/pass4 + llvm-mingw env
+  (WIN_CC/WIN_CXX/WIN_AR/WIN_CLANG overridable) →
+  tmp/win64-lsp/MagellanicPenguinLSP.exe (~12 MB PE32+, imports only
+  KERNEL32 + UCRT). `./penguin -p` deploys it + stdlib bundle to
+  server/windows/ and runs the wine smoke when `WINE=<path>` (or wine on
+  PATH) is available.
+- vscode client already pointed at server\windows\MagellanicPenguinLSP.exe;
+  added a clear missing-binary error message. Version 0.0.7 + CHANGELOG.
+
+## Validation methodology (IMPORTANT for future sessions)
+
+- **Portable wine works**: Kron4ek Wine-Builds tar.xz (wine-11.16-amd64) →
+  extract anywhere, `WINEPREFIX` MUST be under a dir you OWN (/tmp is
+  root-owned sticky → wine refuses; ~/.winepenguin works),
+  `WINEDLLOVERRIDES="mscoree,mshtml="`, `WINEDEBUG=-all`, `wineboot -i none`.
+  Console PE exe runs fine headless.
+- **cwd matters when testing the LSP**: stdlib discovery is cwd-first then
+  exe-dir + upward walk. Run test exes FROM THE REPO ROOT or you get silently
+  empty stdlib → clean diagnostics but missing cross-file symbols (println
+  definition returns []). This wasted a long detour that LOOKED like an -O2
+  miscompilation / monolith bug — it was neither. Byte-compare against the
+  Linux golden from the same cwd before blaming the target.
+- Full session replay: extract `Stdin:` from any Tests/LspTest/*.md with a
+  single-pass unescape (`\\`→`\` FIRST-class citizen; naive chained replaces
+  corrupt `\\n` inside JSON strings) and diff stdout.
+- Results: fd echo (FdEchoChunks shape) byte-exact under wine; 13/14 sessions
+  byte-identical linux-vs-win64 BEFORE the setjmp fix (only CrashSurvival
+  crashed); with the fix (hand-patched IR) it is byte-exact too. After
+  bootstrap the real rebuilt exe must be re-verified to 14/14.
+
+## Sentinel bookkeeping
+
+- PortPayloadEnumChannelCycle: GREEN on pass1/2/3 (rebuilt 8/27 toolchain),
+  description rewritten from RED SENTINEL to regression lock, Apply To
+  extended to Pass1/2/3. StdioStream.penguin's string-payload note updated:
+  strings-on-wire is architecture now, not a compiler workaround.

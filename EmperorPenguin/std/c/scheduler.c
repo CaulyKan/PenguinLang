@@ -25,9 +25,17 @@
  * only up to the watermark recorded at the last switch when a collection
  * triggers on a coroutine stack (see _emperor_gc_alt_stack_scan).
  *
- * POSIX ucontext provides the context switch (Linux first; Windows builds get
- * a sequential fallback — no interleaving, wait is a no-op — until fibers are
- * wired up).
+ * POSIX ucontext provides the context switch on Linux; Windows builds use
+ * Win32 fibers (CreateFiberEx/SwitchToFiber) with the same single-threaded
+ * discipline — user code only ever runs inside one fiber at a time, so the
+ * conservative GC needs no thread synchronization (see the fiber notes at
+ * co_create/fd_poll_all). stdin/stdout readiness is level-probed with
+ * PeekNamedPipe; there is no epoll-for-pipes on Windows, so idle blocking is
+ * a 2 ms re-probe loop. Anonymous pipes expose no writable-space query, so
+ * fd write waits always report ready and the write syscall itself blocks
+ * when the pipe is full — the same ordered backpressure the POLLOUT park
+ * gives on POSIX, because frames are written strictly in order by a single
+ * writer anyway.
  */
 
 #include "emperor_gc.h"
@@ -39,8 +47,12 @@
 #include <setjmp.h>
 
 #if defined(_WIN32)
-#define EMPEROR_NO_UCONTEXT 1
-#define EMPEROR_NO_POLL 1
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0502
+#endif
+#include <windows.h>
+#include <io.h>
+#define EMPEROR_WIN_FIBERS 1
 // mingw-w64's setjmp.h declares setjmp/longjmp (and _setjmp via __mingw_setjmp
 // macros) but NOT the raw _longjmp symbol MSVC headers expose — use longjmp.
 #define _longjmp longjmp
@@ -48,9 +60,17 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <poll.h>
+#define EMPEROR_UCONTEXT 1
 #endif
 
 #define EMPEROR_CO_STACK_SIZE (32 * 1024 * 1024)
+#ifdef EMPEROR_WIN_FIBERS
+/* Fiber stacks: reserve the same 32 MB as the POSIX mmap blocks (parser
+ * recursion), but commit only a small seed — the guard page grows the
+ * committed range on demand, and the GC only ever scans the live range
+ * [parked sp, stack top], which always lies inside committed pages. */
+#define EMPEROR_CO_STACK_COMMIT (256 * 1024)
+#endif
 
 /* ---- GC interop (gc.c reads these) ----
  * Non-NULL while coroutines exist: when a collection triggers on a coroutine
@@ -90,13 +110,18 @@ enum {
 };
 
 typedef struct EmperorCoroutine {
-#ifdef EMPEROR_NO_UCONTEXT
-    char ctx[64]; /* placeholder keeps layout code uniform */
+#if defined(EMPEROR_WIN_FIBERS)
+    void* fiber;   /* CreateFiberEx context (system-allocated stack) */
+    jmp_buf regs;  /* callee-saved register spill captured at park: while the
+                      fiber is switched away, SwitchToFiber parks its
+                      registers in scheduler-private memory the conservative
+                      GC cannot reach; this buffer (inside the scanned struct)
+                      holds the pointer-bearing subset. Never longjmp'd. */
 #else
     ucontext_t ctx; /* saved callee-saved registers live here (scanned) */
 #endif
-    char* block;    /* mmap base of the whole stack block */
-    char* stack_hi; /* block end (just past this struct) */
+    char* block;    /* scan-region base: mmap block base | fiber stack reservation base */
+    char* stack_hi; /* region end: block end (just past the struct) | fiber stack top */
     char* sp_park;  /* stack pointer captured at park (fingerprint start) */
     void (*entry)(void*); /* consumed at the coroutine's first switch */
     void* entry_arg;
@@ -115,22 +140,82 @@ static EmperorCoroutine* next_tail = NULL;
 static EmperorCoroutine* all_cos = NULL; /* creation-order list */
 static int co_seq_counter = 0;
 
-#ifndef EMPEROR_NO_UCONTEXT
+#if defined(EMPEROR_UCONTEXT)
 static ucontext_t sched_ctx; /* scheduler switchback point */
+#elif defined(EMPEROR_WIN_FIBERS)
+static void* sched_fiber = NULL; /* the main thread's fiber (scheduler home) */
 #endif
 
+/* ---- Context switches ----
+ * POSIX: swapcontext saves the outgoing context's callee-saved registers
+ * into co->ctx, which lives inside the GC-scanned stack block.
+ * Windows: SwitchToFiber parks them in scheduler-private memory instead, so
+ * a setjmp first spills them into the scanned EmperorCoroutine struct — the
+ * buffer is never longjmp'd, it exists purely as GC-visible state. */
+
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+static void co_switch_to_sched(EmperorCoroutine* self) {
+#ifdef EMPEROR_UCONTEXT
+    swapcontext(&self->ctx, &sched_ctx);
+#else
+    setjmp(self->regs);
+    SwitchToFiber(sched_fiber);
+#endif
+}
+static void sched_switch_to_co(EmperorCoroutine* co) {
+#ifdef EMPEROR_UCONTEXT
+    swapcontext(&sched_ctx, &co->ctx);
+#else
+    SwitchToFiber(co->fiber);
+#endif
+}
+#endif /* real context switches */
+
 /* The coroutine body: runs the recorded entry, then marks the coroutine
- * finished. uc_link = &sched_ctx returns control to the scheduler loop. */
-static void co_trampoline(void) {
-    EmperorCoroutine* self = sched_current;
+ * finished. POSIX: returning afterwards follows uc_link back to the
+ * scheduler. Windows: the fiber must not return from its start routine, so
+ * the trampoline explicitly switches back (the scheduler then destroys it). */
+static void co_run_entry(EmperorCoroutine* self) {
     void (*entry)(void*) = self->entry;
     void* arg = self->entry_arg;
     self->entry = NULL;
     self->entry_arg = NULL;
     entry(arg);
     self->state = CO_FINISHED;
+}
+
+#ifndef EMPEROR_WIN_FIBERS
+static void co_trampoline(void) {
+    co_run_entry(sched_current);
     /* return → uc_link → scheduler */
 }
+#else
+/* First code to run on a new fiber: discover the stack's bounds (one
+ * VirtualQuery on a local: reservation base, committed base, top) and
+ * register the stack as a GC scan region BEFORE any user frame exists. The
+ * region's initial live range starts at the committed base — pages of the
+ * 32 MB reservation below it are reserved-but-uncommitted and a
+ * conservative scan must never touch them; the range then moves to each
+ * park's sp, which always lies inside the committed area (and the RUNNING
+ * fiber's range is capped at its collect-time sp by gc.c, exactly like the
+ * POSIX coroutine blocks). */
+static void co_win_trampoline(void* arg) {
+    EmperorCoroutine* co = (EmperorCoroutine*)arg;
+    MEMORY_BASIC_INFORMATION mbi;
+    VirtualQuery((LPCVOID)&mbi, &mbi, sizeof(mbi));
+    char* reserve_base = (char*)mbi.AllocationBase;
+    char* committed_base = (char*)mbi.BaseAddress;
+    char* stack_top = (char*)mbi.BaseAddress + mbi.RegionSize;
+    if (reserve_base > committed_base) reserve_base = committed_base;
+    co->block = reserve_base;
+    co->stack_hi = stack_top;
+    _emperor_gc_scan_add(co->block, (size_t)(stack_top - co->block));
+    _emperor_gc_scan_set_live(co->block, committed_base);
+    co_run_entry(co);
+    SwitchToFiber(sched_fiber);
+    /* never returns */
+}
+#endif
 
 static int sched_exit_requested = 0;
 static int sched_exit_code = 0;
@@ -208,30 +293,30 @@ static void co_destroy(EmperorCoroutine* co) {
         }
         p = &(*p)->anext;
     }
-    _emperor_gc_scan_remove(co->block);
-#ifndef EMPEROR_NO_UCONTEXT
+    _emperor_gc_scan_remove(co->block); /* NULL: fiber never ran — no stack region */
+#if defined(EMPEROR_UCONTEXT)
     munmap(co->block, EMPEROR_CO_STACK_SIZE);
+#elif defined(EMPEROR_WIN_FIBERS)
+    _emperor_gc_scan_remove((char*)co); /* the struct region (entry_arg, reg spills) */
+    if (co->fiber) DeleteFiber(co->fiber);
+    free(co);
 #else
     free(co->block);
 #endif
 }
 
-/* The coroutine body: runs the pending entry, then marks the coroutine
- * finished. uc_link = &sched_ctx returns control to the scheduler loop. */
 static EmperorCoroutine* co_create(void (*entry)(void*)) {
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+    EmperorCoroutine* co;
+#if defined(EMPEROR_UCONTEXT)
     size_t total = EMPEROR_CO_STACK_SIZE;
-    char* block;
-#ifndef EMPEROR_NO_UCONTEXT
-    block = (char*)mmap(NULL, total, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char* block = (char*)mmap(NULL, total, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (block == MAP_FAILED) {
         fprintf(stderr, "emperor sched: cannot allocate coroutine stack\n");
         abort();
     }
-#else
-    block = (char*)calloc(1, total);
-#endif
-    EmperorCoroutine* co = (EmperorCoroutine*)(block + total - sizeof(EmperorCoroutine));
+    co = (EmperorCoroutine*)(block + total - sizeof(EmperorCoroutine));
     memset(co, 0, sizeof(EmperorCoroutine));
     co->block = block;
     co->stack_hi = block + total;
@@ -250,7 +335,6 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
      * all-zero never-used pages from conservative scans entirely; the first
      * park (or the running-sp cap in _emperor_gc_collect) opens it up. */
     _emperor_gc_scan_set_live(block, block + total);
-#ifndef EMPEROR_NO_UCONTEXT
     if (getcontext(&co->ctx) == -1) {
         fprintf(stderr, "emperor sched: getcontext failed\n");
         abort();
@@ -259,9 +343,62 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
     co->ctx.uc_stack.ss_size = total - sizeof(EmperorCoroutine) - 64;
     co->ctx.uc_link = &sched_ctx;
     makecontext(&co->ctx, co_trampoline, 0);
+#else
+    /* Windows fiber: the struct is heap-allocated (the fiber stack belongs
+     * to the system); its bounds — and the stack's scan region — are only
+     * discovered when the fiber first runs (co_win_trampoline). From
+     * creation the struct itself is the scan region: it holds entry_arg (a
+     * Penguin object) until the entry consumes it, and every park's
+     * register spill afterwards. */
+    co = (EmperorCoroutine*)calloc(1, sizeof(EmperorCoroutine));
+    if (!co) {
+        fprintf(stderr, "emperor sched: cannot allocate coroutine struct\n");
+        abort();
+    }
+    co->fiber = CreateFiberEx(EMPEROR_CO_STACK_COMMIT, EMPEROR_CO_STACK_SIZE,
+                              FIBER_FLAG_FLOAT_SWITCH, co_win_trampoline, co);
+    if (!co->fiber) {
+        fprintf(stderr, "emperor sched: CreateFiberEx failed (GetLastError %lu)\n",
+                (unsigned long)GetLastError());
+        free(co);
+        abort();
+    }
+    co->state = CO_READY;
+    co->seq = co_seq_counter++;
+    co->entry = entry;
+    co->entry_arg = NULL; /* set by caller */
+    co->anext = all_cos;
+    all_cos = co;
+    _emperor_gc_scan_add((char*)co,
+                         ((sizeof(EmperorCoroutine) + 7u) & ~(size_t)7u));
 #endif
     enqueue(&ready_head, &ready_tail, co);
     return co;
+#else
+    /* Sequential fallback (no real context switch available): the whole
+     * stack block is one calloc'd buffer and entries run inline to
+     * completion in the scheduler loop. */
+    size_t total = EMPEROR_CO_STACK_SIZE;
+    char* block = (char*)calloc(1, total);
+    if (!block) {
+        fprintf(stderr, "emperor sched: cannot allocate coroutine stack\n");
+        abort();
+    }
+    EmperorCoroutine* co = (EmperorCoroutine*)(block + total - sizeof(EmperorCoroutine));
+    memset(co, 0, sizeof(EmperorCoroutine));
+    co->block = block;
+    co->stack_hi = block + total;
+    co->state = CO_READY;
+    co->seq = co_seq_counter++;
+    co->entry = entry;
+    co->entry_arg = NULL; /* set by caller */
+    co->anext = all_cos;
+    all_cos = co;
+    _emperor_gc_scan_add(block, total);
+    _emperor_gc_scan_set_live(block, block + total);
+    enqueue(&ready_head, &ready_tail, co);
+    return co;
+#endif
 }
 
 /* Entry shim for a Penguin __ICoroutineEntry object: dispatch through the
@@ -316,8 +453,8 @@ void _emperor_co_wait(void) {
      * its own stack no longer shares the sequential main-stack reuse that
      * used to hide earlier routines' stale slots). */
     _emperor_gc_scan_set_live(self->block, self->sp_park);
-#ifndef EMPEROR_NO_UCONTEXT
-    swapcontext(&self->ctx, &sched_ctx);
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+    co_switch_to_sched(self);
 #else
     /* Sequential fallback (no real coroutines): time-travel to the earliest
      * pending timer deadline so timer waits (`wait n tick` poll loops) still
@@ -381,9 +518,9 @@ static void fd_park_current(int fd, int for_write) {
     char marker;
     self->sp_park = (char*)&marker;
     _emperor_gc_scan_set_live(self->block, self->sp_park);
-#ifndef EMPEROR_NO_UCONTEXT
-    swapcontext(&self->ctx, &sched_ctx);
-#elif !defined(EMPEROR_NO_POLL)
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+    co_switch_to_sched(self);
+#else
     /* Sequential fallback: block inline (no other coroutine could run anyway)
      * and resume on this stack. */
     struct pollfd pfd;
@@ -391,10 +528,6 @@ static void fd_park_current(int fd, int for_write) {
     pfd.events = for_write ? (short)POLLOUT : (short)(POLLIN | POLLHUP | POLLERR);
     pfd.revents = 0;
     poll(&pfd, 1, -1);
-    self->state = CO_RUNNING;
-#else
-    /* Windows sequential fallback: no poll; treat the fd as ready (the
-     * single-syscall read/write then reports progress or EOF). */
     self->state = CO_RUNNING;
 #endif
     /* The scheduler unlinks the waiter before re-queueing us, so there is
@@ -419,11 +552,71 @@ static void fd_unlink(EmperorFdWaiter* w) {
 /* Poll every registered fd. Ready waiters are unlinked and their coroutines
  * queued for the next delta round. Returns how many were woken. timeout_ms
  * < 0 blocks until an event (or EINTR); 0 is a pure readiness probe. */
+#ifdef EMPEROR_WIN_FIBERS
+/* Level-triggered readiness probe of one registered descriptor.
+ * Returns 1 ready, 0 not ready, -1 "indeterminate" — treated as ready: the
+ * following read/write syscall reports the truth. A pipe whose write end
+ * closed probes as a PeekNamedPipe failure, and the read then delivers the
+ * EOF (empty) result, which is exactly the wake-on-HUP semantic the POSIX
+ * poll branch gets from POLLHUP/POLLERR. */
+static int win_fd_ready(int fd, int for_write) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return -1;
+    if (for_write) {
+        /* Anonymous pipes expose no writable-space query on Windows; the
+         * write syscall blocks while the pipe is full, which preserves the
+         * end-to-end backpressure the POLLOUT park provides on POSIX
+         * (frames are written strictly in order by the single writer). */
+        return 1;
+    }
+    switch (GetFileType(h)) {
+    case FILE_TYPE_DISK:
+        return 1; /* regular files are always readable */
+    case FILE_TYPE_CHAR: {
+        /* Console input buffer: queued input records = readable. */
+        DWORD events = 0;
+        if (GetNumberOfConsoleInputEvents(h, &events)) {
+            return events > 0 ? 1 : 0;
+        }
+        return -1; /* a CHAR handle that is not a console: let the read report */
+    }
+    case FILE_TYPE_PIPE: {
+        DWORD avail = 0;
+        if (PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL)) {
+            return avail > 0 ? 1 : 0;
+        }
+        return -1; /* ERROR_BROKEN_PIPE et al.: the read delivers EOF/error */
+    }
+    default:
+        return -1;
+    }
+}
+
 static int fd_poll_all(int timeout_ms) {
-#ifdef EMPEROR_NO_POLL
-    (void)timeout_ms;
-    return 0; /* no external fd events on this platform */
+    if (!fd_waiters) return 0;
+    for (;;) {
+        int woken = 0;
+        for (EmperorFdWaiter* w = fd_waiters; w;) {
+            EmperorFdWaiter* wnext = w->next; /* fd_unlink frees w */
+            if (win_fd_ready(w->fd, w->for_write)) {
+                EmperorCoroutine* co = w->co;
+                fd_unlink(w);
+                enqueue(&next_head, &next_tail, co);
+                woken++;
+            }
+            w = wnext;
+        }
+        if (woken) return woken;
+        if (timeout_ms == 0) return 0; /* pure readiness probe */
+        /* Block until an external event: there is no epoll-for-pipes on
+         * Windows, so readiness is re-probed at a small interval (idle cost
+         * is one PeekNamedPipe per waiter per 2 ms — the LSP parks exactly
+         * one stdin reader while idle). */
+        Sleep(2);
+    }
+}
 #else
+static int fd_poll_all(int timeout_ms) {
     if (!fd_waiters) return 0;
     size_t n = 0;
     for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) n++;
@@ -462,8 +655,8 @@ static int fd_poll_all(int timeout_ms) {
     free(pfds);
     free(order);
     return woken; /* rc <= 0 (EINTR / error): caller re-enters */
-#endif /* EMPEROR_NO_POLL */
 }
+#endif /* fd_poll_all variants */
 
 /* Register a timer deadline (the future object lives in Penguin-land; only
  * the deadline is tracked — readiness is observed by pollers). */
@@ -478,8 +671,8 @@ void _emperor_sched_exit(int code) {
     if (sched_current) {
         sched_exit_requested = 1;
         sched_exit_code = code;
-#ifndef EMPEROR_NO_UCONTEXT
-        swapcontext(&sched_current->ctx, &sched_ctx);
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+        co_switch_to_sched(sched_current);
 #else
         exit(code);
 #endif
@@ -589,7 +782,10 @@ static uint64_t sched_fingerprint(void) {
     for (EmperorCoroutine* co = all_cos; co; co = co->anext) {
         h = fp_hash_bytes(h, (char*)&co, sizeof(EmperorCoroutine*));
         const char* lo = co->sp_park ? co->sp_park : co->block;
-        if (lo < co->stack_hi) {
+        /* A fiber coroutine that never ran has no stack region yet (bounds
+         * are discovered at first switch): its contribution is constant,
+         * like a never-touched mmap page on POSIX. */
+        if (co->stack_hi && lo && lo < co->stack_hi) {
             h = fp_hash_bytes(h, lo, (size_t)(co->stack_hi - lo));
         }
     }
@@ -599,6 +795,22 @@ static uint64_t sched_fingerprint(void) {
 /* ---- The scheduler loop ---- */
 
 int _emperor_sched_run(void) {
+#ifdef EMPEROR_WIN_FIBERS
+    /* The scheduler runs on the main thread converted to a fiber: every
+     * SwitchToFiber must originate from — and return to — a fiber context.
+     * (A second call after ConvertFiberToThread-less nesting sees
+     * ERROR_ALREADY_FIBER and reuses the current fiber.) */
+    if (!sched_fiber) {
+        sched_fiber = ConvertThreadToFiber(NULL);
+        if (!sched_fiber && GetLastError() == ERROR_ALREADY_FIBER) {
+            sched_fiber = GetCurrentFiber();
+        }
+        if (!sched_fiber) {
+            fprintf(stderr, "emperor sched: ConvertThreadToFiber failed\n");
+            exit(1);
+        }
+    }
+#endif
     /* Make the pending-throw message slot a GC root for this program. */
     _emperor_gc_add_root((void**)&_emperor_throw_msg);
 
@@ -619,7 +831,7 @@ int _emperor_sched_run(void) {
          * also only run next round. */
         while (ready_head) {
             EmperorCoroutine* co = dequeue(&ready_head, &ready_tail);
-#ifndef EMPEROR_NO_UCONTEXT
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
             sched_current = co;
             co->state = CO_RUNNING;
             /* Flush main-stack callee-saved registers and record the main
@@ -628,7 +840,7 @@ int _emperor_sched_run(void) {
             setjmp(switch_flush);
             _emperor_gc_main_watermark = (char*)&switch_flush;
             _emperor_gc_on_coroutine = 1;
-            swapcontext(&sched_ctx, &co->ctx);
+            sched_switch_to_co(co);
             _emperor_gc_on_coroutine = 0;
             sched_current = NULL;
             _emperor_gc_main_watermark = NULL;

@@ -66,6 +66,36 @@ runner's **Prebuilt** backend runs the exe without recompiling: `Tests/LspTest/S
 feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
 (`Apply To: Prebuilt`, `Compile.Args: tmp/lsp`).
 
+### Windows
+
+```sh
+./penguin -b          # bootstrap first
+./penguin -lsp -win   # tmp/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins --enable-coroutine \
+                      #   -target=win64 -o tmp/win64-lsp/MagellanicPenguinLSP.exe   (llvm-mingw cross)
+```
+
+The dyn-lib pair is ELF-specific (`SONAME` + `$ORIGIN` rpath + `-rdynamic`
+interposition), so the Windows port is a **monolith**: `LspServerWin.penguins`
+compiles the 10 LSP modules together with the whole `EmperorPenguinLib` source
+set into one self-contained exe (`MagellanicPenguinLSP.exe`, no `.penguin-lib`
+to ship). The toolchain prefix defaults to `/opt/llvm-mingw` and can be
+overridden per-variable (`WIN_CC`/`WIN_CXX`/`WIN_AR`/`WIN_CLANG`).
+
+Native Windows concurrency comes from the C runtime (`EmperorPenguin/std/c/`):
+coroutines are **Win32 fibers** (`CreateFiberEx`/`SwitchToFiber`, 32 MB
+reserved stacks) switched only from the scheduler fiber, so the
+single-threaded conservative GC keeps its exact POSIX invariants (each fiber
+stack is a registered scan region, narrowed to the parked sp; callee-saved
+registers are spilled into the scanned coroutine struct via `setjmp` before
+every switch away). stdin/stdout readiness is level-probed with
+`PeekNamedPipe` (pipes), `GetNumberOfConsoleInputEvents` (console), always
+ready (disk, and write side — anonymous pipes expose no writable-space query,
+and the blocking `write` itself is the backpressure for the LSP's strictly
+ordered single writer). `./penguin -p` deploys the exe + stdlib bundle to
+`server/windows/` and, when `WINE=<path>` (or `wine` on PATH) is available,
+runs the same initialize/shutdown/exit smoke test as the linux side under the
+emulator.
+
 ## Design notes
 
 - **Port payloads are strings only** — a deliberate architecture choice (kept after the
