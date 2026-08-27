@@ -71,10 +71,12 @@ initial {
     inputs.push(new SourceInput("io.penguin", io_source));
 
     // Lib sources first (deps-first order from load_lib_chain), then user
-    // sources. For a lib build, lib_source_text accumulates the lib's OWN source
-    // (embedded verbatim into its metadata so consumers get the #fun/#template
-    // bodies) — loaded dep-lib sources are NOT re-embedded.
-    let lib_source_text: mut string = "";
+    // sources. For a lib build, lib_files accumulates the lib's OWN source
+    // files (name + verbatim text, embedded into its metadata so consumers get
+    // per-file SourceInputs — original file namespaces preserved — and can
+    // monomorphize NEW generic instances from the #fun/#template bodies) —
+    // loaded dep-lib sources are NOT re-embedded.
+    let lib_files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
     let si: mut i64 = 0;
     while (si < cast<i64>(lib_state.sources.size())) {
         let src: SourceInput = lib_state.sources.at(cast<u64>(si)).some;
@@ -96,14 +98,24 @@ initial {
                 let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
                 let source: string = _utils.file_read_text(proj_file);
                 inputs.push(new SourceInput(proj_file, source));
-                if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+                if (config.is_lib_mode()) {
+                    let lf: mut LibFile = new LibFile();
+                    lf.name = proj_file;
+                    lf.text = source;
+                    lib_files.push(lf);
+                }
                 if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + proj_file); }
                 project_file_index = project_file_index + 1;
             }
         } else {
             let source: string = _utils.file_read_text(file);
             inputs.push(new SourceInput(file, source));
-            if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+            if (config.is_lib_mode()) {
+                let lf2: mut LibFile = new LibFile();
+                lf2.name = file;
+                lf2.text = source;
+                lib_files.push(lf2);
+            }
             if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
         }
         fi = fi + 1;
@@ -149,7 +161,7 @@ initial {
         let lidx: i64 = string_find(config.output_name, ".penguin-lib");
         if (lidx >= 0) { lib_name = string_substring(config.output_name, 0, lidx); }
         lib_name = _get_base_name(lib_name);
-        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_source_text);
+        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_files);
         if (!lc.link_lib(result, config, tmp_dir, exe_path, lib_meta)) {
             __builtin.exit(1);
         }

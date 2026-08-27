@@ -51,10 +51,12 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
     fi
     # Pass2 (native) builds pass3 from EmperorPenguinFull.penguins: the json-backed Dynlib +
     # json/vector/hashmap + _utils are part of the compiler, making pass3 the first
-    # dyn-lib-capable compiler (--enable-dl default on). --enable-coroutine is passed
-    # ONLY here: pass3 is the first coroutine-capable compiler (ports/channels/scheduler
-    # syntax accepted). Wait-free programs (the compiler itself included) emit identical
-    # binaries with or without the flag, so pass4 (built without it) still md5-converges.
+    # dyn-lib-capable compiler (--enable-dl default on). pass2 itself is a Full
+    # monolith (pass1 built it from the ANTLR-safe stub project, no dynlib), so
+    # the lib+exe split can only start FROM pass3.
+    # --enable-coroutine is passed ONLY here: pass3 is the first coroutine-capable
+    # compiler (ports/channels/scheduler syntax accepted). Wait-free programs (the
+    # compiler itself included) emit identical binaries with or without the flag.
     echo "Running Pass 2 with bootstrapping ..."
     tmp/pass2 EmperorPenguin/EmperorPenguinFull.penguins \
         -vv -enable-meta --enable-coroutine -o "tmp/pass3" 2>&1 | ts "%F %T" | tee tmp/pass2.log
@@ -62,57 +64,129 @@ if [ $BOOTSTRAPPING -eq 1 ]; then
         echo "Bootstrap FAILED at pass2 (tmp/pass2 -> tmp/pass3)" >&2
         exit 1
     fi
-    echo "Running Pass 3 with bootstrapping ..."
-    tmp/pass3 EmperorPenguin/EmperorPenguinFull.penguins \
-        -vv -enable-meta -o "tmp/pass4" 2>&1 | ts "%F %T" | tee tmp/pass3.log
+    # Pass4+ are split lib+exe (EmperorPenguinLib/EmperorPenguinExe projects): the
+    # whole compiler is a libemperorpenguin.penguin-lib and the CLI driver links it,
+    # making dyn-lib load-bearing at compiler scale — every bootstrap exercises the
+    # .penguin-lib build/consume path on the compiler's own 16k lines. The exe finds
+    # its lib via rpath $ORIGIN (SONAME = lib basename); tmp/pass4 is a symlink into
+    # pass4.d so the conventional path keeps working from any cwd. pass5 repeats the
+    # stage for the convergence check (exe AND lib md5 equality — the exe alone only
+    # contains the CLI driver, so both artifacts are the full fixed-point proof) and
+    # is removed afterwards.
+    echo "Running Pass 3 (lib) with bootstrapping ..."
+    rm -rf tmp/pass4.d tmp/pass5.d
+    mkdir -p tmp/pass4.d
+    tmp/pass3 EmperorPenguin/EmperorPenguinLib.penguins \
+        -vv -enable-meta -o "tmp/pass4.d/libemperorpenguin.penguin-lib" 2>&1 | ts "%F %T" | tee tmp/pass3-lib.log
     if [ $? -ne 0 ]; then
-        echo "Bootstrap FAILED at pass3 (tmp/pass3 -> tmp/pass4)" >&2
+        echo "Bootstrap FAILED at pass3 lib (tmp/pass3 -> tmp/pass4.d/libemperorpenguin.penguin-lib)" >&2
+        exit 1
+    fi
+    echo "Running Pass 3 with bootstrapping ..."
+    tmp/pass3 EmperorPenguin/EmperorPenguinExe.penguins \
+        -vv -enable-meta --lib tmp/pass4.d/libemperorpenguin.penguin-lib \
+        -o "tmp/pass4.d/pass4" 2>&1 | ts "%F %T" | tee tmp/pass3.log
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass3 (tmp/pass3 -> tmp/pass4.d/pass4)" >&2
+        exit 1
+    fi
+    ln -sf pass4.d/pass4 tmp/pass4
+    echo "Running Pass 4 (lib) with bootstrapping ..."
+    mkdir -p tmp/pass5.d
+    tmp/pass4 EmperorPenguin/EmperorPenguinLib.penguins \
+        -vv -enable-meta -o "tmp/pass5.d/libemperorpenguin.penguin-lib" 2>&1 | ts "%F %T" | tee tmp/pass4-lib.log
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass4 lib (tmp/pass4 -> tmp/pass5.d/libemperorpenguin.penguin-lib)" >&2
+        exit 1
+    fi
+    echo "Running Pass 4 with bootstrapping ..."
+    tmp/pass4 EmperorPenguin/EmperorPenguinExe.penguins \
+        -vv -enable-meta --lib tmp/pass5.d/libemperorpenguin.penguin-lib \
+        -o "tmp/pass5.d/pass5" 2>&1 | ts "%F %T" | tee tmp/pass4.log
+    if [ $? -ne 0 ]; then
+        echo "Bootstrap FAILED at pass4 (tmp/pass4 -> tmp/pass5.d/pass5)" >&2
         exit 1
     fi
     if command -v md5sum >/dev/null 2>&1; then
-        HASH3=$(md5sum tmp/pass3 | cut -d' ' -f1)
-        HASH4=$(md5sum tmp/pass4 | cut -d' ' -f1)
+        HASHEXE4=$(md5sum tmp/pass4.d/pass4 | cut -d' ' -f1)
+        HASHEXE5=$(md5sum tmp/pass5.d/pass5 | cut -d' ' -f1)
+        HASHLIB4=$(md5sum tmp/pass4.d/libemperorpenguin.penguin-lib | cut -d' ' -f1)
+        HASHLIB5=$(md5sum tmp/pass5.d/libemperorpenguin.penguin-lib | cut -d' ' -f1)
     else
-        HASH3=$(md5 -q tmp/pass3)
-        HASH4=$(md5 -q tmp/pass4)
+        HASHEXE4=$(md5 -q tmp/pass4.d/pass4)
+        HASHEXE5=$(md5 -q tmp/pass5.d/pass5)
+        HASHLIB4=$(md5 -q tmp/pass4.d/libemperorpenguin.penguin-lib)
+        HASHLIB5=$(md5 -q tmp/pass5.d/libemperorpenguin.penguin-lib)
     fi
-    if [ "$HASH3" = "$HASH4" ]; then
-        echo "Bootstrap complete"
+    if [ "$HASHEXE4" = "$HASHEXE5" ] && [ "$HASHLIB4" = "$HASHLIB5" ]; then
+        rm -rf tmp/pass5.d
+        echo "Bootstrap complete (exe $HASHEXE4, lib $HASHLIB4)"
         echo "============================================================"
         exit 0
     else
-        echo "Bootstrap NOT converged: pass3 and pass4 differ." >&2
+        echo "Bootstrap NOT converged: pass4/pass5 differ (exe: $HASHEXE4 vs $HASHEXE5, lib: $HASHLIB4 vs $HASHLIB5)." >&2
         exit 1
     fi
 fi
 
 if [ $LSP -eq 1 ]; then
-    echo "Building MagellanicPenguin LSP server (tmp/lsp) ..."
+    echo "Building MagellanicPenguin LSP server (tmp/lsp + tmp/libemperorpenguin.penguin-lib) ..."
     echo "============================================================"
     if [ ! -f tmp/pass3 ]; then
         echo "tmp/pass3 not found. Run './penguin -b' first." >&2
         exit 1
     fi
     # --enable-coroutine: the server is a ports/channels program end to end
-    # (StdioStream parks on fd 0/1, modules wait wires/Fifos). Milestone-grade
-    # build (the whole 16k-line compiler is embedded as the analysis engine);
-    # e2e tests run it via the test runner's Prebuilt backend without
+    # (StdioStream parks on fd 0/1, modules wait wires/Fifos). The compiler is
+    # consumed as libemperorpenguin.penguin-lib (EmperorPenguinLib.penguins):
+    # the LSP binary contains only the 10 LSP modules and monomorphizes its own
+    # generic instances from the lib's embedded source, so an LSP-only change
+    # relinks in seconds while compiler changes rebuild just the lib.
+    # e2e tests run the exe via the test runner's Prebuilt backend without
     # recompiling (Tests/LspTest/*.md, Compile.Args=tmp/lsp).
     #
-    # Content-addressed cache: the LSP binary depends only on the resolved
-    # source set (LspServer.penguins' sources, resolved relative to the
-    # project dir), the auto-loaded stdlib pair, and the pass3 compiler.
-    # Unchanged inputs rebuild in seconds (cache copy) instead of minutes
-    # (full 16k-line compile + clang). LSP_NO_CACHE=1 forces a rebuild.
-    # (This replaces the planned dyn-lib librarization: the LSP consumer
-    # walks the compiler's ENTIRE bound-tree object graph — enum dispatch,
-    # List fields, field reads on lib classes — a surface far beyond the
-    # tested lib flows (exported functions + generic containers); the
-    # ABI/GC risk outweighs the benefit when a cache already gives
-    # second-level iteration.)
+    # Content-addressed caches (LSP_NO_CACHE=1 forces rebuilds):
+    #   lib key  = pass3 + EmperorPenguinLib sources + auto-loaded stdlib pair
+    #   lsp key  = pass3 + LspServer sources + the lib artifact itself
+    # The lib lands NEXT TO tmp/lsp (link_exe stamps rpath $ORIGIN + the lib's
+    # basename SONAME), so the pair is relocatable — ./penguin -p copies both.
+
+    # --- Stage 1: the compiler lib ---
+    LIB_KEY=""
+    LIB_FRESH=0
+    if [ -z "$LSP_NO_CACHE" ]; then
+        LIB_KEY_INPUT="tmp/pass3 EmperorPenguin/EmperorPenguinLib.penguins"
+        for f in $(sed -n 's/^sources=\[\(.*\)\]/\1/p' EmperorPenguin/EmperorPenguinLib.penguins | tr ',' '\n' | sed 's/"//g; s/^[[:space:]]*//; s/[[:space:]]*$//'); do
+            if [ -f "EmperorPenguin/$f" ]; then
+                LIB_KEY_INPUT="$LIB_KEY_INPUT EmperorPenguin/$f"
+            fi
+        done
+        LIB_KEY_INPUT="$LIB_KEY_INPUT EmperorPenguin/std/penguin/core_builtin.penguin EmperorPenguin/std/penguin/io.penguin"
+        LIB_KEY=$(md5sum $LIB_KEY_INPUT 2>/dev/null | md5sum | cut -d' ' -f1)
+        if [ -n "$LIB_KEY" ] && [ -f "tmp/lsp-cache/$LIB_KEY/libemperorpenguin.penguin-lib" ]; then
+            cp "tmp/lsp-cache/$LIB_KEY/libemperorpenguin.penguin-lib" tmp/libemperorpenguin.penguin-lib
+            echo "Compiler lib cache hit ($LIB_KEY) -> copied to tmp/libemperorpenguin.penguin-lib"
+            LIB_FRESH=1
+        fi
+    fi
+    if [ $LIB_FRESH -eq 0 ]; then
+        tmp/pass3 EmperorPenguin/EmperorPenguinLib.penguins -o tmp/libemperorpenguin.penguin-lib
+        LIB_RC=$?
+        if [ $LIB_RC -ne 0 ]; then
+            echo "LSP build FAILED at compiler lib stage" >&2
+            exit 1
+        fi
+        if [ -n "$LIB_KEY" ]; then
+            mkdir -p "tmp/lsp-cache/$LIB_KEY"
+            cp tmp/libemperorpenguin.penguin-lib "tmp/lsp-cache/$LIB_KEY/libemperorpenguin.penguin-lib"
+            echo "Compiler lib cached as $LIB_KEY"
+        fi
+    fi
+
+    # --- Stage 2: the LSP exe, linked against the lib ---
     LSP_KEY=""
     if [ -z "$LSP_NO_CACHE" ]; then
-        KEY_INPUT="tmp/pass3 MagellanicPenguin/LspServer/LspServer.penguins"
+        KEY_INPUT="tmp/pass3 MagellanicPenguin/LspServer/LspServer.penguins tmp/libemperorpenguin.penguin-lib"
         for f in $(sed -n 's/^sources=\[\(.*\)\]/\1/p' MagellanicPenguin/LspServer/LspServer.penguins | tr ',' '\n' | sed 's/"//g; s/^[[:space:]]*//; s/[[:space:]]*$//'); do
             if [ -f "MagellanicPenguin/LspServer/$f" ]; then
                 KEY_INPUT="$KEY_INPUT MagellanicPenguin/LspServer/$f"
@@ -128,7 +202,8 @@ if [ $LSP -eq 1 ]; then
             exit 0
         fi
     fi
-    tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o tmp/lsp
+    tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
+        --lib tmp/libemperorpenguin.penguin-lib -o tmp/lsp
     rc=$?
     if [ $rc -eq 0 ] && [ -n "$LSP_KEY" ]; then
         mkdir -p "tmp/lsp-cache/$LSP_KEY"
@@ -204,9 +279,17 @@ if [ $PUBLISH -eq 1 ]; then
     # bundled server/<platform>/MagellanicPenguinLSP binary (the C# server on
     # win32; the native one on linux when present).
     if [ -f tmp/lsp ]; then
+        if [ ! -f tmp/libemperorpenguin.penguin-lib ]; then
+            echo "Publish FAILED: tmp/lsp exists but tmp/libemperorpenguin.penguin-lib is missing (the exe links it via rpath \$ORIGIN). Run './penguin -lsp' first." >&2
+            exit 1
+        fi
         mkdir -p MagellanicPenguin/vscode/server/linux
         cp tmp/lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
         echo "Copied tmp/lsp -> MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP"
+        # The compiler lib the exe links (SONAME libemperorpenguin.penguin-lib,
+        # rpath \$ORIGIN): must sit BESIDE the binary in the deployed layout.
+        cp tmp/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/libemperorpenguin.penguin-lib
+        echo "Copied tmp/libemperorpenguin.penguin-lib -> MagellanicPenguin/vscode/server/linux/"
         # Bundle the stdlib beside the binary: the server's embedded document
         # compiles look it up at <exe_dir>/EmperorPenguin/std/penguin (one of
         # load_stdlib_text's candidates), so an installed extension analyzes
@@ -216,7 +299,8 @@ if [ $PUBLISH -eq 1 ]; then
         echo "Bundled stdlib -> MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin"
         # Smoke test the BUNDLED server from a foreign cwd (no repo): a full
         # initialize/shutdown/exit session must answer capabilities and exit 0 —
-        # this proves the exe-dir stdlib discovery works in a deployed layout.
+        # this proves the exe-dir stdlib discovery AND the rpath \$ORIGIN lib
+        # load work in a deployed layout.
         SMOKE_DIR=$(mktemp -d)
         REPO_ROOT="$PWD"
         printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
@@ -224,6 +308,7 @@ if [ $PUBLISH -eq 1 ]; then
         SMOKE_RC=$?
         if [ $SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$SMOKE_DIR/out.bin" 2>/dev/null; then
             echo "Publish FAILED: bundled LSP smoke test (exit=$SMOKE_RC)" >&2
+            cat "$SMOKE_DIR/err.bin" >&2
             rm -rf "$SMOKE_DIR"
             exit 1
         fi

@@ -238,6 +238,14 @@ EmperorPenguin is the self-hosting compiler (written in PenguinLang, compiled/ru
 sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/llvm/*.penguin", "src/project/*.penguin", "main.penguin"]
 ```
 
+Three more project files shape the build:
+
+- `EmperorPenguinFull.penguins` — the same compiler set plus the json-backed Dynlib, json/vector/hashmap/array stdlib and `_utils` (the bootstrap's pass2 monolith, and the `./penguin -p` deployed compiler).
+- `EmperorPenguinLib.penguins` — Full **minus main.penguin**: the whole compiler as `libemperorpenguin.penguin-lib` (lib mode triggers on the `.penguin-lib` output name). Its metadata embeds every source file verbatim as per-file entries, so consumers declare-not-define the compiler's defs, call into the `.so` for methods, and monomorphize NEW generic instances locally from the embedded templates.
+- `EmperorPenguinExe.penguins` — just `main.penguin`, linked with `--lib <dir>/libemperorpenguin.penguin-lib`. The exe carries the C runtime + optional JIT (the lib's `_emperor_*`/`__builtin.*` refs bind from it via `-rdynamic`) and initializes the lib's globals (re-defined from the embedded source, interposing the `.so`'s copies through the GOT). `link_lib` stamps the lib's basename as SONAME and `link_exe` adds `-rpath,$ORIGIN`, so an exe + `.penguin-lib` pair is relocatable.
+
+`./penguin -b` keeps pass3 as the Full monolith (the first dyn-lib-capable compiler — pass2 comes from the ANTLR-safe stub project and cannot build libs), then builds pass4/pass5 as lib+exe pairs in `tmp/pass4.d`/`tmp/pass5.d` (`tmp/pass4` is a symlink; convergence checks BOTH the exe and lib md5s, and pass5.d is removed on success). Building the compiler lib requires a JIT-capable compiler (build it with `-enable-meta`) — the compiler sources engage the meta engine during their own compilation.
+
 ### Source Structure (~16,000 lines total)
 
 ```

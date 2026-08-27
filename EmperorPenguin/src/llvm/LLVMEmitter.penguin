@@ -1773,8 +1773,14 @@ class LLVMEmitter {
 
     fun is_value_class_ref(this, ir_type: string) -> bool {
         _utils.trace_enter("Enter is_value_class_ref(ir_type=" + cast<string>(ir_type) + ")");
-        if (!this.string_starts_with(ir_type, "ref<")) { return false; }
-        let type_name: string = this.extract_type_name(ir_type);
+        // "mut ref<X>" must hit too: a MUTABLE value-class binding spells the
+        // return type "mut ref<X>", and missing it made needs_sret false — the
+        // callee then `ret ptr`-ed a pointer to its own DEAD stack alloca, which
+        // the next call's frame (same stack addresses) clobbered before the
+        // caller could copy it (trailing fields read back as garbage).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (!this.string_starts_with(t, "ref<")) { return false; }
+        let type_name: string = this.extract_type_name(t);
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
         if (found.is_some()) { return found.some.is_value_type; }
         return false;
@@ -1800,8 +1806,10 @@ class LLVMEmitter {
     // enums.
     fun get_sret_llvm_type(this, ir_type: string) -> string {
         _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + ir_type + ")");
-        if (this.string_starts_with(ir_type, "ref<")) {
-            let type_name: string = this.extract_type_name(ir_type);
+        // Accept "mut ref<X>" like is_value_class_ref (same "mut " spelling).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (this.string_starts_with(t, "ref<")) {
+            let type_name: string = this.extract_type_name(t);
             let found: Option<ClassLayout> = this.find_class_layout(type_name);
             if (found.is_some()) { return found.some.llvm_struct_type; }
             return "";

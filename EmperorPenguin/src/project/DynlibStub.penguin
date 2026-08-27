@@ -19,12 +19,17 @@ class LibFooter {
     size: i64 = 0;
 }
 
+class LibFile {
+    name: string = "";
+    text: string = "";
+}
+
 class LibMeta {
     name: string = "";
     version: i64 = 0;
     deps: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
-    source: string = "";
+    files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
 }
 
 class LibLoadState {
@@ -97,7 +102,7 @@ fun read_meta(path: string) -> LibMeta {
 }
 
 // Stub: the json metadata builder is only compiled in (pass3+).
-fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, source: string) -> string {
+fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>) -> string {
     __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinFull.penguins)");
     return "";
 }

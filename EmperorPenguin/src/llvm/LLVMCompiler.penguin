@@ -85,7 +85,13 @@ class LLVMCompiler {
                     pos = end_pos + 1;
                 }
             }
+            // --whole-archive: the exe's own code may not reference the JIT
+            // wrappers (a lib-consumer exe delegates meta to the .so), but the
+            // .so's undefined _emperor_penguin_jit_* refs bind from this exe at
+            // load time (-rdynamic) — the archive members must be present.
+            clang_args.push("-Wl,--whole-archive");
             clang_args.push(tmp_dir + "/libpenguin_jit.a");
+            clang_args.push("-Wl,--no-whole-archive");
             clang_args.push("-rdynamic");
             clang_args.push("-Wl,--export-dynamic");
             clang_args.push("-lstdc++");
@@ -115,6 +121,16 @@ class LLVMCompiler {
             } else {
                 clang_args.push("-rdynamic");
                 clang_args.push("-Wl,--export-dynamic");
+                // Find the linked .penguin-lib beside the executable at runtime
+                // (link_lib stamps the lib's basename as its SONAME, so DT_NEEDED
+                // is a bare name resolved via rpath). The embedded single quotes
+                // keep the shell from expanding $ORIGIN.
+                clang_args.push("-Wl,-rpath,'$ORIGIN'");
+                // A .penguin-lib's own undefined refs (e.g. the compiler lib's
+                // _emperor_penguin_jit_* when the exe links real JIT archives
+                // only for its own code) bind at LOAD time from this exe's
+                // -rdynamic exports; ld must not demand them at static-link time.
+                clang_args.push("-Wl,--allow-shlib-undefined");
             }
         }
 
@@ -160,6 +176,19 @@ class LLVMCompiler {
         } else {
             clang_args.push("-shared");
             clang_args.push("-fPIC");
+            // SONAME = the lib's basename: consumers record it as DT_NEEDED, and
+            // link_exe's -rpath,$ORIGIN finds the lib beside the executable — a
+            // deployed exe + .penguin-lib pair is relocatable without
+            // LD_LIBRARY_PATH (and tmp/passN finds its own lib even when another
+            // build's lib sits in the parent directory).
+            let slash: mut i64 = string_find(lib_path, "/");
+            let base_start: mut i64 = 0;
+            while (slash >= 0) {
+                base_start = slash + 1;
+                slash = string_find_from(lib_path, "/", slash + 1);
+            }
+            let soname: string = string_substring(lib_path, base_start, string_length(lib_path) - base_start);
+            clang_args.push("-Wl,-soname," + soname);
         }
         clang_args.push("-o");
         clang_args.push(lib_path);

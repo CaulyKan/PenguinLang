@@ -1371,6 +1371,22 @@ public sealed class PrebuiltExeBackend : ICompilerBackend
         var psi = OperatingSystem.IsWindows()
             ? new ProcessStartInfo { FileName = "cmd", Arguments = ArgumentBuilder.Build("/c", "copy", "/y", src, exeFile), WorkingDirectory = repoRoot }
             : new ProcessStartInfo { FileName = "/bin/cp", Arguments = ArgumentBuilder.Build("--", src, exeFile), WorkingDirectory = repoRoot };
+        // A lib-linked prebuilt exe (rpath $ORIGIN, e.g. tmp/lsp + tmp/libemperorpenguin.penguin-lib)
+        // must have its companion shared library copied BESIDE the workdir copy or the copy
+        // cannot start. Copy any sibling *.penguin-lib of the source exe.
+        var libDir = Path.GetDirectoryName(src);
+        if (Directory.Exists(libDir))
+        {
+            foreach (var lib in Directory.GetFiles(libDir, "*.penguin-lib"))
+            {
+                var libDest = Path.Combine(Path.GetDirectoryName(exeFile) ?? ".", Path.GetFileName(lib));
+                var libPsi = OperatingSystem.IsWindows()
+                    ? new ProcessStartInfo { FileName = "cmd", Arguments = ArgumentBuilder.Build("/c", "copy", "/y", lib, libDest), WorkingDirectory = repoRoot }
+                    : new ProcessStartInfo { FileName = "/bin/cp", Arguments = ArgumentBuilder.Build("--", lib, libDest), WorkingDirectory = repoRoot };
+                using var libProc = System.Diagnostics.Process.Start(libPsi);
+                libProc?.WaitForExit(30_000);
+            }
+        }
         EnvHelper.ApplyEnv(psi, compile.Env, workDir);
         return psi;
     }

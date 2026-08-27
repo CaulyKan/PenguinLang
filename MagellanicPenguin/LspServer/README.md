@@ -52,11 +52,17 @@ and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 
 ```sh
 ./penguin -b      # bootstrap tmp/pass3 first (one-time per compiler change)
-./penguin -lsp    # tmp/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins -o tmp/lsp
+./penguin -lsp    # stage 1: tmp/pass3 EmperorPenguin/EmperorPenguinLib.penguins -o tmp/libemperorpenguin.penguin-lib
+                  # stage 2: tmp/pass3 --enable-coroutine LspServer.penguins --lib tmp/libemperorpenguin.penguin-lib -o tmp/lsp
 ```
 
-Milestone-grade build (the entire ~16k-line compiler is part of the server). The test
-runner's **Prebuilt** backend runs it without recompiling: `Tests/LspTest/SessionLifecycle.md`
+The server links the compiler as a shared library: `tmp/lsp` contains only the 10 LSP
+modules (~0.8 MB) and calls into `libemperorpenguin.penguin-lib` (~14 MB, built from
+`EmperorPenguinLib.penguins`) for all compiler work — `SONAME libemperorpenguin.penguin-lib`
++ `rpath $ORIGIN`, so the exe + lib pair in `tmp/` is relocatable and `./penguin -p` copies
+both into `server/linux/`. Both stages have content-addressed caches (keyed on pass3 + the
+respective source sets; the lsp key includes the lib artifact). The test
+runner's **Prebuilt** backend runs the exe without recompiling: `Tests/LspTest/SessionLifecycle.md`
 feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
 (`Apply To: Prebuilt`, `Compile.Args: tmp/lsp`).
 
@@ -105,11 +111,12 @@ feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
   try/catch (native sjlj); a compiler panic publishes an "internal compiler error"
   diagnostic and keeps the last error-free unit, and `TokenStream.advance`'s end-of-input
   overrun raises a catchable error instead of `exit(1)`.
-- **Build caching**: `./penguin -lsp` keys a content-addressed cache on the resolved
-  source set + stdlib + pass3 — unchanged inputs rebuild in seconds. (A dyn-lib
-  librarization was evaluated and deferred: the LSP walks the compiler's entire bound-tree
-  object graph — enum dispatch, List fields, field reads on lib classes — far beyond the
-  tested lib flows; see the script's comment.)
+- **Build caching**: `./penguin -lsp` keys two content-addressed caches (the compiler
+  lib and the LSP exe) on their resolved source sets + stdlib + pass3 — unchanged
+  inputs rebuild in seconds. (The earlier dyn-lib deferral was reversed: the lib consumer
+  surface the LSP needs — enum dispatch on `BoundDefinition`, `List` field reads, method
+  calls into the `.so`, new-instance monomorphization from embedded templates — all work,
+  locked in by the LspTest e2e suite.)
 
 ## vscode
 

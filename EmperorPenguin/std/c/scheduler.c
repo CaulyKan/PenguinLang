@@ -41,6 +41,9 @@
 #if defined(_WIN32)
 #define EMPEROR_NO_UCONTEXT 1
 #define EMPEROR_NO_POLL 1
+// mingw-w64's setjmp.h declares setjmp/longjmp (and _setjmp via __mingw_setjmp
+// macros) but NOT the raw _longjmp symbol MSVC headers expose — use longjmp.
+#define _longjmp longjmp
 #else
 #include <ucontext.h>
 #include <sys/mman.h>
