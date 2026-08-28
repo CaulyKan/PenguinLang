@@ -67,7 +67,7 @@ class LLVMCompiler {
             let at: i64 = string_find_from(text, "@", d);
             let line_end: i64 = string_find_from(text, "\n", d);
             if (at > d && (line_end < 0 || at < line_end)) {
-                let name_end: i64 = string_find_from(text, "(", at);
+                let name_end : mut i64 = string_find_from(text, "(", at);
                 if (name_end < 0 || (line_end >= 0 && name_end > line_end)) {
                     name_end = line_end;
                 }
