@@ -74,8 +74,13 @@ class LLVMCompiler {
                 if (name_end > at + 1) {
                     let name: string = string_substring(text, at + 1, name_end - at - 1);
                     // llvm.* intrinsics resolve inside LLVM itself; only host
-                    // externs need export entries.
-                    if (string_length(name) > 0 && !(string_length(name) > 5 && string_substring(name, 0, 5) == "llvm.")) {
+                    // externs need export entries. _emperor_sjlj_setjmp is a
+                    // MARKER extern (every call is inlined to a direct _setjmp
+                    // by the emitter) — it has no definition anywhere, and a
+                    // /DEF entry for it is an unresolved external at link.
+                    if (string_length(name) > 0
+                        && !(string_length(name) > 5 && string_substring(name, 0, 5) == "llvm.")
+                        && name != "_emperor_sjlj_setjmp") {
                         out.push("  " + name);
                     }
                 }
