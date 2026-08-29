@@ -4,6 +4,7 @@ Wait in initial block yields control to other initial routines.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -18,7 +19,7 @@ Wait in initial block yields control to other initial routines.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

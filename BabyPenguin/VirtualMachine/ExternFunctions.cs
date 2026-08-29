@@ -441,6 +441,12 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = System.Environment.ProcessPath ?? "";
             });
 
+            vm.Global.RegisterExternFunction("_utils.getenv", (result, args) =>
+            {
+                var name = args[0].As<BasicRuntimeValue>().StringValue;
+                result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = System.Environment.GetEnvironmentVariable(name) ?? "";
+            });
+
             vm.Global.RegisterExternFunction("_utils.mkdir", (result, args) =>
             {
                 var path = args[0].As<BasicRuntimeValue>().StringValue;
@@ -781,6 +787,12 @@ namespace BabyPenguin.VirtualMachine
             vm.Global.RegisterExternFunction("__builtin._run", (frame, result, args) =>
             {
                 SimScheduler.Instance.Run(vm, frame);
+                // A job's __builtin.exit sets Global.ExitCode and stops the
+                // scheduler (the Exited break is consumed there). Unwind the
+                // same way the direct-execution path does so Run() returns the
+                // program's exit code instead of swallowing it as 0.
+                if (SimScheduler.Instance.Exited)
+                    throw new ProgramExitException();
                 return [];
             });
         }

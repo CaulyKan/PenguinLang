@@ -73,15 +73,19 @@ namespace BabyPenguin.CSharpBackend.Runtime
             return mi.Invoke(null, args);
         }
 
-        /// <summary>Run a shell command (matches the interpreter's __builtin._exec_cmd: sh -c "&lt;cmd&gt;", exit code).</summary>
+        /// <summary>Run a shell command (matches the interpreter's __builtin._exec_cmd:
+        /// sh -c "&lt;cmd&gt;" on Unix, cmd.exe /c on Windows — the native-Windows bootstrap
+        /// drives the very same make/clang invocations through here at pass1).</summary>
         public static long ExecCmd(string cmd)
         {
             try
             {
                 var si = new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = "/bin/sh",
-                    Arguments = "-c \"" + cmd.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"",
+                    FileName = System.OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh",
+                    Arguments = System.OperatingSystem.IsWindows()
+                        ? "/c " + cmd
+                        : "-c \"" + cmd.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"",
                     RedirectStandardOutput = false,
                     RedirectStandardError = false,
                     UseShellExecute = false,

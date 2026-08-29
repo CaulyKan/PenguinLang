@@ -2,11 +2,11 @@ namespace emperor {
 
 // ---------------------------------------------------------------------------
 // Dyn-lib STUB — compiled into the default compiler build (pass1 / dotnet
-// tests / pass2 via EmperorPenguin.penguins). This file is ANTLR-safe (plain
+// tests / pass2 via EmperorPenguinPass1.penguins). This file is ANTLR-safe (plain
 // penguin, no meta / no json) so BabyPenguin's parser can compile the
 // compiler source at pass1. It mirrors the public API of the json-backed
 // Dynlib.penguin (which the pass3+ bootstrap swaps in via
-// EmperorPenguinFull.penguins) so the driver compiles unchanged against
+// EmperorPenguinPass2.penguins) so the driver compiles unchanged against
 // either. Only the two json-dependent functions are stubbed (they report the
 // feature as disabled); every other helper is real and identical to the full
 // module. dynlib_available() returns false so the driver can give a clean
@@ -19,12 +19,17 @@ class LibFooter {
     size: i64 = 0;
 }
 
+class LibFile {
+    name: string = "";
+    text: string = "";
+}
+
 class LibMeta {
     name: string = "";
     version: i64 = 0;
     deps: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
-    source: string = "";
+    files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
 }
 
 class LibLoadState {
@@ -92,13 +97,13 @@ fun read_lib_footer(path: string) -> LibFooter {
 
 // Stub: the json metadata reader is only compiled in (pass3+).
 fun read_meta(path: string) -> LibMeta {
-    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinFull.penguins)");
+    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinPass2.penguins)");
     return new LibMeta();
 }
 
 // Stub: the json metadata builder is only compiled in (pass3+).
-fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, source: string) -> string {
-    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinFull.penguins)");
+fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>) -> string {
+    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinPass2.penguins)");
     return "";
 }
 
@@ -131,7 +136,7 @@ fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadStat
 fun load_lib_chain(lib_paths: _utils.List<string>, exe_dir: string) -> mut LibLoadState {
     let state: mut LibLoadState = new LibLoadState();
     state.has_error = true;
-    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinFull.penguins)");
+    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinPass2.penguins)");
     return state;
 }
 
@@ -145,7 +150,7 @@ fun dynlib_available() -> bool { return false; }
 
 // Stub: without json, no shipped-instance metadata can be produced.
 fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
-    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinFull.penguins)");
+    __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinPass2.penguins)");
     return new _utils.List<string>();
 }
 

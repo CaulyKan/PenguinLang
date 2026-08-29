@@ -2,11 +2,9 @@
 ## Description
 Custom strategy via source iteration: the MultiInput itself is iterable — a module can walk its source views and try_poll each one (non-blocking probe) instead of waiting, e.g. to drain everything currently pending.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): MultiInput (dynamic fan-in) exists only in BabyPenguin's builtin so far — EmperorPenguin fails here and should turn green once the ports layer lands there (Phase 3). BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -41,7 +39,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

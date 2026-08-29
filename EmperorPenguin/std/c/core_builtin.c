@@ -10,9 +10,13 @@
 #include <windows.h>
 #include <direct.h>
 #include <process.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <dirent.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <sys/resource.h>
 #endif
 
@@ -106,6 +110,19 @@ void _emperor_eprintln(const char *s) {
 }
 
 void _emperor_exit(int code) {
+    /* exit() inside a coroutine (initial routine / async spawn) must unwind
+     * to the scheduler instead of terminating the process mid-switch: the
+     * scheduler ends the program with this code after flushing its loop.
+     * _emperor_gc_on_coroutine (scheduler.c) is non-zero exactly while a
+     * coroutine is running; zero for plain programs → direct exit. */
+    {
+        extern int _emperor_gc_on_coroutine;
+        extern void _emperor_sched_exit(int);
+        if (_emperor_gc_on_coroutine) {
+            _emperor_sched_exit(code);
+            return;
+        }
+    }
     exit(code);
 }
 
@@ -342,6 +359,22 @@ long long _emperor_exec_cmd(const char* cmd) {
     return (long long)system(cmd);
 }
 
+/* --- Environment --- */
+
+/* "" when unset (GC-allocated, so the caller gets a stable penguin string).
+ * Resolves tool paths (e.g. $CLANG) in-process — a `${VAR:-def}` shell
+ * expansion only works under a POSIX system() shell, not cmd.exe. */
+char* _emperor_getenv(const char* name) {
+    const char* v = (name && name[0]) ? getenv(name) : NULL;
+    size_t len = v ? strlen(v) : 0;
+    char* r = (char*)_emperor_gc_alloc(len + 1, 1);
+    if (r) {
+        if (len) memcpy(r, v, len);
+        r[len] = '\0';
+    }
+    return r;
+}
+
 /* --- File I/O --- */
 
 char* _emperor_file_read_text(const char* path) {
@@ -376,6 +409,101 @@ void _emperor_file_write_text(const char* path, const char* text) {
         fputs(text, f);
     }
     fclose(f);
+}
+
+/* --- Non-blocking fd I/O (external event sources; scheduler.c) ---
+ * Single-syscall helpers for the coroutine fd protocol: the caller parks on
+ * _emperor_fd_wait_read/_write between calls, so these never (need to) block
+ * the scheduler thread. POSIX: descriptors are switched to O_NONBLOCK on
+ * first use — a plain blocking write to a full pipe would freeze every
+ * coroutine.
+ *
+ * _emperor_read_fd: one read() of up to 32KB into a fresh GC string; a
+ * zero-length result means EOF-after-wake (level-triggered poll only wakes
+ * an empty reader for data or HUP, and read-after-HUP returns 0) or a
+ * spurious EAGAIN (the next wait simply re-parks).
+ * _emperor_write_fd: one write() of the string's bytes; returns the count,
+ * 0 for EAGAIN (caller parks on fd_wait_write and retries), -1 on error.
+ *
+ * Windows: there is no O_NONBLOCK for pipes; the model is wait-then-syscall
+ * (scheduler.c's fd integration only wakes a reader after PeekNamedPipe
+ * reports data/broken, so the blocking read returns immediately) plus a
+ * BLOCKING write — when the pipe is full, the write itself is the
+ * backpressure, which is equivalent for the LSP's strictly-ordered single
+ * writer. _O_BINARY stops the CRT from translating CRLF/LF (frames are
+ * byte-exact protocol payloads). */
+#define EMPEROR_FD_CHUNK (32 * 1024)
+
+static void emperor_fd_set_nonblock(int fd) {
+#ifndef _WIN32
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0 && !(flags & O_NONBLOCK)) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+#else
+    (void)fd;
+#endif
+}
+
+char* _emperor_read_fd(long long fd) {
+#ifdef _WIN32
+    int fdi = (int)fd;
+    emperor_fd_set_nonblock(fdi); /* no-op: wait-then-syscall model */
+    _setmode(fdi, _O_BINARY);
+    char* buf = (char*)_emperor_gc_alloc(EMPEROR_FD_CHUNK + 1, 1);
+    if (!buf) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    int n = read(fdi, buf, EMPEROR_FD_CHUNK);
+    if (n < 0) n = 0; /* error: deliver "" (EOF-shaped; caller ends or re-parks) */
+    buf[n] = '\0';
+    return buf;
+#else
+    emperor_fd_set_nonblock((int)fd);
+    char* buf = (char*)_emperor_gc_alloc(EMPEROR_FD_CHUNK + 1, 1);
+    if (!buf) {
+        char* r = (char*)_emperor_gc_alloc(1, 1);
+        if (r) r[0] = '\0';
+        return r;
+    }
+    ssize_t n = read((int)fd, buf, EMPEROR_FD_CHUNK);
+    if (n < 0) n = 0; /* EAGAIN et al.: deliver "" */
+    buf[n] = '\0';
+    return buf;
+#endif
+}
+
+long long _emperor_write_fd(long long fd, const char* data) {
+#ifdef _WIN32
+    if (!data) return 0;
+    int fdi = (int)fd;
+    emperor_fd_set_nonblock(fdi); /* no-op: blocking write IS the backpressure */
+    _setmode(fdi, _O_BINARY);
+    size_t len = strlen(data);
+    size_t off = 0;
+    while (off < len) {
+        size_t piece = len - off;
+        if (piece > 0x40000000u) piece = 0x40000000u; /* _write takes unsigned */
+        int n = write(fdi, data + off, (unsigned)piece);
+        if (n < 0) {
+            return (off > 0) ? (long long)off : -1;
+        }
+        if (n == 0) break; /* shouldn't happen for a blocking write */
+        off += (size_t)n;
+    }
+    return (long long)off;
+#else
+    if (!data) return 0;
+    emperor_fd_set_nonblock((int)fd);
+    size_t len = strlen(data);
+    ssize_t n = write((int)fd, data, len);
+    if (n < 0) {
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    }
+    return (long long)n;
+#endif
 }
 
 /* --- Binary file I/O (dynamic-linking support) ---

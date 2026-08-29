@@ -2,11 +2,9 @@
 ## Description
 Level-sensitive wait on a port condition (`wait s.line == false`, the Verilog wait() idiom): the condition re-evaluates every scheduler round through the bare-read slot, so the waiter wakes when the level actually changes without burning a polling process.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports/connect feature set is not implemented in EmperorPenguin yet — it fails there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -30,7 +28,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

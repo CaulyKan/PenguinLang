@@ -28,6 +28,13 @@ namespace BabyPenguin.VirtualMachine
         /// propagation at the current time is done).</summary>
         public bool LastRoundQuiet { get; private set; }
 
+        /// <summary>True when a scheduled job called __builtin.exit and the
+        /// scheduler stopped (vm.Global.ExitCode holds the code). The driver
+        /// (__builtin._run) turns this into ProgramExitException so
+        /// BabyPenguinVM.Run returns the program's exit code — without it the
+        /// Exited break is swallowed here and every program reports 0.</summary>
+        public bool Exited => _exited;
+
         private class TimerEntry : IComparable<TimerEntry>
         {
             public long DeadlineTick { get; set; }

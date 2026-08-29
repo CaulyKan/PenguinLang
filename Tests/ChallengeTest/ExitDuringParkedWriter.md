@@ -4,6 +4,7 @@ exit() while another routine is parked on a full backpressuring Fifo: the parked
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,7 +14,7 @@ initial { wait 2 tick; println("bye"); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

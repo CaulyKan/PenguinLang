@@ -1,13 +1,16 @@
 namespace emperor {
 
-// Thin driver. Argument parsing lives in CompilerConfig; the IR/lower/link
-// pipeline in LLVMCompiler; the .penguin-lib loading/validation/metadata in
-// Dynlib. This file only orchestrates: parse -> load lib chain -> assemble
-// sources -> compile -> validate (lib) -> link (exe or lib).
+// Thin driver. Argument parsing lives in CompilerConfig; the IR/lowering in
+// LLVMCompiler; the .penguin-lib loading/validation/metadata in Dynlib. This
+// file only orchestrates: parse -> load lib chain -> assemble sources ->
+// compile -> validate (lib) -> emit LLVM IR (.ll). LINKING is external (the
+// emperor / emperor.bat driver scripts run clang + the C runtime make) so the
+// emitted IR is platform-independent and each platform just links it.
 initial {
     let args: _utils.List<string> = _utils.args();
     if (args.size() == 0) {
         __builtin.eprintln("Usage: EmperorPenguin [-v|-vv|-vvv] [-o output] <file.penguins | file1.penguin [file2.penguin ...]>");
+        __builtin.eprintln("       Emits LLVM IR only: -o X -> X.ll (+ X.def); -o X.penguin-lib -> X.ll + X.libmeta.");
         __builtin.exit(1);
     }
 
@@ -17,16 +20,49 @@ initial {
         __builtin.eprintln("Error: no source files specified");
         __builtin.exit(1);
     }
+    // Project-file lib/flags pre-scan: a .penguins may carry lib = [...] and
+    // flags = [...]; both take effect BEFORE the dyn-lib checks below
+    // (project libs flow into lib_paths; relative lib paths resolve against
+    // the project dir). Project flags re-enter parse() after the CLI was
+    // consumed, so on a conflicting toggle/value the PROJECT file wins — keep
+    // project flags to options the command line does not restate. Only
+    // '-'-prefixed tokens are honored (a project file can never inject
+    // source files).
+    {
+        let pscan: mut i64 = 0;
+        while (pscan < cast<i64>(config.source_files.size())) {
+            let pfile: string = config.source_files.at(cast<u64>(pscan)).some;
+            if (string_ends_with(pfile, ".penguins")) {
+                let pproj: mut PenguinProject = PenguinProject.load(pfile);
+                let pdir: string = get_parent_dir(pfile);
+                let plib: mut i64 = 0;
+                while (plib < cast<i64>(pproj.libs.size())) {
+                    let libp : mut string = pproj.libs.at(cast<u64>(plib)).some;
+                    if (string_length(libp) > 0 && string_char_at(libp, 0) != "/") {
+                        libp = path_combine(pdir, libp);
+                    }
+                    config.lib_paths.push(libp);
+                    if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] lib: " + libp); }
+                    plib = plib + 1;
+                }
+                if (cast<i64>(pproj.flags.size()) > 0) {
+                    if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] applying project flags"); }
+                    config.parse(pproj.flags);
+                }
+            }
+            pscan = pscan + 1;
+        }
+    }
     // Dyn-lib capability: --enable-dl (default on) is a plain config bool, and
     // dynlib_available() reports whether THIS compiler binary was built with the
-    // json-backed Dynlib (only the pass3+ binary from EmperorPenguinFull.penguins
+    // json-backed Dynlib (only the pass3+ binary from EmperorPenguinPass2.penguins
     // is). Either being false disables building/consuming .penguin-lib files.
     if (config.is_lib_mode() && (!config.dl_enabled || !dynlib_available())) {
-        __builtin.eprintln("[EmperorPenguin] Error: building a .penguin-lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.eprintln("[EmperorPenguin] Error: building a .penguin-lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinPass2.penguins)");
         __builtin.exit(1);
     }
     if (config.lib_paths.size() > 0 && (!config.dl_enabled || !dynlib_available())) {
-        __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinFull.penguins)");
+        __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinPass2.penguins)");
         __builtin.exit(1);
     }
 
@@ -47,34 +83,45 @@ initial {
     // so non-io programs pay nothing for it.
     let io_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/io.penguin");
 
-    // Build intermediates go into a per-process unique temp directory so that
-    // parallel EmperorPenguin invocations never collide on a shared path.
-    let tmp_dir: mut string = _utils.get_temp_folder();
-    // The final output defaults into that same isolated directory; -o overrides
-    // only the output location (intermediates always stay isolated).
-    let exe_path: mut string = tmp_dir + "/out.exe";
+    // Output layout: the emitter writes a platform-independent .ll plus a
+    // side file next to the -o path (no linking happens in-process):
+    //   exe mode  -o X              -> X.ll  + X.def (lld-link export table)
+    //   lib mode  -o X.penguin-lib  -> X.ll  + X.libmeta (the JSON metadata
+    //                                   the driver script appends to the
+    //                                   linked .so, see link-lib there)
+    // Without -o the default base is "out" in the current directory.
+    let out_base: mut string = "out";
     if (string_length(config.output_name) > 0) {
-        exe_path = config.output_name;
+        out_base = config.output_name;
+        if (config.is_lib_mode()) {
+            let lidx: i64 = string_find(out_base, ".penguin-lib");
+            if (lidx >= 0) {
+                out_base = string_substring(out_base, 0, lidx);
+            }
+        }
         let last_slash: mut i64 = -1;
-        let pos: mut i64 = string_find(config.output_name, "/");
+        let pos: mut i64 = string_find(out_base, "/");
         while (pos >= 0) {
             last_slash = pos;
-            pos = string_find_from(config.output_name, "/", pos + 1);
+            pos = string_find_from(out_base, "/", pos + 1);
         }
         if (last_slash > 0) {
-            _utils.mkdir(string_substring(config.output_name, 0, last_slash));
+            _utils.mkdir(string_substring(out_base, 0, last_slash));
         }
     }
+    let ll_path: string = out_base + ".ll";
 
     let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
     inputs.push(new SourceInput("io.penguin", io_source));
 
     // Lib sources first (deps-first order from load_lib_chain), then user
-    // sources. For a lib build, lib_source_text accumulates the lib's OWN source
-    // (embedded verbatim into its metadata so consumers get the #fun/#template
-    // bodies) — loaded dep-lib sources are NOT re-embedded.
-    let lib_source_text: mut string = "";
+    // sources. For a lib build, lib_files accumulates the lib's OWN source
+    // files (name + verbatim text, embedded into its metadata so consumers get
+    // per-file SourceInputs — original file namespaces preserved — and can
+    // monomorphize NEW generic instances from the #fun/#template bodies) —
+    // loaded dep-lib sources are NOT re-embedded.
+    let lib_files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
     let si: mut i64 = 0;
     while (si < cast<i64>(lib_state.sources.size())) {
         let src: SourceInput = lib_state.sources.at(cast<u64>(si)).some;
@@ -96,14 +143,24 @@ initial {
                 let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
                 let source: string = _utils.file_read_text(proj_file);
                 inputs.push(new SourceInput(proj_file, source));
-                if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+                if (config.is_lib_mode()) {
+                    let lf: mut LibFile = new LibFile();
+                    lf.name = proj_file;
+                    lf.text = source;
+                    lib_files.push(lf);
+                }
                 if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + proj_file); }
                 project_file_index = project_file_index + 1;
             }
         } else {
             let source: string = _utils.file_read_text(file);
             inputs.push(new SourceInput(file, source));
-            if (config.is_lib_mode()) { lib_source_text = lib_source_text + source + "\n"; }
+            if (config.is_lib_mode()) {
+                let lf2: mut LibFile = new LibFile();
+                lf2.name = file;
+                lf2.text = source;
+                lib_files.push(lf2);
+            }
             if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] Adding source: " + file); }
         }
         fi = fi + 1;
@@ -114,6 +171,7 @@ initial {
     _utils.trace_set_verbose(config.verbose);
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = config.verbose;
+    compiler.enable_coroutine = config.coroutine_enabled;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;
     // Dyn-lib routing data: shipped instances (the lib-source boundary is set
@@ -148,14 +206,35 @@ initial {
         let lidx: i64 = string_find(config.output_name, ".penguin-lib");
         if (lidx >= 0) { lib_name = string_substring(config.output_name, 0, lidx); }
         lib_name = _get_base_name(lib_name);
-        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_source_text);
-        if (!lc.link_lib(result, config, tmp_dir, exe_path, lib_meta)) {
+        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_files);
+        // The metadata blob must be a real JSON document (never empty): a stub
+        // build's build_metadata returns "" and must not produce a corrupt lib.
+        if (string_length(lib_meta) == 0) {
+            __builtin.eprintln("[EmperorPenguin] Error: no metadata produced (dynamic linking unavailable in this compiler build)");
             __builtin.exit(1);
         }
+        if (!lc.build_ll(result, ll_path)) { __builtin.exit(1); }
+        let libmeta_path: string = out_base + ".libmeta";
+        _utils.file_write_text(libmeta_path, lib_meta);
+        if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Wrote " + libmeta_path + " (" + cast<string>(string_length(lib_meta)) + " bytes)"); }
     } else {
-        if (!lc.link_exe(result, config, tmp_dir, exe_path, lib_state.so_paths)) {
-            __builtin.exit(1);
+        if (!lc.build_ll(result, ll_path)) { __builtin.exit(1); }
+        let def_path: string = out_base + ".def";
+        lc.write_export_def(ll_path, def_path);
+        if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Wrote " + def_path); }
+        // The consumer dyn-lib closure (deps-first from load_lib_chain —
+        // includes libs reached only through another lib's deps, which the
+        // command line never named). The driver script links every path
+        // listed here beside the .ll.
+        let libs_path: string = out_base + ".libs";
+        let libs_text: mut string = "";
+        let spi: mut i64 = 0;
+        while (spi < cast<i64>(lib_state.so_paths.size())) {
+            libs_text = libs_text + lib_state.so_paths.at(cast<u64>(spi)).some + "\n";
+            spi = spi + 1;
         }
+        _utils.file_write_text(libs_path, libs_text);
+        if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Wrote " + libs_path); }
     }
 }
 

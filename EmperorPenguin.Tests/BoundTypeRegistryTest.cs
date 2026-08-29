@@ -14,7 +14,7 @@ public class BoundTypeRegistryTest
 
     private static string ProjectPath => Path.GetFullPath(Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "..",
-        "EmperorPenguin", "EmperorPenguin.penguins"));
+        "EmperorPenguin", "EmperorPenguinPass1.penguins"));
 
     private static readonly Lazy<SemanticModel> CachedModel = new(() =>
     {

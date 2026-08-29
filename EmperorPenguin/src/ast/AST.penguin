@@ -425,11 +425,16 @@ class SpawnAsyncExpression {
 
 class WaitExpression {
     expression: mut Option<Expression> = new Option<Expression>.none();
+    // `wait <expr> tick` — timer wait; the operand is the tick count.
+    is_tick_unit: mut bool = false;
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
             let self = cast<WaitExpression>(this);
             if (self.expression.is_some()) {
+                if (self.is_tick_unit) {
+                    return "wait " + self.expression.some.build_text() + " tick";
+                }
                 return "wait " + self.expression.some.build_text();
             }
             return "wait";
@@ -750,17 +755,40 @@ class LetDeclarationStatement {
     }
 }
 
-class EmitEventStatement {
-    event_expr: mut Option<Expression> = new Option<Expression>.none();
-    argument: mut Option<Expression> = new Option<Expression>.none();
+// `connect(source, sink);` — wire a source (output port / channel / Event /
+// mut variable net) to a sink (input port / MultiInput). Legal only inside a
+// construct block.
+class ConnectStatement {
+    source: mut Option<Expression> = new Option<Expression>.none();
+    sink: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     impl IStatement {
         fun build_text(this: IStatement) -> string {
             _utils.trace_enter("Enter build_text");
-            let self = cast<EmitEventStatement>(this);
-            let s: mut string = "emit " + self.event_expr.some.build_text() + "(";
-            if (self.argument.is_some()) { s = s + self.argument.some.build_text(); }
-            return s + ");";
+            let self = cast<ConnectStatement>(this);
+            return "connect(" + self.source.some.build_text() + ", " + self.sink.some.build_text() + ");";
+        }
+    }
+}
+
+// `try statement catch (declaration) statement` — minimal exception surface:
+// runtime errors (channel closed, panics) thrown across `wait` are caught by
+// the innermost enclosing try; the catch variable is `__builtin.RuntimeError`.
+class TryStatement {
+    try_block: mut Option<Statement> = new Option<Statement>.none();
+    catch_var_name: mut string = "";
+    catch_type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    catch_block: mut Option<Statement> = new Option<Statement>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    impl IStatement {
+        fun build_text(this: IStatement) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<TryStatement>(this);
+            let s: mut string = "try " + self.try_block.some.build_text() + " catch (";
+            s = s + self.catch_var_name;
+            if (self.catch_type_spec.is_some()) { s = s + ": " + self.catch_type_spec.some.build_text(); }
+            s = s + ") " + self.catch_block.some.build_text();
+            return s;
         }
     }
 }
@@ -923,7 +951,8 @@ enum Statement {
     break_stmt: BreakStatement;
     continue_stmt: ContinueStatement;
     let_decl: LetDeclarationStatement;
-    emit_event: EmitEventStatement;
+    connect_stmt: ConnectStatement;
+    try_stmt: TryStatement;
     yield_stmt: YieldStatement;
     signal_stmt: SignalStatement;
     meta_if_stmt: MetaIfStatement;
@@ -944,7 +973,8 @@ enum Statement {
         if (this is Statement.break_stmt) { return this.break_stmt.build_text(); }
         if (this is Statement.continue_stmt) { return this.continue_stmt.build_text(); }
         if (this is Statement.let_decl) { return this.let_decl.build_text(); }
-        if (this is Statement.emit_event) { return this.emit_event.build_text(); }
+        if (this is Statement.connect_stmt) { return this.connect_stmt.build_text(); }
+        if (this is Statement.try_stmt) { return this.try_stmt.build_text(); }
         if (this is Statement.yield_stmt) { return this.yield_stmt.build_text(); }
         if (this is Statement.signal_stmt) { return this.signal_stmt.build_text(); }
         if (this is Statement.meta_if_stmt) { return this.meta_if_stmt.build_text(); }
@@ -1350,25 +1380,47 @@ class InterfaceForImplementation {
     }
 }
 
-class EventDefinition {
+// RTL-style module port declaration inside a class body:
+// `input x : T (= default)?;` / `output y : T (= default)?;`
+class PortDefinition {
+    is_input: mut bool = false;
     name: mut string = "";
-    event_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    default_expr: mut Option<Expression> = new Option<Expression>.none();
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     source_file: mut string = "";
 
     fun new(mut this, name: string) {
-
         this.name = name;
     }
-
 
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");
-            let self = cast<EventDefinition>(this);
-            let s: mut string = "event " + self.name;
-            if (self.event_type.is_some()) { s = s + ": " + self.event_type.some.build_text(); }
+            let self = cast<PortDefinition>(this);
+            let s: mut string = "input ";
+            if (!self.is_input) { s = "output "; }
+            s = s + self.name;
+            if (self.type_spec.is_some()) { s = s + ": " + self.type_spec.some.build_text(); }
+            if (self.default_expr.is_some()) { s = s + " = " + self.default_expr.some.build_text(); }
             return s + ";";
+        }
+    }
+}
+
+// Elaboration block: `construct { ... }` — the only scope where `connect` is
+// legal. Top-level constructs run before any initial routine; class-level
+// constructs run at `new` before the instance's initial routines spawn.
+class ConstructDefinition {
+    body: mut Option<Expression> = new Option<Expression>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+    source_file: mut string = "";
+    impl IDefinition {
+        fun build_text(this: IDefinition) -> string {
+            _utils.trace_enter("Enter build_text");
+            let self = cast<ConstructDefinition>(this);
+            if (self.body.is_some()) { return "construct " + self.body.some.build_text(); }
+            return "construct {}";
         }
     }
 }
@@ -1434,28 +1486,6 @@ class InitialRoutineDefinition {
     }
 }
 
-class OnRoutineDefinition {
-    event_name: mut string = "";
-    event_expr: mut Option<Expression> = new Option<Expression>.none();
-    parameter: mut Option<Parameter> = new Option<Parameter>.none();
-    body: mut Option<Expression> = new Option<Expression>.none();
-    location: mut SourceLocation = new SourceLocation("", 0, 0);
-    source_file: mut string = "";
-    impl IDefinition {
-        fun build_text(this: IDefinition) -> string {
-            _utils.trace_enter("Enter build_text");
-            let self = cast<OnRoutineDefinition>(this);
-            let mut sb = new StringBuilder();
-            sb.append("on ");
-            if (self.event_expr.is_some()) { sb.append(self.event_expr.some.build_text()); }
-            else { sb.append(self.event_name); }
-            if (self.parameter.is_some()) { sb.append("("); sb.append(self.parameter.some.build_text()); sb.append(")"); }
-            if (self.body.is_some()) { sb.append(" "); sb.append(self.body.some.build_text()); }
-            return sb.to_string();
-        }
-    }
-}
-
 class TypeReferenceDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
@@ -1482,6 +1512,7 @@ class TypeReferenceDefinition {
 class EnumMemberDefinition {
     name: mut string = "";
     type_spec: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
 
     fun new(mut this, name: string) {
 
@@ -1747,8 +1778,8 @@ class SpecializingDefinition {
     interface_def: InterfaceDefinition;
     impl_def: InterfaceImplementation;
     impl_for_def: InterfaceForImplementation;
-    event_def: EventDefinition;
-    on_routine_def: OnRoutineDefinition;
+    port_def: PortDefinition;
+    construct_def: ConstructDefinition;
     type_ref_def: TypeReferenceDefinition;
     enum_member: EnumMemberDefinition;
     class_field: ClassFieldDefinition;
@@ -1772,8 +1803,8 @@ class SpecializingDefinition {
         if (this is Definition.interface_def) { return this.interface_def.build_text(); }
         if (this is Definition.impl_def) { return this.impl_def.build_text(); }
         if (this is Definition.impl_for_def) { return this.impl_for_def.build_text(); }
-        if (this is Definition.event_def) { return this.event_def.build_text(); }
-        if (this is Definition.on_routine_def) { return this.on_routine_def.build_text(); }
+        if (this is Definition.port_def) { return this.port_def.build_text(); }
+        if (this is Definition.construct_def) { return this.construct_def.build_text(); }
         if (this is Definition.type_ref_def) { return this.type_ref_def.build_text(); }
         if (this is Definition.enum_member) { return this.enum_member.build_text(); }
         if (this is Definition.class_field) { return this.class_field.build_text(); }

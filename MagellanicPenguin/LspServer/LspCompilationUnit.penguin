@@ -1,0 +1,256 @@
+// LspCompilationUnit: the per-document module (design doc's dynamic half).
+// Created by LspMain on didOpen (runtime `new` — module-as-actor), wired
+// through its OWN Fifo (cmds: LspMain routes document traffic in; a plain
+// class-field channel so its generic instantiation is collected by the
+// pass-3 monomorphize fixpoint) and publishes through its OWN results
+// OUTPUT PORT — LspMain attaches that port's hub into JsonOutputParser's
+// fan-in at creation (see StdioStream.penguin's note on port payload
+// restrictions).
+//
+// Compilation reuses the embedded EmperorPenguin compiler
+// (EmperorPenguinCompiler.compile_sources) on every didOpen/didChange — the
+// same full-recompile model as the C# LSP — with stdlib (core_builtin +
+// io) injected first and enable_coroutine on (documents may use ports).
+// Diagnostics of the last compile are published; queries run against the
+// last error-free unit (LastSuccessModel pattern) so features keep working
+// in the presence of diagnostics.
+namespace lsp {
+
+let STDLIB_CORE: string = load_stdlib_text("core_builtin.penguin");
+let STDLIB_IO: string = load_stdlib_text("io.penguin");
+
+// Stdlib sources for document compiles, located once at startup: cwd first
+// (dev/test run from the repo root), then exe-relative candidates — a direct
+// sibling layout AND an upward walk from the exe dir (up to 12 parents), so
+// the server still finds the repo when launched from a nested workdir (the
+// test runner copies the exe into build/testruns/<ts>/prebuilt/... ) or from
+// vscode/server/<platform>/ inside a deployed extension.
+fun load_stdlib_text(name: string) -> string {
+    let candidates: mut _utils.List<string> = new _utils.List<string>();
+    candidates.push("EmperorPenguin/std/penguin/" + name);
+    let exe_dir: string = emperor.compiler_exe_dir();
+    candidates.push(exe_dir + "/EmperorPenguin/std/penguin/" + name);
+    // Walk parents of the exe dir: <parent>/EmperorPenguin/std/penguin/<name>.
+    let dir: mut string = exe_dir;
+    let hops: mut i64 = 0;
+    while (hops < 12) {
+        let last_slash: mut i64 = -1;
+        let pos: mut i64 = string_find(dir, "/");
+        while (pos >= 0) {
+            last_slash = pos;
+            pos = string_find_from(dir, "/", pos + 1);
+        }
+        if (last_slash <= 0) { break; }
+        dir = string_substring(dir, 0, last_slash);
+        candidates.push(dir + "/EmperorPenguin/std/penguin/" + name);
+        hops = hops + 1;
+    }
+    let i: mut i64 = 0;
+    while (i < cast<i64>(candidates.size())) {
+        let path: string = candidates.at(cast<u64>(i)).some;
+        if (std.io.exists(path)) {
+            let text: __builtin.Option<string> = std.io.read_text(path);
+            if (text.is_some()) {
+                return text.some;
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+class LspCompilationUnit {
+    impl __builtin.IReferenceType;
+
+    uri: string = "";
+    path: string = "";
+    text: mut string = "";
+    output results : LspOutMsg;
+    cmds: mut __builtin.Fifo<LspMessage> = new __builtin.Fifo<LspMessage>(64, new __builtin.FifoPolicy.backpressure());
+    // Last error-free compilation result (queries survive diagnostics).
+    last_ok: mut __builtin.Option<emperor.BoundCompilationUnit> = new __builtin.Option<emperor.BoundCompilationUnit>.none();
+
+    fun new(mut this, uri: string, text: string) {
+        this.uri = uri;
+        this.path = uri_to_path(uri);
+        this.text = text;
+        this.recompile();
+    }
+
+    // Full recompile: stdlib + this document (in-memory text; the doc's path
+    // is the SourceInput filename so diagnostics carry real locations).
+    // The embedded compile is guarded: a broken document can panic the
+    // compiler (E_INTERNAL → RuntimeError, sjlj-catchable) — the catch
+    // publishes the panic as a diagnostic, keeps last_ok at the previous
+    // error-free unit (queries keep working), and the server SURVIVES
+    // (previously the panic killed the whole process and every later
+    // request went unanswered). Note: the result lives INSIDE the try — no
+    // fallback BoundCompilationUnit is ever constructed (its default
+    // ctor's field-default chain is unexercised by the compiler itself and
+    // crashes; compile_sources either returns a real unit or throws).
+    fun recompile(mut this) {
+        let inputs: mut _utils.List<emperor.SourceInput> = new _utils.List<emperor.SourceInput>();
+        inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
+        inputs.push(new emperor.SourceInput("io.penguin", STDLIB_IO));
+        inputs.push(new emperor.SourceInput(this.path, this.text));
+
+        let compiler: mut emperor.EmperorPenguinCompiler = new emperor.EmperorPenguinCompiler();
+        compiler.enable_coroutine = true;
+        let crash_message: mut string = "";
+        try {
+            let result: emperor.BoundCompilationUnit = compiler.compile_sources(inputs);
+            if (!result.has_errors()) {
+                this.last_ok = new __builtin.Option<emperor.BoundCompilationUnit>.some(result);
+            }
+            this.publish_error_diagnostics(result.errors);
+        } catch (e) {
+            crash_message = e.message;
+        }
+        if (string_length(crash_message) > 0) {
+            this.publish_crash_diagnostic(crash_message);
+        }
+    }
+
+    // publishDiagnostics from the semantic errors (parser errors are already
+    // folded into the unit's error list by compile_sources). EP lexer
+    // locations are 1-based line AND col; LSP positions are 0-based on both
+    // axes.
+    fun publish_error_diagnostics(mut this, errors: _utils.List<emperor.SemanticError>) {
+        let w: mut std.JsonWriter = new std.JsonWriter();
+        w.begin_object();
+        w.key("uri");
+        w.value_string(this.uri);
+        w.key("diagnostics");
+        w.begin_array();
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(errors.size())) {
+            let err: emperor.SemanticError = errors.at(cast<u64>(ei)).some;
+            let line: mut i64 = err.location.line - 1;
+            let col: mut i64 = err.location.col - 1;
+            if (line < 0) { line = 0; }
+            if (col < 0) { col = 0; }
+            w.begin_object();
+            w.key("range");
+            w.begin_object();
+            w.key("start");
+            w.begin_object();
+            w.key("line");
+            w.value_i64(line);
+            w.key("character");
+            w.value_i64(col);
+            w.end_object();
+            w.key("end");
+            w.begin_object();
+            w.key("line");
+            w.value_i64(line);
+            w.key("character");
+            w.value_i64(col + 1);
+            w.end_object();
+            w.end_object();
+            w.key("severity");
+            w.value_i64(1);
+            w.key("message");
+            w.value_string(err.message);
+            w.key("source");
+            w.value_string("penguinlang");
+            w.end_object();
+            ei = ei + 1;
+        }
+        w.end_array();
+        w.end_object();
+        this.send_diagnostics(w.sb.to_string());
+    }
+
+    // The caught compiler panic as a single diagnostic at 0:0.
+    fun publish_crash_diagnostic(mut this, message: string) {
+        let w: mut std.JsonWriter = new std.JsonWriter();
+        w.begin_object();
+        w.key("uri");
+        w.value_string(this.uri);
+        w.key("diagnostics");
+        w.begin_array();
+        w.begin_object();
+        w.key("range");
+        w.begin_object();
+        w.key("start");
+        w.begin_object();
+        w.key("line");
+        w.value_i64(0);
+        w.key("character");
+        w.value_i64(0);
+        w.end_object();
+        w.key("end");
+        w.begin_object();
+        w.key("line");
+        w.value_i64(0);
+        w.key("character");
+        w.value_i64(1);
+        w.end_object();
+        w.end_object();
+        w.key("severity");
+        w.value_i64(1);
+        w.key("message");
+        w.value_string("internal compiler error: " + message);
+        w.key("source");
+        w.value_string("penguinlang");
+        w.end_object();
+        w.end_array();
+        w.end_object();
+        this.send_diagnostics(w.sb.to_string());
+    }
+
+    fun send_diagnostics(mut this, params_json: string) {
+        let n: mut LspNotification = new LspNotification();
+        n.method = "textDocument/publishDiagnostics";
+        n.params_json = params_json;
+        this.results.write(new LspOutMsg.out_notification(n));
+    }
+
+    fun respond_result(mut this, msg: LspMessage, result_json: string) {
+        let r: mut LspResponse = response_for(msg);
+        r.result_json = result_json;
+        this.results.write(new LspOutMsg.out_response(r));
+    }
+
+    fun respond_error(mut this, msg: LspMessage, code: i64, message: string) {
+        this.results.write(new LspOutMsg.out_error(error_for(msg, code, message)));
+    }
+
+    initial {
+        while (true) {
+            let msg: LspMessage = wait this.cmds;
+            if (msg.method == "textDocument/didChange") {
+                let t: string = extract_change_text(msg.params_json);
+                if (string_length(t) > 0) {
+                    this.text = t;
+                    this.recompile();
+                }
+            } else if (msg.method == "textDocument/didClose") {
+                // Protocol-driven retirement: the loop ends, the module's
+                // channels go quiet, and the GC may reclaim the instance
+                // once nothing references it (Close command → break).
+                break;
+            } else if (msg.method == "textDocument/definition") {
+                this.respond_result(msg, lsp.query_definition(this, msg));
+            } else if (msg.method == "textDocument/documentSymbol") {
+                this.respond_result(msg, lsp.query_document_symbol(this));
+            } else if (msg.method == "textDocument/completion") {
+                this.respond_result(msg, lsp.query_completion(this, msg));
+            } else if (msg.method == "textDocument/references") {
+                this.respond_result(msg, lsp.query_references(this, msg));
+            } else if (msg.method == "textDocument/hover") {
+                this.respond_result(msg, lsp.query_hover(this, msg));
+            } else if (msg.method == "textDocument/inlayHint") {
+                this.respond_result(msg, lsp.query_inlay_hints(this, msg));
+            } else if (msg.method == "textDocument/rename") {
+                this.respond_result(msg, lsp.query_rename(this, msg));
+            } else if (msg.method == "textDocument/formatting") {
+                this.respond_result(msg, lsp.query_formatting(this, msg));
+            } else if (msg.has_id) {
+                this.respond_error(msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + msg.method);
+            }
+        }
+    }
+}
+
+}

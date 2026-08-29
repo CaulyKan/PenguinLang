@@ -1,0 +1,81 @@
+// LSP message datatypes (design doc's LspMain / LspCompilationUnit layer).
+//
+// PORTS carry only string payloads (see StdioStream.penguin's note: output
+// ports' injected _Fanout<T> defaults are only green for primitive payloads
+// today). These rich types travel through EXPLICIT Fifo channels spelled as
+// class FIELD types — the pass-3 monomorphize collector sees field types, so
+// every instantiation here is specialized + classified in the fixpoint, not
+// on demand at pass 8.
+//
+// Inbound: JsonInputParser parses each JSON-RPC frame and demuxes by method
+// group onto its string output ports (source-side demux — every consumer
+// group gets its own stream; no `wait any` needed); consumers parse the JSON
+// lazily where they need fields.
+// Outbound: every producer (LspMain, each LspCompilationUnit) writes
+// LspOutMsg values into its own Fifo; JsonOutputParser fans them in via its
+// MultiInput and serializes frames.
+namespace lsp {
+
+// One parsed inbound JSON-RPC message (request or notification). Built by
+// JsonInputParser; also re-parsed by consumers via parse_json where needed.
+class LspMessage {
+    method: string = "";
+    // Request id: numeric in the common case, string allowed by the spec.
+    has_id: bool = false;
+    id_num: i64 = 0;
+    id_is_string: bool = false;
+    id_str: string = "";
+    // The params member verbatim as JSON text ("" when absent).
+    params_json: string = "";
+
+    fun new(mut this) {}
+}
+
+// A successful response: the result member, pre-serialized by the producer
+// (each query builds its own JSON string; JsonOutputParser only wraps it).
+class LspResponse {
+    has_id: bool = false;
+    id_num: i64 = 0;
+    id_is_string: bool = false;
+    id_str: string = "";
+    result_json: string = "null";
+
+    fun new(mut this) {}
+}
+
+// A JSON-RPC error response.
+class LspError {
+    has_id: bool = false;
+    id_num: i64 = 0;
+    id_is_string: bool = false;
+    id_str: string = "";
+    code: i64 = 0;
+    message: string = "";
+
+    fun new(mut this) {}
+}
+
+// A server→client notification (publishDiagnostics, window/logMessage, ...).
+class LspNotification {
+    method: string = "";
+    params_json: string = "";
+
+    fun new(mut this) {}
+}
+
+enum LspOutMsg {
+    out_response: LspResponse;
+    out_error: LspError;
+    out_notification: LspNotification;
+    // End of session: flush every frame queued ahead of it, then exit(code).
+    out_exit: i64;
+}
+
+// JSON-RPC error codes used by the server.
+let JSONRPC_PARSE_ERROR: i64 = -32700;
+let JSONRPC_INVALID_REQUEST: i64 = -32600;
+let JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+let JSONRPC_INVALID_PARAMS: i64 = -32602;
+let JSONRPC_INTERNAL_ERROR: i64 = -32603;
+
+}

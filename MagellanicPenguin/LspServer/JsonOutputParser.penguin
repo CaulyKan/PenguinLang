@@ -1,0 +1,51 @@
+// JsonOutputParser: the outbound fan-in point. Producers are modules with
+// their OWN output ports: LspMain statically (connect(main.responses, ...)),
+// each LspCompilationUnit dynamically via attach() at didOpen — the port
+// hub of an output port is itself a source (slot stream), so a unit's whole
+// result stream merges here (epoll arrival order across streams). This
+// module is the single consumer: it serializes each LspOutMsg into a
+// JSON-RPC frame for StdioStream.tx. The out_exit control rides the same
+// fan-in (a unit frame racing past the exit sentinel would be a protocol
+// violation — didClose precedes exit) and is forwarded as the exit sentinel
+// for StdioStream to terminate the process.
+//
+// attach() is the one runtime-wiring seam left: EP v1 has no
+// channel-as-connect-sink (design deviation F) and no statement-level
+// construct for runtime port wiring — the module façade keeps ISource out
+// of producer code entirely (Stage-4c closes the seam: a runtime construct
+// connect will replace it).
+namespace lsp {
+
+class JsonOutputParser {
+    output out : string;
+    // N:1 fan-in over every producer's output-port stream. A bare MultiInput
+    // FIELD (not a port declaration): connect() accepts it as a sink, wait
+    // merges it, and attach() can call add() on it — method calls on a
+    // MultiInput *port* field do not resolve.
+    inputs: mut __builtin.MultiInput<LspOutMsg> = new __builtin.MultiInput<LspOutMsg>();
+
+    fun new(mut this) {}
+
+    // Runtime wiring façade: register another module's output port as a
+    // source of the fan-in (called by LspMain at didOpen).
+    fun attach(mut this, src: mut __builtin.ISource<LspOutMsg>) {
+        this.inputs.add(src);
+    }
+
+    initial {
+        while (true) {
+            let m: LspOutMsg = wait this.inputs;
+            if (m is LspOutMsg.out_exit) {
+                this.out.write(make_exit_control(m.out_exit));
+            } else if (m is LspOutMsg.out_response) {
+                this.out.write(make_frame(serialize_response(m.out_response)));
+            } else if (m is LspOutMsg.out_error) {
+                this.out.write(make_frame(serialize_error_msg(m.out_error)));
+            } else {
+                this.out.write(make_frame(serialize_notification(m.out_notification)));
+            }
+        }
+    }
+}
+
+}

@@ -1,0 +1,10 @@
+[Project]
+# The compiler EXECUTABLE: just the CLI driver (main.penguin), linked against
+# the prebuilt compiler library. Built with
+#   <compiler> EmperorPenguin/EmperorPenguinExe.penguins --lib <dir>/libemperorpenguin.penguin-lib -o <exe>
+# after EmperorPenguinLib.penguins produced the .penguin-lib. The exe carries
+# the C runtime + JIT (the lib binds its _emperor_*/builtin refs from here) and
+# initializes the lib's globals (they are re-defined from the lib's embedded
+# source in the consumer and interpose the .so's copies).
+name="EmperorPenguinExe"
+sources=["main.penguin"]

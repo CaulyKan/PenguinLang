@@ -178,6 +178,13 @@ class FuncParamTypes {
 
 class LLVMEmitter {
     verbose: mut i64 = 0;
+    // The emitted IR is platform-independent: the try/catch sjlj landing pad
+    // always uses the TWO-argument _setjmp form (jmp_buf, frame). mingw-w64's
+    // x64 _setjmp takes (jmp_buf, frame) and needs the explicit NULL frame (a
+    // garbage second register would become the stored SEH frame and the paired
+    // longjmp would unwind through it); glibc's _setjmp takes (jmp_buf) only
+    // and simply ignores the extra register argument under the SysV/AAPCS
+    // calling conventions. One IR, both link targets.
     string_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
     next_str_id: mut i64 = 0;
     reg_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
@@ -250,8 +257,14 @@ class LLVMEmitter {
     needs_double_to_string: mut bool = false;
     needs_string_equal: mut bool = false;
     needs_vtable_lookup: mut bool = false;
+    // try/catch: declare @_setjmp (returns_twice, attr #1) and the #1 attr line.
+    needs_setjmp: mut bool = false;
     needs_isinstance: mut bool = false;
     needs_check_class: mut bool = false;
+    needs_sched_run: mut bool = false;
+    // Set in lower() from unit.has_suspension: emit_main spawns initials as
+    // coroutines only in suspend mode (see there).
+    suspend_mode: mut bool = false;
     has_boxing: mut bool = false;
     has_main: mut bool = false;
     needs_memset: mut bool = false;
@@ -519,6 +532,14 @@ class LLVMEmitter {
         this.needs_double_to_string = false;
         this.needs_string_equal = false;
         this.needs_vtable_lookup = false;
+        this.needs_setjmp = false;
+        this.needs_sched_run = false;
+        // Suspension mode: only modules that actually contain suspension points
+        // (wait forms / async spawns, stdlib channel code included) run their
+        // initials on the coroutine scheduler; wait-free programs keep the
+        // plain sequential main either way — flag-independent binaries keep
+        // bootstrap md5 convergence intact.
+        this.suspend_mode = unit.has_suspension;
         this.needs_isinstance = false;
         this.needs_check_class = false;
         this.has_boxing = false;
@@ -746,11 +767,16 @@ class LLVMEmitter {
                     } else {
                         target.append("declare " + this.ir_type_to_llvm(func.return_type) + " " + llvm_name + "(");
                     }
+                    // void-as-unit: elide void-typed params from the declaration
+                    // too (call sites drop the matching arguments).
+                    let wrote_any_dparam: mut bool = string_length(decl_sret_type) > 0;
                     let pi: mut i64 = 0;
                     while (pi < cast<i64>(func.parameters.size())) {
-                        if (pi > 0 || string_length(decl_sret_type) > 0) { target.append(", "); }
                         let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
                         let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+                        if (p_llvm_type == "void") { pi = pi + 1; continue; }
+                        if (wrote_any_dparam) { target.append(", "); }
+                        wrote_any_dparam = true;
                         if (this.llvm_type_size(p_llvm_type) > 16) {
                             target.append("ptr byval(" + p_llvm_type + ")");
                         } else {
@@ -794,6 +820,21 @@ class LLVMEmitter {
         }
         if (this.needs_vtable_lookup) {
             target.append("declare ptr @_emperor_vtable_lookup(ptr, ptr, i32)\n");
+        }
+        if (this.needs_sched_run) {
+            target.append("declare void @_emperor_co_spawn_fn0(ptr)\n");
+            target.append("declare i32 @_emperor_sched_run()\n");
+        }
+        if (this.needs_setjmp) {
+            // The try/catch landing pad: _setjmp (no signal mask), marked
+            // returns_twice (#1) so LLVM keeps allocas conservative. Always
+            // the TWO-argument form (jmp_buf, frame): mingw-w64's x64 _setjmp
+            // requires it (the call site passes ptr null — plain sjlj, no SEH
+            // unwinding, matching what clang emits for C `setjmp` in the
+            // non-SEH flavor); glibc's one-argument _setjmp ignores the extra
+            // register argument, so the same IR links on linux too.
+            target.append("declare i32 @_setjmp(ptr, ptr) #1\n");
+            target.append("attributes #1 = { returns_twice }\n");
         }
         if (this.needs_isinstance) {
             target.append("declare i32 @_emperor_isinstance(ptr, ptr)\n");
@@ -956,6 +997,8 @@ class LLVMEmitter {
             while (pai < cast<i64>(func.parameters.size())) {
                 let p: IRParameter = func.parameters.at(cast<u64>(pai)).some;
                 let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+                // void-as-unit: void params are elided from the signature; no dbg either
+                if (p_llvm_type == "void") { pai = pai + 1; continue; }
                 if (this.is_aggregate_llvm_type(p_llvm_type)) { pai = pai + 1; continue; }
                 let var_id: string = this.debug_make_local(p.name, p.ir_type, p.location.line, pai + 1);
                 param_dbg_sb.append("  #dbg_value(" + p_llvm_type + " %" + p.name + ", !" + var_id + ", !DIExpression(), !" + this.current_scope_loc_id + ")\n");
@@ -969,11 +1012,17 @@ class LLVMEmitter {
         } else {
             this.sb.append("define " + this.ir_type_to_llvm(func.return_type) + " " + this.llvm_func_name(func.name) + "(");
         }
+        // void-as-unit: void-typed parameters are elided from the LLVM
+        // signature; call sites drop the matching void arguments (emit_args /
+        // emit_args_coerced / emit_args_with_first) so the arities agree.
+        let wrote_any_param: mut bool = use_sret;
         pi = 0;
         while (pi < cast<i64>(func.parameters.size())) {
-            if (pi > 0 || use_sret) { this.sb.append(", "); }
             let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
             let p_llvm_type: string = this.ir_type_to_llvm(p.ir_type);
+            if (p_llvm_type == "void") { pi = pi + 1; continue; }
+            if (wrote_any_param) { this.sb.append(", "); }
+            wrote_any_param = true;
             // For >16-byte aggregates (value-type classes and large enums), use
             // byval so clang passes the argument via a pointer consistently between
             // caller and callee (System V ABI for large structs).
@@ -1035,6 +1084,10 @@ class LLVMEmitter {
             let name: string = this.mutable_regs.at(cast<u64>(ai)).some;
             let alloca_name: string = this.get_alloca_name(name);
             let llvm_type: string = this.get_llvm_type(name);
+            // void-as-unit: a multi-def void register has no storage — every
+            // def/use of it is dropped elsewhere (assign/args/ret), so an
+            // `alloca void` here would only produce invalid IR.
+            if (llvm_type == "" || llvm_type == "void") { ai = ai + 1; continue; }
             this.sb.append("  " + alloca_name + " = alloca " + llvm_type + "\n");
             // Zero-initialize mutable-reg allocas so i32-tag padding (and any other
             // partial-write gap) doesn't retain stack residuals — same rationale as
@@ -1164,12 +1217,36 @@ class LLVMEmitter {
                 ini = ini + 1;
             }
             let i: mut i64 = 0;
+            let spawned: mut bool = false;
             while (i < cast<i64>(module.entry_functions.size())) {
                 let entry: IRFunction = module.entry_functions.at(cast<u64>(i)).some;
-                this.sb.append("  call void " + this.llvm_func_name(entry.name) + "()\n");
+                if (this.suspend_mode) {
+                    // Initial routines run as coroutines on their own stacks: a
+                    // wait inside an initial (or anything it calls) parks that
+                    // coroutine instead of being a compile error. With no waits,
+                    // the scheduler drains the ready queue FIFO to completion —
+                    // sequentially equivalent to the old direct calls.
+                    this.sb.append("  call void @_emperor_co_spawn_fn0(ptr " + this.llvm_func_name(entry.name) + ")\n");
+                    spawned = true;
+                } else {
+                    // Wait-free module: plain sequential entry call (no scheduler
+                    // runtime linked, binary identical with/without the flag).
+                    this.sb.append("  call void " + this.llvm_func_name(entry.name) + "()\n");
+                }
                 i = i + 1;
             }
-            this.sb.append("  ret i32 0\n");
+            // init_functions (global initializers, __construct elaboration)
+            // may have spawned coroutines of their own (module constructors
+            // spawn class initials) — sched_run also when only those ran; an
+            // empty ready queue returns immediately. Suspend mode only.
+            if (this.suspend_mode && (spawned || cast<i64>(module.init_functions.size()) > 0)) {
+                this.needs_sched_run = true;
+                let run_tmp: string = this.next_tmp();
+                this.sb.append("  " + run_tmp + " = call i32 @_emperor_sched_run()\n");
+                this.sb.append("  ret i32 " + run_tmp + "\n");
+            } else {
+                this.sb.append("  ret i32 0\n");
+            }
             this.sb.append("}\n");
         }
     }
@@ -1265,6 +1342,12 @@ class LLVMEmitter {
             if (fdef is BoundDefinition.class_field) {
                 let cf: BoundClassFieldDefinition = fdef.class_field;
                 let field_llvm_type: string = this.field_type_to_llvm(cf.bound_type);
+                // void-as-unit: a void-typed field (a `T` field with T=void)
+                // has no storage — skip it from the layout entirely. Its
+                // reads/writes never reach the emitter (IRGenerator drops
+                // them), and a "void" member would make the LLVM struct type
+                // invalid.
+                if (field_llvm_type == "void") { fi = fi + 1; continue; }
                 let field_size: i64 = this.llvm_type_size(field_llvm_type);
                 let field_align: i64 = this.llvm_type_align(field_llvm_type);
                 let aligned_offset: i64 = this.align_up(offset, field_align);
@@ -1702,8 +1785,14 @@ class LLVMEmitter {
 
     fun is_value_class_ref(this, ir_type: string) -> bool {
         _utils.trace_enter("Enter is_value_class_ref(ir_type=" + cast<string>(ir_type) + ")");
-        if (!this.string_starts_with(ir_type, "ref<")) { return false; }
-        let type_name: string = this.extract_type_name(ir_type);
+        // "mut ref<X>" must hit too: a MUTABLE value-class binding spells the
+        // return type "mut ref<X>", and missing it made needs_sret false — the
+        // callee then `ret ptr`-ed a pointer to its own DEAD stack alloca, which
+        // the next call's frame (same stack addresses) clobbered before the
+        // caller could copy it (trailing fields read back as garbage).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (!this.string_starts_with(t, "ref<")) { return false; }
+        let type_name: string = this.extract_type_name(t);
         let found: Option<ClassLayout> = this.find_class_layout(type_name);
         if (found.is_some()) { return found.some.is_value_type; }
         return false;
@@ -1729,8 +1818,10 @@ class LLVMEmitter {
     // enums.
     fun get_sret_llvm_type(this, ir_type: string) -> string {
         _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + ir_type + ")");
-        if (this.string_starts_with(ir_type, "ref<")) {
-            let type_name: string = this.extract_type_name(ir_type);
+        // Accept "mut ref<X>" like is_value_class_ref (same "mut " spelling).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (this.string_starts_with(t, "ref<")) {
+            let type_name: string = this.extract_type_name(t);
             let found: Option<ClassLayout> = this.find_class_layout(type_name);
             if (found.is_some()) { return found.some.llvm_struct_type; }
             return "";
@@ -2080,8 +2171,10 @@ class LLVMEmitter {
             return "i64";
         }
         if (bt.kind is TypeKind.InterfaceKind) {
-            __builtin.eprintln("error[E_INTERNAL]: Class layout not found in class_type_to_llvm"); __builtin.exit(1);
-        return "ptr";
+            // An interface value is a heap object reference: a plain pointer.
+            // (Interface-typed fields, e.g. MergeChannel's `a: mut ISource<T>`,
+            // must not abort layout building.)
+            return "ptr";
         }
         return "ptr";
     }
@@ -3096,9 +3189,14 @@ class LLVMEmitter {
                 let field_inline_struct: bool = this.string_starts_with(fl.llvm_type, "%class.") || this.string_starts_with(fl.llvm_type, "%enum.");
                 if (field_inline_struct && this.is_write_chain_reg(result_name)) {
                     // Lvalue addressing: hand out the FIELD SLOT address itself.
+                    // Register the gep temp too: a call consuming this slot as a
+                    // by-value struct argument resolves through reg_map to the
+                    // gep name, and emit_args' ptr->struct coercion keys on the
+                    // resolved name's registered type.
                     let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                     this.reg_map.push(new RegMapping(result_name, field_ptr));
                     this.register_llvm_type(result_name, "ptr");
+                    this.register_llvm_type(field_ptr, "ptr");
                     return;
                 }
                 // Use the field's actual LLVM type from the layout (may differ from ir_type for value-type class fields)
@@ -3341,6 +3439,13 @@ class LLVMEmitter {
             this.emit_line("  store " + this.current_sret_llvm_type + " " + coerced + ", ptr " + this.current_sret_param);
             this.emit_line("  ret void");
         } else {
+            // void-as-unit: returning a void-typed value (a T-typed return
+            // with T=void) lowers to a plain `ret void` — the value has no
+            // LLVM representation and must not be resolved.
+            if (this.current_ret_type == "void") {
+                this.emit_line("  ret void");
+                return;
+            }
             let val_resolved: mut string = this.resolve_value(inst.value);
             let llvm_type: string = this.ir_type_to_llvm(this.current_ret_type);
             // Coerce i1 (icmp result) to the expected return type (e.g. i8 for bool)
@@ -3374,6 +3479,22 @@ class LLVMEmitter {
     fun emit_call(mut this, inst: IRCall) {
         _utils.trace_enter("Enter emit_call(inst=" + inst.display() + ")");
         let result_name: string = inst.result_value.display();
+        // try/catch landing pad: the marker call is INLINED as a direct _setjmp
+        // on the buffer (a real extern wrapper would setjmp in its own frame,
+        // and the later longjmp would land in a dead frame — undefined).
+        if (inst.func_name == "__builtin.__sjlj_setjmp") {
+            let jb_resolved: mut string = "undef";
+            if (cast<i64>(inst.args.size()) > 0) {
+                jb_resolved = this.resolve_value(inst.args.at(cast<u64>(0)).some);
+            }
+            this.needs_setjmp = true;
+            // Always the two-argument form: _setjmp(jmp_buf, frame) with an
+            // explicit NULL frame — required by mingw-w64 x64, ignored by
+            // glibc (see the declare site); keeps the IR platform-independent.
+            this.emit_line("  " + result_name + " = call i32 @_setjmp(ptr " + jb_resolved + ", ptr null) #1");
+            this.register_llvm_type(result_name, "i32");
+            return;
+        }
         let func_name: string = this.llvm_func_name(inst.func_name);
 
         // Check if callee returns an aggregate that uses sret (RVO)
@@ -3554,7 +3675,7 @@ class LLVMEmitter {
         // 2. Build args string and sret buffer (if needed).
         // Use if-expression value form (trailing expression, no `;`) — PenguinLang
         // locals are not reassignable, and an if whose branches are statements is void.
-        let rest_args: string = this.emit_args(inst.args);
+        let rest_args: string = this.emit_args_virt(inst.args);
         let sret_tmp: string = if (callee_sret_type != "") {
             let tmp: string = this.next_tmp();
             this.emit_entry_alloca(tmp, callee_sret_type);
@@ -3643,14 +3764,59 @@ class LLVMEmitter {
         this.emit_line("  call void " + ctor_name + "(" + ctor_args + ")");
     }
 
+    // Virtual-call argument emission: the callee is an interface method whose
+    // signature emit_function built with the SAME byval rule as any function —
+    // >16-byte aggregate parameters are `ptr byval(type)`. The plain emit_args
+    // passed the struct VALUE for such parameters (interface dispatch had
+    // simply never been exercised with an enum/value-class payload >16 bytes),
+    // so the callee dereferenced the struct's first field as a pointer and the
+    // payload arrived zeroed/garbage (e.g. ISink<Fifo>.write(enum-with-string)
+    // crashed in string_length on a bits-as-pointer string).
+    fun emit_args_virt(mut this, args: _utils.List<IRValue>) -> string {
+        _utils.trace_enter("Enter emit_args_virt");
+        let sb2: mut StringBuilder = new StringBuilder();
+        let first: mut bool = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = this.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            if (arg_type == "void" || resolved == "unknown") {
+                i = i + 1;
+                continue;
+            }
+            if (!first) { sb2.append(", "); }
+            first = false;
+            let byval_type: string = this.resolve_byval_type(arg_type);
+            if (byval_type != "") {
+                let arg_ptr: string = this.materialize_enum_ptr(resolved, byval_type);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
+            } else {
+                let llvm_type: string = this.ir_type_to_llvm(arg_type);
+                let actual_type: string = this.get_llvm_type(resolved);
+                if (actual_type == "ptr" && (this.string_starts_with(llvm_type, "%enum.") || this.string_starts_with(llvm_type, "%class."))) {
+                    let coerced: string = this.coerce_operand(resolved, llvm_type);
+                    sb2.append(llvm_type + " " + coerced);
+                } else {
+                    sb2.append(llvm_type + " " + resolved);
+                }
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
     fun emit_args_with_first(mut this, args: _utils.List<IRValue>, first_arg: string) -> string {
         _utils.trace_enter("Enter emit_args_with_first(first_arg=" + cast<string>(first_arg) + ")");
         let sb2: mut StringBuilder = new StringBuilder();
         sb2.append(first_arg);
         let i: mut i64 = 0;
         while (i < cast<i64>(args.size())) {
-            sb2.append(", ");
             let arg: IRValue = args.at(cast<u64>(i)).some;
+            // void-as-unit: drop void-typed arguments — the callee's signature
+            // elides the matching void parameter.
+            if (arg.get_ir_type() == "void") { i = i + 1; continue; }
+            sb2.append(", ");
             let resolved: string = this.resolve_value(arg);
             let arg_type: string = arg.get_ir_type();
             let llvm_type: string = this.ir_type_to_llvm(arg_type);
@@ -3662,7 +3828,7 @@ class LLVMEmitter {
             let byval_type: string = this.resolve_byval_type(arg_type);
             if (byval_type != "") {
                 let arg_ptr: string = this.materialize_enum_ptr(resolved, byval_type);
-                sb2.append("ptr " + arg_ptr);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
             } else {
                 // Coerce ptr→struct for enum/value-class operands registered as ptr
                 let actual_type: string = this.get_llvm_type(resolved);
@@ -3719,10 +3885,12 @@ class LLVMEmitter {
                 // Find the variant's specific payload type; fall back to layout max-type
                 let pay_type: mut string = layout.payload_llvm_type;
                 let variant_payload_bound_type: mut Option<BoundType> = new Option<BoundType>.none();
+                let variant_own_payload: mut string = "";
                 let vi2: mut i64 = 0;
                 while (vi2 < cast<i64>(layout.variants.size())) {
                     let var2: EnumVariantLayout = layout.variants.at(cast<u64>(vi2)).some;
                     if (var2.index == inst.variant_idx) {
+                        variant_own_payload = var2.payload_llvm_type;
                         if (string_length(var2.payload_llvm_type) > 0) {
                             pay_type = var2.payload_llvm_type;
                         }
@@ -3730,6 +3898,10 @@ class LLVMEmitter {
                     }
                     vi2 = vi2 + 1;
                 }
+                // void-as-unit: THIS variant's payload is void (tag-only in a
+                // mixed enum) — nothing to store; the payload argument is
+                // dropped (its producers/consumers all treat void as unit).
+                if (variant_own_payload == "" || variant_own_payload == "void") { return; }
                 let pay_val: string = this.coerce_operand(pay_val_raw, pay_type);
                 let pay_ptr: string = this.next_tmp();
                 this.emit_line("  " + pay_ptr + " = getelementptr " + layout.llvm_struct_type + ", ptr " + result_name + ", i32 0, i32 2");
@@ -4507,7 +4679,7 @@ class LLVMEmitter {
             let byval_type: string = this.resolve_byval_type(arg_ir_type);
             if (byval_type != "") {
                 let arg_ptr: string = this.materialize_enum_ptr(final_resolved, byval_type);
-                sb2.append("ptr " + arg_ptr);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
             } else {
                 // For ≤16-byte aggregates (enums, value classes), the callee expects
                 // the struct value by register. precompute_function_signatures (Phase 3.0)
@@ -4580,7 +4752,7 @@ class LLVMEmitter {
         if (this.is_mutable_reg(display)) {
             let alloca_name: string = this.get_alloca_name(display);
             let llvm_type: string = this.get_llvm_type(display);
-            if (llvm_type != "") {
+            if (llvm_type != "" && llvm_type != "void") {
                 let loaded: string = this.next_tmp();
                 this.sb.append("  " + loaded + " = load " + llvm_type + ", ptr " + alloca_name + "\n");
                 this.register_llvm_type(loaded, llvm_type);

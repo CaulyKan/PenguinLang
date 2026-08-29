@@ -65,9 +65,7 @@ namespace emperor {
         UnsafeCast;
         Else;
         ElifKw;
-        Emit;
         Enum;
-        EventKw;
         Extern;
         Export;
         False;
@@ -88,7 +86,6 @@ namespace emperor {
         Mut;
         Namespace;
         New;
-        On;
         Pure;
         Return;
         SelfKw;
@@ -106,6 +103,14 @@ namespace emperor {
         Wait;
         While;
         Yield;
+        // RTL ports / concurrency vocabulary
+        Connect;
+        ConstructKw;
+        Tick;
+        TryKw;
+        CatchKw;
+        Input;
+        Output;
     }
 
 
@@ -148,8 +153,14 @@ namespace emperor {
         fun advance(this) -> Token {
             let token: Token = this.peek();
             if (this.is_at_end()) {
-                eprintln("error[E_INTERNAL]: Invalid advance of token stream at end of input " + token.location.to_string() + "\n");
-                exit(1);
+                let msg: string = "Invalid advance of token stream at end of input " + token.location.to_string();
+                eprintln("error[E_INTERNAL]: " + msg + "\n");
+                // Catchable (sjlj) instead of exit(1): the LSP server embeds
+                // this compiler and must survive broken documents (its
+                // recompile() catches, publishes a diagnostic, and keeps the
+                // last error-free unit). Uncaught — the CLI — still ends in a
+                // nonzero error exit with the message above on stderr.
+                __builtin.__throw_runtime_error(msg, 1);
             }
             this.pos = this.pos + 1;
             return token;

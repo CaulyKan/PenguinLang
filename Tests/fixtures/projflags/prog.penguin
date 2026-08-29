@@ -1,0 +1,4 @@
+initial {
+    wait 1 tick;
+    println("project-flags-ok");
+}

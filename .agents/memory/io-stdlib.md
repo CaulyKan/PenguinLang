@@ -22,7 +22,7 @@ pass2/3/4 原生可用；BabyPenguin VM 未实现（io 测试 Apply To 仅 Pass2
    **BabyPenguin 自身编译器仍不支持**嵌套 ns 成员访问（Cant resolve symbol），
    回归测试 `Tests/NamespaceTest/NestedNamespaceAccess.md` 仅 Apply To Pass2/Pass3。
 3. **stdlib 加载点**：`main.penguin` 读 `EmperorPenguin/std/penguin/{core_builtin,io}.penguin`
-   push 进 inputs —— 改 main.penguin / 编译器源码必须 `./penguin -b` 重建；io.penguin
+   push 进 inputs —— 改 main.penguin / 编译器源码必须 `make bootstrap` 重建；io.penguin
    本身改动不需要（每次用户编译时从磁盘读，相对 repo root cwd）。
 4. **EOF 协议**（feof 假阳性坑）：read = fgetc 循环（最多多读一字节）；PenguinLang 层
    `eof()` 先查（流已耗尽 → none），读回空串再查 eof（真耗尽 → none）。无尾换行最后一行
@@ -39,7 +39,7 @@ pass2/3/4 原生可用；BabyPenguin VM 未实现（io 测试 Apply To 仅 Pass2
 
 ## 验证命令
 ```
-./penguin -b                                   # 收敛（pass3==pass4 md5）
+make bootstrap                                   # 收敛（pass3==pass4 md5）
 dotnet run --project Tests/PenguinTestRunner -- --filter StdlibTest/Io* --compilers pass3
 dotnet run --project Tests/PenguinTestRunner -- --filter NestedNamespaceAccess --compilers pass2,pass3
 dotnet run --project Tests/PenguinTestRunner --    # 全量回归

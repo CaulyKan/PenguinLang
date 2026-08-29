@@ -4,6 +4,7 @@ Async call to a normal (non-async) function.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -20,7 +21,7 @@ Async call to a normal (non-async) function.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

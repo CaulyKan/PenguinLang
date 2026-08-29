@@ -25,6 +25,12 @@ class BoundCompilationUnit {
     type_registry: BoundTypeRegistry = new BoundTypeRegistry();
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
+    // True when any wait form or async spawn bound anywhere in this unit
+    // (instantiated stdlib channel code included). emit_main runs initials on
+    // the coroutine scheduler only when this is set — wait-free programs emit
+    // the plain sequential main regardless of --enable-coroutine, keeping
+    // bootstrap md5 convergence flag-independent.
+    has_suspension: mut bool = false;
 
     fun new(mut this, location: SourceLocation) {
         this.location = location;

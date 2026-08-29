@@ -19,6 +19,12 @@ class BuildScopesPass {
     // 唯一入口：原 pass_build_scopes
     fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_build_scopes");
+        // E5 RTL desugar (AST-level, BEFORE any binding): top-level construct
+        // blocks split into hoisted globals + hidden __construct_<i> functions;
+        // class bodies get port fields / hidden methods / injected ctor
+        // statements. In-place on the AST defs every later pass (resolve,
+        // monomorphize replay, body binding) sees the transformed tree.
+        this.desugar_rtl_defs(unit);
         let def_index: mut i64 = 0;
         for (let def in unit.definitions) {
             // Top-level defs outside explicit namespaces bind into this file's
@@ -236,6 +242,27 @@ class BuildScopesPass {
         }
         if (def is Definition.type_ref_def) {
             return this.bind_type_ref_def(def.type_ref_def, scope);
+        }
+        if (def is Definition.port_def) {
+            // Flag off -> clear gate error. Flag on this arm is a backstop for
+            // shapes the RTL desugar did not transform (e.g. ports in places
+            // desugar does not reach) — reported explicitly, never dropped.
+            if (!this.model.some.require_coroutine("port declaration '" + def.port_def.name + "'", def.port_def.location)) {
+                return new Option<BoundDefinition>.none();
+            }
+            this.model.some.report_error(new ErrorCode.E_WIRING(),
+                "port declaration '" + def.port_def.name + "' is not supported at this position",
+                def.port_def.location);
+            return new Option<BoundDefinition>.none();
+        }
+        if (def is Definition.construct_def) {
+            if (!this.model.some.require_coroutine("construct block", def.construct_def.location)) {
+                return new Option<BoundDefinition>.none();
+            }
+            this.model.some.report_error(new ErrorCode.E_WIRING(),
+                "construct blocks are not supported at this position",
+                def.construct_def.location);
+            return new Option<BoundDefinition>.none();
         }
         if (def is Definition.global_var) {
             return this.bind_global_var_def(def.global_var, scope);
@@ -583,9 +610,629 @@ class BuildScopesPass {
         return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(result));
     }
 
+    // ===== E5 RTL desugar (AST-level; runs before any binding) =====
+    //
+    // Top-level `construct { ... }` blocks split into hoisted globals (their
+    // top-level lets, same symbol space as ordinary top-level lets so initial
+    // routines see the wired modules/channels) + a hidden `__construct_<n>()`
+    // function holding the remaining statements (connects, assignments). The
+    // initializers run in text order — globals keep their initializers, which
+    // the emitter's init phase executes before entry routines spawn (same
+    // elaboration-before-initial semantics as BabyPenguin's _main).
+    //
+    // Class bodies: `input/output` members become `mut __builtin.IChannel<T>`
+    // fields whose default instantiates the backing channel (ConstantSource /
+    // _NeverSource / _Fanout); `initial` members become hidden
+    // `__initial_<i>(mut this)` methods; class `construct` blocks become
+    // hidden `__class_construct_<i>(mut this)` methods; and the constructor
+    // (user `fun new` if present, else a synthesized one) gains, AFTER the
+    // field defaults: output seed set_seed calls, the class-construct calls,
+    // and `async this.__initial_i()` spawns — exactly BabyPenguin's
+    // ProcessClass order (field defaults -> ports -> constructs -> initials).
+
+    fun desugar_rtl_defs(mut this, unit: CompilationUnit) {
+        _utils.trace_enter("Enter desugar_rtl_defs");
+        // --enable-coroutine gate: with the flag off, leave RTL definitions
+        // untouched — the definition dispatch reports them (E_UNSUPPORTED
+        // requires --enable-coroutine) instead of silently transforming.
+        if (!this.model.some.enable_coroutine) {
+            return;
+        }
+        let rebuilt: mut _utils.List<Definition> = new _utils.List<Definition>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(unit.definitions.size())) {
+            let def: Definition = unit.definitions.at(cast<u64>(i)).some;
+            if (def is Definition.construct_def) {
+                let idx: i64 = this.model.some.construct_counter;
+                this.model.some.construct_counter = idx + 1;
+                let parts: _utils.List<Definition> = this.split_top_construct(def.construct_def, idx);
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(parts.size())) {
+                    rebuilt.push(parts.at(cast<u64>(pi)).some);
+                    pi = pi + 1;
+                }
+            } else {
+                if (def is Definition.class_def) {
+                    this.desugar_class_rtl(def.class_def);
+                }
+                if (def is Definition.namespace_def) {
+                    this.desugar_namespace_rtl(def.namespace_def);
+                }
+                rebuilt.push(def);
+            }
+            i = i + 1;
+        }
+        unit.definitions = rebuilt;
+    }
+
+    fun desugar_namespace_rtl(mut this, ns: NamespaceDefinition) {
+        let rebuilt: mut _utils.List<Definition> = new _utils.List<Definition>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ns.children.size())) {
+            let child: Definition = ns.children.at(cast<u64>(i)).some;
+            if (child is Definition.construct_def) {
+                let idx: i64 = this.model.some.construct_counter;
+                this.model.some.construct_counter = idx + 1;
+                let parts: _utils.List<Definition> = this.split_top_construct(child.construct_def, idx);
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(parts.size())) {
+                    rebuilt.push(parts.at(cast<u64>(pi)).some);
+                    pi = pi + 1;
+                }
+            } else {
+                if (child is Definition.class_def) {
+                    this.desugar_class_rtl(child.class_def);
+                }
+                if (child is Definition.namespace_def) {
+                    this.desugar_namespace_rtl(child.namespace_def);
+                }
+                rebuilt.push(child);
+            }
+            i = i + 1;
+        }
+        ns.children = rebuilt;
+    }
+
+    // A class field's declared type specifier, by field name.
+    fun find_class_field_spec(mut this, cls: ClassDefinition, field_name: string) -> Option<TypeSpecifier> {
+        let fmi: mut i64 = 0;
+        while (fmi < cast<i64>(cls.members.size())) {
+            let cm: Definition = cls.members.at(cast<u64>(fmi)).some;
+            if (cm is Definition.class_field) {
+                if (cm.class_field.name == field_name) {
+                    return cm.class_field.type_spec;
+                }
+            }
+            fmi = fmi + 1;
+        }
+        return new Option<TypeSpecifier>.none();
+    }
+
+    // Stdlib channel classes: a hoisted let / class field of one of these
+    // types used as a connect source binds DIRECTLY (channels are their own
+    // wiring objects) — not an implicit net. (User channel classes are
+    // caught by the bind-time channel-like check instead.)
+    fun is_known_channel_spec(this, ts: TypeSpecifier) -> bool {
+        let n: string = ts.name;
+        return n == "Fifo" || n == "LatestChannel" || n == "MergeChannel" || n == "MultiInput"
+            || n == "Event" || n == "_Fanout" || n == "_LateSource" || n == "ConstantSource" || n == "_NeverSource";
+    }
+
+    // Split one top-level construct into [globals..., net hubs..., hidden function].
+    fun split_top_construct(mut this, cd: ConstructDefinition, idx: i64) -> _utils.List<Definition> {
+        let out: mut _utils.List<Definition> = new _utils.List<Definition>();
+        let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        // Hoisted-let bookkeeping for the variable-net pre-scan: (name,
+        // mut-ness, payload specifier).
+        let hoisted_names: mut _utils.List<string> = new _utils.List<string>();
+        let hoisted_mut: mut _utils.List<bool> = new _utils.List<bool>();
+        let hoisted_specs: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+        if (let body := cd.body.some) {
+            if (body is Expression.code_block) {
+                let block: CodeBlockExpression = body.code_block;
+                let si: mut i64 = 0;
+                while (si < cast<i64>(block.statements.size())) {
+                    let s: Statement = block.statements.at(cast<u64>(si)).some;
+                    if (s is Statement.let_decl) {
+                        let ld: LetDeclarationStatement = s.let_decl;
+                        if (ld.type_spec.is_none()) {
+                            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                                "construct-block lets must carry an explicit type annotation (they hoist to top-level variables): 'let " + ld.variable_name + " : <type> = ...'",
+                                ld.location);
+                        } else {
+                            let gvar: mut GlobalVariableDefinition = new GlobalVariableDefinition(ld.variable_name);
+                            gvar.type_spec = ld.type_spec;
+                            gvar.initializer = ld.initializer;
+                            gvar.is_mutable = ld.is_mutable;
+                            gvar.location = ld.location;
+                            // Same file namespace as the construct itself —
+                            // the hoisted variable must sit next to the file's
+                            // other top-level lets so initials see it.
+                            gvar.source_file = cd.source_file;
+                            out.push(new Definition.global_var(gvar));
+                            hoisted_names.push(ld.variable_name);
+                            let is_mut_decl: bool = ld.is_mutable || ld.type_spec.some.is_mutable;
+                            hoisted_mut.push(is_mut_decl);
+                            hoisted_specs.push(ld.type_spec.some);
+                            this.model.some.construct_global_keys.push(cd.source_file + "|" + ld.variable_name);
+                        }
+                    } else {
+                        stmts.push(s);
+                    }
+                    si = si + 1;
+                }
+            }
+        }
+        // Variable-net pre-scan: a connect whose source is a bare identifier
+        // naming one of THIS construct's hoisted lets registers a hidden
+        // _Fanout hub global (initialized `new _Fanout<T>()` during the init
+        // phase; the connect-time seed is emitted by the connect binding).
+        // Nets need mutable storage.
+        let netted_here: mut _utils.List<string> = new _utils.List<string>();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(stmts.size())) {
+            let s2: Statement = stmts.at(cast<u64>(ci)).some;
+            if (s2 is Statement.connect_stmt) {
+                let conn: ConnectStatement = s2.connect_stmt;
+                if (conn.source.is_some() && conn.source.some is Expression.identifier) {
+                    let vname: string = conn.source.some.identifier.name;
+                    let found: mut i64 = -1;
+                    let hi: mut i64 = 0;
+                    while (hi < cast<i64>(hoisted_names.size())) {
+                        if (hoisted_names.at(cast<u64>(hi)).some == vname) { found = hi; }
+                        hi = hi + 1;
+                    }
+                    if (found >= 0) {
+                        let dup: mut bool = false;
+                        let di2: mut i64 = 0;
+                        while (di2 < cast<i64>(netted_here.size())) {
+                            if (netted_here.at(cast<u64>(di2)).some == vname) { dup = true; }
+                            di2 = di2 + 1;
+                        }
+                        if (!dup && !this.is_known_channel_spec(hoisted_specs.at(cast<u64>(found)).some)) {
+                            netted_here.push(vname);
+                            if (!hoisted_mut.at(cast<u64>(found)).some) {
+                                this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                    "connect source '" + vname + "' must be a mut variable (implicit wire nets need mutable storage)",
+                                    conn.location);
+                            } else {
+                                let hub_name: string = "__net_" + cast<string>(this.model.some.variable_net_counter) + "_" + vname;
+                                this.model.some.variable_net_counter = this.model.some.variable_net_counter + 1;
+                                let hub: mut GlobalVariableDefinition = new GlobalVariableDefinition(hub_name);
+                                hub.type_spec = new Option<TypeSpecifier>.some(this.mk_fanout_spec(hoisted_specs.at(cast<u64>(found)).some));
+                                hub.initializer = new Option<Expression>.some(this.mk_fanout_new(hoisted_specs.at(cast<u64>(found)).some));
+                                hub.is_mutable = true;
+                                hub.location = conn.location;
+                                hub.source_file = cd.source_file;
+                                out.push(new Definition.global_var(hub));
+                                this.model.some.pending_net_var.push(vname);
+                                this.model.some.pending_net_hub.push(hub_name);
+                                this.model.some.pending_net_is_field.push(false);
+                            }
+                        }
+                    }
+                }
+            }
+            ci = ci + 1;
+        }
+        let fn: mut FunctionDefinition = new FunctionDefinition("__construct_" + cast<string>(idx));
+        let body_block: mut CodeBlockExpression = new CodeBlockExpression();
+        body_block.statements = stmts;
+        fn.body = new Option<Expression>.some(new Expression.code_block(body_block));
+        fn.location = cd.location;
+        fn.source_file = cd.source_file;
+        out.push(new Definition.function_def(fn));
+        return out;
+    }
+
+    // `mut __builtin._Fanout<<payload>>` (payload mutability stripped — the
+    // hub owns its storage).
+    fun mk_fanout_spec(mut this, payload: TypeSpecifier) -> TypeSpecifier {
+        let plain: TypeSpecifier = this.strip_spec_mutability(payload);
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = "_Fanout";
+        ts.generic_args.push(plain);
+        ts.is_mutable = true;
+        return ts;
+    }
+
+    // `new __builtin._Fanout<<payload>>()`.
+    fun mk_fanout_new(mut this, payload: TypeSpecifier) -> Expression {
+        let ne: mut NewExpression = new NewExpression();
+        ne.type_name = "__builtin._Fanout";
+        ne.generic_args.push(this.strip_spec_mutability(payload));
+        return new Expression.new_expr(ne);
+    }
+
+    // A shallow copy of a type specifier with top-level mutability stripped
+    // (generic args are shared — they are not mutated afterwards).
+    fun strip_spec_mutability(mut this, ts: TypeSpecifier) -> TypeSpecifier {
+        let c: mut TypeSpecifier = new TypeSpecifier();
+        c.name = ts.name;
+        c.is_mutable = false;
+        c.is_not_mutable = ts.is_not_mutable;
+        c.is_auto_mutability = ts.is_auto_mutability;
+        c.is_value_arg = ts.is_value_arg;
+        c.value_arg_text = ts.value_arg_text;
+        c.is_iterable = ts.is_iterable;
+        c.is_function_type = ts.is_function_type;
+        c.is_async_function_type = ts.is_async_function_type;
+        let qi: mut i64 = 0;
+        while (qi < cast<i64>(ts.qualified_parts.size())) {
+            c.qualified_parts.push(ts.qualified_parts.at(cast<u64>(qi)).some);
+            qi = qi + 1;
+        }
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(ts.generic_args.size())) {
+            c.generic_args.push(ts.generic_args.at(cast<u64>(gi)).some);
+            gi = gi + 1;
+        }
+        let fpi: mut i64 = 0;
+        while (fpi < cast<i64>(ts.function_params.size())) {
+            c.function_params.push(ts.function_params.at(cast<u64>(fpi)).some);
+            fpi = fpi + 1;
+        }
+        if (ts.return_type.is_some()) {
+            c.return_type = ts.return_type;
+        }
+        return c;
+    }
+
+    // Transform one class body in place (ports/initial/construct members).
+    fun desugar_class_rtl(mut this, cls: ClassDefinition) {
+        let has_rtl: mut bool = false;
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(cls.members.size())) {
+            let m: Definition = cls.members.at(cast<u64>(mi)).some;
+            if (m is Definition.port_def || m is Definition.construct_def || m is Definition.initial_routine) {
+                has_rtl = true;
+            }
+            mi = mi + 1;
+        }
+        if (!has_rtl) { return; }
+
+        // --enable-coroutine gate: report each RTL member and leave the class
+        // untouched (the member dispatch then reports nothing further — the
+        // raw members are skipped by bind because errors are already filed).
+        if (!this.model.some.enable_coroutine) {
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(cls.members.size())) {
+                let gm: Definition = cls.members.at(cast<u64>(gi)).some;
+                if (gm is Definition.port_def) {
+                    this.model.some.require_coroutine("port declaration '" + gm.port_def.name + "'", gm.port_def.location);
+                } else if (gm is Definition.construct_def) {
+                    this.model.some.require_coroutine("construct block", gm.construct_def.location);
+                } else if (gm is Definition.initial_routine) {
+                    this.model.some.require_coroutine("class initial routine", gm.initial_routine.location);
+                }
+                gi = gi + 1;
+            }
+            return;
+        }
+
+        let new_members: mut _utils.List<Definition> = new _utils.List<Definition>();
+        let ports: mut _utils.List<PortDefinition> = new _utils.List<PortDefinition>();
+        let ctor_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let initial_count: mut i64 = 0;
+        let construct_count: mut i64 = 0;
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(cls.members.size())) {
+            let m: Definition = cls.members.at(cast<u64>(ci)).some;
+            if (m is Definition.port_def) {
+                ports.push(m.port_def);
+            } else if (m is Definition.initial_routine) {
+                let fn: mut FunctionDefinition = new FunctionDefinition("__initial_" + cast<string>(initial_count));
+                initial_count = initial_count + 1;
+                let this_p: mut Parameter = new Parameter("this");
+                this_p.is_mutable = true;
+                this_p.is_this = true;
+                fn.parameters.push(this_p);
+                fn.body = m.initial_routine.body;
+                fn.location = m.initial_routine.location;
+                new_members.push(new Definition.function_def(fn));
+            } else if (m is Definition.construct_def) {
+                let fn: mut FunctionDefinition = new FunctionDefinition("__class_construct_" + cast<string>(construct_count));
+                construct_count = construct_count + 1;
+                let this_p2: mut Parameter = new Parameter("this");
+                this_p2.is_mutable = true;
+                this_p2.is_this = true;
+                fn.parameters.push(this_p2);
+                fn.body = m.construct_def.body;
+                fn.location = m.construct_def.location;
+                new_members.push(new Definition.function_def(fn));
+            } else {
+                new_members.push(m);
+            }
+            ci = ci + 1;
+        }
+
+        // Variable-net pre-scan (class fields): a connect inside a class
+        // construct whose source is `this.f` (f a plain mut field) registers
+        // a hidden _Fanout hub field; the hub defaults to `new _Fanout<T>()`
+        // and the connect-time seed is emitted by the connect binding.
+        let netted_fields: mut _utils.List<string> = new _utils.List<string>();
+        let smi: mut i64 = 0;
+        while (smi < cast<i64>(new_members.size())) {
+            let fm: Definition = new_members.at(cast<u64>(smi)).some;
+            if (fm is Definition.function_def) {
+                if (string_find(fm.function_def.name, "__class_construct_") == 0) {
+                    if (let fbody := fm.function_def.body.some) {
+                        if (fbody is Expression.code_block) {
+                            let fblk: CodeBlockExpression = fbody.code_block;
+                            let fi2: mut i64 = 0;
+                            while (fi2 < cast<i64>(fblk.statements.size())) {
+                                let fs: Statement = fblk.statements.at(cast<u64>(fi2)).some;
+                                if (fs is Statement.connect_stmt) {
+                                    let fconn: ConnectStatement = fs.connect_stmt;
+                                    if (fconn.source.is_some() && fconn.source.some is Expression.member_access) {
+                                        let fma: MemberAccessExpression = fconn.source.some.member_access;
+                                        if (fma.base_expr.is_some() && fma.base_expr.some is Expression.identifier) {
+                                            if (fma.base_expr.some.identifier.name == "this") {
+                                                let is_port_name: mut bool = false;
+                                                let ppi: mut i64 = 0;
+                                                while (ppi < cast<i64>(ports.size())) {
+                                                    if (ports.at(cast<u64>(ppi)).some.name == fma.member_name) { is_port_name = true; }
+                                                    ppi = ppi + 1;
+                                                }
+                                                if (!is_port_name) {
+                                                    let field_spec: Option<TypeSpecifier> = this.find_class_field_spec(cls, fma.member_name);
+                                                    if (field_spec.is_some() && !this.is_known_channel_spec(field_spec.some)) {
+                                                        let dupf: mut bool = false;
+                                                        let dfi: mut i64 = 0;
+                                                        while (dfi < cast<i64>(netted_fields.size())) {
+                                                            if (netted_fields.at(cast<u64>(dfi)).some == fma.member_name) { dupf = true; }
+                                                            dfi = dfi + 1;
+                                                        }
+                                                        if (!dupf) {
+                                                            netted_fields.push(fma.member_name);
+                                                            if (!field_spec.some.is_mutable) {
+                                                                this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                                                    "connect source '" + fma.member_name + "' must be a mut field (implicit wire nets need mutable storage)",
+                                                                    fconn.location);
+                                                            } else {
+                                                                let hub_name2: string = "__net_" + cast<string>(this.model.some.variable_net_counter) + "_" + fma.member_name;
+                                                                this.model.some.variable_net_counter = this.model.some.variable_net_counter + 1;
+                                                                let hub_field: mut ClassFieldDefinition = new ClassFieldDefinition(hub_name2);
+                                                                hub_field.type_spec = new Option<TypeSpecifier>.some(this.mk_fanout_spec(field_spec.some));
+                                                                hub_field.initializer = new Option<Expression>.some(this.mk_fanout_new(field_spec.some));
+                                                                hub_field.location = fconn.location;
+                                                                new_members.push(new Definition.class_field(hub_field));
+                                                                this.model.some.pending_net_var.push(fma.member_name);
+                                                                this.model.some.pending_net_hub.push(hub_name2);
+                                                                this.model.some.pending_net_is_field.push(true);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                fi2 = fi2 + 1;
+                            }
+                        }
+                    }
+                }
+            }
+            smi = smi + 1;
+        }
+
+        // Port fields (appended after the other members; field order only
+        // affects the class's own layout, not semantics).
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ports.size())) {
+            let p: PortDefinition = ports.at(cast<u64>(pi)).some;
+            if (p.type_spec.is_none()) {
+                this.model.some.report_error(new ErrorCode.E_WIRING(),
+                    "port '" + p.name + "' must declare a payload type (input x : <type>)",
+                    p.location);
+                pi = pi + 1;
+                continue;
+            }
+            new_members.push(new Definition.class_field(this.synthesize_port_field(p)));
+            this.emit_port_seed_stmt(p, ctor_stmts);
+            // Record for the PortMeta registry (drained at bind_class_def,
+            // where the class full name is known).
+            this.model.some.pending_port_class.push(cls.name);
+            this.model.some.pending_port_name.push(p.name);
+            this.model.some.pending_port_is_input.push(p.is_input);
+            this.model.some.pending_port_has_default.push(p.default_expr.is_some());
+            pi = pi + 1;
+        }
+        // Class-construct calls, then initial spawns.
+        let cci: mut i64 = 0;
+        while (cci < construct_count) {
+            ctor_stmts.push(this.mk_this_call_stmt("__class_construct_" + cast<string>(cci)));
+            cci = cci + 1;
+        }
+        let ii: mut i64 = 0;
+        while (ii < initial_count) {
+            let spawn: mut SpawnAsyncExpression = new SpawnAsyncExpression();
+            spawn.expression = new Option<Expression>.some(this.mk_this_call_expr("__initial_" + cast<string>(ii)));
+            let es: mut ExpressionStatement = new ExpressionStatement();
+            es.expression = new Option<Expression>.some(new Expression.spawn_async(spawn));
+            ctor_stmts.push(new Statement.expression(es));
+            ii = ii + 1;
+        }
+
+        if (cast<i64>(ctor_stmts.size()) > 0) {
+            // Append to the user's `fun new` body, or synthesize one.
+            let user_ctor_idx: mut i64 = -1;
+            let ui: mut i64 = 0;
+            while (ui < cast<i64>(new_members.size())) {
+                let m2: Definition = new_members.at(cast<u64>(ui)).some;
+                if (m2 is Definition.function_def) {
+                    if (m2.function_def.is_new) { user_ctor_idx = ui; }
+                }
+                ui = ui + 1;
+            }
+            if (user_ctor_idx >= 0) {
+                let ctor_def: mut FunctionDefinition = new_members.at(cast<u64>(user_ctor_idx)).some.function_def;
+                if (let cb := ctor_def.body.some) {
+                    if (cb is Expression.code_block) {
+                        let blk: mut CodeBlockExpression = cb.code_block;
+                        let ai: mut i64 = 0;
+                        while (ai < cast<i64>(ctor_stmts.size())) {
+                            blk.statements.push(ctor_stmts.at(cast<u64>(ai)).some);
+                            ai = ai + 1;
+                        }
+                    }
+                }
+            } else {
+                let ctor: mut FunctionDefinition = new FunctionDefinition("new");
+                ctor.is_new = true;
+                let this_p3: mut Parameter = new Parameter("this");
+                this_p3.is_mutable = true;
+                this_p3.is_this = true;
+                ctor.parameters.push(this_p3);
+                let blk2: mut CodeBlockExpression = new CodeBlockExpression();
+                blk2.statements = ctor_stmts;
+                ctor.body = new Option<Expression>.some(new Expression.code_block(blk2));
+                new_members.push(new Definition.function_def(ctor));
+            }
+        }
+        cls.members = new_members;
+    }
+
+    // The port's hidden field: `<name> : mut __builtin.IChannel<T>` with the
+    // backing-channel default (ConstantSource(default) / _NeverSource /
+    // _Fanout). Runs as a field default in the ctor prologue — before the
+    // ctor body's seeds/construct calls/spawns.
+    fun synthesize_port_field(mut this, p: PortDefinition) -> ClassFieldDefinition {
+        let field: mut ClassFieldDefinition = new ClassFieldDefinition(p.name);
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = "IChannel";
+        ts.generic_args.push(p.type_spec.some);
+        ts.is_mutable = true;
+        field.type_spec = new Option<TypeSpecifier>.some(ts);
+        let ne: mut NewExpression = new NewExpression();
+        if (p.is_input) {
+            if (p.default_expr.is_some()) {
+                ne.type_name = "__builtin.ConstantSource";
+                ne.arguments.push(p.default_expr.some);
+            } else {
+                ne.type_name = "__builtin._NeverSource";
+            }
+        } else {
+            ne.type_name = "__builtin._Fanout";
+        }
+        ne.generic_args.push(p.type_spec.some);
+        field.initializer = new Option<Expression>.some(new Expression.new_expr(ne));
+        field.location = p.location;
+        return field;
+    }
+
+    // Output ports seed their fanout hub: an EXPLICIT declared default is a
+    // weak deliverable transaction (time-0 first-wait wake-up); a type zero
+    // value only backs bare reads (deliver=false); reference payloads without
+    // a default have no seed at all.
+    fun emit_port_seed_stmt(mut this, p: PortDefinition, out: mut _utils.List<Statement>) {
+        if (p.is_input) { return; }
+        let seed: Option<Expression> = this.port_seed_expr(p);
+        if (seed.is_none()) { return; }
+        let deliver: bool = p.default_expr.is_some();
+        // cast<mut __builtin._Fanout<T>>(this.<port>).set_seed(<seed>, <deliver>);
+        let this_ma: mut MemberAccessExpression = new MemberAccessExpression();
+        this_ma.base_expr = new Option<Expression>.some(this.mk_this_expr());
+        this_ma.member_name = p.name;
+        let fan_ts: mut TypeSpecifier = new TypeSpecifier();
+        fan_ts.qualified_parts.push("__builtin");
+        fan_ts.name = "_Fanout";
+        fan_ts.generic_args.push(p.type_spec.some);
+        fan_ts.is_mutable = true;
+        let cast_e: mut CastExpression = new CastExpression();
+        cast_e.target_type = new Option<TypeSpecifier>.some(fan_ts);
+        cast_e.type_name = "_Fanout";
+        cast_e.inner = new Option<Expression>.some(new Expression.member_access(this_ma));
+        let call_callee: mut MemberAccessExpression = new MemberAccessExpression();
+        call_callee.base_expr = new Option<Expression>.some(new Expression.cast_expr(cast_e));
+        call_callee.member_name = "set_seed";
+        let call: mut FunctionCallExpression = new FunctionCallExpression();
+        call.callee = new Option<Expression>.some(new Expression.member_access(call_callee));
+        call.arguments.push(seed.some);
+        let bl: mut BoolLiteralExpression = new BoolLiteralExpression();
+        if (deliver) { bl.value = "true"; } else { bl.value = "false"; }
+        call.arguments.push(new Expression.bool_literal(bl));
+        let es: mut ExpressionStatement = new ExpressionStatement();
+        es.expression = new Option<Expression>.some(new Expression.function_call(call));
+        out.push(new Statement.expression(es));
+    }
+
+    // An output port's seed expression: the explicit declared default
+    // (deliverable), else the type zero value (bare-read-only), else none.
+    fun port_seed_expr(mut this, p: PortDefinition) -> Option<Expression> {
+        if (p.default_expr.is_some()) { return p.default_expr; }
+        if (p.type_spec.is_some()) {
+            return this.port_zero_literal(p.type_spec.some);
+        }
+        return new Option<Expression>.none();
+    }
+
+    // Zero literal for seedable payload types (bool/int/float/double/string);
+    // char and reference payloads have no synthesized zero.
+    fun port_zero_literal(mut this, ts: TypeSpecifier) -> Option<Expression> {
+        let n: string = ts.name;
+        if (n == "bool") {
+            let bl: mut BoolLiteralExpression = new BoolLiteralExpression();
+            bl.value = "false";
+            return new Option<Expression>.some(new Expression.bool_literal(bl));
+        }
+        if (n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" || n == "u32" || n == "u64") {
+            return new Option<Expression>.some(new Expression.constant(new ConstantExpression("0")));
+        }
+        if (n == "float" || n == "double") {
+            return new Option<Expression>.some(new Expression.constant(new ConstantExpression("0.0")));
+        }
+        if (n == "string") {
+            return new Option<Expression>.some(new Expression.string_literal(new StringLiteralExpression("\"\"")));
+        }
+        return new Option<Expression>.none();
+    }
+
+    fun mk_this_expr(mut this) -> Expression {
+        return new Expression.identifier(new IdentifierExpression("this"));
+    }
+
+    fun mk_this_call_expr(mut this, method_name: string) -> Expression {
+        let ma: mut MemberAccessExpression = new MemberAccessExpression();
+        ma.base_expr = new Option<Expression>.some(this.mk_this_expr());
+        ma.member_name = method_name;
+        let call: mut FunctionCallExpression = new FunctionCallExpression();
+        call.callee = new Option<Expression>.some(new Expression.member_access(ma));
+        return new Expression.function_call(call);
+    }
+
+    fun mk_this_call_stmt(mut this, method_name: string) -> Statement {
+        let es: mut ExpressionStatement = new ExpressionStatement();
+        es.expression = new Option<Expression>.some(this.mk_this_call_expr(method_name));
+        return new Statement.expression(es);
+    }
+
     fun bind_class_def(mut this, def: ClassDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_class_def");
         let full_name: string = scope.full_name + "." + def.name;
+        // Drain the AST-level port capture into the PortMeta registry under
+        // this class's full name (dedup: specialized replays re-bind).
+        let pdi: mut i64 = 0;
+        while (pdi < cast<i64>(this.model.some.pending_port_class.size())) {
+            if (this.model.some.pending_port_class.at(cast<u64>(pdi)).some == def.name) {
+                let key: string = full_name + "." + this.model.some.pending_port_name.at(cast<u64>(pdi)).some;
+                let already: mut bool = false;
+                let ki: mut i64 = 0;
+                while (ki < cast<i64>(this.model.some.port_keys.size())) {
+                    if (this.model.some.port_keys.at(cast<u64>(ki)).some == key) { already = true; }
+                    ki = ki + 1;
+                }
+                if (!already) {
+                    this.model.some.port_keys.push(key);
+                    this.model.some.port_is_input.push(this.model.some.pending_port_is_input.at(cast<u64>(pdi)).some);
+                    this.model.some.port_has_default.push(this.model.some.pending_port_has_default.at(cast<u64>(pdi)).some);
+                }
+            }
+            pdi = pdi + 1;
+        }
         let result: mut BoundClassDefinition = new BoundClassDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
         // req5: record value (non-type) template param names for specialization substitution.
@@ -669,6 +1316,21 @@ class BuildScopesPass {
                     result.interface_impls.push(bi);
                 }
             }
+            if (member is Definition.port_def) {
+                this.model.some.report_error(new ErrorCode.E_WIRING(),
+                    "port declaration '" + member.port_def.name + "' is not supported by this compiler yet",
+                    member.port_def.location);
+            }
+            if (member is Definition.construct_def) {
+                this.model.some.report_error(new ErrorCode.E_WIRING(),
+                    "construct blocks are not supported by this compiler yet",
+                    member.construct_def.location);
+            }
+            if (member is Definition.initial_routine) {
+                this.model.some.report_error(new ErrorCode.E_ASYNC_INVALID(),
+                    "class-level initial routines are not supported by this compiler yet",
+                    member.initial_routine.location);
+            }
         }
         result.ast_source = new Option<Definition>.some(new Definition.class_def(def));
         return new Option<BoundDefinition>.some(new BoundDefinition.class_def(result));
@@ -713,6 +1375,14 @@ class BuildScopesPass {
                 let payload_type: mut BoundType = this.model.some.type_registry.void_type;
                 let m: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(member.enum_member.name, member_idx, payload_type);
                 let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(member.enum_member.name, full_name + "." + member.enum_member.name, t, member_idx, payload_type);
+                // Member symbols carry their declaration site (LSP goto-def
+                // lands on the variant, not the enum). Fall back to the enum's
+                // own location when the AST member has none.
+                if (member.enum_member.location.line > 0) {
+                    msym.location = member.enum_member.location;
+                } else {
+                    msym.location = def.location;
+                }
                 m.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
                 enum_scope.add_symbol(new BoundSymbol.enum_member(msym));
                 result.members.push(m);

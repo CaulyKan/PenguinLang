@@ -466,32 +466,12 @@ initial {{
     public void ParseDef_InterfaceDefinition() => Batch.Assert();
 
     [Fact]
-    [BatchParseTest("interface IEvents { event Click; fun onClick(); }", "parse_interfaceDefinition", "interface IEvents{ event Click; fun onClick(); }")]
-    public void ParseDef_InterfaceWithEvent() => Batch.Assert();
-
-    [Fact]
     [BatchParseTest("impl Foo;", "parse_interfaceImplementation", "impl Foo;")]
     public void ParseDef_ImplDirect() => Batch.Assert();
 
     [Fact]
     [BatchParseTest("impl Foo for IBar { fun hello() { 1 } }", "parse_interfaceImplementation", "impl Foo for IBar { fun hello() { 1 } }")]
     public void ParseDef_ImplFor() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("event Click;", "parse_eventDefinition", "event Click;")]
-    public void ParseDef_EventDefinition() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("event Click: i64;", "parse_eventDefinition", "event Click: i64;")]
-    public void ParseDef_EventWithTyped() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("on click { 42 }", "parse_onRoutine", "on click { 42 }")]
-    public void ParseDef_OnRoutine() => Batch.Assert();
-
-    [Fact]
-    [BatchParseTest("on click(x: i64) { 42 }", "parse_onRoutine", "on click { 42 }")]
-    public void ParseDef_OnRoutineWithParam() => Batch.Assert();
 
     // ==================== Full program round-trip tests (contains-based) ====================
 
@@ -517,7 +497,7 @@ initial {{
     }
 
     [Fact]
-    [BatchParseTest("on event.click(e: Event) { __signal e; }", "parse_compilationUnit", "")]
+    [BatchParseTest("fun f() { __signal 1; }", "parse_compilationUnit", "")]
     public void ParseRoundTrip_SignalStatement() => Assert.Contains("__signal", Batch.GetResult());
 
     [Fact]
@@ -537,10 +517,6 @@ initial {{
         Assert.Contains("Ok", result);
         Assert.Contains("Err", result);
     }
-
-    [Fact]
-    [BatchParseTest("on event.click { 42 }", "parse_compilationUnit", "")]
-    public void ParseRoundTrip_OnDottedEvent() => Assert.Contains("on event.click", Batch.GetResult());
 
     [Fact]
     [BatchParseTest("type MyInt = i64; initial { 42 }", "parse_compilationUnit", "")]

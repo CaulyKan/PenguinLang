@@ -2,11 +2,9 @@
 ## Description
 MultiInput fan-in: two output ports connect into one `MultiInput<i64>` field (two separate connects). `wait mi` returns transactions across ANY source, in write order.
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): MultiInput (dynamic fan-in) exists only in BabyPenguin's builtin so far — EmperorPenguin fails here and should turn green once the ports layer lands there (Phase 3). BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -44,7 +42,7 @@ construct {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

@@ -1528,7 +1528,7 @@ struct Person { name: String, age: i32 }
     <section id="refs">
       <h2><span class="num">20</span>运行前提与参考资料</h2>
       <ul>
-        <li>元编程 JIT 只在 <strong>native Pass2 / Pass3</strong> 生效：先执行 <code>./penguin -b</code> 构建自举编译器。</li>
+        <li>元编程 JIT 只在 <strong>native Pass2 / Pass3</strong> 生效：先执行 <code>make bootstrap</code> 构建自举编译器。</li>
         <li>Pass1 / BabyPenguin 只验证 <code>.penguin</code> 能编译，不执行元函数 JIT。</li>
         <li>详细规范：<code>Documentation/10_MetaProgramming.md</code>。</li>
         <li>可运行用例：<code>Tests/MetaProgramming/*.md</code>（约 80 个）。</li>

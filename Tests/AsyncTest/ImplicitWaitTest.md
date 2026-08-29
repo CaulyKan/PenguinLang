@@ -4,6 +4,7 @@ Call an async function which uses wait; execution resumes after the function com
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -19,7 +20,7 @@ Call an async function which uses wait; execution resumes after the function com
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

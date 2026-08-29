@@ -1,0 +1,89 @@
+// JSON-RPC Content-Length frame reassembly (LSP transport framing).
+// Raw transport chunks in; complete frame bodies (the JSON payload only,
+// headers stripped) out, in order. Handles frames split across chunk
+// boundaries and several frames packed into one chunk.
+namespace lsp {
+
+// "Content-Length: 123" (or lowercase spelling) from a header block -> 123;
+// -1 when no Content-Length header is present (malformed transport).
+fun parse_content_length(header: string) -> i64 {
+    let pos: mut i64 = string_find(header, "Content-Length:");
+    if (pos < 0) {
+        pos = string_find(header, "content-length:");
+    }
+    if (pos < 0) {
+        return -1;
+    }
+    let n: i64 = string_length(header);
+    let i: mut i64 = pos + 15;
+    while (i < n) {
+        let ch: string = string_char_at(header, i);
+        if (ch == " " || ch == "\t") {
+            i = i + 1;
+        } else {
+            break;
+        }
+    }
+    let digits: mut string = "";
+    while (i < n) {
+        let ch: string = string_char_at(header, i);
+        let code: i64 = string_char_code(ch);
+        if (code >= 48 && code <= 57) {
+            digits = digits + ch;
+            i = i + 1;
+        } else {
+            break;
+        }
+    }
+    if (digits == "") {
+        return -1;
+    }
+    return string_to_int(digits);
+}
+
+class Framer {
+    buf: mut string = "";
+
+    fun new(mut this) {}
+
+    // Feed one transport chunk; returns every complete frame body extracted
+    // from the buffer (possibly none, possibly several). Tolerates both the
+    // strict "\r\n\r\n" header terminator and the lenient "\n\n".
+    fun feed(mut this, chunk: string) -> mut _utils.List<string> {
+        this.buf = this.buf + chunk;
+        let out: mut _utils.List<string> = new _utils.List<string>();
+        while (true) {
+            let sep: mut i64 = string_find(this.buf, "\r\n\r\n");
+            let sep_len: mut i64 = 4;
+            if (sep < 0) {
+                sep = string_find(this.buf, "\n\n");
+                sep_len = 2;
+                if (sep < 0) {
+                    return out;
+                }
+            }
+            let header: string = string_substring(this.buf, 0, sep);
+            let body_start: i64 = sep + sep_len;
+            let len: i64 = parse_content_length(header);
+            if (len < 0) {
+                // No parseable Content-Length: malformed transport. Drop the
+                // buffer rather than spin on it forever.
+                this.buf = "";
+                return out;
+            }
+            let total: i64 = string_length(this.buf);
+            if (total < body_start + len) {
+                return out; // partial body: wait for more chunks
+            }
+            out.push(string_substring(this.buf, body_start, len));
+            this.buf = string_substring(this.buf, body_start + len, total - body_start - len);
+        }
+        return out;
+    }
+
+    fun pending(this) -> string {
+        return this.buf;
+    }
+}
+
+}

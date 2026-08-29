@@ -49,6 +49,7 @@ namespace BabyPenguin.CSharpBackend
             ["_utils_file_read_range"] = (["string", "long", "long"], "string", "{ long off=a_1, sz=a_2; if (off<0||sz<0) return \"\"; try { using var fs=System.IO.File.OpenRead(a_0); fs.Seek(off, System.IO.SeekOrigin.Begin); var buf=new byte[sz]; int n=fs.Read(buf,0,(int)sz); return System.Text.Encoding.UTF8.GetString(buf,0,n); } catch { return \"\"; } }"),
             ["_utils_file_append"] = (["string", "string"], "void", "try { System.IO.File.AppendAllText(a_0, a_1); } catch { }"),
             ["_utils_exe_path"] = ([], "string", "return System.Environment.ProcessPath ?? \"\";"),
+            ["_utils_getenv"] = (["string"], "string", "return System.Environment.GetEnvironmentVariable(a_0) ?? \"\";"),
             ["_utils_mkdir"] = (["string"], "bool", "System.IO.Directory.CreateDirectory(a_0); return true;"),
             ["_utils_file_exists"] = (["string"], "bool", "return System.IO.File.Exists(a_0);"),
             ["_utils_dir_exists"] = (["string"], "bool", "return System.IO.Directory.Exists(a_0);"),

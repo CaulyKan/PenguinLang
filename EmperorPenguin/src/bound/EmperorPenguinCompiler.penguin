@@ -35,6 +35,10 @@ class EmperorPenguinCompiler {
     // (no per-file anonymous namespaces) so the compiler's own cross-file
     // top-level helpers stay visible. Set by the MetaEngine.
     top_level_in_global: bool = false;
+    // --enable-coroutine: gates the RTL-port/concurrency syntax set (ports,
+    // construct, connect, wait forms, try/catch, async). Off by default;
+    // the Makefile bootstrap passes it only when pass2 compiles pass3.
+    enable_coroutine: bool = false;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -88,6 +92,7 @@ class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        model.enable_coroutine = this.enable_coroutine;
         model.top_level_in_global = this.top_level_in_global;
         // Dyn-lib routing data (index-based lib-source boundary + shipped names).
         model.lib_def_start = this.lib_def_start;
@@ -105,17 +110,43 @@ class EmperorPenguinCompiler {
             model.meta_option_values.push(this.cli_define_values.at(cast<u64>(cdi)).some);
             cdi = cdi + 1;
         }
-        // Propagate parser errors into model errors
+        // Propagate parser errors into model errors. The parser's error strings
+        // carry their real site as a "file:line:col: message" prefix — lift it
+        // so diagnostics (the LSP) point at the offending token instead of the
+        // main file's 0:0.
         let pei: mut i64 = 0;
         while (pei < cast<i64>(parser_errors.size())) {
             let pe: string = parser_errors.at(cast<u64>(pei)).some;
-            model.report_error(new ErrorCode.E_PARSE(), pe, new SourceLocation(main_filename, 0, 0));
+            let loc: SourceLocation = parse_error_location(pe, main_filename);
+            model.report_error(new ErrorCode.E_PARSE(), pe, loc);
             pei = pei + 1;
         }
         let result = model.bind(combined_unit, new SourceLocation(main_filename, 0, 0));
         this.errors = model.errors;
         return result;
     }
+}
+
+// Lift the leading "file:line:col: " site off a parser error string. Falls
+// back to the main file's 0:0 when the string does not match (defensive —
+// the shape is fixed by Parser.report_error).
+fun parse_error_location(pe: string, main_filename: string) -> SourceLocation {
+    let c1: i64 = string_find(pe, ":");
+    if (c1 < 0) { return new SourceLocation(main_filename, 0, 0); }
+    let c2: i64 = string_find_from(pe, ":", c1 + 1);
+    if (c2 < 0) { return new SourceLocation(main_filename, 0, 0); }
+    let c3: i64 = string_find_from(pe, ":", c2 + 1);
+    if (c3 < 0) { return new SourceLocation(main_filename, 0, 0); }
+    let file_part: string = string_substring(pe, 0, c1);
+    let line_part: string = string_substring(pe, c1 + 1, c2 - c1 - 1);
+    let col_part: string = string_substring(pe, c2 + 1, c3 - c2 - 1);
+    if (string_length(file_part) == 0 || string_length(line_part) == 0 || string_length(col_part) == 0) {
+        return new SourceLocation(main_filename, 0, 0);
+    }
+    let line_val: i64 = __builtin.string_to_int(line_part);
+    let col_val: i64 = __builtin.string_to_int(col_part);
+    if (line_val <= 0 || col_val <= 0) { return new SourceLocation(main_filename, 0, 0); }
+    return new SourceLocation(file_part, line_val, col_val);
 }
 
 }

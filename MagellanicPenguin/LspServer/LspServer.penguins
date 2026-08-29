@@ -1,0 +1,16 @@
+[Project]
+# MagellanicPenguin LSP server — PenguinLang rewrite of the C# LSP.cs using
+# the RTL-ports architecture (StdioStream → JsonInputParser → LspMain /
+# LspCompilationUnit → JsonOutputParser, see .agents/plans/emperorpenguin-lsp-ports.md).
+#
+# The LSP modules ONLY: the whole EmperorPenguin compiler is consumed as the
+# prebuilt shared library libemperorpenguin.penguin-lib (built from
+# EmperorPenguin/EmperorPenguinLib.penguins) instead of being compiled into
+# this binary — per-document analysis still runs through the lib's
+# EmperorPenguinCompiler.compile_sources at runtime. Build (see make lsp):
+#   build/pass3 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
+#       --lib <dir>/libemperorpenguin.penguin-lib -o <exe>
+# (core_builtin.penguin + io.penguin are auto-injected; json/vector/hashmap and
+# the compiler's _utils come from the lib's embedded source).
+name="LspServer"
+sources=["LspTypes.penguin", "LspFraming.penguin", "StdioStream.penguin", "JsonInputParser.penguin", "LspMain.penguin", "LspCompilationUnit.penguin", "JsonOutputParser.penguin", "LspQuery.penguin", "LspJson.penguin", "LspWiring.penguin"]

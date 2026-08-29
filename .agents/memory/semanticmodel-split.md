@@ -5,7 +5,7 @@
 ## 结构
 - 原 `SemanticModel.penguin` 11,474 行单文件 → 共享核心 ~705 行 + 每 pass 一个协作类文件（详见 CLAUDE.md bound/ 表）
 - pass 类模式：`model: mut Option<SemanticModel>` 回引（破除类字段默认构造环，MetaEngine.owner_model 先例）+ 唯一 `run()` 入口；per-def 处理器保留原名供核心 `catch_up_def` 重放
-- 新增 `src/bound/*.penguin` 文件必须同时加入 `EmperorPenguin.penguins` 与 `EmperorPenguinFull.penguins`（显式列表，漏加断 bootstrap）
+- 新增 `src/bound/*.penguin` 文件必须同时加入 `EmperorPenguinPass1.penguins` 与 `EmperorPenguinPass2.penguins`（显式列表，漏加断 bootstrap）
 
 ## 语言/编译器陷阱（写 PenguinLang 代码必读）
 1. **兄弟作用域同名推断类型 for 循环变量 = 编译器 bug**：BabyPenguin 编译期 `E_TYPE_INFERENCE`（SemanticModel.cs:238），EP pass1 编译过但产物段错误。规避：显式标注类型或唯一命名。哨兵用例 `Tests/FlowControlTest/ForInSiblingSameNameInferred.md`

@@ -4,7 +4,7 @@ FIXED (was a red sentinel on Pass2/Pass3). A generic class instantiated inside a
 
 ## Apply To
 * EmperorPenguin Pass2
-* EmperorPenguin Pass3
+* EmperorPenguin Pass1
 
 ## Test Code
 ```

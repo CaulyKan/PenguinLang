@@ -11,6 +11,20 @@ class FunctionInstantiation {
     }
 }
 
+// A member access that lands on a declared RTL port field (`X.p` where p is
+// an input/output of X's class): the port's field symbol (typed
+// IChannel<payload>), direction metadata and owning class, plus whether the
+// access goes through a bare `this` base (the permission matrix's "own
+// module" test).
+class PortAccessInfo {
+    field_sym: mut BoundVariableSymbol = new BoundVariableSymbol();
+    is_input: bool = false;
+    has_default: bool = false;
+    payload: mut BoundType = new BoundType();
+    class_full_name: string = "";
+    base_is_this: bool = false;
+}
+
 // A compiled `#specializing Bar<T> { ... }` block. The block body becomes a
 // meta (#fun) callback `bmf` (params mirror Bar's template params; each `impl`
 // statement becomes emperor.penguin_meta_activate_impl(<slot>)), and the impl
@@ -84,8 +98,8 @@ fun set_def_source_file(def: Definition, fname: string) {
     else if (def is Definition.impl_for_def) { def.impl_for_def.source_file = fname; }
     else if (def is Definition.type_ref_def) { def.type_ref_def.source_file = fname; }
     else if (def is Definition.global_var) { def.global_var.source_file = fname; }
-    else if (def is Definition.event_def) { def.event_def.source_file = fname; }
-    else if (def is Definition.on_routine_def) { def.on_routine_def.source_file = fname; }
+    else if (def is Definition.port_def) { def.port_def.source_file = fname; }
+    else if (def is Definition.construct_def) { def.construct_def.source_file = fname; }
     else if (def is Definition.meta_function_def) { def.meta_function_def.source_file = fname; }
     else if (def is Definition.meta_class_def) { def.meta_class_def.source_file = fname; }
     else if (def is Definition.meta_if_def) { def.meta_if_def.source_file = fname; }
@@ -114,8 +128,8 @@ fun ast_def_filename(def: Definition) -> string {
     if (def is Definition.impl_for_def) { return def.impl_for_def.source_file; }
     if (def is Definition.type_ref_def) { return def.type_ref_def.source_file; }
     if (def is Definition.global_var) { return def.global_var.source_file; }
-    if (def is Definition.event_def) { return def.event_def.source_file; }
-    if (def is Definition.on_routine_def) { return def.on_routine_def.source_file; }
+    if (def is Definition.port_def) { return def.port_def.source_file; }
+    if (def is Definition.construct_def) { return def.construct_def.source_file; }
     if (def is Definition.meta_function_def) { return def.meta_function_def.source_file; }
     if (def is Definition.meta_class_def) { return def.meta_class_def.source_file; }
     if (def is Definition.meta_if_def) { return def.meta_if_def.source_file; }
@@ -155,8 +169,7 @@ fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut Bo
 // defs, the namespace's own scope for namespaces, the variable symbol's
 // enclosing scope for globals; fallback is the global scope. Used where a
 // pass iterates bound defs and needs the def's lookup context.
-fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {
-    if (def is BoundDefinition.class_def) {
+fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {    if (def is BoundDefinition.class_def) {
         if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
             return def.class_def.scope.some.parent.some;
         }
@@ -192,6 +205,17 @@ fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut 
         }
     }
     return global_scope;
+}
+
+// Replay-pass AST lookup: the unit's definitions first (normal defs); when
+// the def is a bind-time synthesized one (async-spawn ctx classes — see
+// BindExpressionsPass.bind_spawn_async) it is not in the unit, and its AST
+// rides on ast_source.
+fun replay_find_ast_def(model: SemanticModel, template_name: string, ast_source: Option<Definition>) -> Option<Definition> {
+    let found: Option<Definition> = model.monomorphize_pass.find_ast_def_by_name(model.ast_definitions, template_name);
+    if (found.is_some()) { return found; }
+    if (ast_source.is_some()) { return ast_source; }
+    return new Option<Definition>.none();
 }
 
 }

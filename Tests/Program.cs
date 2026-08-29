@@ -8,7 +8,7 @@
 // run folder, writes a summary (md + json), and diffs against the previous run.
 //
 // Bootstrap is MANUAL: this runner never bootstraps EmperorPenguin. If a Pass2/3
-// binary is required but missing it errors out telling you to run ./penguin -b.
+// binary is required but missing it errors out telling you to run make bootstrap.
 //
 // Invoke:
 //   dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
@@ -119,16 +119,16 @@ public static class Program
 
         // Prepare run folder.
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var runDir = Path.Combine(repoRoot, "tmp", "testruns", stamp);
+        var runDir = Path.Combine(repoRoot, "build", "testruns", stamp);
         Directory.CreateDirectory(runDir);
 
         // Baseline to diff against: --compare-with latest|none|<path>, default
-        // tmp/testruns/latest.json. The --baseline flag additionally records
+        // build/testruns/latest.json. The --baseline flag additionally records
         // THIS run as the new baseline.
         string? baselinePath;
         if (opts.CompareWith == null ||
             opts.CompareWith.Equals("latest", StringComparison.OrdinalIgnoreCase))
-            baselinePath = Path.Combine(repoRoot, "tmp", "testruns", "latest.json");
+            baselinePath = Path.Combine(repoRoot, "build", "testruns", "latest.json");
         else if (opts.CompareWith.Equals("none", StringComparison.OrdinalIgnoreCase))
             baselinePath = null;
         else
@@ -170,12 +170,12 @@ public static class Program
         SummaryReporter.WriteJson(jsonPath, list, sw.Elapsed, diff);
         // latest.json is only ever overwritten when --baseline is passed explicitly:
         // that run is recorded as the new baseline (a dated snapshot is kept in
-        // tmp/testruns/, same format as latest.json, and latest.json is refreshed).
+        // build/testruns/, same format as latest.json, and latest.json is refreshed).
         // Without --baseline, latest.json is left untouched so plain runs only ever
         // compare against the last recorded baseline.
         if (opts.BaselineSet)
         {
-            var testrunsDir = Path.Combine(repoRoot, "tmp", "testruns");
+            var testrunsDir = Path.Combine(repoRoot, "build", "testruns");
             var baselineSnapshot = Path.Combine(testrunsDir, $"baseline-{stamp}.json");
             File.Copy(jsonPath, baselineSnapshot, overwrite: true);
             File.Copy(jsonPath, Path.Combine(testrunsDir, "latest.json"), overwrite: true);
@@ -333,9 +333,10 @@ public static class Program
         {
             [CompilerKind.BabyPenguin] = new BabyPenguinBackend(bpDll),
             [CompilerKind.BabyPenguinCs] = new BabyPenguinCsBackend(bpDll),
-            [CompilerKind.EmperorPenguinPass1] = new EmperorOnVmBackend(bpDll, Path.Combine(repoRoot, "EmperorPenguin", "EmperorPenguin.penguins")),
-            [CompilerKind.EmperorPenguinPass2] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass2"), CompilerKind.EmperorPenguinPass2),
-            [CompilerKind.EmperorPenguinPass3] = new EmperorNativeBackend(Path.Combine(repoRoot, "tmp", "pass3"), CompilerKind.EmperorPenguinPass3),
+            [CompilerKind.EmperorPenguinPass1] = new EmperorOnVmBackend(bpDll, Path.Combine(repoRoot, "EmperorPenguin", "EmperorPenguinPass1.penguins")),
+            [CompilerKind.EmperorPenguinPass2] = new EmperorNativeBackend(Path.Combine(repoRoot, "build", "bootstrap", "pass2"), CompilerKind.EmperorPenguinPass2),
+            [CompilerKind.EmperorPenguinPass3] = new EmperorNativeBackend(Path.Combine(repoRoot, "build", "bootstrap", "pass3"), CompilerKind.EmperorPenguinPass3),
+            [CompilerKind.Prebuilt] = new PrebuiltExeBackend(),
         };
     }
 
@@ -362,7 +363,7 @@ public static class Program
 
 /// <summary>
 /// Admission control for compiler processes, keyed on estimated peak RSS.
-/// Measured peaks (tmp/testruns result.json): a native pass2/3/4 compile whose
+/// Measured peaks (build/testruns result.json): a native pass2/3/4 compile whose
 /// program (or extra Compile.Args source, e.g. json.penguin) uses the meta
 /// machinery JIT-compiles a copy of the compiler itself and peaks at ~4.6 GiB;
 /// pass1 (EmperorPenguin on the dotnet VM) sits at 1.6-2.8 GiB; everything else
@@ -542,7 +543,7 @@ public sealed class Options
     public int TimeoutCompileSec = 600;
     public int TimeoutRunSec = 60;
     public bool BaselineSet; // true iff --baseline was passed explicitly
-    public string? CompareWith; // baseline to diff against; null => tmp/testruns/latest.json
+    public string? CompareWith; // baseline to diff against; null => build/testruns/latest.json
     public int TimeRegressionPct = 50;
     public int MemRegressionPct = 50;
     public string? Migrate;
@@ -576,7 +577,7 @@ public sealed class Options
                 case "--timeout-run": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutRunSec)) { Console.Error.WriteLine("bad --timeout-run"); return null; } break; }
                 case "--baseline":
                     // Pure flag: record this run as the new baseline. The baseline
-                    // written is timestamped (tmp/testruns/baseline-<stamp>.json) and
+                    // written is timestamped (build/testruns/baseline-<stamp>.json) and
                     // copied to latest.json. Takes no value; the diff still compares
                     // against the --compare-with baseline (default latest.json).
                     o.BaselineSet = true;
@@ -609,6 +610,7 @@ public sealed class Options
             else if (part.Contains("pass1") || part.Equals("pass-1", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass1);
             else if (part.Contains("pass2") || part.Equals("pass-2", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass2);
             else if (part.Contains("pass3") || part.Equals("pass-3", StringComparison.OrdinalIgnoreCase)) set.Add(CompilerKind.EmperorPenguinPass3);
+            else if (part.Contains("prebuilt")) set.Add(CompilerKind.Prebuilt);
             else { Console.Error.WriteLine($"Unknown compiler '{part}'"); return null; }
         }
         return set;
@@ -622,7 +624,7 @@ public sealed class Options
         Usage: dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 
         Options:
-          --compilers babypenguin,pass1,pass2,pass3[,all]
+          --compilers babypenguin,pass1,pass2,pass3,prebuilt
                                   Limit to these compilers (default: each test's Apply To).
           --filter <glob|substr>  Select Tests/ files, e.g. CalculationTest/* or AddTest.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
@@ -631,9 +633,9 @@ public sealed class Options
           --timeout-compile <s>   Per-case compile timeout (default 600).
           --timeout-run <s>       Per-case run timeout (default 60).
           --compare-with <path>   Baseline to diff against: latest, none, or a .json path.
-                                  Default: tmp/testruns/latest.json.
+                                  Default: build/testruns/latest.json.
           --baseline              Flag (no value): record THIS run as the new baseline.
-                                  Writes tmp/testruns/baseline-<time>.json (same format
+                                  Writes build/testruns/baseline-<time>.json (same format
                                   as latest.json) and copies it to latest.json. The diff
                                   still compares against --compare-with (default
                                   latest.json); without --baseline, latest.json is never
@@ -649,7 +651,7 @@ public sealed class Options
 
 // ───────────────────────── Model ─────────────────────────
 
-public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3 }
+public enum CompilerKind { BabyPenguin, BabyPenguinCs, EmperorPenguinPass1, EmperorPenguinPass2, EmperorPenguinPass3, Prebuilt }
 
 public enum Status { Pass, Fail, Skip, Error }
 
@@ -662,6 +664,7 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "pass1",
         CompilerKind.EmperorPenguinPass2 => "pass2",
         CompilerKind.EmperorPenguinPass3 => "pass3",
+        CompilerKind.Prebuilt => "prebuilt",
         _ => throw new InvalidOperationException(),
     };
     public static string Display(this CompilerKind c) => c switch
@@ -671,6 +674,7 @@ public static class CompilerKindExtensions
         CompilerKind.EmperorPenguinPass1 => "Emperor Pass1",
         CompilerKind.EmperorPenguinPass2 => "Emperor Pass2",
         CompilerKind.EmperorPenguinPass3 => "Emperor Pass3",
+        CompilerKind.Prebuilt => "Prebuilt",
         _ => throw new InvalidOperationException(),
     };
 }
@@ -706,6 +710,18 @@ public sealed record Expectation(string Mode, string? Operand)
             reason = DiffReason(Operand ?? "", actual);
             return false;
         }
+        if (Mode == "ESCAPE")
+        {
+            // Byte-exact comparison after true C-style unescaping of the literal
+            // (\n -> LF, \r -> CR, \t -> TAB, \\ -> backslash). EQUALS cannot
+            // express CR bytes (multi-line literals join with LF only), which
+            // binary-protocol outputs need — e.g. LSP JSON-RPC frames separate
+            // headers from body with a literal CRLF CRLF.
+            var expected = CUnescape(Operand ?? "");
+            if (actual == expected) { reason = ""; return true; }
+            reason = DiffReason(expected, actual);
+            return false;
+        }
         if (Mode == "CONTAINS")
         {
             var op = Operand ?? "";
@@ -715,6 +731,29 @@ public sealed record Expectation(string Mode, string? Operand)
         }
         reason = $"unknown match mode '{Mode}'";
         return false;
+    }
+
+    /// <summary>True C-style unescape (\n, \r, \t, \\) — left-to-right, single pass,
+    /// so a lone or unknown escape keeps its backslash verbatim.</summary>
+    public static string CUnescape(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == '\\' && i + 1 < s.Length)
+            {
+                switch (s[i + 1])
+                {
+                    case 'n': sb.Append('\n'); i++; break;
+                    case 'r': sb.Append('\r'); i++; break;
+                    case 't': sb.Append('\t'); i++; break;
+                    case '\\': sb.Append('\\'); i++; break;
+                    default: sb.Append(s[i]); break;
+                }
+            }
+            else sb.Append(s[i]);
+        }
+        return sb.ToString();
     }
 
     private static string DiffReason(string expected, string actual)
@@ -752,6 +791,11 @@ public sealed class StageSpec
     public Expectation ExpectedStdout = Expectation.Discard;
     public Expectation ExpectedStderr = Expectation.Discard;
     public string? Stdin; // Run only
+    /// <summary>Run only: when "false", the runner writes Stdin but keeps the pipe
+    /// OPEN while awaiting exit (LSP-style sessions end via their own exit frame,
+    /// not stdin EOF — this locks the fd-wake/pipeline scheduling path the
+    /// closed-stdin form can never exercise).</summary>
+    public bool StdinClose = true;
     /// <summary>Multi-stage builds: artifact kind ("exe" default, or "lib" → *.penguin-lib).</summary>
     public string Kind = "exe";
     /// <summary>Multi-stage builds: output artifact filename (default "out.exe").</summary>
@@ -781,6 +825,12 @@ public sealed class MarkdownTestCase
     /// skip, but unconditional — used for tests whose semantics require a compiler feature
     /// that does not exist yet (e.g. dead-code evaluation for value-template recursion).</summary>
     public string? SkipReason = null;
+    /// <summary>`## Run LSP` section: a prebuilt-exe LSP session test — no compile
+    /// stage; Run.Args names the server binary (e.g. `build/lsp`), Stdin is the
+    /// JSON-RPC session, stdout asserts the response frames.</summary>
+    public bool IsRunLsp = false;
+    /// <summary>Whether a literal `## Compile` section appeared (Run LSP tests must not have one).</summary>
+    public bool HasCompileSection = false;
     public string SourcePath = "";
     public string Category = "";
     public string Name => string.IsNullOrEmpty(Title) ? Path.GetFileNameWithoutExtension(SourcePath) : Title;
@@ -821,6 +871,11 @@ public static class MarkdownTestParser
             {
                 section = trimmed[3..].Trim().ToLowerInvariant();
                 if (section == "run" && tc.Run == null) tc.Run = new StageSpec();
+                if (section == "run lsp")
+                {
+                    tc.Run ??= new StageSpec();
+                    tc.IsRunLsp = true;
+                }
                 continue;
             }
 
@@ -875,9 +930,11 @@ public static class MarkdownTestParser
                     break;
                 case "compile":
                 case "run":
+                case "run lsp":
                 case string s when isBuild:
                     {
-                        var stage = section == "run" ? tc.Run! : isBuild ? tc.Builds[buildIdx] : tc.Compile;
+                        if (section == "compile") tc.HasCompileSection = true;
+                        var stage = section == "compile" ? tc.Compile : isBuild ? tc.Builds[buildIdx] : tc.Run!;
                         var km = Regex.Match(trimmed, @"^([A-Za-z]+):\s*(.*)$");
                         if (km.Success)
                         {
@@ -892,7 +949,7 @@ public static class MarkdownTestParser
                                 break;
                             }
                         }
-                        ParseStageLine(trimmed, stage, isRun: section == "run");
+                        ParseStageLine(trimmed, stage, isRun: section is "run" or "run lsp");
                         break;
                     }
             }
@@ -914,6 +971,29 @@ public static class MarkdownTestParser
                 if (t.Compiler is CompilerKind.BabyPenguin or CompilerKind.BabyPenguinCs or CompilerKind.EmperorPenguinPass1)
                     throw new FormatException($"Multi-stage test '{tc.Name}' (## Build N) may only Apply To EmperorPenguin Pass2/Pass3, not {t.Compiler}.");
         }
+        if (tc.IsRunLsp)
+        {
+            // ## Run LSP: a prebuilt-exe LSP session — no compile stage at all.
+            // The server binary is named in Run.Args (e.g. `build/lsp`).
+            if (string.IsNullOrWhiteSpace(tc.Run?.Args))
+                throw new FormatException($"Run LSP test '{tc.Name}' requires Run Args = <path to the prebuilt server executable>.");
+            if (tc.Builds.Count > 0)
+                throw new FormatException($"Run LSP test '{tc.Name}' cannot use multi-stage (## Build N) sections.");
+            if (!tc.ApplyTo.All(t => t.Compiler == CompilerKind.Prebuilt))
+                throw new FormatException($"Run LSP test '{tc.Name}' must Apply To 'Prebuilt' only.");
+            if (tc.HasCompileSection)
+                throw new FormatException($"Run LSP test '{tc.Name}' must not have a '## Compile' section (## Run LSP replaces it).");
+        }
+        if (tc.ApplyTo.Any(t => t.Compiler == CompilerKind.Prebuilt) && !tc.IsRunLsp)
+        {
+            // Fail fast at parse time: the Prebuilt backend has nothing to compile and
+            // needs the executable path in Compile.Args (the Test Code block is unused
+            // documentation for such tests).
+            if (string.IsNullOrWhiteSpace(tc.Compile?.Args))
+                throw new FormatException($"Prebuilt test '{tc.Name}' requires Compile.Args = <path to the prebuilt executable>.");
+            if (tc.Builds.Count > 0)
+                throw new FormatException($"Prebuilt test '{tc.Name}' cannot use multi-stage (## Build N) sections.");
+        }
 
         return tc;
     }
@@ -934,11 +1014,21 @@ public static class MarkdownTestParser
         {
             case "args": stage.Args = Stripped(); break;
             case "env": stage.Env = ParseEnv(Stripped()); break;
+            case "stdinclose":
+                if (isRun)
+                {
+                    var v = Stripped().Trim().ToLowerInvariant();
+                    if (v is "false" or "off" or "0" or "no") stage.StdinClose = false;
+                    else if (v is "true" or "on" or "1" or "yes" or "") stage.StdinClose = true;
+                }
+                break;
             case "stdin":
-                // Interpret C-style escapes so multi-line stdin is expressible
-                // on one line (`Stdin: `a\nb\n``); order matters (\r\n first).
-                if (isRun) stage.Stdin = Stripped()
-                    .Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\\r", "\n").Replace("\\t", "\t").Replace("\\\\", "\\");
+                // True C-style unescape, single pass left-to-right (\n LF, \r CR,
+                // \t TAB, \\ backslash). A Replace CHAIN cannot round-trip escaped
+                // backslashes: "\\n" (backslash + 'n', e.g. inside JSON text on a
+                // Stdin line) would first match the \n rule and collapse into
+                // backslash + newline, corrupting the payload.
+                if (isRun) stage.Stdin = Expectation.CUnescape(Stripped());
                 break;
             case "expectedexitcode": stage.ExpectedExitCode = Stripped().Trim(); break;
             case "kind": stage.Kind = Stripped().Trim().ToLowerInvariant(); break;
@@ -1013,6 +1103,7 @@ public static class MarkdownTestParser
             else if (l.Contains("pass1") || l.Contains("pass 1")) kind = CompilerKind.EmperorPenguinPass1;
             else if (l.Contains("pass2") || l.Contains("pass 2")) kind = CompilerKind.EmperorPenguinPass2;
             else if (l.Contains("pass3") || l.Contains("pass 3")) kind = CompilerKind.EmperorPenguinPass3;
+            else if (l.Contains("prebuilt")) kind = CompilerKind.Prebuilt;
             if (kind == null) continue;
             // Optional "(SKIP if '<compiler>' PASS)" — skip this compiler when the guard passes.
             CompilerKind? skipIf = null;
@@ -1069,7 +1160,7 @@ public sealed record ProcResult(int ExitCode, string Stdout, string Stderr, Time
 
 public static class ProcessRunner
 {
-    public static async Task<ProcResult> RunAsync(ProcessStartInfo psi, string? stdin, int timeoutMs)
+    public static async Task<ProcResult> RunAsync(ProcessStartInfo psi, string? stdin, int timeoutMs, bool closeStdin = true)
     {
         psi.UseShellExecute = false;
         psi.RedirectStandardOutput = true;
@@ -1083,9 +1174,24 @@ public static class ProcessRunner
         var stderrTask = p.StandardError.ReadToEndAsync();
         if (stdin != null)
         {
-            await p.StandardInput.WriteAsync(stdin);
-            await p.StandardInput.FlushAsync();
-            p.StandardInput.Close();
+            // A fast-exiting process (e.g. an LSP session whose exit frame is
+            // processed while the session payload is still being written) can
+            // break the pipe mid-write — the program's output and exit code
+            // still count; the write failure does not.
+            try
+            {
+                await p.StandardInput.WriteAsync(stdin);
+                await p.StandardInput.FlushAsync();
+            }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
+            // closeStdin=false keeps the pipe open while awaiting exit — an
+            // LSP session ends via its own exit frame, not stdin EOF, and the
+            // closed form can never exercise the keep-waiting scheduling path.
+            if (closeStdin)
+            {
+                try { p.StandardInput.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
+            }
         }
 
         var sw = Stopwatch.StartNew();
@@ -1183,6 +1289,57 @@ public interface ICompilerBackend
     ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile, string workDir);
     /// <summary>For non-interpreted backends, build the run process for the produced exe. Null for interpreted.</summary>
     ProcessStartInfo? BuildRunProcess(string exeFile, StageSpec run, string workDir);
+    /// <summary>
+    /// Emission-only compilers (the EmperorPenguin backends) produce .ll (+ side
+    /// files) instead of a linked artifact; the runner links via the external
+    /// emperor driver script. Null when the compile process already yields the
+    /// runnable/copy artifact (BabyPenguin VM, Prebuilt).
+    /// </summary>
+    ProcessStartInfo? BuildLinkProcess(string repoRoot, string outFile, StageSpec compile, string workDir) => null;}
+
+/// <summary>
+/// Links the .ll (+ .libmeta) an EmperorPenguin backend emitted, via the
+/// external emperor / emperor.bat driver script — the compiler itself no
+/// longer invokes clang or builds the C runtime.
+/// </summary>
+public static class EmperorLink
+{
+    public static string ScriptPath(string repoRoot) =>
+        OperatingSystem.IsWindows()
+            ? Path.Combine(repoRoot, "EmperorPenguin", "emperor.bat")
+            : Path.Combine(repoRoot, "EmperorPenguin", "emperor");
+
+    public static ProcessStartInfo Build(string repoRoot, string outFile, string compileArgs, string workDir)
+    {
+        var args = new List<string>();
+        if (outFile.EndsWith(".penguin-lib", StringComparison.OrdinalIgnoreCase))
+        {
+            // Lib-mode emission wrote <base>.ll + <base>.libmeta (the -o path
+            // minus its .penguin-lib suffix).
+            var b = outFile[..^".penguin-lib".Length];
+            args.Add("link-lib");
+            args.Add(b + ".ll");
+            args.Add(b + ".libmeta");
+            args.Add("-o");
+            args.Add(outFile);
+        }
+        else
+        {
+            args.Add("link");
+            args.Add(outFile + ".ll");
+            args.Add("-o");
+            args.Add(outFile);
+            // No --consumer-lib needed: the emitter wrote the full dyn-lib
+            // closure (recursive deps included) as <out>.libs beside the .ll,
+            // and the driver script links every path listed there.
+        }
+        return new ProcessStartInfo
+        {
+            FileName = ScriptPath(repoRoot),
+            Arguments = ArgumentBuilder.Build(args),
+            WorkingDirectory = repoRoot,
+        };
+    }
 }
 
 /// <summary>C# reference compiler/VM. Interprets directly; -q emits program stdout once (see BabyPenguin/Program.cs).</summary>
@@ -1263,9 +1420,12 @@ public sealed class EmperorOnVmBackend : ICompilerBackend
         EnvHelper.ApplyEnv(psi, run.Env, workDir);
         return psi;
     }
+
+    public ProcessStartInfo? BuildLinkProcess(string repoRoot, string outFile, StageSpec compile, string workDir)
+        => EmperorLink.Build(repoRoot, outFile, compile.Args, workDir);
 }
 
-/// <summary>Native EmperorPenguin binary (Pass2 = tmp/pass2, Pass3 = tmp/pass3).</summary>
+/// <summary>Native EmperorPenguin binary (Pass2 = build/bootstrap/pass2, Pass3 = build/bootstrap/pass3).</summary>
 public sealed class EmperorNativeBackend : ICompilerBackend
 {
     private readonly string _binary;
@@ -1282,6 +1442,62 @@ public sealed class EmperorNativeBackend : ICompilerBackend
         all.Add("-o");
         all.Add(exeFile);
         var psi = new ProcessStartInfo { FileName = _binary, Arguments = ArgumentBuilder.Build(all), WorkingDirectory = repoRoot };
+        EnvHelper.ApplyEnv(psi, compile.Env, workDir);
+        return psi;
+    }
+
+    public ProcessStartInfo BuildRunProcess(string exeFile, StageSpec run, string workDir)
+    {
+        var psi = new ProcessStartInfo { FileName = exeFile, Arguments = ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args, workDir)).Any() ? ArgumentBuilder.Build(ArgumentBuilder.SplitArgs(EnvHelper.Expand(run.Args, workDir))) : "", WorkingDirectory = Directory.GetParent(exeFile)?.FullName ?? exeFile };
+        EnvHelper.ApplyEnv(psi, run.Env, workDir);
+        return psi;
+    }
+
+    public ProcessStartInfo? BuildLinkProcess(string repoRoot, string outFile, StageSpec compile, string workDir)
+        => EmperorLink.Build(repoRoot, outFile, compile.Args, workDir);
+}
+
+/// <summary>
+/// Prebuilt executable: no compile happens — Compile.Args names an already-built
+/// executable (repo-root-relative or absolute; ${WORKDIR}/${PENGUIN_ROOT} expand).
+/// The "compile" stage copies it into the per-combo workdir as out.exe (so run
+/// + artifacts behave exactly like a natively compiled case) and the Run stage
+/// executes it. Lets heavyweight programs — e.g. the 16k-line LSP server built
+/// once per milestone via build/bootstrap/pass3 — run through the full md e2e lifecycle
+/// (stdin-fed, byte-exact stdout) without recompiling per test. NOT part of
+/// AllCompilers/--probe (probing every test with a copy backend is meaningless).
+/// </summary>
+public sealed class PrebuiltExeBackend : ICompilerBackend
+{
+    public CompilerKind Kind => CompilerKind.Prebuilt;
+    public bool IsInterpreted => false;
+
+    public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile, string workDir)
+    {
+        var src = EnvHelper.Expand(compile.Args, workDir).Trim();
+        if (src.Length == 0)
+            throw new FormatException("Prebuilt backend requires Compile.Args = <path to the prebuilt executable>.");
+        if (!Path.IsPathRooted(src)) src = Path.Combine(repoRoot, src);
+        // cp keeps the artifact in the per-combo workdir exactly like a real compile.
+        var psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo { FileName = "cmd", Arguments = ArgumentBuilder.Build("/c", "copy", "/y", src, exeFile), WorkingDirectory = repoRoot }
+            : new ProcessStartInfo { FileName = "/bin/cp", Arguments = ArgumentBuilder.Build("--", src, exeFile), WorkingDirectory = repoRoot };
+        // A lib-linked prebuilt exe (rpath $ORIGIN, e.g. build/lsp + build/libemperorpenguin.penguin-lib)
+        // must have its companion shared library copied BESIDE the workdir copy or the copy
+        // cannot start. Copy any sibling *.penguin-lib of the source exe.
+        var libDir = Path.GetDirectoryName(src);
+        if (Directory.Exists(libDir))
+        {
+            foreach (var lib in Directory.GetFiles(libDir, "*.penguin-lib"))
+            {
+                var libDest = Path.Combine(Path.GetDirectoryName(exeFile) ?? ".", Path.GetFileName(lib));
+                var libPsi = OperatingSystem.IsWindows()
+                    ? new ProcessStartInfo { FileName = "cmd", Arguments = ArgumentBuilder.Build("/c", "copy", "/y", lib, libDest), WorkingDirectory = repoRoot }
+                    : new ProcessStartInfo { FileName = "/bin/cp", Arguments = ArgumentBuilder.Build("--", lib, libDest), WorkingDirectory = repoRoot };
+                using var libProc = System.Diagnostics.Process.Start(libPsi);
+                libProc?.WaitForExit(30_000);
+            }
+        }
         EnvHelper.ApplyEnv(psi, compile.Env, workDir);
         return psi;
     }
@@ -1467,6 +1683,20 @@ public static class TestRunner
                 if (!proc.TimedOut && !stage.ExpectedStderr.IsDiscard &&
                     !stage.ExpectedStderr.Evaluate(proc.Stderr, out var s2) && s2.Length > 0)
                     sf.Add($"build {bi + 1} stderr: {s2}");
+                // Emission-only compilers write .ll (+ .libmeta); link the
+                // artifact via the emperor driver script before later stages
+                // (or the run) consume it. Skipped for failed/negative builds
+                // and when nothing downstream needs the linked artifact.
+                if (proc.ExitCode == 0 && !proc.TimedOut
+                    && (bi < test.Builds.Count - 1 || test.Run != null)
+                    && backend.BuildLinkProcess(repoRoot, artifactPath, stage, workDir) is { } linkPsi)
+                {
+                    linkPsi.Environment["TMPDIR"] = workDir;
+                    var lproc = await ProcessRunner.RunAsync(linkPsi, null, opts.TimeoutCompileSec * 1000);
+                    await WriteLogAsync(Path.Combine(workDir, $"build{bi + 1}.link.log"), linkPsi, lproc);
+                    if (lproc.ExitCode != 0)
+                        sf.Add($"build {bi + 1} link exit {lproc.ExitCode} ({Program.Truncate(lproc.Stderr.Trim(), 400)})");
+                }
                 stageResult.Failures = sf.ToArray();
                 if (sf.Count > 0) buildFailures.AddRange(sf);
             }
@@ -1487,6 +1717,31 @@ public static class TestRunner
                 return result;
             }
             return await RunStageAsync(test, backend, repoRoot, workDir, lastExe, result, opts, ct, null, null);
+        }
+
+        // ── Run LSP (no compile): launch the prebuilt server binary named in Run.Args ──
+        if (test.IsRunLsp)
+        {
+            var exe = EnvHelper.Expand(test.Run!.Args, workDir).Trim();
+            if (!Path.IsPathRooted(exe)) exe = Path.Combine(repoRoot, exe);
+            if (!File.Exists(exe))
+            {
+                result.Status = Status.Error;
+                result.Message = $"prebuilt server binary not found at '{exe}' (build it first, e.g. make lsp)";
+                await WriteResultJsonAsync(workDir, result);
+                return result;
+            }
+            // Run from the repo root: the LSP resolves its stdlib cwd-first, and a
+            // cross-file stdlib miss silently strips symbols (masquerading as a
+            // miscompilation), so the session must not start from an arbitrary cwd.
+            var runPsi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = "",
+                WorkingDirectory = repoRoot,
+            };
+            EnvHelper.ApplyEnv(runPsi, test.Run.Env, workDir);
+            return await RunStageAsync(test, backend, repoRoot, workDir, exe, result, opts, ct, null, null, runPsi);
         }
 
         // ── Compile stage ──
@@ -1524,6 +1779,18 @@ public static class TestRunner
         if (!cproc.TimedOut && !test.Compile.ExpectedStderr.IsDiscard)
         {
             if (!test.Compile.ExpectedStderr.Evaluate(cproc.Stderr, out var r) && r.Length > 0) failures.Add("compile stderr: " + r);
+        }
+        // Emission-only compilers write .ll; link the exe via the emperor
+        // driver script before the run stage executes it (compile-only tests
+        // never need the linked artifact).
+        if (!isNegative && failures.Count == 0 && test.Run != null
+            && backend.BuildLinkProcess(repoRoot, exeFile, test.Compile, workDir) is { } exeLinkPsi)
+        {
+            exeLinkPsi.Environment["TMPDIR"] = workDir;
+            var lproc = await ProcessRunner.RunAsync(exeLinkPsi, null, opts.TimeoutCompileSec * 1000);
+            await WriteLogAsync(Path.Combine(workDir, "compile.link.log"), exeLinkPsi, lproc);
+            if (lproc.ExitCode != 0)
+                failures.Add($"link exit {lproc.ExitCode} ({Program.Truncate(lproc.Stderr.Trim(), 400)})");
         }
         compileStage.Failures = failures.ToArray();
 
@@ -1563,7 +1830,7 @@ public static class TestRunner
     private static async Task<ComboResult> RunStageAsync(
         MarkdownTestCase test, ICompilerBackend backend, string repoRoot, string workDir, string exeFile,
         ComboResult result, Options opts, CancellationToken ct,
-        ProcResult? compileProc, StageResult? compileStage)
+        ProcResult? compileProc, StageResult? compileStage, ProcessStartInfo? psiOverride = null)
     {
         StageResult runStage;
         string runStdout;
@@ -1592,9 +1859,9 @@ public static class TestRunner
                 await WriteResultJsonAsync(workDir, result);
                 return result;
             }
-            var runPsi = backend.BuildRunProcess(exeFile, test.Run!, workDir)!;
+            var runPsi = psiOverride ?? backend.BuildRunProcess(exeFile, test.Run!, workDir)!;
             runPsi.Environment["TMPDIR"] = workDir;
-            var rproc = await ProcessRunner.RunAsync(runPsi, test.Run!.Stdin, opts.TimeoutRunSec * 1000);
+            var rproc = await ProcessRunner.RunAsync(runPsi, test.Run!.Stdin, opts.TimeoutRunSec * 1000, closeStdin: test.Run.StdinClose);
             runStage = new StageResult
             {
                 ExitCode = rproc.ExitCode,
@@ -1714,10 +1981,12 @@ public static class BootstrapGuard
     public static string? Check(string repoRoot, IEnumerable<CompilerKind> used)
     {
         var set = used.ToHashSet();
-        if (set.Contains(CompilerKind.EmperorPenguinPass2) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass2")))
-            return $"'tmp/pass2' not found. EmperorPenguin Pass2 requires a bootstrapped native binary.\nRun './penguin -b' first.";
-        if (set.Contains(CompilerKind.EmperorPenguinPass3) && !File.Exists(Path.Combine(repoRoot, "tmp", "pass3")))
-            return $"'tmp/pass3' not found. EmperorPenguin Pass3 requires a bootstrapped native binary.\nRun './penguin -b' first.";
+        if (set.Contains(CompilerKind.EmperorPenguinPass1) && !File.Exists(EmperorLink.ScriptPath(repoRoot)))
+            return $"'{EmperorLink.ScriptPath(repoRoot)}' not found. EmperorPenguin Pass1 links its emission through the emperor driver script.";
+        if (set.Contains(CompilerKind.EmperorPenguinPass2) && !File.Exists(Path.Combine(repoRoot, "build", "bootstrap", "pass2")))
+            return "'build/bootstrap/pass2' not found. EmperorPenguin Pass2 requires a bootstrapped native binary.\nRun 'make bootstrap' first.";
+        if (set.Contains(CompilerKind.EmperorPenguinPass3) && !File.Exists(Path.Combine(repoRoot, "build", "bootstrap", "pass3")))
+            return "'build/bootstrap/pass3' not found. EmperorPenguin Pass3 requires a bootstrapped native binary.\nRun 'make bootstrap' first.";
         return null;
     }
 }
@@ -1757,9 +2026,11 @@ public static class BaselineComparer
     private static CompilerKind ParseKey(string s) => s switch
     {
         "babypenguin" => CompilerKind.BabyPenguin,
+        "baby cs" => CompilerKind.BabyPenguinCs,
         "pass1" => CompilerKind.EmperorPenguinPass1,
         "pass2" => CompilerKind.EmperorPenguinPass2,
         "pass3" => CompilerKind.EmperorPenguinPass3,
+        "prebuilt" => CompilerKind.Prebuilt,
         _ => CompilerKind.BabyPenguin,
     };
 

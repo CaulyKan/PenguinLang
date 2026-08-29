@@ -158,6 +158,18 @@ class BoundMetaContinueStatement {
     }
 }
 
+// try/catch (sjlj): the try statements run between _try_setup/_try_leave
+// calls with an inline _setjmp landing pad; a throw longjmps back into the
+// ENCLOSING FUNCTION's live frame (the setjmp buffer is that function's own
+// entry alloca — see IRGenerator's try lowering), and the catch arm runs
+// with `catch_var_symbol` bound to a freshly constructed RuntimeError.
+class BoundTryCatchStatement {
+    try_statements: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+    catch_var_symbol: mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
+    catch_statements: mut _utils.List<BoundStatement> = new _utils.List<BoundStatement>();
+    location: mut SourceLocation = new SourceLocation("", 0, 0);
+}
+
 enum BoundStatement {
     expression: BoundExpressionStatement;
     assignment: BoundAssignmentStatement;
@@ -174,6 +186,7 @@ enum BoundStatement {
     meta_for_stmt: BoundMetaForStatement;
     meta_break_stmt: BoundMetaBreakStatement;
     meta_continue_stmt: BoundMetaContinueStatement;
+    try_catch: BoundTryCatchStatement;
 }
 
 }

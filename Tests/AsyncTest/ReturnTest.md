@@ -4,6 +4,7 @@ Return from initial block stops execution of that block; subsequent initial bloc
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -18,7 +19,7 @@ Return from initial block stops execution of that block; subsequent initial bloc
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

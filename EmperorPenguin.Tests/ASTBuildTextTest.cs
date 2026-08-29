@@ -524,45 +524,74 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
-    let ev = new emperor.EventDefinition("""");
-    ev.name = ""Click"";
-    let d = new emperor.Definition.event_def(ev);
+    let port = new emperor.PortDefinition(""x"");
+    port.is_input = true;
+    let ts = new emperor.TypeSpecifier();
+    ts.name = ""i32"";
+    port.type_spec = new Option<emperor.TypeSpecifier>.some(ts);
+    let d = new emperor.Definition.port_def(port);
     println(d.build_text());
 }
-", "event Click;")]
-    public void AST_EventDefinition_BuildText() => Batch.Assert();
+", "input x: i32;")]
+    public void AST_PortDefinition_BuildText() => Batch.Assert();
 
     [Fact]
     [BatchTest(@"
 initial {
-    let body_expr = new emperor.ConstantExpression("""");
-    body_expr.value = ""42"";
+    let port = new emperor.PortDefinition(""line"");
+    port.is_input = false;
+    let ts = new emperor.TypeSpecifier();
+    ts.name = ""bool"";
+    port.type_spec = new Option<emperor.TypeSpecifier>.some(ts);
+    let dv = new emperor.BoolLiteralExpression();
+    dv.value = ""true"";
+    port.default_expr = new Option<emperor.Expression>.some(new emperor.Expression.bool_literal(dv));
+    let d = new emperor.Definition.port_def(port);
+    println(d.build_text());
+}
+", "output line: bool = true;")]
+    public void AST_PortDefinition_OutputDefault_BuildText() => Batch.Assert();
+
+    [Fact]
+    [BatchTest(@"
+initial {
     let block = new emperor.CodeBlockExpression();
-    block.trailing_expr = new Option<emperor.Expression>.some(new emperor.Expression.constant(body_expr));
-    let on_node = new emperor.OnRoutineDefinition();
-    on_node.event_name = ""click"";
-    on_node.body = new Option<emperor.Expression>.some(new emperor.Expression.code_block(block));
-    let d = new emperor.Definition.on_routine_def(on_node);
+    let cd = new emperor.ConstructDefinition();
+    cd.body = new Option<emperor.Expression>.some(new emperor.Expression.code_block(block));
+    let d = new emperor.Definition.construct_def(cd);
     println(d.build_text());
 }
-", "on click { 42 }")]
-    public void AST_OnRoutineDefinition_BuildText() => Batch.Assert();
+", "construct { }")]
+    public void AST_ConstructDefinition_BuildText() => Batch.Assert();
 
     [Fact]
     [BatchTest(@"
 initial {
-    let event_expr = new emperor.IdentifierExpression("""");
-    event_expr.name = ""click"";
-    let arg = new emperor.ConstantExpression("""");
-    arg.value = ""42"";
-    let emit_node = new emperor.EmitEventStatement();
-    emit_node.event_expr = new Option<emperor.Expression>.some(new emperor.Expression.identifier(event_expr));
-    emit_node.argument = new Option<emperor.Expression>.some(new emperor.Expression.constant(arg));
-    let s = new emperor.Statement.emit_event(emit_node);
+    let src = new emperor.IdentifierExpression("""");
+    src.name = ""a"";
+    let dst = new emperor.IdentifierExpression("""");
+    dst.name = ""b"";
+    let node = new emperor.ConnectStatement();
+    node.source = new Option<emperor.Expression>.some(new emperor.Expression.identifier(src));
+    node.sink = new Option<emperor.Expression>.some(new emperor.Expression.identifier(dst));
+    let s = new emperor.Statement.connect_stmt(node);
     println(s.build_text());
 }
-", "emit click(42);")]
-    public void AST_EmitEventStatement_BuildText() => Batch.Assert();
+", "connect(a, b);")]
+    public void AST_ConnectStatement_BuildText() => Batch.Assert();
+
+    [Fact]
+    [BatchTest(@"
+initial {
+    let w = new emperor.WaitExpression();
+    let n = new emperor.ConstantExpression("""");
+    n.value = ""3"";
+    w.expression = new Option<emperor.Expression>.some(new emperor.Expression.constant(n));
+    w.is_tick_unit = true;
+    println(new emperor.Expression.wait_expr(w).build_text());
+}
+", "wait 3 tick")]
+    public void AST_WaitTick_BuildText() => Batch.Assert();
 
     [Fact]
     [BatchTest(@"
@@ -1020,54 +1049,6 @@ initial {
 }
 ", "#template(T) interface Comparable{ fun compare(other: T) -> i64; }")]
     public void AST_InterfaceDefinition_WithTemplate_BuildText() => Batch.Assert();
-
-    [Fact]
-    [BatchTest(@"
-initial {
-    let target = new emperor.IdentifierExpression("""");
-    target.name = ""event"";
-    let member = new emperor.MemberAccessExpression();
-    member.base_expr = new Option<emperor.Expression>.some(new emperor.Expression.identifier(target));
-    member.member_name = ""click"";
-    let body_expr = new emperor.ConstantExpression("""");
-    body_expr.value = ""42"";
-    let block = new emperor.CodeBlockExpression();
-    block.trailing_expr = new Option<emperor.Expression>.some(new emperor.Expression.constant(body_expr));
-    let on_node = new emperor.OnRoutineDefinition();
-    on_node.event_expr = new Option<emperor.Expression>.some(new emperor.Expression.member_access(member));
-    on_node.body = new Option<emperor.Expression>.some(new emperor.Expression.code_block(block));
-    let d = new emperor.Definition.on_routine_def(on_node);
-    println(d.build_text());
-}
-", "on event.click { 42 }")]
-    public void AST_OnRoutineDefinition_WithEventExpr_BuildText() => Batch.Assert();
-
-    [Fact]
-    [BatchTest(@"
-initial {
-    let target = new emperor.IdentifierExpression("""");
-    target.name = ""event"";
-    let member = new emperor.MemberAccessExpression();
-    member.base_expr = new Option<emperor.Expression>.some(new emperor.Expression.identifier(target));
-    member.member_name = ""click"";
-    let param = new emperor.Parameter("""");
-    param.name = ""e"";
-    let param_type = new emperor.TypeSpecifier();
-    param_type.name = ""Event"";
-    param.type_spec = new Option<emperor.TypeSpecifier>.some(param_type);
-    let body_expr = new emperor.ConstantExpression("""");
-    body_expr.value = ""0"";
-    let block = new emperor.CodeBlockExpression();
-    block.trailing_expr = new Option<emperor.Expression>.some(new emperor.Expression.constant(body_expr));
-    let on_node = new emperor.OnRoutineDefinition();
-    on_node.event_expr = new Option<emperor.Expression>.some(new emperor.Expression.member_access(member));
-    on_node.parameter = new Option<emperor.Parameter>.some(param);
-    on_node.body = new Option<emperor.Expression>.some(new emperor.Expression.code_block(block));
-    let d = new emperor.Definition.on_routine_def(on_node);
-    println(d.build_text());
-}
-", "on event.click(e: Event) { 0 }")]
-    public void AST_OnRoutineDefinition_WithEventExprAndParam_BuildText() => Batch.Assert();
 
     [Fact]
     [BatchTest(@"

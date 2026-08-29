@@ -1,5 +1,5 @@
 // io standard library tour (EmperorPenguin native: compile with
-// `./penguin -3 Examples/io_tour.penguin`). The `io` namespace is
+// `build/pass3 Examples/io_tour.penguin`). The `io` namespace is
 // auto-loaded next to core_builtin for every EmperorPenguin-compiled program.
 
 fun write_config(path: string) -> bool {

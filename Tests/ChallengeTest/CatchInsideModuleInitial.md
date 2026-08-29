@@ -4,6 +4,7 @@ try/catch works inside a class-body initial routine (yield-path interpreter): th
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -22,7 +23,7 @@ initial { s.write(1); let got : i64 = wait m.y; println("got:" + cast<string>(go
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

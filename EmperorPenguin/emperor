@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# emperor — external driver for the EmperorPenguin compiler.
+#
+# The compiler binary (emperor_penguin_llvmir_emitter) only emits
+# platform-independent LLVM IR (.ll files). This script owns everything that
+# touches the LLVM toolchain: environment checks, the C runtime build
+# (make -C EmperorPenguin/std/c), and the final clang link (native or cross,
+# exe or .penguin-lib, with or without the meta JIT).
+#
+# Usage:
+#   emperor [--emitter <path>] <src...> [flags] -o <out>
+#       Full pipeline: run the emitter, build the C runtime, link.
+#       Semantic flags (-vv, --enable-coroutine, --disable-dl, --define, ...)
+#       are forwarded to the emitter verbatim.
+#   emperor link <file.ll> -o <out> [-enable-meta] [-target=win64]
+#                [-llvm-win <dir>] [--consumer-lib <so>]...
+#       Link a prebuilt .ll (the .ll is platform-independent, so one file can
+#       be linked for every target). <file.def> beside the .ll feeds the
+#       native-MSVC meta export table when needed.
+#   emperor link-lib <file.ll> <file.libmeta> -o <out.penguin-lib> [-target=win64]
+#       Link a dyn-lib .so from the .ll and append the JSON metadata +
+#       PENGUINLIB footer.
+#
+# Environment overrides: EMPEROR_PENGUIN_ROOT (tree containing
+# EmperorPenguin/std), EMPEROR_EMITTER, CLANG, LLVM_CONFIG, OPT (passed
+# through to the C runtime make), MINGW_PREFIX / WIN_CC / WIN_CXX / WIN_AR /
+# WIN_CLANG (linux -> win cross toolchain), LLVM_WIN_PREFIX (dir with
+# lib/libLLVM-22.dll.a + include/ for the Windows meta JIT).
+set -u
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+CALLER_CWD=$PWD
+
+die() { echo "[emperor] error: $*" >&2; exit 1; }
+info() { echo "[emperor] $*" >&2; }
+
+# ── locate the PenguinLang tree (dir containing EmperorPenguin/) ──────
+if [ -n "${EMPEROR_PENGUIN_ROOT:-}" ] && [ -d "${EMPEROR_PENGUIN_ROOT}/EmperorPenguin/std" ]; then
+    ROOT=$EMPEROR_PENGUIN_ROOT
+elif [ -d "$SCRIPT_DIR/EmperorPenguin/std" ]; then
+    ROOT=$SCRIPT_DIR                       # released layout: server/<platform>/
+elif [ -d "$SCRIPT_DIR/../EmperorPenguin/std" ]; then
+    ROOT=$(cd "$SCRIPT_DIR/.." && pwd)     # dev layout: <repo>/EmperorPenguin/
+else
+    die "cannot locate EmperorPenguin/std relative to $SCRIPT_DIR; set EMPEROR_PENGUIN_ROOT"
+fi
+
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) HOST_WIN=1 ;;
+    *) HOST_WIN= ;;
+esac
+
+# ── cross toolchain defaults (linux -> win) ───────────────────────────
+MINGW_PREFIX=${MINGW_PREFIX:-/opt/llvm-mingw}
+WIN_CC=${WIN_CC:-$MINGW_PREFIX/bin/x86_64-w64-mingw32-clang}
+WIN_CXX=${WIN_CXX:-$MINGW_PREFIX/bin/x86_64-w64-mingw32-clang++}
+WIN_AR=${WIN_AR:-$MINGW_PREFIX/bin/x86_64-w64-mingw32-ar}
+WIN_CLANG=${WIN_CLANG:-$WIN_CC}
+
+OPT_EMITTER=
+
+# Windows LLVM for the meta JIT: -llvm-win flag > LLVM_WIN_PREFIX env >
+# vendored thirdparty package.
+resolve_llvm_win() {
+    if [ -n "${RESOLVED_LLVM_WIN:-}" ]; then
+        echo "$RESOLVED_LLVM_WIN"
+        return
+    fi
+    local p=""
+    if [ -n "${LLVM_WIN_PREFIX:-}" ]; then
+        p=$LLVM_WIN_PREFIX
+    elif [ -f "$ROOT/thirdparty/mingw-w64-x86_64-llvm-libs/lib/libLLVM-22.dll.a" ]; then
+        p=$(cd "$ROOT/thirdparty/mingw-w64-x86_64-llvm-libs" && pwd)
+    fi
+    RESOLVED_LLVM_WIN=$p
+    echo "$p"
+}
+
+resolve_emitter() {
+    if [ -n "$OPT_EMITTER" ]; then echo "$OPT_EMITTER"; return; fi
+    if [ -n "${EMPEROR_EMITTER:-}" ]; then echo "$EMPEROR_EMITTER"; return; fi
+    local name=emperor_penguin_llvmir_emitter
+    if [ -n "$HOST_WIN" ]; then name=$name.exe; fi
+    if [ -x "$SCRIPT_DIR/$name" ]; then echo "$SCRIPT_DIR/$name"; return; fi
+    die "no emitter found: pass --emitter <path>, set EMPEROR_EMITTER, or place $name beside this script"
+}
+
+# Absolutize against the caller's cwd (the emitter runs with cwd=ROOT).
+abs_path() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *)  echo "$CALLER_CWD/$1" ;;
+    esac
+}
+
+select_clang() {  # $1 = target ("" native / win64)
+    if [ "$1" = win64 ] && [ -z "$HOST_WIN" ]; then
+        echo "$WIN_CLANG"
+    else
+        echo "${CLANG:-clang}"
+    fi
+}
+
+# Build the Penguin C runtime (libcore_builtin.a + meta archives) into $1.
+build_runtime() {  # $1 = OUTPUT_DIR, $2 = target
+    local tmp=$1 target=$2
+    command -v make >/dev/null 2>&1 || die "make not found on PATH (required to build the Penguin C runtime)"
+    local envs=()
+    if [ -n "$HOST_WIN" ]; then
+        # Native windows host: explicit tool names keep the runtime makefile's
+        # mingw-triple default from taking over, and CROSS=win64 steers it onto
+        # the vendored Windows-LLVM JIT path (every link here is PE anyway).
+        envs=(CC=clang CXX=clang++ AR=llvm-ar CLANG=clang CROSS=win64)
+    elif [ "$target" = win64 ]; then
+        envs=(CC="$WIN_CC" CXX="$WIN_CXX" AR="$WIN_AR" CLANG="$WIN_CLANG")
+    fi
+    if [ ${#envs[@]} -gt 0 ]; then
+        env "${envs[@]}" make --silent -C "$ROOT/EmperorPenguin/std/c" OUTPUT_DIR="$tmp" \
+            || die "C runtime build failed (make -C EmperorPenguin/std/c)"
+    else
+        make --silent -C "$ROOT/EmperorPenguin/std/c" OUTPUT_DIR="$tmp" \
+            || die "C runtime build failed (make -C EmperorPenguin/std/c)"
+    fi
+}
+
+# Link a native executable. Mirrors the link command the compiler used to run
+# in-process (LLVMCompiler.link_exe before the emitter/link split).
+#   link_exe <ll> <out> <meta:0|1> <target> <llvm_win> [consumer libs...]
+link_exe() {
+    local ll=$1 out=$2 meta=$3 target=$4 llvm_win=$5
+    shift 5
+    local libs=("$@")
+
+    local clang
+    clang=$(select_clang "$target")
+    command -v "$clang" >/dev/null 2>&1 \
+        || die "clang '$clang' not found${target:+ (target $target)}; set CLANG/WIN_CLANG or install LLVM"
+
+    local tmp
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/emperor.XXXXXX") || die "mktemp failed"
+    build_runtime "$tmp" "$target"
+
+    # Link through a stable basename: the linked output's STT_FILE symbol
+    # records the input .ll's name (the old in-process pipeline always linked
+    # <tmp>/combined.ll) — keep that name so identical IR links to identical
+    # binaries regardless of the .ll's path (bootstrap md5 convergence).
+    local ll_linked=$ll
+    if [ "$(basename "$ll")" != "combined.ll" ]; then
+        cp -f "$ll" "$tmp/combined.ll"
+        ll_linked=$tmp/combined.ll
+    fi
+
+    local is_win=
+    [ "$target" = win64 ] && is_win=1
+
+    # Consumer dyn-lib closure: the emitter wrote every .so to link (incl.
+    # libs resolved recursively through another lib's deps) beside the .ll as
+    # <base>.libs, one path per line. Explicit --consumer-lib flags add to it.
+    local libs_file="${ll%.ll}.libs"
+    if [ -f "$libs_file" ]; then
+        while IFS= read -r l; do
+            [ -n "$l" ] && libs+=("$l")
+        done < "$libs_file"
+    fi
+
+    local args=("$ll_linked" "$tmp/libcore_builtin.a" -Wno-override-module)
+
+    if [ "$meta" = 1 ]; then
+        if [ -z "$is_win" ]; then
+            local llvm_config=${LLVM_CONFIG:-llvm-config}
+            command -v "$llvm_config" >/dev/null 2>&1 \
+                || die "--enable-meta on linux needs a host LLVM with llvm-config on PATH"
+            local ldflags
+            ldflags=$("$llvm_config" --ldflags --libs core orcjit native 2>/dev/null) \
+                || die "llvm-config failed (host LLVM incomplete for the meta JIT)"
+            [ -f "$tmp/libpenguin_jit.a" ] \
+                || die "$tmp/libpenguin_jit.a missing: the C runtime make built no meta JIT (llvm-config usable?)"
+            # shellcheck disable=SC2206  # llvm-config output is whitespace-separated flags
+            args+=($ldflags)
+            # --whole-archive: the exe's own code may not reference the JIT
+            # wrappers (a lib-consumer exe delegates meta to the .so), but the
+            # .so's undefined _emperor_penguin_jit_* refs bind from this exe at
+            # load time (-rdynamic) — the archive members must be present.
+            args+=(-Wl,--whole-archive "$tmp/libpenguin_jit.a" -Wl,--no-whole-archive
+                   -rdynamic -Wl,--export-dynamic -lstdc++)
+        elif [ -n "$llvm_win" ] && [ -f "$tmp/libpenguin_jit.a" ]; then
+            if [[ $clang == *mingw* ]]; then
+                args+=("$tmp/libpenguin_jit.a" "$llvm_win/lib/libLLVM-22.dll.a"
+                       -Wl,--export-all-symbols -lc++ -lwinpthread)
+            else
+                # Native Windows LLVM drives lld-link: bulk exports need a
+                # /DEF file (the emitter wrote the export table beside the
+                # .ll: the JIT resolves host symbols through the process
+                # export table) and the C++ runtime via /defaultlib.
+                local def="${ll%.ll}.def"
+                [ -f "$def" ] || die "missing export table $def (the emitter writes it beside the .ll)"
+                args+=("$tmp/libpenguin_jit.a" "$llvm_win/lib/libLLVM-22.dll.a"
+                       "-Wl,/DEF:$def" "-Wl,/defaultlib:msvcprt.lib")
+            fi
+        else
+            if [ -n "$llvm_win" ]; then
+                info "warning: --enable-meta requested but the C runtime make built no libpenguin_jit.a (Windows LLVM incomplete); linking no-op JIT stubs"
+            else
+                info "warning: --enable-meta requested but no Windows LLVM (-llvm-win) is available; linking no-op JIT stubs"
+            fi
+            args+=("$tmp/meta_stubs.o")
+        fi
+    else
+        args+=("$tmp/meta_stubs.o")
+    fi
+
+    # Dyn-lib consumer: link the loaded .penguin-lib shared objects and export
+    # this exe's runtime symbols so the lib's undefined refs bind.
+    if [ ${#libs[@]} -gt 0 ]; then
+        args+=("${libs[@]}")
+        if [ -n "$is_win" ]; then
+            args+=(-Wl,--export-all-symbols)
+        else
+            # Find the linked .penguin-lib beside the executable at runtime
+            # (link-lib stamps the lib's basename as its SONAME, so DT_NEEDED
+            # is a bare name resolved via rpath). The literal $ORIGIN must
+            # reach clang verbatim (no shell expansion).
+            args+=(-rdynamic -Wl,--export-dynamic "-Wl,-rpath,\$ORIGIN" -Wl,--allow-shlib-undefined)
+        fi
+    fi
+
+    # 32MB stack, linker-flavored: GNU ld style for the llvm-mingw cross, MSVC
+    # style (lld-link /STACK:) for a native Windows LLVM clang — the GNU form
+    # under lld-link dies as LNK1181 "cannot open 33554432.obj".
+    if [ -n "$is_win" ]; then
+        if [[ $clang == *mingw* ]]; then
+            args+=(-Wl,--stack,33554432)
+        else
+            args+=("-Wl,/STACK:33554432")
+        fi
+    else
+        args+=(-Wl,-z,stack-size=33554432)
+    fi
+    args+=(-o "$out")
+
+    mkdir -p "$(dirname "$out")" 2>/dev/null
+    info "linking: $clang ${args[*]}"
+    "$clang" "${args[@]}" || die "clang link failed"
+    info "linked $out"
+    rm -rf "$tmp"
+}
+
+# Link a shared-object .penguin-lib and append the JSON metadata + PENGUINLIB
+# footer (footer offsets are the .so length measured BEFORE appending).
+#   link_lib <ll> <libmeta-file> <out> <target>
+link_lib() {
+    local ll=$1 meta_file=$2 out=$3 target=$4
+
+    [ -s "$meta_file" ] || die "no metadata produced (dynamic linking unavailable in this compiler build): $meta_file"
+
+    local clang
+    clang=$(select_clang "$target")
+    command -v "$clang" >/dev/null 2>&1 || die "clang '$clang' not found"
+
+    # Stable link basename (see link_exe): identical IR + metadata must link
+    # to an identical .penguin-lib regardless of the input paths.
+    local lib_tmp=
+    local ll_linked=$ll
+    if [ "$(basename "$ll")" != "combined.ll" ]; then
+        lib_tmp=$(mktemp -d "${TMPDIR:-/tmp}/emperor.XXXXXX") || die "mktemp failed"
+        cp -f "$ll" "$lib_tmp/combined.ll"
+        ll_linked=$lib_tmp/combined.ll
+    fi
+
+    local args=("$ll_linked" -shared -Wno-override-module)
+    if [ "$target" = win64 ]; then
+        # PE DLL with exported penguin symbols; skip the exe-only stack flag.
+        args+=(-Wl,--export-all-symbols)
+    else
+        args+=(-fPIC "-Wl,-soname,$(basename "$out")")
+    fi
+    args+=(-o "$out")
+
+    mkdir -p "$(dirname "$out")" 2>/dev/null
+    info "linking lib: $clang ${args[*]}"
+    "$clang" "${args[@]}" || die "clang -shared link failed"
+
+    local so_size meta_size
+    so_size=$(wc -c < "$out")
+    meta_size=$(wc -c < "$meta_file")
+    cat "$meta_file" >> "$out" || die "failed to append metadata to $out"
+    printf 'PENGUINLIB:%s:%s\n' "$so_size" "$meta_size" >> "$out"
+    [ -n "$lib_tmp" ] && rm -rf "$lib_tmp"
+    info "linked $out (appended ${meta_size}b metadata)"
+}
+
+# Every link on a native windows host is PE; an empty target means win64 there.
+normalize_target() {
+    if [ -n "$HOST_WIN" ] && [ -z "$TARGET" ]; then TARGET=win64; fi
+}
+
+# ── shared option parsing for link / link-lib / full mode ─────────────
+# Sets: OUT, META, TARGET, LLVM_WIN, LIBS (array), POSITIONALS (array).
+OUT=
+META=0
+TARGET=
+LLVM_WIN=
+LIBS=()
+POSITIONALS=()
+
+parse_link_opts() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -o|--output)
+                shift; [ $# -gt 0 ] || die "-o needs a value"
+                OUT=$1 ;;
+            -enable-meta|--enable-meta) META=1 ;;
+            -target|--target)
+                shift; [ $# -gt 0 ] || die "-target needs a value"
+                TARGET=$1 ;;
+            -target=*|--target=*) TARGET=${1#*=} ;;
+            -llvm-win|--llvm-win)
+                shift; [ $# -gt 0 ] || die "-llvm-win needs a value"
+                RESOLVED_LLVM_WIN=$1 ;;
+            -llvm-win=*|--llvm-win=*) RESOLVED_LLVM_WIN=${1#*=} ;;
+            --consumer-lib)
+                shift; [ $# -gt 0 ] || die "--consumer-lib needs a value"
+                LIBS+=("$(abs_path "$1")") ;;
+            --emitter)
+                shift; [ $# -gt 0 ] || die "--emitter needs a value"
+                OPT_EMITTER=$1 ;;
+            -*) die "unknown option: $1" ;;
+            *)  POSITIONALS+=("$1") ;;
+        esac
+        shift
+    done
+    LLVM_WIN=$(resolve_llvm_win)
+    normalize_target
+    [ ${#POSITIONALS[@]} -gt 0 ] || die "missing input file"
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────
+case "${1:-}" in
+link|link-lib)
+    MODE=$1
+    shift
+    parse_link_opts "$@"
+    if [ "$MODE" = link ]; then
+        [ ${#POSITIONALS[@]} -eq 1 ] || die "link takes exactly one <file.ll>"
+        ll=$(abs_path "${POSITIONALS[0]}")
+        [ -f "$ll" ] || die "no such file: $ll"
+        [ -n "$OUT" ] || die "link needs -o <output>"
+        link_exe "$ll" "$(abs_path "$OUT")" "$META" "$TARGET" "$LLVM_WIN" ${LIBS[@]+"${LIBS[@]}"}
+    else
+        [ ${#POSITIONALS[@]} -eq 2 ] || die "link-lib takes <file.ll> <file.libmeta>"
+        ll=$(abs_path "${POSITIONALS[0]}")
+        meta_file=$(abs_path "${POSITIONALS[1]}")
+        [ -f "$ll" ] || die "no such file: $ll"
+        [ -f "$meta_file" ] || die "no such file: $meta_file"
+        [ -n "$OUT" ] || die "link-lib needs -o <output.penguin-lib>"
+        link_lib "$ll" "$meta_file" "$(abs_path "$OUT")" "$TARGET"
+    fi
+    ;;
+*)
+    # Full pipeline: emitter (semantic flags) -> C runtime -> link.
+    EMITTER_ARGS=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -o|--output)
+                shift; [ $# -gt 0 ] || die "-o needs a value"
+                OUT=$1 ;;
+            -enable-meta|--enable-meta) META=1 ;;
+            -target|--target)
+                shift; [ $# -gt 0 ] || die "-target needs a value"
+                TARGET=$1 ;;
+            -target=*|--target=*) TARGET=${1#*=} ;;
+            -llvm-win|--llvm-win)
+                shift; [ $# -gt 0 ] || die "-llvm-win needs a value"
+                RESOLVED_LLVM_WIN=$1 ;;
+            -llvm-win=*|--llvm-win=*) RESOLVED_LLVM_WIN=${1#*=} ;;
+            --lib|-lib)
+                # Consumed by the emitter (metadata/source merge) AND linked
+                # as a consumer shared object.
+                shift; [ $# -gt 0 ] || die "--lib needs a value"
+                lib=$(abs_path "$1")
+                EMITTER_ARGS+=(--lib "$lib")
+                LIBS+=("$lib") ;;
+            --emitter)
+                shift; [ $# -gt 0 ] || die "--emitter needs a value"
+                OPT_EMITTER=$1 ;;
+            -*) EMITTER_ARGS+=("$1") ;;   # semantic flag: forward verbatim
+            *)  EMITTER_ARGS+=("$(abs_path "$1")") ;;  # source file
+        esac
+        shift
+    done
+    LLVM_WIN=$(resolve_llvm_win)
+    normalize_target
+    [ ${#EMITTER_ARGS[@]} -gt 0 ] || die "no source files specified"
+    EMITTER=$(resolve_emitter)
+    OUT=${OUT:-out}
+    OUT_ABS=$(abs_path "$OUT")
+
+    # A meta-linked emitter on native windows loads libLLVM-22.dll at process
+    # start; the vendored DLLs live in <llvm-win>/bin.
+    if [ -n "$HOST_WIN" ] && [ -n "$LLVM_WIN" ]; then
+        export PATH="$LLVM_WIN/bin:$PATH"
+    fi
+
+    TMP=$(mktemp -d "${TMPDIR:-/tmp}/emperor.XXXXXX") || die "mktemp failed"
+
+    # The emitter reads the auto-loaded stdlib relative to its cwd and writes
+    # <out>.ll (+ .def / .libmeta) beside its -o; run it from the tree root.
+    # $TMP is kept on failure for debugging, removed only after success.
+    if [ "${OUT_ABS%.penguin-lib}" != "$OUT_ABS" ]; then
+        EMIT_OUT=$TMP/out.penguin-lib   # lib mode: triggers on the -o suffix
+    else
+        EMIT_OUT=$TMP/out
+    fi
+    info "emitting: (cd $ROOT) $EMITTER ${EMITTER_ARGS[*]} -o $EMIT_OUT"
+    (cd "$ROOT" && "$EMITTER" "${EMITTER_ARGS[@]}" -o "$EMIT_OUT") \
+        || die "emitter failed (kept $TMP)"
+    [ -f "$EMIT_OUT.ll" ] || die "emitter produced no $EMIT_OUT.ll (kept $TMP)"
+
+    if [ "${OUT_ABS%.penguin-lib}" != "$OUT_ABS" ]; then
+        link_lib "$EMIT_OUT.ll" "$EMIT_OUT.libmeta" "$OUT_ABS" "$TARGET"
+    else
+        link_exe "$EMIT_OUT.ll" "$OUT_ABS" "$META" "$TARGET" "$LLVM_WIN" ${LIBS[@]+"${LIBS[@]}"}
+    fi
+    rm -rf "$TMP"
+    ;;
+esac

@@ -161,7 +161,7 @@ class MetaEngine {
         result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
         // (temporarily removed for bisection)
         // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
-        // EmperorPenguin.penguins), so its emperor.penguin_meta_* extern calls
+        // EmperorPenguinPass1.penguins), so its emperor.penguin_meta_* extern calls
         // resolve against the <meta_externs> injected in compile_meta_function.
         result.push(new SourceInput("meta_runtime.penguin", _utils.file_read_text("EmperorPenguin/src/meta/meta_runtime.penguin")));
         let bound_files: mut _utils.List<string> = new _utils.List<string>();
@@ -1325,6 +1325,7 @@ class MetaEngine {
             let we: WaitExpression = expr.wait_expr;
             let r: mut WaitExpression = new WaitExpression();
             if (we.expression.is_some()) { r.expression = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(we.expression.some)); }
+            r.is_tick_unit = we.is_tick_unit;
             return new Expression.wait_expr(r);
         }
         // Leaves: pass through unchanged
@@ -1555,13 +1556,23 @@ class MetaEngine {
             if (ld.initializer.is_some()) { r.initializer = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ld.initializer.some)); }
             return new Statement.let_decl(r);
         }
-        if (stmt is Statement.emit_event) {
-            let ee: EmitEventStatement = stmt.emit_event;
-            let r: mut EmitEventStatement = new EmitEventStatement();
-            r.location = ee.location;
-            if (ee.event_expr.is_some()) { r.event_expr = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ee.event_expr.some)); }
-            if (ee.argument.is_some()) { r.argument = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(ee.argument.some)); }
-            return new Statement.emit_event(r);
+        if (stmt is Statement.connect_stmt) {
+            let cs: ConnectStatement = stmt.connect_stmt;
+            let r: mut ConnectStatement = new ConnectStatement();
+            r.location = cs.location;
+            if (cs.source.is_some()) { r.source = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(cs.source.some)); }
+            if (cs.sink.is_some()) { r.sink = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(cs.sink.some)); }
+            return new Statement.connect_stmt(r);
+        }
+        if (stmt is Statement.try_stmt) {
+            let ts: TryStatement = stmt.try_stmt;
+            let r: mut TryStatement = new TryStatement();
+            r.location = ts.location;
+            r.catch_var_name = ts.catch_var_name;
+            if (ts.catch_type_spec.is_some()) { r.catch_type_spec = new Option<TypeSpecifier>.some(ts.catch_type_spec.some); }
+            if (ts.try_block.is_some()) { r.try_block = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(ts.try_block.some)); }
+            if (ts.catch_block.is_some()) { r.catch_block = new Option<Statement>.some(this.rewrite_meta_calls_in_stmt(ts.catch_block.some)); }
+            return new Statement.try_stmt(r);
         }
         if (stmt is Statement.yield_stmt) {
             let ys: YieldStatement = stmt.yield_stmt;

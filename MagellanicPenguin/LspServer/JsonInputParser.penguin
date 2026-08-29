@@ -1,0 +1,53 @@
+// JsonInputParser: raw stdin chunks in → per-consumer-group message streams
+// out (source-side demux — the design doc's replacement for `wait any`: every
+// consumer group gets its own stream).
+//
+// Two-stage on purpose: the FEEDER parks on the chunk port and pushes every
+// complete frame body into an internal Fifo (FIFO semantics: every frame is
+// a transaction — a chunk may carry several frames, and a wire port would
+// collapse same-round writes, i.e. lose frames); the DRAINER parks on that
+// Fifo and forwards exactly ONE frame per delta round onto its output ports
+// (the one-write-per-round discipline that makes port wires lossless for the
+// canonical consume-process-produce loops downstream).
+namespace lsp {
+
+class JsonInputParser {
+    input chunks : string;
+    output session : string;
+    output docs : string;
+
+    framer: mut Framer = new Framer();
+    pending: mut __builtin.Fifo<string> = new __builtin.Fifo<string>(64, new __builtin.FifoPolicy.backpressure());
+
+    fun new(mut this) {}
+
+    fun is_session_method(this, method: string) -> bool {
+        return method == "initialize" || method == "initialized" || method == "shutdown" || method == "exit";
+    }
+
+    initial {
+        while (true) {
+            let chunk: string = wait this.chunks;
+            let frames: mut _utils.List<string> = this.framer.feed(chunk);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(frames.size())) {
+                this.pending.write(frames.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+        }
+    }
+
+    initial {
+        while (true) {
+            let body: string = wait this.pending;
+            let method: string = extract_method(body);
+            if (this.is_session_method(method)) {
+                this.session.write(body);
+            } else {
+                this.docs.write(body);
+            }
+        }
+    }
+}
+
+}

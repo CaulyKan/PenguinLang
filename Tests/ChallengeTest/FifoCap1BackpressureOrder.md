@@ -4,6 +4,7 @@ Capacity-1 backpressuring Fifo: the producer parks between writes, the consumer 
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -13,7 +14,7 @@ initial { wait 2 tick; let a : i64 = wait q; let b : i64 = wait q; let c : i64 =
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

@@ -18,10 +18,10 @@ namespace emperor {
 // bytes past the last section, and the footer read uses the portable binary
 // file externs (_utils.file_size / file_read_range / file_append).
 //
-// This file is NOT in the default EmperorPenguin.penguins project — the default
+// This file is NOT in the default EmperorPenguinPass1.penguins project — the default
 // build (pass1 / dotnet tests / pass2) compiles the ANTLR-safe DynlibStub.penguin
 // instead, which disables dyn-lib. The bootstrap's pass2→pass3 / pass3→pass4
-// steps build from EmperorPenguinFull.penguins, which swaps in THIS file plus
+// steps build from EmperorPenguinPass2.penguins, which swaps in THIS file plus
 // json/vector/hashmap (pass3+ only). No meta (#if/#option) anywhere in this
 // module: the compiler's own code is plain penguin.
 // ---------------------------------------------------------------------------
@@ -32,12 +32,22 @@ class LibFooter {
     size: i64 = 0;
 }
 
+// One source file of a lib, carried verbatim in the metadata so consumers get
+// per-file SourceInputs (keeping the original file namespaces) instead of one
+// concatenated blob — a single multi-megabyte SourceInput is pathological for
+// the lexer/GC, and per-file names keep the lib's defs symbol-identical to a
+// monolithic compile of the same sources.
+class LibFile {
+    name: string = "";
+    text: string = "";
+}
+
 class LibMeta {
     name: string = "";
     version: i64 = 0;
     deps: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
-    source: string = "";
+    files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
 }
 
 // Accumulated result of loading a --lib chain: the merged lib sources to
@@ -147,12 +157,35 @@ fun read_meta(path: string) -> LibMeta {
             }
         }
     }
-    if (let sv := doc.get("source").some) { meta.source = sv.as_string(); }
+    if (let fv := doc.get("files").some) {
+        if (fv.is_array()) {
+            let arr3: std.Vector<std.JsonValue> = fv.as_array();
+            let k: mut u64 = 0;
+            while (k < arr3.size()) {
+                let entry: std.JsonValue = arr3.at(k).some;
+                let lf: mut LibFile = new LibFile();
+                if (let nv := entry.get("name").some) { lf.name = nv.as_string(); }
+                if (let tv := entry.get("text").some) { lf.text = tv.as_string(); }
+                meta.files.push(lf);
+                k = k + 1;
+            }
+        }
+    }
+    if (cast<i64>(meta.files.size()) == 0) {
+        // Legacy single-blob metadata ("source" field): one pseudo-file.
+        if (let sv := doc.get("source").some) {
+            let legacy: mut LibFile = new LibFile();
+            legacy.name = "<lib:" + meta.name + ">";
+            legacy.text = sv.as_string();
+            meta.files.push(legacy);
+        }
+    }
     return meta;
 }
 
-// Build the JSON metadata document for a lib being created.
-fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, source: string) -> string {
+// Build the JSON metadata document for a lib being created. The lib's source
+// files are carried as per-file {name, text} entries (see LibFile).
+fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>) -> string {
     let mut w = new std.JsonWriter();
     w.begin_object();
     w.key("name"); w.value_string(name);
@@ -165,7 +198,17 @@ fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instan
     let ii: mut u64 = 0;
     while (ii < instances.size()) { w.value_string(instances.at(ii).some); ii = ii + 1; }
     w.end_array();
-    w.key("source"); w.value_string(source);
+    w.key("files"); w.begin_array();
+    let fi: mut u64 = 0;
+    while (fi < files.size()) {
+        let lf: LibFile = files.at(fi).some;
+        w.begin_object();
+        w.key("name"); w.value_string(lf.name);
+        w.key("text"); w.value_string(lf.text);
+        w.end_object();
+        fi = fi + 1;
+    }
+    w.end_array();
     w.end_object();
     return w.to_string();
 }
@@ -211,7 +254,12 @@ fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadStat
         }
         di = di + 1;
     }
-    state.sources.push(new SourceInput("<lib:" + meta.name + ">", meta.source));
+    let fi2: mut i64 = 0;
+    while (fi2 < cast<i64>(meta.files.size())) {
+        let lf: LibFile = meta.files.at(cast<u64>(fi2)).some;
+        state.sources.push(new SourceInput(lf.name, lf.text));
+        fi2 = fi2 + 1;
+    }
     state.so_paths.push(lib_path);
     state.lib_names.push(meta.name);
     let ii: mut i64 = 0;
@@ -266,7 +314,14 @@ fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
     return out;
 }
 
-// A .penguin-lib may not emit an @main entry point or initialized globals.
+// A .penguin-lib may not emit an @main entry point. Global variables ARE
+// allowed: the consumer compiles the lib's embedded source, so every lib
+// global is re-defined (and initialized by the consumer's initial chain) in
+// the exe; on ELF the exe's definitions interpose the .so's own copies (the
+// lib is built -fPIC, so its data references go through the GOT and bind to
+// the exe's symbols at load time — the same mechanism that lets the lib's
+// _emperor_* runtime refs resolve from the consumer). Lib code and consumer
+// code therefore observe ONE initialized copy of each global.
 // Returns true when the compilation is valid for lib mode.
 fun validate_lib_defs(result: BoundCompilationUnit) -> bool {
     let i: mut i64 = 0;
@@ -274,10 +329,6 @@ fun validate_lib_defs(result: BoundCompilationUnit) -> bool {
         let d: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
         if (d is BoundDefinition.initial_routine) {
             __builtin.eprintln("[EmperorPenguin Dynlib] Error: a .penguin-lib may not contain an initial{} routine");
-            return false;
-        }
-        if (d is BoundDefinition.global_var_def) {
-            __builtin.eprintln("[EmperorPenguin Dynlib] Error: a .penguin-lib may not contain global variables");
             return false;
         }
         i = i + 1;

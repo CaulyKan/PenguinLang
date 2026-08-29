@@ -2,11 +2,9 @@
 ## Description
 Permission matrix: driving another module's output from outside (`d.y = 5` in a top-level initial) is a compile error — outputs have exactly one driver: the module body (or a connect line).
 
-RED SENTINEL on EmperorPenguin Pass1 (in Apply To): the RTL ports grammar (input/output declarations, construct/connect) is not implemented in EmperorPenguin yet — it fails at parse there and should turn green once Phase 3 (coroutine state-machine lowering + ports) lands. BabyPenguin is the reference.
-
 ## Apply To
 * BabyPenguin
-* EmperorPenguin Pass1
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -24,7 +22,7 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD

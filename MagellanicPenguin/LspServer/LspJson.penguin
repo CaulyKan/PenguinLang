@@ -1,0 +1,282 @@
+// JSON plumbing between the JSON-RPC wire format and the LSP datatypes:
+// inbound message parsing (string → LspMessage), outbound serialization
+// (LspResponse/LspError/LspNotification → JSON text), and frame wrapping.
+namespace lsp {
+
+// ---- inbound ----
+
+fun json_get_string(v: std.JsonValue, key: string) -> string {
+    let f: __builtin.Option<std.JsonValue> = v.get(key);
+    if (f.is_some()) {
+        if (f.some is std.JsonValue.json_string) {
+            return f.some.json_string;
+        }
+    }
+    return "";
+}
+
+// Extract the "method" member of a raw JSON-RPC message ("" when absent —
+// the cheap probe JsonInputParser uses to demux).
+fun extract_method(body: string) -> string {
+    return json_get_string(std.parse_json(body), "method");
+}
+
+// Parse a complete inbound message body.
+fun parse_message(body: string) -> mut LspMessage {
+    let m: mut LspMessage = new LspMessage();
+    let v: std.JsonValue = std.parse_json(body);
+    m.method = json_get_string(v, "method");
+    let idf: __builtin.Option<std.JsonValue> = v.get("id");
+    if (idf.is_some()) {
+        m.has_id = true;
+        if (idf.some is std.JsonValue.json_string) {
+            m.id_is_string = true;
+            m.id_str = idf.some.json_string;
+        } else {
+            m.id_num = idf.some.as_i64();
+        }
+    }
+    let pf: __builtin.Option<std.JsonValue> = v.get("params");
+    if (pf.is_some()) {
+        let w: mut std.JsonWriter = new std.JsonWriter();
+        w.value(pf.some);
+        m.params_json = w.sb.to_string();
+    }
+    return m;
+}
+
+// textDocument.uri from a message's params.
+fun extract_uri(msg: LspMessage) -> string {
+    let p: std.JsonValue = std.parse_json(msg.params_json);
+    let td: __builtin.Option<std.JsonValue> = p.get("textDocument");
+    if (td.is_some()) {
+        return json_get_string(td.some, "uri");
+    }
+    return json_get_string(p, "uri");
+}
+
+// Full-sync didChange: the (single) content change's text.
+fun extract_change_text(params_json: string) -> string {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let cc: __builtin.Option<std.JsonValue> = p.get("contentChanges");
+    if (cc.is_some()) {
+        if (cc.some is std.JsonValue.json_array) {
+            if (cc.some.json_array.size() > 0) {
+                return json_get_string(cc.some.json_array.at(0).some, "text");
+            }
+        }
+    }
+    return "";
+}
+
+// position.line / position.character from params (0-based, as the wire sends).
+class LspPosition {
+    line: i64 = 0;
+    character: i64 = 0;
+
+    fun new(mut this) {}
+}
+
+// range.start / range.end lines (0-based) from params (inlayHint).
+class LspRange {
+    start_line: i64 = 0;
+    start_character: i64 = 0;
+    end_line: i64 = 0;
+    end_character: i64 = 0;
+
+    fun new(mut this) {}
+}
+
+fun extract_range(params_json: string) -> LspRange {
+    let r: mut LspRange = new LspRange();
+    let p: std.JsonValue = std.parse_json(params_json);
+    let rng: __builtin.Option<std.JsonValue> = p.get("range");
+    if (rng.is_some()) {
+        let s: __builtin.Option<std.JsonValue> = rng.some.get("start");
+        if (s.is_some()) {
+            let l: __builtin.Option<std.JsonValue> = s.some.get("line");
+            if (l.is_some()) { r.start_line = l.some.as_i64(); }
+            let c: __builtin.Option<std.JsonValue> = s.some.get("character");
+            if (c.is_some()) { r.start_character = c.some.as_i64(); }
+        }
+        let e: __builtin.Option<std.JsonValue> = rng.some.get("end");
+        if (e.is_some()) {
+            let l: __builtin.Option<std.JsonValue> = e.some.get("line");
+            if (l.is_some()) { r.end_line = l.some.as_i64(); }
+            let c: __builtin.Option<std.JsonValue> = e.some.get("character");
+            if (c.is_some()) { r.end_character = c.some.as_i64(); }
+        }
+    }
+    return r;
+}
+
+// A nested string member: params.<key1>.<key2> as string ("" when absent).
+fun json_get_string_at(params_json: string, key1: string, key2: string) -> string {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let outer: __builtin.Option<std.JsonValue> = p.get(key1);
+    if (outer.is_some()) {
+        return json_get_string(outer.some, key2);
+    }
+    return "";
+}
+
+// A nested bool member: params.<key1>.<key2> (false when absent).
+fun json_get_bool_at(params_json: string, key1: string, key2: string) -> bool {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let outer: __builtin.Option<std.JsonValue> = p.get(key1);
+    if (outer.is_some()) {
+        let f: __builtin.Option<std.JsonValue> = outer.some.get(key2);
+        if (f.is_some()) {
+            if (f.some is std.JsonValue.json_bool) {
+                return f.some.json_bool;
+            }
+        }
+    }
+    return false;
+}
+
+fun extract_position(params_json: string) -> LspPosition {
+    let pos_result: mut LspPosition = new LspPosition();
+    let p: std.JsonValue = std.parse_json(params_json);
+    let pos: __builtin.Option<std.JsonValue> = p.get("position");
+    if (pos.is_some()) {
+        let l: __builtin.Option<std.JsonValue> = pos.some.get("line");
+        if (l.is_some()) { pos_result.line = l.some.as_i64(); }
+        let c: __builtin.Option<std.JsonValue> = pos.some.get("character");
+        if (c.is_some()) { pos_result.character = c.some.as_i64(); }
+    }
+    return pos_result;
+}
+
+// file:///a/b.penguin -> /a/b.penguin (pass-through when not a file uri).
+fun uri_to_path(uri: string) -> string {
+    if (string_find(uri, "file://") == 0) {
+        return string_substring(uri, 7, string_length(uri) - 7);
+    }
+    return uri;
+}
+
+fun path_to_uri(path: string) -> string {
+    return "file://" + path;
+}
+
+// ---- outbound ----
+
+fun write_json_id(w: mut std.JsonWriter, id_is_string: bool, id_num: i64, id_str: string) {
+    if (id_is_string) {
+        w.value_string(id_str);
+    } else {
+        w.value_i64(id_num);
+    }
+}
+
+// A response shell pre-filled with the request's id.
+fun response_for(msg: LspMessage) -> mut LspResponse {
+    let r: mut LspResponse = new LspResponse();
+    r.has_id = msg.has_id;
+    r.id_num = msg.id_num;
+    r.id_is_string = msg.id_is_string;
+    r.id_str = msg.id_str;
+    return r;
+}
+
+fun error_for(msg: LspMessage, code: i64, message: string) -> mut LspError {
+    let e: mut LspError = new LspError();
+    e.has_id = msg.has_id;
+    e.id_num = msg.id_num;
+    e.id_is_string = msg.id_is_string;
+    e.id_str = msg.id_str;
+    e.code = code;
+    e.message = message;
+    return e;
+}
+
+fun serialize_response(msg: LspResponse) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_object();
+    w.key("jsonrpc");
+    w.value_string("2.0");
+    w.key("id");
+    write_json_id(w, msg.id_is_string, msg.id_num, msg.id_str);
+    w.key("result");
+    w.value_raw(msg.result_json);
+    w.end_object();
+    return w.sb.to_string();
+}
+
+fun serialize_error_msg(msg: LspError) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_object();
+    w.key("jsonrpc");
+    w.value_string("2.0");
+    w.key("id");
+    write_json_id(w, msg.id_is_string, msg.id_num, msg.id_str);
+    w.key("error");
+    w.begin_object();
+    w.key("code");
+    w.value_i64(msg.code);
+    w.key("message");
+    w.value_string(msg.message);
+    w.end_object();
+    w.end_object();
+    return w.sb.to_string();
+}
+
+fun serialize_notification(msg: LspNotification) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_object();
+    w.key("jsonrpc");
+    w.value_string("2.0");
+    w.key("method");
+    w.value_string(msg.method);
+    w.key("params");
+    w.value_raw(msg.params_json);
+    w.end_object();
+    return w.sb.to_string();
+}
+
+// "Content-Length: <bytes>\r\n\r\n" + body. string_length counts bytes (C
+// strings), matching the Content-Length contract.
+fun make_frame(body: string) -> string {
+    return "Content-Length: " + cast<string>(string_length(body)) + "\r\n\r\n" + body;
+}
+
+// The initialize result: full-text sync + completion/documentSymbol/definition.
+fun initialize_result_json() -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_object();
+    w.key("capabilities");
+    w.begin_object();
+    w.key("textDocumentSync");
+    w.value_i64(1);
+    w.key("completionProvider");
+    w.begin_object();
+    w.key("triggerCharacters");
+    w.begin_array();
+    w.value_string(".");
+    w.value_string(":");
+    w.end_array();
+    w.end_object();
+    w.key("documentSymbolProvider");
+    w.value_bool(true);
+    w.key("definitionProvider");
+    w.value_bool(true);
+    w.key("referencesProvider");
+    w.value_bool(true);
+    w.key("hoverProvider");
+    w.value_bool(true);
+    w.key("inlayHintProvider");
+    w.value_bool(true);
+    w.key("renameProvider");
+    w.begin_object();
+    w.key("prepareProvider");
+    w.value_bool(false);
+    w.end_object();
+    w.key("documentFormattingProvider");
+    w.value_bool(true);
+    w.end_object();
+    w.end_object();
+    return w.sb.to_string();
+}
+
+}

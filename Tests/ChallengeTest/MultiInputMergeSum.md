@@ -4,6 +4,7 @@ MultiInput aggregating two Fifo sources via add(): all six transactions (five fr
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -16,7 +17,7 @@ initial { wait 1 tick; let sum : mut i64 = 0; let cnt : mut i64 = 0; while (cnt 
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

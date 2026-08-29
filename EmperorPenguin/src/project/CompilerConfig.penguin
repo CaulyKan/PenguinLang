@@ -25,21 +25,25 @@ fun _get_stem(path: string) -> string {
 // `if` in the driver — no meta/#option anywhere in the compiler's own code.
 // Whether the compiler BINARY actually has the json-backed Dynlib code is a
 // build-time property (DynlibStub in the default project vs the json-backed
-// Dynlib in EmperorPenguinFull.penguins, see ./penguin -b).
+// Dynlib in EmperorPenguinPass2.penguins, see make bootstrap).
 class CompilerConfig {
     output_name: mut string = "";
     verbose: mut i64 = 0;
+    // ── Link-only flags ────────────────────────────────────────────────
+    // The compiler emits platform-independent LLVM IR (.ll) only; linking
+    // (and everything these flags steer) lives in the external driver
+    // scripts (EmperorPenguin/emperor / emperor.bat). They are still PARSED
+    // here purely so passing them does not fall through to source_files.
+    // enable_meta: link libpenguin_jit.a + LLVM into the produced binary
+    // (runtime #fun JIT).
     enable_meta: bool = false;
-    // Cross-compile target. "" = native host; "win64"/"windows" = PE/COFF via
-    // llvm-mingw (`./penguin -p` sets -target=win64). The linker flags and
-    // clang selection differ per target; this is the only reliable signal (the
-    // default output path is always "<tmp>/out.exe", so the .exe suffix alone
-    // cannot be used to detect Windows).
+    // Cross-compile target. "" = native host; "win64"/"windows" = PE/COFF
+    // via llvm-mingw. Link-time only — the .ll itself is the same for every
+    // target (see LLVMEmitter's _setjmp note).
     target: mut string = "";
-    // For a Windows target WITH -enable-meta: dir containing a Windows LLVM
+    // For a Windows target WITH meta: dir containing a Windows LLVM
     // (include/ + lib/libLLVM-22.dll.a) so the ORC JIT can be linked against
-    // the DLL. Empty = no Windows LLVM available -> meta silently unavailable
-    // in the produced binary.
+    // the DLL. Link-time only.
     llvm_win: mut string = "";
     source_files: mut _utils.List<string> = new _utils.List<string>();
     // Command-line --define A=B / --define A seeds the compile-time option store
@@ -55,6 +59,15 @@ class CompilerConfig {
     // json/vector/hashmap loaded (pass3+) can build/consume .penguin-lib files.
     // Bootstrap pass1/pass2 build with --disable-dl.
     dl_enabled: bool = true;
+    // --enable-coroutine (default off): gates the RTL-port/concurrency syntax
+    // (input/output ports, construct, connect, wait forms, try/catch, async
+    // expressions). Without it those constructs are compile errors and the
+    // emitted main() calls initial routines sequentially (no scheduler). With
+    // it, codegen still only uses the coroutine scheduler when the compiled
+    // module actually contains suspension points, so flag on/off produce
+    // identical binaries for wait-free programs (bootstrap md5 convergence).
+    // In the Makefile bootstrap the flag is passed only when pass2 compiles pass3.
+    coroutine_enabled: bool = false;
 
     fun new(mut this) {}
 
@@ -119,6 +132,8 @@ class CompilerConfig {
                 this.dl_enabled = true;
             } else if (arg == "--disable-dl" || arg == "-disable-dl") {
                 this.dl_enabled = false;
+            } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {
+                this.coroutine_enabled = true;
             } else if (arg == "--lib" || arg == "-lib") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {

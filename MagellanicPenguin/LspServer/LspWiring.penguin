@@ -1,0 +1,32 @@
+// Top-level elaboration of the LSP session skeleton (the design doc's
+// static half): StdioStream ↔ JsonInputParser ↔ LspMain ↔ JsonOutputParser.
+// The dynamic half — per-document LspCompilationUnits — is instantiated by
+// LspMain on didOpen and wired through its own Fifo channels (results
+// registered into JsonOutputParser's MultiInput fan-in at runtime).
+//
+// Backpressure end to end (zero flow-control code anywhere): a client that
+// stops reading fills the stdout pipe → StdioStream's writer parks on fd 1
+// writability → out fills → JsonOutputParser parks → every results Fifo
+// fills → LspMain and every unit park → cmds/pending fill → JsonInputParser
+// parks → the chunk port fills → StdioStream's reader parks → the kernel
+// stdin buffer fills → the client itself is throttled.
+construct {
+    let stdio : mut lsp.StdioStream = new lsp.StdioStream();
+    let parser : mut lsp.JsonInputParser = new lsp.JsonInputParser();
+    let outp : mut lsp.JsonOutputParser = new lsp.JsonOutputParser();
+    let main : mut lsp.LspMain = new lsp.LspMain(outp);
+
+    connect(stdio.rx, parser.chunks);
+    connect(parser.session, main.session);
+    connect(parser.docs, main.docs);
+    connect(main.responses, outp.inputs);
+    connect(outp.out, stdio.tx);
+}
+
+// The modules' own initial loops ARE the program: this top-level initial
+// only exists so emit_main synthesizes `main` (server programs have no
+// user entry point; it parks forever on its input and dies with the fd
+// cascade at stdin EOF / the exit control).
+initial {
+    wait;
+}

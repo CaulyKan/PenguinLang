@@ -4,6 +4,7 @@ close() is supervised shutdown: BOTH parked waiters on the same Fifo wake with t
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -14,7 +15,7 @@ initial { wait 1 tick; q.close(); wait 1 tick; println("closed"); exit(0); }
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

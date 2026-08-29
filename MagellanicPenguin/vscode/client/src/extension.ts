@@ -36,10 +36,12 @@ const lspServerPath: Map<string, string> = new Map([
 	["win32", "server\\windows\\MagellanicPenguinLSP.exe"]
 ]);
 
-// EmperorPenguin compiler path configuration
+// EmperorPenguin compiler: the emperor driver script (links the LLVM-IR
+// emitter binary that sits beside it). On windows a .bat, spawned through
+// the user's terminal.
 const emperorPenguinPath: Map<string, string> = new Map([
-	["linux", "server/linux/emperor_penguin"],
-	["win32", "server\\windows\\emperor_penguin.exe"]
+	["linux", "server/linux/emperor"],
+	["win32", "server\\windows\\emperor.bat"]
 ]);
 
 // Command to restart the language server
@@ -54,14 +56,23 @@ async function restartLanguageServer(context: ExtensionContext) {
 async function startLanguageServer(context: ExtensionContext) {
 	const traceOutputChannel = window.createOutputChannel("PenguinLang Language Server");
 
+	const lspCommand = process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform()) || "");
+	if (!lspCommand || !existsSync(lspCommand)) {
+		window.showErrorMessage(
+			`PenguinLang LSP server not found at "${lspCommand}". ` +
+			`Run 'make lsp' (linux) or 'make lsp TARGET=win' (windows) and 'make publish' first.`
+		);
+		return;
+	}
+
 	// Server options
 	const serverOptions: ServerOptions = {
 		run: {
-			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
+			command: lspCommand,
 			transport: TransportKind.stdio,
 		},
 		debug: {
-			command: process.env.PENGUINLANG_LSPSERVER_PATH || context.asAbsolutePath(lspServerPath.get(platform())) || "",
+			command: lspCommand,
 			transport: TransportKind.stdio,
 		}
 	};
@@ -108,7 +119,7 @@ export async function activate(context: ExtensionContext) {
 			// Locate the emperor_penguin binary for the current platform
 			const emperorPath = process.env.PENGUINLANG_EMPEROR_PATH || context.asAbsolutePath(emperorPenguinPath.get(platform()) || '');
 			if (!emperorPath || !existsSync(emperorPath)) {
-				window.showErrorMessage(`EmperorPenguin binary not found at "${emperorPath}". Run './penguin -p' first.`);
+				window.showErrorMessage(`EmperorPenguin binary not found at "${emperorPath}". Run 'make publish' first.`);
 				return;
 			}
 
