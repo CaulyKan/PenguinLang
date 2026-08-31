@@ -38,13 +38,18 @@ and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 | File | Role |
 | --- | --- |
 | `LspTypes.penguin` | LspMessage/LspResponse/LspError/LspNotification + `LspOutMsg` enum, JSON-RPC error codes |
+| `LspProtocol.penguin` | typed wire-result structs (Position/Range/Diagnostic/Location/TextEdit/CompletionItem/InlayHint/DocumentSymbol/Hover/WorkspaceEdit/PublishDiagnosticsParams) that serialize themselves via json.penguin's `#impl_json_serializable()` meta (fields in declaration order = wire order; recursive `Vector` children and `HashMap<string, Vector<TextEdit>>` supported) — one JSON exit per result kind |
 | `LspFraming.penguin` | Pure Content-Length frame reassembly (`Framer`); unit-tested standalone |
-| `LspJson.penguin` | JSON plumbing: message parsing, response/notification serialization, initialize capabilities, uri helpers |
+| `LspJson.penguin` | frame-level JSON plumbing: message parsing, response/notification serialization, initialize capabilities, param extraction, uri↔path helpers |
 | `StdioStream.penguin` | stdio boundary: reader parks the scheduler's fd integration on stdin, writer parks on stdout writability (end-to-end backpressure); the exit control rides the frame stream so every queued frame is flushed before `exit(code)` |
 | `JsonInputParser.penguin` | chunks → frames (FIFO `pending`) → demux onto `session`/`docs` output ports (one frame per delta round) |
-| `LspMain.penguin` | session commands (initialize/shutdown/exit) + document routing; didOpen dynamically instantiates LspCompilationUnit (module-as-actor) |
-| `LspCompilationUnit.penguin` | per-document actor: full recompile on didOpen/didChange (embedded `EmperorPenguinCompiler.compile_sources`, stdlib + enable_coroutine), publishes diagnostics, serves queries against the last error-free unit |
-| `LspQuery.penguin` | symbol index over `BoundCompilationUnit.definitions`; documentSymbol / definition / completion |
+| `LspConfig.penguin` | `.magellanic.config` workspace routing: array-form config at the initialize rootUri (loaded once), longest-prefix dir matching — the highest-priority routing rule |
+| `LspProject.penguin` | project discovery/assembly: `find_project_file` (upward `*.penguins` walk), `plan_from_project` (sources/globs/flags/libs via the embedded `PenguinProject`/`CompilerConfig`), lib-chain caching, project SourceInput assembly (opened docs contribute editor text) |
+| `LspMain.penguin` | session commands (initialize/shutdown/exit, rootUri→config load) + document routing; didOpen dynamically instantiates LspCompilationUnit (module-as-actor), flushes the sibling-text snapshot before recompiles |
+| `LspCompilationUnit.penguin` | per-document actor: full recompile on didOpen/didChange (embedded `EmperorPenguinCompiler.compile_sources`; routed plan = config hit > .penguins search > single-file), publishes diagnostics, serves queries against the last error-free unit |
+| `LspDiagnostics.penguin` | the single diagnostics pipeline: SemanticError list / compiler panic → `Vector<LspDiagnostic>` → publishDiagnostics params (per-document filter in project mode) |
+| `LspSymIndex.penguin` | the symbol-index layer: SymEntry tree built over `BoundCompilationUnit.definitions` + flattening |
+| `LspQuery.penguin` | pure queries over an `LspDocContext` snapshot (path/text/last_ok/prebuilt index) returning typed protocol structs: documentSymbol / definition / completion / references / hover / inlayHint / rename / formatting |
 | `JsonOutputParser.penguin` | the outbound fan-in: shared hub Fifo (`ISink` views handed to producers), serializes each `LspOutMsg` into a JSON-RPC frame |
 | `LspWiring.penguin` | top-level `construct` wiring the static half + the parking `initial` that stands in for `main` |
 
@@ -56,7 +61,7 @@ make lsp           # stage 1: build/pass3 EmperorPenguin/EmperorPenguinLib.pengu
                    # stage 2: build/pass3 --enable-coroutine LspServer.penguins --lib build/libemperorpenguin.penguin-lib -o build/lsp
 ```
 
-The server links the compiler as a shared library: `build/lsp` contains only the 10 LSP
+The server links the compiler as a shared library: `build/lsp` contains only the 15 LSP
 modules (~0.8 MB) and calls into `libemperorpenguin.penguin-lib` (~14 MB, built from
 `EmperorPenguinLib.penguins`) for all compiler work — `SONAME libemperorpenguin.penguin-lib`
 + `rpath $ORIGIN`, so the exe + lib pair in `build/` is relocatable and `make publish`
@@ -76,7 +81,7 @@ make lsp TARGET=win   # build/pass4 MagellanicPenguin/LspServer/LspServerWin.pen
 
 The dyn-lib pair is ELF-specific (`SONAME` + `$ORIGIN` rpath + `-rdynamic`
 interposition), so the Windows port is a **monolith**: `LspServerWin.penguins`
-compiles the 10 LSP modules together with the whole `EmperorPenguinLib` source
+compiles the 15 LSP modules together with the whole `EmperorPenguinLib` source
 set into one self-contained exe (`MagellanicPenguinLSP.exe`, no `.penguin-lib`
 to ship). The toolchain prefix defaults to `/opt/llvm-mingw` and can be
 overridden per-variable (`WIN_CC`/`WIN_CXX`/`WIN_AR`/`WIN_CLANG`).
@@ -95,6 +100,31 @@ ordered single writer). `make publish TARGET=win` deploys the exe + stdlib
 bundle to `server/windows/` and, when `WINE=<path>` (or `wine` on PATH) is
 available, runs the same initialize/shutdown/exit smoke test as the linux side
 under the emulator (natively on a windows host).
+
+## Document routing (which sources a compile sees)
+
+Each didOpen/didChange recompile picks its source set by the FIRST matching rule:
+
+1. **`.magellanic.config` hit** — the JSON config at the workspace root (the
+   initialize `rootUri`; no upward fallback), loaded once per session:
+   `{ "projects": [ { "dir": "MagellanicPenguin/LspServer", "project": ".../LspServer.penguins", "args": ["--enable-coroutine"], "libs": ["build/libemperorpenguin.penguin-lib"] } ] }`.
+   A document routes to the entry whose `dir` (root-relative) is the longest
+   prefix of its path; the entry supplies the project file (root-relative),
+   extra flags (parsed AFTER the project's own — config wins conflicts), and
+   extra libs (root-relative). See `LspConfig.penguin` / `LspProject.penguin`.
+2. **`.penguins` upward search** — from the document's directory up to 10
+   levels, first `*.penguins` wins (C# server `FindProjectFile` parity).
+3. **Single-file fallback** — stdlib + the document alone (the original mode).
+
+Project-mode compiles include the project's sources with every OPENED sibling
+contributing its editor text (LspMain flushes a path→text snapshot before each
+forwarded didChange; unopened files come from disk) and the project's lib chain
+(cached per resolved lib-path list). Diagnostics filter to the requesting
+document — other files' errors no longer land on its uri (no-location errors
+stay visible). `enable_coroutine` stays on in every mode: the analysis is a
+superset, so port/wait syntax analyzes even when the project's own build omits
+the flag. Cross-file top-level symbols need an explicit `namespace` (EmperorPenguin
+file-namespace semantics) — the fixtures under `Tests/LspTest/fixtures/` show the shape.
 
 ## Design notes
 

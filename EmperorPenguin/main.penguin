@@ -82,6 +82,17 @@ initial {
     // sees the `io` namespace. Unreferenced externs are dropped by the emitter,
     // so non-io programs pay nothing for it.
     let io_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/io.penguin");
+    // Scheduler stdlib (the coroutine/concurrency runtime: the C-microkernel
+    // externs, IFuture/timers/async futures, channels + Event, and the
+    // delta-round policy loop __sched_run) — auto-loaded ONLY with
+    // --enable-coroutine. The concurrency syntax is flag-gated by the
+    // semantic model, so flag-off programs never reference any of it; loading
+    // it conditionally keeps their compilations (and binaries) free of the
+    // scheduler surface entirely.
+    let sched_source: mut string = "";
+    if (config.coroutine_enabled) {
+        sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler.penguin");
+    }
 
     // Output layout: the emitter writes a platform-independent .ll plus a
     // side file next to the -o path (no linking happens in-process):
@@ -114,6 +125,9 @@ initial {
     let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     inputs.push(new SourceInput("core_builtin.penguin", stdlib_source));
     inputs.push(new SourceInput("io.penguin", io_source));
+    if (config.coroutine_enabled) {
+        inputs.push(new SourceInput("scheduler.penguin", sched_source));
+    }
 
     // Lib sources first (deps-first order from load_lib_chain), then user
     // sources. For a lib build, lib_files accumulates the lib's OWN source

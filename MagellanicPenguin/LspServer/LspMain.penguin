@@ -27,6 +27,9 @@ class LspMain {
     out: mut JsonOutputParser;
     units: mut std.HashMap<string, LspCompilationUnit> = new std.HashMap<string, LspCompilationUnit>();
     shutdown_seen: mut bool = false;
+    // Workspace routing config (.magellanic.config at the initialize rootUri;
+    // loaded once at initialize, unloaded-empty before it — see LspConfig).
+    config: mut LspWorkspaceConfig = new LspWorkspaceConfig();
 
     fun new(mut this, out: mut JsonOutputParser) {
         this.out = out;
@@ -42,11 +45,28 @@ class LspMain {
         this.responses.write(new LspOutMsg.out_error(error_for(msg, code, message)));
     }
 
+    // Path → in-memory text of every opened document — the snapshot handed
+    // to each unit so project-mode recompiles analyze sibling documents'
+    // EDITOR text (LspCompilationUnit never reaches back into LspMain).
+    fun build_doc_texts(mut this) -> mut std.HashMap<string, string> {
+        let m: mut std.HashMap<string, string> = new std.HashMap<string, string>();
+        for (let k in this.units.iter_keys()) {
+            let u: LspCompilationUnit = this.units.get(k).some;
+            m.put(u.path, u.text);
+        }
+        return m;
+    }
+
     initial {
         while (true) {
             let body: string = wait this.session;
             let msg: mut LspMessage = parse_message(body);
             if (msg.method == "initialize") {
+                // rootUri is stored, never answered with — the initialize
+                // response bytes are capability-only (SessionLifecycle locks
+                // them). The config load reads <rootUri>/.magellanic.config
+                // once; a missing file is an empty loaded config.
+                this.config = load_workspace_config(extract_root_uri(msg.params_json));
                 this.respond_result(msg, initialize_result_json());
             } else if (msg.method == "initialized") {
                 // Notification; nothing to do.
@@ -84,13 +104,29 @@ class LspMain {
                     if (td.is_some()) {
                         text = json_get_string(td.some, "text");
                     }
-                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text);
+                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text, this.build_doc_texts(), this.config);
                     this.units.put(uri, unit);
                     this.out.attach(cast<mut __builtin.ISource<LspOutMsg>>(unit.results));
+                }
+            } else if (msg.method == "textDocument/didClose") {
+                // Retire the unit: forward the close so its loop drains and
+                // breaks, then DROP the map entry — a later didOpen of the
+                // same uri must create a fresh unit (the retired unit's loop
+                // is dead; routing traffic into its cmds Fifo would silently
+                // black-hole every request).
+                let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);
+                if (u.is_some()) {
+                    u.some.cmds.write(msg);
+                    this.units.remove(uri);
                 }
             } else {
                 let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);
                 if (u.is_some()) {
+                    // Refresh the sibling-text snapshot before a recompile
+                    // (queries never read it).
+                    if (msg.method == "textDocument/didChange") {
+                        u.some.open_texts = this.build_doc_texts();
+                    }
                     u.some.cmds.write(msg);
                 } else if (msg.has_id) {
                     this.respond_error(msg, JSONRPC_INVALID_PARAMS, "document not open: " + uri);

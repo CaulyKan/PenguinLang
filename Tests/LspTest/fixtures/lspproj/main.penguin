@@ -1,0 +1,4 @@
+fun main() {
+    let v: i64 = libx.lsp_proj_target(1);
+    println(v);
+}

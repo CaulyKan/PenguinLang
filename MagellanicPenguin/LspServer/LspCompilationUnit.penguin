@@ -10,14 +10,20 @@
 // Compilation reuses the embedded EmperorPenguin compiler
 // (EmperorPenguinCompiler.compile_sources) on every didOpen/didChange — the
 // same full-recompile model as the C# LSP — with stdlib (core_builtin +
-// io) injected first and enable_coroutine on (documents may use ports).
-// Diagnostics of the last compile are published; queries run against the
-// last error-free unit (LastSuccessModel pattern) so features keep working
-// in the presence of diagnostics.
+// io + scheduler) injected first and enable_coroutine on (documents may use
+// ports; the scheduler/concurrency stdlib loads only under that flag).
+// Diagnostics of the last compile are published through LspDiagnostics (the
+// single typed pipeline); queries run against the last error-free unit
+// (LastSuccessModel pattern) via a snapshot LspDocContext whose symbol index
+// is rebuilt whenever that unit is replaced, so no query re-indexes.
 namespace lsp {
 
 let STDLIB_CORE: string = load_stdlib_text("core_builtin.penguin");
 let STDLIB_IO: string = load_stdlib_text("io.penguin");
+// The concurrency stdlib: documents compile with enable_coroutine on (they
+// may use ports/wait/channels), so the scheduler surface must be injected
+// too — the compiler auto-loads it ONLY under --enable-coroutine (main.penguin).
+let STDLIB_SCHED: string = load_stdlib_text("scheduler.penguin");
 
 // Stdlib sources for document compiles, located once at startup: cwd first
 // (dev/test run from the repo root), then exe-relative candidates — a direct
@@ -26,7 +32,7 @@ let STDLIB_IO: string = load_stdlib_text("io.penguin");
 // test runner copies the exe into build/testruns/<ts>/prebuilt/... ) or from
 // vscode/server/<platform>/ inside a deployed extension.
 fun load_stdlib_text(name: string) -> string {
-    let candidates: mut _utils.List<string> = new _utils.List<string>();
+    let candidates: mut std.Vector<string> = new std.Vector<string>();
     candidates.push("EmperorPenguin/std/penguin/" + name);
     let exe_dir: string = emperor.compiler_exe_dir();
     candidates.push(exe_dir + "/EmperorPenguin/std/penguin/" + name);
@@ -69,16 +75,34 @@ class LspCompilationUnit {
     cmds: mut __builtin.Fifo<LspMessage> = new __builtin.Fifo<LspMessage>(64, new __builtin.FifoPolicy.backpressure());
     // Last error-free compilation result (queries survive diagnostics).
     last_ok: mut __builtin.Option<emperor.BoundCompilationUnit> = new __builtin.Option<emperor.BoundCompilationUnit>.none();
+    // The symbol index of last_ok — rebuilt when last_ok is replaced; the
+    // per-query snapshot (LspDocContext) carries these by reference.
+    index_roots: mut std.Vector<SymEntry> = new std.Vector<SymEntry>();
+    index_flat: mut std.Vector<SymEntry> = new std.Vector<SymEntry>();
+    // Path → in-memory text of every OTHER currently opened document (the
+    // LspMain-owned snapshot, flushed at every forwarded didChange / at
+    // construction — project-mode recompiles use it so sibling documents of
+    // the same project analyze the EDITOR's text, not the disk's).
+    open_texts: mut std.HashMap<string, string> = new std.HashMap<string, string>();
+    // Workspace routing config (config hit > .penguins search > single file).
+    config: mut LspWorkspaceConfig = new LspWorkspaceConfig();
 
-    fun new(mut this, uri: string, text: string) {
+    fun new(mut this, uri: string, text: string, open_texts: std.HashMap<string, string>, config: LspWorkspaceConfig) {
         this.uri = uri;
         this.path = uri_to_path(uri);
         this.text = text;
+        this.open_texts = open_texts;
+        this.config = config;
         this.recompile();
     }
 
-    // Full recompile: stdlib + this document (in-memory text; the doc's path
-    // is the SourceInput filename so diagnostics carry real locations).
+    // Full recompile. Single-file mode (no project file above the document):
+    // stdlib + this document's in-memory text (the doc's path is the
+    // SourceInput filename so diagnostics carry real locations). Project
+    // mode (a *.penguins found upward, see LspProject): stdlib + project
+    // libs + the project's files, every opened sibling contributing its
+    // editor text; diagnostics filter to THIS document (other files' errors
+    // no longer land on this uri).
     // The embedded compile is guarded: a broken document can panic the
     // compiler (E_INTERNAL → RuntimeError, sjlj-catchable) — the catch
     // publishes the panic as a diagnostic, keeps last_ok at the previous
@@ -89,114 +113,77 @@ class LspCompilationUnit {
     // ctor's field-default chain is unexercised by the compiler itself and
     // crashes; compile_sources either returns a real unit or throws).
     fun recompile(mut this) {
+        let plan: mut LspCompilePlan = plan_for_document_routed(this.path, this.config);
         let inputs: mut _utils.List<emperor.SourceInput> = new _utils.List<emperor.SourceInput>();
-        inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
-        inputs.push(new emperor.SourceInput("io.penguin", STDLIB_IO));
-        inputs.push(new emperor.SourceInput(this.path, this.text));
+        // "" = publish every error (single-file mode, the historical
+        // behavior); a path = project mode, publish only this doc's errors.
+        let filter_path: mut string = "";
 
         let compiler: mut emperor.EmperorPenguinCompiler = new emperor.EmperorPenguinCompiler();
+        // Documents may use ports/wait/channels — the analysis is a superset
+        // with the flag on, so it stays on in both modes.
         compiler.enable_coroutine = true;
+
+        if (plan.project_path == "") {
+            inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
+            inputs.push(new emperor.SourceInput("io.penguin", STDLIB_IO));
+            inputs.push(new emperor.SourceInput("scheduler.penguin", STDLIB_SCHED));
+            inputs.push(new emperor.SourceInput(this.path, this.text));
+        } else {
+            inputs = project_source_inputs(plan, this.path, this.text, this.open_texts);
+            filter_path = this.path;
+            compiler.verbose = plan.verbose;
+            let di: mut i64 = 0;
+            while (di < cast<i64>(plan.define_keys.size())) {
+                compiler.cli_define_keys.push(plan.define_keys.at(cast<u64>(di)).some);
+                compiler.cli_define_values.push(plan.define_values.at(cast<u64>(di)).some);
+                di = di + 1;
+            }
+            let state_opt: __builtin.Option<emperor.LibLoadState> = lib_state_for(plan);
+            if (state_opt.is_some()) {
+                let st: emperor.LibLoadState = state_opt.some;
+                if (!st.has_error) {
+                    let ii: mut i64 = 0;
+                    while (ii < cast<i64>(st.instances.size())) {
+                        compiler.lib_instances.push(st.instances.at(cast<u64>(ii)).some);
+                        ii = ii + 1;
+                    }
+                }
+            }
+        }
+
         let crash_message: mut string = "";
         try {
             let result: emperor.BoundCompilationUnit = compiler.compile_sources(inputs);
             if (!result.has_errors()) {
                 this.last_ok = new __builtin.Option<emperor.BoundCompilationUnit>.some(result);
+                this.index_roots = new std.Vector<SymEntry>();
+                index_defs(result.definitions, this.index_roots);
+                this.index_flat = new std.Vector<SymEntry>();
+                flat_collect(this.index_roots, this.index_flat);
             }
-            this.publish_error_diagnostics(result.errors);
+            this.publish_diagnostics(error_diagnostics(result.errors, filter_path));
         } catch (e) {
             crash_message = e.message;
         }
         if (string_length(crash_message) > 0) {
-            this.publish_crash_diagnostic(crash_message);
+            this.publish_diagnostics(crash_diagnostics(crash_message));
         }
     }
 
-    // publishDiagnostics from the semantic errors (parser errors are already
-    // folded into the unit's error list by compile_sources). EP lexer
-    // locations are 1-based line AND col; LSP positions are 0-based on both
-    // axes.
-    fun publish_error_diagnostics(mut this, errors: _utils.List<emperor.SemanticError>) {
-        let w: mut std.JsonWriter = new std.JsonWriter();
-        w.begin_object();
-        w.key("uri");
-        w.value_string(this.uri);
-        w.key("diagnostics");
-        w.begin_array();
-        let ei: mut i64 = 0;
-        while (ei < cast<i64>(errors.size())) {
-            let err: emperor.SemanticError = errors.at(cast<u64>(ei)).some;
-            let line: mut i64 = err.location.line - 1;
-            let col: mut i64 = err.location.col - 1;
-            if (line < 0) { line = 0; }
-            if (col < 0) { col = 0; }
-            w.begin_object();
-            w.key("range");
-            w.begin_object();
-            w.key("start");
-            w.begin_object();
-            w.key("line");
-            w.value_i64(line);
-            w.key("character");
-            w.value_i64(col);
-            w.end_object();
-            w.key("end");
-            w.begin_object();
-            w.key("line");
-            w.value_i64(line);
-            w.key("character");
-            w.value_i64(col + 1);
-            w.end_object();
-            w.end_object();
-            w.key("severity");
-            w.value_i64(1);
-            w.key("message");
-            w.value_string(err.message);
-            w.key("source");
-            w.value_string("penguinlang");
-            w.end_object();
-            ei = ei + 1;
-        }
-        w.end_array();
-        w.end_object();
-        this.send_diagnostics(w.sb.to_string());
+    // The query-side snapshot: path/text/last_ok plus the prebuilt index.
+    fun make_context(mut this) -> mut LspDocContext {
+        let ctx: mut LspDocContext = new LspDocContext();
+        ctx.path = this.path;
+        ctx.text = this.text;
+        ctx.last_ok = this.last_ok;
+        ctx.roots = this.index_roots;
+        ctx.flat = this.index_flat;
+        return ctx;
     }
 
-    // The caught compiler panic as a single diagnostic at 0:0.
-    fun publish_crash_diagnostic(mut this, message: string) {
-        let w: mut std.JsonWriter = new std.JsonWriter();
-        w.begin_object();
-        w.key("uri");
-        w.value_string(this.uri);
-        w.key("diagnostics");
-        w.begin_array();
-        w.begin_object();
-        w.key("range");
-        w.begin_object();
-        w.key("start");
-        w.begin_object();
-        w.key("line");
-        w.value_i64(0);
-        w.key("character");
-        w.value_i64(0);
-        w.end_object();
-        w.key("end");
-        w.begin_object();
-        w.key("line");
-        w.value_i64(0);
-        w.key("character");
-        w.value_i64(1);
-        w.end_object();
-        w.end_object();
-        w.key("severity");
-        w.value_i64(1);
-        w.key("message");
-        w.value_string("internal compiler error: " + message);
-        w.key("source");
-        w.value_string("penguinlang");
-        w.end_object();
-        w.end_array();
-        w.end_object();
-        this.send_diagnostics(w.sb.to_string());
+    fun publish_diagnostics(mut this, diags: std.Vector<LspDiagnostic>) {
+        this.send_diagnostics(diagnostics_params_json(this.uri, diags));
     }
 
     fun send_diagnostics(mut this, params_json: string) {
@@ -231,21 +218,36 @@ class LspCompilationUnit {
                 // once nothing references it (Close command → break).
                 break;
             } else if (msg.method == "textDocument/definition") {
-                this.respond_result(msg, lsp.query_definition(this, msg));
+                this.respond_result(msg, locations_to_json(query_definition(this.make_context(), msg)));
             } else if (msg.method == "textDocument/documentSymbol") {
-                this.respond_result(msg, lsp.query_document_symbol(this));
+                this.respond_result(msg, symbols_to_json(query_document_symbol(this.make_context())));
             } else if (msg.method == "textDocument/completion") {
-                this.respond_result(msg, lsp.query_completion(this, msg));
+                this.respond_result(msg, completion_items_to_json(query_completion(this.make_context(), msg)));
             } else if (msg.method == "textDocument/references") {
-                this.respond_result(msg, lsp.query_references(this, msg));
+                this.respond_result(msg, locations_to_json(query_references(this.make_context(), msg)));
             } else if (msg.method == "textDocument/hover") {
-                this.respond_result(msg, lsp.query_hover(this, msg));
+                let h: __builtin.Option<LspHover> = query_hover(this.make_context(), msg);
+                if (h.is_some()) {
+                    this.respond_result(msg, h.some.json_serialize());
+                } else {
+                    this.respond_result(msg, "null");
+                }
             } else if (msg.method == "textDocument/inlayHint") {
-                this.respond_result(msg, lsp.query_inlay_hints(this, msg));
+                let hints: __builtin.Option<std.Vector<LspInlayHint>> = query_inlay_hints(this.make_context(), msg);
+                if (hints.is_some()) {
+                    this.respond_result(msg, inlay_hints_to_json(hints.some));
+                } else {
+                    this.respond_result(msg, "null");
+                }
             } else if (msg.method == "textDocument/rename") {
-                this.respond_result(msg, lsp.query_rename(this, msg));
+                let we: __builtin.Option<LspWorkspaceEdit> = query_rename(this.make_context(), msg);
+                if (we.is_some()) {
+                    this.respond_result(msg, we.some.json_serialize());
+                } else {
+                    this.respond_result(msg, "null");
+                }
             } else if (msg.method == "textDocument/formatting") {
-                this.respond_result(msg, lsp.query_formatting(this, msg));
+                this.respond_result(msg, text_edits_to_json(query_formatting(this.make_context(), msg)));
             } else if (msg.has_id) {
                 this.respond_error(msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + msg.method);
             }

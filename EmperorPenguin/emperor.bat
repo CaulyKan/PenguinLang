@@ -3,7 +3,7 @@ rem ============================================================================
 rem emperor.bat — external driver for the EmperorPenguin compiler (Windows).
 rem
 rem Mirror of the `emperor` bash driver. The compiler binary
-rem (emperor_penguin_llvmir_emitter.exe) only emits platform-independent LLVM
+rem (emperor_penguin_llvm_emitter.exe) only emits platform-independent LLVM
 rem IR (.ll files); this script owns the LLVM environment checks, the C
 rem runtime build (make -C EmperorPenguin/std/c) and the final clang link.
 rem
@@ -143,8 +143,8 @@ set "CLANG=!SEL_CLANG!"
 
 rem ── emitter resolution (full mode only) ──────────────────────────────
 if "%MODE%"=="full" (
-    if defined OPT_EMITTER ( set "EMITTER=!OPT_EMITTER!" ) else if defined EMPEROR_EMITTER ( set "EMITTER=!EMPEROR_EMITTER!" ) else if exist "%SCRIPT_DIR%\emperor_penguin_llvmir_emitter.exe" ( set "EMITTER=%SCRIPT_DIR%\emperor_penguin_llvmir_emitter.exe" ) else (
-        echo [emperor] error: no emitter found: pass --emitter, set EMPEROR_EMITTER, or place emperor_penguin_llvmir_emitter.exe beside this script >&2
+    if defined OPT_EMITTER ( set "EMITTER=!OPT_EMITTER!" ) else if defined EMPEROR_EMITTER ( set "EMITTER=!EMPEROR_EMITTER!" ) else if exist "%SCRIPT_DIR%\emperor_penguin_llvm_emitter.exe" ( set "EMITTER=%SCRIPT_DIR%\emperor_penguin_llvm_emitter.exe" ) else (
+        echo [emperor] error: no emitter found: pass --emitter, set EMPEROR_EMITTER, or place emperor_penguin_llvm_emitter.exe beside this script >&2
         exit /b 1
     )
 )

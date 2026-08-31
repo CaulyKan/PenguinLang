@@ -15,9 +15,12 @@ Penguin-lang supports following built-in basic types:
 | u64       | 8    |
 | bool      | 1    |
 | char      | 4    |
-| f32       | 4    |
-| f64       | 8    |
+| float (f32) | 4  |
+| double (f64) | 8 |
+| string    | reference |
 | void      | 0    |
+
+`float`/`double` are the keyword spellings; `f32`/`f64` are accepted aliases.
 
 Penguin-lang also support readonly string type. This means that string is not mutable after create, similar to C#. However, string is still a reference type, and can be passed to other functions as reference.
 
@@ -143,22 +146,28 @@ value is stored, laid out, or shared:
 Penguin-lang features a strong, explicit, and fine-grained mutability system enforced at compile time. This design aims to prevent accidental mutations and promote safer, more predictable code.
 
 ### Variable Declaration and Mutability Keywords
-Variables are declared using `let`. By default, `let` declares an **immutable** variable. To make a variable mutable, use the `mut` keyword.
+Variables are declared using `let`. There are four declaration forms:
 
-*   **`let`**: Declares an immutable variable.
+*   **`let x : T = v`**: An immutable binding to an immutable value.
     ```penguin
     let x : i32 = 10; // x is immutable
     x = 20;          // Compile-time ERROR: Cannot reassign immutable variable
     ```
-*   **`let mut`**: Declares a mutable variable.
+*   **`let x : mut T = v`**: An immutable binding to a mutable value — `mut` goes on the TYPE.
     ```penguin
     let y : mut i32 = 20; // y is mutable
     y = 30;              // OK: Can reassign mutable variable
     ```
-*   **`!mut`**: Explicitly marks a type as immutable. This is used to enforce immutability in contexts where `mut` might be default or to explicitly state immutability.
+*   **`let mut x = v`**: A mutable binding with the type inferred — `mut` goes on `let`, and NO type annotation is allowed.
     ```penguin
-    let z : !mut i32 = 30; // z is explicitly immutable
-    z = 40;               // Compile-time ERROR
+    let mut z = 30; // z is mutable, type inferred as i32
+    z = 40;        // OK
+    let mut z : i32 = 30; // Compile-time ERROR: Cannot use 'let mut' with explicit type specifier
+    ```
+*   **`let x : !mut T = v`**: Explicitly marks the value as immutable.
+    ```penguin
+    let w : !mut i32 = 30; // w is explicitly immutable
+    w = 40;               // Compile-time ERROR
     ```
 
 ### Class Member Mutability
@@ -289,15 +298,15 @@ Function parameters can specify their expected mutability.
 
 Penguin-lang provides several built-in data structures.
 
-*   **`Option<T>`**: Represents an optional value. It can be either `Some(T)` or `None`. This is used instead of `null` to handle absence of a value safely.
+*   **`Option<T>`**: Represents an optional value. It can be either `some(T)` or `none`. This is used instead of `null` to handle absence of a value safely.
     ```penguin
     #template(T: type)
     enum Option {
-        some : T,
-        none,
+        some: T;
+        none;
     }
     ```
-*   **`Result<T, E>`**: Used for returning and propagating errors. It can be either `Ok(T)` or `Error(E)`.
+*   **`Result<T, E>`**: Used for returning and propagating errors. It can be either `ok(T)` or `error(E)`.
 *   **`List<T>`**: A growable, heap-allocated list. Element access (`at()`,
     for-loop variables) **copies** value-type elements — write mutations back
     with `set()` (see *Value-Copy Semantics in Practice*).
@@ -378,6 +387,6 @@ class MyClass {
     x : T;
 }
 
-let a : MyClass<i32> = new MyClass<i32>();
+let a : mut MyClass<i32> = new MyClass<i32>();
 a.x = 1;
 ```

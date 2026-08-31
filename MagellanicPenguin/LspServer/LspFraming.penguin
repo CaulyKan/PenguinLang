@@ -49,9 +49,9 @@ class Framer {
     // Feed one transport chunk; returns every complete frame body extracted
     // from the buffer (possibly none, possibly several). Tolerates both the
     // strict "\r\n\r\n" header terminator and the lenient "\n\n".
-    fun feed(mut this, chunk: string) -> mut _utils.List<string> {
+    fun feed(mut this, chunk: string) -> mut std.Vector<string> {
         this.buf = this.buf + chunk;
-        let out: mut _utils.List<string> = new _utils.List<string>();
+        let out: mut std.Vector<string> = new std.Vector<string>();
         while (true) {
             let sep: mut i64 = string_find(this.buf, "\r\n\r\n");
             let sep_len: mut i64 = 4;

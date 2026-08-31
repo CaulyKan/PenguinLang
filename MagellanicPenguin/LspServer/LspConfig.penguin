@@ -1,0 +1,154 @@
+// LspConfig: the .magellanic.config workspace routing layer — the HIGHEST
+// priority of the three document-routing rules (config hit > .penguins
+// upward search > single-file fallback).
+//
+// The config is a JSON document at the WORKSPACE ROOT ONLY (the initialize
+// rootUri; no upward fallback), loaded once per session:
+//
+//   { "projects": [
+//       { "dir": "EmperorPenguin", "project": "EmperorPenguin/Pass1.penguins" },
+//       { "dir": "MagellanicPenguin/LspServer",
+//         "project": "MagellanicPenguin/LspServer/LspServer.penguins",
+//         "args": ["--enable-coroutine"],
+//         "libs": ["build/libemperorpenguin.penguin-lib"] } ] }
+//
+// A document routes to the entry whose `dir` (relative to the root) is the
+// LONGEST prefix of the document's root-relative path. The hit supplies the
+// project file (root-relative), extra compiler args (parsed AFTER the
+// project's own flags — on a conflict the config wins, CompilerConfig.parse
+// semantics), and extra libs (root-relative).
+namespace lsp {
+
+class LspConfigEntry {
+    // Workspace-root-relative directory key, normalized (no leading or
+    // trailing slash).
+    dir: string = "";
+    // Workspace-root-relative project file.
+    project: string = "";
+    args: mut std.Vector<string> = new std.Vector<string>();
+    libs: mut std.Vector<string> = new std.Vector<string>();
+
+    fun new(mut this) {}
+}
+
+class LspWorkspaceConfig {
+    // Workspace root PATH ("" = no rootUri → routing disabled).
+    root: string = "";
+    entries: mut std.Vector<LspConfigEntry> = new std.Vector<LspConfigEntry>();
+    // False until the (possibly absent) config has been read — routing is a
+    // no-op before that.
+    loaded: bool = false;
+
+    fun new(mut this) {}
+}
+
+// A JSON value that IS a string (array element), "" otherwise.
+fun json_string_value(v: std.JsonValue) -> string {
+    if (v is std.JsonValue.json_string) {
+        return v.json_string;
+    }
+    return "";
+}
+
+// Strip leading/trailing slashes from a dir key.
+fun normalize_dir_key(dir: string) -> string {
+    let s: mut string = dir;
+    while (string_length(s) > 0 && string_char_at(s, 0) == "/") {
+        s = string_substring(s, 1, string_length(s) - 1);
+    }
+    while (string_length(s) > 0 && string_char_at(s, string_length(s) - 1) == "/") {
+        s = string_substring(s, 0, string_length(s) - 1);
+    }
+    return s;
+}
+
+// Read <root>/.magellanic.config (once per session). A missing or unreadable
+// config is an EMPTY loaded config — routing simply never hits.
+fun load_workspace_config(root_path: string) -> mut LspWorkspaceConfig {
+    let cfg: mut LspWorkspaceConfig = new LspWorkspaceConfig();
+    cfg.root = root_path;
+    if (root_path == "") {
+        return cfg;
+    }
+    cfg.loaded = true;
+    let cfg_path: string = root_path + "/.magellanic.config";
+    if (!std.io.exists(cfg_path)) {
+        return cfg;
+    }
+    let text: __builtin.Option<string> = std.io.read_text(cfg_path);
+    if (text.is_none()) {
+        return cfg;
+    }
+    let v: std.JsonValue = std.parse_json(text.some);
+    let projects: __builtin.Option<std.JsonValue> = v.get("projects");
+    if (projects.is_none()) {
+        return cfg;
+    }
+    if (!(projects.some is std.JsonValue.json_array)) {
+        return cfg;
+    }
+    let arr: std.Vector<std.JsonValue> = projects.some.json_array;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(arr.size())) {
+        let e: std.JsonValue = arr.at(cast<u64>(i)).some;
+        let entry: mut LspConfigEntry = new LspConfigEntry();
+        entry.dir = normalize_dir_key(json_get_string(e, "dir"));
+        entry.project = json_get_string(e, "project");
+        let args: __builtin.Option<std.JsonValue> = e.get("args");
+        if (args.is_some()) {
+            if (args.some is std.JsonValue.json_array) {
+                let ai: mut i64 = 0;
+                while (ai < cast<i64>(args.some.json_array.size())) {
+                    entry.args.push(json_string_value(args.some.json_array.at(cast<u64>(ai)).some));
+                    ai = ai + 1;
+                }
+            }
+        }
+        let libs: __builtin.Option<std.JsonValue> = e.get("libs");
+        if (libs.is_some()) {
+            if (libs.some is std.JsonValue.json_array) {
+                let li: mut i64 = 0;
+                while (li < cast<i64>(libs.some.json_array.size())) {
+                    entry.libs.push(json_string_value(libs.some.json_array.at(cast<u64>(li)).some));
+                    li = li + 1;
+                }
+            }
+        }
+        if (entry.dir != "" && entry.project != "") {
+            cfg.entries.push(entry);
+        }
+        i = i + 1;
+    }
+    return cfg;
+}
+
+// The entry whose dir is the longest prefix of the document's root-relative
+// path (dir itself or dir + "/..."). None when the config is not loaded, the
+// document is outside the root, or nothing matches.
+fun find_config_entry(cfg: LspWorkspaceConfig, doc_path: string) -> __builtin.Option<LspConfigEntry> {
+    if (!cfg.loaded || cfg.root == "") {
+        return new __builtin.Option<LspConfigEntry>.none();
+    }
+    let prefix: string = cfg.root + "/";
+    if (!emperor.string_starts_with(doc_path, prefix)) {
+        return new __builtin.Option<LspConfigEntry>.none();
+    }
+    let rel: string = string_substring(doc_path, string_length(prefix), string_length(doc_path) - string_length(prefix));
+    let best: mut Option<LspConfigEntry> = new Option<LspConfigEntry>.none();
+    let best_len: mut i64 = -1;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(cfg.entries.size())) {
+        let e: LspConfigEntry = cfg.entries.at(cast<u64>(i)).some;
+        let matches: bool = rel == e.dir || emperor.string_starts_with(rel, e.dir + "/");
+        if (matches) {
+            if (cast<i64>(string_length(e.dir)) > best_len) {
+                best_len = cast<i64>(string_length(e.dir));
+                best = new Option<LspConfigEntry>.some(e);
+            }
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+}

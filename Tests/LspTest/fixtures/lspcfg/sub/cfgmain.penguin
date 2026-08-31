@@ -1,0 +1,4 @@
+fun main() {
+    let v: i64 = cfglib.cfg_target_fn(1);
+    println(v);
+}

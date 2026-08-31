@@ -135,3 +135,100 @@ win64-lsp, linux, testruns, *.log).
   updated (Tests/Program.cs Pass1 backend, BatchCompiler, BoundTypeRegistryTest,
   comments). The runner's Pass2/Pass3 backends now expect build/pass2|pass3;
   LspTest md files use `Run Args: build/lsp`.
+
+## Session 4 (2026-08-30, branch feature/lsp-project-config): _utils→std, typed protocol, project discovery, .magellanic.config
+
+Plan: .agents/plans/lsp-project-config.md — all four milestones landed, each
+an independent green commit (d15bade, e5c904a, 975510d, 0be6a58, b28671b).
+
+- **_utils → std migration**: every LSP-own list is `std.Vector` now;
+  `_utils.List` remains ONLY at the embedded-compiler API boundary
+  (compile_sources inputs, result.errors, BoundDefinition/BoundStatement
+  lists, lexer.tokenize returns). didClose bug fixed (LspMain removes the
+  unit from the map after forwarding the close; reopening used to black-hole
+  requests into the dead unit's Fifo) — locked by LspTest/DidCloseReopen.md.
+- **Typed protocol layer**: LspProtocol.penguin structs serialize themselves
+  (hand-written JsonWriter methods, byte-identical wire output); queries
+  (LspQuery.penguin) take an LspDocContext snapshot (path/text/last_ok +
+  prebuilt index — the unit rebuilds the index when last_ok is replaced) and
+  return typed structs; LspDiagnostics is the single diagnostics pipeline;
+  LspSymIndex holds the index build. The json.penguin `#impl_json_serializable()`
+  meta auto-impl CANNOT be used here: containers of user classes
+  (Vector<Kid>, HashMap<string,Vector<T>>, self-recursive children) fail with
+  E_RESOLVE_TYPE on the spliced impls — red sentinel
+  Tests/StdlibTest/MetaJsonVectorOfSerializable.md documents it (meta splice
+  runs before the template interface instantiation with the user class is
+  registered; plain nested-class fields DO work — MetaJsonContainers).
+- **Project discovery**: LspProject.penguin — find_project_file walks up ≤10
+  dirs (C# parity); plan_from_project mirrors main.penguin's project handling
+  (flags re-enter CompilerConfig.parse, libs relative to project dir);
+  LibLoadState cached per resolved lib-path list. Opened siblings contribute
+  EDITOR text (LspMain flushes a path→text snapshot before each forwarded
+  didChange — no back-reference from units to LspMain); unopened files read
+  disk. Project-mode diagnostics filter to the requesting doc (no-location
+  errors stay visible — cross-file resolve errors carry file=""/line=0).
+- **.magellanic.config** (LspConfig.penguin): array form at the initialize
+  rootUri ONLY, loaded once; longest-prefix dir routing; config args parse
+  after project flags (config wins), config libs resolve against the root.
+  Priority: config hit > .penguins search > single file. Repo root has a
+  dogfooding config (EmperorPenguin→Pass1, LspServer→LspServer.penguins with
+  --enable-coroutine + build/libemperorpenguin.penguin-lib).
+- **Runner features**: Run Stdin expands ${VAR} (LSP sessions open real files
+  via file://${PENGUIN_ROOT} uris); ExpectedStdout/ExpectedStderr operands
+  expand env ${VAR} too — goldens carry ${PENGUIN_ROOT} inside echoed frames,
+  and Content-Length headers must count the EXPANDED bytes (build frames from
+  the expanded text, then string-replace the root when writing the md).
+- **GOTCHAs found**: (1) cross-file TOP-LEVEL symbols do not resolve in
+  EmperorPenguin (each file's top level is its _ns_ namespace) — multi-file
+  fixtures/libs need an explicit `namespace`; (2) a .penguins sources entry
+  must be project-dir-RELATIVE — absolute paths are silently dropped by glob
+  resolution; (3) LspTest sessions need `--enable-coroutine`-style flags only
+  at BUILD time; the dbg trick (compile a driver .penguins with the LSP
+  sources + a Dbg.penguin printing via __builtin.eprintln) is the fastest
+  way to ground-truth LspProject/compile behavior without instrumenting the
+  server (copy sources into the dbg dir for relative paths).
+- LspTest is 20 goldens now (ProjectDiscovery, MagellanicConfig,
+  MagellanicConfigPriority added; all byte-exact ESCAPE).
+
+## Session 5 (2026-08-31, same branch): json auto-impl fixed, LspProtocol on #impl_json_serializable
+
+- **MetaJsonVectorOfSerializable ROOT CAUSE was NOT the interface-registration
+  ordering the sentinel suspected**: a HAND-EXPANDED repro (no meta at all)
+  failed identically. Real chain: `Vector<Kid>` specialization
+  (`at() -> Option<T>`) instantiates `Option<Kid>` → the `#specializing
+  __builtin.Option<T>` block INJECTS an impl that binds in the SPECIALIZED
+  type's scope (std/builtin namespaces) → the spliced
+  `#json_read_expr_ast(T,...)` referenced the element by its CONCRETE short
+  name (`Kid.json_deserialize(...)`), unresolvable there (file _ns_
+  namespaces are invisible cross-file AND not addressable symbols —
+  add_or_merge_namespace adds a scope child, no namespace_sym). Fix:
+  json_read_expr_ast takes the element SPELLING; the Option/Box blocks pass
+  "T", which the specialized scope binds to the concrete type
+  (inject_specializing_impl's documented contract). Why json.penguin itself
+  never tripped this: JsonValue has no IJsonSerializable impl, so
+  Option<JsonValue> never gets the injected impl.
+- **Three more auto-impl gaps fixed the same day** (found via LSP-shape
+  probes): (1) display-name SUBSTRING dispatch misrouted
+  HashMap<string,Vector<X>> to the Vector branch — dispatch on the base name
+  (segment before the first '<') now; (2) self-referential fields
+  (Vector<Self>) were silently SKIPPED — the class's own impl isn't spliced
+  into the AST yet when its #fun expands; the serializable check now also
+  accepts compiler().get_current_scope()'s class; (3) container-valued
+  HashMap entries / container elements spliced nonexistent
+  `Vector.json_deserialize` — the read path recurses
+  json_read_fill_stmt/json_read_push_stmt with depth-suffixed temps, and
+  json_type_spelling no longer appends generic args twice (display_name
+  already includes them; base = def name now). Locked by
+  Tests/StdlibTest/MetaJsonRecursiveNestedContainers.md.
+- **LspProtocol.penguin is on #impl_json_serializable now** (all 12 structs,
+  hand-written serializers deleted; declaration order == wire order so all 20
+  LspTest goldens stay byte-exact). This is the FIRST meta-JIT use in a lib
+  consumer: json.penguin's #funs arrive as embedded per-file SourceInputs
+  from libemperorpenguin.penguin-lib — remember the lib must be REBUILT
+  (`make build/libemperorpenguin.penguin-lib`, ~20 min) after ANY
+  std/penguin/json.penguin change before `make lsp` picks it up (the lib
+  embeds the source verbatim).
+- Known remaining auto-impl gap (pre-existing, untouched): Option/Box FIELDS
+  in an auto-impl'd class die with E_INTERNAL "Symbol register not found for:
+  <global>.__builtin" (probe build/repro/p3.penguin). LSP structs don't use
+  them; MetaJsonOptionBox (locals) is green.

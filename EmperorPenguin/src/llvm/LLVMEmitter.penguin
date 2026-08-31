@@ -823,7 +823,10 @@ class LLVMEmitter {
         }
         if (this.needs_sched_run) {
             target.append("declare void @_emperor_co_spawn_fn0(ptr)\n");
-            target.append("declare i32 @_emperor_sched_run()\n");
+            // The scheduler loop itself needs no runtime declare: it is the
+            // compiled module function __builtin.__sched_run (scheduler.penguin,
+            // auto-loaded with --enable-coroutine — a suspending module always
+            // defines it), called directly as @__builtin___sched_run below.
         }
         if (this.needs_setjmp) {
             // The try/catch landing pad: _setjmp (no signal mask), marked
@@ -1241,9 +1244,16 @@ class LLVMEmitter {
             // empty ready queue returns immediately. Suspend mode only.
             if (this.suspend_mode && (spawned || cast<i64>(module.init_functions.size()) > 0)) {
                 this.needs_sched_run = true;
+                // Call the compiled scheduler loop directly (sanitize of
+                // "__builtin.__sched_run"): scheduler.penguin is auto-loaded
+                // with --enable-coroutine, so a suspending module always
+                // defines it — no C trampoline. The loop returns i64; main
+                // returns i32 (exit codes are small, trunc is exact).
                 let run_tmp: string = this.next_tmp();
-                this.sb.append("  " + run_tmp + " = call i32 @_emperor_sched_run()\n");
-                this.sb.append("  ret i32 " + run_tmp + "\n");
+                let trunc_tmp: string = this.next_tmp();
+                this.sb.append("  " + run_tmp + " = call i64 @__builtin___sched_run()\n");
+                this.sb.append("  " + trunc_tmp + " = trunc i64 " + run_tmp + " to i32\n");
+                this.sb.append("  ret i32 " + trunc_tmp + "\n");
             } else {
                 this.sb.append("  ret i32 0\n");
             }

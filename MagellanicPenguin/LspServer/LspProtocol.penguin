@@ -1,0 +1,192 @@
+// LspProtocol: the typed LSP wire-result layer. Every query builds these
+// structs; each one serializes itself via json.penguin's
+// `#impl_json_serializable()` (meta reflection over the class fields), so
+// there is a single JSON exit per result kind and the golden bytes live in
+// ONE place. Queries set values, never bytes.
+//
+// Field order in each class is the LSP wire order the C# server emitted —
+// the auto-impl emits fields in declaration order. Every field is mut (the
+// generated deserializer needs to assign; the LSP only serializes, but the
+// generated code must still compile). Container fields use the shapes the
+// auto-impl supports: std.Vector<T> of protocol structs (recursively,
+// LspDocumentSymbol.children is self-recursive) and
+// std.HashMap<string, std.Vector<LspTextEdit>> (LspWorkspaceEdit.changes).
+//
+// All coordinates are 0-based LSP positions (the 1-based EP lexer basis is
+// converted by the query layer before filling these structs).
+namespace lsp {
+
+class LspPosition {
+    line: mut i64 = 0;
+    character: mut i64 = 0;
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspRange {
+    start: mut LspPosition = new LspPosition();
+    end: mut LspPosition = new LspPosition();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspDiagnostic {
+    range: mut LspRange = new LspRange();
+    severity: mut i64 = 0;
+    message: mut string = "";
+    source: mut string = "";
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspLocation {
+    uri: mut string = "";
+    range: mut LspRange = new LspRange();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspTextEdit {
+    range: mut LspRange = new LspRange();
+    newText: mut string = "";
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspCompletionItem {
+    label: mut string = "";
+    kind: mut i64 = 0;
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspInlayHint {
+    position: mut LspPosition = new LspPosition();
+    label: mut string = "";
+    kind: mut i64 = 0;
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspDocumentSymbol {
+    name: mut string = "";
+    kind: mut i64 = 0;
+    range: mut LspRange = new LspRange();
+    selectionRange: mut LspRange = new LspRange();
+    children: mut std.Vector<LspDocumentSymbol> = new std.Vector<LspDocumentSymbol>();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspHoverContents {
+    kind: mut string = "markdown";
+    value: mut string = "";
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspHover {
+    contents: mut LspHoverContents = new LspHoverContents();
+    range: mut LspRange = new LspRange();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+class LspWorkspaceEdit {
+    // uri -> edits (v1 rename always fills exactly one uri).
+    changes: mut std.HashMap<string, std.Vector<LspTextEdit>> = new std.HashMap<string, std.Vector<LspTextEdit>>();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+// publishDiagnostics params: {"uri": ..., "diagnostics": [...]}.
+class LspPublishDiagnosticsParams {
+    uri: mut string = "";
+    diagnostics: mut std.Vector<LspDiagnostic> = new std.Vector<LspDiagnostic>();
+    #impl_json_serializable();
+    fun new(mut this) {}
+}
+
+// ---- factories ----
+// Negative coordinates clamp to 0 (the EP lexer's unset locations surface as
+// 0 there; the old write_pos0 did the same clamp at the JSON edge).
+
+fun make_position(line0: i64, char0: i64) -> mut LspPosition {
+    let p: mut LspPosition = new LspPosition();
+    if (line0 < 0) { p.line = 0; } else { p.line = line0; }
+    if (char0 < 0) { p.character = 0; } else { p.character = char0; }
+    return p;
+}
+
+// A same-line range [char_start, char_end).
+fun make_range(line0: i64, char_start: i64, char_end: i64) -> mut LspRange {
+    let r: mut LspRange = new LspRange();
+    r.start = make_position(line0, char_start);
+    r.end = make_position(line0, char_end);
+    return r;
+}
+
+// The one diagnostic shape the server publishes: severity 1 (Error), source
+// penguinlang, single-character range at (line0, char0).
+fun make_diagnostic(line0: i64, char0: i64, message: string) -> mut LspDiagnostic {
+    let d: mut LspDiagnostic = new LspDiagnostic();
+    d.range = make_range(line0, char0, char0 + 1);
+    d.severity = 1;
+    d.message = message;
+    d.source = "penguinlang";
+    return d;
+}
+
+// ---- array serializers (one JSON exit per array result kind) ----
+
+fun locations_to_json(locs: std.Vector<LspLocation>) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    for (let l in locs) {
+        w.value_raw(l.json_serialize());
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+fun completion_items_to_json(items: std.Vector<LspCompletionItem>) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    for (let it in items) {
+        w.value_raw(it.json_serialize());
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+fun inlay_hints_to_json(hints: std.Vector<LspInlayHint>) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    for (let h in hints) {
+        w.value_raw(h.json_serialize());
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+fun text_edits_to_json(edits: std.Vector<LspTextEdit>) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    for (let e in edits) {
+        w.value_raw(e.json_serialize());
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+fun symbols_to_json(syms: std.Vector<LspDocumentSymbol>) -> string {
+    let w: mut std.JsonWriter = new std.JsonWriter();
+    w.begin_array();
+    for (let s in syms) {
+        w.value_raw(s.json_serialize());
+    }
+    w.end_array();
+    return w.to_string();
+}
+
+}

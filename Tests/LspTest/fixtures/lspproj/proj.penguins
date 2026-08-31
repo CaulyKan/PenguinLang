@@ -1,0 +1,3 @@
+[Project]
+name = "lspproj"
+sources = ["main.penguin", "libx.penguin"]

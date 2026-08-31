@@ -4,7 +4,7 @@
 
 ## 目标（用户需求）
 
-1. `make release` 产出 `build/linux(win)/emperor_penguin_llvmir_emitter(.exe)`。
+1. `make release` 产出 `build/linux(win)/emperor_penguin_llvm_emitter(.exe)`。
 2. 各 pass 输出为文件目标（如 `make build/bootstrap/pass2`）；`bootstrap` 依赖 `build/bootstrap/pass4` 并额外编 pass5 检查收敛；`release` 依赖 pass4；`lsp` 依赖 release 并复用 release dynlib。
 3. 为编译器定义文件级依赖，文件未变不重编。
 4. 从 EmperorPenguin 源码删除 LLVM 调用；emitter 只产 `.ll`；`EmperorPenguin/emperor(.bat)` 负责检查 LLVM 环境、链接产物、交叉编译，release 时拷贝到 `build/linux(win)/`。

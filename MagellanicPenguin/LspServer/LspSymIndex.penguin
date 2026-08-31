@@ -1,0 +1,202 @@
+// LspSymIndex: the symbol-index layer — a SymEntry tree built by recursively
+// walking emperor.BoundCompilationUnit.definitions (namespaces, classes,
+// enums, interfaces, functions, fields, globals, initial blocks; each bound
+// symbol carries the emperor.SourceLocation of its declaration). This module
+// only BUILDS and flattens the index; the query layer (LspQuery) reads it.
+//
+// The per-file `_ns_*` wrapper namespaces are spliced away (their children
+// surface at the enclosing level); specialized (monomorphized) defs and impl
+// blocks are skipped — they duplicate their templates.
+namespace lsp {
+
+// LSP SymbolKind (documentSymbol).
+let SYM_NAMESPACE: i64 = 3;
+let SYM_CLASS: i64 = 5;
+let SYM_METHOD: i64 = 6;
+let SYM_FIELD: i64 = 8;
+let SYM_ENUM: i64 = 10;
+let SYM_INTERFACE: i64 = 11;
+let SYM_FUNCTION: i64 = 12;
+let SYM_VARIABLE: i64 = 13;
+let SYM_ENUM_MEMBER: i64 = 22;
+
+// LSP CompletionItemKind (completion).
+let CIK_METHOD: i64 = 2;
+let CIK_FUNCTION: i64 = 3;
+let CIK_FIELD: i64 = 5;
+let CIK_VARIABLE: i64 = 6;
+let CIK_CLASS: i64 = 7;
+let CIK_INTERFACE: i64 = 8;
+let CIK_MODULE: i64 = 9;
+let CIK_ENUM: i64 = 13;
+let CIK_KEYWORD: i64 = 14;
+let CIK_ENUM_MEMBER: i64 = 20;
+
+class SymEntry {
+    name: string = "";
+    kind: i64 = 0;
+    cik: i64 = 0;
+    // Hover detail (a PenguinLang signature/type line; "" = none).
+    detail: string = "";
+    // Declaration site in EP lexer basis (1-based line, 1-based col); an
+    // empty filename means "no location" (namespace wrappers).
+    filename: string = "";
+    line: i64 = 0;
+    col: i64 = 0;
+    children: mut std.Vector<SymEntry> = new std.Vector<SymEntry>();
+
+    fun new(mut this) {}
+}
+
+fun empty_loc() -> emperor.SourceLocation {
+    return new emperor.SourceLocation("", 0, 0);
+}
+
+fun make_entry(name: string, kind: i64, cik: i64, loc: emperor.SourceLocation) -> mut SymEntry {
+    let e: mut SymEntry = new SymEntry();
+    e.name = name;
+    e.kind = kind;
+    e.cik = cik;
+    e.filename = loc.filename;
+    e.line = loc.line;
+    e.col = loc.col;
+    return e;
+}
+
+// A hover signature from a bound function symbol: `fun name(a: T, ...) -> R`
+// (`this` receivers skipped). Parameters carry their mutability flavor.
+fun function_detail(sym: emperor.BoundFunctionSymbol) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append("fun ");
+    sb.append(sym.name);
+    sb.append("(");
+    let i: mut i64 = 0;
+    let first: mut bool = true;
+    while (i < cast<i64>(sym.parameters.size())) {
+        let p: emperor.BoundFunctionParameter = sym.parameters.at(cast<u64>(i)).some;
+        if (!p.is_this) {
+            if (!first) { sb.append(", "); }
+            first = false;
+            sb.append(p.name);
+            sb.append(": ");
+            sb.append(p.bound_type.display_name());
+        }
+        i = i + 1;
+    }
+    sb.append(") -> ");
+    sb.append(sym.return_type.display_name());
+    return sb.to_string();
+}
+
+// One function definition → one entry (skips monomorphized copies so a
+// generic method completes/defines as its template, not Foo__i64 clones).
+fun push_function_entry(def: emperor.BoundFunctionDefinition, kind: i64, cik: i64, out: mut std.Vector<SymEntry>) {
+    if (def.is_specialized) { return; }
+    if (def.symbol.is_none()) { return; }
+    let e: mut SymEntry = make_entry(def.name, kind, cik, def.symbol.some.location);
+    e.detail = function_detail(def.symbol.some);
+    out.push(e);
+}
+
+fun push_function_entries(defs: _utils.List<emperor.BoundDefinition>, kind: i64, cik: i64, out: mut std.Vector<SymEntry>) {
+    for (let d in defs) {
+        if (d is emperor.BoundDefinition.function_def) {
+            push_function_entry(d.function_def, kind, cik, out);
+        }
+    }
+}
+
+// Build the symbol tree from a bound unit's definitions.
+fun index_defs(defs: _utils.List<emperor.BoundDefinition>, out: mut std.Vector<SymEntry>) {
+    for (let def in defs) {
+        if (def is emperor.BoundDefinition.namespace_def) {
+            let nd: emperor.BoundNamespaceDefinition = def.namespace_def;
+            if (string_find(nd.name, "_ns_") == 0) {
+                index_defs(nd.children, out);
+            } else {
+                let e: mut SymEntry = make_entry(nd.name, SYM_NAMESPACE, CIK_MODULE, empty_loc());
+                index_defs(nd.children, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.class_def) {
+            let cd: emperor.BoundClassDefinition = def.class_def;
+            if (!cd.is_specialized) {
+                let loc: emperor.SourceLocation = if (cd.type_symbol.is_some()) { cd.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(cd.name, SYM_CLASS, CIK_CLASS, loc);
+                e.detail = "class " + cd.name;
+                let fi: mut i64 = 0;
+                while (fi < cast<i64>(cd.fields.size())) {
+                    let f: emperor.BoundDefinition = cd.fields.at(cast<u64>(fi)).some;
+                    if (f is emperor.BoundDefinition.class_field) {
+                        let fld: emperor.BoundClassFieldDefinition = f.class_field;
+                        let floc: emperor.SourceLocation = if (fld.field_symbol.is_some()) { fld.field_symbol.some.location } else { empty_loc() };
+                        let fe: mut SymEntry = make_entry(fld.name, SYM_FIELD, CIK_FIELD, floc);
+                        fe.detail = fld.name + ": " + fld.bound_type.display_name();
+                        e.children.push(fe);
+                    }
+                    fi = fi + 1;
+                }
+                push_function_entries(cd.methods, SYM_METHOD, CIK_METHOD, e.children);
+                push_function_entries(cd.constructors, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.enum_def) {
+            let ed: emperor.BoundEnumDefinition = def.enum_def;
+            if (!ed.is_specialized) {
+                let loc: emperor.SourceLocation = if (ed.type_symbol.is_some()) { ed.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(ed.name, SYM_ENUM, CIK_ENUM, loc);
+                e.detail = "enum " + ed.name;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ed.members.size())) {
+                    let m: emperor.BoundEnumMemberDefinition = ed.members.at(cast<u64>(mi)).some;
+                    // Member symbols carry no location (bound tree gap) —
+                    // variants resolve to the enum declaration itself.
+                    let mloc: mut emperor.SourceLocation = loc;
+                    if (m.member_symbol.is_some()) {
+                        if (m.member_symbol.some.location.line > 0) {
+                            mloc = m.member_symbol.some.location;
+                        }
+                    }
+                    let me: mut SymEntry = make_entry(m.name, SYM_ENUM_MEMBER, CIK_ENUM_MEMBER, mloc);
+                    me.detail = "member of " + ed.name;
+                    e.children.push(me);
+                    mi = mi + 1;
+                }
+                push_function_entries(ed.methods, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.interface_def) {
+            let id: emperor.BoundInterfaceDefinition = def.interface_def;
+            if (!id.is_specialized) {
+                let loc: emperor.SourceLocation = if (id.type_symbol.is_some()) { id.type_symbol.some.location } else { empty_loc() };
+                let e: mut SymEntry = make_entry(id.name, SYM_INTERFACE, CIK_INTERFACE, loc);
+                e.detail = "interface " + id.name;
+                push_function_entries(id.methods, SYM_METHOD, CIK_METHOD, e.children);
+                out.push(e);
+            }
+        } else if (def is emperor.BoundDefinition.function_def) {
+            push_function_entry(def.function_def, SYM_FUNCTION, CIK_FUNCTION, out);
+        } else if (def is emperor.BoundDefinition.global_var_def) {
+            let gd: emperor.BoundGlobalVariableDefinition = def.global_var_def;
+            let gloc: emperor.SourceLocation = if (gd.variable_symbol.is_some()) { gd.variable_symbol.some.location } else { empty_loc() };
+            let ge: mut SymEntry = make_entry(gd.name, SYM_VARIABLE, CIK_VARIABLE, gloc);
+            ge.detail = gd.name + ": " + gd.variable_symbol.some.bound_type.display_name();
+            out.push(ge);
+        } else if (def is emperor.BoundDefinition.initial_routine) {
+            let ir: emperor.BoundInitialRoutineDefinition = def.initial_routine;
+            if (ir.symbol.is_some()) {
+                out.push(make_entry("<initial>", SYM_METHOD, CIK_METHOD, ir.symbol.some.location));
+            }
+        }
+        // impl_def / impl_for_def / type_ref / meta_*: not user-visible symbols.
+    }
+}
+
+fun flat_collect(entries: std.Vector<SymEntry>, out: mut std.Vector<SymEntry>) {
+    for (let e in entries) {
+        out.push(e);
+        flat_collect(e.children, out);
+    }
+}
+
+}

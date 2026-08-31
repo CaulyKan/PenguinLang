@@ -1,0 +1,229 @@
+// LspProject: project-file discovery and the project-mode compile assembly —
+// the ONE module that adapts between the LSP and the embedded compiler's
+// project/lib APIs (PenguinProject, CompilerConfig, load_lib_chain). A
+// document compiles in PROJECT mode when a *.penguins file is found by
+// walking UP from the document's directory (≤10 levels, first match wins —
+// C# LSP FindProjectFile parity); otherwise the single-file fallback
+// (LspCompilationUnit's original mode) applies.
+//
+// Project mode mirrors main.penguin's project handling: flags from the
+// project file re-enter CompilerConfig.parse (only '-'-prefixed tokens can
+// be in the list — Project.load filters), project lib paths resolve against
+// the project dir, and lib sources merge deps-first with is_lib set, their
+// shipped instances routed to compiler.lib_instances. The lib chain state
+// (the .so metadata parse) is cached per lib-path LIST so per-keystroke
+// recompiles never re-read lib metadata.
+namespace lsp {
+
+// Lib chains keyed by their (joined, resolved) path list. One compile at a
+// time inside a unit's actor loop — a plain global is safe.
+let LIB_STATE_CACHE: mut std.HashMap<string, emperor.LibLoadState> = new std.HashMap<string, emperor.LibLoadState>();
+
+// The compilation setup resolved for one document.
+class LspCompilePlan {
+    // "" = no project file found (single-file fallback).
+    project_path: string = "";
+    // Absolute source file paths (globs resolved against the project dir).
+    sources: mut std.Vector<string> = new std.Vector<string>();
+    // Absolute .penguin-lib paths (project libs).
+    libs: mut std.Vector<string> = new std.Vector<string>();
+    // -D/--define pairs from the project flags.
+    define_keys: mut std.Vector<string> = new std.Vector<string>();
+    define_values: mut std.Vector<string> = new std.Vector<string>();
+    verbose: i64 = 0;
+
+    fun new(mut this) {}
+}
+
+// First *.penguins in dir or any ancestor (≤10 levels up), "" when absent.
+fun find_project_file(dir: string) -> string {
+    let d: mut string = dir;
+    let hops: mut i64 = 0;
+    while (hops < 10) {
+        let entries: string = std.io.dir_entries(d);
+        if (string_length(entries) > 0) {
+            let names: _utils.List<string> = emperor.split_lines(entries);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(names.size())) {
+                let name: string = names.at(cast<u64>(i)).some;
+                if (emperor.string_ends_with(name, ".penguins")) {
+                    return emperor.path_combine(d, name);
+                }
+                i = i + 1;
+            }
+        }
+        let parent: string = emperor.get_parent_dir(d);
+        if (parent == "" || parent == "." || parent == d) {
+            return "";
+        }
+        d = parent;
+        hops = hops + 1;
+    }
+    return "";
+}
+
+// Resolve the compile plan for a document: config routing first (highest
+// priority), then the .penguins upward search, then the single-file
+// fallback ("" project_path).
+fun plan_for_document_routed(doc_path: string, cfg: LspWorkspaceConfig) -> mut LspCompilePlan {
+    let hit: __builtin.Option<LspConfigEntry> = find_config_entry(cfg, doc_path);
+    if (hit.is_some()) {
+        let e: LspConfigEntry = hit.some;
+        let pf: string = emperor.path_combine(cfg.root, e.project);
+        return plan_from_project(pf, e.args, e.libs, cfg.root);
+    }
+    return plan_for_document(doc_path);
+}
+
+// Resolve the compile plan for a document ("" project_path = fallback).
+fun plan_for_document(doc_path: string) -> mut LspCompilePlan {
+    let dir: string = emperor.get_parent_dir(doc_path);
+    let pf: string = find_project_file(dir);
+    if (pf == "") { return new LspCompilePlan(); }
+    return plan_from_project(pf, new std.Vector<string>(), new std.Vector<string>(), "");
+}
+
+// Build a plan from one project file. extra_args parse AFTER the project's
+// own flags (a conflicting toggle/value — the config — wins); extra_libs
+// resolve against extra_lib_base when relative, and append after the
+// project's own libs.
+fun plan_from_project(pf: string, extra_args: std.Vector<string>, extra_libs: std.Vector<string>, extra_lib_base: string) -> mut LspCompilePlan {
+    let plan: mut LspCompilePlan = new LspCompilePlan();
+    plan.project_path = pf;
+
+    let proj: mut emperor.PenguinProject = emperor.PenguinProject.load(pf);
+    let pdir: string = emperor.get_parent_dir(pf);
+
+    let resolved: _utils.List<string> = proj.resolve_sources(pdir);
+    let si: mut i64 = 0;
+    while (si < cast<i64>(resolved.size())) {
+        plan.sources.push(resolved.at(cast<u64>(si)).some);
+        si = si + 1;
+    }
+
+    // Flags: project flags first, then the extras (config) — mirrors
+    // main.penguin's project pre-scan. coroutine_enabled is not taken from
+    // here: document compiles keep it unconditionally ON (analysis superset
+    // — port/wait syntax must analyze even when the project's own build
+    // omits the flag).
+    let cfg: mut emperor.CompilerConfig = new emperor.CompilerConfig();
+    if (cast<i64>(proj.flags.size()) > 0) {
+        cfg.parse(proj.flags);
+    }
+    if (cast<i64>(extra_args.size()) > 0) {
+        let arg_list: mut _utils.List<string> = new _utils.List<string>();
+        let xi: mut i64 = 0;
+        while (xi < cast<i64>(extra_args.size())) {
+            arg_list.push(extra_args.at(cast<u64>(xi)).some);
+            xi = xi + 1;
+        }
+        cfg.parse(arg_list);
+    }
+    plan.verbose = cfg.verbose;
+    let di: mut i64 = 0;
+    while (di < cast<i64>(cfg.cli_define_keys.size())) {
+        plan.define_keys.push(cfg.cli_define_keys.at(cast<u64>(di)).some);
+        plan.define_values.push(cfg.cli_define_values.at(cast<u64>(di)).some);
+        di = di + 1;
+    }
+
+    // Project libs (relative paths against the project dir), then the
+    // extras (relative paths against extra_lib_base — the workspace root).
+    let li: mut i64 = 0;
+    while (li < cast<i64>(proj.libs.size())) {
+        let libp: mut string = proj.libs.at(cast<u64>(li)).some;
+        if (string_length(libp) > 0 && string_char_at(libp, 0) != "/") {
+            libp = emperor.path_combine(pdir, libp);
+        }
+        plan.libs.push(libp);
+        li = li + 1;
+    }
+    let ei: mut i64 = 0;
+    while (ei < cast<i64>(extra_libs.size())) {
+        let libp2: mut string = extra_libs.at(cast<u64>(ei)).some;
+        if (string_length(libp2) > 0 && string_char_at(libp2, 0) != "/") {
+            libp2 = emperor.path_combine(extra_lib_base, libp2);
+        }
+        plan.libs.push(libp2);
+        ei = ei + 1;
+    }
+    return plan;
+}
+
+// The lib chain for a plan's libs, cached (none when there are no libs; on
+// a load error the state carries has_error — the caller then compiles
+// without lib sources, and unresolved symbols surface as ordinary
+// diagnostics instead of killing the server).
+fun lib_state_for(plan: LspCompilePlan) -> __builtin.Option<emperor.LibLoadState> {
+    if (plan.libs.size() == 0) {
+        return new __builtin.Option<emperor.LibLoadState>.none();
+    }
+    let key: mut string = "";
+    let i: mut i64 = 0;
+    while (i < cast<i64>(plan.libs.size())) {
+        key = key + plan.libs.at(cast<u64>(i)).some + "\n";
+        i = i + 1;
+    }
+    let cached: __builtin.Option<emperor.LibLoadState> = LIB_STATE_CACHE.get(key);
+    if (cached.is_some()) {
+        return cached;
+    }
+    let paths: mut _utils.List<string> = new _utils.List<string>();
+    let pi: mut i64 = 0;
+    while (pi < cast<i64>(plan.libs.size())) {
+        paths.push(plan.libs.at(cast<u64>(pi)).some);
+        pi = pi + 1;
+    }
+    let state: mut emperor.LibLoadState = emperor.load_lib_chain(paths, emperor.compiler_exe_dir());
+    LIB_STATE_CACHE.put(key, state);
+    return new __builtin.Option<emperor.LibLoadState>.some(state);
+}
+
+// SourceInputs for a project-mode compile: stdlib first, then the lib chain's
+// embedded sources (deps-first, is_lib set), then the project files — where
+// every OPENED document contributes its in-memory text (own_path/own_text is
+// the document being edited; open_texts maps the OTHER opened docs' paths)
+// and unopened files come from disk (missing files are skipped, C# parity).
+fun project_source_inputs(plan: LspCompilePlan, own_path: string, own_text: string, open_texts: std.HashMap<string, string>) -> mut _utils.List<emperor.SourceInput> {
+    let inputs: mut _utils.List<emperor.SourceInput> = new _utils.List<emperor.SourceInput>();
+    inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
+    inputs.push(new emperor.SourceInput("io.penguin", STDLIB_IO));
+    inputs.push(new emperor.SourceInput("scheduler.penguin", STDLIB_SCHED));
+
+    let state_opt: __builtin.Option<emperor.LibLoadState> = lib_state_for(plan);
+    if (state_opt.is_some()) {
+        let st: emperor.LibLoadState = state_opt.some;
+        if (!st.has_error) {
+            let si: mut i64 = 0;
+            while (si < cast<i64>(st.sources.size())) {
+                let src: emperor.SourceInput = st.sources.at(cast<u64>(si)).some;
+                let lib_input: mut emperor.SourceInput = new emperor.SourceInput(src.filename, src.source);
+                lib_input.is_lib = true;
+                inputs.push(lib_input);
+                si = si + 1;
+            }
+        }
+    }
+
+    let fi: mut i64 = 0;
+    while (fi < cast<i64>(plan.sources.size())) {
+        let f: string = plan.sources.at(cast<u64>(fi)).some;
+        if (f == own_path) {
+            inputs.push(new emperor.SourceInput(f, own_text));
+        } else {
+            let opened: __builtin.Option<string> = open_texts.get(f);
+            if (opened.is_some()) {
+                inputs.push(new emperor.SourceInput(f, opened.some));
+            } else {
+                let disk: __builtin.Option<string> = std.io.read_text(f);
+                if (disk.is_some()) {
+                    inputs.push(new emperor.SourceInput(f, disk.some));
+                }
+            }
+        }
+        fi = fi + 1;
+    }
+    return inputs;
+}
+
+}

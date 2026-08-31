@@ -28,7 +28,7 @@ class JsonInputParser {
     initial {
         while (true) {
             let chunk: string = wait this.chunks;
-            let frames: mut _utils.List<string> = this.framer.feed(chunk);
+            let frames: mut std.Vector<string> = this.framer.feed(chunk);
             let i: mut i64 = 0;
             while (i < cast<i64>(frames.size())) {
                 this.pending.write(frames.at(cast<u64>(i)).some);

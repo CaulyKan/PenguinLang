@@ -7,9 +7,9 @@ IR（中间表示）是 EmperorPenguin 编译器后端的核心数据结构。�
 **源文件位置**: `EmperorPenguin/src/ir/`
 
 **核心文件**:
-- `IRSourceLocation.penguin` — 源位置追踪
+- `IRSourceLocation.penguin` — 源位置追踪（`ast.SourceLocation` 别名壳）
 - `IRValue.penguin` — IR 值类型（寄存器、常量、标签）
-- `IRInstruction.penguin` — 20 种核心指令
+- `IRInstruction.penguin` — 29 种核心指令
 - `IRFunction.penguin` — IR 函数与参数
 - `IRBuilder.penguin` — 指令发射器（Builder 模式）
 - `IRGenerator.penguin` — Bound Tree → IR 转换器
@@ -23,26 +23,27 @@ IR（中间表示）是 EmperorPenguin 编译器后端的核心数据结构。�
 1. **高抽象层次**：屏蔽内存布局细节，无 alloca/load/store/GEP
 2. **可读性优先**：每条指令有 `display()` 方法，生成人类友好的文本
 3. **符号变量**：使用符号名（`%x`、`%this`）而非编号寄存器
-4. **源位置追踪**：每条指令携带 `IRSourceLocation`，支持错误定位
+4. **源位置追踪**：每条指令携带 `SourceLocation`，支持错误定位
 5. **隐式内存**：字段访问通过 RDMBR/WRMBR，编译器自动处理分配策略
 
 ---
 
 ## IRSourceLocation
 
-源位置信息，附加到每条指令上用于调试和错误报告。
+`IRSourceLocation.penguin` 仅保留空命名空间壳；源位置统一使用 `ast.SourceLocation`（IR 层直接以 `SourceLocation` 引用）。
 
 ```
-IRSourceLocation
-├── file_path: string    # 源文件路径
-├── line: i64            # 行号（1-based）
-└── column: i64          # 列号（1-based）
+SourceLocation (ast)
+├── filename: string    # 源文件路径
+├── line: i64           # 行号（1-based）
+└── col: i64            # 列号（1-based）
 ```
 
 | 方法 | 说明 |
 |------|------|
-| `new(file_path, line, column)` | 构造函数 |
-| `to_string() -> string` | 格式化为 `file:line:column` |
+| `new(filename, line, col)` | 构造函数 |
+| `copy() -> SourceLocation` | 复制 |
+| `to_string() -> string` | 格式化为 `file:line:col` |
 
 ---
 
@@ -56,6 +57,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `temp_reg` | IRTempRegister | `index`, `ir_type` | `%tN` |
 | `constant` | IRConstant | `value`, `ir_type` | `value` |
 | `label` | IRLabel | `name` | `name:` |
+| `global_ref` | IRGlobalRef | `name`, `ir_type` | `@name` |
 
 **公共方法**：
 
@@ -66,9 +68,9 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 
 ---
 
-## 指令集（20 种核心指令）
+## 指令集（29 种核心指令）
 
-`IRInstruction` 枚举包含 20 种变体，分为 6 个功能类别：
+`IRInstruction` 枚举包含 29 种变体，分为 6 个功能类别：
 
 ### 1. 常量与赋值（4 种）
 
@@ -82,7 +84,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 |------|------|
 | `result: IRValue` | 目标寄存器 |
 | `value: string` | 常量值的文本表示 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### ARG — 参数访问
 
@@ -96,7 +98,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `param_name: string` | 参数名称 |
 | `param_index: i64` | 参数索引 |
 | `ir_type: string` | 参数类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### ASSIGN — 变量赋值
 
@@ -108,7 +110,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 |------|------|
 | `dest: IRValue` | 目标寄存器 |
 | `src: IRValue` | 源寄存器 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### CAST — 类型转换
 
@@ -122,7 +124,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `operand: IRValue` | 操作数 |
 | `from_type: string` | 源类型 |
 | `to_type: string` | 目标类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 ### 2. 算术与逻辑（2 种）
 
@@ -139,7 +141,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `right: IRValue` | 右操作数 |
 | `result: IRValue` | 结果寄存器 |
 | `ir_type: string` | 结果类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### UNARYOP — 一元运算
 
@@ -153,9 +155,9 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `operand: IRValue` | 操作数 |
 | `result: IRValue` | 结果寄存器 |
 | `ir_type: string` | 结果类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
-### 3. 内存访问（2 种）
+### 3. 内存访问（7 种）
 
 #### RDMBR — 读取成员（替代 GEP + LOAD）
 
@@ -169,7 +171,7 @@ IR 指令的操作数和结果统一表示为 `IRValue` 枚举：
 | `obj: IRValue` | 对象引用 |
 | `field_name: string` | 字段名 |
 | `ir_type: string` | 字段类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### WRMBR — 写入成员（替代 GEP + STORE）
 
@@ -182,7 +184,70 @@ WRMBR %obj, .field_name, %value
 | `obj: IRValue` | 对象引用 |
 | `field_name: string` | 字段名 |
 | `value: IRValue` | 写入值 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
+
+#### GLOBAL_LOAD — 读取全局变量
+
+```
+%result:ty = GLOBAL_LOAD @global_name
+```
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器 |
+| `global_name: string` | 全局变量名 |
+| `ir_type: string` | 全局变量类型 |
+| `location: SourceLocation` | 源位置 |
+
+#### GLOBAL_STORE — 写入全局变量
+
+```
+GLOBAL_STORE @global_name, %value
+```
+
+| 字段 | 说明 |
+|------|------|
+| `global_name: string` | 全局变量名 |
+| `value: IRValue` | 写入值 |
+| `location: SourceLocation` | 源位置 |
+
+#### ADDRESS_OF — 取地址
+
+```
+%result:u64 = ADDRESS_OF %operand
+```
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器（u64 原始地址） |
+| `operand: IRValue` | 操作数 |
+| `location: SourceLocation` | 源位置 |
+
+#### LOAD_PTR — 从原始地址加载
+
+```
+%result:ty = LOAD_PTR %addr
+```
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器 |
+| `addr: IRValue` | u64 原始地址 |
+| `load_type: string` | 加载类型 |
+| `location: SourceLocation` | 源位置 |
+
+#### STORE_PTR — 向原始地址存储
+
+```
+STORE_PTR %addr, %value:store_type
+```
+
+| 字段 | 说明 |
+|------|------|
+| `addr: IRValue` | u64 原始地址 |
+| `value: IRValue` | 写入值 |
+| `store_type: string` | 存储类型 |
+| `location: SourceLocation` | 源位置 |
 
 ### 4. 控制流（4 种）
 
@@ -218,7 +283,7 @@ RET_VOID
 | `is_terminator() -> bool` | 是否终止指令（RET/RET_VOID） |
 | `is_control_flow() -> bool` | 是否控制流指令（BR/BR_COND/RET/RET_VOID） |
 
-### 5. 函数调用（3 种）
+### 5. 函数调用（4 种）
 
 #### CALL — 同步函数调用（有返回值）
 
@@ -232,7 +297,7 @@ RET_VOID
 | `args: List<IRValue>` | 实参列表 |
 | `result_value: IRValue` | 结果寄存器 |
 | `ret_type: string` | 返回类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
 #### CALL_VOID — 无返回值函数调用
 
@@ -240,22 +305,39 @@ RET_VOID
 CALL @func_name(%arg1:ty1, ...)
 ```
 
+#### CALL_INDIRECT — 间接函数调用
+
+```
+%result:ret_ty = CALL_INDIRECT %callee(%arg1:ty1, ...)
+```
+
+通过函数指针值调用（fun 类型字段 / 局部变量）；`callee` 是持有 fat function pointer 的 IRValue。
+
+| 字段 | 说明 |
+|------|------|
+| `callee: IRValue` | 被调函数指针 |
+| `args: List<IRValue>` | 实参列表 |
+| `result_value: IRValue` | 结果寄存器 |
+| `ret_type: string` | 返回类型 |
+| `location: SourceLocation` | 源位置 |
+
 #### CALL_VIRT — 虚函数调用
 
 ```
-%result:ret_ty = CALL_VIRT %obj, slot=N(%arg1:ty1, ...)
+%result:ret_ty = CALL_VIRT %obj, interface=InterfaceName, slot=N(%arg1:ty1, ...)
 ```
 
 | 字段 | 说明 |
 |------|------|
 | `obj: IRValue` | 对象引用 |
+| `interface_id: string` | 接口标识 |
 | `vtable_slot: i64` | vtable 槽位索引 |
 | `args: List<IRValue>` | 实参列表 |
 | `result_value: IRValue` | 结果寄存器 |
 | `ret_type: string` | 返回类型 |
-| `location: IRSourceLocation` | 源位置 |
+| `location: SourceLocation` | 源位置 |
 
-### 6. 对象创建与枚举操作（5 种）
+### 6. 对象创建与类型操作（8 种）
 
 #### NEW — 对象创建
 
@@ -298,6 +380,52 @@ CALL @func_name(%arg1:ty1, ...)
 | `variant_name: string` | 变体名称 |
 | `payload_type: string` | 载荷类型 |
 
+#### ISINSTANCE — 运行时类型检查
+
+```
+%result:bool = ISINSTANCE %obj, type_id
+```
+
+通过对象 metadata 进行运行时类型检查：`type_id` 为接口时查 interface_map，为类名时比较 metadata->name。
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器 |
+| `obj: IRValue` | 对象引用 |
+| `type_id: string` | 接口名或类名 |
+| `location: SourceLocation` | 源位置 |
+
+#### BOX — 装箱
+
+```
+%result:ptr = BOX %operand, source_type_name
+```
+
+堆分配并复制一个值类型（class 或 enum），用于接口引用（值类型 → 接口的装箱方向是复制）。
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器（ptr） |
+| `operand: IRValue` | 操作数 |
+| `source_type_name: string` | 源类型名 |
+| `location: SourceLocation` | 源位置 |
+
+#### UNBOX — 拆箱
+
+```
+%result:target_ir_type = UNBOX %operand, target_type_name
+```
+
+从堆指针取回值类型。UNBOX 是别名视图（复用 BOX 自身的存储），使 `mut this` 接口方法能写穿到调用方可见的对象。
+
+| 字段 | 说明 |
+|------|------|
+| `result: IRValue` | 结果寄存器 |
+| `operand: IRValue` | 操作数（装箱指针） |
+| `target_type_name: string` | 目标类型名 |
+| `target_ir_type: string` | 目标 IR 类型 |
+| `location: SourceLocation` | 源位置 |
+
 #### LABEL — 基本块标签
 
 ```
@@ -320,9 +448,9 @@ IRFunction
 ├── next_temp: i64               # 临时寄存器计数器
 ├── next_label: i64              # 标签计数器
 ├── is_extern: bool              # 是否外部函数
-├── source_file: string          # 源文件
-├── source_line: i64             # 源行号
-└── source_col: i64              # 源列号
+├── is_lib_export_decl: bool     # dyn-lib 导出声明（函数体在 .penguin-lib 中，非 C 运行时 extern）
+├── location: SourceLocation     # 源位置
+└── used_reg_names: List<string> # 已分配的寄存器名（同名 let 去重）
 ```
 
 ### IRParameter
@@ -340,14 +468,17 @@ IRParameter
 
 | 方法 | 说明 |
 |------|------|
-| `new(name, return_type)` | 构造函数 |
-| `alloc_named_reg(name, ir_type, line, col) -> IRValue` | 分配命名寄存器 |
+| `new(name, return_type, loc)` | 构造函数 |
+| `alloc_named_reg(name, ir_type, line, col) -> IRValue` | 分配命名寄存器（重名时自动追加 `_N` 后缀） |
+| `make_unique_reg_name(name) -> string` | 生成未占用的寄存器名并登记 |
+| `reg_name_taken(name) -> bool` | 寄存器名是否已占用 |
 | `alloc_temp(ir_type) -> IRValue` | 分配临时寄存器 |
 | `alloc_label(prefix) -> IRLabel` | 分配标签（自动编号） |
 | `add_inst(inst)` | 添加指令到末尾 |
 | `alloc_param(name, ir_type, line, col) -> IRValue` | 添加参数并分配寄存器 |
 | `has_terminator() -> bool` | 最后一条指令是否终止指令 |
 | `ends_with_control_flow() -> bool` | 最后一条或倒数第二条是否控制流指令 |
+| `to_string() -> string` | 函数摘要信息 |
 
 ---
 
@@ -376,19 +507,28 @@ IRParameter
 | `emit_ret` | `(value, loc)` | RET |
 | `emit_ret_void` | `(loc)` | RET_VOID |
 | `emit_call` | `(func_name, args, ret_type, loc) -> Option<IRValue>` | CALL 或 CALL_VOID |
-| `emit_call_virt` | `(obj, slot, args, ret_type, loc) -> Option<IRValue>` | CALL_VIRT |
+| `emit_call_indirect` | `(callee, args, ret_type, loc) -> Option<IRValue>` | CALL_INDIRECT |
+| `emit_call_virt` | `(obj, interface_id, slot, args, ret_type, loc) -> Option<IRValue>` | CALL_VIRT |
 | `emit_new` | `(type_name, args, loc) -> IRValue` | NEW |
 | `emit_new_enum` | `(type_name, variant_idx, variant_name, payload, loc) -> IRValue` | NEW_ENUM |
 | `emit_isenum` | `(enum_value, variant_idx, loc) -> IRValue` | ISENUM |
 | `emit_rdenum` | `(enum_value, variant_name, payload_type, loc) -> IRValue` | RDENUM |
+| `emit_isinstance` | `(obj, type_id, loc) -> IRValue` | ISINSTANCE |
+| `emit_box` | `(operand, source_type_name, loc) -> IRValue` | BOX |
+| `emit_unbox` | `(operand, target_type_name, target_ir_type, loc) -> IRValue` | UNBOX |
 | `emit_label` | `(label)` | LABEL |
+| `emit_global_load` | `(global_name, ir_type, loc) -> IRValue` | GLOBAL_LOAD |
+| `emit_global_store` | `(global_name, value, loc)` | GLOBAL_STORE |
+| `emit_address_of` | `(operand, loc) -> IRValue` | ADDRESS_OF |
+| `emit_load_ptr` | `(addr, load_type, loc) -> IRValue` | LOAD_PTR |
+| `emit_store_ptr` | `(addr, value, store_type, loc)` | STORE_PTR |
 
 ### 辅助方法
 
 | 方法 | 说明 |
 |------|------|
 | `alloc_temp(ir_type) -> IRValue` | 分配临时寄存器 |
-| `make_loc(file_path, line, col) -> IRSourceLocation` | 构造源位置 |
+| `make_loc(file_path, line, col) -> SourceLocation` | 构造源位置 |
 | `void_value() -> IRValue` | 返回 void 常量值 |
 
 ---
@@ -401,8 +541,11 @@ Bound Tree → IR 转换器。遍历 Bound Tree 的定义、表达式和语句�
 IRGenerator
 ├── builder: mut IRBuilder         # 当前指令构建器
 ├── symbol_regs: List<SymbolRegEntry>  # 符号 → 寄存器映射
+├── try_site_counter: i64          # try/catch setjmp 站点计数器（索引 C 运行时的 jmp_buf 表）
 ├── loop_stack: List<LoopLabels>   # 循环标签栈（break/continue）
-└── source_file: string            # 当前源文件
+├── current_module: mut IRModule   # 当前 IR 模块
+├── source_file: string            # 当前源文件
+└── verbose: i64                   # 日志级别
 ```
 
 ### 辅助类型
@@ -431,52 +574,64 @@ LoopLabels
 
 | 方法 | 说明 |
 |------|------|
-| `lower_definition(def, module)` | 分发定义（namespace/function/class/initial_routine） |
+| `lower_definition(def, module)` | 分发定义（function/namespace/class/interface/enum/initial_routine/global_var/impl_for，8 种） |
 | `lower_namespace(def, module)` | 处理命名空间（递归处理子定义） |
 | `lower_function_def(def, module)` | 处理函数定义（创建 IRFunction、发射参数、处理函数体） |
-| `lower_class_def(def, module)` | 处理类定义（遍历方法和构造函数） |
+| `lower_class_def(def, module)` | 处理类定义（遍历方法、构造函数、impl 块） |
+| `lower_enum_def(def, module)` | 处理枚举定义（遍历方法、impl 块） |
+| `lower_interface_def(def, module)` | 处理接口定义（遍历默认方法、impl 块） |
+| `lower_impl_for_def(def, module)` | 处理 `impl ... for ...` 块（对其中的方法逐个 lower） |
 | `lower_initial_routine(def, module)` | 处理 initial 块 |
+| `lower_global_var_def(def, module)` | 处理全局变量定义（字面量初始化直接写入 IRGlobalVariable，否则生成 init 函数） |
 
 ### 表达式级别方法
 
 | 方法 | BoundExpression 变体 | 说明 |
 |------|---------------------|------|
-| `lower_expression(expr) -> IRValue` | — | 分发表达式（13 种） |
+| `lower_expression(expr) -> IRValue` | — | 分发表达式（BoundExpression 共 15 种变体，其中 13 种在此分发；`lambda_expr` 与 `meta_call` 不会出现在到达 IR 层的绑定树中——meta 调用在语义层即被改写/拼接） |
 | `lower_literal(expr) -> IRValue` | `literal` | 常量 → CONST |
-| `lower_identifier(expr) -> IRValue` | `identifier` | 标识符 → 查找符号寄存器 |
-| `lower_binary(expr) -> IRValue` | `binary` | 二元运算 → BINOP（支持链式运算） |
+| `lower_identifier(expr) -> IRValue` | `identifier` | 标识符 → 查找符号寄存器（全局变量 → GLOBAL_LOAD） |
+| `lower_binary(expr) -> IRValue` | `binary` | 二元运算 → BINOP（支持链式运算；`is` → ISENUM/ISINSTANCE） |
 | `lower_binary_chain(expr, ir_type, idx, accum) -> IRValue` | — | 链式二元运算的递归处理 |
-| `lower_unary(expr) -> IRValue` | `unary` | 一元运算 → UNARYOP |
-| `lower_function_call(expr) -> IRValue` | `function_call` | 函数调用 → CALL/CALL_VOID/CALL_VIRT |
+| `lower_short_circuit(expr, is_and) -> IRValue` | — | `&&`/`\|\|` 短路求值（BR_COND + 标签） |
+| `lower_unary(expr) -> IRValue` | `unary` | 一元运算 → UNARYOP（`#__address_of`/`#__load`/`#__store` 元内建 → ADDRESS_OF/LOAD_PTR/STORE_PTR） |
+| `lower_function_call(expr) -> IRValue` | `function_call` | 函数调用 → CALL/CALL_VOID/CALL_VIRT/CALL_INDIRECT |
 | `lower_code_block(expr) -> IRValue` | `code_block` | 代码块 → 顺序发射语句和尾表达式 |
-| `lower_cast(expr) -> IRValue` | `cast_expr` | 类型转换 → CAST |
+| `lower_cast(expr) -> IRValue` | `cast_expr` | 类型转换 → CAST（值类型 ↔ 接口 → BOX/UNBOX） |
 | `lower_if_expr(expr) -> IRValue` | `if_expr` | if 表达式 → BR_COND + 标签 |
 | `lower_while_expr(expr) -> IRValue` | `while_expr` | while 循环 → BR/BR_COND + 标签 |
 | `lower_member_access(expr) -> IRValue` | `member_access` | 成员访问 → RDMBR |
 | `lower_new(expr) -> IRValue` | `new_expr` | 对象创建 → NEW |
 | `lower_enum_variant(expr) -> IRValue` | `enum_variant` | 枚举变体 → NEW_ENUM |
+| `lower_try_bind(expr) -> IRValue` | `try_bind` | try-bind 模式 → BR_COND + 匹配路径上提取载荷 |
 
 ### 语句级别方法
 
 | 方法 | BoundStatement 变体 | 说明 |
 |------|---------------------|------|
-| `lower_statement(stmt)` | — | 分发语句 |
+| `lower_statement(stmt)` | — | 分发语句（expression/return/let_decl/assignment/if_stmt/try_catch/while_stmt/for_stmt/block/break/continue） |
 | `lower_let_decl(stmt)` | `let_decl` | 变量声明 → 符号注册 |
-| `lower_assignment(stmt)` | `assignment` | 赋值 → ASSIGN/WRMBR |
+| `lower_assignment(stmt)` | `assignment` | 赋值 → ASSIGN/WRMBR（全局变量 → GLOBAL_STORE） |
 | `lower_if_stmt(stmt)` | `if_stmt` | if 语句 → 委托给 `lower_if_expr` |
+| `lower_try_catch(stmt)` | `try_catch` | try/catch → setjmp 落点（`try_site_counter` 索引 C 运行时 jmp_buf 表） |
 | `lower_while_stmt(stmt)` | `while_stmt` | while 语句 → 委托给 `lower_while_expr` |
 | `lower_block(stmt)` | `block` | 块语句 → 顺序处理子语句 |
 | `lower_break(stmt)` | `break_stmt` | break → BR（跳转到循环出口） |
 | `lower_continue(stmt)` | `continue_stmt` | continue → BR（跳转到循环头） |
 
+return 语句在 `lower_statement` 内联处理：整数字面量返回值按函数返回类型收敛（CAST）后发射 RET，否则 RET_VOID。for_stmt 在语义层已脱糖为 while，IR 层不可达（到达即 E_INTERNAL）。
+
 ### 辅助方法
 
 | 方法 | 说明 |
 |------|------|
-| `make_loc(line, col) -> IRSourceLocation` | 从当前源文件和行列号构造源位置 |
-| `sym_loc(sym: Option<BoundSymbol>) -> IRSourceLocation` | 从绑定符号提取源位置 |
-| `sym_loc_func(sym: Option<BoundFunctionSymbol>) -> IRSourceLocation` | 从函数符号提取源位置 |
+| `make_loc(line, col) -> SourceLocation` | 从当前源文件和行列号构造源位置 |
+| `sym_loc(sym: Option<BoundSymbol>) -> SourceLocation` | 从绑定符号提取源位置 |
+| `sym_loc_func(sym: Option<BoundFunctionSymbol>) -> SourceLocation` | 从函数符号提取源位置 |
 | `resolve_vtable_slot(expr) -> i64` | 解析虚调用的 vtable 槽位 |
+| `resolve_interface_id(expr) -> string` | 解析虚调用的接口标识（取模板简单名） |
+| `lower_call_receiver(expr) -> IRValue` | 解析并 lower 方法调用的接收者（`this`） |
+| `ensure_extern_decl_from_def(def, module)` | 为 dyn-lib 导出函数补一条 extern 声明（`is_lib_export_decl`） |
 | `find_class_def_from_scope(scope) -> Option<BoundClassDefinition>` | 从作用域链查找类定义 |
 | `wrap_stmt_as_expr(stmt) -> BoundExpression` | 将语句包装为 void 代码块表达式 |
 | `wrap_stmt_option(stmt_opt) -> Option<BoundExpression>` | 包装可选语句 |
@@ -518,28 +673,43 @@ function @main(%x:i32, %y:i32) -> i32 {  ; line 5
 
 ## IRModule
 
-IR 模块，包含一个源文件编译产生的所有函数。
+IR 模块，包含一次编译产生的所有函数与全局变量。
 
 ```
 IRModule
-├── source_file: string              # 源文件路径
-├── functions: List<IRFunction>      # 函数列表
-└── entry_function: Option<IRFunction>  # 入口函数
+├── location: SourceLocation                  # 源位置
+├── functions: List<IRFunction>               # 函数列表
+├── entry_functions: List<IRFunction>         # 入口函数（initial 块）
+├── init_functions: List<IRFunction>          # 全局变量初始化函数
+└── global_variables: List<IRGlobalVariable>  # 全局变量列表
+```
+
+### IRGlobalVariable
+
+```
+IRGlobalVariable
+├── name: string             # 全局变量名
+├── ir_type: string          # IR 类型
+└── initializer_value: string # 初始化值（字面量文本）
 ```
 
 | 方法 | 说明 |
 |------|------|
+| `new(location)` | 构造函数 |
 | `add_function(func)` | 添加函数 |
+| `add_global_variable(gv)` | 添加全局变量 |
 | `find_function(name) -> Option<IRFunction>` | 按名查找函数 |
+| `find_global_variable(name) -> Option<IRGlobalVariable>` | 按名查找全局变量 |
+| `to_string() -> string` | 模块摘要信息 |
 
 ---
 
 ## Pipeline 位置
 
 ```
-Source Code → Lexer → Parser → AST → SemanticModel → Bound Tree → IRGenerator → IR → IRPrinter → 文本输出
-                                                                          ↓
-                                                                    LLVM IR（未来）
+Source Code → Lexer → Parser → AST → SemanticModel → Bound Tree → IRGenerator → IRModule
+                                                                                  ├→ IRPrinter → IR 文本输出（调试）
+                                                                                  └→ LLVMEmitter.lower() → LLVM IR 文本（.ll）
 ```
 
-IR 是编译器后端的起始点。它接收 Bound Tree（携带完整语义信息的中间表示），生成抽象的、平台无关的指令序列。未来将通过 LLVM lowering 将 IR 转换为 LLVM IR 进行机器码生成。
+IR 是编译器后端的起始点。它接收 Bound Tree（携带完整语义信息的中间表示），生成抽象的、平台无关的指令序列。`src/llvm/LLVMCompiler.penguin` 串联两级后端：`build_ll()` 先用 `IRGenerator.generate()` 生成 IRModule，再由 `LLVMEmitter.lower()` 将其 lower 为 LLVM IR 文本并写入 `.ll` 文件。`.ll` 与平台无关，链接（clang + C 运行时库）由编译器外部的 `emperor`/`emperor.bat` 驱动脚本完成。

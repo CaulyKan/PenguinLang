@@ -11,7 +11,7 @@ initial { }
 ```
 
 ## Compile
-Args: `Tests/fixtures/projflags/proj.penguins`
+Args: `Tests/LspTest/fixtures/projflags/proj.penguins`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

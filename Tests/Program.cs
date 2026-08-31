@@ -685,6 +685,11 @@ public sealed record Expectation(string Mode, string? Operand)
     public static readonly Expectation Discard = new("DISCARD", null);
     public bool IsDiscard => Mode == "DISCARD";
 
+    /// <summary>Same expectation with ${VAR} tokens expanded against the process
+    /// environment (PENGUIN_ROOT is always set; unset variables expand empty).</summary>
+    public Expectation WithExpandedOperand() =>
+        IsDiscard || string.IsNullOrEmpty(Operand) ? this : this with { Operand = EnvHelper.Expand(Operand) };
+
     public static Expectation Parse(string text)
     {
         text = text.Trim();
@@ -943,6 +948,12 @@ public static class MarkdownTestParser
                             if (key == "expectedstdout" || key == "expectedstderr")
                             {
                                 var (exp, lastIdx) = ParseStreamExpectation(val, lines, i);
+                                // Expected streams expand the same ${VAR} tokens as
+                                // Args/Env/Stdin (env vars only — no ${WORKDIR}: the
+                                // expectation is parsed before any combo workdir
+                                // exists). Needed by LSP goldens whose frames echo a
+                                // ${PENGUIN_ROOT} uri the Stdin opened.
+                                exp = exp.WithExpandedOperand();
                                 if (key == "expectedstdout") stage.ExpectedStdout = exp;
                                 else stage.ExpectedStderr = exp;
                                 i = lastIdx; // skip consumed continuation lines (for-loop will ++ past the closing)
@@ -1861,7 +1872,11 @@ public static class TestRunner
             }
             var runPsi = psiOverride ?? backend.BuildRunProcess(exeFile, test.Run!, workDir)!;
             runPsi.Environment["TMPDIR"] = workDir;
-            var rproc = await ProcessRunner.RunAsync(runPsi, test.Run!.Stdin, opts.TimeoutRunSec * 1000, closeStdin: test.Run.StdinClose);
+            // Stdin goes through the same ${VAR} expansion as Args/Env, so LSP
+            // sessions can open real files via file://${PENGUIN_ROOT}/... uris
+            // (project-discovery tests need on-disk multi-file projects).
+            var runStdin = EnvHelper.Expand(test.Run!.Stdin, workDir);
+            var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, opts.TimeoutRunSec * 1000, closeStdin: test.Run.StdinClose);
             runStage = new StageResult
             {
                 ExitCode = rproc.ExitCode,

@@ -1,41 +1,51 @@
-/* EmperorPenguin coroutine scheduler (RTL-ports / async runtime).
+/* EmperorPenguin coroutine runtime — the context-switch MICROKERNEL only.
  *
- * Stackful coroutines: every initial routine and every `async f()` spawn runs
- * on its own mmap'd stack; `wait` switches back to the scheduler. The
- * scheduler is a delta-round loop mirroring the BabyPenguin SimScheduler
- * semantics (the reference implementation):
+ * The scheduler POLICY (delta rounds, ready/next queues, the timer table,
+ * the virtual clock, fd block/probe decisions, quiescence detection) lives
+ * in PenguinLang now: __builtin.__sched_run in std/penguin/scheduler.penguin
+ * (auto-loaded only with --enable-coroutine, compiled like every other
+ * Penguin function, mirroring the BabyPenguin SimScheduler semantics — the
+ * reference implementation). The emitter's emit_main calls the compiled
+ * loop directly (@__builtin___sched_run). What remains in this file is the
+ * machinery that cannot be expressed safely above raw stacks:
  *
- *   round: run every coroutine queued at round start (a coroutine that calls
- *   wait() parks and is re-queued for the NEXT round — wait means "yield one
- *   delta round", and parked coroutines re-poll their predicates each round);
- *   fire expired timers (entry removal only — readiness is observed by
- *   pollers); when nothing progresses and timers remain, advance the
- *   simulation clock to the earliest deadline; when nothing progresses and no
- *   timers remain but fd waiters exist, block in poll() on the registered
- *   descriptors — fd readiness injects the next delta (external event
- *   sources); only when nothing progresses, no timers remain and no fd
- *   waiters exist, quiescence detection runs: fingerprint every live
- *   coroutine's frozen stack and exit normally once the fingerprint repeats
- *   unchanged for two consecutive idle rounds.
+ *   - stackful coroutine creation/destruction (ucontext on POSIX, Win32
+ *     fibers on Windows) with mmap'd stacks;
+ *   - the conservative-GC switch protocol: each stack block is a scan
+ *     region, and gc.c scans the MAIN stack only up to the watermark
+ *     recorded at the last switch when a collection triggers on a
+ *     coroutine stack (see _emperor_gc_alt_stack_scan);
+ *   - park primitives (`wait`, fd parks) that capture the raw stack
+ *     pointer and switch;
+ *   - the poll() syscall half of the external fd event sources (the
+ *     waiter bookkeeping stays here because fd_park_current, running on
+ *     the coroutine stack, must register itself synchronously);
+ *   - try/catch sjlj and the throw entry points;
+ *   - per-coroutine frozen-stack hashing for the Penguin-side quiescence
+ *     fingerprint.
  *
- * Coroutines interoperate with the conservative GC: each stack block is
- * registered as a scan region (the EmperorCoroutine struct lives at the top
- * of the block so the saved ucontext — which holds the coroutine's spilled
- * callee-saved registers — is scanned too), and gc.c scans the MAIN stack
- * only up to the watermark recorded at the last switch when a collection
- * triggers on a coroutine stack (see _emperor_gc_alt_stack_scan).
+ * Protocol between the two halves (all externs from core_builtin.penguin):
+ *   _co_spawn_entry/_co_spawn_fn0 create a coroutine and park the handle in
+ *     a C-side spawn INBOX (nothing is queued — the Penguin loop owns every
+ *     queue); _co_spawn_count/_co_take_spawn drain it FIFO;
+ *   _co_switch_in(h) runs/resumes h with the whole main-stack GC protocol
+ *     embedded, and returns a status: 0 finished, 1 round-parked (re-queue
+ *     for the next delta round), 2 fd-parked (in the C waiter list — leave
+ *     it out of every queue; _fd_poll re-queues it), 3 exit-requested
+ *     (read _sched_exit_code and return it);
+ *   _fd_poll(timeout_ms) polls the registered descriptors (0 = readiness
+ *     probe, <0 = block until an event); ready waiters are unlinked and
+ *     staged, _fd_take_woken hands them to the Penguin loop one by one;
+ *   _co_fingerprint(h) hashes h's frozen stack ([parked sp, stack top]);
+ *   _co_destroy(h) frees a coroutine (from any state, incl. fd-parked).
  *
- * POSIX ucontext provides the context switch on Linux; Windows builds use
- * Win32 fibers (CreateFiberEx/SwitchToFiber) with the same single-threaded
- * discipline — user code only ever runs inside one fiber at a time, so the
- * conservative GC needs no thread synchronization (see the fiber notes at
- * co_create/fd_poll_all). stdin/stdout readiness is level-probed with
- * PeekNamedPipe; there is no epoll-for-pipes on Windows, so idle blocking is
- * a 2 ms re-probe loop. Anonymous pipes expose no writable-space query, so
- * fd write waits always report ready and the write syscall itself blocks
- * when the pipe is full — the same ordered backpressure the POLLOUT park
- * gives on POSIX, because frames are written strictly in order by a single
- * writer anyway.
+ * Sequential fallback (no ucontext/fibers — a portability escape hatch,
+ * not a shipped configuration): _co_switch_in runs the entry INLINE on the
+ * main stack to completion (wait is a no-op park) and always reports
+ * "finished"; the Penguin loop is the same loop on every platform. Because
+ * the clock and timers live in Penguin-land, the fallback's _co_wait
+ * time-travels by calling back into the compiled helper
+ * __builtin___sim_time_travel (the only C→Penguin call in the runtime).
  */
 
 #include "emperor_gc.h"
@@ -72,6 +82,14 @@
 #define EMPEROR_CO_STACK_COMMIT (256 * 1024)
 #endif
 
+#if !defined(EMPEROR_UCONTEXT) && !defined(EMPEROR_WIN_FIBERS)
+/* Penguin-side clock/timer time-travel helper (sequential fallback only —
+ * the sim clock and timer table are globals in core_builtin.penguin, out
+ * of C's reach). Defined here so the exact mangled symbol is documented in
+ * one place next to its only caller. */
+extern void __builtin___sim_time_travel(void);
+#endif
+
 /* ---- GC interop (gc.c reads these) ----
  * Non-NULL while coroutines exist: when a collection triggers on a coroutine
  * stack, gc.c scans the main stack only up to this watermark (recorded, with
@@ -92,21 +110,24 @@ typedef struct EmperorTryFrame {
 } EmperorTryFrame;
 
 /* Pending error payload for the catch handler: set by throw, read by the
- * catch-entry code. Registered as a GC root so the message string survives
- * the longjmp window. */
+ * catch-entry code. Registered as a GC root (lazily, on first throw — the
+ * old registration point was the C scheduler loop, which no longer exists)
+ * so the message string survives the longjmp window. */
 static char* _emperor_throw_msg = NULL;
 static int64_t _emperor_throw_code = 0;
-static char** _emperor_throw_msg_root = &_emperor_throw_msg;
+static int _emperor_throw_msg_root_done = 0;
 
 /* ---- Coroutine ---- */
 
 enum {
-    CO_READY = 1,   /* queued, never ran or re-queued after park */
+    CO_READY = 1,   /* created, never ran (sitting in the spawn inbox or a
+                       Penguin queue) */
     CO_RUNNING = 2, /* currently executing */
     CO_PARKED = 3,  /* stopped in wait(), re-queued for next round */
     CO_FINISHED = 4, /* entry returned; pending free */
     CO_FD_PARKED = 5 /* parked on an fd (fd_waiters list); NOT re-queued —
-                        fd_poll_all enqueues it when the fd turns ready */
+                        the Penguin loop re-queues it when the fd turns
+                        ready (_fd_poll/_fd_take_woken) */
 };
 
 typedef struct EmperorCoroutine {
@@ -125,26 +146,59 @@ typedef struct EmperorCoroutine {
     char* sp_park;  /* stack pointer captured at park (fingerprint start) */
     void (*entry)(void*); /* consumed at the coroutine's first switch */
     void* entry_arg;
-    struct EmperorCoroutine* qnext; /* ready / next-round queue link */
-    struct EmperorCoroutine* anext; /* all-coroutines list (creation order) */
+    struct EmperorCoroutine* qnext; /* spawn inbox / fd-woken list link */
     int state;
-    int seq;              /* creation index: stable fingerprint ordering */
+    int seq;              /* creation index (stable identity for the Penguin
+                             loop's all-live registry; read via _co_seq) */
     EmperorTryFrame* try_top;
 } EmperorCoroutine;
 
 static EmperorCoroutine* sched_current = NULL; /* NULL on main/scheduler stack */
-static EmperorCoroutine* ready_head = NULL;
-static EmperorCoroutine* ready_tail = NULL;
-static EmperorCoroutine* next_head = NULL; /* next-round queue */
-static EmperorCoroutine* next_tail = NULL;
-static EmperorCoroutine* all_cos = NULL; /* creation-order list */
-static int co_seq_counter = 0;
 
 #if defined(EMPEROR_UCONTEXT)
 static ucontext_t sched_ctx; /* scheduler switchback point */
 #elif defined(EMPEROR_WIN_FIBERS)
 static void* sched_fiber = NULL; /* the main thread's fiber (scheduler home) */
 #endif
+
+static int sched_exit_requested = 0;
+static int sched_exit_code = 0;
+
+/* ---- Spawn inbox ----
+ * co_create parks fresh handles here (FIFO, qnext-linked); the Penguin loop
+ * drains them at round boundaries and after every switch — a coroutine
+ * spawned during round N may run in round N, exactly like the old C loop's
+ * enqueue-into-ready. main() spawns initial routines through
+ * _emperor_co_spawn_fn0 before the loop is entered; async spawns from
+ * coroutine context land here mid-round. */
+static EmperorCoroutine* spawn_inbox_head = NULL;
+static EmperorCoroutine* spawn_inbox_tail = NULL;
+
+static void inbox_push(EmperorCoroutine* co) {
+    co->qnext = NULL;
+    if (spawn_inbox_tail) {
+        spawn_inbox_tail->qnext = co;
+        spawn_inbox_tail = co;
+    } else {
+        spawn_inbox_head = co;
+        spawn_inbox_tail = co;
+    }
+}
+
+int64_t _emperor_co_spawn_count(void) {
+    int64_t n = 0;
+    for (EmperorCoroutine* c = spawn_inbox_head; c; c = c->qnext) n++;
+    return n;
+}
+
+void* _emperor_co_take_spawn(void) {
+    EmperorCoroutine* co = spawn_inbox_head;
+    if (!co) return NULL;
+    spawn_inbox_head = co->qnext;
+    if (!spawn_inbox_head) spawn_inbox_tail = NULL;
+    co->qnext = NULL;
+    return co;
+}
 
 /* ---- Context switches ----
  * POSIX: swapcontext saves the outgoing context's callee-saved registers
@@ -167,6 +221,25 @@ static void sched_switch_to_co(EmperorCoroutine* co) {
     swapcontext(&sched_ctx, &co->ctx);
 #else
     SwitchToFiber(co->fiber);
+#endif
+}
+
+/* Windows: the scheduler runs on the main thread converted to a fiber —
+ * every SwitchToFiber must originate from — and return to — a fiber
+ * context. (A second call after ConvertThreadToFiber-less nesting sees
+ * ERROR_ALREADY_FIBER and reuses the current fiber.) */
+static void ensure_sched_home(void) {
+#ifdef EMPEROR_WIN_FIBERS
+    if (!sched_fiber) {
+        sched_fiber = ConvertThreadToFiber(NULL);
+        if (!sched_fiber && GetLastError() == ERROR_ALREADY_FIBER) {
+            sched_fiber = GetCurrentFiber();
+        }
+        if (!sched_fiber) {
+            fprintf(stderr, "emperor sched: ConvertThreadToFiber failed\n");
+            exit(1);
+        }
+    }
 #endif
 }
 #endif /* real context switches */
@@ -217,96 +290,9 @@ static void co_win_trampoline(void* arg) {
 }
 #endif
 
-static int sched_exit_requested = 0;
-static int sched_exit_code = 0;
-
-/* ---- Simulation clock / activity ---- */
-
-static int64_t sim_now_tick = 0;
-static int64_t sim_round = 0;
-static int64_t sim_activity = 0;
-static int64_t round_start_activity = 0;
-static int last_round_quiet = 0;
-
-static int64_t* timer_ticks = NULL; /* sorted ascending */
-static size_t timer_count = 0;
-static size_t timer_cap = 0;
-
-static void enqueue(EmperorCoroutine** head, EmperorCoroutine** tail, EmperorCoroutine* co) {
-    co->qnext = NULL;
-    if (*tail) {
-        (*tail)->qnext = co;
-        *tail = co;
-    } else {
-        *head = co;
-        *tail = co;
-    }
-}
-
-static EmperorCoroutine* dequeue(EmperorCoroutine** head, EmperorCoroutine** tail) {
-    EmperorCoroutine* co = *head;
-    if (!co) return NULL;
-    *head = co->qnext;
-    if (!*head) *tail = NULL;
-    co->qnext = NULL;
-    return co;
-}
-
-static void timer_insert(int64_t tick) {
-    if (timer_count == timer_cap) {
-        size_t ncap = timer_cap ? timer_cap * 2 : 16;
-        int64_t* nt = (int64_t*)realloc(timer_ticks, ncap * sizeof(int64_t));
-        if (!nt) {
-            fprintf(stderr, "emperor sched: out of memory (timer table)\n");
-            abort();
-        }
-        timer_ticks = nt;
-        timer_cap = ncap;
-    }
-    size_t i = timer_count;
-    while (i > 0 && timer_ticks[i - 1] > tick) {
-        timer_ticks[i] = timer_ticks[i - 1];
-        i--;
-    }
-    timer_ticks[i] = tick;
-    timer_count++;
-}
-
-/* Remove every timer entry with deadline <= now; returns how many fired. */
-static int timers_fire(void) {
-    int fired = 0;
-    while (timer_count > 0 && timer_ticks[0] <= sim_now_tick) {
-        memmove(timer_ticks, timer_ticks + 1, (timer_count - 1) * sizeof(int64_t));
-        timer_count--;
-        fired++;
-    }
-    return fired;
-}
-
-static void co_destroy(EmperorCoroutine* co) {
-    /* unlink from the all-list */
-    EmperorCoroutine** p = &all_cos;
-    while (*p) {
-        if (*p == co) {
-            *p = co->anext;
-            break;
-        }
-        p = &(*p)->anext;
-    }
-    _emperor_gc_scan_remove(co->block); /* NULL: fiber never ran — no stack region */
-#if defined(EMPEROR_UCONTEXT)
-    munmap(co->block, EMPEROR_CO_STACK_SIZE);
-#elif defined(EMPEROR_WIN_FIBERS)
-    _emperor_gc_scan_remove((char*)co); /* the struct region (entry_arg, reg spills) */
-    if (co->fiber) DeleteFiber(co->fiber);
-    free(co);
-#else
-    free(co->block);
-#endif
-}
+static int co_seq_counter = 0;
 
 static EmperorCoroutine* co_create(void (*entry)(void*)) {
-#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
     EmperorCoroutine* co;
 #if defined(EMPEROR_UCONTEXT)
     size_t total = EMPEROR_CO_STACK_SIZE;
@@ -324,8 +310,6 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
     co->seq = co_seq_counter++;
     co->entry = entry;
     co->entry_arg = NULL; /* set by caller */
-    co->anext = all_cos;
-    all_cos = co;
     /* Whole block is one GC scan region: live frames, the saved ucontext
      * (spilled registers) and the struct itself are all covered; bytes below
      * the parked sp are stale garbage, which a conservative collector safely
@@ -343,7 +327,7 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
     co->ctx.uc_stack.ss_size = total - sizeof(EmperorCoroutine) - 64;
     co->ctx.uc_link = &sched_ctx;
     makecontext(&co->ctx, co_trampoline, 0);
-#else
+#elif defined(EMPEROR_WIN_FIBERS)
     /* Windows fiber: the struct is heap-allocated (the fiber stack belongs
      * to the system); its bounds — and the stack's scan region — are only
      * discovered when the fiber first runs (co_win_trampoline). From
@@ -367,37 +351,90 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
     co->seq = co_seq_counter++;
     co->entry = entry;
     co->entry_arg = NULL; /* set by caller */
-    co->anext = all_cos;
-    all_cos = co;
     _emperor_gc_scan_add((char*)co,
                          ((sizeof(EmperorCoroutine) + 7u) & ~(size_t)7u));
-#endif
-    enqueue(&ready_head, &ready_tail, co);
-    return co;
 #else
-    /* Sequential fallback (no real context switch available): the whole
-     * stack block is one calloc'd buffer and entries run inline to
-     * completion in the scheduler loop. */
-    size_t total = EMPEROR_CO_STACK_SIZE;
-    char* block = (char*)calloc(1, total);
-    if (!block) {
-        fprintf(stderr, "emperor sched: cannot allocate coroutine stack\n");
+    /* Sequential fallback (no real context switch): entries run inline on
+     * the main stack inside _co_switch_in, so the struct is the only
+     * memory — and the only scan region (entry_arg, a Penguin object, must
+     * stay GC-visible until the entry consumes it). */
+    co = (EmperorCoroutine*)calloc(1, sizeof(EmperorCoroutine));
+    if (!co) {
+        fprintf(stderr, "emperor sched: cannot allocate coroutine struct\n");
         abort();
     }
-    EmperorCoroutine* co = (EmperorCoroutine*)(block + total - sizeof(EmperorCoroutine));
-    memset(co, 0, sizeof(EmperorCoroutine));
-    co->block = block;
-    co->stack_hi = block + total;
+    co->block = (char*)co;
+    co->stack_hi = (char*)co + sizeof(EmperorCoroutine);
     co->state = CO_READY;
     co->seq = co_seq_counter++;
     co->entry = entry;
     co->entry_arg = NULL; /* set by caller */
-    co->anext = all_cos;
-    all_cos = co;
-    _emperor_gc_scan_add(block, total);
-    _emperor_gc_scan_set_live(block, block + total);
-    enqueue(&ready_head, &ready_tail, co);
+    _emperor_gc_scan_add((char*)co,
+                         ((sizeof(EmperorCoroutine) + 7u) & ~(size_t)7u));
+#endif
+    inbox_push(co);
     return co;
+}
+
+void _emperor_co_destroy(void* handle) {
+    EmperorCoroutine* co = (EmperorCoroutine*)handle;
+    _emperor_gc_scan_remove(co->block); /* NULL: fiber never ran — no stack region */
+#if defined(EMPEROR_UCONTEXT)
+    munmap(co->block, EMPEROR_CO_STACK_SIZE);
+#elif defined(EMPEROR_WIN_FIBERS)
+    _emperor_gc_scan_remove((char*)co); /* the struct region (entry_arg, reg spills) */
+    if (co->fiber) DeleteFiber(co->fiber);
+    free(co);
+#else
+    free(co);
+#endif
+}
+
+int64_t _emperor_co_seq(void* handle) {
+    return ((EmperorCoroutine*)handle)->seq;
+}
+
+/* ---- Run/resume one coroutine (the scheduler loop's only lever) ----
+ * Switches into the coroutine on the REAL-switch platforms; the whole
+ * main-stack GC protocol lives here. When the coroutine parks (wait, fd
+ * wait, exit), the switch lands back inside this same frame and the status
+ * is derived from co->state. Callee-saved registers are preserved by the
+ * switch itself; the Penguin caller's stack frame is untouched while the
+ * coroutine runs. */
+int64_t _emperor_co_switch_in(void* handle) {
+    EmperorCoroutine* co = (EmperorCoroutine*)handle;
+    sched_current = co;
+    co->state = CO_RUNNING;
+#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
+    ensure_sched_home();
+    /* Flush main-stack callee-saved registers and record the main stack
+     * watermark for a possibly-GC-triggering coroutine. */
+    jmp_buf switch_flush;
+    setjmp(switch_flush);
+    _emperor_gc_main_watermark = (char*)&switch_flush;
+    _emperor_gc_on_coroutine = 1;
+    sched_switch_to_co(co);
+    _emperor_gc_on_coroutine = 0;
+    sched_current = NULL;
+    _emperor_gc_main_watermark = NULL;
+    if (sched_exit_requested) return 3;
+    if (co->state == CO_FINISHED) return 0;
+    if (co->state == CO_FD_PARKED) return 2;
+    return 1; /* CO_PARKED: re-queue for the next delta round */
+#else
+    /* Sequential fallback: run the entry inline on this stack — the no-op
+     * wait never parks, so the coroutine always finishes within this call
+     * (fd waits block inline inside fd_park_current). */
+    if (co->entry) {
+        void (*entry)(void*) = co->entry;
+        void* arg = co->entry_arg;
+        co->entry = NULL;
+        co->entry_arg = NULL;
+        entry(arg);
+    }
+    co->state = CO_FINISHED;
+    sched_current = NULL;
+    return 0;
 #endif
 }
 
@@ -456,21 +493,14 @@ void _emperor_co_wait(void) {
 #if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
     co_switch_to_sched(self);
 #else
-    /* Sequential fallback (no real coroutines): time-travel to the earliest
-     * pending timer deadline so timer waits (`wait n tick` poll loops) still
-     * terminate; concurrency semantics are not preserved. */
-    if (timer_count > 0 && timer_ticks[0] > sim_now_tick) {
-        sim_now_tick = timer_ticks[0];
-    }
+    /* Sequential fallback: no real park — the entry runs inline to
+     * completion. The clock and timer table now live in Penguin-land; jump
+     * them to the earliest pending deadline via the compiled helper so
+     * timer waits (`wait n tick` poll loops) still terminate; concurrency
+     * semantics are not preserved. */
+    __builtin___sim_time_travel();
     self->state = CO_RUNNING;
 #endif
-}
-
-int64_t _emperor_sim_now(void) { return sim_now_tick; }
-int64_t _emperor_sim_delta(void) { return sim_round; }
-void _emperor_sim_activity(void) { sim_activity++; }
-int _emperor_sim_settled(void) {
-    return last_round_quiet && (sim_activity == round_start_activity) ? 1 : 0;
 }
 
 /* ---- External fd event sources ----
@@ -478,11 +508,11 @@ int _emperor_sim_settled(void) {
  * the round queue. Such coroutines are external event sources: while any fd
  * waiter exists, quiescence no longer exits the program — the scheduler
  * blocks in poll() over the registered descriptors and the readiness of any
- * of them injects the next delta round (the waiter is re-queued and the loop
- * continues). This is the epoll/poll integration point that retires the v1
- * "quiescence == exit because no external event sources exist" deviation of
- * rtl-ports-design.md §E for programs that actually wait on fds; programs
- * that never do keep the exact previous behavior. */
+ * of them injects the next delta round. The POLICY (when to probe with
+ * timeout 0, when to block with -1, what to do with the woken) is the
+ * Penguin loop's; this file owns the waiter list and the syscall because
+ * fd_park_current (running on the coroutine stack) must register itself
+ * synchronously. */
 
 typedef struct EmperorFdWaiter {
     struct EmperorFdWaiter* next;
@@ -492,6 +522,31 @@ typedef struct EmperorFdWaiter {
 } EmperorFdWaiter;
 
 static EmperorFdWaiter* fd_waiters = NULL;
+
+/* Ready waiters staged for the Penguin loop (qnext-linked stack). */
+static EmperorCoroutine* fd_woken_head = NULL;
+static int64_t fd_woken_count = 0;
+
+static void woken_push(EmperorCoroutine* co) {
+    co->qnext = fd_woken_head;
+    fd_woken_head = co;
+    fd_woken_count++;
+}
+
+int64_t _emperor_fd_waiter_count(void) {
+    int64_t n = 0;
+    for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) n++;
+    return n;
+}
+
+void* _emperor_fd_take_woken(void) {
+    EmperorCoroutine* co = fd_woken_head;
+    if (!co) return NULL;
+    fd_woken_head = co->qnext;
+    fd_woken_count--;
+    co->qnext = NULL;
+    return co;
+}
 
 /* Park the current coroutine until the fd turns readable (for_write == 0) or
  * writable (for_write == 1). HUP/ERR conditions wake read waiters too — the
@@ -549,9 +604,10 @@ static void fd_unlink(EmperorFdWaiter* w) {
     }
 }
 
-/* Poll every registered fd. Ready waiters are unlinked and their coroutines
- * queued for the next delta round. Returns how many were woken. timeout_ms
- * < 0 blocks until an event (or EINTR); 0 is a pure readiness probe. */
+/* Poll every registered fd. Ready waiters are unlinked and STAGED (the
+ * Penguin loop drains them with _fd_take_woken and re-queues the coroutines
+ * itself). Returns how many were woken. timeout_ms < 0 blocks until an
+ * event (or EINTR); 0 is a pure readiness probe. */
 #ifdef EMPEROR_WIN_FIBERS
 /* Level-triggered readiness probe of one registered descriptor.
  * Returns 1 ready, 0 not ready, -1 "indeterminate" — treated as ready: the
@@ -592,7 +648,7 @@ static int win_fd_ready(int fd, int for_write) {
     }
 }
 
-static int fd_poll_all(int timeout_ms) {
+int64_t _emperor_fd_poll(int64_t timeout_ms) {
     if (!fd_waiters) return 0;
     for (;;) {
         int woken = 0;
@@ -601,7 +657,7 @@ static int fd_poll_all(int timeout_ms) {
             if (win_fd_ready(w->fd, w->for_write)) {
                 EmperorCoroutine* co = w->co;
                 fd_unlink(w);
-                enqueue(&next_head, &next_tail, co);
+                woken_push(co);
                 woken++;
             }
             w = wnext;
@@ -616,7 +672,7 @@ static int fd_poll_all(int timeout_ms) {
     }
 }
 #else
-static int fd_poll_all(int timeout_ms) {
+int64_t _emperor_fd_poll(int64_t timeout_ms) {
     if (!fd_waiters) return 0;
     size_t n = 0;
     for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) n++;
@@ -636,8 +692,8 @@ static int fd_poll_all(int timeout_ms) {
         pfds[i].revents = 0;
         i++;
     }
-    int rc = poll(pfds, (nfds_t)n, timeout_ms);
-    int woken = 0;
+    int rc = poll(pfds, (nfds_t)n, (int)timeout_ms);
+    int64_t woken = 0;
     if (rc > 0) {
         for (i = 0; i < n; i++) {
             short re = pfds[i].revents;
@@ -648,22 +704,15 @@ static int fd_poll_all(int timeout_ms) {
             if (!wake) continue;
             EmperorCoroutine* co = order[i]->co;
             fd_unlink(order[i]);
-            enqueue(&next_head, &next_tail, co);
+            woken_push(co);
             woken++;
         }
     }
     free(pfds);
     free(order);
-    return woken; /* rc <= 0 (EINTR / error): caller re-enters */
+    return woken; /* rc <= 0 (EINTR / error): the caller re-enters */
 }
-#endif /* fd_poll_all variants */
-
-/* Register a timer deadline (the future object lives in Penguin-land; only
- * the deadline is tracked — readiness is observed by pollers). */
-void _emperor_timer_at(int64_t deadline) {
-    if (deadline < sim_now_tick) deadline = sim_now_tick;
-    timer_insert(deadline);
-}
+#endif /* fd poll variants */
 
 /* exit(): from a coroutine, unwind to the scheduler and end the program with
  * the given code; from the main stack, exit immediately. */
@@ -680,6 +729,8 @@ void _emperor_sched_exit(int code) {
     }
     exit(code);
 }
+
+int64_t _emperor_sched_exit_code(void) { return sched_exit_code; }
 
 /* ---- try/catch (sjlj) ----
  * The compiled function itself calls _setjmp on a buffer from the per-site
@@ -736,6 +787,14 @@ void _emperor_try_leave(void) {
  * error is uncaught — report and exit non-zero (flushing buffered stdout
  * first, matching the BabyPenguin diagnostic shape). */
 void _emperor_throw_runtime_error(const char* msg, int64_t code) {
+    if (!_emperor_throw_msg_root_done) {
+        /* Make the pending-throw message slot a GC root for this program —
+         * the message must survive the longjmp window until the catch
+         * handler reads it. Registered on first throw (any context: main
+         * stack or coroutine) rather than at scheduler entry. */
+        _emperor_gc_add_root((void**)&_emperor_throw_msg);
+        _emperor_throw_msg_root_done = 1;
+    }
     _emperor_throw_msg = (char*)msg;
     _emperor_throw_code = code;
     EmperorTryFrame** top = _emperor_try_top_slot();
@@ -755,12 +814,12 @@ void _emperor_throw_runtime_error(const char* msg, int64_t code) {
 const char* _emperor_throw_get_msg(void) { return _emperor_throw_msg; }
 int64_t _emperor_throw_get_code(void) { return _emperor_throw_code; }
 
-/* ---- Quiescence fingerprint ----
- * Hash every live coroutine's frozen stack ([parked sp, stack top]) plus the
- * saved sp, in creation order. A coroutine that keeps re-running the same
- * polling loop produces an identical fingerprint; a loop that mutates locals
- * (observation counters, spin variables) changes its stack bytes and counts
- * as forward motion, exactly like BabyPenguin's per-register snapshots. */
+/* ---- Quiescence fingerprint (per coroutine) ----
+ * Hash the coroutine's frozen stack ([parked sp, stack top]) plus the saved
+ * sp. The Penguin loop combines the per-coroutine hashes over its all-live
+ * registry (adoption order) and compares the combined value across two
+ * consecutive idle rounds — only round-to-round equality matters, so the
+ * combine rule is Penguin-side and need not match any C-side predecessor. */
 static uint64_t fp_hash_bytes(uint64_t h, const char* p, size_t n) {
     while (n >= 8) {
         uint64_t v;
@@ -777,175 +836,26 @@ static uint64_t fp_hash_bytes(uint64_t h, const char* p, size_t n) {
     return h;
 }
 
-static uint64_t sched_fingerprint(void) {
-    uint64_t h = 0x1234567890ABCDEFULL;
-    for (EmperorCoroutine* co = all_cos; co; co = co->anext) {
-        h = fp_hash_bytes(h, (char*)&co, sizeof(EmperorCoroutine*));
-        const char* lo = co->sp_park ? co->sp_park : co->block;
-        /* A fiber coroutine that never ran has no stack region yet (bounds
-         * are discovered at first switch): its contribution is constant,
-         * like a never-touched mmap page on POSIX. */
-        if (co->stack_hi && lo && lo < co->stack_hi) {
-            h = fp_hash_bytes(h, lo, (size_t)(co->stack_hi - lo));
-        }
+uint64_t _emperor_co_fingerprint(void* handle) {
+    EmperorCoroutine* co = (EmperorCoroutine*)handle;
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    h = fp_hash_bytes(h, (char*)&co->sp_park, sizeof(co->sp_park));
+    const char* lo = co->sp_park ? co->sp_park : co->block;
+    /* A fiber coroutine that never ran has no stack region yet (bounds
+     * are discovered at first switch): its contribution is constant,
+     * like a never-touched mmap page on POSIX. */
+    if (co->stack_hi && lo && lo < co->stack_hi) {
+        h = fp_hash_bytes(h, lo, (size_t)(co->stack_hi - lo));
     }
     return h;
 }
 
-/* ---- The scheduler loop ---- */
-
-int _emperor_sched_run(void) {
-#ifdef EMPEROR_WIN_FIBERS
-    /* The scheduler runs on the main thread converted to a fiber: every
-     * SwitchToFiber must originate from — and return to — a fiber context.
-     * (A second call after ConvertFiberToThread-less nesting sees
-     * ERROR_ALREADY_FIBER and reuses the current fiber.) */
-    if (!sched_fiber) {
-        sched_fiber = ConvertThreadToFiber(NULL);
-        if (!sched_fiber && GetLastError() == ERROR_ALREADY_FIBER) {
-            sched_fiber = GetCurrentFiber();
-        }
-        if (!sched_fiber) {
-            fprintf(stderr, "emperor sched: ConvertThreadToFiber failed\n");
-            exit(1);
-        }
-    }
-#endif
-    /* Make the pending-throw message slot a GC root for this program. */
-    _emperor_gc_add_root((void**)&_emperor_throw_msg);
-
-    static uint64_t last_fp = 0;
-    static int fp_valid = 0;
-
-    while (!sched_exit_requested) {
-        /* No work at all: program finished. */
-        if (!ready_head && !next_head && timer_count == 0 && !all_cos) break;
-
-        sim_round++;
-        round_start_activity = sim_activity;
-
-        int progress = 0;
-
-        /* Delta round: run everything queued at round start. Parks go to the
-         * next-round queue (they resume next round); newly spawned coroutines
-         * also only run next round. */
-        while (ready_head) {
-            EmperorCoroutine* co = dequeue(&ready_head, &ready_tail);
-#if defined(EMPEROR_UCONTEXT) || defined(EMPEROR_WIN_FIBERS)
-            sched_current = co;
-            co->state = CO_RUNNING;
-            /* Flush main-stack callee-saved registers and record the main
-             * stack watermark for a possibly-GC-triggering coroutine. */
-            jmp_buf switch_flush;
-            setjmp(switch_flush);
-            _emperor_gc_main_watermark = (char*)&switch_flush;
-            _emperor_gc_on_coroutine = 1;
-            sched_switch_to_co(co);
-            _emperor_gc_on_coroutine = 0;
-            sched_current = NULL;
-            _emperor_gc_main_watermark = NULL;
-#else
-            /* Sequential fallback: run the entry inline on this stack (the
-             * entry may "park" via the no-op wait, but it then runs to
-             * completion in one go). */
-            sched_current = co;
-            co->state = CO_RUNNING;
-            if (co->entry) {
-                void (*entry)(void*) = co->entry;
-                void* arg = co->entry_arg;
-                co->entry = NULL;
-                co->entry_arg = NULL;
-                entry(arg);
-            }
-            co->state = CO_FINISHED;
-            sched_current = NULL;
-#endif
-            if (co->state == CO_FINISHED) {
-                progress = 1;
-                co_destroy(co);
-            } else if (co->state == CO_FD_PARKED) {
-                /* Parked on an fd: stays in the fd_waiters list; fd_poll_all
-                 * re-queues it when the descriptor turns ready. Re-enqueueing
-                 * here (the round-park default) would double-queue it and run
-                 * the park loop every round. */
-            } else {
-                /* CO_PARKED (or CO_READY if it never ran — only possible via
-                 * the inline fallback path): re-queue for the next round. */
-                enqueue(&next_head, &next_tail, co);
-            }
-            if (sched_exit_requested) break;
-        }
-        if (sched_exit_requested) break;
-
-        /* Rotate the next-round queue in as the new current round. */
-        ready_head = next_head;
-        ready_tail = next_tail;
-        next_head = NULL;
-        next_tail = NULL;
-
-        /* Fire already-due timers (usually none — time advances below). */
-        if (timers_fire() > 0) progress = 1;
-
-        last_round_quiet = (sim_activity == round_start_activity) ? 1 : 0;
-
-        if (progress) {
-            fp_valid = 0;
-            continue;
-        }
-
-        /* External fd sources: probe ready descriptors without blocking so
-         * fd events are never starved by (virtual-time) timer bursts. */
-        if (fd_waiters && fd_poll_all(0) > 0) {
-            fp_valid = 0;
-            continue;
-        }
-
-        if (timer_count > 0) {
-            /* Idle with timers pending: jump the clock to the earliest
-             * deadline and let the next round's pollers observe it. */
-            if (timer_ticks[0] > sim_now_tick) sim_now_tick = timer_ticks[0];
-            timers_fire();
-            continue;
-        }
-
-        /* External fd sources: quiescence is NOT an exit — a server parked on
-         * its stdin is a legitimate steady state. Rounds with activity keep
-         * flowing (the pipeline the last fd event fed must drain: reader →
-         * parser → main → serializer → writer, one channel hop per round);
-         * a round with NO activity means every remaining coroutine is parked
-         * replaying identical state (channel waiters re-queue every round,
-         * so queue EMPTINESS can never be the test here — gating on it let
-         * the fingerprint quiescence exit kill a server with live fd
-         * waiters). Block until the next external event. */
-        if (fd_waiters) {
-            if (sim_activity != round_start_activity) continue;
-            fd_poll_all(-1);
-            continue;
-        }
-
-        /* No progress, no timers, no external sources: quiescence detection.
-         * Transactions that flowed this round (channel writes, event emits)
-         * keep the program alive; an unchanged fingerprint two rounds in a
-         * row is a normal exit (without fd waiters, "waiting forever" and
-         * "deadlock" are indistinguishable — quiescence is a normal exit,
-         * matching BabyPenguin). */
-        if (sim_activity != round_start_activity) {
-            fp_valid = 0;
-            continue;
-        }
-        uint64_t fp = sched_fingerprint();
-        if (fp_valid && fp == last_fp) break;
-        last_fp = fp;
-        fp_valid = 1;
-    }
-
-    /* Free remaining coroutine stacks (process is about to exit or main
-     * continues without the scheduler). */
-    while (all_cos) {
-        EmperorCoroutine* co = all_cos;
-        co_destroy(co);
-    }
-    ready_head = ready_tail = next_head = next_tail = NULL;
-    timer_count = 0;
-    return sched_exit_requested ? sched_exit_code : 0;
-}
+/* ---- Entry point ----
+ * The delta-round scheduler loop is Penguin code (__builtin.__sched_run in
+ * std/penguin/scheduler.penguin, auto-loaded only with --enable-coroutine);
+ * the emitter's emit_main calls the compiled function DIRECTLY
+ * (@__builtin___sched_run — always defined in a suspending module's .ll).
+ * No C trampoline exists on purpose: this object must stay free of Penguin
+ * symbol references so flag-off programs (which never compile
+ * scheduler.penguin) can still pull it from the archive — they do, for the
+ * GC switch globals, try/catch sjlj and exit — and link cleanly. */

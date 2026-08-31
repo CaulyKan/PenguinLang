@@ -1,0 +1,3 @@
+[Project]
+name = "configproj"
+sources = ["cfgmain.penguin", "cfglib.penguin"]

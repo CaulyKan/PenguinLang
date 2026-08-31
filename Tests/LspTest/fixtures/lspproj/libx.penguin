@@ -1,0 +1,7 @@
+namespace libx {
+
+fun lsp_proj_target(x: i64) -> i64 {
+    return x + 100;
+}
+
+}

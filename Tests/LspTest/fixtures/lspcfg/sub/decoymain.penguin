@@ -1,0 +1,3 @@
+fun main() {
+    no_such_decoy_fn();
+}

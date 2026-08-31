@@ -28,7 +28,7 @@ class BookA {
 You can also implement interface outside of class:
 ```
 class BookB {
-    const language: string = "English";
+    language: string = "English";
 }
 
 impl IBook for BookB {

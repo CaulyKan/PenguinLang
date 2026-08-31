@@ -1694,6 +1694,52 @@ class BindExpressionsPass {
     }
 
 
+    // Bind a namespace-scope member access that carries GENERIC ARGS
+    // (`__builtin.Option<i64>.member`, `ns.Enum<T>.variant`): the plain
+    // namespace lookup returns the TEMPLATE type symbol and drops the args, so
+    // the following member lookup misses #specializing-injected impls (they
+    // live on the SPECIALIZED def only, e.g. Option__i64). Mirror
+    // bind_identifier's generic-type branch: resolve the args, mangle from the
+    // template def's full name, prefer the specialized type symbol; with no
+    // specialization yet, fall back to the template+args type so the member
+    // lookup still takes the generic-base (specialized-def) search paths.
+    // Returns none when the member isn't a type or an arg fails to resolve —
+    // callers then fall through to the plain namespace lookup.
+    fun bind_namespaced_generic_type_member(mut this, ns_scope: BoundScope, expr: MemberAccessExpression, bound_base: Option<BoundExpression>, scope: mut BoundScope) -> Option<BoundExpression> {
+        let found: Option<BoundSymbol> = ns_scope.lookup_symbol(expr.member_name);
+        if (found.is_none()) { return new Option<BoundExpression>.none(); }
+        if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundExpression>.none(); }
+        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(expr.generic_args.size())) {
+            let arg_bt: BoundType = this.model.some.resolve_type_specifier(expr.generic_args.at(cast<u64>(gi)).some, scope);
+            if (arg_bt.kind is TypeKind.ErrorKind) { return new Option<BoundExpression>.none(); }
+            resolved_args.push(make_type_arg(arg_bt));
+            gi = gi + 1;
+        }
+        let tmpl_bt: BoundType = found.some.type_sym.bound_type;
+        if (tmpl_bt.type_definition.is_some()) {
+            let td: BoundDefinition = tmpl_bt.type_definition.some;
+            let base_full: mut string = "";
+            if (td is BoundDefinition.class_def) { base_full = td.class_def.full_name; }
+            if (td is BoundDefinition.enum_def) { base_full = td.enum_def.full_name; }
+            if (td is BoundDefinition.interface_def) { base_full = td.interface_def.full_name; }
+            if (string_length(base_full) > 0) {
+                let mangled: string = MonomorphizePass.mangle_generic_name(base_full, resolved_args);
+                let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                    let bt: BoundType = spec_sym.some.type_sym.bound_type;
+                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_sym);
+                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                }
+            }
+        }
+        let tmpl_with_args: mut BoundType = tmpl_bt.with_generic_args(resolved_args);
+        let result2: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(tmpl_with_args, bound_base, expr.member_name, found);
+        return new Option<BoundExpression>.some(new BoundExpression.member_access(result2));
+    }
+
+
     // Look up `member_name` in the SPECIALIZED class/enum scope for a generic base
     // type (e.g. Option<i64> → Option__i64). #specializing-injected impl methods are
     // registered in the specialized scope, not the template's. Returns none when the
@@ -2096,6 +2142,13 @@ class BindExpressionsPass {
                         if (base_sym is BoundSymbol.namespace_sym) {
                             let ns_scope: Option<BoundScope> = base_sym.namespace_sym.namespace_scope;
                             if (ns_scope.is_some()) {
+                                // Generic args on the namespaced member (`__builtin.Option<i64>.member`):
+                                // resolve through the specialized def — see
+                                // bind_namespaced_generic_type_member.
+                                if (cast<i64>(expr.generic_args.size()) > 0) {
+                                    let gen: Option<BoundExpression> = this.bind_namespaced_generic_type_member(ns_scope.some, expr, bound_base, scope);
+                                    if (gen.is_some()) { return gen; }
+                                }
                                 let found: Option<BoundSymbol> = ns_scope.some.lookup_symbol(expr.member_name);
                                 if (found.is_some()) {
                                     let bt: BoundType = this.resolve_symbol_type(found.some);
@@ -2118,6 +2171,13 @@ class BindExpressionsPass {
                         if (inner_sym is BoundSymbol.namespace_sym) {
                             let inner_ns_scope: Option<BoundScope> = inner_sym.namespace_sym.namespace_scope;
                             if (inner_ns_scope.is_some()) {
+                                // Generic args on the chained namespaced member
+                                // (`std.ns.Enum<T>.member`): same specialized-def
+                                // resolution as the single-namespace case above.
+                                if (cast<i64>(expr.generic_args.size()) > 0) {
+                                    let gen: Option<BoundExpression> = this.bind_namespaced_generic_type_member(inner_ns_scope.some, expr, bound_base, scope);
+                                    if (gen.is_some()) { return gen; }
+                                }
                                 let found: Option<BoundSymbol> = inner_ns_scope.some.lookup_symbol(expr.member_name);
                                 if (found.is_some()) {
                                     let bt: BoundType = this.resolve_symbol_type(found.some);

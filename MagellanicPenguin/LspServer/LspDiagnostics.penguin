@@ -1,0 +1,55 @@
+// LspDiagnostics: the single diagnostics pipeline — compiler outputs (the
+// bound unit's SemanticError list, or a caught compiler panic) become
+// Vector<LspDiagnostic>, and one serializer wraps them into the
+// publishDiagnostics params. Replaces the two hand-rolled JSON blocks that
+// used to live inline in LspCompilationUnit (publish_error_diagnostics /
+// publish_crash_diagnostic — identical shapes, duplicated writers).
+namespace lsp {
+
+// Semantic errors → diagnostics. EP lexer locations are 1-based line AND
+// col; LSP positions are 0-based on both axes. The clamp order matters for
+// byte-parity with the old writer: clamp first, then end = start + 1.
+// filter_path "" keeps every error (single-file mode); a path keeps only
+// that file's errors (project mode — other files' errors must not land on
+// the requesting document's uri).
+fun error_diagnostics(errors: _utils.List<emperor.SemanticError>, filter_path: string) -> mut std.Vector<LspDiagnostic> {
+    let out: mut std.Vector<LspDiagnostic> = new std.Vector<LspDiagnostic>();
+    let ei: mut i64 = 0;
+    while (ei < cast<i64>(errors.size())) {
+        let err: emperor.SemanticError = errors.at(cast<u64>(ei)).some;
+        // No-location errors (empty filename) concern the whole compile and
+        // cannot be attributed elsewhere — keep them visible for this doc.
+        if (filter_path != "" && err.location.filename != "" && err.location.filename != filter_path) {
+            ei = ei + 1;
+            continue;
+        }
+        let line: mut i64 = err.location.line - 1;
+        let col: mut i64 = err.location.col - 1;
+        if (line < 0) { line = 0; }
+        if (col < 0) { col = 0; }
+        out.push(make_diagnostic(line, col, err.message));
+        ei = ei + 1;
+    }
+    return out;
+}
+
+// A caught compiler panic (E_INTERNAL → RuntimeError) as one diagnostic at 0:0.
+fun crash_diagnostics(message: string) -> mut std.Vector<LspDiagnostic> {
+    let out: mut std.Vector<LspDiagnostic> = new std.Vector<LspDiagnostic>();
+    out.push(make_diagnostic(0, 0, "internal compiler error: " + message));
+    return out;
+}
+
+// The publishDiagnostics params document for a uri + diagnostics.
+fun diagnostics_params_json(uri: string, diags: std.Vector<LspDiagnostic>) -> string {
+    let p: mut LspPublishDiagnosticsParams = new LspPublishDiagnosticsParams();
+    p.uri = uri;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(diags.size())) {
+        p.diagnostics.push(diags.at(cast<u64>(i)).some);
+        i = i + 1;
+    }
+    return p.json_serialize();
+}
+
+}

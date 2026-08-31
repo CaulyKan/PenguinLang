@@ -13,4 +13,4 @@
 # (core_builtin.penguin + io.penguin are auto-injected; json/vector/hashmap and
 # the compiler's _utils come from the lib's embedded source).
 name="LspServer"
-sources=["LspTypes.penguin", "LspFraming.penguin", "StdioStream.penguin", "JsonInputParser.penguin", "LspMain.penguin", "LspCompilationUnit.penguin", "JsonOutputParser.penguin", "LspQuery.penguin", "LspJson.penguin", "LspWiring.penguin"]
+sources=["LspTypes.penguin", "LspFraming.penguin", "StdioStream.penguin", "JsonInputParser.penguin", "LspProtocol.penguin", "LspMain.penguin", "LspCompilationUnit.penguin", "JsonOutputParser.penguin", "LspDiagnostics.penguin", "LspSymIndex.penguin", "LspConfig.penguin", "LspProject.penguin", "LspQuery.penguin", "LspJson.penguin", "LspWiring.penguin"]

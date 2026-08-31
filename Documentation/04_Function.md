@@ -9,7 +9,8 @@ fun hello() {
 ### Defining Parameters
 ```
 class MyClass {
-	foo: i32;
+	foo: i32 = 0;
+	impl IReferenceType;   // reference type: assignments share the object
 }
 
 fun hello(param1 : i32, param2 : mut i32, param3 : MyClass, param4 : mut MyClass) {
@@ -21,10 +22,12 @@ fun hello(param1 : i32, param2 : mut i32, param3 : MyClass, param4 : mut MyClass
 	// param3 = new MyClass(); // ERROR: can't change an immutable param
 	// param3.foo = 1;			// ERROR: can't mutate an immutable param
 	
-	param4.foo = 1;			// OK, caller object is mutated
-	param4 = new MyClass(); // OK, and caller object is changed too
+	param4.foo = 1;			// OK, caller object is mutated (shared reference)
+	param4 = new MyClass(); // OK, but only rebinds the local parameter;
+	                        // the caller's object is NOT changed
 }
 ```
+For a value-type parameter, `mut` permits mutating the local copy only — writes never escape the callee. Only the method receiver (`mut this`) aliases the caller's slot.
 
 ### Return Values
 ```
@@ -93,7 +96,7 @@ class Foo {
 		println("hello");
 	}
 
-	fun hello_myself(this: Foo) { // Instance method
+	fun hello_myself(this) { // Instance method
 		println("hello " + this.name);
 	}
 }
@@ -111,7 +114,7 @@ Function 'new' is used as constructor in class. The first parameter must be muta
 ```
 class Foo {
 	x: u8 = 1;
-	fun new(mut this: Foo, x : u8) {
+	fun new(mut this, x : u8) {
 		this.x = x;
 	}
 }

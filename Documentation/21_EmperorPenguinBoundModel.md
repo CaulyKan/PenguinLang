@@ -7,15 +7,30 @@ Bound Model（绑定模型）是 AST 和 IR 之间的中间层。它将 AST 的�
 **源文件位置**: `EmperorPenguin/src/bound/`
 
 **核心文件**:
-- `BoundType.penguin` — 类型系统
+- `BoundType.penguin` — 类型系统（BoundType、BoundTypeArg、名字修饰）
 - `BoundTypeRegistry.penguin` — 类型注册与查找
 - `BoundSymbol.penguin` — 符号定义
 - `BoundScope.penguin` — 作用域层次
 - `BoundExpression.penguin` — 绑定表达式
 - `BoundStatement.penguin` — 绑定语句
 - `BoundDefinition.penguin` — 绑定定义
-- `BoundCompilationUnit.penguin` — 编译单元
-- `SemanticModel.penguin` — 语义分析引擎（多 pass 编排）
+- `BoundCompilationUnit.penguin` — 编译单元与 SemanticError
+- `SemanticModel.penguin` — 语义分析核心（模型字段、`bind()` 编排、`catch_up_def` 回放）
+- `SemanticShared.penguin` — 跨 pass 共享的自由函数与数据类
+- `SemanticMetaRewrite.penguin` — `MetaRewriter` 元编程预处理（`run_prepass`，pass 之前运行）
+- `SemanticBuildScopes.penguin` — Pass 1 `BuildScopesPass`
+- `SemanticResolveTypes.penguin` — Pass 2 `ResolveTypesPass`
+- `SemanticMonomorphize.penguin` — Pass 3 `MonomorphizePass`
+- `SemanticBindSymbols.penguin` — Pass 4 `BindSymbolsPass`
+- `SemanticConstructors.penguin` — Pass 5 `ConstructorsPass`
+- `SemanticInterfaces.penguin` — Pass 6 `InterfacesPass`
+- `SemanticClassifyValueTypes.penguin` — Pass 7 `ClassifyValueTypesPass`
+- `SemanticBindBodies.penguin` — Pass 8a `BindBodiesPass`（语句/函数体绑定）
+- `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass`（表达式绑定）
+- `SemanticBindMetaCalls.penguin` — Pass 8c `BindMetaCallsPass`（元调用绑定）
+- `SemanticValidateControlFlow.penguin` — Pass 9 `ValidateControlFlowPass`
+- `EmperorPenguinCompiler.penguin` — 编译器顶层入口（`compile_sources`）
+- `BoundTreePrinter.penguin` — Bound Tree 调试打印
 
 ---
 
@@ -28,18 +43,21 @@ BoundType
 ├── kind: TypeKind              # 类型分类
 ├── primitive: PrimitiveType    # 原始类型（当 kind == PrimitiveKind）
 ├── type_definition: Option<BoundDefinition>  # 类/枚举/接口的定义
-├── generic_args: List<BoundType>  # 泛型参数
+├── generic_args: List<BoundTypeArg>  # 泛型参数（type_arg 或 value_arg）
 ├── mutability: Mutability      # 可变性
 └── is_async_function: bool     # 是否异步函数类型
 ```
+
+`BoundTypeArg` 是统一的模板参数表示（enum）：`type_arg: BoundTypeArgType`（类型参数，内含 `bound_type`）或 `value_arg: BoundTypeArgValue`（值参数：`value_arg_kind: ValueArgSubKind`（Int/Bool/String/Double/Object）、标量值字段、`unique_name`、`object_ref`）。
 
 | 方法 | 说明 |
 |------|------|
 | `display_name() -> string` | 显示类型名称 |
 | `with_mutability(m) -> BoundType` | 返回修改可变性后的副本 |
-| `is_same_type(other) -> bool` | 类型相等判断 |
-| `is_value_type() -> bool` | 是否值类型（原始类型） |
-| `is_reference_type() -> bool` | 是否引用类型（类、接口） |
+| `with_generic_args(args) -> BoundType` | 返回替换泛型参数后的副本 |
+| `is_same_type(other) -> bool` | 类型相等判断（含模板+args 与特化 def 的等价识别） |
+| `is_value_type() -> bool` | 是否值类型（原始类型、枚举、ICopy 值类） |
+| `is_reference_type() -> bool` | 是否引用类型（引用类、接口） |
 
 ### TypeKind 枚举
 
@@ -82,11 +100,11 @@ BoundType
 
 | 变体 | 类名 | 关键字段 |
 |------|------|---------|
-| `variable` | BoundVariableSymbol | `name`, `full_name`, `bound_type`, `variable_kind`, `is_mutable`, `parameter_index`, `source_line`, `source_col` |
-| `function_sym` | BoundFunctionSymbol | `name`, `full_name`, `parameters`, `return_type`, `is_extern`, `is_static`, `is_new`, `is_async`, `source_line`, `source_col` |
-| `type_sym` | BoundTypeSymbol | `name`, `full_name`, `bound_type`, `type_definition`, `generic_params`, `source_line`, `source_col` |
-| `enum_member` | BoundEnumMemberSymbol | `name`, `full_name`, `enum_value`, `member_type`, `source_line`, `source_col` |
-| `namespace_sym` | BoundNamespaceSymbol | `name`, `full_name`, `namespace_scope` |
+| `variable` | BoundVariableSymbol | `name`, `full_name`, `bound_type`, `variable_kind`, `is_mutable`, `parameter_index`, `declaring_scope_id`, `enclosing_scope`, `location` |
+| `function_sym` | BoundFunctionSymbol | `name`, `full_name`, `bound_type`, `parameters`, `return_type`, `resolved_return_type`, `is_extern`, `is_static`, `is_pure`, `is_new`, `is_async`, `is_meta`, `enclosing_scope`, `location` |
+| `type_sym` | BoundTypeSymbol | `name`, `full_name`, `bound_type`, `type_definition`, `generic_params`, `enclosing_scope`, `location` |
+| `enum_member` | BoundEnumMemberSymbol | `name`, `full_name`, `bound_type`, `enum_value`, `member_type`, `enclosing_scope`, `location` |
+| `namespace_sym` | BoundNamespaceSymbol | `name`, `full_name`, `namespace_scope`, `enclosing_scope`, `location` |
 
 **公共方法**（通过 BoundSymbol 枚举分发）：
 - `get_name() -> string`
@@ -95,7 +113,7 @@ BoundType
 
 ### VariableSymbolKind 枚举
 
-`Local` | `Parameter` | `Field` | `StaticField` | `Temp`
+`Local` | `Param` | `Field` | `StaticField` | `Temp` | `Global`
 
 ### BoundFunctionParameter 类
 
@@ -157,19 +175,21 @@ BoundScope
 
 | 变体 | 类名 | 额外信息（相比 AST） |
 |------|------|---------|
-| `literal` | BoundLiteralExpression | `bound_type`, `literal_kind` (Integer/Float/String/Bool/Void) |
+| `literal` | BoundLiteralExpression | `bound_type`, `literal_kind` (IntegerLiteral/FloatLiteral/StringLiteral/BoolLiteral/VoidLiteral) |
 | `identifier` | BoundIdentifierExpression | `bound_type`, `symbol: Option<BoundSymbol>` |
 | `binary` | BoundBinaryExpression | `bound_type`, 使用 AST BinaryOperator |
 | `unary` | BoundUnaryExpression | `bound_type`, 使用 AST UnaryOperator |
 | `member_access` | BoundMemberAccessExpression | `bound_type`, `member_symbol: Option<BoundSymbol>` |
-| `function_call` | BoundFunctionCallExpression | `bound_type`, `callee_symbol`, `is_virtual` |
+| `function_call` | BoundFunctionCallExpression | `bound_type`, `callee_symbol`, `is_virtual`, `generic_args`, `is_generic_function_call`, `direct_dispatch` |
 | `if_expr` | BoundIfExpression | `bound_type` |
 | `while_expr` | BoundWhileExpression | `bound_type` |
 | `code_block` | BoundCodeBlockExpression | `bound_type`, `scope` |
-| `cast_expr` | BoundCastExpression | `bound_type`, `target_type`, `is_implicit` |
+| `cast_expr` | BoundCastExpression | `bound_type`, `target_type`, `is_implicit`, `needs_boxing`/`needs_unboxing` |
 | `new_expr` | BoundNewExpression | `bound_type`, `type_symbol`, `constructor_symbol` |
 | `enum_variant` | BoundEnumVariantExpression | `bound_type`, `enum_type`, `variant_idx`, `variant_symbol`, `payload` |
 | `lambda_expr` | BoundLambdaExpression | `bound_type`, `parameters`, `return_type`, `scope` |
+| `meta_call` | BoundMetaCallExpression | `bound_type`, `func_name`, `arguments: List<BoundExpression>`, `trailing_block_ast`, `trailing_definition_ast` |
+| `try_bind` | BoundTryBindExpression | `bound_type`, `variable_symbol`, `check`（布尔判定）, `extract`（成功时的载荷提取） |
 
 所有绑定表达式都提供 `get_bound_type() -> BoundType`。
 
@@ -189,6 +209,12 @@ BoundScope
 | `continue_stmt` | BoundContinueStatement | — |
 | `let_decl` | BoundLetDeclarationStatement | `variable_symbol`, `initializer`, `bound_type`, `scope` |
 | `block` | BoundBlockStatement | `statements`, `scope` |
+| `meta_if_stmt` | BoundMetaIfStatement | `ast_source: Option<Statement>`（保留原始 AST 供元阶段处理） |
+| `meta_while_stmt` | BoundMetaWhileStatement | `ast_source: Option<Statement>` |
+| `meta_for_stmt` | BoundMetaForStatement | `ast_source: Option<Statement>` |
+| `meta_break_stmt` | BoundMetaBreakStatement | — |
+| `meta_continue_stmt` | BoundMetaContinueStatement | — |
+| `try_catch` | BoundTryCatchStatement | `try_statements`, `catch_var_symbol`, `catch_statements` |
 
 ---
 
@@ -196,16 +222,22 @@ BoundScope
 
 | 变体 | 类名 | 关键字段 |
 |------|------|---------|
-| `function_def` | BoundFunctionDefinition | `name`, `full_name`, `symbol`, `parameters`, `return_type`, `body`, `scope`, `is_extern`/`is_pure`/`is_static`/`is_new`, `generic_params` |
-| `class_def` | BoundClassDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `fields`, `methods`, `constructors`, `interface_impls`, `vtables`, `constructor` |
-| `enum_def` | BoundEnumDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `members: List<BoundEnumMemberDefinition>` |
-| `interface_def` | BoundInterfaceDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `methods` |
-| `impl_def` | BoundInterfaceImplementation | `interface_type`, `implementing_type`, `methods`, `vtable` |
+| `function_def` | BoundFunctionDefinition | `name`, `full_name`, `symbol`, `parameters`, `return_type`, `body`, `scope`, `is_extern`/`is_pure`/`is_static`/`is_new`, `generic_params`, `value_param_*`, `is_lib_export`/`is_specialized` |
+| `class_def` | BoundClassDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `fields`, `methods`, `constructors`, `interface_impls`, `vtables`, `constructor`, `is_value_class`, `ast_source` |
+| `enum_def` | BoundEnumDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `members: List<BoundEnumMemberDefinition>`, `methods`, `interface_impls`, `vtables` |
+| `interface_def` | BoundInterfaceDefinition | `name`, `full_name`, `type_symbol`, `bound_type`, `scope`, `methods`, `interface_impls`, `vtables` |
+| `impl_def` | BoundInterfaceImplementation | `interface_type`, `implementing_type`, `methods`, `vtable`, `source_impl_def` |
 | `impl_for_def` | BoundInterfaceForImplementation | `interface_type`, `for_type`, `methods`, `vtable` |
 | `namespace_def` | BoundNamespaceDefinition | `name`, `full_name`, `children`, `scope` |
 | `initial_routine` | BoundInitialRoutineDefinition | `body`, `scope`, `symbol`, `full_name` |
 | `type_ref_def` | BoundTypeReferenceDefinition | `name`, `alias_type`, `type_symbol` |
 | `class_field` | BoundClassFieldDefinition | `name`, `bound_type`, `field_symbol`, `initializer`, `mutability`, `is_static` |
+| `global_var_def` | BoundGlobalVariableDefinition | `name`, `full_name`, `variable_symbol`, `bound_type`, `initializer`, `is_mutable`, `scope` |
+| `meta_function_def` | BoundMetaFunctionDefinition | `name`, `full_name`, `parameters: List<MetaParameter>`, `return_type`, `body`, `native_ptr`, `is_compiled` |
+| `meta_if_def` | BoundMetaIfDefinition | `ast_source: Option<Definition>` |
+| `meta_for_def` | BoundMetaForDefinition | `ast_source: Option<Definition>` |
+| `meta_while_def` | BoundMetaWhileDefinition | `ast_source: Option<Definition>` |
+| `meta_call_def` | BoundMetaCallDefinition | `call: Option<BoundExpression>` |
 
 ### VTable 结构
 
@@ -229,72 +261,71 @@ BoundCompilationUnit
 ├── global_scope: BoundScope
 ├── type_registry: BoundTypeRegistry
 ├── errors: List<SemanticError>
-└── source_file: string
+├── location: SourceLocation
+└── has_suspension: bool          # 单元内是否绑定过 wait/async 挂起点
 ```
 
 ### SemanticError 类
 
 ```
 SemanticError
+├── code: ErrorCode
 ├── message: string
-├── line: i64
-├── col: i64
-└── severity: ErrorSeverity (Error | Warning)
+├── location: SourceLocation
+└── severity: ErrorSeverity (Error | Warning | Info)
 ```
 
 ---
 
 ## SemanticModel — 多 Pass 编排
 
-`SemanticModel` 是语义分析引擎，将 AST 转换为 Bound Tree。处理管线如下：
+`SemanticModel` 是语义分析引擎，将 AST 转换为 Bound Tree。每个 pass 是一个独立的协作类，持有 `model: mut Option<SemanticModel>` 反向引用（Option 包装以打破类字段默认构造的循环依赖），对外提供单一 `run()` 入口；`SemanticModel` 在构造函数中装配全部 pass 实例。
 
-### Pass 1: Build Scopes (`pass_build_scopes`)
+`bind()` 在 9 个 pass 之前先运行 `MetaRewriter.run_prepass(unit)`（元编程预处理：收集 `#fun`/`#class`、`#define`/`#if`/`#while` 拼接、JIT 引擎播种）。Pass 3 产生的新特化定义由核心的 `catch_up_def` 按需回放后续 pass，保证泛型实例走完 Pass 4-8。
+
+### Pass 1: Build Scopes (`BuildScopesPass.run(unit, result)`)
 
 遍历 AST `CompilationUnit`，为每个定义创建对应的 `BoundDefinition` 和 `BoundScope`，注册符号到作用域。
 
-- `bind_definition()` → `bind_function_def()`, `bind_class_def()`, `bind_enum_def()`, `bind_interface_def()`, `bind_namespace_def()`, `bind_initial_routine()`, `bind_impl_def()`, `bind_impl_for_def()`, `bind_type_ref_def()`
+- 处理所有定义类型：函数、类、枚举、接口、命名空间、initial 块、impl、impl...for、类型引用、全局变量
+- 收集 `#fun`/`#class` 定义，注册 `#specializing` 块，标记 dyn-lib 导出定义
 
-### Pass 2: Bind Symbols (`pass_bind_symbols`)
+### Pass 2: Resolve Types (`ResolveTypesPass.run(unit, result)`)
 
-为函数和类的方法绑定符号——创建参数符号、局部变量符号等。
+遍历 AST 和 Bound Tree 的 index 对齐平行对，解析 `TypeSpecifier` → `BoundType`。处理泛型、限定名、函数类型、可变性，以及 `#template` 值参数替换。
 
-- `bind_symbols_for_def()` → `bind_function_symbols()`, `bind_class_symbols()`
+### Pass 3: Monomorphize (`MonomorphizePass.run(unit, result)`)
 
-### Pass 3: Resolve Types (`pass_resolve_types`)
+泛型特化的迭代不动点（类、枚举、函数，最多 10 轮）：实例收集、名字修饰（`mangle_specialization`）、`#specializing` 条件 impl 注入、特化方法 `this` 参数类型修正。新特化的 def 由 `catch_up_def` 回放 Pass 4-8。
 
-遍历 AST 和 Bound Tree 平行对，解析 `TypeSpecifier` → `BoundType`。
+### Pass 4: Bind Symbols (`BindSymbolsPass.run(result)`)
 
-- `resolve_pair()` → `resolve_function_pair()`, `resolve_class_pair()`, `resolve_enum_types()`, `resolve_interface_pair()`, `resolve_namespace_pair()`
-- `resolve_type_specifier()` — 核心：将 AST 类型描述符转换为 BoundType
+为函数与方法绑定参数符号，补全函数与字段的符号信息。
 
-### Pass 4: Constructors (`pass_constructors`)
+### Pass 5: Constructors (`ConstructorsPass.run(result)`)
 
-为类生成构造函数，处理字段初始化。
+为类生成默认构造函数，处理 `is_new` 显式构造函数与字段初始化。
 
-- `init_constructors_for_def()` → `init_class_constructor()`, `init_interface_constructor()`
-- `process_constructors_for_def()`
+### Pass 6: Interfaces (`InterfacesPass.run(unit, result)`)
 
-### Pass 5: Interface Implementation (`pass_interface_implementation`)
+构建接口 vtable（类与枚举），处理 `impl` 与 `impl...for` 块，合并接口继承的 vtable。
 
-构建 vtable，处理 `impl` 和 `impl...for` 块。
+### Pass 7: Classify Value Types (`ClassifyValueTypesPass.run(result)`)
 
-- `build_vtables_for_def()` → `build_class_vtables()`, `build_interface_vtables()`
-- `build_vtable_slots()` — 为每个接口方法分配 vtable 槽位
-- `process_impl_for()`
+按接口实现与字段类型判定 ICopy 值类型 / IRef 引用类型；随后 `validate_interface_usage(result)` 校验接口使用合法性。
 
-### Pass 6: Bind Expressions (`pass_bind_expressions`)
+### Pass 8: Bind Bodies (`BindBodiesPass.run(unit, result)`)
 
-将 AST 表达式/语句转换为绑定表达式/语句。这是最核心的 pass，处理类型检查、符号引用解析。
+将 AST 表达式/语句转换为绑定表达式/语句，是类型检查与符号引用解析的核心 pass。`BindBodiesPass`（8a，语句/函数体绑定与 `current_unit` 生命周期）分发给两个协作器：
 
-- `bind_expression()` → `bind_constant()`, `bind_identifier()`, `bind_binary()`, `bind_unary()`, `bind_member_access()`, `bind_function_call()`, `bind_if_expr()`, `bind_while_expr()`, `bind_code_block()`, `bind_cast()`, `bind_new_expr()`
-- `bind_statement()` — 语句绑定
+- `BindExpressionsPass`（8b）：字面量、标识符、二元/一元/逻辑运算、成员访问、函数调用（虚调用/泛型调用）、if/while、代码块、cast/new、try-bind、端口语法脱糖
+- `BindMetaCallsPass`（8c）：`#fun` 元调用绑定与 JIT 结果拼接、sizeof/address_of/load/store 内建、unique-name trampoline、模板实例路由
 
-### Pass 7: Validate Control Flow (`pass_validate_control_flow`)
+### Pass 9: Validate Control Flow (`ValidateControlFlowPass.run(result)`)
 
-验证控制流合法性（return、break、continue 的使用位置）。
+验证控制流合法性：非空函数全路径返回、break/continue 的使用位置、return 值类型检查。
 
-- `validate_expr_control_flow()`, `validate_stmt_control_flow()`
-- `expr_always_returns()`, `stmt_always_returns()`
+Pass 9 之后 `bind()` 还执行静态 connect 拓扑检查（`validate_port_topology`：输出驱动唯一性、输入重复连接、未连接的模块输入），最后把 `errors` 与 `has_suspension` 写入结果。
 
 ---
 
@@ -302,9 +333,9 @@ SemanticError
 
 ### SemanticModel.bind()
 
-入口方法：`bind(unit: ast.CompilationUnit, source_file: string) -> BoundCompilationUnit`
+入口方法：`bind(unit: ast.CompilationUnit, location: SourceLocation) -> BoundCompilationUnit`
 
-按顺序执行所有 pass，返回完整的绑定编译单元。
+按顺序执行元预处理与全部 9 个 pass，返回完整的绑定编译单元。
 
 ### 类型解析
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # emperor — external driver for the EmperorPenguin compiler.
 #
-# The compiler binary (emperor_penguin_llvmir_emitter) only emits
+# The compiler binary (emperor_penguin_llvm_emitter) only emits
 # platform-independent LLVM IR (.ll files). This script owns everything that
 # touches the LLVM toolchain: environment checks, the C runtime build
 # (make -C EmperorPenguin/std/c), and the final clang link (native or cross,
@@ -79,7 +79,7 @@ resolve_llvm_win() {
 resolve_emitter() {
     if [ -n "$OPT_EMITTER" ]; then echo "$OPT_EMITTER"; return; fi
     if [ -n "${EMPEROR_EMITTER:-}" ]; then echo "$EMPEROR_EMITTER"; return; fi
-    local name=emperor_penguin_llvmir_emitter
+    local name=emperor_penguin_llvm_emitter
     if [ -n "$HOST_WIN" ]; then name=$name.exe; fi
     if [ -x "$SCRIPT_DIR/$name" ]; then echo "$SCRIPT_DIR/$name"; return; fi
     die "no emitter found: pass --emitter <path>, set EMPEROR_EMITTER, or place $name beside this script"

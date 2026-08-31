@@ -55,6 +55,19 @@ fun extract_uri(msg: LspMessage) -> string {
     return json_get_string(p, "uri");
 }
 
+// initialize params rootUri as a PATH ("" when absent — no workspace).
+fun extract_root_uri(params_json: string) -> string {
+    let p: std.JsonValue = std.parse_json(params_json);
+    let ru: __builtin.Option<std.JsonValue> = p.get("rootUri");
+    if (ru.is_some()) {
+        let uri: string = json_string_value(ru.some);
+        if (uri != "") {
+            return uri_to_path(uri);
+        }
+    }
+    return json_get_string(p, "rootPath");
+}
+
 // Full-sync didChange: the (single) content change's text.
 fun extract_change_text(params_json: string) -> string {
     let p: std.JsonValue = std.parse_json(params_json);
@@ -69,16 +82,12 @@ fun extract_change_text(params_json: string) -> string {
     return "";
 }
 
-// position.line / position.character from params (0-based, as the wire sends).
-class LspPosition {
-    line: i64 = 0;
-    character: i64 = 0;
+// LspPosition (the {line, character} pair) is the PROTOCOL type — declared
+// once in LspProtocol.penguin and shared by both directions.
 
-    fun new(mut this) {}
-}
-
-// range.start / range.end lines (0-based) from params (inlayHint).
-class LspRange {
+// range.start / range.end lines (0-based) from params (inlayHint). A flat,
+// input-side projection — do not confuse with the wire-shape LspRange.
+class LspRangeParams {
     start_line: i64 = 0;
     start_character: i64 = 0;
     end_line: i64 = 0;
@@ -87,8 +96,8 @@ class LspRange {
     fun new(mut this) {}
 }
 
-fun extract_range(params_json: string) -> LspRange {
-    let r: mut LspRange = new LspRange();
+fun extract_range(params_json: string) -> mut LspRangeParams {
+    let r: mut LspRangeParams = new LspRangeParams();
     let p: std.JsonValue = std.parse_json(params_json);
     let rng: __builtin.Option<std.JsonValue> = p.get("range");
     if (rng.is_some()) {

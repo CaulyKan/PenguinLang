@@ -2,15 +2,13 @@
 
 Penguin-lang provides powerful compile-time meta-programming capabilities through **Meta Functions** and **Compile-Time Evaluation**. This allows you to write code that executes during compilation, enabling zero-cost abstractions and type-level computations.
 
-> **Status (2026-08-01).** This document describes the target design. **Reflection Round 1 shipped (2026-07-29)** as an interim — opaque type-tokens + per-op host callbacks (`#field_count(t)` etc.); **Phase 6 v2** (real-pointer reuse: `type = BoundType`, `t.fields()` direct; per-call-site caller-stub `#fun` ABI; `#class`) is the current implementation direction — see `.claude/plans/meta_plan.md` §0.4. Where this doc shows `t.fields()` / `t.methods()` / `t.variants()` (the v2 form), Round 1 used the procedural `#field_count(t)` / `#field_name(t,i)` equivalents; v2 replaces them.
+> **Status.** The meta surface is: `#fun`, `#if` / `#elif` / `#else`, `#for` / `#while` / `#break` / `#continue`, `#template`, `#typeof`, `#compiler`, `#define` / `#defined` / `#option`, `#class` (meta-only data structures — see [Meta Classes](#meta-classes-class)), and `cast<T>()`.
 >
-> **v1 surface:** `#fun`, `#if` / `#elif` / `#else`, `#for` / `#while` / `#break` / `#continue`, `#template`, `#typeof`, `#compiler`, `#define` / `#defined` / `#option`, `#class` (meta-only data structures — see [Meta Classes](#meta-classes-class)), and `cast<T>()` (there is **no** `#cast` — it was a typo for the existing `cast<T>()`).
+> **Reflection API (reuse-based, see [Reflection API](#reflection-api) below).** `type` carries reflection methods (`t.fields()` / `t.methods()` / `t.variants()` / `t.display_name()` / `t.is_class()` / …); the objects those return are **the compiler's own bound types** surfaced under the aliases `Field` / `Method` / `Variant` / `Param` / `Symbol`; `compiler()` exposes context operations (`resolve_type`, `create_ast`, `can_compile_expression`, `error`, options). Meta code and the compiler read the **same live objects** — there is no parallel `FieldInfo`/`MethodInfo` hierarchy. The meta JIT runs in the native compiler only (EmperorPenguin pass2+); the dotnet test runner verifies the sources parse but does not execute the JIT path.
 >
-> **Reflection API — defined (reuse-based, see [Reflection API](#reflection-api) below).** `type` carries reflection methods (`t.fields()` / `t.methods()` / `t.variants()` / `t.display_name()` / `t.is_class()` / …); the objects those return are **the compiler's own bound types** surfaced under the aliases `Field` / `Method` / `Variant` / `Param` / `Symbol`; `compiler()` exposes context operations (`resolve_type`, `create_ast`, `can_compile_expression`, `error`, options). Meta code and the compiler read the **same live objects** — there is no parallel `FieldInfo`/`MethodInfo` hierarchy.
+> **Not implemented:** `Map`, collection-iteration `#for (let x : coll)`, type-value method chains such as `#typeof(T).as_enum().enum_items()`, and annotations / `get_methods_with_attribute` (PenguinLang has **no annotation system** — do attribute-like generation with `#fun + ast`, passing a description explicitly).
 >
-> **Deferred to a later version (marked `[v2]` where they appear):** `Map`, collection-iteration `#for (let x : coll)`, type-value method chains such as `#typeof(T).as_enum().enum_items()`, and annotations / `get_methods_with_attribute` (PenguinLang has **no annotation system** — do attribute-like generation with `#fun + ast`, passing a description explicitly).
->
-> **`#` is the meta-space access prefix.** `#fun()` calls a meta function; `#item` reads a meta-space variable (e.g. a `#for` loop variable); `.` performs member access on the result. (The precise rules for when `#` is optional *inside* meta context are still being finalized.)
+> **`#` is the meta-space access prefix.** `#fun()` calls a meta function; `#item` reads a meta-space variable; `.` performs member access on the result.
 
 ## Overview
 
@@ -169,7 +167,7 @@ For cases where the type name is computed at meta-execution time (e.g., from a s
 
 ```penguin
 #fun lookup_type(name: string) -> Option<type> {
-    return compiler().resolve_type(name);   # None if the name is unknown
+    return compiler().resolve_type(name);   // None if the name is unknown
 }
 ```
 
@@ -240,7 +238,7 @@ fun default_value() -> T {
 #template(N: u32)
 fun sum() -> u32 {
     let result: u32 = 0;
-    #for (i in range(0, N)) {
+    #for (let i: u32 in 0..N) {
         result = result + i;
     }
     return result;
@@ -271,13 +269,13 @@ initial {
 
 **Implementation note**: `#for` and `#while` are hardcoded compiler constructs (same as `#if`), not JIT-compiled. The compiler evaluates loop bounds and conditions directly, unrolling the body accordingly. This avoids the overhead of JIT for simple compile-time iteration.
 
-> **`#for` grammar.** `#for` reuses the standard (non-`#`) for-grammar, prefixed with `#` — e.g. `#for (i in 0..N) { … }`. The loop variable lives in meta space and is read as `#i`. A collection-iteration form `#for (let x : coll)` is planned but **deferred `[v2]`**.
+> **`#for` grammar.** `#for` reuses the standard (non-`#`) for-grammar, prefixed with `#` — e.g. `#for (let i: u32 in 0..N) { … }`. The loop variable follows the standard `let` declaration and is used by name in the body. A collection-iteration form `#for (let x : coll)` is **not implemented**.
 
 **Compile-time loop control — `#break` / `#continue`.** Inside a meta-loop body, plain `break` / `continue` are *runtime* (emitted into the unrolled code, e.g. inside a runtime loop in the body). `#break` / `#continue` are *compile-time* — they abort or skip the current unrolling iteration. They are `#`-prefixed parser keywords for the same reason as `#else` / `#elif` (to keep compile-time control flow unambiguous and visible), and are rarely needed.
 
 ```penguin
 #fun first_matching(start: u32, end: u32) -> u32 {
-    #for (i in start..end) {
+    #for (let i: u32 in start..end) {
         #if (is_prime(i)) {
             return i;          // runtime return, emitted in the unrolled body
         }
@@ -296,7 +294,7 @@ initial {
 
 // Style 1: #template sugar (user-facing)
 #template(T: type)
-class Box<T> {
+class Box {
     value: T;
 }
 
@@ -312,7 +310,7 @@ Templates support both type and value parameters:
 
 ```penguin
 #template(T: type, default_value: T)
-class Container<T> {
+class Container {
     data: T = default_value;
 }
 ```
@@ -323,9 +321,9 @@ These built-in meta functions provide a lightweight compile-time key-value store
 
 ```penguin
 initial {
-    #define("PI", 3.14);
-    println("PI = {}", #option("PI"));          // PI = 3.14
-    #if (defined("PI")) {
+    #define("PI", "3.14");
+    println("PI = " + #option("PI"));          // PI = 3.14
+    #if (#defined("PI")) {
         println("PI is defined");
     }
 }
@@ -377,24 +375,24 @@ Reflection reads the compiler's **own bound types directly** — there is no sep
 | Method | Description |
 |---|---|
 | `display_name() -> string` | Full source spelling, e.g. `Option<i32>` (alias: `to_string()`) |
-| `kind() -> TypeKind` | `Primitive` / `Class` / `Enum` / `Interface` / `Function` / `TypeReference` / `Error` |
+| `kind_str() -> string` | `Primitive` / `Class` / `Enum` / `Interface` / `Function` / `TypeReference` / `Error` |
 | `is_class()` / `is_enum()` / `is_interface()` / `is_primitive()` | Kind predicates |
 | `is_value_type()` / `is_reference_type()` | ICopy (stack) vs IRef (heap) classification |
 | `fields() -> List<Field>` | Class fields (empty for non-class) |
 | `methods() -> List<Method>` | Class / interface methods |
 | `variants() -> List<Variant>` | Enum variants (empty for non-enum) |
-| `generic_args() -> List<type>` | Instantiated generic arguments, e.g. `Option<i32>` → `[i32]` |
+| `generic_args` (field) | Instantiated generic arguments, e.g. `Option<i32>` → `[i32]` |
 
 The returned `Field` / `Method` / `Variant` objects expose their data as ordinary fields — read them directly: `f.name`, `f.bound_type`, `m.parameters`, `m.return_type`, `m.signature()`, `v.name`, `v.value`.
 
 ```penguin
 #fun derive_clone(t: type) -> ast {
-    let fs = t.fields();                              # List<Field>
+    let fs = t.fields();                              // List<Field>
     let mut body = "return new " + t.display_name() + "(";
     let i = 0;
     #while (i < fs.size()) {
         #if (i > 0) { body = body + ", "; }
-        body = body + "this." + fs.at(i).some.name;   # read Field.name directly
+        body = body + "this." + fs.at(i).some.name;   // read Field.name directly
         i = i + 1;
     }
     body = body + ");";
@@ -565,8 +563,6 @@ class Point {
 
 **PenguinLang**
 
-> ⚠️ **`[v2]`** — the `enum_to_string` meta function below uses collection-iteration `#for`, a type-value method chain (`#typeof(T).as_enum().enum_items()`), and `#item`, all of which are deferred. A v1 equivalent would use `#while` + an index + `compiler().get_enum_variants(t).at(i)`. (`#cast` was a typo for the existing `cast<int>()`.)
-
 ```penguin
 enum Color {
     Red;
@@ -574,18 +570,20 @@ enum Color {
     Blue;
 }
 
-#template<T: Type>
-fun enum_to_string(v: T) -> string {
-    #for (let item : #typeof(T).as_enum().enum_items()) {
-        if (#item.value == cast<int>(v)) {
-            return #item.name;
-        }
+#fun enum_names(t: type) -> string {
+    let vs = t.variants();                            // List<Variant>
+    let mut result = "";
+    let i = 0;
+    #while (i < vs.size()) {
+        #if (i > 0) { result = result + ","; }
+        result = result + vs.at(i).some.name;         // read Variant.name directly
+        i = i + 1;
     }
+    return result;
 }
 
 initial {
-    let c = new Color.Red();
-    println(enum_to_string(c));                     // "Red"
+    println(enum_names(#typeof(Color)));              // "Red,Green,Blue"
 }
 ```
 
@@ -681,7 +679,7 @@ class Person {
 #derive_builder(#typeof(Person));
 
 initial {
-    let person = PersonBuilder()
+    let person = new PersonBuilder()
         .name("Alice")
         .age(30)
         .email("alice@example.com")

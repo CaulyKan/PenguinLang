@@ -1,97 +1,60 @@
 ## Timing Model
-Penguin-lang has a very unique concept in general purpose programming languages, the timing model. This concept enables penguin-lang to process job with the control of how time elapses, which is very useful in gaming logic, HDL simulation and scientific calculation.
+Penguin-lang has a very unique concept in general purpose programming languages, the timing model. This concept enables penguin-lang to process jobs with the control of how time elapses, which is very useful in gaming logic, HDL simulation and scientific calculation.
 
-## Realtime Timing Model
-The default timing model is the realtime timing model, which uses wall clock as timing source. In this model, when you call wait, current routine will be suspended for given wall time.
-```
-initial {
-	print("wall_time: {}, time: {}, hello @0", time.wall_time(), time.now());
-	wait(2s);
-	print("wall_time: {}, time: {}, hello @2", time.wall_time(), time.now());
-}
+Penguin-lang uses a discrete simulation clock measured in **ticks**. All routines share the same simulation time; the scheduler advances it only when no job can make progress at the current time. Timing features require the `--enable-coroutine` compile flag.
 
-initial {
-	while (true) {
-		wait(1s);
-		print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
-	}
-}
-```
-Above code prints:
-```
-wall_time: 10:05:01, time: 10:05:01, hello @0
-wall_time: 10:05:02, time: 10:05:02, hello @1
-wall_time: 10:05:03, time: 10:05:03, hello @2
-```
-
-## Custom Timing Model
-In custom timing model, you can define own timing units, referred as simulation time. For example, in game logic, we offen use 1 tick as minimum time unit. Now, `wait` keyword can wait for given ticks, but no longer actual time units. You can still call `sleep` to suspend current routine  for given wall time, but this will not change simulation time.
+The current simulation time is available through the `_sim_now()` builtin:
 ```
 initial {
-	print("wall_time: {}, time: {}, hello @0", time.wall_time(), time.now());
-	wait(2 tick);
-	print("wall_time: {}, time: {}, hello @2", time.wall_time(), time.now());
-	sleep(1s);
-	print("wall_time: {}, time: {}, hello @2", time.wall_time(), time.now());
-}
-	
-initial {
-	while (true) {
-		wait 1 tick;
-		print("wall_time: {}, time: {}, hello @1", time.wall_time(), time.now());
-	}
-}
-
-initial {
+	println(cast<string>(_sim_now()));   // 0
 	wait 3 tick;
-	print("wall_time: {}, time: {}, hello @3", time.wall_time(), time.now());
+	println(cast<string>(_sim_now()));   // 3
 }
 ```
-Above code prints:
-```
-wall_time: 10:05:01, time: 0, hello @0
-wall_time: 10:05:01, time: 1, hello @1
-wall_time: 10:05:01, time: 2, hello @2
-wall_time: 10:05:02, time: 2, hello @2
-wall_time: 10:05:02, time: 3, hello @3
-```
-Note that `sleep` only cause the change of wall time, but not simulation time.
 
-------------
-Value assignment in custom timing model is different from realtime model. Consider following code:
+## Waiting for Duration
+`wait <n> tick;` suspends the routine until the simulation clock has advanced by `n` ticks. Timers with shorter durations fire first; equal durations fire in scheduling order:
 ```
-let a : mut i32 = 0;				// initial value, assigned before start of simulation
 initial {
-	a = 2;
-	println("a={} @ {} tick", a, time.now());
 	wait 1 tick;
-	println("a={} @ {} tick", a, time.now());
+	println("A");
+}
+initial {
+	wait 2 tick;
+	println("B");
 }
 ```
-Above code will print 
+This prints `A` then `B`.
+
+## Zero-Time and Settling
+`wait 0 tick;` does not advance simulation time. It lets the scheduler finish every runnable job at the current time — updating assignments and propagation — and then reschedules the current routine:
 ```
-a=0 @ 0 tick
-a=2 @ 1 tick
+let a : mut i32 = 0;
+
+async fun set_a() {
+	a = 2;
+}
+
+initial {
+	let f = async set_a();
+	wait 0 tick;
+	println(cast<string>(a));   // 2
+}
 ```
-Maybe it doesn't match your expection, but first print is not the value you assigned. This is because it's not possible for you to modify the value at current time. Any value assignment will take 'simulation time' to take effect. This is actually same in realtime model, because still you can't modify a value at current time, CPU will have to spend about 1ns to do an assignment.
-If you have to visit variable after assignment, you can use zero-time. 
+A bare `wait;` (no expression) parks the routine for one scheduler round — one delta — without touching the tick counter. You MUST NOT rely on zero-time waits to observe value assignments on other routines; use an event (`Event<T>` broadcast) or a port/channel connection (see `11_PortsChannelsEvents.md`).
+
+## Variable Assignment and Reads
+A plain variable is ordinary storage: a read observes the latest assignment — immediately for subsequent reads in the same routine, and for other routines once the assigning routine has executed it.
 ```
 let a : mut i32 = 0;				// initial value, assigned before start of simulation
 initial {
 	a = 2;
-	println("a={} @ {} tick", a, time.now());
-	wait 0 tick;
-	println("a={} @ {} tick", a, time.now());
+	println(cast<string>(a));		// prints 2
 }
 ```
-Above code will print 
-```
-a=0 @ 0 tick
-a=2 @ 0 tick
-```
-Waiting for zero-time wont cause simulation time to proceed, it will notify the scheduler to finish all jobs at current simulation time (like `yield` in many other co-routine libraries), update all assignments, then re-schedule current routine. You MUST NOT rely on wait zero-time to wait for value assignments on other routines, and if you have to, use an event (`Event<T>` broadcast) or a port/channel connection (see `11_PortsChannelsEvents.md`).
+Port reads follow different rules: a bare port read is a **settle point** — it first lets the current time's propagation settle, then samples the channel's current slot (see `11_PortsChannelsEvents.md`).
 
-## Waiting for conditions and edges
+## Waiting for Conditions and Edges
 
 `wait <condition>` is level-sensitive: the routine parks and the condition is re-evaluated every scheduler round until it holds (`wait a == 5`, `wait port == false`).
 
@@ -103,10 +66,21 @@ initial {
 }
 ```
 
-A condition (or watched value) that never changes contributes identical scheduler rounds and ends the program at quiescence, like every other parked waiter.
+## Quiescence
+When every routine is parked and no timer, event, or channel can wake anything, the program has reached quiescence and terminates normally — with exit code 0. A condition that never becomes true is a legal final state:
+```
+let a : mut i32 = 0;
+
+initial {
+	println("start");
+	wait a == 99;			// parks forever; program ends at quiescence
+	println("never");
+}
+```
+This prints `start` and exits with code 0.
 
 ## Example
-Following is an example of playing chess between two players, which make a good use of custom timing model.
+Following is an example of playing chess between two players, which makes good use of the timing model.
 ```
 fun move_black() {
 	...
@@ -143,16 +117,16 @@ initial {
 
 initial {
 	while (true) {
-		wait 1tick;
-		match check_victory() {
-			case none:
-				break;
-			case black:
-				println("black wins!");
-				exit(0);
-			case white:
-				println("white wins!");
-				exit(0);
+		wait 1 tick;
+		let r : victory_result = check_victory();
+		if (r is victory_result.none) {
+			continue;
+		} else if (r is victory_result.black) {
+			println("black wins!");
+			exit(0);
+		} else {
+			println("white wins!");
+			exit(0);
 		}
 	}
 }

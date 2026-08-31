@@ -125,8 +125,10 @@ endif
 # sources=[...] entries of a .penguins project file.
 proj_sources = $(shell sed -n 's/^sources=\[\(.*\)\]/\1/p' $(1) | tr ',' '\n' | sed 's/"//g; s/^[[:space:]]*//; s/[[:space:]]*$$//')
 
-# Auto-loaded stdlib pair (read CWD-relative by every compiler invocation).
-EP_STD := EmperorPenguin/std/penguin/core_builtin.penguin EmperorPenguin/std/penguin/io.penguin
+# Auto-loaded stdlib (read CWD-relative by every compiler invocation);
+# scheduler.penguin only loads under --enable-coroutine, but every bootstrap
+# stage that passes the flag (pass2 -> pass3) depends on it.
+EP_STD := EmperorPenguin/std/penguin/core_builtin.penguin EmperorPenguin/std/penguin/io.penguin EmperorPenguin/std/penguin/scheduler.penguin
 
 # C runtime + driver script: a change here only re-LINKS, never re-emits.
 # Explicit source patterns (never a bare *) so stale .o/.a leftovers in the
@@ -403,13 +405,13 @@ endif
 # the script locates the tree (EmperorPenguin/std) beside itself, checks the
 # LLVM environment, runs the emitter and links.
 
-$(REL)/emperor_penguin_llvmir_emitter.ll $(REL)/emperor_penguin_llvmir_emitter.def \
+$(REL)/emperor_penguin_llvm_emitter.ll $(REL)/emperor_penguin_llvm_emitter.def \
         &: $(BS)/pass4 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
-	@echo "Release: emitting $(REL)/emperor_penguin_llvmir_emitter.ll"
+	@echo "Release: emitting $(REL)/emperor_penguin_llvm_emitter.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv -o $(REL)/emperor_penguin_llvmir_emitter $(TEE) build/logs/release-emitter.log; \
+	    -vv -o $(REL)/emperor_penguin_llvm_emitter $(TEE) build/logs/release-emitter.log; \
 	} || { echo "Release FAILED: emitter emission" >&2; exit 1; }
 
 # The compiler-as-dynlib for the LSP (no meta — the consumer LSP exe carries
@@ -423,11 +425,11 @@ $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
 	    -vv -o $(REL)/libemperorpenguin.penguin-lib $(TEE) build/logs/release-lib.log; \
 	} || { echo "Release FAILED: dynlib emission" >&2; exit 1; }
 
-build/linux/emperor_penguin_llvmir_emitter: $(REL)/emperor_penguin_llvmir_emitter.ll $(C_RT)
+build/linux/emperor_penguin_llvm_emitter: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvmir_emitter.ll \
-	    -o build/linux/emperor_penguin_llvmir_emitter \
+	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvm_emitter.ll \
+	    -o build/linux/emperor_penguin_llvm_emitter \
 	    -enable-meta $(TEE) build/logs/release-linux.log; \
 	} || { echo "Release FAILED: linux emitter link" >&2; exit 1; }
 
@@ -442,13 +444,13 @@ build/linux/emperor: EmperorPenguin/emperor
 	@mkdir -p $(@D)
 	@cp -f EmperorPenguin/emperor $@
 
-release_linux: build/linux/emperor_penguin_llvmir_emitter build/linux/libemperorpenguin.penguin-lib build/linux/emperor
+release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/emperor
 
-build/win/emperor_penguin_llvmir_emitter.exe: $(REL)/emperor_penguin_llvmir_emitter.ll $(C_RT)
+build/win/emperor_penguin_llvm_emitter.exe: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvmir_emitter.ll \
-	    -o build/win/emperor_penguin_llvmir_emitter.exe \
+	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvm_emitter.ll \
+	    -o build/win/emperor_penguin_llvm_emitter.exe \
 	    -enable-meta -target=win64 $(TEE) build/logs/release-win.log; \
 	} || { echo "Release FAILED: windows emitter link" >&2; exit 1; }
 
@@ -456,7 +458,7 @@ build/win/emperor.bat: EmperorPenguin/emperor.bat
 	@mkdir -p $(@D)
 	@cp -f EmperorPenguin/emperor.bat $@
 
-release_win: build/win/emperor_penguin_llvmir_emitter.exe build/win/emperor.bat
+release_win: build/win/emperor_penguin_llvm_emitter.exe build/win/emperor.bat
 
 release: release_$(HOST)
 	@echo "Release complete ($(HOST))"
@@ -554,7 +556,7 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	@# --- linux: emitter + driver script + LSP pair + stdlib (penguin for the
 	@# compilers, c sources for the script's runtime make) ---
 	@mkdir -p MagellanicPenguin/vscode/server/linux/EmperorPenguin/std
-	@cp build/linux/emperor_penguin_llvmir_emitter MagellanicPenguin/vscode/server/linux/
+	@cp build/linux/emperor_penguin_llvm_emitter MagellanicPenguin/vscode/server/linux/
 	@cp build/linux/emperor MagellanicPenguin/vscode/server/linux/
 	@cp build/lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
 	@cp build/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/
@@ -602,7 +604,7 @@ endif
 ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
 	@# --- windows: emitter + emperor.bat + LSP monolith + stdlib trees ---
 	@mkdir -p MagellanicPenguin/vscode/server/windows/EmperorPenguin/std
-	@cp build/win/emperor_penguin_llvmir_emitter.exe MagellanicPenguin/vscode/server/windows/
+	@cp build/win/emperor_penguin_llvm_emitter.exe MagellanicPenguin/vscode/server/windows/
 	@cp build/win/emperor.bat MagellanicPenguin/vscode/server/windows/
 	@cp build/win/MagellanicPenguinLSP.exe MagellanicPenguin/vscode/server/windows/
 	@cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin
