@@ -65,7 +65,7 @@ dotnet test --filter "FullyQualifiedName~BuiltinTest.PrintTest"
 
 # Run the cross-compiler markdown test suite (Tests/*.md) via PenguinTestRunner
 # Fast loop — BabyPenguin only, no bootstrap needed:
-dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin
+dotnet run --project Tests/PenguinTestRunner.csproj -- --compilers babypenguin
 # Or through the Makefile (logs to build/test.log; extra args via TEST_ARGS):
 make test TEST_ARGS="--compilers babypenguin"
 # Full matrix (requires make bootstrap first, to build build/bootstrap/pass2 & build/bootstrap/pass3):
@@ -101,7 +101,7 @@ cd MagellanicPenguin\vscode && npm run package
 
 ## Markdown Test Framework (cross-compiler e2e)
 
-The cross-compiler end-to-end test suite lives in `Tests/` as **one markdown file per test case** (`Tests/<Category>/<Name>.md`, currently ~194 cases). It is driven by a single-file C# console runner — `Tests/PenguinTestRunner` (`Program.cs`, added to the .sln, **no** test SDK / xunit) — which spawns the compilers as processes. Full spec and examples: `Tests/Readme.md`.
+The cross-compiler end-to-end test suite lives in `Tests/` as **one markdown file per test case** (`Tests/<Category>/<Name>.md`, currently ~194 cases). It is driven by a single-file C# console runner — `Tests/PenguinTestRunner.csproj` (`Tests/Program.cs`, added to the .sln, **no** test SDK / xunit) — which spawns the compilers as processes. Full spec and examples: `Tests/Readme.md`.
 
 Each `*.md` describes a penguin program, the compilers it **Apply To** (`BabyPenguin`, `EmperorPenguin Pass1`, `EmperorPenguin Pass2`, `EmperorPenguin Pass3`), and the expected compile/run exit codes and stdout. The runner compiles (+ runs the produced exe, for EmperorPenguin) each program against each applicable compiler and checks results **byte-exact** (`ExpectedStdout: EQUALS \`...\``; `DISCARD` to skip a stream; `ExpectedExitCode` may be `0`, any int, `NONZERO`, or `ANY`). Omit the `## Run` section (or set a non-zero compile exit) for negative/compile-failure tests.
 
@@ -113,7 +113,7 @@ Each `*.md` describes a penguin program, the compilers it **Apply To** (`BabyPen
 - **Exit code**: `0` iff all executed (test × compiler) combinations pass; non-zero on any fail/error.
 
 ```bash
-dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
+dotnet run --project Tests/PenguinTestRunner.csproj -- [options] [filter]
   --compilers babypenguin,pass1,pass2,pass3   # default: each test's Apply To
   --filter <glob|substr>     # e.g. CalculationTest/* or AddTest
   --probe                    # ignore Apply To; run selected compilers on every test
@@ -269,7 +269,7 @@ sources=["src/ast/*.penguin", "src/bound/*.penguin", "src/ir/*.penguin", "src/ll
 Three more project files shape the build:
 
 - `EmperorPenguinPass2.penguins` (formerly `EmperorPenguinFull.penguins`) — the same compiler set plus the json-backed Dynlib, json/vector/hashmap/array stdlib and `_utils` (the bootstrap's pass2 monolith, and the `make publish` deployed compiler).
-- `EmperorPenguinLib.penguins` — Full **minus main.penguin**: the whole compiler as `libemperorpenguin.penguin-lib` (lib mode triggers on the `.penguin-lib` output name). Its metadata embeds every source file verbatim as per-file entries, so consumers declare-not-define the compiler's defs, call into the `.so` for methods, and monomorphize NEW generic instances locally from the embedded templates.
+- `EmperorPenguinLib.penguins` — Full **minus main.penguin**: the whole compiler as `libemperorpenguin.penguin-lib` (lib mode triggers on the `.penguin-lib` output name). Its metadata is the **emperor-libmeta v1 structured symbol table** (see `std/penguin/dynlib.penguin`): `export`-marked defs + their signature/field/impl closure as declaration entries, every global (with re-bound initializer text), all `impl X for Y` edges, and VERBATIM SOURCE for files containing template/meta constructs (`#template`/`#fun`/`#specializing` — json/vector/hashmap/array/utils) so consumers can monomorphize NEW generic instances. Consumers declare-not-define the table's defs — `--libmeta=direct` (default) injects prebuilt bound defs (skeleton registration + signature backfill + the publisher's prebuilt vtables) between semantic passes 1 and 2; `--libmeta=text` materializes bodyless declaration text instead (the debug/parity path; both modes produce byte-identical `.ll`) — then call into the `.so` for method bodies and re-specialize templates locally.
 - `EmperorPenguinExe.penguins` — just `main.penguin`, linked with `--lib <dir>/libemperorpenguin.penguin-lib`. The exe carries the C runtime + optional JIT (the lib's `_emperor_*`/`__builtin.*` refs bind from it via `-rdynamic`) and initializes the lib's globals (re-defined from the embedded source, interposing the `.so`'s copies through the GOT). `link_lib` stamps the lib's basename as SONAME and `link_exe` adds `-rpath,$ORIGIN`, so an exe + `.penguin-lib` pair is relocatable.
 
 `make bootstrap` keeps pass3 as the Full monolith (the first dyn-lib-capable compiler — pass2 comes from the ANTLR-safe stub project and cannot build libs), then builds pass4/pass5 as lib+exe pairs in `build/bootstrap/pass4.d`/`build/bootstrap/pass5.d` (`build/bootstrap/pass4` is a symlink; convergence checks BOTH the exe and lib md5s; the pass5.d artifacts are KEPT so a repeat bootstrap re-verifies without recompiling). Building the compiler lib requires a JIT-capable compiler (build it with `-enable-meta`) — the compiler sources engage the meta engine during their own compilation.
@@ -404,9 +404,9 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 
 ```bash
 # Cross-compiler e2e: run the markdown test suite (see Markdown Test Framework above)
-dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin | tee /tmp/test.log
+dotnet run --project Tests/PenguinTestRunner.csproj -- --compilers babypenguin | tee /tmp/test.log
 # After make bootstrap: full matrix across all four compilers
-dotnet run --project Tests/PenguinTestRunner -- | tee /tmp/test.log
+dotnet run --project Tests/PenguinTestRunner.csproj -- | tee /tmp/test.log
 
 # In-process unit tests (compiler internals; AST/Bound/IR/LLVM)
 dotnet test EmperorPenguin.Tests | tee /tmp/test.log

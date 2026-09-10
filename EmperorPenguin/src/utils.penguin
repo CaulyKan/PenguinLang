@@ -94,13 +94,14 @@ namespace _utils {
         }
 
         // Reallocate to new_cap slots, copying existing elements over. The new
-        // buffer is registered as a GC scan region BEFORE elements (which may
-        // be GC references) land in it, and the old region is removed before
-        // the old buffer is freed — the collector must never scan freed memory.
+        // buffer is registered with its PRECISE element layout (GC v2 3b)
+        // BEFORE elements land in it, and the old region is removed before the
+        // old buffer is freed — the collector must never scan freed memory,
+        // and a minor must be able to rewrite young element references.
         fun _grow(mut this, new_cap: u64) {
             let bytes: u64 = new_cap * this.slot_size();
             let new_buf: u64 = __builtin._malloc(bytes);
-            __builtin._gc_scan_add(new_buf, cast<i64>(bytes));
+            #__track_buffer(T, new_buf, new_cap, this.slot_size());
             let i: mut u64 = 0;
             while (i < this.len) {
                 #__store(T, new_buf + i * this.slot_size(), #__load(T, this.buf + i * this.slot_size()));
@@ -177,6 +178,77 @@ namespace _utils {
                 __builtin._mfree(this.buf);
                 this.buf = 0;
             }
+        }
+    }
+
+    // String-keyed hash map (string -> i64) for the compiler's hot name
+    // lookups (layout tables, per-function register/alloca sets, memoized
+    // finders). Chained buckets over dense parallel arrays; the hash is
+    // djb2 over string_char_code_at — ZERO allocation per probe (a
+    // list_contains/linear-scan replacement: those pay one string content
+    // compare per element, which dominated the emitter profile). Values
+    // must be non-negative; get() returns -1 on miss.
+    class StrMap {
+        impl __builtin.IReferenceType;
+        heads: mut _utils.List<i64> = new _utils.List<i64>();
+        next: mut _utils.List<i64> = new _utils.List<i64>();
+        keys: mut _utils.List<string> = new _utils.List<string>();
+        vals: mut _utils.List<i64> = new _utils.List<i64>();
+        count: mut i64 = 0;
+
+        fun new(mut this) {
+            let i: mut i64 = 0;
+            while (i < 256) {
+                this.heads.push(-1);
+                i = i + 1;
+            }
+        }
+
+        fun hash(this, key: string) -> i64 {
+            let h: mut i64 = 5381;
+            let n: i64 = string_length(key);
+            let i: mut i64 = 0;
+            while (i < n) {
+                h = __builtin.lshift(h, 5) + h + string_char_code_at(key, i);
+                i = i + 1;
+            }
+            // Fold high bits in so long names do not collide on the low
+            // bucket bits only.
+            return (h ^ __builtin.rshift(h, 33)) & 1073741823;
+        }
+
+        fun get(this, key: string) -> i64 {
+            let b: i64 = this.hash(key) & 255;
+            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            while (i >= 0) {
+                if (this.keys.at(cast<u64>(i)).some == key) {
+                    return this.vals.at(cast<u64>(i)).some;
+                }
+                i = this.next.at(cast<u64>(i)).some;
+            }
+            return -1;
+        }
+
+        // NOTE: `this` (not `mut this`) — the buckets/keys/vals fields are
+        // declared `mut`, so the map updates through an immutable receiver
+        // too. The emitter's classification predicates are largely non-mut
+        // and memoize through this map; requiring a mutable receiver would
+        // cascade `mut` through the whole predicate call graph.
+        fun set(this, key: string, val: i64) {
+            let b: i64 = this.hash(key) & 255;
+            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            while (i >= 0) {
+                if (this.keys.at(cast<u64>(i)).some == key) {
+                    this.vals.set(cast<u64>(i), val);
+                    return;
+                }
+                i = this.next.at(cast<u64>(i)).some;
+            }
+            this.keys.push(key);
+            this.vals.push(val);
+            this.next.push(this.heads.at(cast<u64>(b)).some);
+            this.heads.set(cast<u64>(b), this.count);
+            this.count = this.count + 1;
         }
     }
 

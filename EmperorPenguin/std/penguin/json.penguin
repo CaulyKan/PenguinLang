@@ -319,26 +319,29 @@ class JsonWriter {
 // chars; there is no code->char to emit the raw byte).
 fun _json_escape(s: string) -> string {
     let mut sb = new __builtin.StringBuilder();
+    let len: i64 = string_length(s);
+    let seg: mut i64 = 0;  // start of the pending plain (unescaped) segment
     let i: mut i64 = 0;
-    while (i < string_length(s)) {
-        let c: string = string_char_at(s, i);
-        if (c == "\"") { sb.append("\\\""); }
-        else if (c == "\\") { sb.append("\\\\"); }
-        else if (c == "\n") { sb.append("\\n"); }
-        else if (c == "\t") { sb.append("\\t"); }
-        else if (c == "\r") { sb.append("\\r"); }
-        else if (string_char_code(c) < 32) { sb.append(_unicode_escape(string_char_code(c))); }
-        else { sb.append(c); }
-        i = i + 1;
+    while (i < len) {
+        let code: i64 = string_char_code_at(s, i);
+        if (code == 34) { sb.append(string_slice(s, seg, i - seg)); sb.append("\\\""); i = i + 1; seg = i; }
+        else if (code == 92) { sb.append(string_slice(s, seg, i - seg)); sb.append("\\\\"); i = i + 1; seg = i; }
+        else if (code == 10) { sb.append(string_slice(s, seg, i - seg)); sb.append("\\n"); i = i + 1; seg = i; }
+        else if (code == 9) { sb.append(string_slice(s, seg, i - seg)); sb.append("\\t"); i = i + 1; seg = i; }
+        else if (code == 13) { sb.append(string_slice(s, seg, i - seg)); sb.append("\\r"); i = i + 1; seg = i; }
+        else if (code < 32) { sb.append(string_slice(s, seg, i - seg)); sb.append(_unicode_escape(code)); i = i + 1; seg = i; }
+        else { i = i + 1; }
     }
+    sb.append(string_slice(s, seg, len - seg));
     return sb.to_string();
 }
 
 // Strip surrounding double quotes from a JSON string literal (no-op if absent).
 fun _json_strip_quotes(s: string) -> string {
-    if (string_length(s) >= 2) {
-        if (string_char_at(s, 0) == "\"" && string_char_at(s, string_length(s) - 1) == "\"") {
-            return string_substring(s, 1, string_length(s) - 2);
+    let len: i64 = string_length(s);
+    if (len >= 2) {
+        if (string_char_code_at(s, 0) == 34 && string_char_code_at(s, len - 1) == 34) {
+            return string_slice(s, 1, len - 2);
         }
     }
     return s;
@@ -348,23 +351,35 @@ fun _json_strip_quotes(s: string) -> string {
 // \uXXXX preserved verbatim, since there is no code->char).
 fun _json_unescape(s: string) -> string {
     let mut sb = new __builtin.StringBuilder();
+    let len: i64 = string_length(s);
+    let seg: mut i64 = 0;  // start of the pending plain (already-decoded) segment
     let i: mut i64 = 0;
-    while (i < string_length(s)) {
-        let c: string = string_char_at(s, i);
-        if (c == "\\" && i + 1 < string_length(s)) {
-            let e: string = string_char_at(s, i + 1);
-            if (e == "\"") { sb.append("\""); i = i + 2; }
-            else if (e == "\\") { sb.append("\\"); i = i + 2; }
-            else if (e == "/") { sb.append("/"); i = i + 2; }
-            else if (e == "n") { sb.append("\n"); i = i + 2; }
-            else if (e == "t") { sb.append("\t"); i = i + 2; }
-            else if (e == "r") { sb.append("\r"); i = i + 2; }
-            else { sb.append(c); i = i + 1; }
+    while (i < len) {
+        let code: i64 = string_char_code_at(s, i);
+        if (code == 92 && i + 1 < len) {
+            let e: i64 = string_char_code_at(s, i + 1);
+            let out: mut string = "";
+            if (e == 34) { out = "\""; }          // escaped quote -> plain quote
+            else if (e == 92) { out = "\\\\"; }
+            else if (e == 47) { out = "/"; }
+            else if (e == 110) { out = "\n"; }
+            else if (e == 116) { out = "\t"; }
+            else if (e == 114) { out = "\r"; }
+            if (string_length(out) > 0) {
+                sb.append(string_slice(s, seg, i - seg));
+                sb.append(out);
+                i = i + 2;
+                seg = i;
+                continue;
+            }
+            sb.append(string_slice(s, seg, i + 1 - seg));  // lone backslash kept
+            i = i + 1;
+            seg = i;
         } else {
-            sb.append(c);
             i = i + 1;
         }
     }
+    sb.append(string_slice(s, seg, len - seg));
     return sb.to_string();
 }
 
@@ -388,9 +403,9 @@ class JsonReader {
         return this._parse_value();
     }
 
-    fun _peek(this) -> string {
-        if (this.pos < this.len) { return string_char_at(this.text, this.pos); }
-        return "";
+    fun _peek_code(this) -> i64 {
+        if (this.pos < this.len) { return string_char_code_at(this.text, this.pos); }
+        return -1;
     }
 
     fun _advance(mut this) {
@@ -399,33 +414,32 @@ class JsonReader {
 
     fun _skip_ws(mut this) {
         while (true) {
-            let c: string = this._peek();
-            if (c == " " || c == "\t" || c == "\n" || c == "\r") { this._advance(); }
+            let c: i64 = this._peek_code();
+            if (c == 32 || c == 9 || c == 10 || c == 13) { this._advance(); }
             else { return; }
         }
     }
 
-    fun _is_digit(this, c: string) -> bool {
-        return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
-            || c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+    fun _is_digit_code(this, c: i64) -> bool {
+        return c >= 48 && c <= 57;
     }
 
     fun _parse_value(mut this) -> JsonValue {
         this._skip_ws();
-        let c: string = this._peek();
-        if (c == "{") { return this._parse_object(); }
-        if (c == "[") { return this._parse_array(); }
-        if (c == "\"") { return this._parse_string(); }
-        if (c == "-" || this._is_digit(c)) { return this._parse_number(); }
-        if (c == "t") { return this._parse_literal("true", "bool"); }
-        if (c == "f") { return this._parse_literal("false", "bool"); }
-        if (c == "n") { return this._parse_literal("null", "null"); }
+        let c: i64 = this._peek_code();
+        if (c == 123) { return this._parse_object(); }
+        if (c == 91) { return this._parse_array(); }
+        if (c == 34) { return this._parse_string(); }
+        if (c == 45 || this._is_digit_code(c)) { return this._parse_number(); }
+        if (c == 116) { return this._parse_literal("true", "bool"); }
+        if (c == 102) { return this._parse_literal("false", "bool"); }
+        if (c == 110) { return this._parse_literal("null", "null"); }
         return new JsonValue.json_error("invalid json at " + cast<string>(this.pos));
     }
 
     // Consume a keyword literal; on success return the matching JsonValue.
     fun _parse_literal(mut this, lit: string, kind: string) -> JsonValue {
-        if (string_substring(this.text, this.pos, string_length(lit)) == lit) {
+        if (string_starts_with_at(this.text, this.pos, lit)) {
             this.pos = this.pos + string_length(lit);
             if (kind == "bool") {
                 if (lit == "true") { return new JsonValue.json_bool(true); }
@@ -440,22 +454,22 @@ class JsonReader {
         this._advance();  // consume '{'
         this._skip_ws();
         let map: mut std.HashMap<string, JsonValue> = new std.HashMap<string, JsonValue>();
-        if (this._peek() == "}") { this._advance(); return new JsonValue.json_object(map); }
+        if (this._peek_code() == 125) { this._advance(); return new JsonValue.json_object(map); }
         while (true) {
             this._skip_ws();
-            if (this._peek() != "\"") {
+            if (this._peek_code() != 34) {
                 return new JsonValue.json_error("expected object key");
             }
             let key: string = this._parse_string_raw();
             this._skip_ws();
-            if (this._peek() != ":") { return new JsonValue.json_error("expected ':'"); }
+            if (this._peek_code() != 58) { return new JsonValue.json_error("expected ':'"); }
             this._advance();
             let val: JsonValue = this._parse_value();
             map.put(key, val);
             this._skip_ws();
-            let c: string = this._peek();
-            if (c == ",") { this._advance(); continue; }
-            if (c == "}") { this._advance(); break; }
+            let c: i64 = this._peek_code();
+            if (c == 44) { this._advance(); continue; }
+            if (c == 125) { this._advance(); break; }
             return new JsonValue.json_error("expected ',' or '}'");
         }
         return new JsonValue.json_object(map);
@@ -465,14 +479,14 @@ class JsonReader {
         this._advance();  // consume '['
         this._skip_ws();
         let vec: mut std.Vector<JsonValue> = new std.Vector<JsonValue>();
-        if (this._peek() == "]") { this._advance(); return new JsonValue.json_array(vec); }
+        if (this._peek_code() == 93) { this._advance(); return new JsonValue.json_array(vec); }
         while (true) {
             let val: JsonValue = this._parse_value();
             vec.push(val);
             this._skip_ws();
-            let c: string = this._peek();
-            if (c == ",") { this._advance(); continue; }
-            if (c == "]") { this._advance(); break; }
+            let c: i64 = this._peek_code();
+            if (c == 44) { this._advance(); continue; }
+            if (c == 93) { this._advance(); break; }
             return new JsonValue.json_error("expected ',' or ']'");
         }
         return new JsonValue.json_array(vec);
@@ -488,26 +502,32 @@ class JsonReader {
     fun _parse_string_raw(mut this) -> string {
         this._advance();  // consume opening '"'
         let mut sb = new __builtin.StringBuilder();
+        let seg: mut i64 = this.pos;  // start of the pending plain segment
         while (true) {
             if (this.pos >= this.len) { break; }
-            let c: string = string_char_at(this.text, this.pos);
-            if (c == "\"") { this._advance(); break; }
-            if (c == "\\") {
+            let c: i64 = string_char_code_at(this.text, this.pos);
+            if (c == 34) {
+                sb.append(string_slice(this.text, seg, this.pos - seg));
+                this._advance();
+                break;
+            }
+            if (c == 92) {
+                sb.append(string_slice(this.text, seg, this.pos - seg));
                 this._advance();
                 if (this.pos >= this.len) { break; }
-                let e: string = string_char_at(this.text, this.pos);
-                if (e == "\"") { sb.append("\""); this._advance(); }
-                else if (e == "\\") { sb.append("\\"); this._advance(); }
-                else if (e == "/") { sb.append("/"); this._advance(); }
-                else if (e == "n") { sb.append("\n"); this._advance(); }
-                else if (e == "t") { sb.append("\t"); this._advance(); }
-                else if (e == "r") { sb.append("\r"); this._advance(); }
-                else if (e == "b") { sb.append("\\b"); this._advance(); }
-                else if (e == "f") { sb.append("\\f"); this._advance(); }
-                else if (e == "u") {
+                let e: i64 = string_char_code_at(this.text, this.pos);
+                if (e == 34) { sb.append("\""); this._advance(); }
+                else if (e == 92) { sb.append("\\"); this._advance(); }
+                else if (e == 47) { sb.append("/"); this._advance(); }
+                else if (e == 110) { sb.append("\n"); this._advance(); }
+                else if (e == 116) { sb.append("\t"); this._advance(); }
+                else if (e == 114) { sb.append("\r"); this._advance(); }
+                else if (e == 98) { sb.append("\\b"); this._advance(); }
+                else if (e == 102) { sb.append("\\f"); this._advance(); }
+                else if (e == 117) {
                     if (this.pos + 4 < this.len) {
                         sb.append("\\u");
-                        sb.append(string_substring(this.text, this.pos + 1, 4));
+                        sb.append(string_slice(this.text, this.pos + 1, 4));
                         this.pos = this.pos + 5;
                     } else {
                         break;
@@ -515,26 +535,26 @@ class JsonReader {
                 } else {
                     break;
                 }
+                seg = this.pos;
             } else {
-                sb.append(c);
                 this._advance();
             }
         }
         return sb.to_string();
     }
 
-    fun _is_number_char(this, c: string) -> bool {
-        return this._is_digit(c) || c == "-" || c == "+" || c == "." || c == "e" || c == "E";
+    fun _is_number_code(this, c: i64) -> bool {
+        return this._is_digit_code(c) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69;
     }
 
     fun _parse_number(mut this) -> JsonValue {
         let start: i64 = this.pos;
         while (true) {
-            let c: string = this._peek();
-            if (this._is_number_char(c)) { this._advance(); }
+            let c: i64 = this._peek_code();
+            if (this._is_number_code(c)) { this._advance(); }
             else { break; }
         }
-        let token: string = string_substring(this.text, start, this.pos - start);
+        let token: string = string_slice(this.text, start, this.pos - start);
         let has_float: bool = string_find(token, ".") >= 0
             || string_find(token, "e") >= 0
             || string_find(token, "E") >= 0;

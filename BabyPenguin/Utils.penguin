@@ -77,6 +77,74 @@ namespace _utils {
         }
     }
 
+    // String-keyed hash map (string -> i64) for the compiler's hot name
+    // lookups (layout tables, per-function register/alloca sets, memoized
+    // finders). Chained buckets over dense parallel arrays; the hash is
+    // djb2 over string_char_code_at — ZERO allocation per probe (a
+    // list_contains/linear-scan replacement: those pay one string content
+    // compare per element, which dominated the emitter profile). Values
+    // must be non-negative; get() returns -1 on miss.
+    // (Mirror of EmperorPenguin/src/utils.penguin — keep both in sync.)
+    class StrMap {
+        impl __builtin.IReferenceType;
+        heads: mut _utils.List<i64> = new _utils.List<i64>();
+        next: mut _utils.List<i64> = new _utils.List<i64>();
+        keys: mut _utils.List<string> = new _utils.List<string>();
+        vals: mut _utils.List<i64> = new _utils.List<i64>();
+        count: mut i64 = 0;
+
+        fun new(mut this) {
+            let i: mut i64 = 0;
+            while (i < 256) {
+                this.heads.push(-1);
+                i = i + 1;
+            }
+        }
+
+        fun hash(this, key: string) -> i64 {
+            let h: mut i64 = 5381;
+            let n: i64 = string_length(key);
+            let i: mut i64 = 0;
+            while (i < n) {
+                h = __builtin.lshift(h, 5) + h + string_char_code_at(key, i);
+                i = i + 1;
+            }
+            // Fold high bits in so long names do not collide on the low
+            // bucket bits only.
+            return (h ^ __builtin.rshift(h, 33)) & 1073741823;
+        }
+
+        fun get(this, key: string) -> i64 {
+            let b: i64 = this.hash(key) & 255;
+            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            while (i >= 0) {
+                if (this.keys.at(cast<u64>(i)).some == key) {
+                    return this.vals.at(cast<u64>(i)).some;
+                }
+                i = this.next.at(cast<u64>(i)).some;
+            }
+            return -1;
+        }
+
+        // NOTE: `this` (not `mut this`) — see EmperorPenguin/src/utils.penguin.
+        fun set(this, key: string, val: i64) {
+            let b: i64 = this.hash(key) & 255;
+            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            while (i >= 0) {
+                if (this.keys.at(cast<u64>(i)).some == key) {
+                    this.vals.set(cast<u64>(i), val);
+                    return;
+                }
+                i = this.next.at(cast<u64>(i)).some;
+            }
+            this.keys.push(key);
+            this.vals.push(val);
+            this.next.push(this.heads.at(cast<u64>(b)).some);
+            this.heads.set(cast<u64>(b), this.count);
+            this.count = this.count + 1;
+        }
+    }
+
     #template(T: type)
     class ListIterator {
         list: !mut _utils.List<T>;

@@ -57,8 +57,10 @@ export class Array {
         let bytes: u64 = cast<u64>(#sizeof(T)) * this.len;
         this.buf = __builtin._malloc(bytes);
         // Element storage may hold GC references (ref T): make the buffer
-        // visible to the collector. Removed in dispose_mem.
-        __builtin._gc_scan_add(this.buf, cast<i64>(bytes));
+        // visible to the collector with its PRECISE element layout (GC v2 3b)
+        // so a minor rewrites young references in place. Removed in
+        // dispose_mem. Primitive elements compile this to nothing.
+        #__track_buffer(T, this.buf, this.len, cast<u64>(#sizeof(T)));
     }
 
     fun at(this, i: u64) -> __builtin.Option<T> {

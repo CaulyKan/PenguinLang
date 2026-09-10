@@ -1,12 +1,18 @@
 namespace emperor {
 
-class SourceInput {
+export class SourceInput {
     filename: string = "";
     source: string = "";
     // Dyn-lib: true when this source_input is the verbatim source embedded in a loaded
     // .penguin-lib. Its defs are lib-export (declared, linked to the lib) rather
     // than re-compiled into the consumer.
     is_lib: bool = false;
+    // Libmeta direct injection: marks the POSITION where this lib's decl file
+    // would sit in --libmeta=text mode. The input itself contributes no defs;
+    // compile_sources records the def index so libmeta_direct_inject splices
+    // the prebuilt defs there (keeping the def order — and the emitted .ll —
+    // identical to the text path).
+    is_lib_decl_slot: bool = false;
 
     fun new(mut this, filename: string, source: string) {
 
@@ -15,7 +21,7 @@ class SourceInput {
     }
 }
 
-class EmperorPenguinCompiler {
+export class EmperorPenguinCompiler {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     verbose: mut i64 = 0;
     // Command-line --define A=B seed (Phase 5a): pre-seeds the SemanticModel's
@@ -31,6 +37,11 @@ class EmperorPenguinCompiler {
     lib_def_start: mut i64 = 0;
     lib_def_count: mut i64 = 0;
     lib_instances: mut _utils.List<string> = new _utils.List<string>();
+    // Libmeta direct injection (--libmeta=direct): per-lib metadata JSON
+    // documents + the def-index slots where each lib's prebuilt defs are
+    // spliced (recorded from SourceInput.is_lib_decl_slot during parsing).
+    prebuilt_lib_metas: mut _utils.List<string> = new _utils.List<string>();
+    lib_decl_slots: mut _utils.List<i64> = new _utils.List<i64>();
     // Unit B (meta) compilation: top-level defs bind into the global scope
     // (no per-file anonymous namespaces) so the compiler's own cross-file
     // top-level helpers stay visible. Set by the MetaEngine.
@@ -84,6 +95,11 @@ class EmperorPenguinCompiler {
                 }
                 this.lib_def_count = this.lib_def_count + cast<i64>(unit.definitions.size());
             }
+            // Libmeta direct injection: a decl-slot input contributes no defs;
+            // record where this lib's prebuilt defs must be spliced.
+            if (source_input.is_lib_decl_slot) {
+                this.lib_decl_slots.push(total_defs);
+            }
             total_defs = total_defs + cast<i64>(unit.definitions.size());
         }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
@@ -101,6 +117,17 @@ class EmperorPenguinCompiler {
         while (lii < cast<i64>(this.lib_instances.size())) {
             model.lib_instances.push(this.lib_instances.at(cast<u64>(lii)).some);
             lii = lii + 1;
+        }
+        // Libmeta direct injection: per-lib docs + splice slots.
+        let mdi: mut i64 = 0;
+        while (mdi < cast<i64>(this.prebuilt_lib_metas.size())) {
+            model.lib_meta_docs.push(this.prebuilt_lib_metas.at(cast<u64>(mdi)).some);
+            mdi = mdi + 1;
+        }
+        let sli: mut i64 = 0;
+        while (sli < cast<i64>(this.lib_decl_slots.size())) {
+            model.lib_meta_slots.push(this.lib_decl_slots.at(cast<u64>(sli)).some);
+            sli = sli + 1;
         }
         // Seed command-line --define options before binding. Code-level #define
         // (processed during bind) overwrites these, so code has higher priority.

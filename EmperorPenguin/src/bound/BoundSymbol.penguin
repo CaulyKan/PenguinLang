@@ -2,7 +2,7 @@ namespace emperor {
 
 enum VariableSymbolKind { Local; Param; Field; StaticField; Temp; Global; }
 
-class BoundVariableSymbol {
+export class BoundVariableSymbol {
     name: string = "";
     full_name: mut string = "";
     bound_type: BoundType = new BoundType();
@@ -14,7 +14,7 @@ class BoundVariableSymbol {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 }
 
-class BoundFunctionSymbol {
+export class BoundFunctionSymbol {
     name: string = "";
     full_name: mut string = "";
     bound_type: BoundType = new BoundType();
@@ -118,7 +118,7 @@ enum BoundSymbol {
     }
 }
 
-class BoundFunctionParameter {
+export class BoundFunctionParameter {
     name: string = "";
     bound_type: BoundType = new BoundType();
     index: i64 = 0;

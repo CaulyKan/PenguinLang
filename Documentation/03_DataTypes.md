@@ -22,15 +22,17 @@ Penguin-lang supports following built-in basic types:
 
 `float`/`double` are the keyword spellings; `f32`/`f64` are accepted aliases.
 
-Penguin-lang also support readonly string type. This means that string is not mutable after create, similar to C#. However, string is still a reference type, and can be passed to other functions as reference.
+`string` is an **immutable reference type**: a string value is a pointer to a header-prefixed block (`metaptr + length + data`, see *EmperorPenguin LLVM* §2.4), contents can never be modified after creation (every builtin producing a string allocates a fresh one), and assignment/argument passing **shares the pointer** (safe precisely because contents are immutable — same model as C#). Compare with `==` (content equality), build with `StringBuilder`.
 
 ## Reference Types and Value Types
 Penguin-lang supports both reference types and value types. A reference type is a type that holds a reference to an object, and can be passed to other functions as reference. A value type is a type that holds its own data, and can be copied when assigned to another variable.
 
 | Type            | Who                                                      | Managed By                     | Assignment       |
 | --------------- | -------------------------------------------------------- | ------------------------------ | ---------------- |
-| Value types     | i32, f64, string...<br /> classes that implement `IValueType` | Stack or Parent Data Structure | Always copied    |
-| Reference types | any other types (implements `IReferenceType`)            | GC                             | Shared reference |
+| Value types     | i32, f64, bool...<br /> classes that implement `IValueType` | Stack or Parent Data Structure | Always copied    |
+| Reference types | any other types (implements `IReferenceType`), incl. `string` | GC                             | Shared reference |
+
+> `string` is a reference type (shared pointer on assignment), but with **immutable contents** — see the note above; it never appears in the value-type row.
 
 ### `IValueType` and `IReferenceType`
 

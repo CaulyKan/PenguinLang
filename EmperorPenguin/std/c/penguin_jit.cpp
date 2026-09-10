@@ -85,18 +85,26 @@ penguin_jit_ctx_t _emperor_penguin_jit_create(void) {
 }
 
 int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx,
-                           const char *name,
-                           const char *ir_text) {
+                           const _emperor_string *name,
+                           const _emperor_string *ir_text) {
   if (!ctx) {
     last_error = "penguin_jit_add_module: null context";
     return 1;
   }
+  if (!name || !ir_text) {
+    last_error = "penguin_jit_add_module: null string argument";
+    return 1;
+  }
 
-  /* Each module gets its own LLVMContext for thread safety. */
+  /* Each module gets its own LLVMContext for thread safety. StringRef is
+   * length-driven, so IR text with embedded NULs parses intact. */
   auto Ctx = std::make_unique<LLVMContext>();
 
   SMDiagnostic Err;
-  auto M = parseIR(*MemoryBuffer::getMemBuffer(ir_text, name), Err, *Ctx);
+  auto M = parseIR(*MemoryBuffer::getMemBuffer(
+                       StringRef(ir_text->data, (size_t)ir_text->length),
+                       StringRef(name->data, (size_t)name->length)),
+                   Err, *Ctx);
   if (!M) {
     last_error = "parseIR: " + Err.getMessage().str();
     return 1;
@@ -129,13 +137,17 @@ int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx,
   return 0;
 }
 
-void *_emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const char *name) {
+void *_emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const _emperor_string *name) {
   if (!ctx) {
     last_error = "penguin_jit_lookup: null context";
     return nullptr;
   }
+  if (!name) {
+    last_error = "penguin_jit_lookup: null name";
+    return nullptr;
+  }
 
-  auto S = ctx->jit->lookup(name);
+  auto S = ctx->jit->lookup(std::string(name->data, (size_t)name->length));
   if (!S) {
     last_error = "lookup: " + toString(S.takeError());
     return nullptr;
@@ -151,8 +163,11 @@ void _emperor_penguin_jit_destroy(penguin_jit_ctx_t ctx) {
   delete ctx;
 }
 
-const char *_emperor_penguin_jit_get_error(void) {
-  return last_error.c_str();
+_emperor_string *_emperor_penguin_jit_get_error(void) {
+  /* Adopt-copy: last_error may be overwritten by the very next JIT call, and
+   * c_str() hands out a pointer into that transient buffer — the caller gets
+   * a stable GC-allocated PenguinLang string instead. */
+  return _emperor_string_adopt_cstring(last_error.c_str());
 }
 
 /* ------------------------------------------------------------------ */

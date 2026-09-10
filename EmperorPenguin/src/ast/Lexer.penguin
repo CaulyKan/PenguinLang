@@ -1,23 +1,33 @@
 namespace emperor {
-    class Lexer {
+    export class Lexer {
         source: string = "";
         filename: string = "";
         pos: mut i64 = 0;
         line: mut i64 = 1;
         col: mut i64 = 1;
+        // Cached string_length(source): string helpers strlen the whole string
+        // per call, so calling them per source byte made tokenization O(n^2).
+        source_len: mut i64 = 0;
 
         fun new(mut this, source: string, filename: string) {
             this.source = source;
             this.filename = filename;
+            this.source_len = string_length(source);
+        }
+
+        // O(1) code unit at pos (-1 at EOF) — the hot per-position read.
+        fun peek_code(this) -> i64 {
+            if (this.pos >= this.source_len) { return -1; }
+            return string_char_code_at(this.source, this.pos);
         }
 
         fun tokenize(this) -> _utils.List<Token> {
             let mut tokens = new _utils.List<Token>();
             while (!this.is_at_end()) {
-                let ch: string = this.current_char();
+                let ch_code: i64 = this.peek_code();
                 // Skip whitespace
-                if (ch == " " || ch == "\t" || ch == "\r" || ch == "\n") {
-                    if (ch == "\n") {
+                if (ch_code == 32 || ch_code == 9 || ch_code == 13 || ch_code == 10) {
+                    if (ch_code == 10) {
                         this.line = this.line + 1;
                         this.col = 1;
                     } else {
@@ -29,7 +39,7 @@ namespace emperor {
 
                 // Line comment
                 if (this.match_string("//")) {
-                    while (!this.is_at_end() && this.current_char() != "\n") {
+                    while (!this.is_at_end() && this.peek_code() != 10) {
                         this.advance_char();
                     }
                     continue;
@@ -43,7 +53,7 @@ namespace emperor {
                             this.advance_chars(2);
                             break;
                         }
-                        if (this.current_char() == "\n") {
+                        if (this.peek_code() == 10) {
                             this.line = this.line + 1;
                             this.col = 1;
                         }
@@ -508,7 +518,7 @@ namespace emperor {
                     this.advance_chars(2);
                     continue;
                 }
-                if (this.match_keyword("u8") && (this.pos + 2 >= string_length(this.source) || (string_substring(this.source, this.pos + 2, 1) != "\"" && string_substring(this.source, this.pos + 2, 1) != "'"))) {
+                if (this.match_keyword("u8") && (this.pos + 2 >= this.source_len || (string_substring(this.source, this.pos + 2, 1) != "\"" && string_substring(this.source, this.pos + 2, 1) != "'"))) {
                     tokens.push(new Token(new TokenType.U8(), "u8", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
@@ -538,116 +548,116 @@ namespace emperor {
                     this.advance_chars(7);
                     continue;
                 }
-                if (ch == "(") {
-                    tokens.push(new Token(new TokenType.LParen(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 40) {
+                    tokens.push(new Token(new TokenType.LParen(), "(", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == ")") {
-                    tokens.push(new Token(new TokenType.RParen(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 41) {
+                    tokens.push(new Token(new TokenType.RParen(), ")", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "<") {
-                    tokens.push(new Token(new TokenType.Less(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 60) {
+                    tokens.push(new Token(new TokenType.Less(), "<", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == ">") {
-                    tokens.push(new Token(new TokenType.Greater(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 62) {
+                    tokens.push(new Token(new TokenType.Greater(), ">", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "{") {
-                    tokens.push(new Token(new TokenType.LBrace(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 123) {
+                    tokens.push(new Token(new TokenType.LBrace(), "{", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "}") {
-                    tokens.push(new Token(new TokenType.RBrace(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 125) {
+                    tokens.push(new Token(new TokenType.RBrace(), "}", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == ".") {
-                    tokens.push(new Token(new TokenType.Dot(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 46) {
+                    tokens.push(new Token(new TokenType.Dot(), ".", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == ",") {
-                    tokens.push(new Token(new TokenType.Comma(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 44) {
+                    tokens.push(new Token(new TokenType.Comma(), ",", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "&") {
-                    tokens.push(new Token(new TokenType.Ampersand(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 38) {
+                    tokens.push(new Token(new TokenType.Ampersand(), "&", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "*") {
-                    tokens.push(new Token(new TokenType.Star(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 42) {
+                    tokens.push(new Token(new TokenType.Star(), "*", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "+") {
-                    tokens.push(new Token(new TokenType.Plus(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 43) {
+                    tokens.push(new Token(new TokenType.Plus(), "+", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "-") {
-                    tokens.push(new Token(new TokenType.Minus(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 45) {
+                    tokens.push(new Token(new TokenType.Minus(), "-", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "~") {
-                    tokens.push(new Token(new TokenType.Tilde(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 126) {
+                    tokens.push(new Token(new TokenType.Tilde(), "~", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "!") {
-                    tokens.push(new Token(new TokenType.Bang(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 33) {
+                    tokens.push(new Token(new TokenType.Bang(), "!", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "/") {
-                    tokens.push(new Token(new TokenType.Slash(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 47) {
+                    tokens.push(new Token(new TokenType.Slash(), "/", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "%") {
-                    tokens.push(new Token(new TokenType.Percent(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 37) {
+                    tokens.push(new Token(new TokenType.Percent(), "%", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "^") {
-                    tokens.push(new Token(new TokenType.Caret(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 94) {
+                    tokens.push(new Token(new TokenType.Caret(), "^", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "|") {
-                    tokens.push(new Token(new TokenType.Pipe(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 124) {
+                    tokens.push(new Token(new TokenType.Pipe(), "|", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "=") {
-                    tokens.push(new Token(new TokenType.Assign(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 61) {
+                    tokens.push(new Token(new TokenType.Assign(), "=", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
@@ -658,27 +668,27 @@ namespace emperor {
                     this.advance_chars(2);
                     continue;
                 }
-                if (ch == ":") {
-                    tokens.push(new Token(new TokenType.Colon(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 58) {
+                    tokens.push(new Token(new TokenType.Colon(), ":", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == "#") {
-                    tokens.push(new Token(new TokenType.Hash(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 35) {
+                    tokens.push(new Token(new TokenType.Hash(), "#", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
-                if (ch == ";") {
-                    tokens.push(new Token(new TokenType.Semicolon(), ch, new SourceLocation(this.filename, this.line, this.col)));
+                if (ch_code == 59) {
+                    tokens.push(new Token(new TokenType.Semicolon(), ";", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 1;
                     this.advance_char();
                     continue;
                 }
                 // Array/iterable type suffix: `i64[]`. The parser expects a single
                 // ArrayBracket token for `[]`.
-                if (ch == "[" && this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "]") {
+                if (ch_code == 91 && this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 93) {
                     tokens.push(new Token(new TokenType.ArrayBracket(), "[]", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 2;
                     this.advance_chars(2);
@@ -686,9 +696,9 @@ namespace emperor {
                 }
 
                 // Check for encoding prefix (u8/u/U/L) for string/char constants
-                if (ch == "u" || ch == "U" || ch == "L") {
+                if (ch_code == 117 || ch_code == 85 || ch_code == 76) {
                     // u8"..." string prefix
-                    if (ch == "u" && this.pos + 2 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "8" && string_substring(this.source, this.pos + 2, 1) == "\"") {
+                    if (ch_code == 117 && this.pos + 2 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 56 && string_char_code_at(this.source, this.pos + 2) == 34) {
                         let start_col: i64 = this.col;
                         let text: string = this.read_string_literal_with_prefix();
                         tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -696,7 +706,7 @@ namespace emperor {
                         continue;
                     }
                     // u"/U"/L" string prefix
-                    if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "\"") {
+                    if (this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 34) {
                         let start_col: i64 = this.col;
                         let text: string = this.read_string_literal_with_prefix();
                         tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -704,7 +714,7 @@ namespace emperor {
                         continue;
                     }
                     // L'/u'/U' char constant prefix
-                    if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "'") {
+                    if (this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 39) {
                         let start_col: i64 = this.col;
                         let text: string = this.read_char_constant();
                         tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -713,7 +723,7 @@ namespace emperor {
                     }
                 }
                 // String literal
-                if (ch == "\"") {
+                if (ch_code == 34) {
                     let start_col: i64 = this.col;
                     let text: string = this.read_string_literal();
                     tokens.push(new Token(new TokenType.Stringliteral(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -722,7 +732,7 @@ namespace emperor {
                 }
 
                 // Character constant
-                if (ch == "'") {
+                if (ch_code == 39) {
                     let start_col: i64 = this.col;
                     let text: string = this.read_char_constant();
                     tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -730,8 +740,7 @@ namespace emperor {
                     continue;
                 }
                 // Constant (integer, float, or character)
-                let code: i64 = string_char_code(ch);
-                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                if (ch_code >= 48 && ch_code <= 57) {
                     let start_col: i64 = this.col;
                     let text: string = this.read_constant();
                     tokens.push(new Token(new TokenType.Constant(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -741,8 +750,7 @@ namespace emperor {
 
                 // Identifier fallback (non-keyword alphabetic identifier)
                 {
-                    let code: i64 = string_char_code(ch);
-                    if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_") {
+                    if ((ch_code >= 97 && ch_code <= 122) || (ch_code >= 65 && ch_code <= 90) || ch_code == 95) {
                         let start_col: i64 = this.col;
                         let text: string = this.read_while_identifier_start();
                         tokens.push(new Token(new TokenType.Identifier(), text, new SourceLocation(this.filename, this.line, start_col)));
@@ -758,11 +766,6 @@ namespace emperor {
             return tokens;
         }
 
-        fun current_char(this) -> string {
-            if (this.pos >= string_length(this.source)) { return ""; }
-            return string_substring(this.source, this.pos, 1);
-        }
-
         fun advance_char(this) {
             this.pos = this.pos + 1;
         }
@@ -772,20 +775,18 @@ namespace emperor {
         }
 
         fun is_at_end(this) -> bool {
-            return this.pos >= string_length(this.source);
+            return this.pos >= this.source_len;
         }
 
         fun match_string(this, s: string) -> bool {
-            if (this.pos + string_length(s) > string_length(this.source)) { return false; }
-            return string_substring(this.source, this.pos, string_length(s)) == s;
+            return string_starts_with_at(this.source, this.pos, s);
         }
 
         fun read_while_digit(this) -> string {
             let start: i64 = this.pos;
-            while (this.pos < string_length(this.source)) {
-                let ch: string = string_substring(this.source, this.pos, 1);
-                let code: i64 = string_char_code(ch);
-                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+            while (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if (code >= 48 && code <= 57) {
                     this.pos = this.pos + 1;
                 } else {
                     break;
@@ -797,20 +798,18 @@ namespace emperor {
         fun read_while_identifier_start(this) -> string {
             let start: i64 = this.pos;
             // Read first char: [a-zA-Z_]
-            if (this.pos < string_length(this.source)) {
-                let ch: string = string_substring(this.source, this.pos, 1);
-                let code: i64 = string_char_code(ch);
-                if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_") {
+            if (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if ((code >= 97 && code <= 122) || (code >= 65 && code <= 90) || code == 95) {
                     this.pos = this.pos + 1;
                 } else {
                     return "";
                 }
             }
             // Read remaining: [a-zA-Z0-9_]*
-            while (this.pos < string_length(this.source)) {
-                let ch: string = string_substring(this.source, this.pos, 1);
-                let code: i64 = string_char_code(ch);
-                if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || ch == "_" || (code >= string_char_code("0") && code <= string_char_code("9"))) {
+            while (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if ((code >= 97 && code <= 122) || (code >= 65 && code <= 90) || code == 95 || (code >= 48 && code <= 57)) {
                     this.pos = this.pos + 1;
                 } else {
                     break;
@@ -822,22 +821,20 @@ namespace emperor {
         fun read_while_float(this) -> string {
             let start: i64 = this.pos;
             // Read integer part
-            while (this.pos < string_length(this.source)) {
-                let ch: string = string_substring(this.source, this.pos, 1);
-                let code: i64 = string_char_code(ch);
-                if (code >= string_char_code("0") && code <= string_char_code("9")) {
+            while (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if (code >= 48 && code <= 57) {
                     this.pos = this.pos + 1;
                 } else {
                     break;
                 }
             }
             // Read dot and fractional part
-            if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+            if (this.pos < this.source_len && string_char_code_at(this.source, this.pos) == 46) {
                 this.pos = this.pos + 1;
-                while (this.pos < string_length(this.source)) {
-                    let ch: string = string_substring(this.source, this.pos, 1);
-                    let code: i64 = string_char_code(ch);
-                    if (code >= string_char_code("0") && code <= string_char_code("9")) {
+                while (this.pos < this.source_len) {
+                    let code: i64 = string_char_code_at(this.source, this.pos);
+                    if (code >= 48 && code <= 57) {
                         this.pos = this.pos + 1;
                     } else {
                         break;
@@ -848,12 +845,17 @@ namespace emperor {
         }
 
         fun match_keyword(this, keyword: string) -> bool {
-            if (!this.match_string(keyword)) { return false; }
+            // First-code-unit precheck: the keyword chain tries ~60 candidates
+            // per position, and a full starts_with for each is wasted work —
+            // comparing the leading byte rejects all but a couple.
+            if (this.pos >= this.source_len) { return false; }
+            let c: i64 = string_char_code_at(this.source, this.pos);
+            if (c != string_char_code_at(keyword, 0)) { return false; }
+            if (!string_starts_with_at(this.source, this.pos, keyword)) { return false; }
             let next_pos: i64 = this.pos + string_length(keyword);
-            if (next_pos >= string_length(this.source)) { return true; }
-            let next_ch: string = string_substring(this.source, next_pos, 1);
-            let code: i64 = string_char_code(next_ch);
-            if ((code >= string_char_code("a") && code <= string_char_code("z")) || (code >= string_char_code("A") && code <= string_char_code("Z")) || next_ch == "_" || (code >= string_char_code("0") && code <= string_char_code("9"))) {
+            if (next_pos >= this.source_len) { return true; }
+            let code: i64 = string_char_code_at(this.source, next_pos);
+            if ((code >= 97 && code <= 122) || (code >= 65 && code <= 90) || code == 95 || (code >= 48 && code <= 57)) {
                 return false;
             }
             return true;
@@ -862,13 +864,13 @@ namespace emperor {
         fun read_string_literal(this) -> string {
             let start: i64 = this.pos;
             this.advance_char(); // skip opening quote
-            while (this.pos < string_length(this.source)) {
-                let ch: string = string_substring(this.source, this.pos, 1);
-                if (ch == "\"") {
+            while (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if (code == 34) {
                     this.pos = this.pos + 1; // include closing quote
                     break;
                 }
-                if (ch == "\\" && this.pos + 1 < string_length(this.source)) {
+                if (code == 92 && this.pos + 1 < this.source_len) {
                     this.pos = this.pos + 2; // skip escape sequence
                 } else {
                     this.pos = this.pos + 1;
@@ -879,74 +881,68 @@ namespace emperor {
 
         fun read_constant(this) -> string {
             let start: i64 = this.pos;
-            if (this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos, 1) == "0") {
-                let next: string = string_substring(this.source, this.pos + 1, 1);
-                if (next == "x" || next == "X") {
+            if (this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos) == 48) {
+                let next: i64 = string_char_code_at(this.source, this.pos + 1);
+                if (next == 120 || next == 88) {
                     this.pos = this.pos + 2;
-                    while (this.pos < string_length(this.source)) {
-                        let c: string = string_substring(this.source, this.pos, 1);
-                        let code: i64 = string_char_code(c);
-                        if ((code >= string_char_code("0") && code <= string_char_code("9")) || (code >= string_char_code("a") && code <= string_char_code("f")) || (code >= string_char_code("A") && code <= string_char_code("F"))) {
+                    while (this.pos < this.source_len) {
+                        let code: i64 = string_char_code_at(this.source, this.pos);
+                        if ((code >= 48 && code <= 57) || (code >= 97 && code <= 102) || (code >= 65 && code <= 70)) {
                             this.pos = this.pos + 1;
                         } else { break; }
                     }
-                    if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+                    if (this.pos < this.source_len && string_char_code_at(this.source, this.pos) == 46) {
                         this.pos = this.pos + 1;
-                        while (this.pos < string_length(this.source)) {
-                            let c: string = string_substring(this.source, this.pos, 1);
-                            let code: i64 = string_char_code(c);
-                            if ((code >= string_char_code("0") && code <= string_char_code("9")) || (code >= string_char_code("a") && code <= string_char_code("f")) || (code >= string_char_code("A") && code <= string_char_code("F"))) {
+                        while (this.pos < this.source_len) {
+                            let code: i64 = string_char_code_at(this.source, this.pos);
+                            if ((code >= 48 && code <= 57) || (code >= 97 && code <= 102) || (code >= 65 && code <= 70)) {
                                 this.pos = this.pos + 1;
                             } else { break; }
                         }
                     }
-                    if (this.pos < string_length(this.source)) {
-                        let c: string = string_substring(this.source, this.pos, 1);
-                        if (c == "p" || c == "P") {
+                    if (this.pos < this.source_len) {
+                        let code: i64 = string_char_code_at(this.source, this.pos);
+                        if (code == 112 || code == 80) {
                             this.pos = this.pos + 1;
-                            if (this.pos < string_length(this.source)) { let s: string = string_substring(this.source, this.pos, 1); if (s == "+" || s == "-") { this.pos = this.pos + 1; } }
-                            while (this.pos < string_length(this.source)) {
-                                let d: string = string_substring(this.source, this.pos, 1);
-                                let code: i64 = string_char_code(d);
-                                if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                            if (this.pos < this.source_len) { let s: i64 = string_char_code_at(this.source, this.pos); if (s == 43 || s == 45) { this.pos = this.pos + 1; } }
+                            while (this.pos < this.source_len) {
+                                let d: i64 = string_char_code_at(this.source, this.pos);
+                                if (d >= 48 && d <= 57) { this.pos = this.pos + 1; } else { break; }
                             }
                         }
                     }
                     this.skip_constant_suffix();
                     return string_substring(this.source, start, this.pos - start);
                 }
-                if (next == "b" || next == "B") {
+                if (next == 98 || next == 66) {
                     this.pos = this.pos + 2;
-                    while (this.pos < string_length(this.source)) {
-                        let c: string = string_substring(this.source, this.pos, 1);
-                        if (c == "0" || c == "1") { this.pos = this.pos + 1; } else { break; }
+                    while (this.pos < this.source_len) {
+                        let c: i64 = string_char_code_at(this.source, this.pos);
+                        if (c == 48 || c == 49) { this.pos = this.pos + 1; } else { break; }
                     }
                     this.skip_constant_suffix();
                     return string_substring(this.source, start, this.pos - start);
                 }
             }
-            while (this.pos < string_length(this.source)) {
-                let c: string = string_substring(this.source, this.pos, 1);
-                let code: i64 = string_char_code(c);
-                if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+            while (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if (code >= 48 && code <= 57) { this.pos = this.pos + 1; } else { break; }
             }
-            if (this.pos < string_length(this.source) && string_substring(this.source, this.pos, 1) == ".") {
+            if (this.pos < this.source_len && string_char_code_at(this.source, this.pos) == 46) {
                 this.pos = this.pos + 1;
-                while (this.pos < string_length(this.source)) {
-                    let c: string = string_substring(this.source, this.pos, 1);
-                    let code: i64 = string_char_code(c);
-                    if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                while (this.pos < this.source_len) {
+                    let code: i64 = string_char_code_at(this.source, this.pos);
+                    if (code >= 48 && code <= 57) { this.pos = this.pos + 1; } else { break; }
                 }
             }
-            if (this.pos < string_length(this.source)) {
-                let c: string = string_substring(this.source, this.pos, 1);
-                if (c == "e" || c == "E") {
+            if (this.pos < this.source_len) {
+                let code: i64 = string_char_code_at(this.source, this.pos);
+                if (code == 101 || code == 69) {
                     this.pos = this.pos + 1;
-                    if (this.pos < string_length(this.source)) { let s: string = string_substring(this.source, this.pos, 1); if (s == "+" || s == "-") { this.pos = this.pos + 1; } }
-                    while (this.pos < string_length(this.source)) {
-                        let d: string = string_substring(this.source, this.pos, 1);
-                        let code: i64 = string_char_code(d);
-                        if (code >= string_char_code("0") && code <= string_char_code("9")) { this.pos = this.pos + 1; } else { break; }
+                    if (this.pos < this.source_len) { let s: i64 = string_char_code_at(this.source, this.pos); if (s == 43 || s == 45) { this.pos = this.pos + 1; } }
+                    while (this.pos < this.source_len) {
+                        let d: i64 = string_char_code_at(this.source, this.pos);
+                        if (d >= 48 && d <= 57) { this.pos = this.pos + 1; } else { break; }
                     }
                 }
             }
@@ -955,30 +951,30 @@ namespace emperor {
         }
 
         fun skip_constant_suffix(this) {
-            if (this.pos >= string_length(this.source)) { return; }
-            let c: string = string_substring(this.source, this.pos, 1);
-            if (c == "f" || c == "F") { this.pos = this.pos + 1; return; }
-            if (c == "u" || c == "U") {
+            if (this.pos >= this.source_len) { return; }
+            let c: i64 = string_char_code_at(this.source, this.pos);
+            if (c == 102 || c == 70) { this.pos = this.pos + 1; return; }
+            if (c == 117 || c == 85) {
                 this.pos = this.pos + 1;
-                if (this.pos < string_length(this.source)) {
-                    let c2: string = string_substring(this.source, this.pos, 1);
-                    if (c2 == "l" || c2 == "L") {
+                if (this.pos < this.source_len) {
+                    let c2: i64 = string_char_code_at(this.source, this.pos);
+                    if (c2 == 108 || c2 == 76) {
                         this.pos = this.pos + 1;
-                        if (this.pos < string_length(this.source)) { let c3: string = string_substring(this.source, this.pos, 1); if (c3 == "l" || c3 == "L") { this.pos = this.pos + 1; } }
+                        if (this.pos < this.source_len) { let c3: i64 = string_char_code_at(this.source, this.pos); if (c3 == 108 || c3 == 76) { this.pos = this.pos + 1; } }
                     }
                 }
                 return;
             }
-            if (c == "l" || c == "L") {
+            if (c == 108 || c == 76) {
                 this.pos = this.pos + 1;
-                if (this.pos < string_length(this.source)) {
-                    let c2: string = string_substring(this.source, this.pos, 1);
-                    if (c2 == "l" || c2 == "L") {
+                if (this.pos < this.source_len) {
+                    let c2: i64 = string_char_code_at(this.source, this.pos);
+                    if (c2 == 108 || c2 == 76) {
                         this.pos = this.pos + 1;
-                        if (this.pos < string_length(this.source)) { let c3: string = string_substring(this.source, this.pos, 1); if (c3 == "u" || c3 == "U") { this.pos = this.pos + 1; } }
+                        if (this.pos < this.source_len) { let c3: i64 = string_char_code_at(this.source, this.pos); if (c3 == 117 || c3 == 85) { this.pos = this.pos + 1; } }
                         return;
                     }
-                    if (c2 == "u" || c2 == "U") { this.pos = this.pos + 1; }
+                    if (c2 == 117 || c2 == 85) { this.pos = this.pos + 1; }
                 }
                 return;
             }
@@ -987,13 +983,13 @@ namespace emperor {
 
         fun read_char_constant(this) -> string {
             let start: i64 = this.pos;
-            let ch: string = this.current_char();
-            if (ch == "L" || ch == "u" || ch == "U") { this.pos = this.pos + 1; }
+            let first: i64 = this.peek_code();
+            if (first == 76 || first == 117 || first == 85) { this.pos = this.pos + 1; }
             this.pos = this.pos + 1;
-            while (this.pos < string_length(this.source)) {
-                let c: string = string_substring(this.source, this.pos, 1);
-                if (c == "'") { this.pos = this.pos + 1; break; }
-                if (c == "\\" && this.pos + 1 < string_length(this.source)) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
+            while (this.pos < this.source_len) {
+                let c: i64 = string_char_code_at(this.source, this.pos);
+                if (c == 39) { this.pos = this.pos + 1; break; }
+                if (c == 92 && this.pos + 1 < this.source_len) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
             }
             return string_substring(this.source, start, this.pos - start);
         }
@@ -1001,17 +997,16 @@ namespace emperor {
 
         fun read_string_literal_with_prefix(this) -> string {
             let start: i64 = this.pos;
-            let ch: string = this.current_char();
-            if (ch == "u" && this.pos + 1 < string_length(this.source) && string_substring(this.source, this.pos + 1, 1) == "8") {
+            if (this.peek_code() == 117 && this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 56) {
                 this.pos = this.pos + 2;
             } else {
                 this.pos = this.pos + 1;
             }
             this.pos = this.pos + 1; // skip opening quote
-            while (this.pos < string_length(this.source)) {
-                let c: string = string_substring(this.source, this.pos, 1);
-                if (c == "\"") { this.pos = this.pos + 1; break; }
-                if (c == "\\" && this.pos + 1 < string_length(this.source)) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
+            while (this.pos < this.source_len) {
+                let c: i64 = string_char_code_at(this.source, this.pos);
+                if (c == 34) { this.pos = this.pos + 1; break; }
+                if (c == 92 && this.pos + 1 < this.source_len) { this.pos = this.pos + 2; } else { this.pos = this.pos + 1; }
             }
             return string_substring(this.source, start, this.pos - start);
         }

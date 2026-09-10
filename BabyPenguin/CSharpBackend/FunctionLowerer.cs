@@ -163,7 +163,21 @@ namespace BabyPenguin.CSharpBackend
                         Line($"r_{Reg(c.Result)} = {castExpr};");
                     }
                     break;
-                case IRBinOpInst b: Line($"r_{Reg(b.Result)} = ({_emitter.CsType(b.IrType)})({_emitter.Operand(b.Left)} {CSharpEmitter.BinOp(b.Op)} {_emitter.Operand(b.Right)});"); break;
+                case IRBinOpInst b:
+                    {
+                        // C# has no relational operators on string; PenguinLang
+                        // compares lexicographically (byte-wise, matching the
+                        // native runtime's strcmp-based helper and the VM).
+                        var cmpOps = new HashSet<string> { "lt", "gt", "le", "ge" };
+                        if (cmpOps.Contains(b.Op) && (b.Left.GetIrType() == "ref<string>" || b.Right.GetIrType() == "ref<string>"))
+                        {
+                            var csOp = b.Op switch { "lt" => "<", "gt" => ">", "le" => "<=", _ => ">=" };
+                            Line($"r_{Reg(b.Result)} = string.CompareOrdinal({_emitter.Operand(b.Left)}, {_emitter.Operand(b.Right)}) {csOp} 0;");
+                            break;
+                        }
+                        Line($"r_{Reg(b.Result)} = ({_emitter.CsType(b.IrType)})({_emitter.Operand(b.Left)} {CSharpEmitter.BinOp(b.Op)} {_emitter.Operand(b.Right)});");
+                        break;
+                    }
                 case IRUnaryOpInst u: Line($"r_{Reg(u.Result)} = ({_emitter.CsType(u.IrType)})({CSharpEmitter.UnaryOp(u.Op)}{_emitter.Operand(u.Operand)});"); break;
                 case IRRdmbrInst r:
                     if (IsFunptrType(r.Result))

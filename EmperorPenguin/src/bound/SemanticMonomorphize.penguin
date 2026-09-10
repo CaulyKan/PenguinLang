@@ -161,7 +161,7 @@ class MonomorphizePass {
         while (iteration < max_iterations) {
             let instantiations: mut _utils.List<BoundType> = new _utils.List<BoundType>();
             this.collect_generic_instantiations(result.definitions, instantiations);
-            this.collect_generic_instantiations_from_ast(unit.definitions, result.definitions, result.global_scope, instantiations);
+            this.collect_generic_instantiations_from_ast(unit.definitions, result.global_scope, instantiations);
             this.model.some.trace("monomorphize iteration " + cast<string>(iteration) + " start: " + cast<string>(instantiations.size()) + " instantiation(s) collected");
 
             let specialized_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
@@ -313,10 +313,20 @@ class MonomorphizePass {
                 }
                 // Dyn-lib: a specialized instance that a loaded lib SHIPS is emitted
                 // as a declaration (linked to the lib symbol) instead of being
-                // re-compiled into the consumer.
+                // re-compiled into the consumer. Guard: the instance's TEMPLATE
+                // must be lib-sourced (shipped verbatim in the lib's metadata) —
+                // a consumer-local template whose specialization mangles onto a
+                // shipped name is a metadata/name collision and would silently
+                // produce a declaration whose ABI does not match the .so symbol.
                 let resolved_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
                 if (this.model.some.build_scopes_pass.is_shipped_instance(resolved_def)) {
-                    this.model.some.build_scopes_pass.mark_lib_export(resolved_def);
+                    if (this.specialization_template_is_lib_sourced(resolved_def, result)) {
+                        this.model.some.build_scopes_pass.mark_lib_export(resolved_def);
+                    } else {
+                        this.model.some.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(),
+                            "specialization '" + this.spec_full_name(resolved_def) + "' collides with an instance shipped by a loaded .penguin-lib, but its template is not provided by that lib (the lib metadata lists the instance without shipping the template source); redefining it is not supported",
+                            new SourceLocation("", 0, 0));
+                    }
                 }
                 k = k + 1;
             }
@@ -330,6 +340,55 @@ class MonomorphizePass {
             if (this.model.some.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Monomorphize] Iteration " + cast<string>(iteration) + ": " + cast<string>(specialized_defs.size()) + " new specializations (total: " + cast<string>(total_specialized) + ")"); }
             iteration = iteration + 1;
         }
+    }
+
+    // Full name of a (possibly specialized) def, "" for shapes without one.
+    fun spec_full_name(this, d: BoundDefinition) -> string {
+        if (d is BoundDefinition.function_def) { return d.function_def.full_name; }
+        if (d is BoundDefinition.class_def) { return d.class_def.full_name; }
+        if (d is BoundDefinition.enum_def) { return d.enum_def.full_name; }
+        if (d is BoundDefinition.interface_def) { return d.interface_def.full_name; }
+        return "";
+    }
+
+    // The shipped-instance guard: the specialization's mangled full name is
+    // <template full name>$<base62>. The template def must be lib-sourced
+    // (its file shipped verbatim in a loaded lib's metadata). EXEMPT:
+    // `__builtin.*` templates — core_builtin is compiled into EVERY binary,
+    // so a consumer-local __builtin.Option<T> specialization mangling onto a
+    // shipped instance name is the normal, ABI-identical case. Names without
+    // '$' (old-style `__` mangling) cannot locate the template reliably —
+    // accept them (pre-existing behavior).
+    fun specialization_template_is_lib_sourced(mut this, d: BoundDefinition, result: BoundCompilationUnit) -> bool {
+        let full: string = this.spec_full_name(d);
+        let dollar: i64 = string_find(full, "$");
+        if (dollar < 0) { return true; }
+        let tmpl_full: string = string_substring(full, 0, dollar);
+        if (string_starts_with(tmpl_full, "<global>.__builtin.")) { return true; }
+        let found: Option<BoundDefinition> = this.find_def_by_full_name(result.definitions, tmpl_full);
+        if (found.is_none()) { return true; }
+        let td: BoundDefinition = found.some;
+        if (td is BoundDefinition.class_def) { return td.class_def.is_lib_source; }
+        if (td is BoundDefinition.enum_def) { return td.enum_def.is_lib_source; }
+        if (td is BoundDefinition.interface_def) { return td.interface_def.is_lib_source; }
+        if (td is BoundDefinition.function_def) { return td.function_def.is_lib_source; }
+        return true;
+    }
+
+    fun find_def_by_full_name(mut this, defs: _utils.List<BoundDefinition>, full: string) -> Option<BoundDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (this.spec_full_name(d) == full) {
+                return new Option<BoundDefinition>.some(d);
+            }
+            if (d is BoundDefinition.namespace_def) {
+                let nested: Option<BoundDefinition> = this.find_def_by_full_name(d.namespace_def.children, full);
+                if (nested.is_some()) { return nested; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundDefinition>.none();
     }
 
     // #specializing hook (run inside pass_monomorphize after specialize_class_def
@@ -923,11 +982,11 @@ class MonomorphizePass {
         }
     }
 
-    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
-        this.collect_generic_instantiations_from_ast_impl(defs, bound_defs, scope, true, instantiations);
+    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        this.collect_generic_instantiations_from_ast_impl(defs, scope, true, instantiations);
     }
 
-    fun collect_generic_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, bound_defs: _utils.List<BoundDefinition>, scope: BoundScope, top_level: bool, instantiations: mut _utils.List<BoundType>) {
+    fun collect_generic_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, scope: BoundScope, top_level: bool, instantiations: mut _utils.List<BoundType>) {
         _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
         let i: mut i64 = 0;
         while (i < cast<i64>(defs.size())) {
@@ -975,28 +1034,16 @@ class MonomorphizePass {
                 }
             }
             if (def is Definition.namespace_def) {
-                // Find matching bound namespace to get its scope
-                let ns_scope: BoundScope = if (i < cast<i64>(bound_defs.size())) {
-                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
-                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
-                        bd.namespace_def.scope.some
-                    } else {
-                        scope
-                    }
-                } else {
-                    scope
-                };
-                let ns_bound_children: _utils.List<BoundDefinition> = if (i < cast<i64>(bound_defs.size())) {
-                    let bd: BoundDefinition = bound_defs.at(cast<u64>(i)).some;
-                    if (bd is BoundDefinition.namespace_def && bd.namespace_def.scope.is_some()) {
-                        bd.namespace_def.children
-                    } else {
-                        new _utils.List<BoundDefinition>()
-                    }
-                } else {
-                    new _utils.List<BoundDefinition>()
-                };
-                this.collect_generic_instantiations_from_ast_impl(def.namespace_def.children, ns_bound_children, ns_scope, false, instantiations);
+                // Namespace children resolve in the namespace scope (merged by
+                // name across files, so sibling types are its local symbols).
+                // The scope is found by NAME, never by index into the bound
+                // defs: libmeta direct injection inserts bound defs with no
+                // AST counterpart, shifting every later bound index and
+                // mis-scoping all files compiled after the lib slot (their
+                // bare namespace-qualified names stopped resolving).
+                let ns_lookup: Option<BoundScope> = scope.lookup_namespace(def.namespace_def.name);
+                let ns_scope: BoundScope = if (ns_lookup.is_some()) { ns_lookup.some } else { scope };
+                this.collect_generic_instantiations_from_ast_impl(def.namespace_def.children, ns_scope, false, instantiations);
             }
             i = i + 1;
         }

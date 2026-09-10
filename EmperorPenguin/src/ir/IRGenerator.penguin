@@ -719,6 +719,26 @@ class IRGenerator {
                     this.builder.emit_store_ptr(addr, v, v.get_ir_type(), loc);
                     return this.builder.void_value();
                 }
+                if (iname == "<intrinsic>.track_buffer") {
+                    // GC v2 3b: typed container-buffer registration. The element
+                    // BoundType rides in the call's generic arguments; splice its
+                    // IR spelling into the callee token so the LLVM emitter can
+                    // pick the ref-map operand (bare-ref / class / enum / none).
+                    let loc2: SourceLocation = this.sym_loc(expr.callee_symbol);
+                    let taddr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
+                    let tcount: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(1)).some);
+                    let tstride: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(2)).some);
+                    let elem_ir: mut string = "void";
+                    if (cast<i64>(expr.generic_args.size()) > 0) {
+                        elem_ir = this.bound_type_to_ir_type(expr.generic_args.at(cast<u64>(0)).some);
+                    }
+                    let targs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                    targs.push(taddr);
+                    targs.push(tcount);
+                    targs.push(tstride);
+                    this.builder.emit_call("<intrinsic>.track_buffer::" + elem_ir, targs, "void", loc2);
+                    return this.builder.void_value();
+                }
             }
         }
         let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();

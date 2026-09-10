@@ -6,7 +6,7 @@ enum ErrorSeverity {
     Info;
 }
 
-class SemanticError {
+export class SemanticError {
     code: ErrorCode = new ErrorCode.E_INTERNAL();
     message: string = "";
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
@@ -19,7 +19,7 @@ class SemanticError {
     }
 }
 
-class BoundCompilationUnit {
+export class BoundCompilationUnit {
     definitions: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     global_scope: BoundScope = new BoundScope(new ScopeKind.GlobalScope(), "", "", new Option<BoundScope>.none());
     type_registry: BoundTypeRegistry = new BoundTypeRegistry();

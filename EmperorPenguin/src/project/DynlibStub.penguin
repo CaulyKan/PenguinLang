@@ -38,6 +38,9 @@ class LibLoadState {
     lib_names: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
     visited: mut _utils.List<string> = new _utils.List<string>();
+    // Mirror of the json-backed module's per-lib metadata docs (always empty
+    // in a stub build — read_meta fails before any doc is collected).
+    meta_docs: mut _utils.List<string> = new _utils.List<string>();
     has_error: bool = false;
 }
 
@@ -101,10 +104,16 @@ fun read_meta(path: string) -> LibMeta {
     return new LibMeta();
 }
 
-// Stub: the json metadata builder is only compiled in (pass3+).
-fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>) -> string {
+// Stub: the json symbol-table serializer is only compiled in (pass3+).
+fun serialize_symbols(result: BoundCompilationUnit, name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>, verbose: i64) -> string {
     __builtin.eprintln("[EmperorPenguin Dynlib] dynamic linking disabled (this compiler build has no json-backed Dynlib; use the pass3+ binary built from EmperorPenguinPass2.penguins)");
     return "";
+}
+
+// Stub: the libmeta direct injector is only compiled in (pass3+); the
+// SemanticModel calls this no-op when the (stub) loader produced no docs —
+// which is always, since read_meta fails first in a stub build.
+fun libmeta_direct_inject(model: mut SemanticModel, result: mut BoundCompilationUnit) {
 }
 
 fun resolve_dep_path(dep_name: string, referencing_dir: string, exe_dir: string) -> Option<string> {

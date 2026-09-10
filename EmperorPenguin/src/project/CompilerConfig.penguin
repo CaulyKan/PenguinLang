@@ -1,6 +1,6 @@
 namespace emperor {
 
-fun _get_base_name(path: string) -> string {
+export fun _get_base_name(path: string) -> string {
     let pos: mut i64 = string_find(path, "/");
     while (pos >= 0) {
         let next: i64 = string_find_from(path, "/", pos + 1);
@@ -26,7 +26,7 @@ fun _get_stem(path: string) -> string {
 // Whether the compiler BINARY actually has the json-backed Dynlib code is a
 // build-time property (DynlibStub in the default project vs the json-backed
 // Dynlib in EmperorPenguinPass2.penguins, see make bootstrap).
-class CompilerConfig {
+export class CompilerConfig {
     output_name: mut string = "";
     verbose: mut i64 = 0;
     // ── Link-only flags ────────────────────────────────────────────────
@@ -59,6 +59,12 @@ class CompilerConfig {
     // json/vector/hashmap loaded (pass3+) can build/consume .penguin-lib files.
     // Bootstrap pass1/pass2 build with --disable-dl.
     dl_enabled: bool = true;
+    // --libmeta=text|direct (default direct): how a consumer ingests a lib's
+    // emperor-libmeta symbol table. "direct" injects prebuilt bound defs
+    // (skeleton + signature backfill + prebuilt vtables; skips the decl-text
+    // parse/rebind); "text" materializes bodyless declaration text and runs
+    // the ordinary pipeline — the debug/parity path.
+    libmeta_mode: mut string = "direct";
     // --enable-coroutine (default off): gates the RTL-port/concurrency syntax
     // (input/output ports, construct, connect, wait forms, try/catch, async
     // expressions). Without it those constructs are compile errors and the
@@ -130,6 +136,13 @@ class CompilerConfig {
                 }
             } else if (arg == "--enable-dl" || arg == "-enable-dl") {
                 this.dl_enabled = true;
+            } else if (string_length(arg) >= 10 && string_substring(arg, 0, 10) == "--libmeta=") {
+                let mode: string = string_substring(arg, 10, string_length(arg) - 10);
+                if (mode == "text" || mode == "direct") {
+                    this.libmeta_mode = mode;
+                } else {
+                    __builtin.eprintln("[EmperorPenguin] Warning: unknown --libmeta mode '" + mode + "' (expected text|direct); keeping " + this.libmeta_mode);
+                }
             } else if (arg == "--disable-dl" || arg == "-disable-dl") {
                 this.dl_enabled = false;
             } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {

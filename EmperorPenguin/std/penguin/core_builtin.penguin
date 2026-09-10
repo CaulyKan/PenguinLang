@@ -11,6 +11,10 @@ namespace __builtin {
 
     extern fun gc_collect();
     extern fun gc_info() -> i64;
+    // Pin a compile-time object value (a raw i64 address baked into a meta
+    // stub / template-arg environment) for the process lifetime — the GC
+    // retains it as a root because integers are invisible to the marker.
+    extern fun gc_pin_object(addr: u64);
 
     // Raw heap allocation for manually-managed buffers (Array<T,N>, _ptr<T>).
     // Routed to @_emperor_malloc / @_emperor_mfree in core_builtin.c (libc
@@ -437,6 +441,15 @@ namespace __builtin {
     extern fun string_substring(s: string, start: i64, length: i64) -> string;
     extern fun string_char_at(s: string, index: i64) -> string;
     extern fun string_char_code(s: string) -> i64;
+    // O(1)-per-call hot-path helpers (no strlen scan of the WHOLE string, no
+    // allocation): the lexer calls these per source byte — string_substring/
+    // string_length re-strlen the entire source file every call, which made
+    // tokenization quadratic. starts_with compares prefix bytes until s's NUL;
+    // char_code_at returns the code unit at index (-1 at the NUL terminator),
+    // callers keep index within [0, length).
+    extern fun string_starts_with_at(s: string, at: i64, prefix: string) -> bool;
+    extern fun string_char_code_at(s: string, index: i64) -> i64;
+    extern fun string_slice(s: string, start: i64, length: i64) -> string;
     extern fun string_to_int(s: string) -> i64;
     extern fun string_to_double(s: string) -> double;
 

@@ -1,0 +1,9 @@
+[Project]
+# Self-host-shaped LSP routing fixture: a project-mode compile that consumes
+# the REAL compiler dynlib (the repo's build/libemperorpenguin.penguin-lib,
+# 14 MB of embedded-source metadata) — the exact path that hung the server
+# when the lib's JsonReader was O(n^2), and crashed it when the server exe
+# carried no meta JIT (probe.penguin's #impl_json_serializable expands via
+# #fun meta, JIT-executed through the lib sources' json.penguin).
+name="SelfHostProbe"
+sources=["probe.penguin"]

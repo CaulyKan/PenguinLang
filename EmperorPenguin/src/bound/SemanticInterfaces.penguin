@@ -20,8 +20,14 @@ class InterfacesPass {
         let ast_count: i64 = cast<i64>(unit.definitions.size());
         let i: mut i64 = 0;
         while (i < cast<i64>(result.definitions.size())) {
-            if (i < ast_count) {
-                let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+            if (this.model.some.libmeta_is_injected(i)) {
+                // Libmeta-injected defs carry prebuilt vtables (pass 6 done).
+                i = i + 1;
+                continue;
+            }
+            if (i < ast_count + this.model.some.libmeta_total_injected()) {
+                let ai: i64 = this.model.some.libmeta_ast_index(i);
+                let ast_def: Definition = unit.definitions.at(cast<u64>(ai)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
                 let vt_scope: mut BoundScope = if (this.model.some.top_level_in_global) {
                     result.global_scope

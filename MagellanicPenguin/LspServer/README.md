@@ -56,10 +56,18 @@ and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 ## Build
 
 ```sh
-make bootstrap     # build build/pass3 first (one-time per compiler change)
-make lsp           # stage 1: build/pass3 EmperorPenguin/EmperorPenguinLib.penguins -o build/libemperorpenguin.penguin-lib
-                   # stage 2: build/pass3 --enable-coroutine LspServer.penguins --lib build/libemperorpenguin.penguin-lib -o build/lsp
+make bootstrap     # build build/bootstrap/pass4 first (one-time per compiler change)
+make lsp           # stage 1: pass4 EmperorPenguinLib.penguins -> build/libemperorpenguin.penguin-lib (via build/linux/)
+                   # stage 2: pass4 --enable-coroutine LspServer.penguins --lib build/libemperorpenguin.penguin-lib
+                   #          then `emperor link -enable-meta --consumer-lib ...` -> build/lsp
 ```
+
+The exe is linked with `-enable-meta`: the embedded compiler JITs `#fun` meta
+at didOpen/didChange (the LSP's own sources use `#impl_json_serializable`,
+and any user document may use `#fun`), and the `.so`'s JIT refs bind from the
+exe via `-rdynamic`. MetaEngine failures (no JIT, missing unit-B base sources)
+throw a catchable error instead of exit(1) — the server degrades to a
+diagnostic and survives (Tests/LspTest/MetaFun*.md, SelfHostProjectModeLibChain.md).
 
 The server links the compiler as a shared library: `build/lsp` contains only the 15 LSP
 modules (~0.8 MB) and calls into `libemperorpenguin.penguin-lib` (~14 MB, built from

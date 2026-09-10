@@ -3,7 +3,7 @@
 
 namespace emperor {
 
-enum ErrorCode {
+export enum ErrorCode {
     // Resolution errors
     E_RESOLVE_SYMBOL;
     E_RESOLVE_TYPE;
@@ -83,7 +83,7 @@ impl __builtin.ICopy<ErrorCode> for ErrorCode {}
 
 // Helper: convert ErrorCode to its string name (since 
 // PenguinLang has no enum-to-string yet).
-fun error_code_name(code: ErrorCode) -> string {
+export fun error_code_name(code: ErrorCode) -> string {
     if (code is ErrorCode.E_RESOLVE_SYMBOL) { return "E_RESOLVE_SYMBOL"; }
     if (code is ErrorCode.E_RESOLVE_TYPE) { return "E_RESOLVE_TYPE"; }
     if (code is ErrorCode.E_RESOLVE_NAMESPACE) { return "E_RESOLVE_NAMESPACE"; }

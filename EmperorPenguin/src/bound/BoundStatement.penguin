@@ -89,7 +89,7 @@ class BoundContinueStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 }
 
-class BoundLetDeclarationStatement {
+export class BoundLetDeclarationStatement {
     variable_symbol: !mut Option<BoundVariableSymbol> = new Option<BoundVariableSymbol>.none();
     initializer: !mut Option<BoundExpression> = new Option<BoundExpression>.none();
     bound_type: !mut BoundType = new BoundType();
@@ -170,7 +170,7 @@ class BoundTryCatchStatement {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
 }
 
-enum BoundStatement {
+export enum BoundStatement {
     expression: BoundExpressionStatement;
     assignment: BoundAssignmentStatement;
     if_stmt: BoundIfStatement;

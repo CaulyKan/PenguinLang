@@ -143,6 +143,11 @@ class BuildScopesPass {
     // For classes/enums/interfaces the METHODS and ctor are marked too — the IR
     // layer lowers each method via lower_function_def, which checks the METHOD's
     // is_lib_export flag (the class flag alone would leave bodies defined).
+    // is_lib_source is set on EVERY def (generic templates included — their
+    // bodies must stay bindable so consumers can specialize them, but the
+    // Monomorphize shipped-instance guard needs to know they are lib-sourced).
+    // Top-level impl-for defs have their methods marked as well (libmeta v1
+    // materializes them bodyless).
     fun mark_lib_export(mut this, b: BoundDefinition) {
         let export_name: mut string = "?";
         if (b is BoundDefinition.function_def) { export_name = b.function_def.full_name; }
@@ -152,23 +157,27 @@ class BuildScopesPass {
         else if (b is BoundDefinition.namespace_def) { export_name = b.namespace_def.full_name; }
         this.model.some.trace("mark_lib_export " + export_name);
         if (b is BoundDefinition.function_def) {
-            if (!b.function_def.is_generic_template) {
-                let f: mut BoundFunctionDefinition = b.function_def;
+            let f: mut BoundFunctionDefinition = b.function_def;
+            f.is_lib_source = true;
+            if (!f.is_generic_template) {
                 f.is_lib_export = true;
             }
         } else if (b is BoundDefinition.class_def) {
-            if (!b.class_def.is_generic_template) {
-                let c: mut BoundClassDefinition = b.class_def;
+            let c: mut BoundClassDefinition = b.class_def;
+            c.is_lib_source = true;
+            if (!c.is_generic_template) {
                 c.is_lib_export = true;
                 for (let md in c.methods) {
                     if (md is BoundDefinition.function_def) {
                         let mf: mut BoundFunctionDefinition = md.function_def;
                         mf.is_lib_export = true;
+                        mf.is_lib_source = true;
                     }
                 }
                 if (c.constructor.is_some()) {
                     let ctor: mut BoundFunctionDefinition = c.constructor.some;
                     ctor.is_lib_export = true;
+                    ctor.is_lib_source = true;
                 }
                 for (let id in c.interface_impls) {
                     if (id is BoundDefinition.impl_def) {
@@ -177,33 +186,71 @@ class BuildScopesPass {
                             if (imd is BoundDefinition.function_def) {
                                 let imf: mut BoundFunctionDefinition = imd.function_def;
                                 imf.is_lib_export = true;
+                                imf.is_lib_source = true;
                             }
                         }
                     }
                 }
             }
         } else if (b is BoundDefinition.enum_def) {
+            let e: mut BoundEnumDefinition = b.enum_def;
+            e.is_lib_source = true;
             // Enums/interfaces mark the template by generic_params (specialized
             // and non-generic defs have an empty list; templates retain it).
-            if (cast<i64>(b.enum_def.generic_params.size()) == 0) {
-                let e: mut BoundEnumDefinition = b.enum_def;
+            if (cast<i64>(e.generic_params.size()) == 0) {
                 e.is_lib_export = true;
                 for (let emd in e.methods) {
                     if (emd is BoundDefinition.function_def) {
                         let emf: mut BoundFunctionDefinition = emd.function_def;
                         emf.is_lib_export = true;
+                        emf.is_lib_source = true;
+                    }
+                }
+                for (let eid in e.interface_impls) {
+                    if (eid is BoundDefinition.impl_def) {
+                        let eimp: BoundInterfaceImplementation = eid.impl_def;
+                        for (let eimd in eimp.methods) {
+                            if (eimd is BoundDefinition.function_def) {
+                                let eimf: mut BoundFunctionDefinition = eimd.function_def;
+                                eimf.is_lib_export = true;
+                                eimf.is_lib_source = true;
+                            }
+                        }
                     }
                 }
             }
         } else if (b is BoundDefinition.interface_def) {
-            if (cast<i64>(b.interface_def.generic_params.size()) == 0) {
-                let iface: mut BoundInterfaceDefinition = b.interface_def;
+            let iface: mut BoundInterfaceDefinition = b.interface_def;
+            iface.is_lib_source = true;
+            if (cast<i64>(iface.generic_params.size()) == 0) {
                 iface.is_lib_export = true;
                 for (let imd2 in iface.methods) {
                     if (imd2 is BoundDefinition.function_def) {
                         let imf2: mut BoundFunctionDefinition = imd2.function_def;
                         imf2.is_lib_export = true;
+                        imf2.is_lib_source = true;
                     }
+                }
+                for (let iid in iface.interface_impls) {
+                    if (iid is BoundDefinition.impl_def) {
+                        let iimp: BoundInterfaceImplementation = iid.impl_def;
+                        for (let iimd in iimp.methods) {
+                            if (iimd is BoundDefinition.function_def) {
+                                let iimf: mut BoundFunctionDefinition = iimd.function_def;
+                                iimf.is_lib_export = true;
+                                iimf.is_lib_source = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (b is BoundDefinition.impl_for_def) {
+            let ifd: mut BoundInterfaceForImplementation = b.impl_for_def;
+            for (let fmd in ifd.methods) {
+                if (fmd is BoundDefinition.function_def) {
+                    let fmf: mut BoundFunctionDefinition = fmd.function_def;
+                    fmf.is_lib_export = true;
+                    fmf.is_lib_source = true;
                 }
             }
         } else if (b is BoundDefinition.namespace_def) {
@@ -584,6 +631,7 @@ class BuildScopesPass {
         sym.is_new = def.is_new;
         sym.location = def.location;
         result.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        result.is_exported = def.is_exported;
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
         }
@@ -1237,6 +1285,7 @@ class BuildScopesPass {
         this.extract_template_params(def.template_decl, result.generic_params);
         // req5: record value (non-type) template param names for specialization substitution.
         this.extract_value_param_names(def.template_decl, result.value_param_names);
+        result.is_exported = def.is_exported;
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
         }
@@ -1342,6 +1391,7 @@ class BuildScopesPass {
         let result: mut BoundEnumDefinition = new BoundEnumDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
         this.extract_value_param_names(def.template_decl, result.value_param_names);
+        result.is_exported = def.is_exported;
         let enum_scope: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), def.name, full_name, new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(enum_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
@@ -1411,6 +1461,7 @@ class BuildScopesPass {
         let result: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(def.name, full_name);
         this.extract_template_params(def.template_decl, result.generic_params);
         this.extract_value_param_names(def.template_decl, result.value_param_names);
+        result.is_exported = def.is_exported;
         let iface_scope: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), def.name, full_name, new Option<BoundScope>.some(scope));
         result.scope = new Option<BoundScope>.some(iface_scope);
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, full_name);
@@ -1494,6 +1545,20 @@ class BuildScopesPass {
 
     fun bind_impl_def(mut this, def: InterfaceImplementation, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_impl_def");
+        // A no-`for` impl implements the interface for its ENCLOSING type, so it
+        // is only valid inside a class/enum/interface body (every member-loop and
+        // specializing-injection caller passes the type's own scope). Reaching
+        // here with a file/namespace scope means a top-level `impl Iface { ... }`
+        // with no owning type — reject it instead of silently dropping the block
+        // (dropping left dangling calls in the emitted IR). This cannot fire for
+        // meta-spliced impls: #create_definition parses the text standalone, but
+        // the def is spliced into a class member list and bound from there.
+        if (scope.kind is ScopeKind.GlobalScope || scope.kind is ScopeKind.NamespaceScope) {
+            this.model.some.report_error(new ErrorCode.E_ORPHAN_IMPL(),
+                "file-level 'impl' requires a 'for' clause (impl <Interface> for <Type> { ... }); the no-'for' form is only valid inside a class, enum, or interface body",
+                def.location);
+            return new Option<BoundDefinition>.none();
+        }
         let result: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
         // Resolve the implemented interface type (with generic args, e.g.
         // IFoo<u8>) so downstream passes (monomorphization collection, etc.)
@@ -1589,6 +1654,7 @@ class BuildScopesPass {
     fun bind_type_ref_def(mut this, def: TypeReferenceDefinition, scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter bind_type_ref_def");
         let result: mut BoundTypeReferenceDefinition = new BoundTypeReferenceDefinition(def.name);
+        result.is_exported = def.is_exported;
         let type_sym: mut BoundTypeSymbol = new BoundTypeSymbol(def.name, scope.full_name + "." + def.name);
         result.type_symbol = new Option<BoundTypeSymbol>.some(type_sym);
         scope.add_symbol(new BoundSymbol.type_sym(type_sym));

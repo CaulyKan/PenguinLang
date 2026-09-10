@@ -668,6 +668,44 @@ namespace BabyPenguin.VirtualMachine
                 }
             });
 
+            // Hot-path helpers mirroring the C runtime (see _emperor_string_starts_with):
+            // O(prefix)/O(1) with no substring allocation — the lexer calls them per byte.
+            vm.Global.RegisterExternFunction("__builtin.string_starts_with_at", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                var at = (int)args[1].As<BasicRuntimeValue>().I64Value;
+                var prefix = args[2].As<BasicRuntimeValue>().StringValue;
+                bool ok = at >= 0;
+                for (int i = 0; ok && i < prefix.Length; i++)
+                {
+                    if (at + i >= s.Length || s[at + i] != prefix[i]) ok = false;
+                }
+                result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue = ok;
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.string_char_code_at", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                var index = (int)args[1].As<BasicRuntimeValue>().I64Value;
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value =
+                    (index >= 0 && index < s.Length) ? (long)s[index] : -1;
+            });
+
+            vm.Global.RegisterExternFunction("__builtin.string_slice", (result, args) =>
+            {
+                var s = args[0].As<BasicRuntimeValue>().StringValue;
+                var start = (int)args[1].As<BasicRuntimeValue>().I64Value;
+                var length = (int)args[2].As<BasicRuntimeValue>().I64Value;
+                if (start < 0 || length < 0 || start + length > s.Length)
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = "";
+                }
+                else
+                {
+                    result!.As<BasicRuntimeSymbol>().BasicValue.StringValue = s.Substring(start, length);
+                }
+            });
+
             vm.Global.RegisterExternFunction("__builtin.string_to_int", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeValue>().StringValue;

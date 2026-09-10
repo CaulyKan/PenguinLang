@@ -1,12 +1,23 @@
 namespace emperor {
 
 // Set is_exported on an AST definition after an `export` prefix is parsed.
+// An exported NAMESPACE cascades: every definition nested inside the exported
+// block is exported too (per-file, static — namespace merging across files is
+// unaffected; a plain `namespace X` in another file does not inherit).
 fun _mark_ast_exported(def: Definition) {
     if (def is Definition.function_def) { let f: mut FunctionDefinition = def.function_def; f.is_exported = true; }
     else if (def is Definition.class_def) { let c: mut ClassDefinition = def.class_def; c.is_exported = true; }
     else if (def is Definition.enum_def) { let e: mut EnumDefinition = def.enum_def; e.is_exported = true; }
     else if (def is Definition.interface_def) { let i: mut InterfaceDefinition = def.interface_def; i.is_exported = true; }
-    else if (def is Definition.namespace_def) { let n: mut NamespaceDefinition = def.namespace_def; n.is_exported = true; }
+    else if (def is Definition.namespace_def) {
+        let n: mut NamespaceDefinition = def.namespace_def;
+        n.is_exported = true;
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(n.children.size())) {
+            _mark_ast_exported(n.children.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+    }
     else if (def is Definition.type_ref_def) { let t: mut TypeReferenceDefinition = def.type_ref_def; t.is_exported = true; }
 }
 

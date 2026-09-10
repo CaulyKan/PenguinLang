@@ -27,8 +27,16 @@ class BindBodiesPass {
         // DURING body binding; their own bodies bind here in the loop — never
         // re-entrantly inside an expression bind (which corrupts resolution).
         while (i < cast<i64>(result.definitions.size())) {
-            if (i < ast_count) {
-                let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+            if (this.model.some.libmeta_is_injected(i)) {
+                // Libmeta-injected defs: pass 8 already done (bodies live in
+                // the .so; is_lib_export preset).
+                BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, this.model.some.current_pass_index);
+                i = i + 1;
+                continue;
+            }
+            if (i < ast_count + this.model.some.libmeta_total_injected()) {
+                let ai: i64 = this.model.some.libmeta_ast_index(i);
+                let ast_def: Definition = unit.definitions.at(cast<u64>(ai)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
                 if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding " + this.model.some.def_display_name(bound_def)); }
                 result.definitions.set(cast<u64>(i), this.bind_body_for_def(ast_def, bound_def, result));

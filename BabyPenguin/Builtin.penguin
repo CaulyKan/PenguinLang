@@ -31,6 +31,9 @@ namespace __builtin {
     extern fun penguin_jit_call_i64_i64_i64_i64(fn: u64, a: i64, b: i64, c: i64) -> i64;
     extern fun penguin_jit_call_ptr_ptr(fn: u64, a: u64) -> u64;
     extern fun penguin_jit_call_ptr_ptr_ptr(fn: u64, a: u64, b: u64) -> u64;
+    // GC object pinning for compile-time meta values (MetaEngine). Native-only
+    // (EmperorPenguin C runtime); type-checks here, never called in VM tests.
+    extern fun gc_pin_object(addr: u64);
 
     fun hello_world() {
         println("hello world!");
@@ -125,6 +128,11 @@ namespace __builtin {
     extern fun string_substring(s: string, start: i64, length: i64) -> string;
     extern fun string_char_at(s: string, index: i64) -> string;
     extern fun string_char_code(s: string) -> i64;
+    // Hot-path helpers (mirrored in EmperorPenguin/std/penguin/core_builtin.penguin):
+    // no substring allocation, no whole-string scan.
+    extern fun string_starts_with_at(s: string, at: i64, prefix: string) -> bool;
+    extern fun string_char_code_at(s: string, index: i64) -> i64;
+    extern fun string_slice(s: string, start: i64, length: i64) -> string;
     extern fun string_to_int(s: string) -> i64;
     extern fun string_to_double(s: string) -> double;
 

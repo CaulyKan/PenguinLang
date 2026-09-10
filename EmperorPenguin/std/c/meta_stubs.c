@@ -25,13 +25,13 @@ penguin_jit_ctx_t _emperor_penguin_jit_create(void) {
 }
 
 int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx,
-                                    const char* name,
-                                    const char* ir_text) {
+                                    const _emperor_string* name,
+                                    const _emperor_string* ir_text) {
     (void)ctx; (void)name; (void)ir_text;
     return 1;
 }
 
-void* _emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const char* name) {
+void* _emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const _emperor_string* name) {
     (void)ctx; (void)name;
     return NULL;
 }
@@ -40,8 +40,9 @@ void _emperor_penguin_jit_destroy(penguin_jit_ctx_t ctx) {
     (void)ctx;
 }
 
-const char* _emperor_penguin_jit_get_error(void) {
-    return "meta JIT unavailable in this build (no LLVM ORC linked)";
+_emperor_string* _emperor_penguin_jit_get_error(void) {
+    return _emperor_string_adopt_cstring(
+        "meta JIT unavailable in this build (no LLVM ORC linked)");
 }
 
 int64_t _emperor_penguin_jit_call_i64_0(void* fn) {

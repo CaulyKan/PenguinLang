@@ -7,8 +7,20 @@
 /* Initialize the GC. Must be called once at program start. */
 void _emperor_gc_init(void* stack_bottom);
 
-/* Register a global pointer as a GC root. */
+/* Register/unregister a global pointer as a GC root. */
 void _emperor_gc_add_root(void** root);
+void _emperor_gc_remove_root(void** root);
+
+/* Safepoint poll (GC v2): the emitter calls this before every call and at
+ * every allocation site; it collects when _emperor_gc_alloc raised the
+ * pending flag. Cheap no-op otherwise. */
+void _emperor_gc_poll(void);
+
+/* The current stack's precise frame-chain head (emitted code links a
+ * per-function EmperorGcFrame onto it; the scheduler swaps it per
+ * coroutine — see gc.c). */
+extern void* _emperor_gc_frame_head;
+extern int _emperor_gc_want_collect;
 
 /* Register/unregister a RAW (non-GC) buffer whose CONTENTS include pointers
  * to GC objects (std container element storage). The collector scans every
@@ -16,6 +28,41 @@ void _emperor_gc_add_root(void** root);
  * the region when they free or replace the buffer (dispose_mem / _grow). */
 void _emperor_gc_scan_add(void* base, size_t bytes);
 void _emperor_gc_scan_remove(void* base);
+
+/* Typed buffer registration (GC v2 phase 3b): like _gc_scan_add but the
+ * buffer holds COUNT elements of STRIDE bytes whose reference layout is
+ * described by ELEM_MAP (an emperor ref-map program for ONE element; NULL =
+ * each element is a single bare reference). Precise: a minor collection
+ * rewrites young references in place. Remove with _gc_untrack_buffer.
+ * _emperor_gc_bare_refmap is the shared map for bare-ref element buffers. */
+void _emperor_gc_track_buffer(void* base, uint64_t count, uint64_t stride,
+                              const int32_t* elem_map);
+void _emperor_gc_untrack_buffer(void* base);
+extern const int32_t _emperor_gc_bare_refmap[5];
+
+/* Generational write barriers (GC v2): call AFTER storing into a heap
+ * object field. OBJ is the object base (member store target), SLOT is the
+ * field address (already holding the new value). No-op unless the runtime
+ * is generational AND obj lives in the old generation; then the barrier
+ * dirties the 512B CARD containing slot (card-table semantics, no value
+ * check at the store) and the next minor scans every object overlapping
+ * a dirty card, judging each field's CURRENT value. The _map form covers
+ * whole-struct stores; the map itself is no longer recorded (the scan
+ * walks the owner object's own ref-map, which includes the embedded
+ * struct's slots) — NULL map = no embedded references, no-op. */
+void _emperor_gc_write_barrier(void* obj, void** slot);
+void _emperor_gc_write_barrier_map(void* obj, void* slot, const int32_t* map);
+
+/* Debug introspection (test-only): split of _emperor_gc_info() into the
+ * old-generation malloc-heap bytes and the live nursery bytes, plus the
+ * cumulative conservative-pin count (objects kept at their address by a
+ * conservative word — tests accept pin OR promotion as a valid outcome). */
+void _emperor_gc_info_split(uint64_t* old_bytes, uint64_t* young_bytes);
+uint64_t _emperor_gc_debug_pin_count(void);
+
+/* Runtime ABI tag — consumers mixing emissions against foreign runtimes
+ * compare this and refuse (see gc.c). */
+extern const char* const _emperor_runtime_abi;
 
 /* Trigger an immediate garbage collection. */
 void _emperor_gc_collect(void);

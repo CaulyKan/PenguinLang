@@ -1,5 +1,5 @@
 namespace emperor {
-    enum TokenType {
+    export enum TokenType {
         EOF;
         Identifier;
         Constant;
@@ -114,7 +114,7 @@ namespace emperor {
     }
 
 
-    class Token {
+    export class Token {
         token_type: TokenType = new TokenType.EOF();
         text: string = "";
         location: !mut SourceLocation = new SourceLocation("", 0, 0);

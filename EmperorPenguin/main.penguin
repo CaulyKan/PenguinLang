@@ -136,9 +136,24 @@ initial {
     // monomorphize NEW generic instances from the #fun/#template bodies) —
     // loaded dep-lib sources are NOT re-embedded.
     let lib_files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
+    let use_direct_libmeta: bool = config.libmeta_mode == "direct";
     let si: mut i64 = 0;
     while (si < cast<i64>(lib_state.sources.size())) {
         let src: SourceInput = lib_state.sources.at(cast<u64>(si)).some;
+        // Direct injection: the materialized decl pseudo-file is replaced by
+        // an empty slot input that only records the def index where the
+        // injector splices the prebuilt symbols (keeping def order — and the
+        // emitted .ll — identical to --libmeta=text).
+        let is_decl_file: bool = string_length(src.filename) > 10 && string_substring(src.filename, 0, 10) == "<libdecls:";
+        if (use_direct_libmeta && is_decl_file) {
+            let slot_input: mut SourceInput = new SourceInput(src.filename, "");
+            slot_input.is_lib = true;
+            slot_input.is_lib_decl_slot = true;
+            inputs.push(slot_input);
+            if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] Libmeta decl slot (direct injection): " + src.filename); }
+            si = si + 1;
+            continue;
+        }
         let lib_input: mut SourceInput = new SourceInput(src.filename, src.source);
         lib_input.is_lib = true;
         inputs.push(lib_input);
@@ -195,6 +210,13 @@ initial {
         compiler.lib_instances.push(lib_state.instances.at(cast<u64>(lii)).some);
         lii = lii + 1;
     }
+    if (use_direct_libmeta) {
+        let mdi: mut i64 = 0;
+        while (mdi < cast<i64>(lib_state.meta_docs.size())) {
+            compiler.prebuilt_lib_metas.push(lib_state.meta_docs.at(cast<u64>(mdi)).some);
+            mdi = mdi + 1;
+        }
+    }
     let result = compiler.compile_sources(inputs);
 
     if (result.has_errors()) {
@@ -220,9 +242,10 @@ initial {
         let lidx: i64 = string_find(config.output_name, ".penguin-lib");
         if (lidx >= 0) { lib_name = string_substring(config.output_name, 0, lidx); }
         lib_name = _get_base_name(lib_name);
-        let lib_meta: string = build_metadata(lib_name, 1, lib_state.lib_names, instances, lib_files);
+        let lib_meta: string = serialize_symbols(result, lib_name, 1, lib_state.lib_names, instances, lib_files, config.verbose);
         // The metadata blob must be a real JSON document (never empty): a stub
-        // build's build_metadata returns "" and must not produce a corrupt lib.
+        // build's serialize_symbols returns "" and must not produce a corrupt
+        // lib.
         if (string_length(lib_meta) == 0) {
             __builtin.eprintln("[EmperorPenguin] Error: no metadata produced (dynamic linking unavailable in this compiler build)");
             __builtin.exit(1);

@@ -50,6 +50,7 @@
 
 #include "emperor_gc.h"
 #include "emperor_interop.h"
+#include "emperor_string.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,13 +108,20 @@ int _emperor_gc_on_coroutine = 0;
 typedef struct EmperorTryFrame {
     struct EmperorTryFrame* prev;
     jmp_buf* jb; /* points into the per-site table; owned by the site */
+    /* GC v2: the frame-chain head at try-entry. Throw longjmps past every
+     * deeper frame WITHOUT running their epilogues, so their descriptors
+     * would stay linked and the precise walk would read dead frames' slots.
+     * Restoring this value at throw truncates the chain back to the try
+     * function's own state (its frame was already linked when the try was
+     * set up). */
+    void* saved_gc_frames;
 } EmperorTryFrame;
 
 /* Pending error payload for the catch handler: set by throw, read by the
  * catch-entry code. Registered as a GC root (lazily, on first throw — the
  * old registration point was the C scheduler loop, which no longer exists)
  * so the message string survives the longjmp window. */
-static char* _emperor_throw_msg = NULL;
+static _emperor_string* _emperor_throw_msg = NULL;
 static int64_t _emperor_throw_code = 0;
 static int _emperor_throw_msg_root_done = 0;
 
@@ -147,6 +155,12 @@ typedef struct EmperorCoroutine {
     void (*entry)(void*); /* consumed at the coroutine's first switch */
     void* entry_arg;
     struct EmperorCoroutine* qnext; /* spawn inbox / fd-woken list link */
+    /* GC v2 precise roots: this coroutine's frame-chain head while parked
+     * (the running coroutine's frames are linked on
+     * _emperor_gc_frame_head; the switch swaps the two). NULL while it has
+     * never run or fully unwound. */
+    void* gc_frames;
+    struct EmperorCoroutine* all_next; /* every live coroutine (GC root walk) */
     int state;
     int seq;              /* creation index (stable identity for the Penguin
                              loop's all-live registry; read via _co_seq) */
@@ -154,6 +168,22 @@ typedef struct EmperorCoroutine {
 } EmperorCoroutine;
 
 static EmperorCoroutine* sched_current = NULL; /* NULL on main/scheduler stack */
+
+/* Every live coroutine (intrusive, linked at create, unlinked at destroy).
+ * The GC's frame-chain walk needs each PARKED stack's saved head; the
+ * queues live in Penguin-land, invisible to C. */
+static EmperorCoroutine* co_all_head = NULL;
+
+/* gc.c: mark every ref reachable from one frame chain. The walker skips
+ * the RUNNING coroutine — its saved head is stale (its frames are on the
+ * current chain). */
+void _emperor_sched_each_frame_head(void (*visit)(void*)) {
+    for (EmperorCoroutine* co = co_all_head; co; co = co->all_next) {
+        if (co != sched_current && co->gc_frames) {
+            visit(co->gc_frames);
+        }
+    }
+}
 
 #if defined(EMPEROR_UCONTEXT)
 static ucontext_t sched_ctx; /* scheduler switchback point */
@@ -253,6 +283,10 @@ static void co_run_entry(EmperorCoroutine* self) {
     void* arg = self->entry_arg;
     self->entry = NULL;
     self->entry_arg = NULL;
+    /* The async ctx object (arg) was rooted at spawn because this struct
+     * held the only reference — the root's job is done once the entry has
+     * it on its own frames. */
+    _emperor_gc_remove_root(&self->entry_arg);
     entry(arg);
     self->state = CO_FINISHED;
 }
@@ -372,12 +406,25 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
     _emperor_gc_scan_add((char*)co,
                          ((sizeof(EmperorCoroutine) + 7u) & ~(size_t)7u));
 #endif
+    co->all_next = co_all_head;
+    co_all_head = co;
     inbox_push(co);
     return co;
 }
 
 void _emperor_co_destroy(void* handle) {
     EmperorCoroutine* co = (EmperorCoroutine*)handle;
+    /* Unlink from the all-coroutines list before anything is freed: the GC
+     * frame walk must not see a destroyed coroutine's saved chain. */
+    EmperorCoroutine** pp = &co_all_head;
+    while (*pp) {
+        if (*pp == co) {
+            *pp = co->all_next;
+            break;
+        }
+        pp = &(*pp)->all_next;
+    }
+    _emperor_gc_remove_root(&co->entry_arg);
     _emperor_gc_scan_remove(co->block); /* NULL: fiber never ran — no stack region */
 #if defined(EMPEROR_UCONTEXT)
     munmap(co->block, EMPEROR_CO_STACK_SIZE);
@@ -413,7 +460,15 @@ int64_t _emperor_co_switch_in(void* handle) {
     setjmp(switch_flush);
     _emperor_gc_main_watermark = (char*)&switch_flush;
     _emperor_gc_on_coroutine = 1;
+    /* Swap the precise frame-chain head: the coroutine's stack carries its
+     * own chain (its gc_frames from the last park, NULL on first run);
+     * main's head is restored when the switch lands back and the
+     * coroutine's chain is re-saved into its struct. */
+    void* saved_main_frames = _emperor_gc_frame_head;
+    _emperor_gc_frame_head = co->gc_frames;
     sched_switch_to_co(co);
+    co->gc_frames = _emperor_gc_frame_head;
+    _emperor_gc_frame_head = saved_main_frames;
     _emperor_gc_on_coroutine = 0;
     sched_current = NULL;
     _emperor_gc_main_watermark = NULL;
@@ -459,6 +514,10 @@ static void co_entry_iface(void* obj) {
 void _emperor_co_spawn_entry(void* entry_obj) {
     EmperorCoroutine* co = co_create(co_entry_iface);
     co->entry_arg = entry_obj;
+    /* This struct holds the ONLY reference until the entry consumes it —
+     * an explicit root keeps it alive across the spawn-to-first-switch
+     * window (the struct's scan regions are gone in the precise world). */
+    _emperor_gc_add_root(&co->entry_arg);
 }
 
 /* Initial-routine spawn: the entry is a plain `void ()` Penguin function
@@ -770,6 +829,7 @@ void _emperor_try_setup(int64_t site) {
     }
     f->prev = *top;
     f->jb = (jmp_buf*)_emperor_try_buf(site);
+    f->saved_gc_frames = _emperor_gc_frame_head;
     *top = f;
 }
 
@@ -786,7 +846,7 @@ void _emperor_try_leave(void) {
  * stash the payload and longjmp to the innermost handler; otherwise the
  * error is uncaught — report and exit non-zero (flushing buffered stdout
  * first, matching the BabyPenguin diagnostic shape). */
-void _emperor_throw_runtime_error(const char* msg, int64_t code) {
+void _emperor_throw_runtime_error(_emperor_string* msg, int64_t code) {
     if (!_emperor_throw_msg_root_done) {
         /* Make the pending-throw message slot a GC root for this program —
          * the message must survive the longjmp window until the catch
@@ -795,23 +855,32 @@ void _emperor_throw_runtime_error(const char* msg, int64_t code) {
         _emperor_gc_add_root((void**)&_emperor_throw_msg);
         _emperor_throw_msg_root_done = 1;
     }
-    _emperor_throw_msg = (char*)msg;
+    _emperor_throw_msg = msg;
     _emperor_throw_code = code;
     EmperorTryFrame** top = _emperor_try_top_slot();
     if (*top) {
         EmperorTryFrame* f = *top;
         *top = f->prev;
+        /* Truncate the frame chain to the try-entry state BEFORE the longjmp:
+         * every frame between the thrower and this try is abandoned without
+         * running its descriptor unlink. */
+        _emperor_gc_frame_head = f->saved_gc_frames;
         jmp_buf* jb = f->jb;
         free(f);
         _longjmp(*jb, 1);
     }
     fflush(stdout);
-    fprintf(stderr, "Uncaught runtime error: %s (code %lld)\n", msg ? msg : "?",
-            (long long)code);
+    fputs("Uncaught runtime error: ", stderr);
+    if (msg) {
+        fwrite(msg->data, 1, (size_t)msg->length, stderr);
+    } else {
+        fputs("?", stderr);
+    }
+    fprintf(stderr, " (code %lld)\n", (long long)code);
     _emperor_sched_exit(1);
 }
 
-const char* _emperor_throw_get_msg(void) { return _emperor_throw_msg; }
+_emperor_string* _emperor_throw_get_msg(void) { return _emperor_throw_msg; }
 int64_t _emperor_throw_get_code(void) { return _emperor_throw_code; }
 
 /* ---- Quiescence fingerprint (per coroutine) ----

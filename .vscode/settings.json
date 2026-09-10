@@ -2,10 +2,15 @@
     "files.exclude": {
         "**/bin": true,
         "**/obj": true,
-        "**/.antlr": true
+        "**/.antlr": true,
+        "**/target": true,
+        "**/tmp": true,
+        "**/build": true
     },
     "cmake.ignoreCMakeListsMissing": true,
     "files.watcherExclude": {
-        "**/target": true
+        "**/target": true,
+        "**/tmp": true,
+        "**/build": true
     }
 }

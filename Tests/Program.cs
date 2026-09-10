@@ -801,6 +801,11 @@ public sealed class StageSpec
     /// not stdin EOF — this locks the fd-wake/pipeline scheduling path the
     /// closed-stdin form can never exercise).</summary>
     public bool StdinClose = true;
+    /// <summary>Run only: override the process working directory (default: the
+    /// repo root for Run LSP sessions, the exe's dir otherwise). ${VAR} expands;
+    /// a relative path resolves against the repo root. Used to prove a server/
+    /// program works from a FOREIGN cwd (exe-relative stdlib/source discovery).</summary>
+    public string? Cwd;
     /// <summary>Multi-stage builds: artifact kind ("exe" default, or "lib" → *.penguin-lib).</summary>
     public string Kind = "exe";
     /// <summary>Multi-stage builds: output artifact filename (default "out.exe").</summary>
@@ -1040,6 +1045,9 @@ public static class MarkdownTestParser
                 // Stdin line) would first match the \n rule and collapse into
                 // backslash + newline, corrupting the payload.
                 if (isRun) stage.Stdin = Expectation.CUnescape(Stripped());
+                break;
+            case "cwd":
+                if (isRun) stage.Cwd = Stripped().Trim();
                 break;
             case "expectedexitcode": stage.ExpectedExitCode = Stripped().Trim(); break;
             case "kind": stage.Kind = Stripped().Trim().ToLowerInvariant(); break;
@@ -1742,14 +1750,24 @@ public static class TestRunner
                 await WriteResultJsonAsync(workDir, result);
                 return result;
             }
-            // Run from the repo root: the LSP resolves its stdlib cwd-first, and a
-            // cross-file stdlib miss silently strips symbols (masquerading as a
-            // miscompilation), so the session must not start from an arbitrary cwd.
+            // Run from the repo root (default): the LSP resolves its stdlib cwd-first,
+            // and a cross-file stdlib miss silently strips symbols (masquerading as a
+            // miscompilation), so a session must not start from an arbitrary cwd
+            // UNLESS the test explicitly opts in via `Cwd:` — the foreign-cwd
+            // discovery sentinels (exe-relative stdlib/unit-B source resolution).
+            var runCwd = repoRoot;
+            if (!string.IsNullOrWhiteSpace(test.Run.Cwd))
+            {
+                var expanded = EnvHelper.Expand(test.Run.Cwd, workDir);
+                runCwd = Path.IsPathRooted(expanded) ? expanded : Path.GetFullPath(Path.Combine(repoRoot, expanded));
+                if (!Directory.Exists(runCwd))
+                    throw new FormatException($"Run LSP test '{test.Name}': Cwd '{test.Run.Cwd}' does not exist.");
+            }
             var runPsi = new ProcessStartInfo
             {
                 FileName = exe,
                 Arguments = "",
-                WorkingDirectory = repoRoot,
+                WorkingDirectory = runCwd,
             };
             EnvHelper.ApplyEnv(runPsi, test.Run.Env, workDir);
             return await RunStageAsync(test, backend, repoRoot, workDir, exe, result, opts, ct, null, null, runPsi);

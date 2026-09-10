@@ -481,10 +481,14 @@ build/lsp.ll: $(BS)/pass4 build/libemperorpenguin.penguin-lib $(LSP_SRC) $(EP_ST
 	    --lib build/libemperorpenguin.penguin-lib -vv -o build/lsp $(TEE) build/logs/lsp.log; \
 	} || { echo "LSP build FAILED at emission" >&2; exit 1; }
 
+# -enable-meta: the embedded compiler JITs `#fun` meta at didOpen/didChange
+# (the LSP's own sources use #impl_json_serializable, and any user document
+# may use #fun) — the exe must carry the ORC JIT for the lib's meta engine
+# (the .so's _emperor_penguin_jit_* refs bind from here via -rdynamic).
 build/lsp: build/lsp.ll build/libemperorpenguin.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/lsp.ll -o build/lsp \
+	OPT=-O2 EmperorPenguin/emperor link build/lsp.ll -o build/lsp -enable-meta \
 	    --consumer-lib build/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
 	} || { echo "LSP build FAILED at link" >&2; exit 1; }
 
@@ -493,8 +497,10 @@ lsp_linux: build/lsp
 # Windows: the LspServerWin MONOLITH (LSP modules + the whole
 # EmperorPenguinLib source set) — the dyn-lib pair is ELF-specific
 # (SONAME/$$ORIGIN/rpath/-rdynamic); file namespaces only use basenames so
-# ../..-relative sources are safe. No meta (the Linux LSP carries no JIT
-# either). Windows coroutines & stdio events come from the runtime's fiber
+# ../..-relative sources are safe. No meta (a no-JIT build degrades to a
+# "meta JIT unavailable" diagnostic per document instead of crashing —
+# MetaEngine.init throws, LspCompilationUnit.recompile catches).
+# Windows coroutines & stdio events come from the runtime's fiber
 # scheduler + PeekNamedPipe fd integration (EmperorPenguin/std/c/scheduler.c).
 build/win/MagellanicPenguinLSP.ll: $(BS)/pass4 $(LSPWIN_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
@@ -560,9 +566,14 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	@cp build/linux/emperor MagellanicPenguin/vscode/server/linux/
 	@cp build/lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
 	@cp build/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/
-	@cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin
-	@cp -r EmperorPenguin/std/include MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/include
-	@cp -r EmperorPenguin/std/c MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c
+	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin/
+	@cp -r EmperorPenguin/std/include/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/include/
+	@cp -r EmperorPenguin/std/c/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/
+	@# Compiler sources beside the stdlib: MetaEngine's unit B reads its base
+	@# sources (utils/bound/ast layers) exe-relative when the cwd has no repo —
+	@# any #fun-using program compiled by the bundled emitter (or the LSP's
+	@# embedded compile) needs this tree from a foreign cwd.
+	@cp -r EmperorPenguin/src/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/src/
 	@rm -f MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/*.o MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/*.a
 	@echo "Deployed linux emitter + emperor script + LSP + stdlib -> MagellanicPenguin/vscode/server/linux/"
 	@# Smoke test the BUNDLED driver script from a foreign cwd (no repo): the
@@ -584,22 +595,27 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	# Smoke test the BUNDLED LSP from a foreign cwd (no repo): a full \
 	# session must answer capabilities, survive opening a broken document \
 	# (the parser-panic path exercises the sjlj try/catch landing pad — \
-	# publishing an 'internal compiler error' diagnostic, not dying) and \
-	# exit 0 — proving the exe-dir stdlib discovery AND the rpath \
-	# lib load work in a deployed layout. \
+	# publishing an 'internal compiler error' diagnostic, not dying), \
+	# compile a #fun document CLEANLY (the meta JIT in the exe plus \
+	# MetaEngine unit B's exe-relative base-source discovery — a regression \
+	# means missing unit-B sources and a MetaEngine diagnostic instead of \
+	# '"diagnostics":[]'), and exit 0 — proving the exe-dir stdlib+src \
+	# discovery AND the rpath lib load work in a deployed layout. \
 	SMOKE_DIR=$$(mktemp -d); \
-	printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 172\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/broken.penguin","languageId":"penguin","version":1,"text":"fun broken( {"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
+	printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 172\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/broken.penguin","languageId":"penguin","version":1,"text":"fun broken( {"}}}Content-Length: 270\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/metafun.penguin","languageId":"penguin","version":1,"text":"#fun dbl(x: i64) -> i64 { return x * 2; }\\nfun main() -> i64 {\\n    let r: i64 = #dbl(21);\\n    return r;\\n}\\n"}}}Content-Length: 129\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///smoke/metafun.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}' \
 	    | (cd "$$SMOKE_DIR" && "$$REPO_ROOT/MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP" > out.bin 2> err.bin); \
 	SMOKE_RC=$$?; \
 	if [ $$SMOKE_RC -ne 0 ] || ! grep -q "definitionProvider" "$$SMOKE_DIR/out.bin" 2>/dev/null \
-	    || ! grep -q "internal compiler error" "$$SMOKE_DIR/out.bin" 2>/dev/null; then \
+	    || ! grep -q "internal compiler error" "$$SMOKE_DIR/out.bin" 2>/dev/null \
+	    || ! grep -q '"diagnostics":\[\]' "$$SMOKE_DIR/out.bin" 2>/dev/null \
+	    || ! grep -q '"name":"main"' "$$SMOKE_DIR/out.bin" 2>/dev/null; then \
 	    echo "Publish FAILED: bundled LSP smoke test (exit=$$SMOKE_RC)" >&2; \
 	    cat "$$SMOKE_DIR/err.bin" >&2; \
 	    rm -rf "$$SMOKE_DIR"; \
 	    exit 1; \
 	fi; \
 	rm -rf "$$SMOKE_DIR"; \
-	echo "Bundled LSP smoke test passed (initialize + broken-doc survival + shutdown/exit from a foreign cwd)"
+	echo "Bundled LSP smoke test passed (initialize + broken-doc survival + #fun compile + shutdown/exit from a foreign cwd)"
 endif
 ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
 	@# --- windows: emitter + emperor.bat + LSP monolith + stdlib trees ---
@@ -607,9 +623,11 @@ ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
 	@cp build/win/emperor_penguin_llvm_emitter.exe MagellanicPenguin/vscode/server/windows/
 	@cp build/win/emperor.bat MagellanicPenguin/vscode/server/windows/
 	@cp build/win/MagellanicPenguinLSP.exe MagellanicPenguin/vscode/server/windows/
-	@cp -r EmperorPenguin/std/penguin MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin
-	@cp -r EmperorPenguin/std/include MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/include
-	@cp -r EmperorPenguin/std/c MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c
+	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin/
+	@cp -r EmperorPenguin/std/include/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/include/
+	@cp -r EmperorPenguin/std/c/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/
+	@# Compiler sources for MetaEngine unit B (see the linux deploy note).
+	@cp -r EmperorPenguin/src/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/src/
 	@rm -f MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/*.o MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/*.a
 	@echo "Deployed windows emitter + emperor.bat + LSP + stdlib -> MagellanicPenguin/vscode/server/windows/"
 	@# LSP smoke session (initialize, broken-document didOpen exercising the

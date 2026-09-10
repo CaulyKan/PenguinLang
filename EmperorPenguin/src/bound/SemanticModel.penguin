@@ -104,6 +104,53 @@ class SemanticModel {
     lib_def_start: i64 = 0;
     lib_def_count: i64 = 0;
     lib_instances: mut _utils.List<string> = new _utils.List<string>();
+    // Libmeta direct injection (--libmeta=direct): per-lib metadata JSON
+    // documents + the def-index slots where each lib's prebuilt bound defs
+    // are spliced after pass 1 (libmeta_direct_inject in Dynlib.penguin; the
+    // DynlibStub build's version is a no-op).
+    lib_meta_docs: mut _utils.List<string> = new _utils.List<string>();
+    lib_meta_slots: mut _utils.List<i64> = new _utils.List<i64>();
+    // Filled by libmeta_direct_inject after splicing: the [start, start+count)
+    // ranges of injected defs in result.definitions (ascending). The ast-zip
+    // passes (2/6/8) skip these positions and subtract the earlier injected
+    // counts from their ast index so the prefix alignment is preserved.
+    injected_starts: mut _utils.List<i64> = new _utils.List<i64>();
+    injected_counts: mut _utils.List<i64> = new _utils.List<i64>();
+
+    fun libmeta_total_injected(this) -> i64 {
+        let out: mut i64 = 0;
+        let k: mut i64 = 0;
+        while (k < cast<i64>(this.injected_counts.size())) {
+            out = out + this.injected_counts.at(cast<u64>(k)).some;
+            k = k + 1;
+        }
+        return out;
+    }
+
+    fun libmeta_is_injected(this, i: i64) -> bool {
+        let k: mut i64 = 0;
+        while (k < cast<i64>(this.injected_starts.size())) {
+            let st: i64 = this.injected_starts.at(cast<u64>(k)).some;
+            if (i >= st && i < st + this.injected_counts.at(cast<u64>(k)).some) { return true; }
+            k = k + 1;
+        }
+        return false;
+    }
+
+    // The unit.definitions index that pairs with result.definitions[i]
+    // (valid only when libmeta_is_injected(i) is false).
+    fun libmeta_ast_index(this, i: i64) -> i64 {
+        let out: mut i64 = i;
+        let k: mut i64 = 0;
+        while (k < cast<i64>(this.injected_starts.size())) {
+            let st: i64 = this.injected_starts.at(cast<u64>(k)).some;
+            if (i >= st + this.injected_counts.at(cast<u64>(k)).some) {
+                out = out - this.injected_counts.at(cast<u64>(k)).some;
+            }
+            k = k + 1;
+        }
+        return out;
+    }
     // ===== E5 port wiring registries (parallel lists — GC-safe) =====
     // PortMeta: a class's declared ports. Key "<class full name>.<port name>"
     // (specialized classes register under their mangled full name when
@@ -289,6 +336,12 @@ class SemanticModel {
         this.current_pass_index = 1;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 1/9: Building scopes..."); }
         this.build_scopes_pass.run(unit, result);
+        // Libmeta direct injection: splice prebuilt bound defs (skeleton +
+        // signature backfill + prebuilt vtables) where each lib's decl text
+        // would have parsed, before any type resolution sees the tree.
+        if (cast<i64>(this.lib_meta_docs.size()) > 0) {
+            libmeta_direct_inject(this, result);
+        }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 1/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
         this.current_pass_index = 2;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 2/9: Resolving types..."); }
@@ -1047,6 +1100,36 @@ class SemanticModel {
         if (type_sym.is_some()) {
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             return result;
+        }
+        this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+            "Can't resolve type specifier '" + name + "'",
+            location);
+        return this.type_registry.make_error_type();
+    }
+
+    // Resolve a possibly-dotted base type name ("<ns>.<ns>.<Type>" or a
+    // primitive/registry name) from the given scope. resolve_type_name is the
+    // simple-name path; dotted spellings need segment-by-segment resolution
+    // (used by the libmeta injector, whose <T> base names are always fully
+    // qualified).
+    fun resolve_base_type_qualified(mut this, name: string, scope: mut BoundScope, location: SourceLocation) -> mut BoundType {
+        let dot: i64 = string_find(name, ".");
+        if (dot < 0) { return this.resolve_type_name(name, scope, location); }
+        let parts: mut _utils.List<string> = new _utils.List<string>();
+        let rest: mut string = name;
+        let d: mut i64 = string_find(rest, ".");
+        while (d >= 0) {
+            parts.push(string_substring(rest, 0, d));
+            rest = string_substring(rest, d + 1, string_length(rest) - d - 1);
+            d = string_find(rest, ".");
+        }
+        parts.push(rest);
+        let found: Option<BoundSymbol> = scope.resolve_qualified(parts);
+        if (found.is_some()) {
+            if (found.some is BoundSymbol.type_sym) {
+                let bt: mut BoundType = found.some.type_sym.bound_type;
+                return bt;
+            }
         }
         this.report_error(new ErrorCode.E_RESOLVE_TYPE(),
             "Can't resolve type specifier '" + name + "'",

@@ -1,0 +1,11 @@
+class Probe {
+    x: mut i64 = 0;
+    label: mut string = "";
+    #impl_json_serializable();
+}
+
+fun main() -> i64 {
+    let p: mut Probe = new Probe();
+    p.x = 21;
+    return p.x;
+}

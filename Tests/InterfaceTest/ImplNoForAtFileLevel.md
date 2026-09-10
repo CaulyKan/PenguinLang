@@ -1,9 +1,10 @@
 # ImplNoForAtFileLevel
 ## Description
-RED SENTINEL (known bug, kept as a stable failure until fixed): an `impl` block written at FILE level without a `for` clause (`impl IPing { fun ping() ... }`) is silently accepted and then DROPPED — EmperorPenguin exits 0, but the emitted `.ll` contains only dangling calls (`call void @_ns_..._ping()`) with no function definitions, so the downstream `emperor link` fails with undefined symbols. The reference grammar (BabyPenguin, ANTLR parser) REJECTS the form at parse time (`mismatched input '{' expecting 'for'` — an `impl` outside a class body requires `impl Iface for Type { ... }`), so the correct behavior is a compile-time error, never a silent drop. Root cause: the EmperorPenguin Parser accepts the no-`for` impl at top level and BuildScopes/IR emission never surface it. Green on BabyPenguin (E_PARSE); should turn green on EmperorPenguin once it rejects (or meaningfully implements) the file-level no-`for` form.
+An `impl` block written at FILE level without a `for` clause (`impl IPing { fun ping() ... }`) is rejected at compile time by every compiler: the reference grammar (BabyPenguin, ANTLR) only allows `interfaceForImplementation` inside class/enum/interface bodies — `namespaceBody` permits `impl Iface for Type { ... }` only (`mismatched input '{' expecting 'for'`). EmperorPenguin used to accept the form and silently DROP it (exit 0) while the emitted `.ll` kept dangling `_ns_..._ping()` calls with no definitions, breaking the downstream `emperor link`; `BuildScopesPass.bind_impl_def` now reports `E_ORPHAN_IMPL` ("file-level 'impl' requires a 'for' clause") when a no-`for` impl reaches a file/namespace scope. The check lives in the semantic layer, NOT the parser, so `compiler().create_definition("impl ... { ... }")` keeps working — meta-generated impls are spliced into class member lists and bind from the class scope (the `#impl_json_serializable()` auto-impl depends on this). Locks in the fix: compile must exit NONZERO, never a silent drop.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass1
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

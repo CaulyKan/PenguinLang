@@ -23,10 +23,10 @@ ExpectedStderr: DISCARD
 ## Test Code
 ```
 namespace mid {
-    fun first(v: std.Vector<i64>) -> i64 {
+    export fun first(v: std.Vector<i64>) -> i64 {
         return v.at(0).some;
     }
-    fun answer() -> i64 { return 99; }
+    export fun answer() -> i64 { return 99; }
 }
 ```
 ## Build 2

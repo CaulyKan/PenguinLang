@@ -55,7 +55,10 @@ public class BatchResults
     }
 
     public void AssertSemantic([CallerMemberName] string name = "")
-        => IRSemanticEqual.AssertSemanticallyEqual(_data[name].Expected, _data[name].Result);
+    {
+        try { System.IO.Directory.CreateDirectory("/tmp/actuals"); System.IO.File.WriteAllText($"/tmp/actuals/{name}.txt", _data[name].Result); } catch { }
+        IRSemanticEqual.AssertSemanticallyEqual(_data[name].Expected, _data[name].Result);
+    }
 
     public string GetResult([CallerMemberName] string name = "")
         => _data[name].Result;

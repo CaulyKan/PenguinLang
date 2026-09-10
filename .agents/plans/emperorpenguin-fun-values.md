@@ -2,7 +2,7 @@
 
 日期：2026-08-31。分支：`feature/emperorpenguin-fun-values`（从 main 切出，待 `feature/lsp-project-config` 合并后进行）。
 
-目标：让 EmperorPenguin（pass2/pass3）达到 BabyPenguin 的函数值能力——`fun<...>` / `async_fun<...>` 类型、lambda 表达式（含捕获）、函数/方法引用作为值、经值的间接调用——并让 `Tests/LambdaTest/*`、`Tests/AsyncTest/ImplicitCastForFunToAsyncFunTest.md` 在全部编译器上转绿。
+目标：让 EmperorPenguin（pass2/pass3）达到 BabyPenguin 的函数值能力——`fun<...>` / `async_fun<...>` 类型、lambda 表达式（含捕获）、函数/方法引用作为值、经值的间接调用——并让 `Tests/LambdaTest/*`、`Tests/AsyncTest/ImplicitCastForFunToAsyncFunTest.md` 在全部编译器上转绿。同时引入一个**两编译器同步实现的新语义：无绑定方法引用**（`A.b` 作为 `fun<A, P...>` 值，`h(a, x) ≡ A.b(a, x)`——`a.b(x) ≡ A.b(a, x)` 糖的值形式补全，BabyPenguin 作参考实现先行）。
 
 ## 现状（2026-08-31 实测，pass2/pass3 probe）
 
@@ -36,16 +36,19 @@
 %r  = call <ret> %fn(ptr %funval, <args...>)
 ```
 
-三种 fun 值来源共用这一表示：
+四种 fun 值来源共用这一表示：
 1. **顶层/静态函数引用**（`let f: fun<i32,i32> = twice;`）：每函数合成 thunk（丢弃第 0 参数、转发原函数）+ 常量单例对象 `@__funval_<fn>_obj = private constant { ptr @metadata }`（无字段类实例 = 仅元数据指针一个词，纯常量、零运行时分配）；现有 funptr 常量路径（`LLVMEmitter.penguin:2698-2711`）改映射到该单例
 2. **绑定方法引用**（`let func: fun<i32,i32> = x.call;`）：每 (类,方法) 首次引用时合成 invoker 类 `{ __recv 字段; fun __call(mut this, args...) { return this.__recv.m(args...); } }`，`new` 出的对象即 fun 值
-3. **lambda**：闭包类（捕获字段 + `fun __call(mut this, params) { 体重写 }`），闭包对象本身就是 fun 值（不再包 invoker，避免双重间接）
+3. **无绑定方法引用**（`let h: fun<Temp, i32, i32> = ns.Temp.call;`，新语义，BabyPenguin 同步实现）：fun 类型**保留** this 参数（`fun<A, P...>`）；常量单例（同 1 的机制），thunk 不丢弃第 0 真实参数、原样作为 receiver 转发（`@__funval_thunk_A_b(ptr %self, ptr %a, ...) → A.b(%a, ...)`）
+4. **lambda**：闭包类（捕获字段 + `fun __call(mut this, params) { 体重写 }`），闭包对象本身就是 fun 值（不再包 invoker，避免双重间接）
+
+**语义等式**（贯穿设计，两编译器统一）：`a.b(x) ≡ A.b(a, x)`（直接调用今天已成立）；绑定引用 `g = a.b` 后 `g(x) ≡ A.b(a, x)`（receiver 取引用时固化）；无绑定引用 `h = A.b` 后 `h(a, x) ≡ A.b(a, x)`（receiver 由调用方作第一实参传入）。糖在语言可观察行为层面成立，不在 ABI 位级成立（无法从 fun 值反取函数地址/receiver，无运行时绑定/解绑定操作——BabyPenguin 同）。接口方法无绑定引用（`I.b`）报错：接口方法没有唯一实现。
 
 **为什么不是 BabyPenguin 式双字胖指针 `{fn, env}` 按值传递**：
 - GC 安全：类元数据的 `field_is_ptr` 按字段粒度标记，无法表达内联双字结构中"第二个词是指针"；fun 值作字段 / `Option<fun<...>>` payload 的可达性追踪会漏。单 ptr 表示下 fun 字段就是普通指针字段，现有标记机制直接工作（`FunctionKind.is_value_type()` 已返回 false → 引用语义，与 BabyPenguin `ToType(Mutability.Mutable)` 一致）
 - 调用点无法静态判断被引函数是否接收 this/env；统一"第 0 参数 = 对象自身"ABI 后无需为每个函数生成 trampoline（仅静态引用需要，且是确定性命名 → 相等性保持）
 
-**已知行为差异**（记录，不阻塞）：`==` 为指针相等——静态引用同一单例 → 相等（匹配 BabyPenguin）；绑定方法每次取引用生成新 invoker → `x.m == x.m` 为 false（BabyPenguin 为 true），后续可用 invoker 缓存修正。性能：每次间接调用一次 vtable strcmp 扫描（与接口调用同款）；后续优化可将 thunk 存进 `EmperorClassMetadata` 当前恒为 null 的 `virtual_method_table` 槽位直达。
+**已知行为差异**（记录，不阻塞）：`==` 为指针相等——静态引用同一单例 → 相等（匹配 BabyPenguin）；无绑定引用 `A.b == A.b` 也相等（EP 同一单例 / BabyPenguin 同一 FunctionSymbol）；绑定方法每次取引用生成新 invoker → `x.m == x.m` 为 false（BabyPenguin 为 true），后续可用 invoker 缓存修正。性能：每次间接调用一次 vtable strcmp 扫描（与接口调用同款）；后续优化可将 thunk 存进 `EmperorClassMetadata` 当前恒为 null 的 `virtual_method_table` 槽位直达。
 
 **`__FunVal` 条目的实现方式**：不引入 PenguinLang 可见的接口定义（模板定长参数无法表达任意签名的方法族）。`BoundClassDefinition` 加 `is_funval: bool` 标记，由 lambda/invoker/静态单例的合成方设置；`LLVMEmitter.emit_full_class_metadata`（:1969-2060）对标记类在 interface_map 追加 `{ @.__FunVal_interface_id, [ @<cls>__.__call 或 @thunk ] }`（interface_id 沿用 `.<name>_interface_id` 点前缀形状，`interface_map_name` :4170-4178 截断 `<` 对固定 id 无影响）。
 
@@ -58,6 +61,7 @@
 - 从 main 切 `feature/emperorpenguin-fun-values`（LSP 分支合并后）
 - 更新 `FunFieldMemberCall.md` 描述（字段路径已实现、已转绿；改述为锁定该路径的回归测试），清理 `SemanticBindExpressions.penguin:3014-3017` 过期注释
 - 按 AGENTS.md 红哨兵规范，把这些 BabyPenguin-only 测试的 Apply To 扩到 `EmperorPenguin Pass2, Pass3`（描述注明"should turn green once implemented"）：`LambdaBasicTest`、`LambdaBasicReturnTest`、`FunctionVariableTest`、`FunctionBindingTest`、`StaticFunctionBindingTest`、`AsyncFunctionBindingTest`、`AsyncFunctionVariableTest`、`WrongFunctionTypeTest`、`AsyncTest/ImplicitCastForFunToAsyncFunTest`（后两个 async 的在 M5 前保持红）
+- 新增 `Tests/LambdaTest/UnboundMethodBindingTest.md`（`let h: fun<Temp, i32, i32> = ns.Temp.call; h(x, 2)` → `3`，即在 `FunctionBindingTest` 的类上取无绑定引用、显式传 receiver 调用）——**双红哨兵**（BabyPenguin 与 EmperorPenguin 都还没有该语义），Apply To: BabyPenguin + Pass2/Pass3，随里程碑 3 转绿
 
 ### 里程碑 1：语法补全（async_fun 类型 + 嵌套位置）
 
@@ -77,13 +81,24 @@
 - **类型检查**：`can_implicitly_cast`（`BoundTypeRegistry.penguin:149`）加规则——两边均 FunctionKind、签名相同（`is_same_type` 忽略 async 标志的参数级比较）且 `from 非 async → to async` 允许（`fun<i32>` → `async_fun<i32>`；反向与 async→fun 拒绝）；赋值/声明不兼容时报 `E_TYPE_MISMATCH`
 - 测试转绿：`FunctionVariableTest`、`WrongFunctionTypeTest`、`FunFieldMemberCall`（保持）；新增 `Tests/LambdaTest/HigherOrderFunTest.md`（fun 作函数参数传递并回调）+ `Tests/LambdaTest/FunIndirectAggregateReturn.md`（间接调用返回 string，锁 sret 路径）
 
-### 里程碑 3：方法引用（绑定 + 静态）
+### 里程碑 3：方法引用（BabyPenguin 无绑定参考实现 + EmperorPenguin 绑定/静态/无绑定）
 
-- **类型**：`bind_member_access` 的方法成员在**值位置**产出 fun 类型——`make_function_type(ret, parameters[1..], sym.is_async)`（剥离 this，对照 `ICodeContainer.cs:1884-1889`）。调用位置不受影响：`bind_function_call` 先 bind callee，其 `:2604` 分支按 `member_symbol is function_sym` 走直呼，与 member_access 的 bound_type 无关（实施时核对该顺序，避免 `x.m(args)` 误入间接路径）
+**BabyPenguin 侧（先行——参考编译器定语义，新语义 = 无绑定方法引用）**：
+
+- `BabyPenguin/SemanticInterface/ICodeContainer.cs` 成员访问绑定：base 为**类型符号**、成员为实例方法、处于**值位置**时加无绑定分支——fun 类型**保留** this 参数（对照绑定分支 :1884-1889 剥离 `Skip(2)`，无绑定不剥离，类型为 `fun<Ret, A, P...>`），`FunctionRuntimeValue` 不设 Owner
+- 运行时**无需改动**：`IRCallFuncPtrInst`（`VirtualMachine/RuntimeFrame.cs:612-688`）Owner 为空时本就不前插、实参按位透传——receiver 由调用方作第一实参显式传入，类型检查由 fun 类型的第二个泛型参数（A）承接
+- C# 后端 `BabyPenguin/CSharpBackend/FunctionLowerer.cs` 的 funptr 溯源补无绑定形态（无 receiver 前插、原样调用）
+- 约束（两个编译器一致）：接口方法 `I.b` 无绑定引用报错（无唯一实现）；泛型方法需引用点显式特化（`A.m<i32>`）
+- 验证：`UnboundMethodBindingTest` 在 BabyPenguin 转绿
+
+**EmperorPenguin 侧（绑定 + 静态 + 无绑定）**：
+
+- **类型**：`bind_member_access` 的方法成员在**值位置**产出 fun 类型——绑定时 `make_function_type(ret, parameters[1..], sym.is_async)`（剥离 this，对照 `ICodeContainer.cs:1884-1889`）；无绑定（base 为类型符号）时 `make_function_type(ret, 全参数含 this, sym.is_async)`。调用位置不受影响：`bind_function_call` 先 bind callee，其 `:2604` 分支按 `member_symbol is function_sym` 走直呼，与 member_access 的 bound_type 无关（实施时核对该顺序，避免 `x.m(args)` 误入间接路径）
 - **invoker 合成**：`new` 一批 per-(类,方法) invoker 类（字段 `__recv` + `fun __call(mut this, ...) { return this.__recv.m(...); }`），**非泛型、具体类型拼写**（复用 `spawn_type_spec` 从 BoundType 构造 TypeSpecifier；合成+`catch_up_def_before_bodies` 完全照抄 `bind_spawn_async` :928-1032, :1146-1174 模式），`SemanticModel` 上按 `类全名#方法名#特化` 缓存防重复；泛型类方法按 receiver 的具体特化合成（名字含特化后缀）
 - **lowering**：`IRGenerator` 的 member_access 分支对 fun 类型且 symbol 为 function_sym 的值位置求值 → 发射 `new <invoker>`（receiver 求值一次存入 `__recv`）
 - **静态方法引用**（无 this 的方法，`StaticFunctionBindingTest`）：直接走里程碑 2 的 `@__funval_<fn>` 单例（thunk 转发静态方法）
-- 测试转绿：`FunctionBindingTest`、`StaticFunctionBindingTest`
+- **无绑定方法引用**（`A.b` 值位置 → `fun<A, P...>`）：单例机制同静态引用，差别仅在 thunk **透传**第 0 真实参数作 receiver（`__funval_thunk_A_b(ptr %self, ptr %a, ...) → A.b(%a, ...)`），thunk 命名含类与方法以区分静态函数 thunk
+- 测试转绿：`FunctionBindingTest`、`StaticFunctionBindingTest`、`UnboundMethodBindingTest`（EP 侧随之转绿）
 
 ### 里程碑 4：lambda（捕获闭包）
 
@@ -108,7 +123,7 @@
 
 ### 里程碑 6：收尾
 
-- 文档：`EmperorPenguin/README.md`（fun 值表示与 `__FunVal` 元数据条目）、`Documentation/`（函数类型/lambda 章节，若已有则更新）；**技能表更新**：`penguinang-coding` 的"Lambda / 函数值在编译器源中禁用"条目——EP pass2+ 支持后该限制的原始理由（EP 编译不了自身源码中的 lambda）消失，可解除（bootstrap 链 pass1 用 BabyPenguin 编译本就支持）；保守起见标注"新解除，编译器源码暂不主动使用"
+- 文档：`EmperorPenguin/README.md`（fun 值表示与 `__FunVal` 元数据条目）、`Documentation/`（函数类型/lambda 章节，含语义等式 `a.b(x) ≡ A.b(a, x)` 的值形式说明与无绑定引用，若已有则更新）；**技能表更新**：`penguinang-coding` 的"Lambda / 函数值在编译器源中禁用"条目——EP pass2+ 支持后该限制的原始理由（EP 编译不了自身源码中的 lambda）消失，可解除（bootstrap 链 pass1 用 BabyPenguin 编译本就支持）；保守起见标注"新解除，编译器源码暂不主动使用"
 - `.agents/memory/` 记录（ABI 决策、已知差异、优化路径）
 - 全量验证（tee 到 /tmp/test.log）：`make bootstrap`（pass5 收敛）→ `make test` 全矩阵 → `dotnet test` → `make lsp` 确认不受影响 → （linux host）`make lsp_win` 交叉构建抽查
 - 用 `--probe` 扫一遍其余类别（GenericTest/InterfaceTest 等）确认无回归
@@ -121,6 +136,8 @@
 - **interface_id 碰撞**：`.__FunVal` 固定 id 无泛型后缀；点前缀与现有 interface_id 形状一致，无用户可见命名冲突
 - **调用/值位置歧义**（M3 最大坑）：`x.m(args)` 直呼 vs `x.m` 取引用——绑定顺序上 `bind_function_call` 先 bind callee 再按 `member_symbol` 分派，理论隔离；实施时对 `x.m` 泛型方法引用（需显式 `x.m<i32>` 取特化）明确报错或支持，写测试锁定
 - **BabyPenguin 行为差异**：绑定方法 `==` 指针相等性（见设计决策）；`cast<string>(fun值)` BabyPenguin 打印函数名——EP v1 报清晰 `E_UNSUPPORTED` 而非崩
+- **无绑定引用的边界**：接口方法 `I.b`（无唯一实现）与泛型方法未显式特化（`A.m` 不带 `<i32>`）在两个编译器上一致报错；从 fun 值反取函数地址/receiver、运行时绑定/解绑定两编译器均不支持——Documentation 明确记录
+- **BabyPenguin 侧回归面**：`ICodeContainer.cs` 成员访问分支与 C# 后端 funptr 溯源改动可能波及既有绑定/静态引用路径——`dotnet test`（BabyPenguin.Tests）+ `FunctionBindingTest`/`StaticFunctionBindingTest` 既有用例必须保持绿
 - **动态库边界**：`.penguin-lib` 跨界传递 fun 值（嵌入源码本地单态化 vs `.so` 内定义的符号可见性）超范围，README 记录限制
 - **bootstrap 自举**：实现代码本身必须留在 ANTLR 安全子集（不使用 lambda/fun 类型/嵌套命名空间）——鸡生蛋约束，纯数据结构与分支代码无压力；每里程碑 `make bootstrap` 保证 pass5 md5 收敛
 

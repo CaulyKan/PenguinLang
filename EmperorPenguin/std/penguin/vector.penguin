@@ -24,10 +24,11 @@ export class Vector {
     fun _grow(mut this, new_cap: u64) {
         let new_bytes: u64 = new_cap * cast<u64>(#sizeof(T));
         let new_buf: u64 = __builtin._malloc(new_bytes);
-        // Register the new buffer as a GC scan region BEFORE elements (which
-        // may be GC references) land in it; unregister the old one before
-        // freeing so the collector never scans freed memory.
-        __builtin._gc_scan_add(new_buf, cast<i64>(new_bytes));
+        // Register the new buffer with its PRECISE element layout (GC v2 3b)
+        // BEFORE elements land in it: a minor collection rewrites young
+        // references in place (the legacy _gc_scan_add byte-region could only
+        // pin them). Primitive elements compile this to nothing.
+        #__track_buffer(T, new_buf, new_cap, cast<u64>(#sizeof(T)));
         let i: mut u64 = 0;
         while (i < this.len) {
             let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));

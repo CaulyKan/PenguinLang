@@ -180,14 +180,22 @@ field_offset = 8 + field_position_offset   // 8 = sizeof(ptr metadata)
 
 ### 2.4 String 内存布局（引用类型）
 
+一个 string 值是 `ptr`，指向一个**头前缀块**（C 侧定义见 `EmperorPenguin/std/include/emperor_string.h`）：
+
 ```llvm
-; PenguinString: 变长结构
-; offset 0:  ptr metadata → @String_metadata
-; offset 8:  i64 length (字符串长度)
-; offset 16: i8  data[] (UTF-8 数据，内联存储)
+; _emperor_string: 变长结构（字面量与堆串同构）
+; offset 0:  ptr metadata   → @_emperor_string_metadata（EmperorClassMetadata，
+;                                interface_count=0 —— `x is IFace` 对 string 干净地返回 false）
+; offset 8:  i64 length     （字节长度，不含结尾 NUL；string_length O(1) 直读）
+; offset 16: i8  data[]     （length 字节 + data[length] = '\0'，C 互操作便利）
 ```
 
-字符串字面量作为全局常量。变量持有 `ptr` 直接指向 PenguinString。
+- **堆串**：运行期串由 `_emperor_string_alloc(len)` 经 `_emperor_gc_alloc(16+len+1, is_string=1)` 分配（GC 对 is_string 块不扫描、不 finalize，头里的 metaptr 对收集器完全不可见）。
+- **字面量**：`@str_N = private constant { ptr, i64, [len+1 x i8] } { ptr @_emperor_string_metadata, i64 len, [len+1 x i8] c"...\00" }` —— 字面量的**值就是这个结构体的地址**，与堆串在 C ABI 上完全同构（静态存储，GC 不追踪）。含字面量的模块伴随一行 `@_emperor_string_metadata = external global i8`（仅取地址；链接期由 libcore_builtin.a / exe `-rdynamic` 解析，JIT unit B 经进程符号表解析）。
+- **libc 边界**：`to_cstring = +16`（即 data 指针），`from_cstring = -16` 只对已知是 data 指针的值合法；外来 C 串（libc 返回值）必须走 `_emperor_string_adopt_cstring` 拷贝。裸顶层 extern 的调用点编组见 §6（string 实参 `getelementptr +16`，string 返回值 adopt）。
+- 不可变：string 无成员写路径，赋值/传参/值类 memcpy 共享指针，`==` 为内容比较（先比 length 再 memcmp）。
+
+变量持有 `ptr` 直接指向该结构。
 
 ### 2.5 Enum 内存布局（Tagged Union，值类型 + metadata ptr）
 
@@ -947,11 +955,15 @@ extern 函数的调用走普通 CALL 指令（IR 中没有专门的 extern 调�
 declare i32 @puts(ptr)
 
 define void @NS_initial_routine_0() {
-    %str = ... ; string → const char* marshal
-    call i32 @puts(ptr %str)
+    %data = getelementptr i8, ptr @str_N, i64 16   ; string → data 指针（+16 跳过 header）
+    call i32 @puts(ptr %data)
     ret void
 }
 ```
+
+裸 libc extern 的 **string 编组**（`string` 是头前缀块，libc 只认 `char*`）：
+- string **实参**：`getelementptr i8, ptr %s, i64 16`（数据指针）
+- string **返回值**：`%adopted = call ptr @_emperor_string_adopt_cstring(ptr %raw)`（把外来 C 串拷贝成 GC string）
 
 符号名映射规则（`llvm_func_name`）：
 - `__builtin` / `_utils` 运行时命名空间的 extern → `@_emperor_<tail>`（如 `__builtin.println` → `@_emperor_println`）

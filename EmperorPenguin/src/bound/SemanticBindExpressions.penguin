@@ -1270,6 +1270,17 @@ class BindExpressionsPass {
         // float literal as f64 makes unary neg emit `fsub double 0.0, 3.5`
         // (LLVMEmitter.emit_unaryop already dispatches on is_float_type).
         let value: string = expr.value;
+        // A char literal ('a', '\n') binds as its integer code point. The
+        // quoted token text must never flow into the IR as-is ("add i32 0,
+        // 'a'" is invalid LLVM), and the float-shape test below would even
+        // misread 'e' as a float literal. Char contexts accept the i64 via
+        // the ordinary numeric implicit cast.
+        if (string_length(value) >= 3 && string_char_code_at(value, 0) == 39 && string_char_code_at(value, string_length(value) - 1) == 39) {
+            let ch_code: i64 = this.char_literal_code(value);
+            let bt_ch: BoundType = this.model.some.type_registry.resolve_type("i64").some;
+            let lit_ch: mut BoundLiteralExpression = new BoundLiteralExpression(cast<string>(ch_code), bt_ch, new LiteralKind.IntegerLiteral());
+            return new Option<BoundExpression>.some(new BoundExpression.literal(lit_ch));
+        }
         if (string_find(value, ".") >= 0 || string_find(value, "e") >= 0 || string_find(value, "E") >= 0) {
             let bt: BoundType = this.model.some.type_registry.resolve_type("f64").some;
             let result: mut BoundLiteralExpression = new BoundLiteralExpression(value, bt, new LiteralKind.FloatLiteral());
@@ -1280,6 +1291,27 @@ class BindExpressionsPass {
         return new Option<BoundExpression>.some(new BoundExpression.literal(result));
     }
 
+
+    // The code point of a char literal's payload. `value` is the raw token
+    // text INCLUDING the single quotes; escape sequences ('\n', '\t', '\r',
+    // '\0', '\\', '\'', '\"') fold to their character, an unknown escape
+    // yields the escaped character itself. Comparisons are on char codes —
+    // the lexer/codebase idiom.
+    fun char_literal_code(mut this, value: string) -> i64 {
+        let inner: string = string_substring(value, 1, string_length(value) - 2);
+        if (string_length(inner) >= 2 && string_char_code_at(inner, 0) == 92) {
+            let esc: i64 = string_char_code_at(inner, 1);
+            if (esc == 110) { return 10; }
+            if (esc == 116) { return 9; }
+            if (esc == 114) { return 13; }
+            if (esc == 48) { return 0; }
+            if (esc == 92) { return 92; }
+            if (esc == 39) { return 39; }
+            if (esc == 34) { return 34; }
+            return esc;
+        }
+        return string_char_code_at(inner, 0);
+    }
 
     fun bind_string_literal(mut this, expr: StringLiteralExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_string_literal");
@@ -1538,6 +1570,14 @@ class BindExpressionsPass {
             operators.push(expr.operators.at(cast<u64>(j)).some);
             j = j + 1;
         }
+        // Constant-fold string-literal `+` runs ("a" + "b" -> "ab") so the
+        // result lowers to ONE static .rodata literal instead of a runtime
+        // _emperor_string_concat heap allocation per evaluation.
+        if (this.fold_string_literal_concats(operands, operators)) {
+            if (cast<i64>(operands.size()) == 1 && cast<i64>(operators.size()) == 0) {
+                return new Option<BoundExpression>.some(operands.at(cast<u64>(0)).some);
+            }
+        }
         if (cast<i64>(operands.size()) > 0) {
             let bt: BoundType = operands.at(cast<u64>(0)).some.get_bound_type();
             // Comparison and `is` operators produce bool result
@@ -1560,6 +1600,85 @@ class BindExpressionsPass {
         }
         let result: mut BoundBinaryExpression = new BoundBinaryExpression(new BoundType(), operators, operands);
         return new Option<BoundExpression>.some(new BoundExpression.binary(result));
+    }
+
+    // True when `e` is a plain string literal. `value` holds the raw quoted
+    // token text with escape sequences still encoded (bind_string_literal).
+    fun is_string_literal_expr(this, e: BoundExpression) -> bool {
+        if (e is BoundExpression.literal) {
+            if (e.literal.literal_kind is LiteralKind.StringLiteral) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The inner text of a string literal's value: quotes stripped, escape
+    // sequences kept VERBATIM. Concatenating inner texts therefore produces
+    // exactly what the merged source literal would lex to.
+    fun string_literal_inner(this, e: BoundExpression) -> string {
+        let v: string = e.literal.value;
+        let len: i64 = string_length(v);
+        if (len >= 2 && string_char_at(v, 0) == "\"" && string_char_at(v, len - 1) == "\"") {
+            return string_substring(v, 1, len - 2);
+        }
+        return v;
+    }
+
+    // Fold ADJACENT string-literal operands joined by Add into one literal,
+    // rewriting `operands`/`operators` in place. A folded chain becomes a
+    // single StringLiteral bound expression, so IRGenerator emits one CONST
+    // and LLVMEmitter places the whole text in a static @str_N constant —
+    // no runtime _emperor_string_concat, no GC allocation. Mixed chains
+    // ("lit" + x + "a" + "b") keep their non-literal operands; only the
+    // adjacent literal runs merge. Returns true when anything folded.
+    fun fold_string_literal_concats(mut this, operands: mut _utils.List<BoundExpression>, operators: mut _utils.List<BinaryOperator>) -> bool {
+        if (cast<i64>(operands.size()) < 2) { return false; }
+        if (cast<i64>(operators.size()) != cast<i64>(operands.size()) - 1) { return false; }
+        let folded_any: mut bool = false;
+        let out_operands: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
+        let out_operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(operands.size())) {
+            let cur: BoundExpression = operands.at(cast<u64>(i)).some;
+            let merge: mut bool = false;
+            if (i > 0 && this.is_string_literal_expr(cur) && cast<i64>(out_operands.size()) > 0) {
+                let prev_op: BinaryOperator = operators.at(cast<u64>(i - 1)).some;
+                let last_idx: i64 = cast<i64>(out_operands.size()) - 1;
+                if (prev_op is BinaryOperator.Add && this.is_string_literal_expr(out_operands.at(cast<u64>(last_idx)).some)) {
+                    merge = true;
+                }
+            }
+            if (merge) {
+                let last: BoundExpression = out_operands.pop().some;
+                let merged_inner: string = this.string_literal_inner(last) + this.string_literal_inner(cur);
+                let merged: mut BoundLiteralExpression = new BoundLiteralExpression("\"" + merged_inner + "\"", last.literal.bound_type, new LiteralKind.StringLiteral());
+                out_operands.push(new BoundExpression.literal(merged));
+                folded_any = true;
+                // the Add between the merged pair is consumed: not carried over
+            } else {
+                out_operands.push(cur);
+                if (i > 0) {
+                    out_operators.push(operators.at(cast<u64>(i - 1)).some);
+                }
+            }
+            i = i + 1;
+        }
+        if (folded_any) {
+            while (cast<i64>(operands.size()) > 0) { operands.pop(); }
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(out_operands.size())) {
+                operands.push(out_operands.at(cast<u64>(oi)).some);
+                oi = oi + 1;
+            }
+            while (cast<i64>(operators.size()) > 0) { operators.pop(); }
+            let pj: mut i64 = 0;
+            while (pj < cast<i64>(out_operators.size())) {
+                operators.push(out_operators.at(cast<u64>(pj)).some);
+                pj = pj + 1;
+            }
+        }
+        return folded_any;
     }
 
 

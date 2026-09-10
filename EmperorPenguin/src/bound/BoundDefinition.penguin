@@ -10,7 +10,7 @@ class BoundVTable {
     slots: mut _utils.List<BoundVTableSlot> = new _utils.List<BoundVTableSlot>();
 }
 
-class BoundEnumMemberDefinition {
+export class BoundEnumMemberDefinition {
     name: string = "";
     member_symbol: Option<BoundEnumMemberSymbol> = new Option<BoundEnumMemberSymbol>.none();
     member_type: BoundType = new BoundType();
@@ -23,7 +23,7 @@ class BoundEnumMemberDefinition {
     }
 }
 
-class BoundFunctionDefinition {
+export class BoundFunctionDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
@@ -56,6 +56,17 @@ class BoundFunctionDefinition {
     // consumer emits a declaration (extern) and links against the lib instead of
     // lowering a body. Set for lib-source defs and shipped generic instances.
     is_lib_export: bool = false;
+    // True for EVERY def contributed by a loaded .penguin-lib's merged sources
+    // (including generic templates, which is_lib_export deliberately skips so
+    // their bodies stay bindable for consumer-side specialization). Read by the
+    // Monomorphize shipped-instance guard: a consumer-local template whose
+    // specialization mangles onto a shipped instance name is a metadata/name
+    // collision, not a routable instance.
+    is_lib_source: bool = false;
+    // Dyn-lib export filter (libmeta v1): the source def carried `export` (or is
+    // nested in an exported namespace). Only consumed when BUILDING a
+    // .penguin-lib (serialize_symbols keep-set seed); inert for normal compiles.
+    is_exported: bool = false;
     // Set on monomorphized generic instances (produced by specialize_*), so
     // collect_instances can list the shipped instances in a lib's metadata.
     is_specialized: bool = false;
@@ -74,7 +85,7 @@ class BoundFunctionDefinition {
     }
 }
 
-class BoundClassDefinition {
+export class BoundClassDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
@@ -104,6 +115,8 @@ class BoundClassDefinition {
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_generic_template: bool = false;
     is_lib_export: bool = false;
+    is_lib_source: bool = false;
+    is_exported: bool = false;
     is_specialized: bool = false;
     // Interface names this class implements (from its `impl ...` members), populated
     // by the AST-fallback reflection (MetaEngine.spec_to_bound_type) so meta codegen
@@ -154,7 +167,7 @@ class BoundClassDefinition {
     }
 }
 
-class BoundEnumDefinition {
+export class BoundEnumDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
@@ -169,6 +182,8 @@ class BoundEnumDefinition {
     vtables: mut _utils.List<BoundVTable> = new _utils.List<BoundVTable>();
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_lib_export: bool = false;
+    is_lib_source: bool = false;
+    is_exported: bool = false;
     is_specialized: bool = false;
     // D6/req5: non-type (value) template params (N in #template(N: i32) enum E) and
     // the concrete values/texts/kinds bound at specialization. Parallel lists; the
@@ -189,7 +204,7 @@ class BoundEnumDefinition {
     }
 }
 
-class BoundInterfaceDefinition {
+export class BoundInterfaceDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
@@ -208,6 +223,8 @@ class BoundInterfaceDefinition {
     generic_params: mut _utils.List<string> = new _utils.List<string>();
     ast_source: Option<Definition> = new Option<Definition>.none();
     is_lib_export: bool = false;
+    is_lib_source: bool = false;
+    is_exported: bool = false;
     is_specialized: bool = false;
     // D6/req5: non-type (value) template params (N in #template(N: i32) interface I)
     // and the concrete values bound at specialization. Parallel lists; the
@@ -254,7 +271,7 @@ class BoundInterfaceForImplementation {
     }
 }
 
-class BoundNamespaceDefinition {
+export class BoundNamespaceDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
@@ -271,7 +288,7 @@ class BoundNamespaceDefinition {
     }
 }
 
-class BoundInitialRoutineDefinition {
+export class BoundInitialRoutineDefinition {
     pass_index: mut i64 = 0;
     body: Option<BoundExpression> = new Option<BoundExpression>.none();
     scope: Option<BoundScope> = new Option<BoundScope>.none();
@@ -292,6 +309,7 @@ class BoundTypeReferenceDefinition {
     name: string = "";
     alias_type: BoundType = new BoundType();
     type_symbol: Option<BoundTypeSymbol> = new Option<BoundTypeSymbol>.none();
+    is_exported: bool = false;
 
     fun new(mut this, name: string) {
         this.name = name;
@@ -302,7 +320,7 @@ class BoundTypeReferenceDefinition {
     }
 }
 
-class BoundClassFieldDefinition {
+export class BoundClassFieldDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     bound_type: BoundType = new BoundType();
@@ -320,7 +338,7 @@ class BoundClassFieldDefinition {
     }
 }
 
-class BoundGlobalVariableDefinition {
+export class BoundGlobalVariableDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";

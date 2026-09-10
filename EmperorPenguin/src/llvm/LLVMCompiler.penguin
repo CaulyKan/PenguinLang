@@ -5,7 +5,7 @@ namespace emperor {
 // meta/JIT archives, stack flags) lives OUTSIDE the compiler — in the
 // `emperor` / `emperor.bat` driver scripts — so one .ll serves every link
 // target (linux native, linux->win cross, native windows).
-class LLVMCompiler {
+export class LLVMCompiler {
     verbose: mut i64 = 0;
 
     fun new(mut this) {}

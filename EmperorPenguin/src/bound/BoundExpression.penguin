@@ -300,7 +300,7 @@ class BoundMetaCallExpression {
     }
 }
 
-enum BoundExpression {
+export enum BoundExpression {
     literal: BoundLiteralExpression;
     identifier: BoundIdentifierExpression;
     binary: BoundBinaryExpression;

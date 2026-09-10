@@ -19,8 +19,21 @@ class ResolveTypesPass {
     fun run(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_resolve_types");
         let i: mut i64 = 0;
+        let ast_count: i64 = cast<i64>(unit.definitions.size());
         while (i < cast<i64>(result.definitions.size())) {
-            let ast_def: Definition = unit.definitions.at(cast<u64>(i)).some;
+            // Libmeta-injected defs (no AST counterpart) arrive with
+            // pass_index 2 — their signatures were backfilled by the
+            // injector; skip them and re-index the ast pairing so the
+            // prefix alignment is preserved.
+            if (this.model.some.libmeta_is_injected(i) || i >= ast_count + this.model.some.libmeta_total_injected()) {
+                if (i >= ast_count + this.model.some.libmeta_total_injected()) {
+                    BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, this.model.some.current_pass_index);
+                }
+                i = i + 1;
+                continue;
+            }
+            let ai: i64 = this.model.some.libmeta_ast_index(i);
+            let ast_def: Definition = unit.definitions.at(cast<u64>(ai)).some;
             let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
             if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Resolving " + this.model.some.def_display_name(bound_def)); }
             // Pair against the scope the def was bound into (file namespace for

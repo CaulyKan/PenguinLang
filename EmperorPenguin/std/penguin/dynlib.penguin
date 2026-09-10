@@ -10,17 +10,59 @@ namespace emperor {
 //     <JSON metadata document>
 //     PENGUINLIB:<meta_offset>:<meta_size>\n
 //
-// The JSON (written with std.JsonWriter, read with std.JsonReader) holds
-// name / version / deps / instances / source (the lib's original source verbatim
-// — this carries #fun / #template bodies to consumers, so a consumer can
-// monomorphize NEW generic instances without the lib's source on disk). The
-// loader is OS-agnostic by construction: all native loaders ignore trailing
-// bytes past the last section, and the footer read uses the portable binary
-// file externs (_utils.file_size / file_read_range / file_append).
+// METADATA FORMAT (emperor-libmeta v1 — structured symbol table):
+// The JSON (written with std.JsonWriter, read with std.JsonReader) is a
+// C#-metadata-style SYMBOL TABLE, not embedded source:
+//
+//     {"format":"emperor-libmeta","version":1,
+//      "name":..,"deps":[..],"instances":[<mangled full_name>,..],
+//      "symbols":[
+//        {"kind":"ns","name":"std"},
+//        {"kind":"class","ns":"emperor","name":"BoundType",
+//         "fields":[{"n":"kind","t":<T>,"m":0}],
+//         "methods":[<fun>...],
+//         "impls":[{"iface":<T>,"vt":["<method full_name>",..]}]},
+//        {"kind":"fun","ns":"emperor","name":"compile_sources",
+//         "params":[{"n":"inputs","t":<T>,"m":0}],"ret":<T>},
+//        {"kind":"enum","ns":"bound","name":"E",
+//         "members":[{"n":"a","p":<T>|null,"v":0}],"methods":[..],"impls":[..]},
+//        {"kind":"iface","ns":"emperor","name":"I","methods":[..],"impls":[..]},
+//        {"kind":"alias","ns":"..","name":"A","t":<T>},
+//        {"kind":"implfor","ns":"emperor","iface":<T>,"for":<T>,"methods":[..]},
+//        {"kind":"global","ns":"_utils","name":"g","t":<T>,"m":0,"init":"<expr>"},
+//        {"kind":"source","name":"std/vector.penguin","text":"<verbatim>"}
+//      ]}
+//
+// <T> is a structured type encoding {"b":"<base>","a":[<arg>...],"m":0|1}
+// where base is a primitive registry name ("i32"/"string") or a class/enum/
+// interface full name without the "<global>." prefix; args are {"t":<T>} type
+// args or {"v":{"k":"i64|bool|string|double|obj",...}} value args. display_name
+// is NOT used (it carries mutability prefixes and cannot round-trip).
+//
+// KEEP SET (export activation): a lib's metadata carries
+//   - every `export`-marked def (an `export namespace` cascades to its
+//     members) plus the closure of types referenced by retained signatures,
+//     fields, enum payloads, impl edges and global initializers,
+//   - every global variable (the consumer must re-define + re-initialize them
+//     for GOT interposition),
+//   - every top-level `impl X for Y` edge (value-type classification parity),
+//   - VERBATIM SOURCE for every lib file containing template/meta constructs
+//     (#template / #fun / #specializing / #if / ...) — consumers must re-bind
+//     those defs to monomorphize NEW generic instances.
+// Everything else stays private to the .so. `is_exported` is consumed ONLY
+// here (lib build filtering); normal compiles are unaffected.
+//
+// CONSUMPTION (Phase A — text materialization): read_meta parses the symbol
+// table and MATERIALIZES it as one declaration-only pseudo source (bodyless
+// `fun ...;` — never `extern fun`, so the extern->libc mapping never fires);
+// source entries become per-file SourceInputs unchanged. The materialized
+// file flows through the ordinary pipeline marked SourceInput.is_lib, so the
+// existing is_lib_export machinery (pass-1 range marking, pass-8 body skip,
+// IR declaration emission, check_lib_redefinition) applies as-is.
 //
 // This file is NOT in the default EmperorPenguinPass1.penguins project — the default
 // build (pass1 / dotnet tests / pass2) compiles the ANTLR-safe DynlibStub.penguin
-// instead, which disables dyn-lib. The bootstrap's pass2→pass3 / pass3→pass4
+// instead, which disables dyn-lib. The bootstrap's pass2->pass3 / pass3->pass4
 // steps build from EmperorPenguinPass2.penguins, which swaps in THIS file plus
 // json/vector/hashmap (pass3+ only). No meta (#if/#option) anywhere in this
 // module: the compiler's own code is plain penguin.
@@ -32,12 +74,13 @@ class LibFooter {
     size: i64 = 0;
 }
 
-// One source file of a lib, carried verbatim in the metadata so consumers get
-// per-file SourceInputs (keeping the original file namespaces) instead of one
-// concatenated blob — a single multi-megabyte SourceInput is pathological for
-// the lexer/GC, and per-file names keep the lib's defs symbol-identical to a
+// One source file carried verbatim in the metadata (a template/meta file), OR
+// — after read_meta — one materialized declaration pseudo-file. Per-file
+// SourceInputs (not one concatenated blob) keep the original file namespaces
+// stable: a single multi-megabyte SourceInput is pathological for the
+// lexer/GC, and per-file names keep the lib's defs symbol-identical to a
 // monolithic compile of the same sources.
-class LibFile {
+export class LibFile {
     name: string = "";
     text: string = "";
 }
@@ -48,18 +91,31 @@ class LibMeta {
     deps: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
     files: mut _utils.List<LibFile> = new _utils.List<LibFile>();
+    // True when the symbol table materialized into a decl pseudo-file (i.e.
+    // the lib carries at least one declarable symbol). The decl file and the
+    // direct-injection doc are two views of the same material — a lib WITHOUT
+    // a decl file (e.g. a template-source-only lib with no export marks) must
+    // contribute neither, or lib_meta_docs and lib_meta_slots misalign and the
+    // injector splices batches at garbage slot indices.
+    has_decls: bool = false;
+    // The full metadata JSON text (libmeta direct injection re-parses it to
+    // build prebuilt bound defs instead of materializing declaration text).
+    doc_json: string = "";
 }
 
 // Accumulated result of loading a --lib chain: the merged lib sources to
 // compile into the consumer, the .penguin-lib paths to link, the dep names to
 // record, and the union of shipped instance names (for declare-not-define
 // routing). has_error latches any unresolvable dependency.
-class LibLoadState {
+export class LibLoadState {
     sources: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     so_paths: mut _utils.List<string> = new _utils.List<string>();
     lib_names: mut _utils.List<string> = new _utils.List<string>();
     instances: mut _utils.List<string> = new _utils.List<string>();
     visited: mut _utils.List<string> = new _utils.List<string>();
+    // Per-lib metadata JSON documents (load order == the decl-file order the
+    // text path would produce), consumed by libmeta direct injection.
+    meta_docs: mut _utils.List<string> = new _utils.List<string>();
     has_error: bool = false;
 }
 
@@ -119,7 +175,1719 @@ fun read_lib_footer(path: string) -> LibFooter {
     return footer;
 }
 
-// Parse the appended JSON metadata into a LibMeta. Empty name on failure.
+// ===========================================================================
+// SERIALIZER (lib build side): BoundCompilationUnit -> emperor-libmeta v1.
+// ===========================================================================
+
+// The source file a bound def came from (for lib-own filtering). Classes/
+// enums/interfaces carry their AST def; functions/globals carry it on the
+// symbol location. "" when unknown.
+fun _lib_def_source_file(d: BoundDefinition) -> string {
+    if (d is BoundDefinition.class_def) {
+        if (let a := d.class_def.ast_source.some) { return ast_def_filename(a); }
+    }
+    if (d is BoundDefinition.enum_def) {
+        if (let a := d.enum_def.ast_source.some) { return ast_def_filename(a); }
+    }
+    if (d is BoundDefinition.interface_def) {
+        if (let a := d.interface_def.ast_source.some) { return ast_def_filename(a); }
+    }
+    if (d is BoundDefinition.function_def) {
+        if (let s := d.function_def.symbol.some) { return s.location.filename; }
+    }
+    if (d is BoundDefinition.meta_function_def) { return d.meta_function_def.location.filename; }
+    if (d is BoundDefinition.global_var_def) {
+        // Prefer the AST def: the variable symbol's location is not always
+        // populated at bind time, and the ast_source carries the real file.
+        if (let a := d.global_var_def.ast_source.some) { return ast_def_filename(a); }
+        if (let s := d.global_var_def.variable_symbol.some) { return s.location.filename; }
+    }
+    return "";
+}
+
+// A lib file must ship VERBATIM when it contains template/meta constructs:
+// consumers re-bind those defs (template bodies, #fun bodies, #specializing
+// blocks, #if/#option splices) to monomorphize NEW instances. Detection: a
+// line whose first non-whitespace character is '#' followed by an ASCII
+// letter (every template/meta DEFINITION starts a line this way; inline meta
+// CALLS are not detected — they only appear inside bodies that are either
+// template bodies (file already ships) or .so-private). Character tests use
+// string_char_code_at (integers) — kept even though string relationals are
+// now content-based on every backend (StringRelationalGeNative): comparing
+// char codes stays cheaper than allocating single-char strings per position.
+// A def-based backstop (upgrade_template_files) catches anything the text
+// scan misses. False positives only over-ship source (correct, bigger).
+fun _lib_text_needs_source(text: string) -> bool {
+    let i: mut i64 = 0;
+    let len: i64 = string_length(text);
+    while (i < len) {
+        let nl: i64 = string_find_from(text, "\n", i);
+        let line_end: i64 = if (nl >= 0) { nl } else { len };
+        // first non-ws char
+        let p: mut i64 = i;
+        while (p < line_end) {
+            let code: i64 = string_char_code_at(text, p);
+            if (code != 32 && code != 9) { break; }
+            p = p + 1;
+        }
+        if (p < line_end) {
+            let c0: i64 = string_char_code_at(text, p);
+            if (c0 == 35) {
+                // '#' (35) followed by an ASCII letter
+                if (p + 1 < len) {
+                    let c1: i64 = string_char_code_at(text, p + 1);
+                    if ((c1 >= 97 && c1 <= 122) || (c1 >= 65 && c1 <= 90)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (nl < 0) { break; }
+        i = nl + 1;
+    }
+    return false;
+}
+
+// Full name of a def ("<global>.ns.Name") or "" for shapes without one.
+fun _lib_def_full_name(d: BoundDefinition) -> string {
+    if (d is BoundDefinition.function_def) { return d.function_def.full_name; }
+    if (d is BoundDefinition.class_def) { return d.class_def.full_name; }
+    if (d is BoundDefinition.enum_def) { return d.enum_def.full_name; }
+    if (d is BoundDefinition.interface_def) { return d.interface_def.full_name; }
+    if (d is BoundDefinition.global_var_def) { return d.global_var_def.full_name; }
+    if (d is BoundDefinition.type_ref_def) {
+        if (let s := d.type_ref_def.type_symbol.some) { return s.full_name; }
+    }
+    return "";
+}
+
+// Strip the "<global>." prefix off a full name (for source spellings).
+fun _lib_strip_global(full: string) -> string {
+    if (string_length(full) > 9 && string_substring(full, 0, 9) == "<global>.") {
+        return string_substring(full, 9, string_length(full) - 9);
+    }
+    return full;
+}
+
+// The enclosing-namespace path of a def derived from its full name
+// ("<global>.std.io.Foo" -> "std.io"; "<global>.Foo" -> "").
+fun _lib_ns_of_full(full: string) -> string {
+    let stripped: string = _lib_strip_global(full);
+    let dot: i64 = _find_last_char(stripped, ".");
+    if (dot < 0) { return ""; }
+    return string_substring(stripped, 0, dot);
+}
+
+class LibMetaSerializer {
+    // inputs
+    files: _utils.List<LibFile>;
+    verbose: mut i64 = 0;
+    // files shipping verbatim (template/meta files)
+    shipped_files: mut _utils.List<string> = new _utils.List<string>();
+    // defs from shipped files: their BODIES re-bind in the consumer, so the
+    // closure must walk them fully (every referenced symbol retained as a
+    // declaration, or its file shipped when it is itself a template)
+    shipped_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    shipped_walked: mut _utils.List<bool> = new _utils.List<bool>();
+    // flat index of the lib's own non-shipped top-level defs
+    top_names: mut _utils.List<string> = new _utils.List<string>();
+    top_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    top_retained: mut _utils.List<bool> = new _utils.List<bool>();
+    top_emit: mut _utils.List<bool> = new _utils.List<bool>();
+    top_walked: mut _utils.List<bool> = new _utils.List<bool>();
+    // member full names (methods/fields/enum members/globals) -> top index
+    member_names: mut _utils.List<string> = new _utils.List<string>();
+    member_top: mut _utils.List<i64> = new _utils.List<i64>();
+
+    fun new(mut this, files: _utils.List<LibFile>, verbose: i64) {
+        this.files = files;
+        this.verbose = verbose;
+    }
+
+    fun is_own_file(this, fname: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.files.size())) {
+            if (this.files.at(cast<u64>(i)).some.name == fname) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun is_shipped_file(this, fname: string) -> bool {
+        return _string_list_contains(this.shipped_files, fname);
+    }
+
+    fun add_member(mut this, full: string, top_idx: i64) {
+        if (string_length(full) == 0) { return; }
+        if (_string_list_contains(this.member_names, full)) { return; }
+        this.member_names.push(full);
+        this.member_top.push(top_idx);
+    }
+
+    fun index_top(mut this, d: BoundDefinition) {
+        let full: string = _lib_def_full_name(d);
+        if (string_length(full) == 0) { return; }
+        if (_string_list_contains(this.top_names, full)) { return; }
+        let idx: i64 = cast<i64>(this.top_names.size());
+        this.top_names.push(full);
+        this.top_defs.push(d);
+        this.top_retained.push(false);
+        this.top_emit.push(false);
+        this.top_walked.push(false);
+        this.add_member(full, idx);
+        if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (let s := md.function_def.symbol.some) { this.add_member(s.full_name, idx); }
+                }
+                mi = mi + 1;
+            }
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    if (let s := fd.class_field.field_symbol.some) { this.add_member(s.full_name, idx); }
+                }
+                fi = fi + 1;
+            }
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    let imp: BoundInterfaceImplementation = id.impl_def;
+                    let ji: mut i64 = 0;
+                    while (ji < cast<i64>(imp.methods.size())) {
+                        let imd: BoundDefinition = imp.methods.at(cast<u64>(ji)).some;
+                        if (imd is BoundDefinition.function_def) {
+                            if (let s := imd.function_def.symbol.some) { this.add_member(s.full_name, idx); }
+                        }
+                        ji = ji + 1;
+                    }
+                }
+                ii = ii + 1;
+            }
+        } else if (d is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = d.enum_def;
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(enm.members.size())) {
+                let mem: BoundEnumMemberDefinition = enm.members.at(cast<u64>(ei)).some;
+                if (let s := mem.member_symbol.some) { this.add_member(s.full_name, idx); }
+                ei = ei + 1;
+            }
+            let mi2: mut i64 = 0;
+            while (mi2 < cast<i64>(enm.methods.size())) {
+                let md2: BoundDefinition = enm.methods.at(cast<u64>(mi2)).some;
+                if (md2 is BoundDefinition.function_def) {
+                    if (let s := md2.function_def.symbol.some) { this.add_member(s.full_name, idx); }
+                }
+                mi2 = mi2 + 1;
+            }
+        } else if (d is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = d.interface_def;
+            let yi: mut i64 = 0;
+            while (yi < cast<i64>(iface.methods.size())) {
+                let yd: BoundDefinition = iface.methods.at(cast<u64>(yi)).some;
+                if (yd is BoundDefinition.function_def) {
+                    if (let s := yd.function_def.symbol.some) { this.add_member(s.full_name, idx); }
+                }
+                yi = yi + 1;
+            }
+        } else if (d is BoundDefinition.impl_for_def) {
+            let impl_for: BoundInterfaceForImplementation = d.impl_for_def;
+            let zi: mut i64 = 0;
+            while (zi < cast<i64>(impl_for.methods.size())) {
+                let zd: BoundDefinition = impl_for.methods.at(cast<u64>(zi)).some;
+                if (zd is BoundDefinition.function_def) {
+                    if (let s := zd.function_def.symbol.some) { this.add_member(s.full_name, idx); }
+                }
+                zi = zi + 1;
+            }
+        }
+    }
+
+    // Recursively index the lib's own defs. Namespaces recurse; defs from
+    // other files (core_builtin/io/dep libs — is_lib_export) are skipped.
+    // Templates are never indexed (their files ship verbatim — see
+    // upgrade_template_files); a specialized def IS indexed but only ever
+    // retained walk-only. Defs from shipped files go to shipped_defs (their
+    // bodies re-bind in the consumer — see walk_full).
+    fun collect_defs(mut this, defs: _utils.List<BoundDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (d is BoundDefinition.namespace_def) {
+                this.collect_defs(d.namespace_def.children);
+            } else if (_lib_def_is_template(d)) {
+                // backstop: should be unreachable (upgrade_template_files)
+                let tf: string = _lib_def_source_file(d);
+                if (string_length(tf) > 0 && !this.is_shipped_file(tf)) {
+                    __builtin.eprintln("[EmperorPenguin Dynlib] warning: template def in non-shipped file: " + _lib_def_full_name(d) + " (" + tf + ")");
+                }
+                if (string_length(tf) > 0 && this.is_own_file(tf) && this.is_shipped_file(tf)) {
+                    this.shipped_defs.push(d);
+                    this.shipped_walked.push(false);
+                }
+            } else if (d is BoundDefinition.function_def) {
+                if (d.function_def.is_lib_export) { i = i + 1; continue; }
+                let fname: string = _lib_def_source_file(d);
+                if (string_length(fname) > 0 && this.is_own_file(fname)) {
+                    if (this.is_shipped_file(fname)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.class_def) {
+                if (d.class_def.is_lib_export) { i = i + 1; continue; }
+                let fname2: string = _lib_def_source_file(d);
+                if (string_length(fname2) > 0 && this.is_own_file(fname2)) {
+                    if (this.is_shipped_file(fname2)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.enum_def) {
+                if (d.enum_def.is_lib_export) { i = i + 1; continue; }
+                let fname3: string = _lib_def_source_file(d);
+                if (string_length(fname3) > 0 && this.is_own_file(fname3)) {
+                    if (this.is_shipped_file(fname3)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.interface_def) {
+                if (d.interface_def.is_lib_export) { i = i + 1; continue; }
+                let fname4: string = _lib_def_source_file(d);
+                if (string_length(fname4) > 0 && this.is_own_file(fname4)) {
+                    if (this.is_shipped_file(fname4)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.global_var_def) {
+                // Dep-lib globals arrive via pseudo-files not named in this
+                // lib's own file list — the is_own_file check below excludes
+                // them (globals carry no is_lib_export flag).
+                let fname5: string = _lib_def_source_file(d);
+                if (string_length(fname5) > 0 && this.is_own_file(fname5)) {
+                    if (this.is_shipped_file(fname5)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.type_ref_def) {
+                let fname6: string = _lib_def_source_file(d);
+                if (string_length(fname6) > 0 && this.is_own_file(fname6)) {
+                    if (this.is_shipped_file(fname6)) {
+                        this.shipped_defs.push(d);
+                        this.shipped_walked.push(false);
+                    } else {
+                        this.index_top(d);
+                    }
+                }
+            } else if (d is BoundDefinition.impl_for_def) {
+                // impl-for edges have no own location: keep them all as
+                // declarations (tiny; value-type classification parity
+                // requires them) — unless a method's location shows the impl
+                // lives in a file that ships verbatim (it ships as source).
+                let impl_ships: mut bool = false;
+                let imc: i64 = cast<i64>(d.impl_for_def.methods.size());
+                let imi: mut i64 = 0;
+                while (imi < imc) {
+                    let imd: BoundDefinition = d.impl_for_def.methods.at(cast<u64>(imi)).some;
+                    if (imd is BoundDefinition.function_def) {
+                        if (let s := imd.function_def.symbol.some) {
+                            let mf: string = s.location.filename;
+                            if (string_length(mf) > 0 && this.is_own_file(mf) && this.is_shipped_file(mf)) { impl_ships = true; }
+                        }
+                    }
+                    imi = imi + 1;
+                }
+                if (impl_ships) {
+                    this.shipped_defs.push(d);
+                    this.shipped_walked.push(false);
+                } else {
+                    this.index_top(d);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Def-based backstop for the source-shipping decision: walk every def;
+    // any generic template / value template / #fun meta def whose own file is
+    // not already shipping verbatim forces its file into shipped_files.
+    fun upgrade_template_files(mut this, defs: _utils.List<BoundDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let d: BoundDefinition = defs.at(cast<u64>(i)).some;
+            let is_template: bool = _lib_def_is_template(d) || d is BoundDefinition.meta_function_def;
+            if (is_template) {
+                let fname: string = _lib_def_source_file(d);
+                if (string_length(fname) > 0 && this.is_own_file(fname) && !this.is_shipped_file(fname)) {
+                    this.shipped_files.push(fname);
+                    __builtin.eprintln("[EmperorPenguin Dynlib] libmeta source file (def backstop): " + fname);
+                }
+            }
+            if (d is BoundDefinition.namespace_def) {
+                this.upgrade_template_files(d.namespace_def.children);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun find_top(this, full: string) -> i64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.top_names.size())) {
+            if (this.top_names.at(cast<u64>(i)).some == full) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    // Retain the top def owning `full` (a member or the top itself). Returns
+    // the top index or -1 (foreign def: core_builtin / dep lib).
+    fun handle_name(mut this, full: string) -> i64 {
+        if (string_length(full) == 0) { return -1; }
+        let mi: mut i64 = 0;
+        let mcount: i64 = cast<i64>(this.member_names.size());
+        while (mi < mcount) {
+            if (this.member_names.at(cast<u64>(mi)).some == full) {
+                let idx: i64 = this.member_top.at(cast<u64>(mi)).some;
+                this.retain(idx);
+                return idx;
+            }
+            mi = mi + 1;
+        }
+        return -1;
+    }
+
+    fun retain(mut this, idx: i64) {
+        if (idx < 0 || idx >= cast<i64>(this.top_names.size())) { return; }
+        if (this.top_retained.at(cast<u64>(idx)).some) { return; }
+        this.top_retained.set(cast<u64>(idx), true);
+        let d: BoundDefinition = this.top_defs.at(cast<u64>(idx)).some;
+        // Specialized instances never emit symbol entries in Phase A: the
+        // consumer re-derives them from the shipped template source and the
+        // instances[] list (declare-not-define). They ARE walked so their
+        // concrete field/signature types pull the arg types into the closure.
+        let is_specialized: bool = _lib_def_is_specialized(d);
+        this.top_emit.set(cast<u64>(idx), !is_specialized);
+        if (this.verbose >= 1) {
+            let tag: string = if (is_specialized) { " (instance, walk-only)" } else { "" };
+            __builtin.eprintln("[EmperorPenguin Dynlib] libmeta retain: " + this.top_names.at(cast<u64>(idx)).some + tag);
+        }
+    }
+
+    // ---- type / expression closure walk (iterate to fixpoint) ----
+    // Two worklists run to a joint fixpoint: retained DECL defs (signature
+    // closure — their bodies live in the .so and are never re-bound) and
+    // SHIPPED-file defs (full body closure — the consumer re-binds everything,
+    // so every symbol a shipped body references must be retained as a
+    // declaration or its template file shipped).
+    fun run_closure(mut this) {
+        let changed: mut bool = true;
+        while (changed) {
+            changed = false;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.top_names.size())) {
+                if (this.top_retained.at(cast<u64>(i)).some && !this.top_walked.at(cast<u64>(i)).some) {
+                    this.top_walked.set(cast<u64>(i), true);
+                    this.walk_top(this.top_defs.at(cast<u64>(i)).some);
+                    changed = true;
+                }
+                i = i + 1;
+            }
+            let s: mut i64 = 0;
+            while (s < cast<i64>(this.shipped_defs.size())) {
+                if (!this.shipped_walked.at(cast<u64>(s)).some) {
+                    this.shipped_walked.set(cast<u64>(s), true);
+                    this.walk_full(this.shipped_defs.at(cast<u64>(s)).some);
+                    changed = true;
+                }
+                s = s + 1;
+            }
+        }
+    }
+
+    // Signature-level walk of a retained (declaration-shipping) def.
+    fun walk_top(mut this, d: BoundDefinition) {
+        if (d is BoundDefinition.function_def) {
+            let f: BoundFunctionDefinition = d.function_def;
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(f.parameters.size())) {
+                this.walk_type(f.parameters.at(cast<u64>(pi)).some.bound_type);
+                pi = pi + 1;
+            }
+            this.walk_type(f.return_type);
+        } else if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            this.walk_type(cls.bound_type);
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    this.walk_type(fd.class_field.bound_type);
+                }
+                fi = fi + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) { this.walk_top(md); }
+                mi = mi + 1;
+            }
+            if (let ctor := cls.constructor.some) { this.walk_top(new BoundDefinition.function_def(ctor)); }
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    let imp: BoundInterfaceImplementation = id.impl_def;
+                    this.walk_type(imp.interface_type);
+                    let ji: mut i64 = 0;
+                    while (ji < cast<i64>(imp.methods.size())) {
+                        let imd: BoundDefinition = imp.methods.at(cast<u64>(ji)).some;
+                        if (imd is BoundDefinition.function_def) { this.walk_top(imd); }
+                        ji = ji + 1;
+                    }
+                }
+                ii = ii + 1;
+            }
+        } else if (d is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = d.enum_def;
+            this.walk_type(enm.bound_type);
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(enm.members.size())) {
+                this.walk_type(enm.members.at(cast<u64>(ei)).some.member_type);
+                ei = ei + 1;
+            }
+            let mi2: mut i64 = 0;
+            while (mi2 < cast<i64>(enm.methods.size())) {
+                let md2: BoundDefinition = enm.methods.at(cast<u64>(mi2)).some;
+                if (md2 is BoundDefinition.function_def) { this.walk_top(md2); }
+                mi2 = mi2 + 1;
+            }
+            let ii2: mut i64 = 0;
+            while (ii2 < cast<i64>(enm.interface_impls.size())) {
+                let id2: BoundDefinition = enm.interface_impls.at(cast<u64>(ii2)).some;
+                if (id2 is BoundDefinition.impl_def) {
+                    let imp2: BoundInterfaceImplementation = id2.impl_def;
+                    this.walk_type(imp2.interface_type);
+                    let ji2: mut i64 = 0;
+                    while (ji2 < cast<i64>(imp2.methods.size())) {
+                        let imd2: BoundDefinition = imp2.methods.at(cast<u64>(ji2)).some;
+                        if (imd2 is BoundDefinition.function_def) { this.walk_top(imd2); }
+                        ji2 = ji2 + 1;
+                    }
+                }
+                ii2 = ii2 + 1;
+            }
+        } else if (d is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = d.interface_def;
+            this.walk_type(iface.bound_type);
+            let yi: mut i64 = 0;
+            while (yi < cast<i64>(iface.methods.size())) {
+                let yd: BoundDefinition = iface.methods.at(cast<u64>(yi)).some;
+                if (yd is BoundDefinition.function_def) { this.walk_top(yd); }
+                yi = yi + 1;
+            }
+            let xi: mut i64 = 0;
+            while (xi < cast<i64>(iface.interface_impls.size())) {
+                let xd: BoundDefinition = iface.interface_impls.at(cast<u64>(xi)).some;
+                if (xd is BoundDefinition.impl_def) {
+                    let ximp: BoundInterfaceImplementation = xd.impl_def;
+                    this.walk_type(ximp.interface_type);
+                    let xji: mut i64 = 0;
+                    while (xji < cast<i64>(ximp.methods.size())) {
+                        let xmd: BoundDefinition = ximp.methods.at(cast<u64>(xji)).some;
+                        if (xmd is BoundDefinition.function_def) { this.walk_top(xmd); }
+                        xji = xji + 1;
+                    }
+                }
+                xi = xi + 1;
+            }
+        } else if (d is BoundDefinition.type_ref_def) {
+            this.walk_type(d.type_ref_def.alias_type);
+        } else if (d is BoundDefinition.global_var_def) {
+            let gv: BoundGlobalVariableDefinition = d.global_var_def;
+            this.walk_type(gv.bound_type);
+            if (let init := gv.initializer.some) { this.walk_expr(init); }
+        } else if (d is BoundDefinition.impl_for_def) {
+            let impl_for: BoundInterfaceForImplementation = d.impl_for_def;
+            this.walk_type(impl_for.interface_type);
+            this.walk_type(impl_for.for_type);
+            let zi: mut i64 = 0;
+            while (zi < cast<i64>(impl_for.methods.size())) {
+                let zd: BoundDefinition = impl_for.methods.at(cast<u64>(zi)).some;
+                if (zd is BoundDefinition.function_def) { this.walk_top(zd); }
+                zi = zi + 1;
+            }
+        }
+    }
+
+    fun walk_type(mut this, bt: BoundType) {
+        if (bt.kind is TypeKind.PrimitiveKind) { return; }
+        if (bt.kind is TypeKind.ErrorKind) { return; }
+        if (bt.kind is TypeKind.FunctionKind) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(bt.generic_args.size())) {
+                this.walk_type(arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some));
+                i = i + 1;
+            }
+            return;
+        }
+        if (let td := bt.type_definition.some) {
+            let full: string = _lib_def_full_name(td);
+            if (string_length(full) > 0) {
+                let idx: i64 = this.handle_name(full);
+                // A specialized instance: also walk its generic args so the
+                // argument types (e.g. JsonValue in Vector<JsonValue>) enter
+                // the closure even though the instance itself is walk-only.
+                if (idx >= 0 && _lib_def_is_specialized(td)) {
+                    let j: mut i64 = 0;
+                    while (j < cast<i64>(bt.generic_args.size())) {
+                        this.walk_type(arg_as_bound_type(bt.generic_args.at(cast<u64>(j)).some));
+                        j = j + 1;
+                    }
+                } else if (idx < 0 && _lib_def_is_template(td)) {
+                    // An own template that is neither indexed nor shipping:
+                    // the def backstop should have caught its file. Warn —
+                    // the consumer would fail to resolve this type.
+                    let tf: string = _lib_def_source_file(td);
+                    if (string_length(tf) > 0 && this.is_own_file(tf) && !this.is_shipped_file(tf)) {
+                        __builtin.eprintln("[EmperorPenguin Dynlib] warning: template not shipped, shipping now: " + tf);
+                        this.shipped_files.push(tf);
+                    }
+                }
+            }
+        }
+        let k: mut i64 = 0;
+        while (k < cast<i64>(bt.generic_args.size())) {
+            this.walk_type(arg_as_bound_type(bt.generic_args.at(cast<u64>(k)).some));
+            k = k + 1;
+        }
+    }
+
+    fun walk_symbol(mut this, sym: BoundSymbol) {
+        if (sym is BoundSymbol.function_sym) {
+            this.handle_name(sym.function_sym.full_name);
+            this.walk_type(sym.function_sym.return_type);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(sym.function_sym.parameters.size())) {
+                this.walk_type(sym.function_sym.parameters.at(cast<u64>(i)).some.bound_type);
+                i = i + 1;
+            }
+        } else if (sym is BoundSymbol.variable) {
+            this.walk_type(sym.variable.bound_type);
+            if (sym.variable.variable_kind is VariableSymbolKind.Global) {
+                this.handle_name(sym.variable.full_name);
+            }
+        } else if (sym is BoundSymbol.type_sym) {
+            this.walk_type(sym.type_sym.bound_type);
+            this.handle_name(sym.type_sym.full_name);
+        } else if (sym is BoundSymbol.enum_member) {
+            this.handle_name(sym.enum_member.full_name);
+        }
+    }
+
+    fun walk_expr(mut this, e: BoundExpression) {
+        if (e is BoundExpression.literal) { this.walk_type(e.literal.get_bound_type()); return; }
+        if (e is BoundExpression.identifier) {
+            this.walk_type(e.identifier.get_bound_type());
+            if (let s := e.identifier.symbol.some) { this.walk_symbol(s); }
+            return;
+        }
+        if (e is BoundExpression.binary) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.binary.operands.size())) {
+                this.walk_expr(e.binary.operands.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            this.walk_type(e.binary.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.unary) {
+            if (let o := e.unary.operand.some) { this.walk_expr(o); }
+            this.walk_type(e.unary.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.member_access) {
+            if (let b := e.member_access.base_expr.some) { this.walk_expr(b); }
+            if (let s := e.member_access.member_symbol.some) { this.walk_symbol(s); }
+            this.walk_type(e.member_access.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.function_call) {
+            if (let c := e.function_call.callee.some) { this.walk_expr(c); }
+            if (let s := e.function_call.callee_symbol.some) { this.walk_symbol(s); }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.function_call.arguments.size())) {
+                this.walk_expr(e.function_call.arguments.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            let j: mut i64 = 0;
+            while (j < cast<i64>(e.function_call.generic_args.size())) {
+                this.walk_type(e.function_call.generic_args.at(cast<u64>(j)).some);
+                j = j + 1;
+            }
+            this.walk_type(e.function_call.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.if_expr) {
+            if (let c := e.if_expr.condition.some) { this.walk_expr(c); }
+            if (let t := e.if_expr.then_block.some) { this.walk_expr(t); }
+            if (let x := e.if_expr.else_block.some) { this.walk_expr(x); }
+            this.walk_type(e.if_expr.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.while_expr) {
+            if (let c := e.while_expr.condition.some) { this.walk_expr(c); }
+            if (let b := e.while_expr.body.some) { this.walk_expr(b); }
+            this.walk_type(e.while_expr.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.code_block) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.code_block.statements.size())) {
+                this.walk_stmt(e.code_block.statements.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            if (let t := e.code_block.trailing_expr.some) { this.walk_expr(t); }
+            this.walk_type(e.code_block.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.cast_expr) {
+            this.walk_type(e.cast_expr.target_type);
+            if (let o := e.cast_expr.inner.some) { this.walk_expr(o); }
+            return;
+        }
+        if (e is BoundExpression.new_expr) {
+            this.walk_type(e.new_expr.get_bound_type());
+            if (let s := e.new_expr.constructor_symbol.some) { this.walk_symbol(new BoundSymbol.function_sym(s)); }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.new_expr.arguments.size())) {
+                this.walk_expr(e.new_expr.arguments.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            return;
+        }
+        if (e is BoundExpression.enum_variant) {
+            this.walk_type(e.enum_variant.enum_type);
+            if (let p := e.enum_variant.payload.some) { this.walk_expr(p); }
+            if (let s := e.enum_variant.variant_symbol.some) { this.walk_symbol(new BoundSymbol.enum_member(s)); }
+            return;
+        }
+        if (e is BoundExpression.lambda_expr) {
+            this.walk_type(e.lambda_expr.return_type);
+            if (let b := e.lambda_expr.body.some) { this.walk_expr(b); }
+            return;
+        }
+        if (e is BoundExpression.meta_call) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.meta_call.arguments.size())) {
+                this.walk_expr(e.meta_call.arguments.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            this.walk_type(e.meta_call.get_bound_type());
+            return;
+        }
+        if (e is BoundExpression.try_bind) {
+            if (let c := e.try_bind.check.some) { this.walk_expr(c); }
+            if (let x := e.try_bind.extract.some) { this.walk_expr(x); }
+            if (let s := e.try_bind.variable_symbol.some) { this.walk_symbol(new BoundSymbol.variable(s)); }
+            return;
+        }
+    }
+
+    fun walk_stmt(mut this, s: BoundStatement) {
+        if (s is BoundStatement.expression) {
+            if (let e := s.expression.expression.some) { this.walk_expr(e); }
+            return;
+        }
+        if (s is BoundStatement.assignment) {
+            if (let t := s.assignment.target.some) { this.walk_expr(t); }
+            if (let v := s.assignment.value.some) { this.walk_expr(v); }
+            return;
+        }
+        if (s is BoundStatement.if_stmt) {
+            if (let c := s.if_stmt.condition.some) { this.walk_expr(c); }
+            if (let t := s.if_stmt.then_statement.some) { this.walk_stmt(t); }
+            if (let e := s.if_stmt.else_statement.some) { this.walk_stmt(e); }
+            return;
+        }
+        if (s is BoundStatement.while_stmt) {
+            if (let c := s.while_stmt.condition.some) { this.walk_expr(c); }
+            if (let b := s.while_stmt.body.some) { this.walk_stmt(b); }
+            return;
+        }
+        if (s is BoundStatement.for_stmt) {
+            if (let i := s.for_stmt.iterable.some) { this.walk_expr(i); }
+            if (let b := s.for_stmt.body.some) { this.walk_stmt(b); }
+            if (let lv := s.for_stmt.loop_variable.some) { this.walk_symbol(new BoundSymbol.variable(lv)); }
+            return;
+        }
+        if (s is BoundStatement.return_stmt) {
+            if (let v := s.return_stmt.value.some) { this.walk_expr(v); }
+            return;
+        }
+        if (s is BoundStatement.let_decl) {
+            this.walk_type(s.let_decl.bound_type);
+            if (let v := s.let_decl.initializer.some) { this.walk_expr(v); }
+            if (let s2 := s.let_decl.variable_symbol.some) { this.walk_symbol(new BoundSymbol.variable(s2)); }
+            return;
+        }
+        if (s is BoundStatement.block) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(s.block.statements.size())) {
+                this.walk_stmt(s.block.statements.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            return;
+        }
+        // meta_if/meta_while/meta_for statements carry only their AST source;
+        // their spliced children were lowered as ordinary statements already.
+    }
+
+    // FULL walk of a shipped-file def: the signature walk (walk_top) plus
+    // every BODY and field initializer — the consumer re-binds all of it, so
+    // every referenced symbol must be retained.
+    fun walk_full(mut this, d: BoundDefinition) {
+        this.walk_top(d);
+        if (d is BoundDefinition.function_def) {
+            if (let b := d.function_def.body.some) { this.walk_expr(b); }
+        } else if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    if (let init := fd.class_field.initializer.some) { this.walk_expr(init); }
+                }
+                fi = fi + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                this.walk_full(cls.methods.at(cast<u64>(mi)).some);
+                mi = mi + 1;
+            }
+            if (let ctor := cls.constructor.some) { this.walk_full(new BoundDefinition.function_def(ctor)); }
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    let ji: mut i64 = 0;
+                    while (ji < cast<i64>(id.impl_def.methods.size())) {
+                        this.walk_full(id.impl_def.methods.at(cast<u64>(ji)).some);
+                        ji = ji + 1;
+                    }
+                }
+                ii = ii + 1;
+            }
+        } else if (d is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = d.enum_def;
+            let mi2: mut i64 = 0;
+            while (mi2 < cast<i64>(enm.methods.size())) {
+                this.walk_full(enm.methods.at(cast<u64>(mi2)).some);
+                mi2 = mi2 + 1;
+            }
+            let ii2: mut i64 = 0;
+            while (ii2 < cast<i64>(enm.interface_impls.size())) {
+                let id2: BoundDefinition = enm.interface_impls.at(cast<u64>(ii2)).some;
+                if (id2 is BoundDefinition.impl_def) {
+                    let ji2: mut i64 = 0;
+                    while (ji2 < cast<i64>(id2.impl_def.methods.size())) {
+                        this.walk_full(id2.impl_def.methods.at(cast<u64>(ji2)).some);
+                        ji2 = ji2 + 1;
+                    }
+                }
+                ii2 = ii2 + 1;
+            }
+        } else if (d is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = d.interface_def;
+            let yi: mut i64 = 0;
+            while (yi < cast<i64>(iface.methods.size())) {
+                this.walk_full(iface.methods.at(cast<u64>(yi)).some);
+                yi = yi + 1;
+            }
+            let xi: mut i64 = 0;
+            while (xi < cast<i64>(iface.interface_impls.size())) {
+                let xd: BoundDefinition = iface.interface_impls.at(cast<u64>(xi)).some;
+                if (xd is BoundDefinition.impl_def) {
+                    let xji: mut i64 = 0;
+                    while (xji < cast<i64>(xd.impl_def.methods.size())) {
+                        this.walk_full(xd.impl_def.methods.at(cast<u64>(xji)).some);
+                        xji = xji + 1;
+                    }
+                }
+                xi = xi + 1;
+            }
+        } else if (d is BoundDefinition.impl_for_def) {
+            let zi: mut i64 = 0;
+            while (zi < cast<i64>(d.impl_for_def.methods.size())) {
+                this.walk_full(d.impl_for_def.methods.at(cast<u64>(zi)).some);
+                zi = zi + 1;
+            }
+        }
+    }
+
+    // ---- JSON emission ----
+
+    fun write_type(mut this, w: mut std.JsonWriter, bt: BoundType) {
+        w.begin_object();
+        if (bt.kind is TypeKind.FunctionKind) {
+            w.key("k"); w.value_string("fun");
+            if (bt.is_async_function) { w.key("ay"); w.value_i64(1); }
+        } else {
+            w.key("b"); w.value_string(_lib_type_base(bt));
+        }
+        if (bt.mutability is Mutability.Mutable) {
+            w.key("m"); w.value_i64(1);
+        }
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            w.key("a"); w.begin_array();
+            let i: mut i64 = 0;
+            while (i < cast<i64>(bt.generic_args.size())) {
+                this.write_type_arg(w, bt.generic_args.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+            w.end_array();
+        }
+        w.end_object();
+    }
+
+    fun write_type_arg(mut this, w: mut std.JsonWriter, arg: BoundTypeArg) {
+        if (arg is BoundTypeArg.type_arg) {
+            w.begin_object();
+            w.key("t");
+            this.write_type(w, arg.type_arg.bound_type);
+            w.end_object();
+            return;
+        }
+        let v: BoundTypeArgValue = arg.value_arg;
+        w.begin_object();
+        w.key("v");
+        w.begin_object();
+        if (v.value_arg_kind is ValueArgSubKind.IntArg) {
+            w.key("k"); w.value_string("i64");
+            w.key("i"); w.value_i64(v.int_val);
+        } else if (v.value_arg_kind is ValueArgSubKind.BoolArg) {
+            w.key("k"); w.value_string("bool");
+            if (v.bool_val) { w.key("b"); w.value_i64(1); } else { w.key("b"); w.value_i64(0); }
+        } else if (v.value_arg_kind is ValueArgSubKind.StringArg) {
+            w.key("k"); w.value_string("string");
+            w.key("s"); w.value_string(v.string_val);
+        } else if (v.value_arg_kind is ValueArgSubKind.DoubleArg) {
+            w.key("k"); w.value_string("double");
+            w.key("d"); w.value_string(v.string_val);
+        } else {
+            w.key("k"); w.value_string("obj");
+            w.key("u"); w.value_string(v.unique_name);
+        }
+        w.end_object();
+        w.end_object();
+    }
+
+    fun write_fun(mut this, w: mut std.JsonWriter, f: BoundFunctionDefinition, with_kind: bool) {
+        w.begin_object();
+        if (with_kind) {
+            w.key("kind"); w.value_string("fun");
+            w.key("ns"); w.value_string(_lib_ns_of_full(f.full_name));
+            w.key("name"); w.value_string(f.name);
+        } else {
+            w.key("n"); w.value_string(f.name);
+        }
+        if (f.is_extern) { w.key("x"); w.value_i64(1); }
+        if (f.is_pure) { w.key("p"); w.value_i64(1); }
+        if (f.is_new) { w.key("nw"); w.value_i64(1); }
+        if (f.is_static) { w.key("st"); w.value_i64(1); }
+        w.key("params"); w.begin_array();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(f.parameters.size())) {
+            let p: BoundFunctionParameter = f.parameters.at(cast<u64>(i)).some;
+            w.begin_object();
+            w.key("n"); w.value_string(p.name);
+            w.key("t");
+            // Non-`this` params carry mutability on the TYPE (`x: mut T` is the
+            // source spelling; a binding-level `mut x: T` is not valid syntax),
+            // so the type is serialized as-is. The "m" flag is meaningful only
+            // for the untyped `this` parameter (`mut this`).
+            this.write_type(w, p.bound_type);
+            if (p.is_mutable && p.name == "this") { w.key("m"); w.value_i64(1); }
+            w.end_object();
+            i = i + 1;
+        }
+        w.end_array();
+        w.key("ret");
+        this.write_type(w, f.return_type);
+        w.end_object();
+    }
+
+    // One impl block: the interface type, the impl METHODS' signatures
+    // (bodyless declarations in the materialized text — their bodies live in
+    // the .so and their symbols fill the vtable slots), plus the prebuilt
+    // vtable (pass-6 product, slot-ordered implementation-method full names).
+    // Phase A materialization rebuilds the vtable from the declared methods;
+    // Phase B adopts "vt" directly (skipping pass 6 for lib defs).
+    fun write_impl(mut this, w: mut std.JsonWriter, imp: BoundInterfaceImplementation, vtables: _utils.List<BoundVTable>) {
+        w.begin_object();
+        w.key("iface");
+        this.write_type(w, imp.interface_type);
+        if (cast<i64>(imp.methods.size()) > 0) {
+            w.key("methods"); w.begin_array();
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(imp.methods.size())) {
+                let md: BoundDefinition = imp.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.write_fun(w, md.function_def, false);
+                }
+                mi = mi + 1;
+            }
+            w.end_array();
+        }
+        let vt_idx: mut i64 = -1;
+        let key: string = serialize_bound_type(imp.interface_type);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(vtables.size())) {
+            if (serialize_bound_type(vtables.at(cast<u64>(i)).some.interface_type) == key) { vt_idx = i; }
+            i = i + 1;
+        }
+        if (vt_idx >= 0) {
+            let vt: BoundVTable = vtables.at(cast<u64>(vt_idx)).some;
+            w.key("vt"); w.begin_array();
+            let j: mut i64 = 0;
+            while (j < cast<i64>(vt.slots.size())) {
+                if (let im := vt.slots.at(cast<u64>(j)).some.implementation_method.some) {
+                    w.value_string(_lib_strip_global(im.full_name));
+                } else {
+                    w.value_null();
+                }
+                j = j + 1;
+            }
+            w.end_array();
+        }
+        w.end_object();
+    }
+
+    fun write_top(mut this, w: mut std.JsonWriter, d: BoundDefinition) {
+        if (d is BoundDefinition.function_def) {
+            this.write_fun(w, d.function_def, true);
+        } else if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            w.begin_object();
+            w.key("kind"); w.value_string("class");
+            w.key("ns"); w.value_string(_lib_ns_of_full(cls.full_name));
+            w.key("name"); w.value_string(cls.name);
+            w.key("fields"); w.begin_array();
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    let fld: BoundClassFieldDefinition = fd.class_field;
+                    w.begin_object();
+                    w.key("n"); w.value_string(fld.name);
+                    w.key("t");
+                    // Field mutability is the tri-state "mu" flag (mut / !mut /
+                    // auto); the type itself is serialized without it so the
+                    // materialized spelling is never doubled.
+                    this.write_type(w, fld.bound_type.with_mutability(new Mutability.Immutable()));
+                    if (fld.mutability is Mutability.Mutable) { w.key("mu"); w.value_i64(2); }
+                    else if (fld.mutability is Mutability.Immutable) { w.key("mu"); w.value_i64(1); }
+                    w.end_object();
+                }
+                fi = fi + 1;
+            }
+            w.end_array();
+            w.key("methods"); w.begin_array();
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.write_fun(w, md.function_def, false);
+                }
+                mi = mi + 1;
+            }
+            w.end_array();
+            if (cast<i64>(cls.interface_impls.size()) > 0) {
+                w.key("impls"); w.begin_array();
+                let ii: mut i64 = 0;
+                while (ii < cast<i64>(cls.interface_impls.size())) {
+                    let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                    if (id is BoundDefinition.impl_def) {
+                        this.write_impl(w, id.impl_def, cls.vtables);
+                    }
+                    ii = ii + 1;
+                }
+                w.end_array();
+            }
+            w.end_object();
+        } else if (d is BoundDefinition.enum_def) {
+            let enm: BoundEnumDefinition = d.enum_def;
+            w.begin_object();
+            w.key("kind"); w.value_string("enum");
+            w.key("ns"); w.value_string(_lib_ns_of_full(enm.full_name));
+            w.key("name"); w.value_string(enm.name);
+            w.key("members"); w.begin_array();
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(enm.members.size())) {
+                let mem: BoundEnumMemberDefinition = enm.members.at(cast<u64>(ei)).some;
+                w.begin_object();
+                w.key("n"); w.value_string(mem.name);
+                let has_payload: bool = !(mem.member_type.kind is TypeKind.PrimitiveKind && mem.member_type.primitive is PrimitiveType.VoidType);
+                if (has_payload) {
+                    w.key("p");
+                    this.write_type(w, mem.member_type);
+                }
+                w.key("v"); w.value_i64(mem.value);
+                w.end_object();
+                ei = ei + 1;
+            }
+            w.end_array();
+            if (cast<i64>(enm.methods.size()) > 0) {
+                w.key("methods"); w.begin_array();
+                let mi2: mut i64 = 0;
+                while (mi2 < cast<i64>(enm.methods.size())) {
+                    let md2: BoundDefinition = enm.methods.at(cast<u64>(mi2)).some;
+                    if (md2 is BoundDefinition.function_def) {
+                        this.write_fun(w, md2.function_def, false);
+                    }
+                    mi2 = mi2 + 1;
+                }
+                w.end_array();
+            }
+            if (cast<i64>(enm.interface_impls.size()) > 0) {
+                w.key("impls"); w.begin_array();
+                let ii2: mut i64 = 0;
+                while (ii2 < cast<i64>(enm.interface_impls.size())) {
+                    let id2: BoundDefinition = enm.interface_impls.at(cast<u64>(ii2)).some;
+                    if (id2 is BoundDefinition.impl_def) {
+                        this.write_impl(w, id2.impl_def, enm.vtables);
+                    }
+                    ii2 = ii2 + 1;
+                }
+                w.end_array();
+            }
+            w.end_object();
+        } else if (d is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = d.interface_def;
+            w.begin_object();
+            w.key("kind"); w.value_string("iface");
+            w.key("ns"); w.value_string(_lib_ns_of_full(iface.full_name));
+            w.key("name"); w.value_string(iface.name);
+            w.key("methods"); w.begin_array();
+            let yi: mut i64 = 0;
+            while (yi < cast<i64>(iface.methods.size())) {
+                let yd: BoundDefinition = iface.methods.at(cast<u64>(yi)).some;
+                if (yd is BoundDefinition.function_def) {
+                    this.write_fun(w, yd.function_def, false);
+                }
+                yi = yi + 1;
+            }
+            w.end_array();
+            if (cast<i64>(iface.interface_impls.size()) > 0) {
+                w.key("impls"); w.begin_array();
+                let xi: mut i64 = 0;
+                while (xi < cast<i64>(iface.interface_impls.size())) {
+                    let xd: BoundDefinition = iface.interface_impls.at(cast<u64>(xi)).some;
+                    if (xd is BoundDefinition.impl_def) {
+                        this.write_impl(w, xd.impl_def, iface.vtables);
+                    }
+                    xi = xi + 1;
+                }
+                w.end_array();
+            }
+            w.end_object();
+        } else if (d is BoundDefinition.type_ref_def) {
+            w.begin_object();
+            w.key("kind"); w.value_string("alias");
+            let full: string = "";
+            if (let s := d.type_ref_def.type_symbol.some) {
+                w.key("ns"); w.value_string(_lib_ns_of_full(s.full_name));
+                w.key("name"); w.value_string(d.type_ref_def.name);
+            } else {
+                w.key("ns"); w.value_string("");
+                w.key("name"); w.value_string(d.type_ref_def.name);
+            }
+            w.key("t");
+            this.write_type(w, d.type_ref_def.alias_type);
+            w.end_object();
+        } else if (d is BoundDefinition.global_var_def) {
+            let gv: BoundGlobalVariableDefinition = d.global_var_def;
+            w.begin_object();
+            w.key("kind"); w.value_string("global");
+            w.key("ns"); w.value_string(_lib_ns_of_full(gv.full_name));
+            w.key("name"); w.value_string(gv.name);
+            // The type spelling carries mutability (`let g: mut i64`); a
+            // binding-level `let mut g` with a non-mut type cannot round-trip
+            // (let-mut + annotation is not valid source) — warn and drop it.
+            w.key("t");
+            this.write_type(w, gv.bound_type);
+            if (gv.is_mutable && !(gv.bound_type.mutability is Mutability.Mutable)) {
+                __builtin.eprintln("[EmperorPenguin Dynlib] warning: global '" + gv.full_name + "' uses `let mut` with a non-mut type; mutability is not representable in libmeta and is dropped");
+            }
+            if (let a := gv.ast_source.some) {
+                if (a is Definition.global_var) {
+                    if (let init := a.global_var.initializer.some) {
+                        w.key("init"); w.value_string(init.build_text());
+                    }
+                }
+            }
+            w.end_object();
+        } else if (d is BoundDefinition.impl_for_def) {
+            let impl_for: BoundInterfaceForImplementation = d.impl_for_def;
+            w.begin_object();
+            w.key("kind"); w.value_string("implfor");
+            // Materialization scope: the FOR type's namespace (the orphan rule
+            // is satisfied there); fall back to the first method's true scope.
+            let ns: mut string = _lib_ns_of_full(_lib_type_base(impl_for.for_type));
+            if (cast<i64>(impl_for.methods.size()) > 0) {
+                let md: BoundDefinition = impl_for.methods.at(cast<u64>(0)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (let s := md.function_def.symbol.some) {
+                        ns = _lib_ns_of_full(s.full_name);
+                    }
+                }
+            }
+            w.key("ns"); w.value_string(ns);
+            w.key("iface");
+            this.write_type(w, impl_for.interface_type);
+            w.key("for");
+            this.write_type(w, impl_for.for_type);
+            w.key("methods"); w.begin_array();
+            let zi: mut i64 = 0;
+            while (zi < cast<i64>(impl_for.methods.size())) {
+                let zd: BoundDefinition = impl_for.methods.at(cast<u64>(zi)).some;
+                if (zd is BoundDefinition.function_def) {
+                    this.write_fun(w, zd.function_def, false);
+                }
+                zi = zi + 1;
+            }
+            w.end_array();
+            w.end_object();
+        }
+    }
+
+    fun build(mut this, result: BoundCompilationUnit, name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>) -> string {
+        // 1a. source-shipping decision per file (text scan: template/meta
+        // constructs anywhere in the file, including inline calls)
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.files.size())) {
+            let lf: LibFile = this.files.at(cast<u64>(i)).some;
+            if (_lib_text_needs_source(lf.text)) {
+                this.shipped_files.push(lf.name);
+                if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] libmeta source file (template/meta): " + lf.name); }
+            }
+            i = i + 1;
+        }
+        // 1b. def-based backstop: any TEMPLATE / #fun def whose own file was
+        // not caught by the text scan forces that file to ship verbatim. A
+        // template def must NEVER become a symbol-table entry — its types
+        // reference the unresolved template parameter, and consumers must
+        // re-bind its body to specialize it.
+        this.upgrade_template_files(result.definitions);
+        // 2. index the lib's own non-shipped defs
+        this.collect_defs(result.definitions);
+        // 3. seeds: export-marked defs, all globals, all impl-for edges
+        let j: mut i64 = 0;
+        while (j < cast<i64>(this.top_defs.size())) {
+            let d: BoundDefinition = this.top_defs.at(cast<u64>(j)).some;
+            let seed: bool = _lib_def_is_exported(d)
+                || d is BoundDefinition.global_var_def
+                || d is BoundDefinition.impl_for_def;
+            if (seed) { this.retain(j); }
+            j = j + 1;
+        }
+        // 4. closure to fixpoint
+        this.run_closure();
+        // 5. emit
+        let mut w = new std.JsonWriter();
+        w.begin_object();
+        w.key("format"); w.value_string("emperor-libmeta");
+        w.key("version"); w.value_i64(version);
+        w.key("name"); w.value_string(name);
+        w.key("deps"); w.begin_array();
+        let di: mut i64 = 0;
+        while (di < cast<i64>(deps.size())) { w.value_string(deps.at(cast<u64>(di)).some); di = di + 1; }
+        w.end_array();
+        w.key("instances"); w.begin_array();
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(instances.size())) { w.value_string(instances.at(cast<u64>(ii)).some); ii = ii + 1; }
+        w.end_array();
+        w.key("symbols"); w.begin_array();
+        // 5a. namespace entries (every ns path touched by an emitted def, plus
+        // ancestors) — informational for Phase B; the Phase A materializer
+        // derives wrappers from each symbol's own ns.
+        let ns_list: mut _utils.List<string> = new _utils.List<string>();
+        let k: mut i64 = 0;
+        while (k < cast<i64>(this.top_defs.size())) {
+            if (this.top_emit.at(cast<u64>(k)).some) {
+                let full: string = this.top_names.at(cast<u64>(k)).some;
+                let ns: string = _lib_ns_of_full(full);
+                _lib_ns_chain(ns, ns_list);
+            }
+            k = k + 1;
+        }
+        let n1: mut i64 = 0;
+        while (n1 < cast<i64>(ns_list.size())) {
+            w.begin_object();
+            w.key("kind"); w.value_string("ns");
+            w.key("name"); w.value_string(ns_list.at(cast<u64>(n1)).some);
+            w.end_object();
+            n1 = n1 + 1;
+        }
+        // 5b. source files
+        let s2: mut i64 = 0;
+        while (s2 < cast<i64>(this.files.size())) {
+            let lf2: LibFile = this.files.at(cast<u64>(s2)).some;
+            if (this.is_shipped_file(lf2.name)) {
+                w.begin_object();
+                w.key("kind"); w.value_string("source");
+                w.key("name"); w.value_string(lf2.name);
+                w.key("text"); w.value_string(lf2.text);
+                w.end_object();
+            }
+            s2 = s2 + 1;
+        }
+        // 5c. symbol entries in definition order
+        let m: mut i64 = 0;
+        while (m < cast<i64>(this.top_defs.size())) {
+            if (this.top_emit.at(cast<u64>(m)).some) {
+                this.write_top(w, this.top_defs.at(cast<u64>(m)).some);
+            }
+            m = m + 1;
+        }
+        w.end_array();
+        w.end_object();
+        return w.to_string();
+    }
+}
+
+fun _lib_def_is_exported(d: BoundDefinition) -> bool {
+    if (d is BoundDefinition.function_def) { return d.function_def.is_exported; }
+    if (d is BoundDefinition.class_def) { return d.class_def.is_exported; }
+    if (d is BoundDefinition.enum_def) { return d.enum_def.is_exported; }
+    if (d is BoundDefinition.interface_def) { return d.interface_def.is_exported; }
+    if (d is BoundDefinition.type_ref_def) { return d.type_ref_def.is_exported; }
+    return false;
+}
+
+fun _lib_def_is_specialized(d: BoundDefinition) -> bool {
+    if (d is BoundDefinition.class_def) { return d.class_def.is_specialized; }
+    if (d is BoundDefinition.enum_def) { return d.enum_def.is_specialized; }
+    if (d is BoundDefinition.interface_def) { return d.interface_def.is_specialized; }
+    if (d is BoundDefinition.function_def) { return d.function_def.is_specialized; }
+    return false;
+}
+
+// True for defs that must ship as SOURCE, never as symbol entries: generic
+// templates (type params) and value templates (non-type params).
+fun _lib_def_is_template(d: BoundDefinition) -> bool {
+    if (d is BoundDefinition.function_def) {
+        return d.function_def.is_generic_template || cast<i64>(d.function_def.value_param_names.size()) > 0;
+    }
+    if (d is BoundDefinition.class_def) {
+        return d.class_def.is_generic_template || cast<i64>(d.class_def.value_param_names.size()) > 0;
+    }
+    if (d is BoundDefinition.enum_def) {
+        return cast<i64>(d.enum_def.generic_params.size()) > 0 || cast<i64>(d.enum_def.value_param_names.size()) > 0;
+    }
+    if (d is BoundDefinition.interface_def) {
+        return cast<i64>(d.interface_def.generic_params.size()) > 0 || cast<i64>(d.interface_def.value_param_names.size()) > 0;
+    }
+    return false;
+}
+
+// Base spelling of a BoundType for the "b" field: primitive registry name, or
+// the def's full name without "<global>.".
+fun _lib_type_base(bt: BoundType) -> string {
+    if (bt.kind is TypeKind.PrimitiveKind) { return primitive_type_to_string(bt.primitive); }
+    if (bt.kind is TypeKind.ErrorKind) { return "?"; }
+    if (let td := bt.type_definition.some) {
+        let full: string = _lib_def_full_name(td);
+        if (string_length(full) > 0) { return _lib_strip_global(full); }
+    }
+    return "?";
+}
+
+// Add ns and all its ancestors to the list (dedup, insertion order).
+fun _lib_ns_chain(ns: string, out: mut _utils.List<string>) {
+    if (string_length(ns) == 0) { return; }
+    if (!_string_list_contains(out, ns)) { out.push(ns); }
+    let dot: i64 = _find_last_char(ns, ".");
+    if (dot > 0) {
+        let parent: string = string_substring(ns, 0, dot);
+        _lib_ns_chain(parent, out);
+    }
+}
+
+// Build the emperor-libmeta v1 metadata document for a lib being created:
+// structured symbol table (export set + closure + globals + impl-fors) plus
+// verbatim source entries for template/meta files.
+export fun serialize_symbols(result: BoundCompilationUnit, name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>, verbose: i64) -> string {
+    let mut ser = new LibMetaSerializer(files, verbose);
+    return ser.build(result, name, version, deps, instances);
+}
+
+// ===========================================================================
+// CONSUMER SIDE: read emperor-libmeta v1 and materialize declarations.
+// ===========================================================================
+
+// Number of generic args on a <T> JSON object (0 when absent/not an array).
+fun _libmeta_arg_count(tj: std.JsonValue) -> i64 {
+    if (let av := tj.get("a").some) {
+        if (av.is_array()) { return cast<i64>(av.as_array().size()); }
+    }
+    return 0;
+}
+
+// ", "-joined spellings of a <T>'s generic args.
+fun _libmeta_args_text(tj: std.JsonValue) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    if (let av := tj.get("a").some) {
+        if (av.is_array()) {
+            let args: std.Vector<std.JsonValue> = av.as_array();
+            let i: mut u64 = 0;
+            while (i < args.size()) {
+                if (i > 0) { sb.append(", "); }
+                let arg: std.JsonValue = args.at(i).some;
+                if (let tv := arg.get("t").some) {
+                    sb.append(_libmeta_type_spelling(tv));
+                } else if (let vv := arg.get("v").some) {
+                    sb.append(_libmeta_value_arg_spelling(vv));
+                }
+                i = i + 1;
+            }
+        }
+    }
+    return sb.to_string();
+}
+
+// Spell a <T> JSON object back into source type syntax.
+fun _libmeta_type_spelling(tj: std.JsonValue) -> string {
+    let b: mut string = "";
+    if (let bv := tj.get("b").some) { b = bv.as_string(); }
+    let is_fun: mut bool = false;
+    if (let kv := tj.get("k").some) {
+        if (kv.as_string() == "fun") { is_fun = true; }
+    }
+    let mut prefix = "";
+    if (let mv := tj.get("m").some) {
+        if (mv.as_i64() == 1) { prefix = "mut "; }
+    }
+    let n: i64 = _libmeta_arg_count(tj);
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(prefix);
+    if (is_fun) {
+        sb.append("fun<");
+    } else {
+        sb.append(b);
+        if (n > 0) { sb.append("<"); }
+    }
+    if (n > 0) { sb.append(_libmeta_args_text(tj)); }
+    if (is_fun) {
+        sb.append(">");
+    } else if (n > 0) {
+        sb.append(">");
+    }
+    return sb.to_string();
+}
+
+// Spell a value template argument ({"k":"i64","i":5} -> "5").
+fun _libmeta_value_arg_spelling(vv: std.JsonValue) -> string {
+    let k: mut string = "";
+    if (let kv := vv.get("k").some) { k = kv.as_string(); }
+    if (k == "i64") {
+        if (let iv := vv.get("i").some) { return cast<string>(iv.as_i64()); }
+        return "0";
+    }
+    if (k == "bool") {
+        if (let bv := vv.get("b").some) {
+            if (bv.as_i64() == 1) { return "true"; }
+        }
+        return "false";
+    }
+    if (k == "double") {
+        if (let dv := vv.get("d").some) { return dv.as_string(); }
+        return "0.0";
+    }
+    if (k == "string") {
+        let s: mut string = "";
+        if (let sv := vv.get("s").some) { s = sv.as_string(); }
+        return "\"" + s + "\"";
+    }
+    if (k == "obj") {
+        if (let uv := vv.get("u").some) { return uv.as_string(); }
+    }
+    return "0";
+}
+
+// One declaration emitter; tracks the currently-open namespace path so
+// consecutive symbols in the same namespace share one wrapper block.
+class LibDeclMaterializer {
+    sb: mut StringBuilder;
+    cur_ns: mut string = "";
+
+    fun new(mut this) {
+        this.sb = new StringBuilder();
+        this.cur_ns = "";
+    }
+
+    fun set_ns(mut this, ns: string) {
+        if (ns == this.cur_ns) { return; }
+        // close current (innermost-first not needed: one level max is open
+        // because set_ns always closes everything before opening)
+        if (string_length(this.cur_ns) > 0) {
+            this.sb.append("} // namespace " + this.cur_ns + "\n");
+        }
+        this.cur_ns = ns;
+        if (string_length(ns) > 0) {
+            this.sb.append("namespace " + ns + " {\n");
+        }
+    }
+
+    fun done(mut this) -> string {
+        this.set_ns("");
+        return this.sb.to_string();
+    }
+
+    fun fun_decl(mut this, f: std.JsonValue, name_override: string) {
+        let name: mut string = name_override;
+        if (string_length(name) == 0) {
+            if (let nv := f.get("name").some) { name = nv.as_string(); }
+        }
+        let prefix: mut string = "";
+        if (let xv := f.get("x").some) {
+            if (xv.as_i64() == 1) { prefix = "extern "; }
+        }
+        if (let pv := f.get("p").some) {
+            if (pv.as_i64() == 1) { prefix = "pure " + prefix; }
+        }
+        if (let av := f.get("a").some) {
+            if (av.as_i64() == 1) { prefix = "async " + prefix; }
+        }
+        let sb2: mut StringBuilder = new StringBuilder();
+        sb2.append("    " + prefix + "fun " + name + "(");
+        if (let pv2 := f.get("params").some) {
+            if (pv2.is_array()) {
+                let params: std.Vector<std.JsonValue> = pv2.as_array();
+                let i: mut u64 = 0;
+                while (i < params.size()) {
+                    if (i > 0) { sb2.append(", "); }
+                    let p: std.JsonValue = params.at(i).some;
+                    let pn: mut string = "p";
+                    if (let nv2 := p.get("n").some) { pn = nv2.as_string(); }
+                    let is_mut: mut bool = false;
+                    if (let mv := p.get("m").some) {
+                        if (mv.as_i64() == 1) { is_mut = true; }
+                    }
+                    if (pn == "this") {
+                        if (is_mut) { sb2.append("mut "); }
+                        sb2.append("this");
+                    } else {
+                        // Mutability lives on the TYPE spelling (`x: mut T`);
+                        // `mut x: T` is not valid parameter syntax.
+                        sb2.append(pn);
+                        if (let tv := p.get("t").some) {
+                            sb2.append(": ");
+                            sb2.append(_libmeta_type_spelling(tv));
+                        }
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+        sb2.append(")");
+        if (let rv := f.get("ret").some) {
+            let ret_spelling: string = _libmeta_type_spelling(rv);
+            if (ret_spelling != "void") {
+                sb2.append(" -> ");
+                sb2.append(ret_spelling);
+            }
+        }
+        sb2.append(";\n");
+        this.sb.append(sb2.to_string());
+    }
+
+    fun symbol(mut this, s: std.JsonValue) {
+        let kind: mut string = "";
+        if (let kv := s.get("kind").some) { kind = kv.as_string(); }
+        if (kind == "ns" || kind == "source") { return; }
+        let ns: mut string = "";
+        if (let nv := s.get("ns").some) { ns = nv.as_string(); }
+        this.set_ns(ns);
+        if (kind == "fun") {
+            this.fun_decl(s, "");
+        } else if (kind == "class") {
+            let name: mut string = "C";
+            if (let nv2 := s.get("name").some) { name = nv2.as_string(); }
+            this.sb.append("    class " + name + " {\n");
+            if (let fv := s.get("fields").some) {
+                if (fv.is_array()) {
+                    let fields: std.Vector<std.JsonValue> = fv.as_array();
+                    let i: mut u64 = 0;
+                    while (i < fields.size()) {
+                        let f2: std.JsonValue = fields.at(i).some;
+                        let fn: mut string = "f";
+                        if (let nv3 := f2.get("n").some) { fn = nv3.as_string(); }
+                        let mu: mut i64 = 0;
+                        if (let mv := f2.get("mu").some) { mu = mv.as_i64(); }
+                        let mut_prefix: mut string = "";
+                        if (mu == 2) { mut_prefix = "mut "; }
+                        else if (mu == 1) { mut_prefix = "!mut "; }
+                        let ts: mut string = "";
+                        if (let tv := f2.get("t").some) { ts = _libmeta_type_spelling(tv); }
+                        this.sb.append("        " + fn + ": " + mut_prefix + ts + ";\n");
+                        i = i + 1;
+                    }
+                }
+            }
+            this.emit_methods_and_impls(s);
+            this.sb.append("    }\n");
+        } else if (kind == "enum") {
+            let name2: mut string = "E";
+            if (let nv4 := s.get("name").some) { name2 = nv4.as_string(); }
+            this.sb.append("    enum " + name2 + " {\n");
+            if (let mv2 := s.get("members").some) {
+                if (mv2.is_array()) {
+                    let members: std.Vector<std.JsonValue> = mv2.as_array();
+                    let i2: mut u64 = 0;
+                    while (i2 < members.size()) {
+                        let mem: std.JsonValue = members.at(i2).some;
+                        let mn: mut string = "m";
+                        if (let nv5 := mem.get("n").some) { mn = nv5.as_string(); }
+                        if (let pv := mem.get("p").some) {
+                            this.sb.append("        " + mn + ": " + _libmeta_type_spelling(pv) + ";\n");
+                        } else {
+                            this.sb.append("        " + mn + ";\n");
+                        }
+                        i2 = i2 + 1;
+                    }
+                }
+            }
+            this.emit_methods_and_impls(s);
+            this.sb.append("    }\n");
+        } else if (kind == "iface") {
+            let name3: mut string = "I";
+            if (let nv6 := s.get("name").some) { name3 = nv6.as_string(); }
+            this.sb.append("    interface " + name3 + " {\n");
+            this.emit_methods_and_impls(s);
+            this.sb.append("    }\n");
+        } else if (kind == "alias") {
+            let name4: mut string = "A";
+            if (let nv7 := s.get("name").some) { name4 = nv7.as_string(); }
+            let ts2: mut string = "";
+            if (let tv2 := s.get("t").some) { ts2 = _libmeta_type_spelling(tv2); }
+            this.sb.append("    type " + name4 + " = " + ts2 + ";\n");
+        } else if (kind == "global") {
+            let name5: mut string = "g";
+            if (let nv8 := s.get("name").some) { name5 = nv8.as_string(); }
+            let ts3: mut string = "";
+            if (let tv3 := s.get("t").some) { ts3 = _libmeta_type_spelling(tv3); }
+            let init: mut string = "";
+            if (let iv := s.get("init").some) { init = iv.as_string(); }
+            if (string_length(init) > 0) {
+                this.sb.append("    let " + name5 + ": " + ts3 + " = " + init + ";\n");
+            } else {
+                this.sb.append("    let " + name5 + ": " + ts3 + ";\n");
+            }
+        } else if (kind == "implfor") {
+            let iface_s: mut string = "";
+            if (let iv2 := s.get("iface").some) { iface_s = _libmeta_type_spelling(iv2); }
+            let for_s: mut string = "";
+            if (let fv3 := s.get("for").some) { for_s = _libmeta_type_spelling(fv3); }
+            let has_methods: mut bool = false;
+            if (let mv4 := s.get("methods").some) {
+                if (mv4.is_array()) {
+                    if (mv4.as_array().size() > 0) { has_methods = true; }
+                }
+            }
+            if (has_methods) {
+                this.sb.append("    impl " + iface_s + " for " + for_s + " {\n");
+                if (let mv5 := s.get("methods").some) {
+                    if (mv5.is_array()) {
+                        let methods: std.Vector<std.JsonValue> = mv5.as_array();
+                        let i3: mut u64 = 0;
+                        while (i3 < methods.size()) {
+                            let md: std.JsonValue = methods.at(i3).some;
+                            let mn2: mut string = "m";
+                            if (let nv9 := md.get("n").some) { mn2 = nv9.as_string(); }
+                            this.fun_decl(md, mn2);
+                            i3 = i3 + 1;
+                        }
+                    }
+                }
+                this.sb.append("    }\n");
+            } else {
+                this.sb.append("    impl " + iface_s + " for " + for_s + ";\n");
+            }
+        }
+    }
+
+    // Shared tail for class/enum/interface bodies: methods + impl blocks.
+    fun emit_methods_and_impls(mut this, s: std.JsonValue) {
+        if (let mv := s.get("methods").some) {
+            if (mv.is_array()) {
+                let methods: std.Vector<std.JsonValue> = mv.as_array();
+                let i: mut u64 = 0;
+                while (i < methods.size()) {
+                    let md: std.JsonValue = methods.at(i).some;
+                    let mn: mut string = "m";
+                    if (let nv := md.get("n").some) { mn = nv.as_string(); }
+                    this.fun_decl(md, mn);
+                    i = i + 1;
+                }
+            }
+        }
+        if (let iv := s.get("impls").some) {
+            if (iv.is_array()) {
+                let impls: std.Vector<std.JsonValue> = iv.as_array();
+                let j: mut u64 = 0;
+                while (j < impls.size()) {
+                    let imp: std.JsonValue = impls.at(j).some;
+                    let iface_s: mut string = "";
+                    if (let fv := imp.get("iface").some) { iface_s = _libmeta_type_spelling(fv); }
+                    let has_methods: mut bool = false;
+                    if (let mv2 := imp.get("methods").some) {
+                        if (mv2.is_array()) {
+                            if (mv2.as_array().size() > 0) { has_methods = true; }
+                        }
+                    }
+                    if (has_methods) {
+                        this.sb.append("        impl " + iface_s + " {\n");
+                        let methods2: std.Vector<std.JsonValue> = imp.get("methods").some.as_array();
+                        let k: mut u64 = 0;
+                        while (k < methods2.size()) {
+                            let md2: std.JsonValue = methods2.at(k).some;
+                            let mn2: mut string = "m";
+                            if (let nv2 := md2.get("n").some) { mn2 = nv2.as_string(); }
+                            this.fun_decl(md2, mn2);
+                            k = k + 1;
+                        }
+                        this.sb.append("        }\n");
+                    } else {
+                        this.sb.append("        impl " + iface_s + ";\n");
+                    }
+                    j = j + 1;
+                }
+            }
+        }
+    }
+}
+
+// Parse the appended emperor-libmeta v1 metadata into a LibMeta. Empty name on
+// failure. Source entries become per-file LibFiles; the symbol table is
+// materialized into ONE declaration pseudo-file appended last.
 fun read_meta(path: string) -> LibMeta {
     let meta: mut LibMeta = new LibMeta();
     let footer: LibFooter = read_lib_footer(path);
@@ -129,14 +1897,25 @@ fun read_meta(path: string) -> LibMeta {
     }
     if (footer.offset < 0 || footer.size < 0) { return meta; }
     let json_text: string = _utils.file_read_range(path, footer.offset, footer.size);
+    meta.doc_json = json_text;
     let mut reader = new std.JsonReader(json_text);
     let doc: std.JsonValue = reader.parse();
     if (doc.is_error()) {
         __builtin.eprintln("[EmperorPenguin Dynlib] Metadata parse failed in " + path);
         return meta;
     }
-    if (let nv := doc.get("name").some) { meta.name = nv.as_string(); }
+    let fmt: mut string = "";
+    if (let fv := doc.get("format").some) { fmt = fv.as_string(); }
+    if (fmt != "emperor-libmeta") {
+        __builtin.eprintln("[EmperorPenguin Dynlib] Unsupported metadata format '" + fmt + "' in " + path + " (expected emperor-libmeta)");
+        return meta;
+    }
     if (let vv := doc.get("version").some) { meta.version = vv.as_i64(); }
+    if (meta.version != 1) {
+        __builtin.eprintln("[EmperorPenguin Dynlib] Unsupported metadata version " + cast<string>(meta.version) + " in " + path);
+        return meta;
+    }
+    if (let nv := doc.get("name").some) { meta.name = nv.as_string(); }
     if (let dv := doc.get("deps").some) {
         if (dv.is_array()) {
             let arr: std.Vector<std.JsonValue> = dv.as_array();
@@ -157,60 +1936,42 @@ fun read_meta(path: string) -> LibMeta {
             }
         }
     }
-    if (let fv := doc.get("files").some) {
-        if (fv.is_array()) {
-            let arr3: std.Vector<std.JsonValue> = fv.as_array();
+    if (let sv := doc.get("symbols").some) {
+        if (sv.is_array()) {
+            let symbols: std.Vector<std.JsonValue> = sv.as_array();
+            // 1. verbatim source entries first (original file names keep the
+            //    lib's file namespaces — and therefore mangled names — stable)
             let k: mut u64 = 0;
-            while (k < arr3.size()) {
-                let entry: std.JsonValue = arr3.at(k).some;
-                let lf: mut LibFile = new LibFile();
-                if (let nv := entry.get("name").some) { lf.name = nv.as_string(); }
-                if (let tv := entry.get("text").some) { lf.text = tv.as_string(); }
-                meta.files.push(lf);
+            while (k < symbols.size()) {
+                let entry: std.JsonValue = symbols.at(k).some;
+                let kind: mut string = "";
+                if (let kv := entry.get("kind").some) { kind = kv.as_string(); }
+                if (kind == "source") {
+                    let lf: mut LibFile = new LibFile();
+                    if (let nv2 := entry.get("name").some) { lf.name = nv2.as_string(); }
+                    if (let tv := entry.get("text").some) { lf.text = tv.as_string(); }
+                    meta.files.push(lf);
+                }
                 k = k + 1;
+            }
+            // 2. materialize the symbol table into one declaration pseudo-file
+            let mut mat = new LibDeclMaterializer();
+            let k2: mut u64 = 0;
+            while (k2 < symbols.size()) {
+                mat.symbol(symbols.at(k2).some);
+                k2 = k2 + 1;
+            }
+            let decl_text: string = mat.done();
+            if (string_length(decl_text) > 0) {
+                let decl_file: mut LibFile = new LibFile();
+                decl_file.name = "<libdecls:" + meta.name + ">";
+                decl_file.text = decl_text;
+                meta.files.push(decl_file);
+                meta.has_decls = true;
             }
         }
     }
-    if (cast<i64>(meta.files.size()) == 0) {
-        // Legacy single-blob metadata ("source" field): one pseudo-file.
-        if (let sv := doc.get("source").some) {
-            let legacy: mut LibFile = new LibFile();
-            legacy.name = "<lib:" + meta.name + ">";
-            legacy.text = sv.as_string();
-            meta.files.push(legacy);
-        }
-    }
     return meta;
-}
-
-// Build the JSON metadata document for a lib being created. The lib's source
-// files are carried as per-file {name, text} entries (see LibFile).
-fun build_metadata(name: string, version: i64, deps: _utils.List<string>, instances: _utils.List<string>, files: _utils.List<LibFile>) -> string {
-    let mut w = new std.JsonWriter();
-    w.begin_object();
-    w.key("name"); w.value_string(name);
-    w.key("version"); w.value_i64(version);
-    w.key("deps"); w.begin_array();
-    let di: mut u64 = 0;
-    while (di < deps.size()) { w.value_string(deps.at(di).some); di = di + 1; }
-    w.end_array();
-    w.key("instances"); w.begin_array();
-    let ii: mut u64 = 0;
-    while (ii < instances.size()) { w.value_string(instances.at(ii).some); ii = ii + 1; }
-    w.end_array();
-    w.key("files"); w.begin_array();
-    let fi: mut u64 = 0;
-    while (fi < files.size()) {
-        let lf: LibFile = files.at(fi).some;
-        w.begin_object();
-        w.key("name"); w.value_string(lf.name);
-        w.key("text"); w.value_string(lf.text);
-        w.end_object();
-        fi = fi + 1;
-    }
-    w.end_array();
-    w.end_object();
-    return w.to_string();
 }
 
 // Locate a dependency lib by name: search the referencing lib's directory, the
@@ -261,6 +2022,12 @@ fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadStat
         fi2 = fi2 + 1;
     }
     state.so_paths.push(lib_path);
+    // Only libs with a decl pseudo-file carry an injection doc — doc and decl
+    // file must stay 1:1 with the decl-slot inputs main.penguin creates (the
+    // injector pairs docs and slots by index).
+    if (meta.has_decls) {
+        state.meta_docs.push(meta.doc_json);
+    }
     state.lib_names.push(meta.name);
     let ii: mut i64 = 0;
     while (ii < cast<i64>(meta.instances.size())) {
@@ -272,7 +2039,7 @@ fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadStat
 
 // Load every --lib path (deps recursively, deps-first). Returns the merged
 // state; on any unresolvable dep the driver must abort with a non-zero exit.
-fun load_lib_chain(lib_paths: _utils.List<string>, exe_dir: string) -> mut LibLoadState {
+export fun load_lib_chain(lib_paths: _utils.List<string>, exe_dir: string) -> mut LibLoadState {
     let state: mut LibLoadState = new LibLoadState();
     let li: mut i64 = 0;
     while (li < cast<i64>(lib_paths.size())) {
@@ -283,19 +2050,19 @@ fun load_lib_chain(lib_paths: _utils.List<string>, exe_dir: string) -> mut LibLo
 }
 
 // Directory of the running compiler executable (for dep resolution).
-fun compiler_exe_dir() -> string {
+export fun compiler_exe_dir() -> string {
     let exe: string = _utils.exe_path();
     return _path_dir(exe);
 }
 
 // The compiler binary has the json-backed Dynlib machinery compiled in.
-fun dynlib_available() -> bool { return true; }
+export fun dynlib_available() -> bool { return true; }
 
 // Collect the mangled full names of every specialized generic instance in the
 // compilation result — these are the instances a lib SHIPS, and the names a
 // consumer declares instead of re-compiling. Defs already provided by a loaded
 // dependency lib (is_lib_export) are excluded: they are not part of THIS lib.
-fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
+export fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
     let out: mut _utils.List<string> = new _utils.List<string>();
     let i: mut i64 = 0;
     while (i < cast<i64>(result.definitions.size())) {
@@ -315,15 +2082,15 @@ fun collect_instances(result: BoundCompilationUnit) -> _utils.List<string> {
 }
 
 // A .penguin-lib may not emit an @main entry point. Global variables ARE
-// allowed: the consumer compiles the lib's embedded source, so every lib
-// global is re-defined (and initialized by the consumer's initial chain) in
-// the exe; on ELF the exe's definitions interpose the .so's own copies (the
-// lib is built -fPIC, so its data references go through the GOT and bind to
-// the exe's symbols at load time — the same mechanism that lets the lib's
+// allowed: the consumer re-defines every lib global from the metadata, so
+// each is re-defined (and initialized by the consumer's initial chain) in the
+// exe; on ELF the exe's definitions interpose the .so's own copies (the lib is
+// built -fPIC, so its data references go through the GOT and bind to the
+// exe's symbols at load time — the same mechanism that lets the lib's
 // _emperor_* runtime refs resolve from the consumer). Lib code and consumer
 // code therefore observe ONE initialized copy of each global.
 // Returns true when the compilation is valid for lib mode.
-fun validate_lib_defs(result: BoundCompilationUnit) -> bool {
+export fun validate_lib_defs(result: BoundCompilationUnit) -> bool {
     let i: mut i64 = 0;
     while (i < cast<i64>(result.definitions.size())) {
         let d: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
@@ -349,6 +2116,866 @@ fun make_force_export_sources(roots: _utils.List<string>) -> string {
     }
     sb.append("}\n");
     return sb.to_string();
+}
+
+// ===========================================================================
+// LIBMETA DIRECT INJECTION (Phase B): build prebuilt bound defs from the
+// emperor-libmeta symbol table, skipping the decl-text parse/rebind.
+//
+// Two stages per document: (1) skeleton registration — every symbol becomes a
+// bound def with its scope + symbols registered (is_lib_export/is_lib_source
+// preset, pass_index stamped to 2 so passes 1/2 treat it as done); (2)
+// signature backfill — structured <T> encodings resolve against the registry
+// + global scope, vtables adopt the publisher's prebuilt slot lists, and
+// global initializer TEXT is re-parsed + bound through the ordinary binder.
+// Injected defs are inserted at the recorded decl-slot indices so the def
+// order — and therefore the emitted .ll — is byte-identical to --libmeta=text.
+// ===========================================================================
+
+// The (JSON symbol, built def) pair for one lib's injection batch.
+class LibMetaInjectEntry {
+    json: std.JsonValue;
+    def: BoundDefinition;
+}
+
+class LibMetaInjector {
+    model: mut SemanticModel;
+    result: mut BoundCompilationUnit;
+    // function symbols by full name (implementation-method lookup for vtables)
+    fn_names: mut _utils.List<string> = new _utils.List<string>();
+    fn_syms: mut _utils.List<BoundFunctionSymbol> = new _utils.List<BoundFunctionSymbol>();
+
+    fun new(mut this, model: mut SemanticModel, result: mut BoundCompilationUnit) {
+        this.model = model;
+        this.result = result;
+    }
+
+    fun note_fn(this, sym: BoundFunctionSymbol) {
+        if (_string_list_contains(this.fn_names, sym.full_name)) { return; }
+        this.fn_names.push(sym.full_name);
+        this.fn_syms.push(sym);
+    }
+
+    fun find_fn(this, full: string) -> Option<BoundFunctionSymbol> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.fn_names.size())) {
+            if (this.fn_names.at(cast<u64>(i)).some == full) {
+                return new Option<BoundFunctionSymbol>.some(this.fn_syms.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<BoundFunctionSymbol>.none();
+    }
+
+    // The scope for a dotted ns path (creating/merging namespaces as needed).
+    fun ns_scope(mut this, ns: string) -> mut BoundScope {
+        if (string_length(ns) == 0) { return this.result.global_scope; }
+        return this.ns_scope_from(this.result.global_scope, ns);
+    }
+
+    fun ns_scope_from(mut this, base: mut BoundScope, ns: string) -> mut BoundScope {
+        let dot: i64 = string_find(ns, ".");
+        let seg: string = if (dot < 0) { ns } else { string_substring(ns, 0, dot) };
+        let child: mut BoundScope = base.add_or_merge_namespace(seg);
+        // A namespace SCOPE alone is not reachable by name: register the
+        // namespace symbol in the parent (mirrors bind_namespace_def).
+        if (!base.lookup_symbol_local(seg).is_some()) {
+            let ns_sym: BoundNamespaceSymbol = new BoundNamespaceSymbol(seg, child.full_name, new Option<BoundScope>.some(child));
+            base.add_symbol(new BoundSymbol.namespace_sym(ns_sym));
+        }
+        if (dot < 0) { return child; }
+        let rest: string = string_substring(ns, dot + 1, string_length(ns) - dot - 1);
+        return this.ns_scope_from(child, rest);
+    }
+
+    fun full_of(ns: string, name: string) -> string {
+        if (string_length(ns) == 0) { return "<global>." + name; }
+        return "<global>." + ns + "." + name;
+    }
+
+    // ---- stage 1: skeletons ----
+
+    fun make_fun_skeleton(mut this, name: string, full_name: string, j: std.JsonValue) -> BoundFunctionDefinition {
+        let is_extern: mut bool = false;
+        let is_pure: mut bool = false;
+        let is_new: mut bool = false;
+        let is_static: mut bool = false;
+        if (let xv := j.get("x").some) { if (xv.as_i64() == 1) { is_extern = true; } }
+        if (let pv := j.get("p").some) { if (pv.as_i64() == 1) { is_pure = true; } }
+        if (let nv := j.get("nw").some) { if (nv.as_i64() == 1) { is_new = true; } }
+        if (let sv := j.get("st").some) { if (sv.as_i64() == 1) { is_static = true; } }
+        let f: mut BoundFunctionDefinition = new BoundFunctionDefinition(name, full_name, is_extern, is_pure, is_new, is_static);
+        f.is_lib_export = true;
+        f.is_lib_source = true;
+        let sym: mut BoundFunctionSymbol = new BoundFunctionSymbol(name, full_name);
+        sym.is_extern = is_extern;
+        sym.is_pure = is_pure;
+        sym.is_new = is_new;
+        sym.is_static = is_static;
+        f.symbol = new Option<BoundFunctionSymbol>.some(sym);
+        this.note_fn(sym);
+        return f;
+    }
+
+    fun build_skeleton(mut this, j: std.JsonValue) -> Option<BoundDefinition> {
+        let kind: mut string = "";
+        if (let kv := j.get("kind").some) { kind = kv.as_string(); }
+        if (kind == "ns" || kind == "source") { return new Option<BoundDefinition>.none(); }
+        let ns: mut string = "";
+        if (let nv := j.get("ns").some) { ns = nv.as_string(); }
+        let name: mut string = "";
+        if (let nv2 := j.get("name").some) { name = nv2.as_string(); }
+        let scope: mut BoundScope = this.ns_scope(ns);
+        if (kind == "fun") {
+            let f: mut BoundFunctionDefinition = this.make_fun_skeleton(name, this.full_of(ns, name), j);
+            scope.add_symbol(new BoundSymbol.function_sym(f.symbol.some));
+            return new Option<BoundDefinition>.some(new BoundDefinition.function_def(f));
+        }
+        if (kind == "class" || kind == "iface") {
+            let full: string = this.full_of(ns, name);
+            if (kind == "class") {
+                let cls: mut BoundClassDefinition = new BoundClassDefinition(name, full);
+                cls.is_lib_export = true;
+                cls.is_lib_source = true;
+                let cs: mut BoundScope = new BoundScope(new ScopeKind.ClassScope(), name, full, new Option<BoundScope>.some(scope));
+                cls.scope = new Option<BoundScope>.some(cs);
+                let ts: mut BoundTypeSymbol = new BoundTypeSymbol(name, full);
+                let bt: mut BoundType = new BoundType();
+                bt.kind = new TypeKind.ClassKind();
+                bt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.class_def(cls));
+                ts.bound_type = bt;
+                cls.type_symbol = new Option<BoundTypeSymbol>.some(ts);
+                cls.bound_type = bt;
+                scope.add_symbol(new BoundSymbol.type_sym(ts));
+                return new Option<BoundDefinition>.some(new BoundDefinition.class_def(cls));
+            }
+            let iface: mut BoundInterfaceDefinition = new BoundInterfaceDefinition(name, full);
+            iface.is_lib_export = true;
+            iface.is_lib_source = true;
+            let isc: mut BoundScope = new BoundScope(new ScopeKind.InterfaceScope(), name, full, new Option<BoundScope>.some(scope));
+            iface.scope = new Option<BoundScope>.some(isc);
+            let its: mut BoundTypeSymbol = new BoundTypeSymbol(name, full);
+            let ibt: mut BoundType = new BoundType();
+            ibt.kind = new TypeKind.InterfaceKind();
+            ibt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.interface_def(iface));
+            its.bound_type = ibt;
+            iface.type_symbol = new Option<BoundTypeSymbol>.some(its);
+            iface.bound_type = ibt;
+            scope.add_symbol(new BoundSymbol.type_sym(its));
+            return new Option<BoundDefinition>.some(new BoundDefinition.interface_def(iface));
+        }
+        if (kind == "enum") {
+            let full2: string = this.full_of(ns, name);
+            let enm: mut BoundEnumDefinition = new BoundEnumDefinition(name, full2);
+            enm.is_lib_export = true;
+            enm.is_lib_source = true;
+            let esc: mut BoundScope = new BoundScope(new ScopeKind.EnumScope(), name, full2, new Option<BoundScope>.some(scope));
+            enm.scope = new Option<BoundScope>.some(esc);
+            let ets: mut BoundTypeSymbol = new BoundTypeSymbol(name, full2);
+            let ebt: mut BoundType = new BoundType();
+            ebt.kind = new TypeKind.EnumKind();
+            ebt.type_definition = new Option<BoundDefinition>.some(new BoundDefinition.enum_def(enm));
+            ets.bound_type = ebt;
+            enm.type_symbol = new Option<BoundTypeSymbol>.some(ets);
+            enm.bound_type = ebt;
+            scope.add_symbol(new BoundSymbol.type_sym(ets));
+            return new Option<BoundDefinition>.some(new BoundDefinition.enum_def(enm));
+        }
+        if (kind == "alias") {
+            let full3: string = this.full_of(ns, name);
+            let tr: mut BoundTypeReferenceDefinition = new BoundTypeReferenceDefinition(name);
+            let tts: mut BoundTypeSymbol = new BoundTypeSymbol(name, full3);
+            tr.type_symbol = new Option<BoundTypeSymbol>.some(tts);
+            scope.add_symbol(new BoundSymbol.type_sym(tts));
+            return new Option<BoundDefinition>.some(new BoundDefinition.type_ref_def(tr));
+        }
+        if (kind == "global") {
+            let full4: string = this.full_of(ns, name);
+            let gv: mut BoundGlobalVariableDefinition = new BoundGlobalVariableDefinition();
+            gv.name = name;
+            gv.full_name = full4;
+            let gs: mut BoundVariableSymbol = new BoundVariableSymbol();
+            gs.name = name;
+            gs.full_name = full4;
+            gs.variable_kind = new VariableSymbolKind.Global();
+            gs.enclosing_scope = new Option<BoundScope>.some(scope);
+            gv.variable_symbol = new Option<BoundVariableSymbol>.some(gs);
+            gv.scope = new Option<BoundScope>.some(scope);
+            scope.add_symbol(new BoundSymbol.variable(gs));
+            return new Option<BoundDefinition>.some(new BoundDefinition.global_var_def(gv));
+        }
+        if (kind == "implfor") {
+            let imp: mut BoundInterfaceForImplementation = new BoundInterfaceForImplementation();
+            return new Option<BoundDefinition>.some(new BoundDefinition.impl_for_def(imp));
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // ---- stage 2: signature backfill ----
+
+    fun resolve_type_json(mut this, tj: std.JsonValue) -> mut BoundType {
+        let loc: SourceLocation = new SourceLocation("<libmeta>", 0, 0);
+        let is_fun: mut bool = false;
+        if (let kv := tj.get("k").some) {
+            if (kv.as_string() == "fun") { is_fun = true; }
+        }
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        if (let av := tj.get("a").some) {
+            if (av.is_array()) {
+                let arr: std.Vector<std.JsonValue> = av.as_array();
+                let i: mut u64 = 0;
+                while (i < arr.size()) {
+                    let arg: std.JsonValue = arr.at(i).some;
+                    if (let tv := arg.get("t").some) {
+                        args.push(make_type_arg(this.resolve_type_json(tv)));
+                    } else if (let vv := arg.get("v").some) {
+                        args.push(this.make_value_arg(vv));
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+        if (is_fun) {
+            // generic_args = [ret, params...] (make_function_type convention)
+            let types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let j2: mut i64 = 0;
+            while (j2 < cast<i64>(args.size())) {
+                types.push(arg_as_bound_type(args.at(cast<u64>(j2)).some));
+                j2 = j2 + 1;
+            }
+            let ret: mut BoundType = this.model.type_registry.void_type;
+            if (cast<i64>(types.size()) > 0) { ret = types.at(cast<u64>(0)).some; }
+            let params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let k: mut i64 = 1;
+            while (k < cast<i64>(types.size())) {
+                params.push(types.at(cast<u64>(k)).some);
+                k = k + 1;
+            }
+            let is_async: mut bool = false;
+            if (let ayv := tj.get("ay").some) { if (ayv.as_i64() == 1) { is_async = true; } }
+            return this.model.type_registry.make_function_type(ret, params, is_async);
+        }
+        let b: mut string = "";
+        if (let bv := tj.get("b").some) { b = bv.as_string(); }
+        let base: mut BoundType = this.model.resolve_base_type_qualified(b, this.result.global_scope, loc);
+        if (cast<i64>(args.size()) > 0) {
+            base = base.with_generic_args(args);
+        }
+        if (let mv := tj.get("m").some) {
+            if (mv.as_i64() == 1) {
+                base = base.with_mutability(new Mutability.Mutable());
+            }
+        }
+        return base;
+    }
+
+    fun make_value_arg(mut this, vv: std.JsonValue) -> BoundTypeArg {
+        let k: mut string = "";
+        if (let kv := vv.get("k").some) { k = kv.as_string(); }
+        if (k == "bool") {
+            if (let bv := vv.get("b").some) {
+                return make_bool_value_arg(bv.as_i64());
+            }
+            return make_bool_value_arg(0);
+        }
+        if (k == "string") {
+            let s: mut string = "";
+            if (let sv := vv.get("s").some) { s = sv.as_string(); }
+            return make_string_value_arg(s);
+        }
+        if (k == "double") {
+            let d: mut string = "0.0";
+            if (let dv := vv.get("d").some) { d = dv.as_string(); }
+            return make_double_value_arg(string_to_double(d), d);
+        }
+        if (k == "obj") {
+            __builtin.eprintln("[EmperorPenguin Dynlib] warning: object value template args are not injectable; using 0");
+        }
+        let iv: mut i64 = 0;
+        if (let ivv := vv.get("i").some) { iv = ivv.as_i64(); }
+        return make_int_value_arg(iv);
+    }
+
+    // Backfill one function def's params/return from its JSON entry.
+    fun backfill_fun(mut this, f: mut BoundFunctionDefinition, j: std.JsonValue, this_type: Option<BoundType>) {
+        let idx: mut i64 = 0;
+        if (let pv := j.get("params").some) {
+            if (pv.is_array()) {
+                let params: std.Vector<std.JsonValue> = pv.as_array();
+                let i: mut u64 = 0;
+                while (i < params.size()) {
+                    let pj: std.JsonValue = params.at(i).some;
+                    let pn: mut string = "p";
+                    if (let nv := pj.get("n").some) { pn = nv.as_string(); }
+                    let is_mut: mut bool = false;
+                    if (let mv := pj.get("m").some) { if (mv.as_i64() == 1) { is_mut = true; } }
+                    let pt: mut BoundType = this.model.type_registry.void_type;
+                    if (pn == "this") {
+                        if (let tt := this_type.some) {
+                            if (is_mut) {
+                                pt = tt.with_mutability(new Mutability.Mutable());
+                            } else {
+                                pt = tt.with_mutability(new Mutability.Immutable());
+                            }
+                        }
+                    } else {
+                        if (let tv := pj.get("t").some) { pt = this.resolve_type_json(tv); }
+                    }
+                    let is_this: mut bool = false;
+                    if (pn == "this") { is_this = true; }
+                    let bp: mut BoundFunctionParameter = new BoundFunctionParameter(pn, idx, is_mut, is_this);
+                    bp.bound_type = pt;
+                    f.parameters.push(bp);
+                    idx = idx + 1;
+                    i = i + 1;
+                }
+            }
+        }
+        f.return_type = this.model.type_registry.void_type;
+        if (let rv := j.get("ret").some) {
+            f.return_type = this.resolve_type_json(rv);
+        }
+        if (let sym := f.symbol.some) {
+            let s2: mut BoundFunctionSymbol = sym;
+            s2.return_type = f.return_type;
+            s2.resolved_return_type = new Option<BoundType>.some(f.return_type);
+            let pts: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(f.parameters.size())) {
+                pts.push(f.parameters.at(cast<u64>(pi)).some.bound_type);
+                pi = pi + 1;
+            }
+            s2.bound_type = this.model.type_registry.make_function_type(f.return_type, pts, false);
+            // NOTE: sym.parameters stays empty here — pass 4 (BindSymbols)
+            // mirrors def.parameters onto the symbol; pre-filling would
+            // double every parameter (E_CALL_ARITY against 2x arity).
+        }
+    }
+
+    // Adopt the publisher's prebuilt vtable for one impl entry.
+    fun adopt_vtable(mut this, imp_json: std.JsonValue, interface_type: BoundType, out_vtables: mut _utils.List<BoundVTable>) {
+        let vt: mut BoundVTable = new BoundVTable();
+        vt.interface_type = interface_type;
+        if (let vtv := imp_json.get("vt").some) {
+            if (vtv.is_array()) {
+                let slots: std.Vector<std.JsonValue> = vtv.as_array();
+                // Interface methods in declaration order, matched by name.
+                let iface_methods: mut _utils.List<BoundFunctionSymbol> = new _utils.List<BoundFunctionSymbol>();
+                if (let td := interface_type.type_definition.some) {
+                    if (td is BoundDefinition.interface_def) {
+                        let ifd: BoundInterfaceDefinition = td.interface_def;
+                        let mi: mut i64 = 0;
+                        while (mi < cast<i64>(ifd.methods.size())) {
+                            let md: BoundDefinition = ifd.methods.at(cast<u64>(mi)).some;
+                            if (md is BoundDefinition.function_def) {
+                                if (let s := md.function_def.symbol.some) {
+                                    iface_methods.push(s);
+                                }
+                            }
+                            mi = mi + 1;
+                        }
+                    }
+                }
+                let i: mut u64 = 0;
+                while (i < slots.size()) {
+                    let slot: mut BoundVTableSlot = new BoundVTableSlot();
+                    let sv: std.JsonValue = slots.at(i).some;
+                    if (sv.is_string()) {
+                        let impl_name: string = sv.as_string();
+                        if (let fs := this.find_fn("<global>." + impl_name).some) {
+                            slot.implementation_method = new Option<BoundFunctionSymbol>.some(fs);
+                            let smi: mut i64 = 0;
+                            while (smi < cast<i64>(iface_methods.size())) {
+                                if (iface_methods.at(cast<u64>(smi)).some.name == fs.name) {
+                                    slot.interface_method = new Option<BoundFunctionSymbol>.some(iface_methods.at(cast<u64>(smi)).some);
+                                }
+                                smi = smi + 1;
+                            }
+                        } else {
+                            __builtin.eprintln("[EmperorPenguin Dynlib] warning: vtable method not found: " + impl_name);
+                        }
+                    }
+                    vt.slots.push(slot);
+                    i = i + 1;
+                }
+            }
+        }
+        out_vtables.push(vt);
+    }
+
+    fun backfill(mut this, j: std.JsonValue, d: BoundDefinition) {
+        let kind: mut string = "";
+        if (let kv := j.get("kind").some) { kind = kv.as_string(); }
+        let ns: mut string = "";
+        if (let nv := j.get("ns").some) { ns = nv.as_string(); }
+        let scope: mut BoundScope = this.ns_scope(ns);
+        if (kind == "fun") {
+            if (d is BoundDefinition.function_def) {
+                this.backfill_fun(d.function_def, j, new Option<BoundType>.none());
+            }
+            return;
+        }
+        if (kind == "class") {
+            if (d is BoundDefinition.class_def) {
+                let cls: mut BoundClassDefinition = d.class_def;
+                let cs: mut BoundScope = cls.scope.some;
+                if (let fv := j.get("fields").some) {
+                    if (fv.is_array()) {
+                        let fields: std.Vector<std.JsonValue> = fv.as_array();
+                        let i: mut u64 = 0;
+                        while (i < fields.size()) {
+                            let fj: std.JsonValue = fields.at(i).some;
+                            let fn: mut string = "f";
+                            if (let nv2 := fj.get("n").some) { fn = nv2.as_string(); }
+                            let mu: mut i64 = 0;
+                            if (let mv := fj.get("mu").some) { mu = mv.as_i64(); }
+                            let ft: mut BoundType = this.model.type_registry.void_type;
+                            if (let tv := fj.get("t").some) { ft = this.resolve_type_json(tv); }
+                            let fld: mut BoundClassFieldDefinition = new BoundClassFieldDefinition(fn);
+                            if (mu == 2) { fld.mutability = new Mutability.Mutable(); }
+                            else if (mu == 1) { fld.mutability = new Mutability.Immutable(); }
+                            let fsym: mut BoundVariableSymbol = new BoundVariableSymbol();
+                            fsym.name = fn;
+                            fsym.full_name = cls.full_name + "." + fn;
+                            fsym.variable_kind = new VariableSymbolKind.Field();
+                            fsym.is_mutable = mu == 2;
+                            fsym.bound_type = ft;
+                            fsym.enclosing_scope = new Option<BoundScope>.some(cs);
+                            fld.bound_type = ft;
+                            fld.field_symbol = new Option<BoundVariableSymbol>.some(fsym);
+                            cs.add_symbol(new BoundSymbol.variable(fsym));
+                            cls.fields.push(new BoundDefinition.class_field(fld));
+                            i = i + 1;
+                        }
+                    }
+                }
+                this.backfill_class_methods(cls, j);
+                if (let iv := j.get("impls").some) {
+                    if (iv.is_array()) {
+                        let impls: std.Vector<std.JsonValue> = iv.as_array();
+                        let k: mut u64 = 0;
+                        while (k < impls.size()) {
+                            let ij: std.JsonValue = impls.at(k).some;
+                            let it: mut BoundType = this.model.type_registry.make_error_type();
+                            if (let tv2 := ij.get("iface").some) { it = this.resolve_type_json(tv2); }
+                            let imp: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
+                            imp.interface_type = it;
+                            if (let mv2 := ij.get("methods").some) {
+                                if (mv2.is_array()) {
+                                    let ms: std.Vector<std.JsonValue> = mv2.as_array();
+                                    let m2: mut u64 = 0;
+                                    while (m2 < ms.size()) {
+                                        let mj: std.JsonValue = ms.at(m2).some;
+                                        let mn: mut string = "m";
+                                        if (let nv3 := mj.get("n").some) { mn = nv3.as_string(); }
+                                        let mf: mut BoundFunctionDefinition = this.make_fun_skeleton(mn, cls.full_name + "." + mn, mj);
+                                        cs.add_symbol(new BoundSymbol.function_sym(mf.symbol.some));
+                                        this.backfill_fun(mf, mj, new Option<BoundType>.some(cls.bound_type));
+                                        imp.methods.push(new BoundDefinition.function_def(mf));
+                                        m2 = m2 + 1;
+                                    }
+                                }
+                            }
+                            cls.interface_impls.push(new BoundDefinition.impl_def(imp));
+                            this.adopt_vtable(ij, it, cls.vtables);
+                            k = k + 1;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if (kind == "enum") {
+            if (d is BoundDefinition.enum_def) {
+                let enm: mut BoundEnumDefinition = d.enum_def;
+                let esc: mut BoundScope = enm.scope.some;
+                if (let mv3 := j.get("members").some) {
+                    if (mv3.is_array()) {
+                        let members: std.Vector<std.JsonValue> = mv3.as_array();
+                        let i2: mut u64 = 0;
+                        while (i2 < members.size()) {
+                            let mj2: std.JsonValue = members.at(i2).some;
+                            let mn2: mut string = "m";
+                            if (let nv4 := mj2.get("n").some) { mn2 = nv4.as_string(); }
+                            let mv4: mut i64 = 0;
+                            if (let vv2 := mj2.get("v").some) { mv4 = vv2.as_i64(); }
+                            let mt: mut BoundType = this.model.type_registry.void_type;
+                            if (let pj3 := mj2.get("p").some) { mt = this.resolve_type_json(pj3); }
+                            let mem: mut BoundEnumMemberDefinition = new BoundEnumMemberDefinition(mn2, mv4, mt);
+                            let msym: mut BoundEnumMemberSymbol = new BoundEnumMemberSymbol(mn2, enm.full_name + "." + mn2, enm.bound_type, mv4, mt);
+                            mem.member_symbol = new Option<BoundEnumMemberSymbol>.some(msym);
+                            esc.add_symbol(new BoundSymbol.enum_member(msym));
+                            enm.members.push(mem);
+                            i2 = i2 + 1;
+                        }
+                    }
+                }
+                this.backfill_enum_methods(enm, j);
+                if (let iv2 := j.get("impls").some) {
+                    if (iv2.is_array()) {
+                        let impls2: std.Vector<std.JsonValue> = iv2.as_array();
+                        let k2: mut u64 = 0;
+                        while (k2 < impls2.size()) {
+                            let ij2: std.JsonValue = impls2.at(k2).some;
+                            let it2: mut BoundType = this.model.type_registry.make_error_type();
+                            if (let tv3 := ij2.get("iface").some) { it2 = this.resolve_type_json(tv3); }
+                            let imp2: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
+                            imp2.interface_type = it2;
+                            if (let mv5 := ij2.get("methods").some) {
+                                if (mv5.is_array()) {
+                                    let ms2: std.Vector<std.JsonValue> = mv5.as_array();
+                                    let m3: mut u64 = 0;
+                                    while (m3 < ms2.size()) {
+                                        let mj3: std.JsonValue = ms2.at(m3).some;
+                                        let mn3: mut string = "m";
+                                        if (let nv5 := mj3.get("n").some) { mn3 = nv5.as_string(); }
+                                        let mf2: mut BoundFunctionDefinition = this.make_fun_skeleton(mn3, enm.full_name + "." + mn3, mj3);
+                                        esc.add_symbol(new BoundSymbol.function_sym(mf2.symbol.some));
+                                        this.backfill_fun(mf2, mj3, new Option<BoundType>.some(enm.bound_type));
+                                        imp2.methods.push(new BoundDefinition.function_def(mf2));
+                                        m3 = m3 + 1;
+                                    }
+                                }
+                            }
+                            enm.interface_impls.push(new BoundDefinition.impl_def(imp2));
+                            this.adopt_vtable(ij2, it2, enm.vtables);
+                            k2 = k2 + 1;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if (kind == "iface") {
+            if (d is BoundDefinition.interface_def) {
+                this.backfill_iface_methods(d.interface_def, j);
+                if (let iv3 := j.get("impls").some) {
+                    if (iv3.is_array()) {
+                        let impls3: std.Vector<std.JsonValue> = iv3.as_array();
+                        let k3: mut u64 = 0;
+                        while (k3 < impls3.size()) {
+                            let ij3: std.JsonValue = impls3.at(k3).some;
+                            let it3: mut BoundType = this.model.type_registry.make_error_type();
+                            if (let tv4 := ij3.get("iface").some) { it3 = this.resolve_type_json(tv4); }
+                            let imp3: mut BoundInterfaceImplementation = new BoundInterfaceImplementation();
+                            imp3.interface_type = it3;
+                            let ifd: BoundInterfaceDefinition = d.interface_def;
+                            let ifsc: mut BoundScope = ifd.scope.some;
+                            if (let mv6 := ij3.get("methods").some) {
+                                if (mv6.is_array()) {
+                                    let ms3: std.Vector<std.JsonValue> = mv6.as_array();
+                                    let m4: mut u64 = 0;
+                                    while (m4 < ms3.size()) {
+                                        let mj4: std.JsonValue = ms3.at(m4).some;
+                                        let mn4: mut string = "m";
+                                        if (let nv6 := mj4.get("n").some) { mn4 = nv6.as_string(); }
+                                        let mf3: mut BoundFunctionDefinition = this.make_fun_skeleton(mn4, ifd.full_name + "." + mn4, mj4);
+                                        ifsc.add_symbol(new BoundSymbol.function_sym(mf3.symbol.some));
+                                        this.backfill_fun(mf3, mj4, new Option<BoundType>.some(ifd.bound_type));
+                                        imp3.methods.push(new BoundDefinition.function_def(mf3));
+                                        m4 = m4 + 1;
+                                    }
+                                }
+                            }
+                            ifd.interface_impls.push(new BoundDefinition.impl_def(imp3));
+                            this.adopt_vtable(ij3, it3, ifd.vtables);
+                            k3 = k3 + 1;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if (kind == "alias") {
+            if (d is BoundDefinition.type_ref_def) {
+                let tr: mut BoundTypeReferenceDefinition = d.type_ref_def;
+                if (let tv5 := j.get("t").some) {
+                    tr.alias_type = this.resolve_type_json(tv5);
+                    if (let ts := tr.type_symbol.some) {
+                        let ts2: mut BoundTypeSymbol = ts;
+                        ts2.bound_type = tr.alias_type;
+                    }
+                }
+            }
+            return;
+        }
+        if (kind == "global") {
+            if (d is BoundDefinition.global_var_def) {
+                let gv: mut BoundGlobalVariableDefinition = d.global_var_def;
+                if (let tv6 := j.get("t").some) {
+                    let gt: mut BoundType = this.resolve_type_json(tv6);
+                    gv.bound_type = gt;
+                    if (let gs := gv.variable_symbol.some) {
+                        let gs2: mut BoundVariableSymbol = gs;
+                        gs2.bound_type = gt;
+                        if (gt.mutability is Mutability.Mutable) { gs2.is_mutable = true; }
+                    }
+                }
+            }
+            return;
+        }
+        if (kind == "implfor") {
+            if (d is BoundDefinition.impl_for_def) {
+                let imp4: mut BoundInterfaceForImplementation = d.impl_for_def;
+                let it4: mut BoundType = this.model.type_registry.make_error_type();
+                if (let tv7 := j.get("iface").some) { it4 = this.resolve_type_json(tv7); }
+                let ft: mut BoundType = this.model.type_registry.make_error_type();
+                if (let tv8 := j.get("for").some) { ft = this.resolve_type_json(tv8); }
+                imp4.interface_type = it4;
+                imp4.for_type = ft;
+                if (let mv7 := j.get("methods").some) {
+                    if (mv7.is_array()) {
+                        let ms4: std.Vector<std.JsonValue> = mv7.as_array();
+                        let m5: mut u64 = 0;
+                        while (m5 < ms4.size()) {
+                            let mj5: std.JsonValue = ms4.at(m5).some;
+                            let mn5: mut string = "m";
+                            if (let nv7 := mj5.get("n").some) { mn5 = nv7.as_string(); }
+                            let mf4: mut BoundFunctionDefinition = this.make_fun_skeleton(mn5, this.full_of(ns, mn5), mj5);
+                            scope.add_symbol(new BoundSymbol.function_sym(mf4.symbol.some));
+                            this.backfill_fun(mf4, mj5, new Option<BoundType>.some(ft));
+                            imp4.methods.push(new BoundDefinition.function_def(mf4));
+                            m5 = m5 + 1;
+                        }
+                    }
+                }
+                // Build the vtable: slots match interface methods by name.
+                let vt2: mut BoundVTable = new BoundVTable();
+                vt2.interface_type = it4;
+                if (let td2 := it4.type_definition.some) {
+                    if (td2 is BoundDefinition.interface_def) {
+                        let ifd2: BoundInterfaceDefinition = td2.interface_def;
+                        let qi: mut i64 = 0;
+                        while (qi < cast<i64>(ifd2.methods.size())) {
+                            let md2: BoundDefinition = ifd2.methods.at(cast<u64>(qi)).some;
+                            if (md2 is BoundDefinition.function_def) {
+                                let slot2: mut BoundVTableSlot = new BoundVTableSlot();
+                                if (let is2 := md2.function_def.symbol.some) {
+                                    slot2.interface_method = new Option<BoundFunctionSymbol>.some(is2);
+                                }
+                                let ri: mut i64 = 0;
+                                while (ri < cast<i64>(imp4.methods.size())) {
+                                    let rm: BoundDefinition = imp4.methods.at(cast<u64>(ri)).some;
+                                    if (rm is BoundDefinition.function_def) {
+                                        if (rm.function_def.name == md2.function_def.name) {
+                                            if (let rs := rm.function_def.symbol.some) {
+                                                slot2.implementation_method = new Option<BoundFunctionSymbol>.some(rs);
+                                            }
+                                        }
+                                    }
+                                    ri = ri + 1;
+                                }
+                                vt2.slots.push(slot2);
+                            }
+                            qi = qi + 1;
+                        }
+                    }
+                }
+                imp4.vtable = new Option<BoundVTable>.some(vt2);
+            }
+            return;
+        }
+    }
+
+    fun backfill_class_methods(mut this, cls: mut BoundClassDefinition, j: std.JsonValue) {
+        let cs: mut BoundScope = cls.scope.some;
+        if (let mv := j.get("methods").some) {
+            if (mv.is_array()) {
+                let ms: std.Vector<std.JsonValue> = mv.as_array();
+                let i: mut u64 = 0;
+                while (i < ms.size()) {
+                    let mj: std.JsonValue = ms.at(i).some;
+                    let mn: mut string = "m";
+                    if (let nv := mj.get("n").some) { mn = nv.as_string(); }
+                    let mf: mut BoundFunctionDefinition = this.make_fun_skeleton(mn, cls.full_name + "." + mn, mj);
+                    cs.add_symbol(new BoundSymbol.function_sym(mf.symbol.some));
+                    this.backfill_fun(mf, mj, new Option<BoundType>.some(cls.bound_type));
+                    cls.methods.push(new BoundDefinition.function_def(mf));
+                    if (mf.is_new) {
+                        cls.constructors.push(new BoundDefinition.function_def(mf));
+                        cls.constructor = new Option<BoundFunctionDefinition>.some(mf);
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+    }
+
+    fun backfill_enum_methods(mut this, enm: mut BoundEnumDefinition, j: std.JsonValue) {
+        let esc: mut BoundScope = enm.scope.some;
+        if (let mv := j.get("methods").some) {
+            if (mv.is_array()) {
+                let ms: std.Vector<std.JsonValue> = mv.as_array();
+                let i: mut u64 = 0;
+                while (i < ms.size()) {
+                    let mj: std.JsonValue = ms.at(i).some;
+                    let mn: mut string = "m";
+                    if (let nv := mj.get("n").some) { mn = nv.as_string(); }
+                    let mf: mut BoundFunctionDefinition = this.make_fun_skeleton(mn, enm.full_name + "." + mn, mj);
+                    esc.add_symbol(new BoundSymbol.function_sym(mf.symbol.some));
+                    this.backfill_fun(mf, mj, new Option<BoundType>.some(enm.bound_type));
+                    enm.methods.push(new BoundDefinition.function_def(mf));
+                    i = i + 1;
+                }
+            }
+        }
+    }
+
+    fun backfill_iface_methods(mut this, iface: mut BoundInterfaceDefinition, j: std.JsonValue) {
+        let isc: mut BoundScope = iface.scope.some;
+        if (let mv := j.get("methods").some) {
+            if (mv.is_array()) {
+                let ms: std.Vector<std.JsonValue> = mv.as_array();
+                let i: mut u64 = 0;
+                while (i < ms.size()) {
+                    let mj: std.JsonValue = ms.at(i).some;
+                    let mn: mut string = "m";
+                    if (let nv := mj.get("n").some) { mn = nv.as_string(); }
+                    let mf: mut BoundFunctionDefinition = this.make_fun_skeleton(mn, iface.full_name + "." + mn, mj);
+                    isc.add_symbol(new BoundSymbol.function_sym(mf.symbol.some));
+                    this.backfill_fun(mf, mj, new Option<BoundType>.some(iface.bound_type));
+                    iface.methods.push(new BoundDefinition.function_def(mf));
+                    i = i + 1;
+                }
+            }
+        }
+    }
+
+    // Build + backfill one document; returns the defs in symbol order.
+    fun build_doc(mut this, doc_json: string) -> _utils.List<BoundDefinition> {
+        let out: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+        let mut reader = new std.JsonReader(doc_json);
+        let doc: std.JsonValue = reader.parse();
+        if (doc.is_error()) {
+            __builtin.eprintln("[EmperorPenguin Dynlib] libmeta direct: metadata parse failed");
+            return out;
+        }
+        if (let sv := doc.get("symbols").some) {
+            if (sv.is_array()) {
+                let symbols: std.Vector<std.JsonValue> = sv.as_array();
+                // stage 1: skeletons (all symbols registered before any
+                // signature resolves — self/mutual references work)
+                let entries: mut _utils.List<LibMetaInjectEntry> = new _utils.List<LibMetaInjectEntry>();
+                let i: mut u64 = 0;
+                while (i < symbols.size()) {
+                    let built: Option<BoundDefinition> = this.build_skeleton(symbols.at(i).some);
+                    if (let b := built.some) {
+                        let e: mut LibMetaInjectEntry = new LibMetaInjectEntry();
+                        e.json = symbols.at(i).some;
+                        e.def = b;
+                        entries.push(e);
+                    }
+                    i = i + 1;
+                }
+                // stage 2: backfill signatures + vtables (ALL entries before
+                // any initializer binds — a global's init expression may call
+                // a fun whose signature appears later in the symbol order)
+                let k: mut i64 = 0;
+                while (k < cast<i64>(entries.size())) {
+                    let e2: LibMetaInjectEntry = entries.at(cast<u64>(k)).some;
+                    this.backfill(e2.json, e2.def);
+                    BoundDefinition.set_pass_index(e2.def, 2);
+                    out.push(e2.def);
+                    k = k + 1;
+                }
+                // stage 3: bind global initializer expressions
+                let g: mut i64 = 0;
+                while (g < cast<i64>(entries.size())) {
+                    let e3: LibMetaInjectEntry = entries.at(cast<u64>(g)).some;
+                    this.bind_global_init(e3.json, e3.def);
+                    g = g + 1;
+                }
+            }
+        }
+        return out;
+    }
+
+    // Stage 3 of a document: bind a global's initializer expression (GOT
+    // interposition requires the consumer to re-run it at startup).
+    fun bind_global_init(mut this, j: std.JsonValue, d: BoundDefinition) {
+        let kind: mut string = "";
+        if (let kv := j.get("kind").some) { kind = kv.as_string(); }
+        if (kind != "global") { return; }
+        if (d is BoundDefinition.global_var_def) {
+            let gv: mut BoundGlobalVariableDefinition = d.global_var_def;
+            let init_text: mut string = "";
+            if (let iv4 := j.get("init").some) { init_text = iv4.as_string(); }
+            if (string_length(init_text) == 0) { return; }
+            if (gv.scope.is_none()) { return; }
+            let gscope: mut BoundScope = gv.scope.some;
+            let mut lexer = new Lexer(init_text, "<libmeta-init>");
+            let tokens = lexer.tokenize();
+            let mut parser = new Parser(tokens);
+            let expr: Expression = parser.parse_expression();
+            if (!parser.has_errors()) {
+                let bound: Option<BoundExpression> = this.model.bind_expressions_pass.bind_expression(expr, gscope);
+                if (bound.is_some()) {
+                    gv.initializer = new Option<BoundExpression>.some(bound.some);
+                }
+            } else {
+                __builtin.eprintln("[EmperorPenguin Dynlib] warning: failed to parse global initializer for " + gv.full_name);
+            }
+        }
+    }
+}
+
+// Entry point called from SemanticModel.bind() after pass 1 (only when the
+// consumer carries prebuilt lib metadata; the DynlibStub build has a no-op).
+fun libmeta_direct_inject(model: mut SemanticModel, result: mut BoundCompilationUnit) {
+    if (cast<i64>(model.lib_meta_docs.size()) == 0) { return; }
+    if (model.lib_meta_docs.size() != model.lib_meta_slots.size()) {
+        // Unreachable by construction (docs and decl-slot inputs are created
+        // together, gated on LibMeta.has_decls); a mismatch here would splice
+        // batches at out-of-range slot indices and silently corrupt def order.
+        __builtin.eprintln("[EmperorPenguin Dynlib] error: libmeta docs (" + cast<string>(cast<i64>(model.lib_meta_docs.size())) + ") and decl slots (" + cast<string>(cast<i64>(model.lib_meta_slots.size())) + ") misaligned; skipping direct injection");
+        return;
+    }
+    let mut inj = new LibMetaInjector(model, result);
+    // Build every doc's defs first (all symbols registered across libs so
+    // cross-lib references resolve), then splice each doc's defs into its
+    // recorded decl slot — reverse slot order keeps earlier indices stable.
+    let batches: mut _utils.List<_utils.List<BoundDefinition>> = new _utils.List<_utils.List<BoundDefinition>>();
+    let di: mut i64 = 0;
+    while (di < cast<i64>(model.lib_meta_docs.size())) {
+        batches.push(inj.build_doc(model.lib_meta_docs.at(cast<u64>(di)).some));
+        di = di + 1;
+    }
+    let bi: mut i64 = cast<i64>(batches.size()) - 1;
+    while (bi >= 0) {
+        let slot: i64 = model.lib_meta_slots.at(cast<u64>(bi)).some;
+        let defs: _utils.List<BoundDefinition> = batches.at(cast<u64>(bi)).some;
+        let fresh: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+        let ci: mut i64 = 0;
+        while (ci < slot && ci < cast<i64>(result.definitions.size())) {
+            fresh.push(result.definitions.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+        let dj: mut i64 = 0;
+        while (dj < cast<i64>(defs.size())) {
+            fresh.push(defs.at(cast<u64>(dj)).some);
+            dj = dj + 1;
+        }
+        let ck: mut i64 = slot;
+        while (ck < cast<i64>(result.definitions.size())) {
+            fresh.push(result.definitions.at(cast<u64>(ck)).some);
+            ck = ck + 1;
+        }
+        result.definitions = fresh;
+        bi = bi - 1;
+    }
+    // Record the final injected ranges (ascending) for the ast-zip passes.
+    let total_before: mut i64 = 0;
+    let ri2: mut i64 = 0;
+    while (ri2 < cast<i64>(model.lib_meta_slots.size())) {
+        model.injected_starts.push(model.lib_meta_slots.at(cast<u64>(ri2)).some + total_before);
+        model.injected_counts.push(cast<i64>(batches.at(cast<u64>(ri2)).some.size()));
+        total_before = total_before + cast<i64>(batches.at(cast<u64>(ri2)).some.size());
+        ri2 = ri2 + 1;
+    }
+    // The shipped-name collision guard ran at pass 1 before injection;
+    // re-run so consumer redefinitions of injected names are still caught.
+    model.build_scopes_pass.check_lib_redefinition(result);
+    if (model.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] libmeta direct: injected prebuilt lib symbols"); }
 }
 
 } // namespace emperor

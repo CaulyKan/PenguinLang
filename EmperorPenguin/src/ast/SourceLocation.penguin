@@ -1,6 +1,6 @@
 namespace emperor {
 
-class SourceLocation {
+export class SourceLocation {
     filename: string = "";
     line: i64 = 0;
     col: i64 = 0;

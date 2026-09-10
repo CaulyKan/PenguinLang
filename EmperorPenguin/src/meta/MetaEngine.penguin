@@ -81,14 +81,17 @@ class MetaEngine {
     }
 
     // Initialise the JIT session (lazy, first call to init).
-    // Prints an error and exits if JIT creation fails.
+    // THROWS (catchable, sjlj) if JIT creation fails — never exit(1): the
+    // LSP server embeds this compiler and must survive documents that use
+    // #fun meta (its recompile() catches, publishes the failure as a
+    // diagnostic, and keeps the last error-free unit). Uncaught — the CLI —
+    // still ends in a nonzero error exit with the message on stderr.
     fun init(mut this) {
         if (this.jit_ctx == 0) {
             this.jit_ctx = __builtin.penguin_jit_create();
             if (this.jit_ctx == 0) {
                 let err: string = __builtin.penguin_jit_get_error();
-                __builtin.eprintln("MetaEngine ERROR: penguin_jit_create failed: " + err);
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: penguin_jit_create failed: " + err, 1);
             }
         }
     }
@@ -157,13 +160,13 @@ class MetaEngine {
     // resolve to the host's strong exports (emperor_BoundType_fields, …).
     fun base_meta_sources(this) -> mut _utils.List<SourceInput> {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
-        result.push(new SourceInput("core_builtin.penguin", _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin")));
-        result.push(new SourceInput("utils.penguin", _utils.file_read_text("EmperorPenguin/src/utils.penguin")));
+        result.push(new SourceInput("core_builtin.penguin", read_compiler_source("EmperorPenguin/std/penguin/core_builtin.penguin")));
+        result.push(new SourceInput("utils.penguin", read_compiler_source("EmperorPenguin/src/utils.penguin")));
         // (temporarily removed for bisection)
         // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
         // EmperorPenguinPass1.penguins), so its emperor.penguin_meta_* extern calls
         // resolve against the <meta_externs> injected in compile_meta_function.
-        result.push(new SourceInput("meta_runtime.penguin", _utils.file_read_text("EmperorPenguin/src/meta/meta_runtime.penguin")));
+        result.push(new SourceInput("meta_runtime.penguin", read_compiler_source("EmperorPenguin/src/meta/meta_runtime.penguin")));
         let bound_files: mut _utils.List<string> = new _utils.List<string>();
         bound_files.push("BoundType"); bound_files.push("BoundDefinition"); bound_files.push("BoundSymbol");
         bound_files.push("BoundScope"); bound_files.push("BoundExpression"); bound_files.push("BoundStatement");
@@ -171,7 +174,7 @@ class MetaEngine {
         let bi: mut i64 = 0;
         while (bi < cast<i64>(bound_files.size())) {
             let bn: string = bound_files.at(cast<u64>(bi)).some;
-            result.push(new SourceInput(bn + ".penguin", _utils.file_read_text("EmperorPenguin/src/bound/" + bn + ".penguin")));
+            result.push(new SourceInput(bn + ".penguin", read_compiler_source("EmperorPenguin/src/bound/" + bn + ".penguin")));
             bi = bi + 1;
         }
         let ast_files: mut _utils.List<string> = new _utils.List<string>();
@@ -179,10 +182,10 @@ class MetaEngine {
         let ai: mut i64 = 0;
         while (ai < cast<i64>(ast_files.size())) {
             let an: string = ast_files.at(cast<u64>(ai)).some;
-            result.push(new SourceInput(an + ".penguin", _utils.file_read_text("EmperorPenguin/src/ast/" + an + ".penguin")));
+            result.push(new SourceInput(an + ".penguin", read_compiler_source("EmperorPenguin/src/ast/" + an + ".penguin")));
             ai = ai + 1;
         }
-        result.push(new SourceInput("ErrorCode.penguin", _utils.file_read_text("EmperorPenguin/src/project/ErrorCode.penguin")));
+        result.push(new SourceInput("ErrorCode.penguin", read_compiler_source("EmperorPenguin/src/project/ErrorCode.penguin")));
         return result;
     }
 
@@ -490,8 +493,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -503,8 +505,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -522,8 +523,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -541,8 +541,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -562,8 +561,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -582,8 +580,7 @@ class MetaEngine {
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
             ptr = this.find_ptr(bmf.name);
         }
@@ -625,8 +622,7 @@ class MetaEngine {
                 this.compiling_meta_names.pop();
             }
             if (!ok) {
-                __builtin.eprintln("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'");
-                __builtin.exit(1);
+                __builtin.__throw_runtime_error("MetaEngine ERROR: compile_meta_function failed for '" + bmf.name + "'", 1);
             }
         }
         let key: mut string = bmf.name + ":";
@@ -639,7 +635,11 @@ class MetaEngine {
         let si: mut i64 = 0;
         while (si < cast<i64>(this.stub_keys.size())) {
             if (this.stub_keys.at(cast<u64>(si)).some == key) {
-                return __builtin.penguin_jit_call_i64_0(this.stub_ptrs.at(cast<u64>(si)).some);
+                let cached_r: i64 = __builtin.penguin_jit_call_i64_0(this.stub_ptrs.at(cast<u64>(si)).some);
+                // The result may be a reference (object-kind return): pin it —
+                // its only holder on this side is the returned integer.
+                __builtin.gc_pin_object(cast<u64>(cached_r));
+                return cached_r;
             }
             si = si + 1;
         }
@@ -699,7 +699,10 @@ class MetaEngine {
             } else if (param_kind == "object") {
                 // M6-step2 4c: a reference-typed param — the baked i64 is the live
                 // address; materialize the object pointer via the C bridge (the
-                // #fun's real param is the reference type = ptr in LLVM).
+                // #fun's real param is the reference type = ptr in LLVM). The
+                // address is PINNED as a GC root: it lives on only as an integer
+                // here and in the stub text, invisible to precise marking.
+                __builtin.gc_pin_object(cast<u64>(args.at(cast<u64>(ai2)).some));
                 needs_get_object = true;
                 let o_reg: string = "%obj" + cast<string>(ai2);
                 prelude = prelude + "  " + o_reg + " = call ptr @emperor_penguin_meta_get_object(i64 " + arg_val + ") \n";
@@ -787,18 +790,20 @@ class MetaEngine {
         let add_result: i32 = __builtin.penguin_jit_add_module(this.jit_ctx, "stub_module_" + stub_name, stub_ir);
         if (add_result != 0) {
             let err: string = __builtin.penguin_jit_get_error();
-            __builtin.eprintln("MetaEngine ERROR: penguin_jit_add_module('" + stub_name + "') failed: " + err);
-            __builtin.exit(1);
+            __builtin.__throw_runtime_error("MetaEngine ERROR: penguin_jit_add_module('" + stub_name + "') failed: " + err, 1);
         }
         let stub_ptr: u64 = __builtin.penguin_jit_lookup(this.jit_ctx, stub_name);
         if (stub_ptr == 0) {
             let err: string = __builtin.penguin_jit_get_error();
-            __builtin.eprintln("MetaEngine ERROR: penguin_jit_lookup('" + stub_name + "') failed: " + err);
-            __builtin.exit(1);
+            __builtin.__throw_runtime_error("MetaEngine ERROR: penguin_jit_lookup('" + stub_name + "') failed: " + err, 1);
         }
         this.stub_keys.push(key);
         this.stub_ptrs.push(stub_ptr);
-        return __builtin.penguin_jit_call_i64_0(stub_ptr);
+        let fresh_r: i64 = __builtin.penguin_jit_call_i64_0(stub_ptr);
+        // Same pin as the cached path above: an object-kind return's only
+        // holder here is the returned integer address.
+        __builtin.gc_pin_object(cast<u64>(fresh_r));
+        return fresh_r;
     }
 
     // Sanitize a name for use as an LLVM IR symbol, mirroring
@@ -1601,6 +1606,34 @@ class AstToken {
     kind: mut string = "";
     expr: mut Option<Expression> = new Option<Expression>.none();
     def: mut Option<Definition> = new Option<Definition>.none();
+}
+
+// Locate one of the compiler's own source files for unit B. The historical
+// read was cwd-relative, which only worked when the process ran from the
+// repo root (the Makefile bootstrap; the test runner also spawns compilers
+// with a repo-root cwd, masking this) — an editor-launched LSP server, or
+// any deployed compiler invoked from a foreign folder, failed unit B with
+// unresolved BoundType/Expression. Resolution order: cwd first (repo-root
+// invocations), then beside the executable and an upward walk from it
+// (deployed trees ship EmperorPenguin/ next to the binary). "" when not
+// found (unit B then reports the unresolved types as compile errors).
+fun read_compiler_source(rel: string) -> string {
+    if (_utils.file_exists(rel)) {
+        return _utils.file_read_text(rel);
+    }
+    let dir: mut string = compiler_exe_dir();
+    let hops: mut i64 = 0;
+    while (hops < 12) {
+        let cand: string = dir + "/" + rel;
+        if (_utils.file_exists(cand)) {
+            return _utils.file_read_text(cand);
+        }
+        let parent: string = get_parent_dir(dir);
+        if (parent == "" || parent == "." || parent == dir) { break; }
+        dir = parent;
+        hops = hops + 1;
+    }
+    return "";
 }
 
 }

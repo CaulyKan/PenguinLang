@@ -2,7 +2,7 @@ namespace emperor {
 
 // --- String helper functions ---
 
-fun string_ends_with(s: string, suffix: string) -> bool {
+export fun string_ends_with(s: string, suffix: string) -> bool {
     let slen: i64 = string_length(s);
     let flen: i64 = string_length(suffix);
     if (flen > slen) { return false; }
@@ -10,7 +10,7 @@ fun string_ends_with(s: string, suffix: string) -> bool {
     return tail == suffix;
 }
 
-fun string_starts_with(s: string, prefix: string) -> bool {
+export fun string_starts_with(s: string, prefix: string) -> bool {
     let slen: i64 = string_length(s);
     let plen: i64 = string_length(prefix);
     if (plen > slen) { return false; }
@@ -62,7 +62,7 @@ fun split_string(s: string, delim: string) -> _utils.List<string> {
     return result;
 }
 
-fun split_lines(s: string) -> _utils.List<string> {
+export fun split_lines(s: string) -> _utils.List<string> {
     return split_string(s, "\n");
 }
 
@@ -110,7 +110,7 @@ fun parse_string_array(s: string) -> _utils.List<string> {
 
 // --- Path helpers ---
 
-fun path_combine(dir: string, name: string) -> string {
+export fun path_combine(dir: string, name: string) -> string {
     let dlen: i64 = string_length(dir);
     if (dlen == 0) { return name; }
     let last: string = string_char_at(dir, dlen - 1);
@@ -120,7 +120,7 @@ fun path_combine(dir: string, name: string) -> string {
     return dir + "/" + name;
 }
 
-fun get_parent_dir(path: string) -> string {
+export fun get_parent_dir(path: string) -> string {
     let len: i64 = string_length(path);
     let last_slash: mut i64 = -1;
     let pos: mut i64 = string_find(path, "/");
@@ -302,7 +302,7 @@ fun resolve_pattern(base_dir: string, pattern: string, result: mut _utils.List<s
 
 // --- PenguinProject class ---
 
-class PenguinProject {
+export class PenguinProject {
     name: string = "";
     sources: mut _utils.List<string> = new _utils.List<string>();
     // lib = ["xxx.penguin-lib"]: dependency dyn-libs (relative to the project

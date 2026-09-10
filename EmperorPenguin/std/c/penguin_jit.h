@@ -2,6 +2,7 @@
 #define PENGUIN_JIT_H
 
 #include <stdint.h>
+#include "emperor_string.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,20 +17,22 @@ penguin_jit_ctx_t _emperor_penguin_jit_create(void);
 
 /* Add an LLVM IR module to the JIT session. `name` is a descriptive label
  * used for diagnostics. `ir_text` must be well-formed LLVM IR in textual form.
- * Returns 0 on success, non-zero on failure. */
-int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx, const char* name, const char* ir_text);
+ * Both are PenguinLang strings (header + length; contents are read
+ * length-driven, so embedded NULs survive). Returns 0 on success, non-zero on
+ * failure. */
+int _emperor_penguin_jit_add_module(penguin_jit_ctx_t ctx, const _emperor_string* name, const _emperor_string* ir_text);
 
 /* Look up a symbol by name in the JIT session. Returns the function/global
  * pointer, or NULL on failure. */
-void* _emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const char* name);
+void* _emperor_penguin_jit_lookup(penguin_jit_ctx_t ctx, const _emperor_string* name);
 
 /* Destroy a JIT session and release all resources. The context pointer is
  * invalid after this call. */
 void _emperor_penguin_jit_destroy(penguin_jit_ctx_t ctx);
 
-/* Return the last error message (thread-local). The returned string is valid
- * until the next call to any penguin_jit_* function on the same thread. */
-const char* _emperor_penguin_jit_get_error(void);
+/* Return the last error message (thread-local) as a fresh GC-allocated
+ * PenguinLang string (an adopt-copy: the underlying C buffer is transient). */
+_emperor_string* _emperor_penguin_jit_get_error(void);
 
 /* --- Trampolines for calling JIT-compiled functions with various signatures ---
  *

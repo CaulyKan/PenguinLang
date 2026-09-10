@@ -1460,7 +1460,15 @@ namespace BabyPenguin.VirtualMachine
             }
 
             if (irType == "char")
-                return new BasicRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("char")!) { CharValue = literal.Length > 0 ? literal[0] : '\0' };
+            {
+                // The token text carries the single quotes ('a'); unquote and
+                // unescape before taking the character (literal[0] alone would
+                // be the opening quote, code 39, for every char constant).
+                var cv = literal;
+                if (cv.Length >= 3 && cv.StartsWith('\'') && cv.EndsWith('\''))
+                    cv = UnescapeString(cv[1..^1]);
+                return new BasicRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("char")!) { CharValue = cv.Length > 0 ? cv[0] : '\0' };
+            }
 
             if (irType == "void")
                 return new NotInitializedRuntimeValue(Model.BasicTypeNodes.GetCachedImmutableType("void")!);
@@ -1765,6 +1773,8 @@ namespace BabyPenguin.VirtualMachine
                 case TypeEnum.U64: res.BoolValue = l.U64Value < unchecked((ulong)ReadAsLong(r)); break;
                 case TypeEnum.Float: res.BoolValue = l.FloatValue < (float)ReadAsDouble(r); break;
                 case TypeEnum.Double: res.BoolValue = l.DoubleValue < ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue < unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = string.CompareOrdinal(l.StringValue ?? "", r.StringValue ?? "") < 0; break;
                 default: res.BoolValue = false; break;
             }
         }
@@ -1782,6 +1792,8 @@ namespace BabyPenguin.VirtualMachine
                 case TypeEnum.U64: res.BoolValue = l.U64Value > unchecked((ulong)ReadAsLong(r)); break;
                 case TypeEnum.Float: res.BoolValue = l.FloatValue > (float)ReadAsDouble(r); break;
                 case TypeEnum.Double: res.BoolValue = l.DoubleValue > ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue > unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = string.CompareOrdinal(l.StringValue ?? "", r.StringValue ?? "") > 0; break;
                 default: res.BoolValue = false; break;
             }
         }
@@ -1799,6 +1811,8 @@ namespace BabyPenguin.VirtualMachine
                 case TypeEnum.U64: res.BoolValue = l.U64Value <= unchecked((ulong)ReadAsLong(r)); break;
                 case TypeEnum.Float: res.BoolValue = l.FloatValue <= (float)ReadAsDouble(r); break;
                 case TypeEnum.Double: res.BoolValue = l.DoubleValue <= ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue <= unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = string.CompareOrdinal(l.StringValue ?? "", r.StringValue ?? "") <= 0; break;
                 default: res.BoolValue = false; break;
             }
         }
@@ -1816,6 +1830,8 @@ namespace BabyPenguin.VirtualMachine
                 case TypeEnum.U64: res.BoolValue = l.U64Value >= unchecked((ulong)ReadAsLong(r)); break;
                 case TypeEnum.Float: res.BoolValue = l.FloatValue >= (float)ReadAsDouble(r); break;
                 case TypeEnum.Double: res.BoolValue = l.DoubleValue >= ReadAsDouble(r); break;
+                case TypeEnum.Char: res.BoolValue = l.CharValue >= unchecked((char)ReadAsLong(r)); break;
+                case TypeEnum.String: res.BoolValue = string.CompareOrdinal(l.StringValue ?? "", r.StringValue ?? "") >= 0; break;
                 default: res.BoolValue = false; break;
             }
         }
