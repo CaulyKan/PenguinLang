@@ -1,9 +1,12 @@
 # AsyncFunctionVariableTest
 ## Description
 Assign async function to async_fun variable and call it.
+RED SENTINEL (known gap in EmperorPenguin, .agents/plans/emperorpenguin-fun-values.md): async 函数赋给 async_fun 变量并调用（EP: async_fun<...> 类型语法不识别）. Should turn green once implemented.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass2
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -19,7 +22,7 @@ Assign async function to async_fun variable and call it.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

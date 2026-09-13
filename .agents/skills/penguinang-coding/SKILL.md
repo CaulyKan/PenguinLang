@@ -160,7 +160,7 @@ fun returns_mutable() -> mut MyClass {
 
 // specifiers: pure fun f(); !pure fun g(); async fun h(); !async fun k();
 
-// lambda + function type (param types..., last type = return type)
+// lambda + function type (FIRST type arg = return type, rest = param types)
 let lambda: fun<i32, i32> = fun(x: i32) -> i32 {
     return x * 2;
 };
@@ -614,7 +614,7 @@ When writing or modifying files under `EmperorPenguin/src/**`, `EmperorPenguin/m
 | `using`, `export`, `unsafe_cast` | EP front-end only | fully-qualified names; `cast<T>()` |
 | `wait`, `async`, `yield`, `Event<T>`, channels, `input`/`output`/`connect`/`construct` | compiler is wait-free; coroutine emission is `--enable-coroutine`-gated (pass3+) | plain sequential code |
 | `try`/`catch`/`panic` | not used in bootstrap sources | error enums / `Result`-style returns |
-| Lambdas / function values | not used in bootstrap sources | plain `fun`s (namespace-level) |
+| Lambdas / function values | NEWLY LIFTED (fun-values branch): EP pass2+ compiles lambdas, `fun<...>`/`async_fun<...>` types, method refs — but compiler sources still avoid them (conservative; the whole bootstrap chain must stay in the safe subset) | plain `fun`s (namespace-level) |
 | `Self` type keyword | grammar supports it, convention avoids it | `let self = cast<ConcreteType>(this);` |
 | `auto` mutability specifier | not used | explicit mutability |
 | `std.io` (`io.penguin`) | pass2+ native only — auto-loaded by main.penguin but NOT implemented in BabyPenguin VM | `_utils` file externs |

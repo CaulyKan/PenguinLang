@@ -408,16 +408,18 @@ link|link-lib)
     # $TMP is kept on failure for debugging, removed only after success.
     if [ "${OUT_ABS%.penguin-lib}" != "$OUT_ABS" ]; then
         EMIT_OUT=$TMP/out.penguin-lib   # lib mode: triggers on the -o suffix
+        EMIT_BASE=$TMP/out              # ...but emission writes <base>.ll + <base>.libmeta
     else
         EMIT_OUT=$TMP/out
+        EMIT_BASE=$TMP/out
     fi
     info "emitting: (cd $ROOT) $EMITTER ${EMITTER_ARGS[*]} -o $EMIT_OUT"
     (cd "$ROOT" && "$EMITTER" "${EMITTER_ARGS[@]}" -o "$EMIT_OUT") \
         || die "emitter failed (kept $TMP)"
-    [ -f "$EMIT_OUT.ll" ] || die "emitter produced no $EMIT_OUT.ll (kept $TMP)"
+    [ -f "$EMIT_BASE.ll" ] || die "emitter produced no $EMIT_BASE.ll (kept $TMP)"
 
     if [ "${OUT_ABS%.penguin-lib}" != "$OUT_ABS" ]; then
-        link_lib "$EMIT_OUT.ll" "$EMIT_OUT.libmeta" "$OUT_ABS" "$TARGET"
+        link_lib "$EMIT_BASE.ll" "$EMIT_BASE.libmeta" "$OUT_ABS" "$TARGET"
     else
         link_exe "$EMIT_OUT.ll" "$OUT_ABS" "$META" "$TARGET" "$LLVM_WIN" ${LIBS[@]+"${LIBS[@]}"}
     fi

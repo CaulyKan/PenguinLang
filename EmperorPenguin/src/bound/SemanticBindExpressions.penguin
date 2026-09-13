@@ -58,7 +58,11 @@ class BindExpressionsPass {
             return this.bind_unary(expr.unary, scope);
         }
         if (expr is Expression.member_access) {
-            return this.bind_member_access(expr.member_access, scope);
+            let ma_result: Option<BoundExpression> = this.bind_member_access(expr.member_access, scope);
+            if (ma_result.is_some() && ma_result.some is BoundExpression.member_access) {
+                return new Option<BoundExpression>.some(this.adjust_method_ref_type(ma_result.some.member_access));
+            }
+            return ma_result;
         }
         if (expr is Expression.function_call) {
             return this.bind_function_call(expr.function_call, scope);
@@ -95,6 +99,9 @@ class BindExpressionsPass {
         }
         if (expr is Expression.spawn_async) {
             return this.bind_spawn_async(expr.spawn_async, scope);
+        }
+        if (expr is Expression.lambda_expr) {
+            return this.bind_lambda(expr.lambda_expr, scope);
         }
         return new Option<BoundExpression>.none();
     }
@@ -426,14 +433,9 @@ class BindExpressionsPass {
 
         let inner: Expression = expr.expression.some;
 
-        // `wait <n> tick` — __builtin._after(n).do_wait() (an i64: the deadline).
+        // `wait <n> tick` — __builtin._after(<n>).do_wait() (an i64: the deadline).
         if (expr.is_tick_unit) {
-            let after_args: mut _utils.List<Expression> = new _utils.List<Expression>();
-            after_args.push(inner);
-            let after_call: Expression = this.mk_builtin_call("_after", after_args);
-            let probe_after: Option<BoundExpression> = this.bind_expression(after_call, scope);
-            if (probe_after.is_none()) { return new Option<BoundExpression>.none(); }
-            return this.bind_wait_on_expr2(after_call, probe_after.some.get_bound_type(), scope);
+            return this.bind_timer_wait(inner, scope);
         }
 
         // `wait change(x)` — sample x, park while unchanged, yield the new value.
@@ -509,6 +511,13 @@ class BindExpressionsPass {
             return this.bind_expression(this.mk_block_expr(stmts2, new Option<Expression>.none()), scope);
         }
 
+        // `wait <integer>` — the short timer form: `wait n;` == `wait n tick;`.
+        // Any integer width (literal, variable, expression); the deadline unit
+        // is i64 (bind_timer_wait inserts the cast).
+        if (this.model.some.type_registry.is_integer(inner_type)) {
+            return this.bind_timer_wait(inner, scope);
+        }
+
         // `wait ev` on an Event<T>: one fresh one-slot subscription per wait
         // (the ctor subscribes; poll delivers once and auto-unsubscribes) —
         // exactly BabyPenguin's wait-rewrite shape. The do_wait goes through
@@ -579,12 +588,49 @@ class BindExpressionsPass {
             if (inner_type.kind is TypeKind.PrimitiveKind && inner_type.primitive is PrimitiveType.VoidType) {
                 return bound_inner;
             }
+            // Anything else has no wait semantics — report cleanly instead of
+            // emitting a doomed do_wait member call (which surfaces as an
+            // E_INTERNAL "no callee symbol" at IR time).
+            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                "wait operand must be an integer (timer ticks), bool, IFuture, Event or port, got '" + inner_type.display_name() + "'",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
         }
 
         // `wait <future/channel>` — cast<mut IFuture<T>>(<expr>).do_wait(); the
         // explicit interface cast makes the call dispatch through the vtable
         // (the specialized default method), exactly like BabyPenguin.
         return this.bind_wait_on_expr2(inner, inner_type, scope);
+    }
+
+    // `wait <n> [tick]` — timer wait: __builtin._after(cast<i64>(<n>)).do_wait().
+    // The operand may be any integer width (literal, variable, expression);
+    // _after takes the deadline as i64, so narrower ints get an explicit cast.
+    fun bind_timer_wait(mut this, inner: Expression, scope: mut BoundScope) -> Option<BoundExpression> {
+        let probe: Option<BoundExpression> = this.bind_expression(inner, scope);
+        if (probe.is_none()) { return new Option<BoundExpression>.none(); }
+        let arg_t: BoundType = probe.some.get_bound_type();
+        if (!this.model.some.type_registry.is_integer(arg_t)) {
+            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                "timer wait operand must be an integer, got '" + arg_t.display_name() + "'",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
+        }
+        let after_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        if (arg_t.primitive is PrimitiveType.I64) {
+            after_args.push(inner);
+        } else {
+            let i64_ts: TypeSpecifier = this.spawn_type_spec(this.model.some.type_registry.i64_type);
+            let cn: mut CastExpression = new CastExpression();
+            cn.target_type = new Option<TypeSpecifier>.some(i64_ts);
+            cn.type_name = "i64";
+            cn.inner = new Option<Expression>.some(inner);
+            after_args.push(new Expression.cast_expr(cn));
+        }
+        let after_call: Expression = this.mk_builtin_call("_after", after_args);
+        let probe_after: Option<BoundExpression> = this.bind_expression(after_call, scope);
+        if (probe_after.is_none()) { return new Option<BoundExpression>.none(); }
+        return this.bind_wait_on_expr2(after_call, probe_after.some.get_bound_type(), scope);
     }
 
     // Shared future-wait lowering: cast the receiver to its (mutable)
@@ -760,6 +806,19 @@ class BindExpressionsPass {
         let ts: mut TypeSpecifier = new TypeSpecifier();
         if (bt.kind is TypeKind.PrimitiveKind) {
             ts.name = primitive_type_to_string(bt.primitive);
+        } else if (bt.kind is TypeKind.FunctionKind) {
+            // fun/async_fun type: generic_args[0] = return, rest = params (the
+            // resolve side reads function_params in exactly this order).
+            ts.is_function_type = true;
+            ts.is_async_function_type = bt.is_async_function;
+            let fgi: mut i64 = 0;
+            while (fgi < cast<i64>(bt.generic_args.size())) {
+                let farg: BoundTypeArg = bt.generic_args.at(cast<u64>(fgi)).some;
+                if (farg is BoundTypeArg.type_arg) {
+                    ts.function_params.push(this.spawn_type_spec(farg.type_arg.bound_type));
+                }
+                fgi = fgi + 1;
+            }
         } else {
             let full: mut string = "";
             if (bt.type_definition.is_some()) {
@@ -836,6 +895,1408 @@ class BindExpressionsPass {
         return new Statement.assignment(a);
     }
 
+    // ---- lambda desugar (fun-value closures) ----
+    // A lambda becomes a synthesized closure class `__lambda_<n>`:
+    //   class __lambda_<n> {
+    //     <cap>: <T>; ...                                  // by-value snapshot
+    //     fun new(mut this, <cap>: <T>, ...) { this.<cap> = <cap>; ... }
+    //     fun __call(mut this, <params>) -> <ret> { <body, captures -> this.<cap>> }
+    //   }
+    // The class is marked is_funval: its metadata carries a .__FunVal entry
+    // (slot 0 = __call), so the closure OBJECT is the fun value — one
+    // allocation, single indirection (no invoker wrapper).
+    // Captured identifiers are rewritten to `this.<name>` member accesses in
+    // place; a miss in this traversal is loud (E_UNDEFINED inside __call), so
+    // unhandled expression kinds fail compilation instead of misbehaving.
+
+    fun lam_shadow_has(this, a: mut LamAnalysis, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(a.shadow.size())) {
+            if (a.shadow.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun lam_shadow_mark(this, a: mut LamAnalysis) -> i64 {
+        return cast<i64>(a.shadow.size());
+    }
+
+    fun lam_shadow_restore(mut this, a: mut LamAnalysis, mark: i64) {
+        while (cast<i64>(a.shadow.size()) > mark) {
+            if (a.shadow.pop().is_none()) { return; }
+        }
+    }
+
+    fun lam_capture_index(this, a: mut LamAnalysis, name: string) -> i64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(a.names.size())) {
+            if (a.names.at(cast<u64>(i)).some == name) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    // Walk the scope chain from the lambda's lexical position upward and
+    // classify where the first VARIABLE symbol with this name lives:
+    //   Function/Block/InitialRoutine scope -> a local/param: capturable
+    //   Class/Enum/Interface/Impl scope      -> a type member: unsupported (v1)
+    //   Namespace/Global scope               -> global: resolves inside __call
+    fun lam_classify(this, name: string, scope: mut BoundScope, a: mut LamAnalysis) -> LamCaptureKind {
+        a.last_found_type = new Option<BoundType>.none();
+        let cur: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+        let guard: mut i64 = 0;
+        while (guard < 128) {
+            if (cur.is_none()) { return new LamCaptureKind.NotVariable(); }
+            let s: BoundScope = cur.some;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(s.symbols.size())) {
+                let sym: BoundSymbol = s.symbols.at(cast<u64>(i)).some;
+                if (sym is BoundSymbol.variable && sym.variable.name == name) {
+                    if (name == "this") { return new LamCaptureKind.ThisParam(); }
+                    if (s.kind is ScopeKind.FunctionScope || s.kind is ScopeKind.BlockScope || s.kind is ScopeKind.InitialRoutineScope) {
+                        a.last_found_type = new Option<BoundType>.some(sym.variable.bound_type);
+                        return new LamCaptureKind.Capturable();
+                    }
+                    if (s.kind is ScopeKind.ClassScope || s.kind is ScopeKind.EnumScope || s.kind is ScopeKind.InterfaceScope || s.kind is ScopeKind.ImplScope) {
+                        return new LamCaptureKind.ClassMember();
+                    }
+                    return new LamCaptureKind.NotVariable();
+                }
+                i = i + 1;
+            }
+            if (s.parent.is_some()) {
+                cur = new Option<BoundScope>.some(s.parent.some);
+            } else {
+                return new LamCaptureKind.NotVariable();
+            }
+            guard = guard + 1;
+        }
+        return new LamCaptureKind.NotVariable();
+    }
+
+    // Visit an expression: rewrite captured identifiers into `this.<name>`
+    // (returning the replacement so the PARENT slot can be updated — EP has
+    // no by-reference parameters), collecting captures in first-appearance
+    // order. `shadow` carries names declared inside the lambda body that hide
+    // outer locals (params, lets, loop vars, catch vars).
+    fun lam_visit_expr(mut this, e: Expression, a: mut LamAnalysis, scope: mut BoundScope) -> Expression {
+        if (e is Expression.identifier) {
+            let id: IdentifierExpression = e.identifier;
+            if (!this.lam_shadow_has(a, id.name)
+                && cast<i64>(id.generic_args.size()) == 0
+                && cast<i64>(id.value_generic_args.size()) == 0) {
+                let kind: LamCaptureKind = this.lam_classify(id.name, scope, a);
+                if (kind is LamCaptureKind.ThisParam) {
+                    this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                        "lambda cannot capture 'this' (v1); copy the needed members into locals first",
+                        new SourceLocation("", 0, 0));
+                    a.error_count = a.error_count + 1;
+                    return e;
+                }
+                if (kind is LamCaptureKind.ClassMember) {
+                    this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                        "lambda cannot capture class members (v1); copy the member into a local first",
+                        new SourceLocation("", 0, 0));
+                    a.error_count = a.error_count + 1;
+                    return e;
+                }
+                if (kind is LamCaptureKind.Capturable) {
+                    if (this.lam_capture_index(a, id.name) < 0) {
+                        a.names.push(id.name);
+                        a.types.push(a.last_found_type.some);
+                    }
+                    return this.mk_this_member(id.name);
+                }
+            }
+            return e;
+        }
+        if (e is Expression.parenthesized) {
+            let p: mut ParenthesizedExpression = e.parenthesized;
+            if (p.inner.is_some()) {
+                p.inner = new Option<Expression>.some(this.lam_visit_expr(p.inner.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.binary) {
+            let b: mut BinaryExpression = e.binary;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(b.operands.size())) {
+                b.operands.set(cast<u64>(i), this.lam_visit_expr(b.operands.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.unary) {
+            let u: mut UnaryExpression = e.unary;
+            if (u.operand.is_some()) {
+                u.operand = new Option<Expression>.some(this.lam_visit_expr(u.operand.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.member_access) {
+            let ma: mut MemberAccessExpression = e.member_access;
+            if (ma.base_expr.is_some()) {
+                ma.base_expr = new Option<Expression>.some(this.lam_visit_expr(ma.base_expr.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.function_call) {
+            let fc: mut FunctionCallExpression = e.function_call;
+            if (fc.callee.is_some()) {
+                fc.callee = new Option<Expression>.some(this.lam_visit_expr(fc.callee.some, a, scope));
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fc.arguments.items.size())) {
+                fc.arguments.items.set(cast<u64>(i), this.lam_visit_expr(fc.arguments.items.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.function_call_arguments) {
+            let fca: mut FunctionCallArguments = e.function_call_arguments;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fca.items.size())) {
+                fca.items.set(cast<u64>(i), this.lam_visit_expr(fca.items.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.if_expr) {
+            let ie: mut IfExpression = e.if_expr;
+            if (ie.condition.is_some()) {
+                ie.condition = new Option<Expression>.some(this.lam_visit_expr(ie.condition.some, a, scope));
+            }
+            if (ie.then_block.is_some()) {
+                ie.then_block = new Option<Expression>.some(this.lam_visit_expr(ie.then_block.some, a, scope));
+            }
+            if (ie.else_block.is_some()) {
+                ie.else_block = new Option<Expression>.some(this.lam_visit_expr(ie.else_block.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.while_expr) {
+            let we: mut WhileExpression = e.while_expr;
+            if (we.condition.is_some()) {
+                we.condition = new Option<Expression>.some(this.lam_visit_expr(we.condition.some, a, scope));
+            }
+            if (we.body.is_some()) {
+                we.body = new Option<Expression>.some(this.lam_visit_expr(we.body.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.code_block) {
+            // Block-lexical scoping: declarations inside the block die at its
+            // end (also covers if/while block children, which arrive here as
+            // code-block expressions).
+            let cb: mut CodeBlockExpression = e.code_block;
+            let mark: i64 = this.lam_shadow_mark(a);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(cb.statements.size())) {
+                this.lam_visit_stmt(cb.statements.at(cast<u64>(i)).some, a, scope);
+                i = i + 1;
+            }
+            if (cb.trailing_expr.is_some()) {
+                cb.trailing_expr = new Option<Expression>.some(this.lam_visit_expr(cb.trailing_expr.some, a, scope));
+            }
+            this.lam_shadow_restore(a, mark);
+            return e;
+        }
+        if (e is Expression.cast_expr) {
+            let ce: mut CastExpression = e.cast_expr;
+            if (ce.inner.is_some()) {
+                ce.inner = new Option<Expression>.some(this.lam_visit_expr(ce.inner.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.new_expr) {
+            let ne: mut NewExpression = e.new_expr;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ne.arguments.size())) {
+                ne.arguments.set(cast<u64>(i), this.lam_visit_expr(ne.arguments.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.lambda_expr) {
+            // Nested lambda: its params shadow within its body only; capture
+            // analysis still runs against the OUTER site's scope chain, so
+            // outer-function locals it references become captures of THIS
+            // closure (a nested lambda referencing them again later fails
+            // loudly at its own __call binding — documented v1 limit).
+            let inner: mut LambdaFunctionExpression = e.lambda_expr;
+            let mark: i64 = this.lam_shadow_mark(a);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(inner.parameters.size())) {
+                a.shadow.push(inner.parameters.at(cast<u64>(i)).some.name);
+                i = i + 1;
+            }
+            if (inner.body.is_some()) {
+                inner.body = new Option<Expression>.some(this.lam_visit_expr(inner.body.some, a, scope));
+            }
+            this.lam_shadow_restore(a, mark);
+            return e;
+        }
+        if (e is Expression.spawn_async) {
+            let se: mut SpawnAsyncExpression = e.spawn_async;
+            if (se.expression.is_some()) {
+                se.expression = new Option<Expression>.some(this.lam_visit_expr(se.expression.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.wait_expr) {
+            let we2: mut WaitExpression = e.wait_expr;
+            if (we2.expression.is_some()) {
+                we2.expression = new Option<Expression>.some(this.lam_visit_expr(we2.expression.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.meta_call) {
+            let mc: mut MetaCallExpression = e.meta_call;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(mc.arguments.size())) {
+                mc.arguments.set(cast<u64>(i), this.lam_visit_expr(mc.arguments.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.try_bind) {
+            let tb: mut TryBindExpression = e.try_bind;
+            if (tb.rhs.is_some()) {
+                tb.rhs = new Option<Expression>.some(this.lam_visit_expr(tb.rhs.some, a, scope));
+            }
+            // The pattern variable is bound for the rest of the region.
+            if (string_length(tb.variable_name) > 0) { a.shadow.push(tb.variable_name); }
+            return e;
+        }
+        // constant / string / bool / void literals and specializing_impl
+        // carry no capturable identifiers.
+        return e;
+    }
+
+    fun lam_visit_stmt(mut this, s: Statement, a: mut LamAnalysis, scope: mut BoundScope) {
+        if (s is Statement.expression) {
+            let es: mut ExpressionStatement = s.expression;
+            if (es.expression.is_some()) {
+                es.expression = new Option<Expression>.some(this.lam_visit_expr(es.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.block_expr) {
+            let bs: mut BlockExpressionStatement = s.block_expr;
+            if (bs.expression.is_some()) {
+                bs.expression = new Option<Expression>.some(this.lam_visit_expr(bs.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.assignment) {
+            let as2: mut AssignmentStatement = s.assignment;
+            if (as2.target.is_some()) {
+                as2.target = new Option<Expression>.some(this.lam_visit_expr(as2.target.some, a, scope));
+            }
+            if (as2.value.is_some()) {
+                as2.value = new Option<Expression>.some(this.lam_visit_expr(as2.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.if_stmt) {
+            let is2: mut IfStatement = s.if_stmt;
+            if (is2.condition.is_some()) {
+                is2.condition = new Option<Expression>.some(this.lam_visit_expr(is2.condition.some, a, scope));
+            }
+            if (is2.then_statement.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(is2.then_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            if (is2.else_statement.is_some()) {
+                let mark2: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(is2.else_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark2);
+            }
+            return;
+        }
+        if (s is Statement.while_stmt) {
+            let ws: mut WhileStatement = s.while_stmt;
+            if (ws.condition.is_some()) {
+                ws.condition = new Option<Expression>.some(this.lam_visit_expr(ws.condition.some, a, scope));
+            }
+            if (ws.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ws.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.for_stmt) {
+            let fs: mut ForStatement = s.for_stmt;
+            if (fs.iterable.is_some()) {
+                fs.iterable = new Option<Expression>.some(this.lam_visit_expr(fs.iterable.some, a, scope));
+            }
+            if (fs.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                if (string_length(fs.variable_name) > 0) { a.shadow.push(fs.variable_name); }
+                this.lam_visit_stmt(fs.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.return_stmt) {
+            let rs: mut ReturnStatement = s.return_stmt;
+            if (rs.value.is_some()) {
+                rs.value = new Option<Expression>.some(this.lam_visit_expr(rs.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.let_decl) {
+            let ls: mut LetDeclarationStatement = s.let_decl;
+            if (ls.initializer.is_some()) {
+                ls.initializer = new Option<Expression>.some(this.lam_visit_expr(ls.initializer.some, a, scope));
+            }
+            // Sequential scoping: the declared name is visible only AFTER
+            // its own initializer (mirrors progressive symbol binding).
+            if (string_length(ls.variable_name) > 0) { a.shadow.push(ls.variable_name); }
+            return;
+        }
+        if (s is Statement.connect_stmt) {
+            let cs: mut ConnectStatement = s.connect_stmt;
+            if (cs.source.is_some()) {
+                cs.source = new Option<Expression>.some(this.lam_visit_expr(cs.source.some, a, scope));
+            }
+            if (cs.sink.is_some()) {
+                cs.sink = new Option<Expression>.some(this.lam_visit_expr(cs.sink.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.try_stmt) {
+            let ts: mut TryStatement = s.try_stmt;
+            if (ts.try_block.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ts.try_block.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            if (ts.catch_block.is_some()) {
+                let mark2: i64 = this.lam_shadow_mark(a);
+                if (string_length(ts.catch_var_name) > 0) { a.shadow.push(ts.catch_var_name); }
+                this.lam_visit_stmt(ts.catch_block.some, a, scope);
+                this.lam_shadow_restore(a, mark2);
+            }
+            return;
+        }
+        if (s is Statement.yield_stmt) {
+            let ys: mut YieldStatement = s.yield_stmt;
+            if (ys.value.is_some()) {
+                ys.value = new Option<Expression>.some(this.lam_visit_expr(ys.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.signal_stmt) {
+            let ss: mut SignalStatement = s.signal_stmt;
+            if (ss.expression.is_some()) {
+                ss.expression = new Option<Expression>.some(this.lam_visit_expr(ss.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.break_stmt) {
+            let bs2: mut BreakStatement = s.break_stmt;
+            if (bs2.value.is_some()) {
+                bs2.value = new Option<Expression>.some(this.lam_visit_expr(bs2.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.meta_if_stmt) {
+            let ms: mut MetaIfStatement = s.meta_if_stmt;
+            if (ms.condition.is_some()) {
+                ms.condition = new Option<Expression>.some(this.lam_visit_expr(ms.condition.some, a, scope));
+            }
+            if (ms.then_statement.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ms.then_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ms.elif_branches.size())) {
+                let eb: mut MetaElifBranch = ms.elif_branches.at(cast<u64>(i)).some;
+                if (eb.condition.is_some()) {
+                    eb.condition = new Option<Expression>.some(this.lam_visit_expr(eb.condition.some, a, scope));
+                }
+                if (eb.body_statement.is_some()) {
+                    let mark2: i64 = this.lam_shadow_mark(a);
+                    this.lam_visit_stmt(eb.body_statement.some, a, scope);
+                    this.lam_shadow_restore(a, mark2);
+                }
+                i = i + 1;
+            }
+            if (ms.else_statement.is_some()) {
+                let mark3: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ms.else_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark3);
+            }
+            return;
+        }
+        if (s is Statement.meta_while_stmt) {
+            let mws: mut MetaWhileStatement = s.meta_while_stmt;
+            if (mws.condition.is_some()) {
+                mws.condition = new Option<Expression>.some(this.lam_visit_expr(mws.condition.some, a, scope));
+            }
+            if (mws.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(mws.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.meta_for_stmt) {
+            let mfs: mut MetaForStatement = s.meta_for_stmt;
+            if (mfs.iterable.is_some()) {
+                mfs.iterable = new Option<Expression>.some(this.lam_visit_expr(mfs.iterable.some, a, scope));
+            }
+            if (mfs.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                if (string_length(mfs.variable_name) > 0) { a.shadow.push(mfs.variable_name); }
+                this.lam_visit_stmt(mfs.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.meta_break_stmt) {
+            let mbs: mut MetaBreakStatement = s.meta_break_stmt;
+            if (mbs.value.is_some()) {
+                mbs.value = new Option<Expression>.some(this.lam_visit_expr(mbs.value.some, a, scope));
+            }
+            return;
+        }
+        // continue / meta_continue carry no expressions.
+    }
+
+    fun bind_lambda(mut this, lam: mut LambdaFunctionExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        let m: mut SemanticModel = this.model.some;
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        if (m.current_unit.is_none()) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "lambda outside a compilation unit", loc);
+            return new Option<BoundExpression>.none();
+        }
+        if (lam.body.is_none()) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "lambda without a body", loc);
+            return new Option<BoundExpression>.none();
+        }
+        // Resolve param/return types in the ENCLOSING scope (the closure class
+        // lives under the enclosing namespace; lambda-local type names would
+        // not survive there).
+        let param_bts: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(lam.parameters.size())) {
+            let p: Parameter = lam.parameters.at(cast<u64>(pi)).some;
+            if (p.type_spec.is_none()) {
+                m.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+                    "lambda parameter '" + p.name + "' needs an explicit type", loc);
+                return new Option<BoundExpression>.none();
+            }
+            param_bts.push(m.resolve_type_specifier(p.type_spec.some, scope));
+            pi = pi + 1;
+        }
+        let ret_bt: mut BoundType = m.type_registry.void_type;
+        if (lam.return_type.is_some()) {
+            ret_bt = m.resolve_type_specifier(lam.return_type.some, scope);
+        }
+        // Capture analysis + in-place body rewrite.
+        let a: mut LamAnalysis = new LamAnalysis();
+        let si: mut i64 = 0;
+        while (si < cast<i64>(lam.parameters.size())) {
+            a.shadow.push(lam.parameters.at(cast<u64>(si)).some.name);
+            si = si + 1;
+        }
+        lam.body = new Option<Expression>.some(this.lam_visit_expr(lam.body.some, a, scope));
+        if (a.error_count > 0) { return new Option<BoundExpression>.none(); }
+
+        // ---- synthesize the closure class ----
+        m.lambda_site_counter = m.lambda_site_counter + 1;
+        let cls_name: string = "__lambda_" + cast<string>(m.lambda_site_counter);
+        let cls: mut ClassDefinition = new ClassDefinition(cls_name);
+        cls.location = loc;
+        cls.source_file = "<lambda>";
+        cls.is_funval = true;
+
+        // Capture fields: by-value snapshot, mutability preserved from the
+        // source variable (a mut local's snapshot stays assignable inside
+        // the lambda body; an immutable local's does not).
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap_name: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt: BoundType = a.types.at(cast<u64>(ci)).some;
+            let fd: mut ClassFieldDefinition = new ClassFieldDefinition(cap_name);
+            let fts: mut TypeSpecifier = this.spawn_type_spec(cap_bt);
+            fts.is_mutable = cap_bt.mutability is Mutability.Mutable;
+            fd.type_spec = new Option<TypeSpecifier>.some(fts);
+            fd.location = loc;
+            cls.members.push(new Definition.class_field(fd));
+            ci = ci + 1;
+        }
+        // Constructor: fun new(mut this, caps...) { this.<cap> = <cap>; ... }
+        let ctor: mut FunctionDefinition = new FunctionDefinition("new");
+        ctor.is_new = true;
+        let this_p: Parameter = new Parameter("this");
+        this_p.is_this = true;
+        this_p.is_mutable = true;
+        ctor.parameters.push(this_p);
+        let ctor_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        ci = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap_name2: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt2: BoundType = a.types.at(cast<u64>(ci)).some;
+            let cp: Parameter = new Parameter(cap_name2);
+            let cts: mut TypeSpecifier = this.spawn_type_spec(cap_bt2);
+            cts.is_mutable = cap_bt2.mutability is Mutability.Mutable;
+            cp.type_spec = new Option<TypeSpecifier>.some(cts);
+            ctor.parameters.push(cp);
+            ctor_stmts.push(this.mk_assign_stmt(this.mk_this_member(cap_name2), this.mk_ident_expr(cap_name2)));
+            ci = ci + 1;
+        }
+        ctor.body = new Option<Expression>.some(this.mk_block_expr(ctor_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(ctor));
+        // __call: the callable body (captures already rewritten to this.<name>).
+        let call_fn: mut FunctionDefinition = new FunctionDefinition("__call");
+        let call_this: Parameter = new Parameter("this");
+        call_this.is_this = true;
+        call_this.is_mutable = true;
+        call_fn.parameters.push(call_this);
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(lam.parameters.size())) {
+            call_fn.parameters.push(lam.parameters.at(cast<u64>(mi)).some);
+            mi = mi + 1;
+        }
+        call_fn.return_type = lam.return_type;
+        call_fn.is_async = lam.is_async;
+        call_fn.body = lam.body;
+        cls.members.push(new Definition.function_def(call_fn));
+
+        // ---- bind into the enclosing namespace, resolve, catch up (spawn
+        // pattern: the pushed def's bodies are bound by the pass-8 loop) ----
+        let def_scope: mut BoundScope = this.enclosing_def_scope(scope);
+        let cls_ast: Definition = new Definition.class_def(cls);
+        let bound_cls: Option<BoundDefinition> = m.build_scopes_pass.bind_definition(cls_ast, def_scope);
+        if (bound_cls.is_none()) { return new Option<BoundExpression>.none(); }
+        let saved_pass: i64 = m.current_pass_index;
+        m.current_pass_index = 2;
+        let resolved: BoundDefinition = m.resolve_types_pass.resolve_pair(cls_ast, bound_cls.some, def_scope);
+        m.current_pass_index = saved_pass;
+        let unit_ref: mut BoundCompilationUnit = m.current_unit.some;
+        unit_ref.definitions.push(resolved);
+        m.catch_up_def_before_bodies(resolved, unit_ref);
+
+        // ---- the lambda expression binds as `new __lambda_N(<captures>)`,
+        // re-typed to its fun type: the closure object IS the fun value ----
+        let fun_bt: BoundType = m.type_registry.make_function_type(ret_bt, param_bts, lam.is_async);
+        let new_ast: mut NewExpression = new NewExpression();
+        new_ast.type_name = cls_name;
+        let ni: mut i64 = 0;
+        while (ni < cast<i64>(a.names.size())) {
+            new_ast.arguments.push(this.mk_ident_expr(a.names.at(cast<u64>(ni)).some));
+            ni = ni + 1;
+        }
+        let bound_new: Option<BoundExpression> = this.bind_new_expr(new_ast, scope);
+        if (bound_new.is_none()) { return new Option<BoundExpression>.none(); }
+        if (bound_new.some is BoundExpression.new_expr) {
+            // Re-type as the fun type (fresh node — the closure object IS the
+            // fun value; lower_new keys on type_symbol, not bound_type).
+            let orig: BoundNewExpression = bound_new.some.new_expr;
+            let re_typed: mut BoundNewExpression = new BoundNewExpression(fun_bt, orig.type_symbol, orig.constructor_symbol, orig.arguments);
+            return new Option<BoundExpression>.some(new BoundExpression.new_expr(re_typed));
+        }
+        return bound_new;
+    }
+
+
+    // ===================== Generic call type-arg inference =====================
+    // A call to a template function/method WITHOUT explicit <...> args infers
+    // the type parameters from the bound argument types: a direct match
+    // (param `x: U` vs an i64 argument), a fun-type match (param
+    // `f: fun<U, P>` vs a lambda/fun value — arg 0 is the RETURN type), and a
+    // same-base container match (param `List<U>` vs `List<i64>`). Partial
+    // solutions abandon inference (the call falls back to the historical
+    // unspecialized form — a loud link error today).
+
+    // Structural unification of one (declared param type, actual arg type)
+    // pair into the solved-params lists. Conflicts keep the first solution.
+    fun infer_unify_type(mut this, ts: TypeSpecifier, bt: BoundType, generic_params: _utils.List<string>, names: mut _utils.List<string>, types: mut _utils.List<BoundType>) {
+        if (ts.is_function_type) {
+            if (bt.kind is TypeKind.FunctionKind) {
+                if (cast<i64>(ts.function_params.size()) == cast<i64>(bt.generic_args.size())) {
+                    let i: mut i64 = 0;
+                    while (i < cast<i64>(ts.function_params.size())) {
+                        this.infer_unify_type(ts.function_params.at(cast<u64>(i)).some, arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some), generic_params, names, types);
+                        i = i + 1;
+                    }
+                }
+            }
+            return;
+        }
+        if (cast<i64>(ts.qualified_parts.size()) == 0 && cast<i64>(ts.generic_args.size()) == 0) {
+            let gp: mut i64 = 0;
+            while (gp < cast<i64>(generic_params.size())) {
+                if (generic_params.at(cast<u64>(gp)).some == ts.name) {
+                    let ni: mut i64 = 0;
+                    while (ni < cast<i64>(names.size())) {
+                        if (names.at(cast<u64>(ni)).some == ts.name) { return; }
+                        ni = ni + 1;
+                    }
+                    names.push(ts.name);
+                    types.push(bt);
+                    return;
+                }
+                gp = gp + 1;
+            }
+            return;
+        }
+        // Same-base container (List<U> vs List<i64>): unify the args pairwise.
+        if (cast<i64>(ts.generic_args.size()) > 0 && cast<i64>(bt.generic_args.size()) == cast<i64>(ts.generic_args.size())) {
+            let base_match: mut bool = false;
+            if (bt.type_definition.is_some()) {
+                if (string_find(bt.type_definition.some.get_name(), ts.name) >= 0) { base_match = true; }
+            }
+            if (base_match) {
+                let i2: mut i64 = 0;
+                while (i2 < cast<i64>(ts.generic_args.size())) {
+                    this.infer_unify_type(ts.generic_args.at(cast<u64>(i2)).some, arg_as_bound_type(bt.generic_args.at(cast<u64>(i2)).some), generic_params, names, types);
+                    i2 = i2 + 1;
+                }
+            }
+        }
+    }
+
+    // Find the BoundFunctionDefinition for a symbol's full name (top-level,
+    // namespace, class methods, impl methods — the search_return_type walker's
+    // shape, returning the def instead of its return type).
+    fun find_function_def_in_defs(this, target_full_name: string, defs: _utils.List<BoundDefinition>) -> Option<BoundDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.function_def) {
+                if (def.function_def.full_name == target_full_name) {
+                    return new Option<BoundDefinition>.some(def);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let r: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.namespace_def.children);
+                if (r.is_some()) { return r; }
+            }
+            if (def is BoundDefinition.class_def) {
+                let rm: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.methods);
+                if (rm.is_some()) { return rm; }
+                let rc: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.constructors);
+                if (rc.is_some()) { return rc; }
+                let ri: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.interface_impls);
+                if (ri.is_some()) { return ri; }
+            }
+            if (def is BoundDefinition.impl_for_def) {
+                let rf: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.impl_for_def.methods);
+                if (rf.is_some()) { return rf; }
+            }
+            if (def is BoundDefinition.impl_def) {
+                let r2: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.impl_def.methods);
+                if (r2.is_some()) { return r2; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // Infer a template callee's type args from the bound arguments and return
+    // the SPECIALIZED function's symbol (existing or created on demand).
+    // out_types receives the solved types in generic_params order.
+    fun try_infer_generic_call(mut this, sym: BoundFunctionSymbol, args: _utils.List<BoundExpression>, skip_this: bool, scope: mut BoundScope, out_types: mut _utils.List<BoundType>) -> Option<BoundFunctionSymbol> {
+        let m: mut SemanticModel = this.model.some;
+        if (m.current_unit.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        let tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(sym.full_name, m.current_unit.some.definitions);
+        if (tmpl_def.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        if (!(tmpl_def.some is BoundDefinition.function_def)) { return new Option<BoundFunctionSymbol>.none(); }
+        let tf: BoundFunctionDefinition = tmpl_def.some.function_def;
+        if (cast<i64>(tf.generic_params.size()) == 0) { return new Option<BoundFunctionSymbol>.none(); }
+        if (cast<i64>(tf.value_param_names.size()) > 0) { return new Option<BoundFunctionSymbol>.none(); }
+        let ast_def2: Option<Definition> = if (tf.ast_source.is_some()) {
+            tf.ast_source
+        } else {
+            m.monomorphize_pass.find_ast_def_by_name(m.ast_definitions, tf.name)
+        };
+        if (ast_def2.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        if (!(ast_def2.some is Definition.function_def)) { return new Option<BoundFunctionSymbol>.none(); }
+        let ast_func: FunctionDefinition = ast_def2.some.function_def;
+        let skip: i64 = if (skip_this) { 1 } else { 0 };
+        let names: mut _utils.List<string> = new _utils.List<string>();
+        let types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(ast_func.parameters.size())) {
+            let ai2: i64 = pi - skip;
+            if (ai2 >= 0 && ai2 < cast<i64>(args.size())) {
+                let p: Parameter = ast_func.parameters.at(cast<u64>(pi)).some;
+                if (p.type_spec.is_some()) {
+                    this.infer_unify_type(p.type_spec.some, args.at(cast<u64>(ai2)).some.get_bound_type(), tf.generic_params, names, types);
+                }
+            }
+            pi = pi + 1;
+        }
+        if (cast<i64>(names.size()) != cast<i64>(tf.generic_params.size())) { return new Option<BoundFunctionSymbol>.none(); }
+        let type_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(tf.generic_params.size())) {
+            let want: string = tf.generic_params.at(cast<u64>(gi)).some;
+            let found: mut bool = false;
+            let ni2: mut i64 = 0;
+            while (ni2 < cast<i64>(names.size())) {
+                if (names.at(cast<u64>(ni2)).some == want) {
+                    let solved: BoundType = types.at(cast<u64>(ni2)).some;
+                    type_args.push(make_type_arg(solved));
+                    out_types.push(solved);
+                    found = true;
+                }
+                ni2 = ni2 + 1;
+            }
+            if (!found) { return new Option<BoundFunctionSymbol>.none(); }
+            gi = gi + 1;
+        }
+        // Refuse template-param solutions: inference firing inside a
+        // still-generic body can "solve" params to dummy template-param types —
+        // specializing over them manufactures garbage instantiations (see
+        // bound_type_is_template_param).
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(type_args.size())) {
+            if (bound_type_is_template_param(arg_as_bound_type(type_args.at(cast<u64>(ti)).some))) {
+                return new Option<BoundFunctionSymbol>.none();
+            }
+            ti = ti + 1;
+        }
+        let mangled: string = MonomorphizePass.mangle_generic_name(sym.full_name, type_args);
+        let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
+        if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
+            return new Option<BoundFunctionSymbol>.some(spec_sym.some.function_sym);
+        }
+        return m.monomorphize_pass.ensure_function_specialization_now(tmpl_def.some, type_args, m.current_unit.some);
+    }
+
+    // ===================== Generator functions =====================
+    // `fun g(params) -> IGenerator<T> { ... yield v; ... }` rewrites onto the
+    // stackful-coroutine runtime, mirroring BabyPenguin's RewriteGenerator:
+    //   class __GenCtx_<n> {
+    //     <params as snapshot fields>                  (the lambda capture
+    //     started/done/resume: mut bool;               machinery rewrites
+    //     value: mut Option<T>;                         identifiers to this.<p>)
+    //     fun new(mut this, params...) { ... }
+    //     fun __gen_yield(mut this, v: T) { this.value = some(v); this.resume = false;
+    //                                      while (!this.resume) { _co_wait(); } }
+    //     fun __gen_finish(mut this, v: T) { this.value = some(v); this.done = true; }
+    //     fun __gen_finish_void(mut this) { this.done = true; }
+    //     impl __ICoroutineEntry { fun __enter(mut this) { <body: yield -> publish,
+    //                                 return -> finish; fall-off -> finish_void> } }
+    //     impl IGenerator<T> { fun next(mut this) -> Option<T> { <drive protocol> } }
+    //   }
+    // and the function itself becomes { let __gen = new __GenCtx_<n>(params...);
+    // return cast<IGenerator<T>>(__gen); }. Protocol: next() spawns __enter on
+    // its own stack on first call, then parks one delta round between polls;
+    // __gen_yield publishes the value and parks until next() consumes it (the
+    // handshake costs ~1 round per element, like BabyPenguin's do_wait_any).
+
+    fun is_generator_return_type(this, bt: BoundType) -> bool {
+        // The instantiated interface's def name is the MANGLED specialization
+        // (IGenerator$2Fib...), so match on the display spelling — the same
+        // approach is_iterator_type uses for IIterator<.
+        if (bt.kind is TypeKind.InterfaceKind) {
+            if (string_find(bt.display_name(), "IGenerator<") >= 0) { return true; }
+        }
+        return false;
+    }
+
+    // yield/return surgery AFTER lam_visit (identifiers are already this.<p>;
+    // the synthetic this.__gen_* calls are never visited by it).
+    fun gen_stmt_replace(mut this, s: Statement) -> Option<Statement> {
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        if (s is Statement.yield_stmt) {
+            let ys: mut YieldStatement = s.yield_stmt;
+            if (ys.value.is_none()) {
+                this.model.some.report_error(new ErrorCode.E_YIELD_CONTEXT(),
+                    "yield without a value is only valid in IGenerator<void> (not supported on EmperorPenguin)", loc);
+                return new Option<Statement>.none();
+            }
+            let args: mut _utils.List<Expression> = new _utils.List<Expression>();
+            args.push(ys.value.some);
+            let call: Expression = this.mk_member_call_expr(this.mk_ident_expr("this"), "__gen_yield", args);
+            let es: mut ExpressionStatement = new ExpressionStatement();
+            es.expression = new Option<Expression>.some(call);
+            es.location = loc;
+            return new Option<Statement>.some(new Statement.expression(es));
+        }
+        if (s is Statement.return_stmt) {
+            let rs: mut ReturnStatement = s.return_stmt;
+            let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+            let noargs: mut _utils.List<Expression> = new _utils.List<Expression>();
+            let fin: Expression = if (rs.value.is_some()) {
+                let fargs: mut _utils.List<Expression> = new _utils.List<Expression>();
+                fargs.push(rs.value.some);
+                this.mk_member_call_expr(this.mk_ident_expr("this"), "__gen_finish", fargs)
+            } else {
+                this.mk_member_call_expr(this.mk_ident_expr("this"), "__gen_finish_void", noargs)
+            };
+            let fs: mut ExpressionStatement = new ExpressionStatement();
+            fs.expression = new Option<Expression>.some(fin);
+            fs.location = loc;
+            stmts.push(new Statement.expression(fs));
+            let ret: mut ReturnStatement = new ReturnStatement();
+            ret.location = loc;
+            stmts.push(new Statement.return_stmt(ret));
+            let cb: mut CodeBlockExpression = new CodeBlockExpression();
+            cb.statements = stmts;
+            let bes: mut BlockExpressionStatement = new BlockExpressionStatement();
+            bes.expression = new Option<Expression>.some(new Expression.code_block(cb));
+            bes.location = loc;
+            return new Option<Statement>.some(new Statement.block_expr(bes));
+        }
+        // containers: recurse into single-statement slots and statement lists
+        if (s is Statement.if_stmt) {
+            let is2: mut IfStatement = s.if_stmt;
+            if (is2.then_statement.is_some()) {
+                let r1: Option<Statement> = this.gen_stmt_replace(is2.then_statement.some);
+                if (r1.is_some()) { is2.then_statement = new Option<Statement>.some(r1.some); }
+            }
+            if (is2.else_statement.is_some()) {
+                let r2: Option<Statement> = this.gen_stmt_replace(is2.else_statement.some);
+                if (r2.is_some()) { is2.else_statement = new Option<Statement>.some(r2.some); }
+            }
+            return new Option<Statement>.none();
+        }
+        if (s is Statement.while_stmt) {
+            let ws: mut WhileStatement = s.while_stmt;
+            if (ws.body.is_some()) {
+                let r3: Option<Statement> = this.gen_stmt_replace(ws.body.some);
+                if (r3.is_some()) { ws.body = new Option<Statement>.some(r3.some); }
+            }
+            return new Option<Statement>.none();
+        }
+        if (s is Statement.for_stmt) {
+            let fs2: mut ForStatement = s.for_stmt;
+            if (fs2.body.is_some()) {
+                let r4: Option<Statement> = this.gen_stmt_replace(fs2.body.some);
+                if (r4.is_some()) { fs2.body = new Option<Statement>.some(r4.some); }
+            }
+            return new Option<Statement>.none();
+        }
+        if (s is Statement.try_stmt) {
+            let ts: mut TryStatement = s.try_stmt;
+            if (ts.try_block.is_some()) {
+                let r5: Option<Statement> = this.gen_stmt_replace(ts.try_block.some);
+                if (r5.is_some()) { ts.try_block = new Option<Statement>.some(r5.some); }
+            }
+            if (ts.catch_block.is_some()) {
+                let r6: Option<Statement> = this.gen_stmt_replace(ts.catch_block.some);
+                if (r6.is_some()) { ts.catch_block = new Option<Statement>.some(r6.some); }
+            }
+            return new Option<Statement>.none();
+        }
+        if (s is Statement.block_expr) {
+            let bs: mut BlockExpressionStatement = s.block_expr;
+            if (bs.expression.is_some()) {
+                this.gen_transform_expr(bs.expression.some);
+            }
+            return new Option<Statement>.none();
+        }
+        if (s is Statement.expression) {
+            let es2: mut ExpressionStatement = s.expression;
+            if (es2.expression.is_some()) {
+                this.gen_transform_expr(es2.expression.some);
+            }
+            return new Option<Statement>.none();
+        }
+        return new Option<Statement>.none();
+    }
+
+    // Block-level control flow inside a code block parses as an EXPRESSION
+    // (`{ while ... }` arrives as block_expr{while_expr} — see
+    // parse_codeBlockExpression), so the statement surgery above must also
+    // descend through while/if EXPRESSION bodies to reach their statements.
+    fun gen_transform_expr(mut this, e: Expression) {
+        if (e is Expression.code_block) {
+            this.gen_transform_stmt_list(e.code_block.statements);
+        }
+        if (e is Expression.while_expr) {
+            let we: mut WhileExpression = e.while_expr;
+            if (we.body.is_some()) { this.gen_transform_expr(we.body.some); }
+        }
+        if (e is Expression.if_expr) {
+            let ie: mut IfExpression = e.if_expr;
+            if (ie.then_block.is_some()) { this.gen_transform_expr(ie.then_block.some); }
+            if (ie.else_block.is_some()) { this.gen_transform_expr(ie.else_block.some); }
+        }
+    }
+
+    fun gen_transform_stmt_list(mut this, stmts: mut _utils.List<Statement>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(stmts.size())) {
+            let r: Option<Statement> = this.gen_stmt_replace(stmts.at(cast<u64>(i)).some);
+            if (r.is_some()) { stmts.set(cast<u64>(i), r.some); }
+            i = i + 1;
+        }
+    }
+
+    fun bind_generator_function(mut this, ast_func: FunctionDefinition, bound_func: BoundFunctionDefinition, elem_bt: BoundType, func_scope: mut BoundScope) -> Option<Expression> {
+        let m: mut SemanticModel = this.model.some;
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        if (!m.require_coroutine("yield (generator function)", loc)) {
+            return new Option<Expression>.none();
+        }
+        // The ctx's yield/park protocol suspends: mark the unit so emit_main
+        // runs the scheduler (initials on coroutine stacks).
+        m.has_suspension = true;
+        if (elem_bt.kind is TypeKind.PrimitiveKind && elem_bt.primitive is PrimitiveType.VoidType) {
+            m.report_error(new ErrorCode.E_UNSUPPORTED(), "IGenerator<void> is not supported on EmperorPenguin yet (every yield must carry a value)", loc);
+            return new Option<Expression>.none();
+        }
+        if (cast<i64>(bound_func.generic_params.size()) > 0) {
+            m.report_error(new ErrorCode.E_UNSUPPORTED(), "generic generator functions are not supported on EmperorPenguin yet", loc);
+            return new Option<Expression>.none();
+        }
+        if (ast_func.body.is_none() || !(ast_func.body.some is Expression.code_block)) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "generator function without a block body", loc);
+            return new Option<Expression>.none();
+        }
+
+        // 1) identifier rewrite (the lambda machinery): parameters (and any
+        // capturables) become this.<name> snapshot fields; this/class-member
+        // references error loudly (v1 limits, same as lambdas).
+        let a: mut LamAnalysis = new LamAnalysis();
+        let body_cb: mut CodeBlockExpression = ast_func.body.some.code_block;
+        this.lam_visit_expr(new Expression.code_block(body_cb), a, func_scope);
+        if (a.error_count > 0) { return new Option<Expression>.none(); }
+
+        // 2) yield/return surgery + implicit finish at fall-off
+        this.gen_transform_stmt_list(body_cb.statements);
+        let finargs: mut _utils.List<Expression> = new _utils.List<Expression>();
+        let fin_call: Expression = this.mk_member_call_expr(this.mk_ident_expr("this"), "__gen_finish_void", finargs);
+        let fin_stmt: mut ExpressionStatement = new ExpressionStatement();
+        fin_stmt.expression = new Option<Expression>.some(fin_call);
+        fin_stmt.location = loc;
+        body_cb.statements.push(new Statement.expression(fin_stmt));
+
+        // 3) the ctx class
+        m.generator_site_counter = m.generator_site_counter + 1;
+        let n: i64 = m.generator_site_counter;
+        let ctx_name: string = "__GenCtx_" + cast<string>(n);
+        let cls: mut ClassDefinition = new ClassDefinition(ctx_name);
+        cls.location = loc;
+        cls.source_file = "<generator>";
+        
+        // protocol fields
+        let pf_names: mut _utils.List<string> = new _utils.List<string>();
+        pf_names.push("started");
+        pf_names.push("done");
+        pf_names.push("resume");
+        let pfi: mut i64 = 0;
+        while (pfi < 3) {
+            let fname: string = pf_names.at(cast<u64>(pfi)).some;
+            let fd: mut ClassFieldDefinition = new ClassFieldDefinition(fname);
+            let bts: mut TypeSpecifier = new TypeSpecifier();
+            bts.name = "bool";
+            bts.is_mutable = true;
+            fd.type_spec = new Option<TypeSpecifier>.some(bts);
+            let fl: mut BoolLiteralExpression = new BoolLiteralExpression();
+            fl.value = "false";
+            fd.initializer = new Option<Expression>.some(new Expression.bool_literal(fl));
+            fd.location = loc;
+            cls.members.push(new Definition.class_field(fd));
+            pfi = pfi + 1;
+        }
+        // value: mut Option<T> = new Option<T>.none()
+        let val_fd: mut ClassFieldDefinition = new ClassFieldDefinition("value");
+        let opt_ts: mut TypeSpecifier = new TypeSpecifier();
+        opt_ts.qualified_parts.push("__builtin");
+        opt_ts.name = "Option";
+        opt_ts.generic_args.push(this.spawn_type_spec(elem_bt));
+        opt_ts.is_mutable = true;
+        val_fd.type_spec = new Option<TypeSpecifier>.some(opt_ts);
+        let none_new: mut NewExpression = new NewExpression();
+        none_new.type_name = "__builtin.Option.none";
+        none_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let none_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        none_new.arguments = none_args;
+        val_fd.initializer = new Option<Expression>.some(new Expression.new_expr(none_new));
+        val_fd.location = loc;
+        cls.members.push(new Definition.class_field(val_fd));
+
+        // capture fields (the generator's parameters) + ctor — by-value
+        // snapshot, mutability preserved (same as lambda captures)
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap_name: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt: BoundType = a.types.at(cast<u64>(ci)).some;
+            let cfd: mut ClassFieldDefinition = new ClassFieldDefinition(cap_name);
+            let cts: mut TypeSpecifier = this.spawn_type_spec(cap_bt);
+            cts.is_mutable = cap_bt.mutability is Mutability.Mutable;
+            cfd.type_spec = new Option<TypeSpecifier>.some(cts);
+            cfd.location = loc;
+            cls.members.push(new Definition.class_field(cfd));
+            ci = ci + 1;
+        }
+        let ctor: mut FunctionDefinition = new FunctionDefinition("new");
+        ctor.is_new = true;
+        let ctor_this: Parameter = new Parameter("this");
+        ctor_this.is_this = true;
+        ctor_this.is_mutable = true;
+        ctor.parameters.push(ctor_this);
+        let ctor_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        ci = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap2: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt2: BoundType = a.types.at(cast<u64>(ci)).some;
+            let cp: Parameter = new Parameter(cap2);
+            let cts2: mut TypeSpecifier = this.spawn_type_spec(cap_bt2);
+            cts2.is_mutable = cap_bt2.mutability is Mutability.Mutable;
+            cp.type_spec = new Option<TypeSpecifier>.some(cts2);
+            ctor.parameters.push(cp);
+            ctor_stmts.push(this.mk_assign_stmt(this.mk_this_member(cap2), this.mk_ident_expr(cap2)));
+            ci = ci + 1;
+        }
+        ctor.body = new Option<Expression>.some(this.mk_block_expr(ctor_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(ctor));
+
+        // fun __gen_yield(mut this, v: T) {
+        //     this.value = new Option<T>.some(v);
+        //     this.resume = false;
+        //     while (!this.resume) { __builtin._co_wait(); }
+        // }
+        let yf: mut FunctionDefinition = new FunctionDefinition("__gen_yield");
+        let yf_this: Parameter = new Parameter("this");
+        yf_this.is_this = true;
+        yf_this.is_mutable = true;
+        yf.parameters.push(yf_this);
+        let yf_vp: Parameter = new Parameter("v");
+        yf_vp.type_spec = new Option<TypeSpecifier>.some(this.spawn_type_spec(elem_bt));
+        yf.parameters.push(yf_vp);
+        let yf_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let some_new: mut NewExpression = new NewExpression();
+        some_new.type_name = "__builtin.Option.some";
+        some_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let some_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        some_args.push(this.mk_ident_expr("v"));
+        some_new.arguments = some_args;
+        yf_stmts.push(this.mk_assign_stmt(this.mk_this_member("value"), new Expression.new_expr(some_new)));
+        let f_lit: mut BoolLiteralExpression = new BoolLiteralExpression();
+        f_lit.value = "false";
+        yf_stmts.push(this.mk_assign_stmt(this.mk_this_member("resume"), new Expression.bool_literal(f_lit)));
+        let notres: mut UnaryExpression = new UnaryExpression();
+        notres.operator_value = new UnaryOperator.Not();
+        notres.operand = new Option<Expression>.some(this.mk_this_member("resume"));
+        let park_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let park_es: mut ExpressionStatement = new ExpressionStatement();
+        park_es.expression = new Option<Expression>.some(this.mk_park_call());
+        park_es.location = loc;
+        park_stmts.push(new Statement.expression(park_es));
+        let yw: mut WhileExpression = new WhileExpression();
+        yw.condition = new Option<Expression>.some(new Expression.unary(notres));
+        yw.body = new Option<Expression>.some(this.mk_block_expr(park_stmts, new Option<Expression>.none()));
+        let yws: mut BlockExpressionStatement = new BlockExpressionStatement();
+        yws.expression = new Option<Expression>.some(new Expression.while_expr(yw));
+        yws.location = loc;
+        yf_stmts.push(new Statement.block_expr(yws));
+        yf.body = new Option<Expression>.some(this.mk_block_expr(yf_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(yf));
+
+        // fun __gen_finish(mut this, v: T) { value=some(v); done=true; }
+        // fun __gen_finish_void(mut this) { done=true; }
+        let ff: mut FunctionDefinition = new FunctionDefinition("__gen_finish");
+        let ff_this: Parameter = new Parameter("this");
+        ff_this.is_this = true;
+        ff_this.is_mutable = true;
+        ff.parameters.push(ff_this);
+        let ff_vp: Parameter = new Parameter("v");
+        ff_vp.type_spec = new Option<TypeSpecifier>.some(this.spawn_type_spec(elem_bt));
+        ff.parameters.push(ff_vp);
+        let ff_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let fs_new: mut NewExpression = new NewExpression();
+        fs_new.type_name = "__builtin.Option.some";
+        fs_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let fs_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        fs_args.push(this.mk_ident_expr("v"));
+        fs_new.arguments = fs_args;
+        ff_stmts.push(this.mk_assign_stmt(this.mk_this_member("value"), new Expression.new_expr(fs_new)));
+        let t_lit: mut BoolLiteralExpression = new BoolLiteralExpression();
+        t_lit.value = "true";
+        ff_stmts.push(this.mk_assign_stmt(this.mk_this_member("done"), new Expression.bool_literal(t_lit)));
+        ff.body = new Option<Expression>.some(this.mk_block_expr(ff_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(ff));
+
+        let fv: mut FunctionDefinition = new FunctionDefinition("__gen_finish_void");
+        let fv_this: Parameter = new Parameter("this");
+        fv_this.is_this = true;
+        fv_this.is_mutable = true;
+        fv.parameters.push(fv_this);
+        let fv_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let t_lit2: mut BoolLiteralExpression = new BoolLiteralExpression();
+        t_lit2.value = "true";
+        fv_stmts.push(this.mk_assign_stmt(this.mk_this_member("done"), new Expression.bool_literal(t_lit2)));
+        fv.body = new Option<Expression>.some(this.mk_block_expr(fv_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(fv));
+
+        // impl __builtin.__ICoroutineEntry { fun __enter(mut this) { <body> } }
+        let enter_impl: mut InterfaceImplementation = new InterfaceImplementation("__ICoroutineEntry");
+        let enter_ts: mut TypeSpecifier = new TypeSpecifier();
+        enter_ts.qualified_parts.push("__builtin");
+        enter_ts.name = "__ICoroutineEntry";
+        enter_impl.type_spec = new Option<TypeSpecifier>.some(enter_ts);
+        let enter_fun: mut FunctionDefinition = new FunctionDefinition("__enter");
+        let enter_this: Parameter = new Parameter("this");
+        enter_this.is_this = true;
+        enter_this.is_mutable = true;
+        enter_fun.parameters.push(enter_this);
+        enter_fun.body = new Option<Expression>.some(new Expression.code_block(body_cb));
+        enter_impl.functions.push(new Definition.function_def(enter_fun));
+        cls.members.push(new Definition.impl_def(enter_impl));
+
+        // impl __builtin.IGenerator<T> { fun next(mut this) -> Option<T> {
+        //     if (!this.started) { this.started = true; __builtin._co_spawn_entry(this); }
+        //     while (true) {
+        //         if (this.value.is_some()) {
+        //             let __ret = new Option<T>.some(this.value.some);
+        //             this.value = new Option<T>.none();
+        //             this.resume = true;
+        //             return __ret;
+        //         }
+        //         if (this.done) { return new Option<T>.none(); }
+        //         __builtin._co_wait();
+        //     }
+        // } }
+        let next_impl: mut InterfaceImplementation = new InterfaceImplementation("IGenerator");
+        let next_ts: mut TypeSpecifier = new TypeSpecifier();
+        next_ts.qualified_parts.push("__builtin");
+        next_ts.name = "IGenerator";
+        next_ts.generic_args.push(this.spawn_type_spec(elem_bt));
+        next_impl.type_spec = new Option<TypeSpecifier>.some(next_ts);
+        let next_fun: mut FunctionDefinition = new FunctionDefinition("next");
+        let next_this: Parameter = new Parameter("this");
+        next_this.is_this = true;
+        next_this.is_mutable = true;
+        next_fun.parameters.push(next_this);
+        let nret_ts: mut TypeSpecifier = new TypeSpecifier();
+        nret_ts.qualified_parts.push("__builtin");
+        nret_ts.name = "Option";
+        nret_ts.generic_args.push(this.spawn_type_spec(elem_bt));
+        next_fun.return_type = new Option<TypeSpecifier>.some(nret_ts);
+        let nx_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        // if (!this.started) { started=true; spawn }
+        let nstart: mut UnaryExpression = new UnaryExpression();
+        nstart.operator_value = new UnaryOperator.Not();
+        nstart.operand = new Option<Expression>.some(this.mk_this_member("started"));
+        let spawn_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let t_lit3: mut BoolLiteralExpression = new BoolLiteralExpression();
+        t_lit3.value = "true";
+        spawn_stmts.push(this.mk_assign_stmt(this.mk_this_member("started"), new Expression.bool_literal(t_lit3)));
+        let sp_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        // __builtin._co_spawn_entry(cast<mut __builtin.__ICoroutineEntry>(this));
+        let entry_ts: mut TypeSpecifier = new TypeSpecifier();
+        entry_ts.qualified_parts.push("__builtin");
+        entry_ts.name = "__ICoroutineEntry";
+        entry_ts.is_mutable = true;
+        let entry_cast: mut CastExpression = new CastExpression();
+        entry_cast.target_type = new Option<TypeSpecifier>.some(entry_ts);
+        entry_cast.type_name = "__builtin.__ICoroutineEntry";
+        entry_cast.inner = new Option<Expression>.some(this.mk_ident_expr("this"));
+        sp_args.push(new Expression.cast_expr(entry_cast));
+        let sp_call: Expression = this.mk_member_call_expr(this.mk_ident_expr("__builtin"), "_co_spawn_entry", sp_args);
+        let sp_es: mut ExpressionStatement = new ExpressionStatement();
+        sp_es.expression = new Option<Expression>.some(sp_call);
+        sp_es.location = loc;
+        spawn_stmts.push(new Statement.expression(sp_es));
+        let spawn_blk: Expression = this.mk_block_expr(spawn_stmts, new Option<Expression>.none());
+        let nif: mut IfStatement = new IfStatement();
+        nif.condition = new Option<Expression>.some(new Expression.unary(nstart));
+        nif.then_statement = new Option<Statement>.some(this.wrap_block(spawn_blk));
+        nif.location = loc;
+        nx_stmts.push(new Statement.if_stmt(nif));
+        // while (true) { ... }
+        let loop_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let isom_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        let isom_call: Expression = this.mk_member_call_expr(this.mk_this_member("value"), "is_some", isom_args);
+        let take_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let take_new: mut NewExpression = new NewExpression();
+        take_new.type_name = "__builtin.Option.some";
+        take_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let take_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        let vsome_ma: mut MemberAccessExpression = new MemberAccessExpression();
+        vsome_ma.base_expr = new Option<Expression>.some(this.mk_this_member("value"));
+        vsome_ma.member_name = "some";
+        take_args.push(new Expression.member_access(vsome_ma));
+        take_new.arguments = take_args;
+        let take_let: mut LetDeclarationStatement = new LetDeclarationStatement();
+        take_let.is_mutable = false;
+        take_let.variable_name = "__ret";
+        take_let.initializer = new Option<Expression>.some(new Expression.new_expr(take_new));
+        take_let.location = loc;
+        take_stmts.push(new Statement.let_decl(take_let));
+        let clr_new: mut NewExpression = new NewExpression();
+        clr_new.type_name = "__builtin.Option.none";
+        clr_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let clr_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        clr_new.arguments = clr_args;
+        take_stmts.push(this.mk_assign_stmt(this.mk_this_member("value"), new Expression.new_expr(clr_new)));
+        let t_lit4: mut BoolLiteralExpression = new BoolLiteralExpression();
+        t_lit4.value = "true";
+        take_stmts.push(this.mk_assign_stmt(this.mk_this_member("resume"), new Expression.bool_literal(t_lit4)));
+        let take_ret: mut ReturnStatement = new ReturnStatement();
+        take_ret.value = new Option<Expression>.some(this.mk_ident_expr("__ret"));
+        take_ret.location = loc;
+        take_stmts.push(new Statement.return_stmt(take_ret));
+        let isom_if: mut IfStatement = new IfStatement();
+        isom_if.condition = new Option<Expression>.some(isom_call);
+        isom_if.then_statement = new Option<Statement>.some(this.wrap_block(this.mk_block_expr(take_stmts, new Option<Expression>.none())));
+        isom_if.location = loc;
+        loop_stmts.push(new Statement.if_stmt(isom_if));
+        // if (this.done) { return none; }
+        let doneret_new: mut NewExpression = new NewExpression();
+        doneret_new.type_name = "__builtin.Option.none";
+        doneret_new.generic_args.push(this.spawn_type_spec(elem_bt));
+        let doneret_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        doneret_new.arguments = doneret_args;
+        let done_ret: mut ReturnStatement = new ReturnStatement();
+        done_ret.value = new Option<Expression>.some(new Expression.new_expr(doneret_new));
+        done_ret.location = loc;
+        let done_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        done_stmts.push(new Statement.return_stmt(done_ret));
+        let done_if: mut IfStatement = new IfStatement();
+        done_if.condition = new Option<Expression>.some(this.mk_this_member("done"));
+        done_if.then_statement = new Option<Statement>.some(this.wrap_block(this.mk_block_expr(done_stmts, new Option<Expression>.none())));
+        done_if.location = loc;
+        loop_stmts.push(new Statement.if_stmt(done_if));
+        // __builtin._co_wait();
+        let park_es2: mut ExpressionStatement = new ExpressionStatement();
+        park_es2.expression = new Option<Expression>.some(this.mk_park_call());
+        park_es2.location = loc;
+        loop_stmts.push(new Statement.expression(park_es2));
+        let t_lit5: mut BoolLiteralExpression = new BoolLiteralExpression();
+        t_lit5.value = "true";
+        let nloop: mut WhileExpression = new WhileExpression();
+        nloop.condition = new Option<Expression>.some(new Expression.bool_literal(t_lit5));
+        nloop.body = new Option<Expression>.some(this.mk_block_expr(loop_stmts, new Option<Expression>.none()));
+        let nloops: mut BlockExpressionStatement = new BlockExpressionStatement();
+        nloops.expression = new Option<Expression>.some(new Expression.while_expr(nloop));
+        nloops.location = loc;
+        nx_stmts.push(new Statement.block_expr(nloops));
+        next_fun.body = new Option<Expression>.some(this.mk_block_expr(nx_stmts, new Option<Expression>.none()));
+        next_impl.functions.push(new Definition.function_def(next_fun));
+        cls.members.push(new Definition.impl_def(next_impl));
+
+        // 4) the IGenerator<T> and Option<T> instantiations are referenced
+        // only by pass-8-synthesized code (invisible to the pass-3 fixpoint) —
+        // ensure their specs are created, resolved AND registered, or the
+        // emitter finds no layout and lowers every slot to a default scalar
+        // (an unregistered Option<T> made every value/next signature i64).
+        this.gen_ensure_builtin_spec("IGenerator", elem_bt, func_scope);
+        this.gen_ensure_builtin_spec("Option", elem_bt, func_scope);
+
+        // 5) register the ctx class (spawn pattern)
+        let def_scope: mut BoundScope = this.enclosing_def_scope(func_scope);
+        let cls_ast: Definition = new Definition.class_def(cls);
+        let bound_cls: Option<BoundDefinition> = m.build_scopes_pass.bind_definition(cls_ast, def_scope);
+        if (bound_cls.is_none()) { return new Option<Expression>.none(); }
+        let saved_pass: i64 = m.current_pass_index;
+        m.current_pass_index = 2;
+        let resolved: BoundDefinition = m.resolve_types_pass.resolve_pair(cls_ast, bound_cls.some, def_scope);
+        m.current_pass_index = saved_pass;
+        if (m.current_unit.is_none()) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "generator outside a compilation unit", loc);
+            return new Option<Expression>.none();
+        }
+        let unit_ref: mut BoundCompilationUnit = m.current_unit.some;
+        unit_ref.definitions.push(resolved);
+        m.catch_up_def_before_bodies(resolved, unit_ref);
+
+        // 6) the function's replacement body:
+        //    { let __gen = new __GenCtx_<n>(<params...>);
+        //      return cast<IGenerator<T>>(__gen); }
+        let wrap_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        let gnew: mut NewExpression = new NewExpression();
+        gnew.type_name = ctx_name;
+        let gnew_args: mut _utils.List<Expression> = new _utils.List<Expression>();
+        let wi: mut i64 = 0;
+        while (wi < cast<i64>(a.names.size())) {
+            gnew_args.push(this.mk_ident_expr(a.names.at(cast<u64>(wi)).some));
+            wi = wi + 1;
+        }
+        gnew.arguments = gnew_args;
+        let glet: mut LetDeclarationStatement = new LetDeclarationStatement();
+        glet.is_mutable = false;
+        glet.variable_name = "__gen";
+        glet.initializer = new Option<Expression>.some(new Expression.new_expr(gnew));
+        glet.location = loc;
+        wrap_stmts.push(new Statement.let_decl(glet));
+        let gcast_ts: mut TypeSpecifier = new TypeSpecifier();
+        gcast_ts.qualified_parts.push("__builtin");
+        gcast_ts.name = "IGenerator";
+        gcast_ts.generic_args.push(this.spawn_type_spec(elem_bt));
+        // Mirror the declared return mutability (`-> mut IGenerator<T>` and the
+        // immutable form both occur in source).
+        gcast_ts.is_mutable = bound_func.return_type.mutability is Mutability.Mutable;
+        let gcast: mut CastExpression = new CastExpression();
+        gcast.target_type = new Option<TypeSpecifier>.some(gcast_ts);
+        gcast.type_name = "IGenerator";
+        gcast.inner = new Option<Expression>.some(this.mk_ident_expr("__gen"));
+        let gret: mut ReturnStatement = new ReturnStatement();
+        gret.value = new Option<Expression>.some(new Expression.cast_expr(gcast));
+        gret.location = loc;
+        wrap_stmts.push(new Statement.return_stmt(gret));
+        return new Option<Expression>.some(this.mk_block_expr(wrap_stmts, new Option<Expression>.none()));
+    }
+
+    // Wrap a code-block EXPRESSION into a block STATEMENT (if/while body slots
+    // take Statement, not Expression).
+    fun wrap_block(mut this, blk: Expression) -> Statement {
+        let bes: mut BlockExpressionStatement = new BlockExpressionStatement();
+        bes.expression = new Option<Expression>.some(blk);
+        bes.location = new SourceLocation("", 0, 0);
+        return new Statement.block_expr(bes);
+    }
+
+    // Ensure a __builtin generic's <elem> specialization exists AND is
+    // emitted: pass-8-synthesized references are invisible to the pass-3
+    // fixpoint, and a spec that resolve creates without registration leaves
+    // the emitter without a layout (every use then lowers to a default
+    // scalar). Protocol mirrors ensure_generic_iface_spec: create, resolve at
+    // pass index 3 (resolving at 8 would stamp the def fully-processed and
+    // skip vtables/classification), then signature-level catch-up + push.
+    fun gen_ensure_builtin_spec(mut this, short: string, elem_bt: BoundType, scope: mut BoundScope) {
+        let m: mut SemanticModel = this.model.some;
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = short;
+        ts.generic_args.push(this.spawn_type_spec(elem_bt));
+        let bt: BoundType = m.resolve_type_specifier(ts, scope);
+        if (bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = bt.type_definition.some;
+        let full_base: mut string = "";
+        let nparams: mut i64 = 0;
+        if (td is BoundDefinition.interface_def) {
+            full_base = td.interface_def.full_name;
+            nparams = cast<i64>(td.interface_def.generic_params.size());
+        }
+        if (td is BoundDefinition.enum_def) {
+            full_base = td.enum_def.full_name;
+            nparams = cast<i64>(td.enum_def.generic_params.size());
+        }
+        if (nparams == 0 || cast<i64>(bt.generic_args.size()) == 0) { return; }
+        let mangled: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
+        if (m.global_scope.lookup_type_in_scope(mangled).is_some()) { return; }
+        let spec: Option<BoundDefinition> = m.monomorphize_pass.ensure_specialized_def(bt, m.global_scope);
+        if (spec.is_none()) { return; }
+        if (m.current_unit.is_none()) { return; }
+        let ast_spec: Option<Definition> = m.monomorphize_pass.find_ast_def_by_name(m.ast_definitions, short);
+        let saved_idx: i64 = m.current_pass_index;
+        if (ast_spec.is_some()) {
+            m.current_pass_index = 3;
+            let resolved_def: BoundDefinition = m.resolve_types_pass.resolve_pair(ast_spec.some, spec.some, this.spec_resolve_scope(spec.some));
+            m.current_pass_index = saved_idx;
+            m.catch_up_def_before_bodies(resolved_def, m.current_unit.some);
+            m.current_unit.some.definitions.push(resolved_def);
+        } else {
+            m.catch_up_def_before_bodies(spec.some, m.current_unit.some);
+            m.current_unit.some.definitions.push(spec.some);
+        }
+    }
+
     fun bind_spawn_async(mut this, expr: SpawnAsyncExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         let m: mut SemanticModel = this.model.some;
         let loc: SourceLocation = new SourceLocation("", 0, 0);
@@ -858,6 +2319,23 @@ class BindExpressionsPass {
             return new Option<BoundExpression>.none();
         }
         let is_member: bool = fc.callee.some is Expression.member_access;
+
+        // Indirect spawn: `async f(args)` where f is a local/param fun value.
+        // The ctx captures the callable into a `__fn` field and __enter calls
+        // through it (the fun-field call path). Plain member callees keep the
+        // receiver capture (a bound ref `async x.m(a)` is equivalent to the
+        // synthesized `this.__recv.m(a)`).
+        let is_indirect_fun: mut bool = false;
+        let indirect_fun_bt: mut Option<BoundType> = new Option<BoundType>.none();
+        if (!is_member && fc.callee.some is Expression.identifier) {
+            let cid: IdentifierExpression = fc.callee.some.identifier;
+            let cs: Option<BoundSymbol> = scope.lookup_symbol(cid.name);
+            if (cs.is_some() && cs.some is BoundSymbol.variable
+                && cs.some.variable.bound_type.kind is TypeKind.FunctionKind) {
+                is_indirect_fun = true;
+                indirect_fun_bt = new Option<BoundType>.some(cs.some.variable.bound_type);
+            }
+        }
 
         // Probe: bind the whole call once (compile-time) to learn the return
         // type and argument types. The moved AST nodes are bound again inside
@@ -954,6 +2432,12 @@ class BindExpressionsPass {
             recv_field.location = loc;
             cls.members.push(new Definition.class_field(recv_field));
         }
+        if (is_indirect_fun) {
+            let fn_field: mut ClassFieldDefinition = new ClassFieldDefinition("__fn");
+            fn_field.type_spec = new Option<TypeSpecifier>.some(this.spawn_type_spec(indirect_fun_bt.some));
+            fn_field.location = loc;
+            cls.members.push(new Definition.class_field(fn_field));
+        }
         // fut: mut __SpawnFut_<n>  (or __builtin.__SpawnUnitFuture for void)
         let fut_field: mut ClassFieldDefinition = new ClassFieldDefinition("fut");
         let fut_ts: mut TypeSpecifier = new TypeSpecifier();
@@ -989,7 +2473,11 @@ class BindExpressionsPass {
             }
             inner_call.callee = new Option<Expression>.some(new Expression.member_access(recv_ma));
         } else {
-            inner_call.callee = fc.callee;
+            if (is_indirect_fun) {
+                inner_call.callee = new Option<Expression>.some(this.mk_this_member("__fn"));
+            } else {
+                inner_call.callee = fc.callee;
+            }
         }
         let xi: mut i64 = 0;
         while (xi < cast<i64>(arg_names.size())) {
@@ -1198,6 +2686,12 @@ class BindExpressionsPass {
             target_ma.base_expr = new Option<Expression>.some(this.mk_ident_expr(s_name));
             target_ma.member_name = "__recv";
             stmts.push(this.mk_assign_stmt(new Expression.member_access(target_ma), orig_ma2.base_expr.some));
+        }
+        if (is_indirect_fun) {
+            let fn_target: MemberAccessExpression = new MemberAccessExpression();
+            fn_target.base_expr = new Option<Expression>.some(this.mk_ident_expr(s_name));
+            fn_target.member_name = "__fn";
+            stmts.push(this.mk_assign_stmt(new Expression.member_access(fn_target), fc.callee.some));
         }
         // arg assignments
         let yi: mut i64 = 0;
@@ -1569,6 +3063,47 @@ class BindExpressionsPass {
         while (j < cast<i64>(expr.operators.size())) {
             operators.push(expr.operators.at(cast<u64>(j)).some);
             j = j + 1;
+        }
+        // Integer-literal FIRST operand: `1 + b` binds the literal as i64,
+        // and the binary result type is operand 0's type — so `return 1+b` in
+        // an i32 function fails while `b+1` compiles. Mirror the
+        // literal-second behavior: re-type a leading integer literal to the
+        // first non-literal integer operand's type.
+        if (cast<i64>(operands.size()) >= 2) {
+            let op0: BoundExpression = operands.at(cast<u64>(0)).some;
+            if (op0 is BoundExpression.literal && op0.literal.literal_kind is LiteralKind.IntegerLiteral) {
+                let t0: BoundType = op0.get_bound_type();
+                if (t0.kind is TypeKind.PrimitiveKind) {
+                    // Track the operand INDEX (not the BoundType itself):
+                    // get_bound_type() yields an immutable reference, which
+                    // cannot be assigned into a mut slot.
+                    let hit: mut i64 = -1;
+                    let k: mut i64 = 1;
+                    while (k < cast<i64>(operands.size())) {
+                        let cand: BoundExpression = operands.at(cast<u64>(k)).some;
+                        let is_lit: bool = if (cand is BoundExpression.literal) {
+                            cand.literal.literal_kind is LiteralKind.IntegerLiteral
+                        } else {
+                            false
+                        };
+                        if (!is_lit) {
+                            let tk: BoundType = cand.get_bound_type();
+                            if (tk.kind is TypeKind.PrimitiveKind && this.model.some.type_registry.is_integer(tk)) {
+                                hit = k;
+                            }
+                            k = cast<i64>(operands.size());
+                        }
+                        k = k + 1;
+                    }
+                    if (hit >= 0) {
+                        let target: BoundType = operands.at(cast<u64>(hit)).some.get_bound_type();
+                        if (!target.is_same_type(t0)) {
+                            let re_lit: mut BoundLiteralExpression = new BoundLiteralExpression(op0.literal.value, target, new LiteralKind.IntegerLiteral());
+                            operands.set(cast<u64>(0), new BoundExpression.literal(re_lit));
+                        }
+                    }
+                }
+            }
         }
         // Constant-fold string-literal `+` runs ("a" + "b" -> "ab") so the
         // result lowers to ONE static .rodata literal instead of a runtime
@@ -1954,6 +3489,78 @@ class BindExpressionsPass {
         return this.bind_expression(base, scope);
     }
 
+    // True when a member-access BASE denotes a VALUE (an object), as opposed
+    // to a type / namespace reference (the base of an unbound or static
+    // method reference).
+    fun member_base_is_value(mut this, ma: BoundMemberAccessExpression) -> bool {
+        if (ma.base_expr.is_none()) { return false; }
+        let b: BoundExpression = ma.base_expr.some;
+        if (b is BoundExpression.identifier) {
+            if (b.identifier.symbol.is_some()) {
+                let s: BoundSymbol = b.identifier.symbol.some;
+                if (s is BoundSymbol.type_sym) { return false; }
+                if (s is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        if (b is BoundExpression.member_access) {
+            let inner: BoundMemberAccessExpression = b.member_access;
+            if (inner.member_symbol.is_some()) {
+                let s2: BoundSymbol = inner.member_symbol.some;
+                if (s2 is BoundSymbol.type_sym) { return false; }
+                if (s2 is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // A method reference in VALUE position: bind_member_access gives the
+    // method's full fun type (receiver included). A reference through a VALUE
+    // base (`x.call`) is BOUND — the receiver is baked into the callable
+    // object, so the value's type STRIPS the this parameter
+    // (fun<Ret, Params...>). A reference through a TYPE base (`Temp.call`)
+    // stays UNBOUND — the full type keeps the receiver as the first parameter
+    // (fun<Ret, Temp, Params...>; h(a, x) ≡ Temp.b(a, x)). Call positions are
+    // unaffected: bind_function_call dispatches on member_symbol, not on this
+    // type.
+    fun adjust_method_ref_type(mut this, ma: BoundMemberAccessExpression) -> BoundExpression {
+        if (ma.member_symbol.is_none()) { return new BoundExpression.member_access(ma); }
+        let sym: BoundSymbol = ma.member_symbol.some;
+        if (!(sym is BoundSymbol.function_sym)) { return new BoundExpression.member_access(ma); }
+        let fsym: BoundFunctionSymbol = sym.function_sym;
+        if (!this.function_is_method(fsym)) { return new BoundExpression.member_access(ma); }
+        let bt: BoundType = ma.get_bound_type();
+        if (!(bt.kind is TypeKind.FunctionKind)) { return new BoundExpression.member_access(ma); }
+        if (cast<i64>(bt.generic_args.size()) < 2) { return new BoundExpression.member_access(ma); }
+        if (this.member_base_is_value(ma)) {
+            // Receiver mutability: a `mut this` method referenced on an
+            // immutable binding must fail (same rule as calling it).
+            if (cast<i64>(fsym.parameters.size()) > 0) {
+                let this_param: BoundFunctionParameter = fsym.parameters.at(cast<u64>(0)).some;
+                if (this_param.is_mutable && ma.base_expr.is_some()) {
+                    let base_type: BoundType = ma.base_expr.some.get_bound_type();
+                    if (base_type.mutability is Mutability.Immutable) {
+                        this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                            "Cannot bind method '" + fsym.name + "' with 'mut this' on an immutable binding",
+                            fsym.location);
+                    }
+                }
+            }
+            let ret: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+            let params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let i: mut i64 = 2;
+            while (i < cast<i64>(bt.generic_args.size())) {
+                params.push(arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some));
+                i = i + 1;
+            }
+            let stripped: BoundType = this.model.some.type_registry.make_function_type(ret, params, bt.is_async_function);
+            let replacement: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(stripped, ma.base_expr, ma.member_name, ma.member_symbol);
+            return new BoundExpression.member_access(replacement);
+        }
+        return new BoundExpression.member_access(ma);
+    }
+
     fun bind_member_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_member_access");        if (expr.base_expr.is_some()) {
             // E5 receiver-raw rule: when the base of this member access is
@@ -2333,6 +3940,108 @@ class BindExpressionsPass {
     }
 
 
+    // The inference callee for a member call: the receiver's SPECIALIZED
+    // class's method symbol when the receiver is a generic instance (the
+    // member symbol itself resolved from the TEMPLATE scope — specializing
+    // that def leaves `this` as the template type), else the fallback symbol.
+    fun infer_member_callee_sym(mut this, base_opt: Option<BoundExpression>, method_name: string, fallback: BoundFunctionSymbol, scope: mut BoundScope) -> mut BoundFunctionSymbol {
+        if (base_opt.is_none()) { return fallback; }
+        let recv_bt: BoundType = base_opt.some.get_bound_type();
+        if (cast<i64>(recv_bt.generic_args.size()) == 0 || recv_bt.type_definition.is_none()) { return fallback; }
+        let spec_def2: Option<BoundDefinition> = this.ensure_receiver_class_spec(recv_bt, scope);
+        if (spec_def2.is_some() && spec_def2.some is BoundDefinition.class_def) {
+            let spec_cls2: BoundClassDefinition = spec_def2.some.class_def;
+            let mi3: mut i64 = 0;
+            while (mi3 < cast<i64>(spec_cls2.methods.size())) {
+                let smd: BoundDefinition = spec_cls2.methods.at(cast<u64>(mi3)).some;
+                if (smd is BoundDefinition.function_def) {
+                    if (smd.function_def.name == method_name && smd.function_def.symbol.is_some()) {
+                        return smd.function_def.symbol.some;
+                    }
+                }
+                mi3 = mi3 + 1;
+            }
+        }
+        return fallback;
+    }
+
+    // Ensure the specialized def of a template+args receiver type exists —
+    // created on demand, resolved at the monomorphize pass index, signature-
+    // caught-up, and registered for the dynamic pass-8 body loop (the
+    // bind_new_expr on-demand protocol). Generic-method inference must
+    // specialize methods UNDER the specialized class (this = the spec type),
+    // never the template.
+    fun ensure_receiver_class_spec(mut this, recv_bt: BoundType, scope: mut BoundScope) -> Option<BoundDefinition> {
+        if (this.model.some.current_unit.is_none()) { return new Option<BoundDefinition>.none(); }
+        let td: BoundDefinition = recv_bt.type_definition.some;
+        let full_base: mut string = "";
+        let tmpl_short: mut string = "";
+        if (td is BoundDefinition.class_def) { full_base = td.class_def.full_name; tmpl_short = td.class_def.name; }
+        if (td is BoundDefinition.enum_def) { full_base = td.enum_def.full_name; tmpl_short = td.enum_def.name; }
+        if (string_length(full_base) == 0) { return new Option<BoundDefinition>.none(); }
+        let mangled: string = MonomorphizePass.mangle_generic_name(full_base, recv_bt.generic_args);
+        let existing: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled);
+        if (existing.is_some() && existing.some is BoundSymbol.type_sym) {
+            if (existing.some.type_sym.bound_type.type_definition.is_some()) {
+                return existing.some.type_sym.bound_type.type_definition;
+            }
+        }
+        let spec: Option<BoundDefinition> = this.model.some.monomorphize_pass.ensure_specialized_def(recv_bt, this.model.some.global_scope);
+        if (spec.is_none()) { return new Option<BoundDefinition>.none(); }
+        let ast_spec: Option<Definition> = this.model.some.monomorphize_pass.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_short);
+        let m1: mut SemanticModel = this.model.some;
+        let saved_idx: i64 = m1.current_pass_index;
+        if (ast_spec.is_some()) {
+            m1.current_pass_index = 3;
+            let to_register: BoundDefinition = m1.resolve_types_pass.resolve_pair(ast_spec.some, spec.some, this.spec_resolve_scope(spec.some));
+            m1.current_pass_index = saved_idx;
+            m1.catch_up_def_before_bodies(to_register, m1.current_unit.some);
+            m1.current_unit.some.definitions.push(to_register);
+            return new Option<BoundDefinition>.some(to_register);
+        }
+        m1.catch_up_def_before_bodies(spec.some, m1.current_unit.some);
+        m1.current_unit.some.definitions.push(spec.some);
+        return new Option<BoundDefinition>.some(spec.some);
+    }
+
+    // Substitute a template CLASS's type params inside `bt` — the template
+    // method's resolved return type (e.g. Option<U>) — with the receiver's
+    // generic args (a MapIterator<i64,i64> receiver -> Option<i64>). Used by
+    // the member-call return-type refresh when the specialized def doesn't
+    // exist yet (see the refresh site); display-name param matching mirrors
+    // substitute_generic_args.
+    fun substitute_class_params_type(this, bt: BoundType, cls: BoundClassDefinition, args: _utils.List<BoundTypeArg>) -> mut BoundType {
+        let dn: string = bt.display_name();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(cls.generic_params.size()) && pi < cast<i64>(args.size())) {
+            if (dn == cls.generic_params.at(cast<u64>(pi)).some) {
+                return arg_as_bound_type(args.at(cast<u64>(pi)).some);
+            }
+            pi = pi + 1;
+        }
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            let new_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+            let changed: mut bool = false;
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(bt.generic_args.size())) {
+                let one_arg: BoundTypeArg = bt.generic_args.at(cast<u64>(gi)).some;
+                if (!arg_is_value(one_arg)) {
+                    let before_dn: string = arg_as_bound_type(one_arg).display_name();
+                    let sub: BoundType = this.substitute_class_params_type(arg_as_bound_type(one_arg), cls, args);
+                    if (sub.display_name() != before_dn) { changed = true; }
+                    new_args.push(make_type_arg(sub));
+                } else {
+                    new_args.push(one_arg);
+                }
+                gi = gi + 1;
+            }
+            if (changed) {
+                return bt.with_generic_args(new_args);
+            }
+        }
+        return bt;
+    }
+
     fun find_function_return_type(this, sym: mut BoundFunctionSymbol) -> BoundType {
         _utils.trace_enter("Enter find_function_return_type");
         if (sym.resolved_return_type.is_some()) {
@@ -2496,6 +4205,48 @@ class BindExpressionsPass {
     // Integer literals coerce to any integer param type; args whose bound type is
     // void/error (from a prior diagnostic) and generic template params (T unsubstituted)
     // are skipped to avoid cascading false positives.
+    // Check call arguments against a fun VALUE's type (`fun<...>`: arg 0 is
+    // the return type, the rest are the parameter types). Arity and implicit
+    // castability per argument; reports E_CALL_ARITY / E_TYPE_MISMATCH.
+    fun check_fun_value_args(mut this, ftype: BoundType, args: mut _utils.List<BoundExpression>, loc: SourceLocation) {
+        let param_count: i64 = cast<i64>(ftype.generic_args.size()) - 1;
+        let arg_count: i64 = cast<i64>(args.size());
+        if (arg_count != param_count) {
+            this.model.some.report_error(new ErrorCode.E_CALL_ARITY(),
+                "Function value expects " + cast<string>(param_count)
+                + " arguments but " + cast<string>(arg_count) + " were provided",
+                loc);
+            return;
+        }
+        let i: mut i64 = 0;
+        while (i < arg_count) {
+            let param_type: BoundType = arg_as_bound_type(ftype.generic_args.at(cast<u64>(i + 1)).some);
+            let arg_expr: BoundExpression = args.at(cast<u64>(i)).some;
+            let arg_type: BoundType = arg_expr.get_bound_type();
+            if (this.model.some.type_registry.is_void(param_type) || this.model.some.type_registry.is_void(arg_type)
+                || param_type.kind is TypeKind.ErrorKind || arg_type.kind is TypeKind.ErrorKind) {
+                i = i + 1;
+                continue;
+            }
+            // Integer literals coerce to any integer parameter type (the IR
+            // layer re-types constants in the destination register type) —
+            // same relaxation as check_argument_types.
+            let is_int_lit: bool = if (arg_expr is BoundExpression.literal) {
+                arg_expr.literal.literal_kind is LiteralKind.IntegerLiteral
+            } else {
+                false
+            };
+            if (!this.model.some.type_registry.can_implicitly_cast(arg_type, param_type)
+                && !(is_int_lit && this.model.some.type_registry.is_integer(param_type))) {
+                this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                    "Cannot convert argument " + cast<string>(i + 1) + " of type "
+                    + arg_type.display_name() + " to parameter type " + param_type.display_name(),
+                    loc);
+            }
+            i = i + 1;
+        }
+    }
+
     fun check_argument_types(mut this, sym: BoundFunctionSymbol, args: mut _utils.List<BoundExpression>) {
         _utils.trace_enter("Enter check_argument_types");
         let arg_i: mut i64 = 0;
@@ -2669,6 +4420,20 @@ class BindExpressionsPass {
                                     return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
                                 }
                             }
+                            // Inference fallback: a TEMPLATE callee called without explicit
+                            // <...> args — solve the type parameters from the argument types
+                            // (direct, fun-typed, same-base container matches) and dispatch to
+                            // the (created-on-demand) specialization.
+                            if (!is_generic_call) {
+                                let inferred_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                                let spec_sym_inf: Option<BoundFunctionSymbol> = this.try_infer_generic_call(sym.function_sym, args, false, scope, inferred_types);
+                                if (spec_sym_inf.is_some()) {
+                                    let inf_sym: mut BoundFunctionSymbol = spec_sym_inf.some;
+                                    let inf_bt: mut BoundType = this.find_function_return_type(inf_sym);
+                                    let inf_result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(inf_bt, callee, id_expr.symbol, args, false, inferred_types, true);
+                                    return new Option<BoundExpression>.some(new BoundExpression.function_call(inf_result));
+                                }
+                            }
                             // Check argument count
                             let param_count: i64 = cast<i64>(sym.function_sym.parameters.size());
                             let arg_count: i64 = cast<i64>(args.size());
@@ -2686,6 +4451,24 @@ class BindExpressionsPass {
                             let bt: mut BoundType = this.find_function_return_type(sym.function_sym);
                             let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, id_expr.symbol, args, false, resolved_generic_args, false);
                             return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
+                        }
+                        if (sym is BoundSymbol.variable) {
+                            // fun-typed VARIABLE call: `f(21)` where `f` is a
+                            // local/param of type `fun<...>` — call through the
+                            // function value (a callable object). Mirrors the
+                            // fun-typed FIELD branch below: return type is
+                            // generic_args[0], the rest are parameter types.
+                            let ftype: BoundType = sym.variable.bound_type;
+                            if (ftype.kind is TypeKind.FunctionKind) {
+                                let ret: mut BoundType = this.model.some.type_registry.void_type;
+                                if (cast<i64>(ftype.generic_args.size()) > 0) {
+                                    ret = arg_as_bound_type(ftype.generic_args.at(cast<u64>(0)).some);
+                                }
+                                this.check_fun_value_args(ftype, args, sym.variable.location);
+                                let empty_ga2: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                                let fvc: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(ret, callee, id_expr.symbol, args, false, empty_ga2, false);
+                                return new Option<BoundExpression>.some(new BoundExpression.function_call(fvc));
+                            }
                         }
                     }
                 }
@@ -2769,13 +4552,59 @@ class BindExpressionsPass {
                                     type_arg_wrap.push(make_type_arg(a));
                                     wi = wi + 1;
                                 }
-                                let mangled: string = MonomorphizePass.mangle_generic_name(sym.function_sym.full_name, type_arg_wrap);
+                                // Prefer the receiver's SPECIALIZED class method (a
+                                // template+args receiver's member symbol is template-
+                                // scoped; specializing it leaves `this` unresolved).
+                                let gen_callee: mut BoundFunctionSymbol = this.infer_member_callee_sym(ma_expr.base_expr, sym.function_sym.name, sym.function_sym, scope);
+                                let mangled: string = MonomorphizePass.mangle_generic_name(gen_callee.full_name, type_arg_wrap);
                                 let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
                                 if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
                                     let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
                                     let bt: mut BoundType = this.find_function_return_type(spec_func_sym);
-                                    let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, ma_expr.member_symbol, args, false, resolved_generic_args, true);
+                                    // Spec symbol's name is already mangled — plain call
+                                    // (is_generic_function_call would mangle it a second time).
+                                    let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, spec_sym, args, false, new _utils.List<BoundType>(), false);
                                     return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
+                                }
+                                // Bind-time creation: explicit-arg method calls on
+                                // bind-time-born receivers (the inferred map just
+                                // returned a MapIterator whose spec class exists only
+                                // since this expression) were never collected by the
+                                // pass-3 fixpoint — create the specialization now.
+                                let gen_tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(gen_callee.full_name, this.model.some.current_unit.some.definitions);
+                                if (gen_tmpl_def.is_some() && this.model.some.current_unit.is_some()) {
+                                    let ensured2: Option<BoundFunctionSymbol> = this.model.some.monomorphize_pass.ensure_function_specialization_now(gen_tmpl_def.some, type_arg_wrap, this.model.some.current_unit.some);
+                                    if (ensured2.is_some()) {
+                                        let ens_bt: mut BoundType = this.find_function_return_type(ensured2.some);
+                                        let ens_result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(ens_bt, callee, new Option<BoundSymbol>.some(new BoundSymbol.function_sym(ensured2.some)), args, false, new _utils.List<BoundType>(), false);
+                                        return new Option<BoundExpression>.some(new BoundExpression.function_call(ens_result));
+                                    }
+                                }
+                            }
+                            // Inference fallback for generic METHODS called without explicit
+                            // <...> args (map/filter/reduce on the concrete iterator classes).
+                            if (!is_generic_method_call) {
+                                // A receiver spelled template+args (MapIterator<i64,i64>)
+                                // resolves its member symbol from the TEMPLATE scope;
+                                // specializing THAT def attaches the method to the
+                                // template class — `this` stays the template type and
+                                // every this.x() call inside the specialized body
+                                // mis-resolves. Prefer the receiver's SPECIALIZED
+                                // class's own method def.
+                                let infer_sym: mut BoundFunctionSymbol = this.infer_member_callee_sym(ma_expr.base_expr, sym.function_sym.name, sym.function_sym, scope);
+                                let inferred_types2: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+                                let spec_sym_inf2: Option<BoundFunctionSymbol> = this.try_infer_generic_call(infer_sym, args, true, scope, inferred_types2);
+                                if (spec_sym_inf2.is_some()) {
+                                    let inf_sym2: mut BoundFunctionSymbol = spec_sym_inf2.some;
+                                    let inf_bt2: mut BoundType = this.find_function_return_type(inf_sym2);
+                                    // The callee symbol must be the SPECIALIZATION's symbol:
+                                    // IR mangles the call from callee_symbol.full_name, and the
+                                    // member symbol (template-scoped) would name a function
+                                    // nobody emitted (undefined at link). The spec symbol's
+                                    // name is ALREADY mangled — pass it as a plain (non-
+                                    // generic) call so IRGen does not mangle it a second time.
+                                    let inf_result2: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(inf_bt2, callee, new Option<BoundSymbol>.some(new BoundSymbol.function_sym(inf_sym2)), args, false, new _utils.List<BoundType>(), false);
+                                    return new Option<BoundExpression>.some(new BoundExpression.function_call(inf_result2));
                                 }
                             }
                             let bt: mut BoundType = this.find_function_return_type(sym.function_sym);
@@ -2837,6 +4666,18 @@ class BindExpressionsPass {
                                     if (orig_def is BoundDefinition.class_def) {
                                         let spec_name: string = MonomorphizePass.mangle_generic_name(orig_def.class_def.full_name, base_type.generic_args);
                                         let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(spec_name);
+                                        if (spec_sym.is_none()) {
+                                            // The specialized def does not exist YET: it is created
+                                            // later, when the expression producing the receiver has
+                                            // its body bound by the dynamic pass-8 loop (e.g.
+                                            // d.next() where d = range(..).map(f) — the
+                                            // MapIterator<i64,i64> spec is born from map's body,
+                                            // bound after this whole initial block). Derive the
+                                            // return type by SUBSTITUTING the class's type params
+                                            // in the template method's return (Option<U> ->
+                                            // Option<i64>) instead of leaving unresolved params.
+                                            bt = this.substitute_class_params_type(bt, orig_def.class_def, base_type.generic_args);
+                                        }
                                         if (spec_sym.is_some()) {
                                             if (spec_sym.some is BoundSymbol.type_sym) {
                                                 let spec_type: BoundType = spec_sym.some.type_sym.bound_type;
@@ -3130,10 +4971,11 @@ class BindExpressionsPass {
                     // fallback built a void-typed call with no callee symbol,
                     // poisoning every dependent expression (and eventually dying in
                     // the IR generator with E_INTERNAL: Function call has no callee
-                    // symbol). Scoped to enum-member symbols only: BabyPenguin also
-                    // accepts calls of function-typed FIELDS (`h.cb(21)`), which
-                    // EmperorPenguin does not support yet — that gap must keep its
-                    // own (internal) failure, not be rejected as invalid syntax.
+                    // symbol). Scoped to enum-member symbols only: calls of
+                    // function-typed FIELDS (`h.cb(21)`) are handled earlier by the
+                    // fun-typed-field branch, and fun-typed local variables fall
+                    // through to the no-callee call (a tracked gap, not invalid
+                    // syntax).
                     // (Must stay INSIDE the `if member_access` block: ma_expr is
                     // declared there, and EmperorPenguin's block scoping — unlike
                     // BabyPenguin's function-level leak — rejects outer use.)
@@ -3892,7 +5734,18 @@ class BindExpressionsPass {
                 // the pushed def's bodies are bound later by the dynamic pass-8
                 // loop. bt keeps the template+args shape so downstream lowering
                 // is unchanged.
-                if (cast<i64>(bt.generic_args.size()) > 0 && this.model.some.current_unit.is_some()) {
+                // GUARD: refuse when any type arg is an unresolved template
+                // param (a still-generic body's `new Foo<V>`): such specs are
+                // garbage, and self-referential ones (V from THIS class's own
+                // template methods) grow without bound (see
+                // bound_type_is_template_param).
+                let arg_has_tpl: mut bool = false;
+                let gi: mut i64 = 0;
+                while (gi < cast<i64>(bt.generic_args.size())) {
+                    if (bound_type_is_template_param(arg_as_bound_type(bt.generic_args.at(cast<u64>(gi)).some))) { arg_has_tpl = true; }
+                    gi = gi + 1;
+                }
+                if (!arg_has_tpl && cast<i64>(bt.generic_args.size()) > 0 && this.model.some.current_unit.is_some()) {
                     let full_base: mut string = expr.type_name;
                     let tmpl_short: mut string = expr.type_name;
                     if (bt.type_definition.is_some()) {
@@ -3977,6 +5830,26 @@ class BindExpressionsPass {
     }
 
 
+}
+
+// Capture classification for one identifier encountered in a lambda body.
+enum LamCaptureKind {
+    NotVariable;   // resolves inside __call anyway (global / function / type)
+    Capturable;    // a local/param of the enclosing function scope chain
+    ClassMember;   // lives in a class/enum/interface/impl scope (v1: error)
+    ThisParam;     // the enclosing method's `this` (v1: error)
+}
+
+// Mutable analysis state threaded through the lambda-body traversal: shadow =
+// names declared inside the lambda body that hide outer locals; names/types =
+// captures in first-appearance order; last_found_type = the classified
+// variable's type (valid only right after a Capturable result).
+class LamAnalysis {
+    shadow: mut _utils.List<string> = new _utils.List<string>();
+    names: mut _utils.List<string> = new _utils.List<string>();
+    types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+    last_found_type: mut Option<BoundType> = new Option<BoundType>.none();
+    error_count: mut i64 = 0;
 }
 
 }

@@ -232,3 +232,43 @@ an independent green commit (d15bade, e5c904a, 975510d, 0be6a58, b28671b).
   in an auto-impl'd class die with E_INTERNAL "Symbol register not found for:
   <global>.__builtin" (probe build/repro/p3.penguin). LSP structs don't use
   them; MetaJsonOptionBox (locals) is green.
+
+## 2026-09-13 分诊：LSP didOpen 挂死（全矩阵 prebuilt 17 ERROR 的根因）——已解决，见下节
+
+`build/lsp`（9/11 22:19 构建，lib 配套）在 **didOpen**（语义分析路径）后死等：
+单线程阻塞在 `rt_sigsuspend`（/proc wchan），stdin EOF 也不退出；init/shutdown/exit 不带
+didOpen 的会话正常 exit 0。时间强吻合 8e7cb559 "implement generation based gc"
+（2026-09-11 01:44，gc.c +3337 行 / scheduler.c +81 行）——build/lsp 构建于该提交之后，
+所以挂死自 generation GC 起就在。9/12 门禁只跑 babypenguin,pass2,pass3（无 prebuilt），
+从未暴露；2026-09-13 全量矩阵（首次含 prebuilt）暴露为 LspTest 17×"run timed out after 60s"。
+
+## 2026-09-13 解决：不是 GC 信号，是旧编译器工件 × 新 stdlib 的 pass-3 失控（活循环）
+
+上一节的 rt_sigsuspend/生成GC 归因是**误诊**。gdb 抓栈（yama ptrace_scope=1 不能 attach，
+要用 gdb 启动为目标进程的父进程 + FIFO 保住 stdin + kill -INT 目标 pid 让 batch gdb 停机
+取栈）三次采样全部停在：
+
+```
+MonomorphizePass.run → collect_generic_instantiations → collect_instantiations_from_def /
+collect_from_ast_statement_safe → try_add_instantiation → BoundType_is_same_type ↔
+matches_specialization_of ↔ is_template_args_of （99% CPU，state RN）
+```
+
+根因链：**build/lsp 与 build/libemperorpenguin.penguin-lib 是 9/11 22:19 的（嵌入
+pre-T6 守卫的编译器），而 LSP 在运行时从 cwd 读磁盘上的 stdlib**——HEAD 的
+core_builtin.penguin 已带 T5 IGenerator + T6 MapIterator/FilterIterator 方法级模板组合子，
+旧编译器的 pass-3 特化收集撞上就指数失控（正是 c98665e4 守卫修复的那族 OOM bug）。
+wchan=rt_sigsuspend 是红鲱鱼：running 任务的 wchan 显示陈旧等待通道，`ps` 的 RN + 99% CPU
+才是真相。修复 = `make lsp` 从 HEAD 重建（级联重发 pass3.ll/pass3——9/13 bootstrap 收尾时
+pass2 链接(03:12)比 pass3.ll(03:11)晚了几秒的 mtime 倒挂，无害）；重建后最小 didOpen 会话
+0.28s exit 0，LspTest 23/23 绿。
+
+- **结构性陷阱（记住）**：prebuilt LSP 与**检出态 stdlib** 耦合，不是与构建时 stdlib 耦合。
+  stdlib 语义面变化后不 `make lsp` 就跑 Prebuilt LspTest = 拿旧编译器编译新 stdlib，
+  runner 无法感知这种陈旧。改 stdlib/编译器源后记得 `make lsp`。
+- Completion.md golden 合法漂移并已更新（347→358 符号：map/filter/reduce/all/any/into、
+  MapIterator(src,f)/FilterIterator(pred)、IGenerator；`src` 因按名去重换到更早的
+  MapIterator 块）——用 result.json 的 actualStdout 反转义回写，roundtrip 校验过。
+- 23 个 LspTest md 即红哨兵（期望 exit 0），修复后自动转绿，无需新增测试。
+- 与 2026-09-13 的三项编译器修复（lower_new / wait-port / emit_call_indirect）无关——
+  那三个已随当晚 bootstrap 进入 pass2/pass3。

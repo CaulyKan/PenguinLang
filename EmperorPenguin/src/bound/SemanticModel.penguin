@@ -83,6 +83,13 @@ class SemanticModel {
     meta_engine: mut MetaEngine = new MetaEngine();
     meta_engine_seeded: mut bool = false;
     verbose: mut i64 = 0;
+    // Error-report suppression for speculative resolution: the pass-3 AST
+    // collector resolves method-body type args in the CLASS scope, where the
+    // method's own template params are invisible — those resolve failures are
+    // EXPECTED (the instantiation is skipped, and pass 8 re-binds the body
+    // with proper scopes, reporting any REAL errors there). Save/restore
+    // around the speculative window only.
+    suppress_report_errors: mut bool = false;
     // --enable-coroutine gate (default off): when false, the RTL-port /
     // concurrency syntax set (ports, construct, connect, wait forms,
     // try/catch, async expressions) reports a clear compile error instead of
@@ -225,6 +232,13 @@ class SemanticModel {
     // class (__SpawnCtx_<n>) + site block; the counter gives each site a
     // unique class name within the compilation.
     spawn_site_counter: mut i64 = 0;
+    // Lambda-site counter: every lambda expression desugars to a synthesized
+    // closure class (__lambda_<n>); unique names across the compilation.
+    lambda_site_counter: mut i64 = 0;
+    // Generator-site counter: every `-> IGenerator<T>` function rewrites to a
+    // synthesized coroutine ctx class (__GenCtx_<n>); unique names across the
+    // compilation.
+    generator_site_counter: mut i64 = 0;
 
     fun new(mut this) {
 
@@ -388,6 +402,7 @@ class SemanticModel {
 
     fun report_error(this, code: ErrorCode, message: string, location: SourceLocation) {
         _utils.trace_enter("Enter report_error");
+        if (this.suppress_report_errors) { return; }
         this.errors.push(new SemanticError(code, message, location));
     }
 

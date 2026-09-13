@@ -1,9 +1,12 @@
 # StaticFunctionBindingTest
 ## Description
 Bind static method (no this) to function variable.
+RED SENTINEL (known gap in EmperorPenguin, .agents/plans/emperorpenguin-fun-values.md): 静态方法引用作为 fun 值并调用（EP: 无静态引用单例/thunk 机制）. Should turn green once implemented.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass2
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

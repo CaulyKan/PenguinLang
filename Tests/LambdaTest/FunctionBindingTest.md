@@ -1,9 +1,12 @@
 # FunctionBindingTest
 ## Description
 Bind method to function variable via instance.call.
+RED SENTINEL (known gap in EmperorPenguin, .agents/plans/emperorpenguin-fun-values.md): 绑定方法引用 x.call 作为 fun 值并调用（EP: 方法值位置不产 fun 类型 + 无 invoker 机制）. Should turn green once implemented.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass2
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

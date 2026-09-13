@@ -13,10 +13,10 @@ initial {
 ```
 
 ## Waiting for Duration
-`wait <n> tick;` suspends the routine until the simulation clock has advanced by `n` ticks. Timers with shorter durations fire first; equal durations fire in scheduling order:
+`wait <n>;` suspends the routine until the simulation clock has advanced by `n` ticks, where `<n>` is any integer expression — a literal, a variable (any integer width; narrower ints are cast to the i64 deadline unit) or a computation. The long form `wait <n> tick;` means exactly the same thing; the `tick` keyword is optional. Timers with shorter durations fire first; equal durations fire in scheduling order:
 ```
 initial {
-	wait 1 tick;
+	wait 1;
 	println("A");
 }
 initial {

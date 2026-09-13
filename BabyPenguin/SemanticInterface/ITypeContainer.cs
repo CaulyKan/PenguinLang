@@ -55,10 +55,19 @@ namespace BabyPenguin.SemanticInterface
             return result;
         }
 
-        public IClassNode AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, bool isPure = false, bool? isAsync = false)
+        public IClassNode AddLambdaClass(string nameHint, SyntaxNode? syntaxNode, List<FunctionParameter> parameters, IType returnType, List<ISymbol> closureSymbols, SourceLocation sourceLocation, bool isPure = false, bool? isAsync = false, List<FunctionParameter>? captureParameters = null)
         {
             var parametersString = string.Join(", ", parameters.Select(p => $"{p.Name} : {p.Type.FullName()}"));
+            // Capture PARAMETERS (used by the generator desugar): unlike
+            // `parameters` (which feed the `call` signature), these are baked
+            // into the closure at construction as snapshot fields — the body's
+            // references to them are rewritten to `this.<name>` exactly like
+            // closure symbols.
+            var captureParams = (captureParameters ?? []).Where(p => p.Name != "this").ToList();
             var declarationStrings = closureSymbols.Select(s => $"{s.Name} : {s.TypeInfo.FullName()}").ToList();
+            declarationStrings.AddRange(captureParams.Select(p => $"{p.Name} : {p.Type.FullName()}"));
+            var capturedNames = new HashSet<string>(closureSymbols.Select(s => s.Name).Concat(captureParams.Select(p => p.Name)));
+            var ctorArgNames = string.Join(", ", closureSymbols.Select(s => s.Name).Concat(captureParams.Select(p => p.Name)));
 
             var name = $"__lambda_{nameHint}_{Interlocked.Increment(ref counter)}";
             string text = "";
@@ -72,7 +81,7 @@ namespace BabyPenguin.SemanticInterface
                             postfix.SubPrimaryExpression != null &&
                             postfix.SubPrimaryExpression.PrimaryExpressionType == PrimaryExpression.Type.Identifier &&
                             postfix.SubPrimaryExpression.Identifier != null &&
-                            closureSymbols.Any(s => s.Name == postfix.SubPrimaryExpression.Identifier.Name))
+                            capturedNames.Contains(postfix.SubPrimaryExpression.Identifier.Name))
                         {
                             var memberAccess = CreateMemberAccess(true, postfix.SubPrimaryExpression.Identifier);
                             postfix.PostfixExpressionType = PostfixExpression.Type.MemberAccess;
@@ -83,7 +92,7 @@ namespace BabyPenguin.SemanticInterface
                     else if (node is PrimaryExpression primaryExp &&
                         primaryExp.PrimaryExpressionType == PrimaryExpression.Type.Identifier &&
                         primaryExp.Identifier != null &&
-                        closureSymbols.Any(s => s.Name == primaryExp.Identifier.Name))
+                        capturedNames.Contains(primaryExp.Identifier.Name))
                     {
                         // PrimaryExpression was unwrapped from PostfixExpression via GetEffectiveExpression
                         // Convert it to a ParenthesizedExpression wrapping the member access
@@ -108,7 +117,7 @@ namespace BabyPenguin.SemanticInterface
                 class {name} {{
                     {string.Join("\n", declarationStrings.Select(i => i + ";"))}
                     fun new(this: mut {name}{(declarationStrings.Count > 0 ? ", " : "")}{string.Join(", ", declarationStrings)}) {{
-                        {string.Join("\n", closureSymbols.Select(s => $"this.{s.Name} = {s.Name};"))}
+                        {string.Join("\n", capturedNames.Select(s => $"this.{s} = {s};"))}
                     }}
                     fun call(this: mut {name}{(!string.IsNullOrEmpty(parametersString) ? ", " : "")}{parametersString}) -> {returnType.FullName()} {{
                         {text}

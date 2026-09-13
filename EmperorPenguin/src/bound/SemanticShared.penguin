@@ -212,10 +212,57 @@ fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut 
 // BindExpressionsPass.bind_spawn_async) it is not in the unit, and its AST
 // rides on ast_source.
 fun replay_find_ast_def(model: SemanticModel, template_name: string, ast_source: Option<Definition>) -> Option<Definition> {
+    // The carried AST source is the UNAMBIGUOUS match — check it FIRST: the
+    // bare-name search returns the LAST same-named def, so same-named methods
+    // of different classes (map/filter/... on every iterator class) replay
+    // against the WRONG body.
+    if (ast_source.is_some()) { return ast_source; }
     let found: Option<Definition> = model.monomorphize_pass.find_ast_def_by_name(model.ast_definitions, template_name);
     if (found.is_some()) { return found; }
-    if (ast_source.is_some()) { return ast_source; }
     return new Option<Definition>.none();
+}
+
+// True when bt IS (or CONTAINS) an unspecializable type argument: an
+// unresolved template-param reference OR an unresolved/error type (the `?`
+// serialization — e.g. pass-3's AST collector resolves a method-body type arg
+// in the CLASS scope, where the method's own template params are invisible,
+// yielding error types). BuildScopes registers every generic param
+// (class/enum/interface/function scope) as a type symbol whose bound_type
+// points at a DUMMY class def — constructed as (param_name,
+// enclosing_full_name + "." + param_name), with type_symbol/scope none and
+// every member list empty. Specializing over any of these is meaningless, and
+// worse, self-referential: the arg's mangle embeds its ENCLOSING def's
+// (specialized, ever-growing) name, so a bind-time specialization driven from
+// a still-generic body creates a spec whose own template methods spawn
+// longer-named specs forever — unbounded memory growth. Every specialization
+// path (pass-3 fixpoint, new-expression on-demand specs, generic-call
+// inference) must refuse such args via this predicate.
+fun bound_type_is_template_param(bt: BoundType) -> bool {
+    // Error/unresolved types (`?`): ErrorKind, or a non-primitive non-function
+    // type with no type definition. Function types carry no def and are fine —
+    // their ARGS are checked by the recursion below.
+    if (bt.kind is TypeKind.ErrorKind) { return true; }
+    if (!(bt.kind is TypeKind.PrimitiveKind) && !(bt.kind is TypeKind.FunctionKind) && bt.type_definition.is_none()) { return true; }
+    if (bt.type_definition.is_some()) {
+        let td: BoundDefinition = bt.type_definition.some;
+        if (td is BoundDefinition.class_def) {
+            let cd: BoundClassDefinition = td.class_def;
+            if (cd.type_symbol.is_none() && cd.scope.is_none()
+                && cast<i64>(cd.methods.size()) == 0 && cast<i64>(cd.fields.size()) == 0
+                && cast<i64>(cd.constructors.size()) == 0 && cast<i64>(cd.interface_impls.size()) == 0
+                && cast<i64>(cd.generic_params.size()) == 0) {
+                return true;
+            }
+        }
+    }
+    if (cast<i64>(bt.generic_args.size()) > 0) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            if (bound_type_is_template_param(arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some))) { return true; }
+            i = i + 1;
+        }
+    }
+    return false;
 }
 
 }

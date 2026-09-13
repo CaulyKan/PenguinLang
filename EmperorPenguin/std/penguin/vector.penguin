@@ -85,7 +85,7 @@ export class Vector {
         return this.cap;
     }
 
-    fun iter(this) -> _VectorIterator<T> {
+    fun iter(this) -> mut _VectorIterator<T> {
         return new _VectorIterator<T>(this.buf, this.len);
     }
 
@@ -125,7 +125,67 @@ export class _VectorIterator {
         return new __builtin.Option<T>.some(v);
     }
 
-    fun iter(this) -> _VectorIterator<T> {
+    // The combinators' `cast<IIterator<T>>(this)` requires the INTERFACE impl
+    // (a bare same-shape `next` is not enough — the cast object would carry no
+    // IIterator vtable entry and dispatch through it dereferences NULL).
+    impl __builtin.IIterator<T> {
+        fun next(mut this) -> __builtin.Option<T> {
+            if (this.cursor >= this.end) {
+                return new __builtin.Option<T>.none();
+            }
+            let v: T = #__load(T, this.base + this.cursor * cast<u64>(#sizeof(T)));
+            this.cursor = this.cursor + 1;
+            return new __builtin.Option<T>.some(v);
+        }
+    }
+
+        #template(U: type)
+        fun map(mut this, f: mut fun<U, T>) -> mut __builtin.MapIterator<T, U> {
+            let it: mut __builtin.MapIterator<T, U> = new __builtin.MapIterator<T, U>(cast<mut __builtin.IIterator<T>>(this), f);
+            return it;
+        }
+        fun filter(mut this, pred: mut fun<bool, T>) -> mut __builtin.FilterIterator<T> {
+            let it: mut __builtin.FilterIterator<T> = new __builtin.FilterIterator<T>(cast<mut __builtin.IIterator<T>>(this), pred);
+            return it;
+        }
+        #template(R: type)
+        fun reduce(mut this, init: R, f: mut fun<R, R, T>) -> R {
+            let mut acc = init;
+            let mut v = this.next();
+            while (v.is_some()) {
+                acc = f(acc, v.some);
+                v = this.next();
+            }
+            return acc;
+        }
+        fun all(mut this, pred: mut fun<bool, T>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (!(pred(v.some))) { return false; }
+                v = this.next();
+            }
+            return true;
+        }
+        fun any(mut this, pred: mut fun<bool, T>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (pred(v.some)) { return true; }
+                v = this.next();
+            }
+            return false;
+        }
+        #template(C: type)
+        fun into(mut this) -> C {
+            let mut c = new C();
+            let mut v = this.next();
+            while (v.is_some()) {
+                c.push(v.some);
+                v = this.next();
+            }
+            return c;
+        }
+
+    fun iter(this) -> mut _VectorIterator<T> {
         return this;
     }
 }

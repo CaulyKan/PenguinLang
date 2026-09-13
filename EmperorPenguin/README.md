@@ -565,6 +565,26 @@ declare i32 @_emperor_isinstance(ptr, ptr)
 declare ptr @_emperor_alloc_impl(i32)
 ```
 
+#### 函数值（fun / async_fun / lambda）
+
+函数值是**单一对象指针**（GC 管理），其类元数据的 interface_map 携带一条 `.__FunVal` 条目，槽 0 指向一个**以对象自身为第 0 参数**的函数（与 `mut this` 方法 ABI 相同）。间接调用点统一编译为：
+
+```llvm
+%fn = call ptr @_emperor_vtable_lookup(ptr %funval, ptr @.__FunVal_interface_id, i32 0)
+%r  = call <ret> %fn(ptr %funval, <args...>)
+```
+
+四种函数值来源共用这一表示（细节见 `SemanticBindExpressions.penguin` 的 `bind_lambda` / `adjust_method_ref_type` 与 `LLVMEmitter.penguin` 的 `ensure_funval` / `ensure_bound_funval`）：
+
+| 来源 | 表示 | 发射物 |
+|------|------|--------|
+| 顶层/静态函数引用 `let f = twice;` | 常量单例对象（无字段） | `@__funval_thunk_<fn>`（丢弃第 0 参数转发原函数）+ 常量元数据 + `@__funval_<fn>_obj` |
+| 绑定方法引用 `let g = x.call;` | 2 字堆对象 `{ metadata, recv }` | `@__funval_boundmake_<fn>`（分配并固化 receiver）+ `@__funval_boundcall_<fn>`（从 offset 8 加载 receiver 调原方法） |
+| 无绑定方法引用 `let h = A.call;` | 常量单例对象 | 同静态引用的机制，但 thunk 把第 0 真实参数作为 receiver 透传（`fun<A, P...>`：receiver 是 fun 类型第一个参数） |
+| lambda（含捕获） | 闭包对象即函数值 | bind 期合成 `__lambda_<n>` 类（捕获字段 + 构造器 + `__call(mut this, ...)`，置 `is_funval`）；`ensure_class_layout` 给标记类追加 `__FunVal` interface_map 条目（槽 0 = `__call`） |
+
+设计要点：单指针表示让 fun 字段 / `Option<fun<...>>` payload 的 GC 可达性由现有 `field_is_ptr`/refmap 机制直接覆盖（双字胖指针无法按字段粒度标记第二个词）；闭包捕获为**按值快照**（可变性保留自源变量）；funval 类恒为引用类型（身份即函数值身份，闭包可逃逸定义帧）。`fun` 与 `async_fun` 签名相同即双向互通（async 标志只影响 `async f(...)` spawn 语法，不影响调用 ABI — 栈式协程下直接调用即内联执行+隐式等待）。已知差异：`==` 为指针相等 — 绑定方法每次取引用生成新 invoker（`x.m == x.m` 为 false，BabyPenguin 为 true），后续可用 invoker 缓存修正；跨 `.penguin-lib` 边界传递函数值未支持。优化路径：`__FunVal` 查找现走 interface_map strcmp 扫描，可把 thunk 存进 `EmperorClassMetadata` 当前恒为 null 的 `virtual_method_table` 槽位直达。
+
 ### 10. C 运行时 — `std/c/`
 
 **文件:** [`std/c/core_builtin.c`](std/c/core_builtin.c)、[`std/c/gc.c`](std/c/gc.c)、[`std/c/penguinlang_interop.c`](std/c/penguinlang_interop.c)

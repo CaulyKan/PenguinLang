@@ -326,6 +326,26 @@ initial {{
     public void ParseType_NestedGeneric() => Batch.Assert();
 
     [Fact]
+    [BatchParseTest("fun<i64, string>", "parse_typeSpecifier", "fun<i64, string>")]
+    public void ParseType_FunctionType() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("async_fun<i64, string>", "parse_typeSpecifier", "async_fun<i64, string>")]
+    public void ParseType_AsyncFunctionType() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("List<fun<i64, string>>", "parse_typeSpecifier", "List<fun<i64, string>>")]
+    public void ParseType_FunctionTypeAsGenericArg() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("Option<async_fun<i32>>", "parse_typeSpecifier", "Option<async_fun<i32>>")]
+    public void ParseType_AsyncFunctionTypeAsGenericArg() => Batch.Assert();
+
+    [Fact]
+    [BatchParseTest("fun<i32, fun<i32, i32>>", "parse_typeSpecifier", "fun<i32, fun<i32, i32>>")]
+    public void ParseType_NestedFunctionType() => Batch.Assert();
+
+    [Fact]
     [BatchParseTest("mut i64", "parse_typeSpecifier", "mut i64")]
     public void ParseType_Mutable() => Batch.Assert();
 

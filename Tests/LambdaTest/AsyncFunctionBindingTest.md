@@ -1,9 +1,12 @@
 # AsyncFunctionBindingTest
 ## Description
 Bind async method to async_fun variable.
+RED SENTINEL (known gap in EmperorPenguin, .agents/plans/emperorpenguin-fun-values.md): async 方法引用绑定 async_fun 变量（EP: async_fun<...> 类型语法不识别 + 方法引用缺失）. Should turn green once implemented.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass2
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -24,7 +27,7 @@ Bind async method to async_fun variable.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

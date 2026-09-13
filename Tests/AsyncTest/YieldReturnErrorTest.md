@@ -4,6 +4,7 @@ Compile error: generator returning a non-matching type.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
@@ -22,7 +23,7 @@ Compile error: generator returning a non-matching type.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD

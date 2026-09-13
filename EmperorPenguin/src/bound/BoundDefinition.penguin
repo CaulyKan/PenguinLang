@@ -70,6 +70,13 @@ export class BoundFunctionDefinition {
     // Set on monomorphized generic instances (produced by specialize_*), so
     // collect_instances can list the shipped instances in a lib's metadata.
     is_specialized: bool = false;
+    // The AST def this bound function was built from (set by bind_function_def
+    // and copied onto specializations). The unambiguous handle for replays:
+    // find_ast_def_by_name matches the BARE name, so same-named methods of
+    // different classes (map/filter/reduce on every iterator class) resolve to
+    // the WRONG AST — resolve_pair/body-replay then fail on the other class's
+    // type params.
+    ast_source: mut Option<Definition> = new Option<Definition>.none();
 
     fun new(mut this, name: string, full_name: string, is_extern: mut bool, is_pure: mut bool, is_new: mut bool, is_static: mut bool) {
         this.name = name;
@@ -118,6 +125,10 @@ export class BoundClassDefinition {
     is_lib_source: bool = false;
     is_exported: bool = false;
     is_specialized: bool = false;
+    // fun-value closure class (lambda desugar): the emitter adds a .__FunVal
+    // interface entry (slot 0 = __call) to this class's metadata so instances
+    // are directly callable through the fun-value ABI.
+    is_funval: mut bool = false;
     // Interface names this class implements (from its `impl ...` members), populated
     // by the AST-fallback reflection (MetaEngine.spec_to_bound_type) so meta codegen
     // can check e.g. whether a field's type implements IJsonSerializable at

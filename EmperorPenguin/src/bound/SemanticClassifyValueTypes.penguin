@@ -181,6 +181,14 @@ class ClassifyValueTypesPass {
             return cls.is_value_class.some;
         }
 
+        // fun-value closures are ALWAYS reference types: they escape their
+        // defining frame (returned / stored) and their identity IS the fun
+        // value's identity (pointer equality), regardless of field types.
+        if (cls.is_funval) {
+            cls.is_value_class = new Option<bool>.some(false);
+            return false;
+        }
+
         if (this.is_in_visiting(cls.full_name, visiting)) {
             cls.is_value_class = new Option<bool>.some(false);
             return false;
@@ -273,6 +281,12 @@ class ClassifyValueTypesPass {
                 let iface: BoundInterfaceDefinition = td.interface_def;
                 for (let iv in iface.vtables) {
                     if (string_find(iv.interface_type.display_name(), "IIterator<") >= 0) { return true; }
+                }
+                // An interface DECLARING `next` is itself iterable (IGenerator<T>
+                // has no IIterator vtable — EP has no interface inheritance —
+                // but its values drive for-in directly through next()).
+                for (let im in iface.methods) {
+                    if (im is BoundDefinition.function_def && im.function_def.name == "next") { return true; }
                 }
             }
         }

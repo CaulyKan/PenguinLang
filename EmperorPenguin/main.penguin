@@ -224,7 +224,11 @@ initial {
         let ei: mut i64 = 0;
         while (ei < cast<i64>(result.errors.size())) {
             let err: SemanticError = result.errors.at(cast<u64>(ei)).some;
-            __builtin.eprintln("  error[" + error_code_name(err.code) + "]: " + err.message);
+            let loc_txt: mut string = "";
+            if (string_length(err.location.filename) > 0 || err.location.line > 0) {
+                loc_txt = " (at " + err.location.filename + ":" + cast<string>(err.location.line) + "," + cast<string>(err.location.col) + ")";
+            }
+            __builtin.eprintln("  error[" + error_code_name(err.code) + "]: " + err.message + loc_txt);
             ei = ei + 1;
         }
         __builtin.exit(1);

@@ -1581,6 +1581,14 @@ fun _libmeta_type_spelling(tj: std.JsonValue) -> string {
     if (let kv := tj.get("k").some) {
         if (kv.as_string() == "fun") { is_fun = true; }
     }
+    // write_type signals an async_fun type with "ay":1 (kind stays "fun");
+    // the text materializer must spell it back as async_fun<...>.
+    let is_async_fun: mut bool = false;
+    if (is_fun) {
+        if (let av := tj.get("ay").some) {
+            if (av.as_i64() == 1) { is_async_fun = true; }
+        }
+    }
     let mut prefix = "";
     if (let mv := tj.get("m").some) {
         if (mv.as_i64() == 1) { prefix = "mut "; }
@@ -1589,7 +1597,11 @@ fun _libmeta_type_spelling(tj: std.JsonValue) -> string {
     let sb: mut StringBuilder = new StringBuilder();
     sb.append(prefix);
     if (is_fun) {
-        sb.append("fun<");
+        if (is_async_fun) {
+            sb.append("async_fun<");
+        } else {
+            sb.append("fun<");
+        }
     } else {
         sb.append(b);
         if (n > 0) { sb.append("<"); }
@@ -2908,7 +2920,13 @@ class LibMetaInjector {
             let mut parser = new Parser(tokens);
             let expr: Expression = parser.parse_expression();
             if (!parser.has_errors()) {
+                // A lambda initializer synthesizes a closure class INTO the
+                // unit (bind_lambda needs current_unit); direct injection runs
+                // between passes 1 and 2, where current_unit is unset.
+                let saved_unit: Option<BoundCompilationUnit> = this.model.current_unit;
+                this.model.current_unit = new Option<BoundCompilationUnit>.some(this.result);
                 let bound: Option<BoundExpression> = this.model.bind_expressions_pass.bind_expression(expr, gscope);
+                this.model.current_unit = saved_unit;
                 if (bound.is_some()) {
                     gv.initializer = new Option<BoundExpression>.some(bound.some);
                 }

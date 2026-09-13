@@ -1699,10 +1699,16 @@ namespace BabyPenguin.SemanticInterface
                 var type = typeReference.TypeReference;
                 var memberName = expression.Member!.Name;
 
-                // Try to find a function on the type
-                var funcSymbol = Model.ResolveShortSymbol(memberName, s => s.IsFunction, scope: type as ISemanticScope);
+                // Try to find a function on the type. Resolve against the TYPE
+                // NODE (the symbol container) — `type` itself is an IType
+                // wrapper and does not implement ISemanticScope.
+                var funcSymbol = Model.ResolveShortSymbol(memberName, s => s.IsFunction, scope: type.TypeNode as ISemanticScope);
                 if (funcSymbol != null)
                 {
+                    // An INTERFACE method has no single implementation — an
+                    // unbound reference to it cannot resolve to one function.
+                    if (funcSymbol.Parent is ITypeNode { Type: TypeEnum.Interface })
+                        throw new BabyPenguinException($"'{expression.Text}' is an interface method and has no single implementation — reference it through a concrete class", expression.SourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
                     ownerType = null;
                     targetSymbol = funcSymbol;
                     return;
@@ -1874,7 +1880,16 @@ namespace BabyPenguin.SemanticInterface
                             // check this type
                             var thisType = symbol.TypeInfo.GenericArguments[1];
                             if (ownerType == null)
-                                throw new NotImplementedException();
+                            {
+                                // Unbound method reference (`Temp.call` where call is an
+                                // instance method): the value keeps the receiver as the
+                                // first parameter — fun<Ret, Owner, Params...>. Calling it
+                                // passes the receiver explicitly (a.b(x) ≡ Temp.b(a, x));
+                                // the runtime's owner-less dispatch forwards arguments
+                                // as-is, so this param reads the first explicit argument.
+                                return (fs.IsAsync ? Model.BasicTypeNodes.AsyncFun : Model.BasicTypeNodes.Fun)
+                                    .Specialize([.. symbol.TypeInfo.GenericArguments]).ToType(Mutability.Mutable);
+                            }
 
                             if (ownerType.IsMutable == Mutability.Auto) ownerType = ownerType.WithMutability(Mutability.Immutable);
 

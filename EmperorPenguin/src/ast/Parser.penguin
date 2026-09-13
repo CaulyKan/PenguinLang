@@ -382,6 +382,10 @@ fun _mark_ast_exported(def: Definition) {
             if (tt is TokenType.StringKw) { return true; }
             if (tt is TokenType.Void) { return true; }
             if (tt is TokenType.Char) { return true; }
+            // `fun` / `async_fun` start a function type — needed so generic
+            // argument parsing (try_parse_genericTypeArgs) accepts them.
+            if (tt is TokenType.Fun) { return true; }
+            if (tt is TokenType.Async_fun) { return true; }
             return false;
         }
 
@@ -415,11 +419,15 @@ fun _mark_ast_exported(def: Definition) {
                             let t1: Token = this.stream.advance();
                             first.location = this.tok_loc(t1);
                             first.name = t1.text;
-                            if (this.stream.peek_type() is TokenType.Less) {
+                            // Qualified type arg: ns.Class — chain dot parts.
+                            if (!this.try_parse_qualified_tail(first)) {
+                                parse_ok = false;
+                            }
+                            if (parse_ok && this.stream.peek_type() is TokenType.Less) {
                                 this.parse_genericTypeArgs(first.generic_args);
                             }
-                            generic_args.push(first);
-                            while (this.stream.peek_type() is TokenType.Comma) {
+                            if (parse_ok) { generic_args.push(first); }
+                            while (parse_ok && this.stream.peek_type() is TokenType.Comma) {
                                 this.stream.advance();
                                 let next_type: TypeSpecifier = new TypeSpecifier();
                                 if (this.stream.peek_type() is TokenType.Mut) {
@@ -433,6 +441,10 @@ fun _mark_ast_exported(def: Definition) {
                                 let tn: Token = this.stream.advance();
                                 next_type.location = this.tok_loc(tn);
                                 next_type.name = tn.text;
+                                if (!this.try_parse_qualified_tail(next_type)) {
+                                    parse_ok = false;
+                                    break;
+                                }
                                 if (this.stream.peek_type() is TokenType.Less) {
                                     this.parse_genericTypeArgs(next_type.generic_args);
                                 }
@@ -595,56 +607,17 @@ fun _mark_ast_exported(def: Definition) {
             // Try to parse generic args after member name (e.g., obj.method<T>(args))
             if (this.stream.peek_type() is TokenType.Less) {
                 let saved_pos: i64 = this.stream.pos;
-                let parse_ok: mut bool = true;
                 this.stream.advance(); // consume '<'
-                let first: Token = this.stream.peek();
-                if (this.is_type_name_token(first.token_type)) {
-                    // Parse generic args with manual backtracking (avoid parse_genericTypeArgs which calls expect)
-                    let ga: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
-                    let t1: TypeSpecifier = new TypeSpecifier();
-                    let tn: Token = this.stream.advance();
-                    t1.location = this.tok_loc(tn);
-                    t1.name = tn.text;
-                    if (this.stream.peek_type() is TokenType.Less) {
-                        parse_ok = this.try_parse_genericTypeArgs(t1.generic_args);
-                    }
-                    if (parse_ok) { ga.push(t1); }
-                    while (this.stream.peek_type() is TokenType.Comma) {
-                        if (!parse_ok) { break; }
-                        this.stream.advance();
-                        if (this.stream.peek_type() is TokenType.Greater) { break; }
-                        if (!(this.is_type_name_token(this.stream.peek_type()))) {
-                            parse_ok = false;
-                            break;
-                        }
-                        let next_type: TypeSpecifier = new TypeSpecifier();
-                        let tn2: Token = this.stream.advance();
-                        next_type.location = this.tok_loc(tn2);
-                        next_type.name = tn2.text;
-                        if (this.stream.peek_type() is TokenType.Less) {
-                            parse_ok = this.try_parse_genericTypeArgs(next_type.generic_args);
-                        }
-                        if (parse_ok) { ga.push(next_type); }
-                    }
-                    if (!parse_ok) {
-                        this.stream.pos = saved_pos;
-                    } else if (this.stream.peek_type() is TokenType.Greater) {
-                        this.stream.advance(); // consume >
-                    } else {
-                        parse_ok = false;
-                    }
-                    if (parse_ok) {
-                        // Accept if followed by (, ), ;, ,, {, >, }, ., or EOF. The '.'
-                        // covers a namespace-qualified GENERIC type member access whose
-                        // generic args are followed by a further member (e.g.
-                        // `ns.Enum<i64>.variant`), so the args attach to the type member
-                        // access instead of being mis-parsed as a `<` comparison.
-                        let after: Token = this.stream.peek();
-                        if (after.token_type is TokenType.LParen || after.token_type is TokenType.RParen || after.token_type is TokenType.Semicolon || after.token_type is TokenType.Comma || after.token_type is TokenType.LBrace || after.token_type is TokenType.RBrace || after.token_type is TokenType.Dot || after.token_type is TokenType.EOF) {
-                            ma_expr.generic_args = ga;
-                        } else {
-                            this.stream.pos = saved_pos;
-                        }
+                let ga: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+                if (this.try_parse_genericTypeArgs(ga)) {
+                    // Accept if followed by (, ), ;, ,, {, >, }, ., or EOF. The '.'
+                    // covers a namespace-qualified GENERIC type member access whose
+                    // generic args are followed by a further member (e.g.
+                    // `ns.Enum<i64>.variant`), so the args attach to the type member
+                    // access instead of being mis-parsed as a `<` comparison.
+                    let after: Token = this.stream.peek();
+                    if (after.token_type is TokenType.LParen || after.token_type is TokenType.RParen || after.token_type is TokenType.Semicolon || after.token_type is TokenType.Comma || after.token_type is TokenType.LBrace || after.token_type is TokenType.RBrace || after.token_type is TokenType.Dot || after.token_type is TokenType.EOF) {
+                        ma_expr.generic_args = ga;
                     } else {
                         this.stream.pos = saved_pos;
                     }
@@ -1083,11 +1056,17 @@ fun _mark_ast_exported(def: Definition) {
                 return node;
             }
             let type_next: Token = this.stream.peek();
-            if (type_next.token_type is TokenType.Fun) {
+            if (type_next.token_type is TokenType.Fun || type_next.token_type is TokenType.Async_fun) {
                 this.stream.advance();
                 node.location = this.tok_loc(type_next);
                 if (this.stream.peek_type() is TokenType.Less) {
-                    node.is_function_type = true;
+                    // `fun<...>` / `async_fun<...>` function types: generic arg 0
+                    // is the return type, the rest are parameters.
+                    if (type_next.token_type is TokenType.Async_fun) {
+                        node.is_async_function_type = true;
+                    } else {
+                        node.is_function_type = true;
+                    }
                     this.parse_genericTypeArgs(node.function_params);
                 } else {
                     node.name = type_next.text;
@@ -1146,9 +1125,27 @@ fun _mark_ast_exported(def: Definition) {
             let t1: Token = this.stream.advance();
             first.location = this.tok_loc(t1);
             first.name = t1.text;
-            if (this.stream.peek_type() is TokenType.Less) {
-                if (!this.try_parse_genericTypeArgs(first.generic_args)) {
+            if (t1.token_type is TokenType.Fun || t1.token_type is TokenType.Async_fun) {
+                // A function type as generic argument: `List<fun<i64, string>>`.
+                // The '<...>' tail lands in function_params (arg 0 = return type).
+                if (!this.try_parse_fun_type_tail(first, t1)) {
                     return false;
+                }
+            } else {
+                // Qualified type names: ns.Class / std.Vector — chain the dot
+                // parts into qualified_parts before any nested generic args.
+                if (!this.try_parse_qualified_tail(first)) {
+                    return false;
+                }
+                if (this.stream.peek_type() is TokenType.Less) {
+                    // Nested generic args: consume the '<' first — the callee's
+                    // contract expects to be positioned right AFTER it (this
+                    // missing advance is why nested expression-position generics
+                    // like x.foo<Bar<i64>>() never parsed).
+                    this.stream.advance();
+                    if (!this.try_parse_genericTypeArgs(first.generic_args)) {
+                        return false;
+                    }
                 }
             }
             list.push(first);
@@ -1162,9 +1159,19 @@ fun _mark_ast_exported(def: Definition) {
                 let tn: Token = this.stream.advance();
                 next_type.location = this.tok_loc(tn);
                 next_type.name = tn.text;
-                if (this.stream.peek_type() is TokenType.Less) {
-                    if (!this.try_parse_genericTypeArgs(next_type.generic_args)) {
+                if (tn.token_type is TokenType.Fun || tn.token_type is TokenType.Async_fun) {
+                    if (!this.try_parse_fun_type_tail(next_type, tn)) {
                         return false;
+                    }
+                } else {
+                    if (!this.try_parse_qualified_tail(next_type)) {
+                        return false;
+                    }
+                    if (this.stream.peek_type() is TokenType.Less) {
+                        this.stream.advance();
+                        if (!this.try_parse_genericTypeArgs(next_type.generic_args)) {
+                            return false;
+                        }
                     }
                 }
                 list.push(next_type);
@@ -1174,6 +1181,40 @@ fun _mark_ast_exported(def: Definition) {
                 return true;
             }
             return false;
+        }
+
+        // Dot-qualified tail of a type argument in the non-throwing parser:
+        // after the first name token, chain `.part` segments into
+        // qualified_parts (`std.Vector`, `ns.Inner.Class`). Returns false when
+        // a part after a dot is not a type-name token (caller backtracks).
+        fun try_parse_qualified_tail(this, ts: mut TypeSpecifier) -> bool {
+            while (this.stream.peek_type() is TokenType.Dot) {
+                this.stream.advance();
+                if (!(this.is_type_name_token(this.stream.peek_type()))) {
+                    return false;
+                }
+                let part: Token = this.stream.advance();
+                ts.qualified_parts.push(ts.name);
+                ts.name = part.text;
+            }
+            return true;
+        }
+
+        // Tail of a `fun<...>` / `async_fun<...>` type argument in the
+        // non-throwing generic-args parser: the keyword token has been
+        // consumed into `ts` by the caller. When '<' follows, parse the
+        // signature args into function_params; otherwise the specifier stays
+        // a plain name. Returns false on parse failure (caller backtracks).
+        fun try_parse_fun_type_tail(this, ts: mut TypeSpecifier, tok: Token) -> bool {
+            if (this.stream.peek_type() is TokenType.Less) {
+                if (tok.token_type is TokenType.Async_fun) {
+                    ts.is_async_function_type = true;
+                } else {
+                    ts.is_function_type = true;
+                }
+                return this.try_parse_genericTypeArgs(ts.function_params);
+            }
+            return true;
         }
 
         fun parse_typeSpecifierInGeneric(this) -> TypeSpecifier {
@@ -1224,6 +1265,25 @@ fun _mark_ast_exported(def: Definition) {
                     this.capture_meta_trailing_block(mc);
                 }
                 ts.meta_call = new Option<MetaCallExpression>.some(mc);
+                return ts;
+            }
+            // A function type as a (nested) generic argument in type context,
+            // e.g. `Option<fun<i64, string>>` — mirror parse_typeSpecifier's
+            // fun/async_fun branch: the '<...>' signature lands in
+            // function_params (arg 0 = return type), not generic_args.
+            let maybe_fun: Token = this.stream.peek();
+            if (maybe_fun.token_type is TokenType.Fun || maybe_fun.token_type is TokenType.Async_fun) {
+                let ft: Token = this.stream.advance();
+                ts.location = this.tok_loc(ft);
+                ts.name = ft.text;
+                if (this.stream.peek_type() is TokenType.Less) {
+                    if (ft.token_type is TokenType.Async_fun) {
+                        ts.is_async_function_type = true;
+                    } else {
+                        ts.is_function_type = true;
+                    }
+                    this.parse_genericTypeArgs(ts.function_params);
+                }
                 return ts;
             }
             let t: Token = this.stream.advance();

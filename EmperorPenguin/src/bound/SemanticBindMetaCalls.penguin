@@ -89,6 +89,16 @@ class BindMetaCallsPass {
         if (bmf.return_type.is_some()) {
             ret_kind = bmf.return_type.some.name;
         }
+        // A function-typed return (`-> fun<...>` parses with is_function_type
+        // and an EMPTY name, so the reference-return guard below never fires
+        // for it — the value would fall through to the integer-literal splice
+        // and emit the fun object's compile-time address as a number. Treat it
+        // exactly like a reference return: fun values cannot cross the meta
+        // boundary.
+        if (bmf.return_type.is_some() && bmf.return_type.some.is_function_type) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta '#" + bmf.name + "' returns a function type; function values cannot be spliced into runtime code; call it inside another #fun instead", expr.location);
+            return new Option<BoundExpression>.none();
+        }
         if (ret_kind == "ast") {
             let node_opt: Option<Expression> = this.model.some.meta_engine.get_ast_expression(cast<u64>(result_i64));
             if (node_opt.is_some()) {

@@ -183,6 +183,10 @@ class TypeIdConstant {
 class FuncParamTypes {
     func_name: string = "";
     param_types: mut _utils.List<string> = new _utils.List<string>();
+    // IR-level return type ("void", "i32", "ref<string>", ...) — needed by the
+    // function-value thunk synthesis (ensure_funval) to mirror the callee's
+    // sret/scalar return convention.
+    ret_ir_type: mut string = "void";
     // True when the callee's first parameter is named "this" — the receiver.
     // The write-chain pre-scan uses this to decide whether a CALL's arg0 is a
     // method receiver (must alias the caller's slot) or a plain by-value
@@ -350,6 +354,14 @@ class LLVMEmitter {
     gc_frame_prev_gep: mut string = "";
     gc_frame_predicted: mut bool = false;
     pending_iface_ids: mut StringBuilder = new StringBuilder();
+    // Function-value singletons (see ensure_funval): synthesized lazily when a
+    // function's address is taken as a `fun` value. Function DEFINITIONS
+    // (thunks) and their constant globals interleave freely — LLVM textual IR
+    // is order-insensitive at module level — so one pending section suffices.
+    pending_funvals: mut StringBuilder = new StringBuilder();
+    emitted_funvals: mut _utils.List<string> = new _utils.List<string>();
+    // True once a bound method reference requires the allocator declaration.
+    needs_funval_alloc: mut bool = false;
     current_unit: Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
     func_param_types: mut _utils.List<FuncParamTypes> = new _utils.List<FuncParamTypes>();
     current_sret_llvm_type: mut string = "";
@@ -778,6 +790,9 @@ class LLVMEmitter {
         this.needs_memset = false;
         this.type_id_constants = new _utils.List<TypeIdConstant>();
         this.emitted_interface_ids = new _utils.List<string>();
+        this.pending_funvals = new StringBuilder();
+        this.emitted_funvals = new _utils.List<string>();
+        this.needs_funval_alloc = false;
         this.func_param_types = new _utils.List<FuncParamTypes>();
         // Per-unit lookup acceleration state (see the field block).
         this.fcl_memo = new _utils.StrMap();
@@ -884,6 +899,9 @@ class LLVMEmitter {
         this.emit_extern_declarations_runtime_to(this.sb);
         this.sb.append("\n");
         this.sb.append(func_sb.to_string());
+        // Synthesized function-value singletons (thunk defines + constant
+        // globals), discovered lazily during function emission.
+        this.sb.append(this.pending_funvals.to_string());
         // Emit debug metadata
         this.debug_emit_metadata();
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] LLVM lowering done"); }
@@ -1092,7 +1110,7 @@ class LLVMEmitter {
         // pending, and old-runtime links are rejected by the ABI gate.
         target.append("declare void @_emperor_gc_poll()\n");
         target.append("@_emperor_gc_frame_head = external global ptr\n");
-        if (this.has_iref_class || this.has_boxing) {
+        if (this.has_iref_class || this.has_boxing || this.needs_funval_alloc) {
             target.append("declare ptr @_emperor_alloc_impl(i32)\n");
         }
         if (this.has_boxing || this.needs_memcpy) {
@@ -1194,6 +1212,7 @@ class LLVMEmitter {
         while (fi < cast<i64>(module.functions.size())) {
             let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
             let fpt: mut FuncParamTypes = new FuncParamTypes(this.strip_global_prefix(func.name));
+            fpt.ret_ir_type = func.return_type;
             let ppi: mut i64 = 0;
             while (ppi < cast<i64>(func.parameters.size())) {
                 let pp: IRParameter = func.parameters.at(cast<u64>(ppi)).some;
@@ -1872,6 +1891,32 @@ class LLVMEmitter {
             }
             layout.interface_vtables.push(iface_vtable);
             vi = vi + 1;
+        }
+
+        // fun-value closure class (lambda desugar): append the .__FunVal entry
+        // — slot 0 is __call — so indirect calls resolve the callable through
+        // _emperor_vtable_lookup(obj, ".__FunVal", 0) exactly like the
+        // emitter-synthesized funval singletons and bound-method invokers.
+        if (cls.is_funval) {
+            let call_name: mut string = "";
+            let cmi: mut i64 = 0;
+            while (cmi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(cmi)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (md.function_def.name == "__call") {
+                        call_name = this.llvm_func_name(md.function_def.full_name);
+                    }
+                }
+                cmi = cmi + 1;
+            }
+            if (string_length(call_name) > 0) {
+                let funval_vt: mut InterfaceVTable = new InterfaceVTable("__FunVal");
+                funval_vt.method_ptrs.push(call_name);
+                layout.interface_vtables.push(funval_vt);
+            } else {
+                __builtin.eprintln("error[E_INTERNAL]: funval class without __call: " + cls.full_name);
+                __builtin.exit(1);
+            }
         }
 
         layout.is_building = false;
@@ -3502,15 +3547,17 @@ class LLVMEmitter {
             return;
         }
         if (ir_type == "funptr") {
-            // Function-address constant: a fat funptr is just the code
-            // address, so map the register directly to the global function
-            // symbol (ptr arithmetic on @name is invalid LLVM).
-            let func_sym: string = this.llvm_func_name(inst.value);
+            // Function-address constant: a `fun` value is a callable OBJECT
+            // (single ptr), so the constant is the per-function singleton
+            // synthesized by ensure_funval — not the bare code address. The
+            // singleton is a pure constant global; every site referencing the
+            // same function shares it, so fun-value equality is stable.
+            let funval_sym: string = this.ensure_funval(inst.value);
             if (this.is_mutable_reg(result_name)) {
                 let alloca_name: string = this.get_alloca_name(result_name);
-                this.emit_line("  store ptr " + func_sym + ", ptr " + alloca_name);
+                this.emit_line("  store ptr " + funval_sym + ", ptr " + alloca_name);
             } else {
-                this.reg_map.push(new RegMapping(result_name, func_sym));
+                this.reg_map.push(new RegMapping(result_name, funval_sym));
             }
             this.register_llvm_type(result_name, "ptr");
             return;
@@ -3658,12 +3705,19 @@ class LLVMEmitter {
             this.reg_map.push(new RegMapping(dest_name, coerced));
         } else {
             let coerced: string = this.coerce_operand(src_resolved, llvm_type);
-            if (llvm_type == "float" || llvm_type == "double") {
-                // Float/double copy: LLVM requires fadd with a float zero
-                // ("0.0"), mirroring emit_const's float branch.
-                this.emit_line("  " + dest_name + " = fadd " + llvm_type + " 0.0, " + coerced);
-            } else {
-                this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
+            // Self-assign normalization guard: an immutable register lowered
+            // straight into its own SSA name (BINOP result named after the
+            // user variable, e.g. `%t2 = add i64 %a, %b` for `let t2 = a+b`)
+            // must not be redefined (`%t2 = add i64 0, %t2` is a multiple
+            // definition). The normalize-add is the identity here — skip it.
+            if (coerced != dest_name) {
+                if (llvm_type == "float" || llvm_type == "double") {
+                    // Float/double copy: LLVM requires fadd with a float zero
+                    // ("0.0"), mirroring emit_const's float branch.
+                    this.emit_line("  " + dest_name + " = fadd " + llvm_type + " 0.0, " + coerced);
+                } else {
+                    this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
+                }
             }
         }
         // Register the destination's value-model type. For a mutable reg the
@@ -4428,6 +4482,21 @@ class LLVMEmitter {
             this.register_llvm_type(result_name, "i32");
             return;
         }
+        // Bound method reference creation (`__funval_bound.<fn>` pseudo-calls
+        // emitted by IRGenerator for `x.m` in value position): allocate the
+        // { metadata, recv } callable object via the synthesized creator.
+        if (this.string_starts_with(inst.func_name, "__funval_bound.")) {
+            let pfx: i64 = string_length("__funval_bound.");
+            let target_fn: string = string_substring(inst.func_name, pfx, string_length(inst.func_name) - pfx);
+            let creator: string = this.ensure_bound_funval(target_fn);
+            let obj: string = this.next_tmp();
+            let rargs: string = this.emit_args(inst.args);
+            this.emit_line("  " + obj + " = call ptr " + creator + "(" + rargs + ")");
+            let bres: string = inst.result_value.display();
+            this.reg_map.push(new RegMapping(bres, obj));
+            this.register_llvm_type(bres, "ptr");
+            return;
+        }
         let func_name: string = this.llvm_func_name(inst.func_name);
 
         // Check if callee returns an aggregate that uses sret (RVO)
@@ -4654,23 +4723,259 @@ class LLVMEmitter {
     // The callee operand is a live ptr register; no signature-based coercion is
     // possible (the fat-pointer ABI has no call-site metadata), so arguments are
     // emitted as-is.
+    // ---- Function values (fun<...>) ----
+    // A fun value is a callable OBJECT: one ptr to a constant (or GC) object
+    // whose metadata carries a "__FunVal" interface entry at slot 0; the slot
+    // method takes the object itself as argument 0 (same ABI as a `mut this`
+    // method), so every indirect call site prepends the object. For a
+    // top-level/static function reference the object is a per-function
+    // CONSTANT singleton — zero runtime allocation, stable identity (two
+    // references to the same function compare equal) — whose slot-0 entry is
+    // a thunk that drops the self argument and forwards to the function.
+    fun ensure_funval_iface_id(mut this) {
+        if (!this.list_contains(this.emitted_interface_ids, "__FunVal")) {
+            this.emitted_interface_ids.push("__FunVal");
+            this.pending_iface_ids.append("@.__FunVal_interface_id = private unnamed_addr constant [9 x i8] c\"__FunVal\\00\"\n");
+        }
+    }
+
+    fun ensure_funval(mut this, fn_name: string) -> string {
+        let key: string = this.sanitize_name(this.strip_global_prefix(fn_name));
+        let obj_name: string = "@__funval_" + key + "_obj";
+        if (this.list_contains(this.emitted_funvals, key)) {
+            return obj_name;
+        }
+        this.emitted_funvals.push(key);
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(this.strip_global_prefix(fn_name));
+        if (fpt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: function-value reference to unknown function: " + fn_name);
+            __builtin.exit(1);
+        }
+        let sig: FuncParamTypes = fpt.some;
+        // sig.first_param_is_this means an UNBOUND method reference (Temp.call):
+        // the thunk passes argument 0 through as the receiver (fwd_args includes
+        // ALL callee parameters, which for a method start with `this`). A static
+        // function's parameter list has no receiver, so the same code drops only
+        // the synthetic self argument.
+        // Build the thunk signature: (ptr %self, <callee params...>) -> callee ret.
+        let params_sig: mut string = "ptr %self";
+        let fwd_args: mut string = "";
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(sig.param_types.size())) {
+            let pname: string = "%a" + cast<string>(pi);
+            let ptype: string = sig.param_types.at(cast<u64>(pi)).some;
+            params_sig = params_sig + ", " + ptype + " " + pname;
+            if (string_length(fwd_args) > 0) { fwd_args = fwd_args + ", "; }
+            fwd_args = fwd_args + ptype + " " + pname;
+            pi = pi + 1;
+        }
+        let thunk: string = "@__funval_thunk_" + key;
+        let target: string = this.llvm_func_name(fn_name);
+        let b: mut StringBuilder = new StringBuilder();
+        let sret_type: mut string = "";
+        if (this.needs_sret(sig.ret_ir_type)) {
+            sret_type = this.get_sret_llvm_type(sig.ret_ir_type);
+            // sret convention: the hidden return pointer is the thunk's FIRST
+            // parameter (before %self) and is forwarded verbatim.
+            b.append("define void " + thunk + "(ptr sret(" + sret_type + ") %agg, " + params_sig + ") {\n");
+            if (string_length(fwd_args) > 0) {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, " + fwd_args + ")\n");
+            } else {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg)\n");
+            }
+            b.append("  ret void\n");
+            b.append("}\n");
+        } else {
+            let ret_llvm: string = this.ir_type_to_llvm(sig.ret_ir_type);
+            if (ret_llvm == "void") {
+                b.append("define void " + thunk + "(" + params_sig + ") {\n");
+                if (string_length(fwd_args) > 0) {
+                    b.append("  call void " + target + "(" + fwd_args + ")\n");
+                } else {
+                    b.append("  call void " + target + "()\n");
+                }
+                b.append("  ret void\n");
+                b.append("}\n");
+            } else {
+                b.append("define " + ret_llvm + " " + thunk + "(" + params_sig + ") {\n");
+                if (string_length(fwd_args) > 0) {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(" + fwd_args + ")\n");
+                } else {
+                    b.append("  %r = call " + ret_llvm + " " + target + "()\n");
+                }
+                b.append("  ret " + ret_llvm + " %r\n");
+                b.append("}\n");
+            }
+        }
+        // Constant singleton: { metadata } — one word, the metadata pointer at
+        // offset 0, exactly like a no-field class instance. field_count=0 and
+        // interface_count=1 (the __FunVal entry with the thunk at slot 0).
+        this.ensure_funval_iface_id();
+        b.append("@__funval_" + key + "_vtable = private constant [1 x ptr] [ptr " + thunk + "]\n");
+        b.append("@__funval_" + key + "_iface_map = private constant [1 x { ptr, ptr }] [{ ptr, ptr } { ptr @.__FunVal_interface_id, ptr @__funval_" + key + "_vtable }]\n");
+        b.append("@.__funval_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
+        b.append("@__funval_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        b.append("  ptr @.__funval_" + key + "_name,\n");
+        b.append("  i32 8,\n");
+        b.append("  i32 0,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_" + key + "_iface_map,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null\n");
+        b.append("}\n");
+        b.append(obj_name + " = private constant { ptr } { ptr @__funval_" + key + "_metadata }\n");
+        this.pending_funvals.append(b.to_string());
+        return obj_name;
+    }
+
+    // BOUND method reference (`x.call` in value position): the callable object
+    // is a 2-word GC allocation { metadata, recv }. The per-(class, method)
+    // constant metadata's __FunVal slot points at a forwarder that loads the
+    // receiver from offset 8 and calls the method with it as argument 0.
+    // Synthesizes (once per (class, method)) the creator function (allocates
+    // and stamps the object), the forwarder, and the metadata; returns the
+    // creator's symbol.
+    fun ensure_bound_funval(mut this, fn_name: string) -> string {
+        let key: string = this.sanitize_name(this.strip_global_prefix(fn_name));
+        let creator: string = "@__funval_boundmake_" + key;
+        if (this.list_contains(this.emitted_funvals, "bound." + key)) {
+            return creator;
+        }
+        this.emitted_funvals.push("bound." + key);
+        this.needs_funval_alloc = true;
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(this.strip_global_prefix(fn_name));
+        if (fpt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: bound function-value reference to unknown function: " + fn_name);
+            __builtin.exit(1);
+        }
+        let sig: FuncParamTypes = fpt.some;
+        if (!sig.first_param_is_this) {
+            __builtin.eprintln("error[E_INTERNAL]: bound function-value target is not a method: " + fn_name);
+            __builtin.exit(1);
+        }
+        if (cast<i64>(sig.param_types.size()) < 1 || sig.param_types.at(cast<u64>(0)).some != "ptr") {
+            __builtin.eprintln("error[E_INTERNAL]: bound method reference to a non-reference receiver is not supported: " + fn_name);
+            __builtin.exit(1);
+        }
+        // Forwarder: (ptr %self, <params[1..]>) -> ret; receiver = *(self+8).
+        let target: string = this.llvm_func_name(fn_name);
+        let fwd: string = "@__funval_boundcall_" + key;
+        let params_sig: mut string = "ptr %self";
+        let fwd_rest: mut string = "";
+        let pi: mut i64 = 1;
+        while (pi < cast<i64>(sig.param_types.size())) {
+            let pname: string = "%a" + cast<string>(pi - 1);
+            let ptype: string = sig.param_types.at(cast<u64>(pi)).some;
+            params_sig = params_sig + ", " + ptype + " " + pname;
+            if (string_length(fwd_rest) > 0) { fwd_rest = fwd_rest + ", "; }
+            fwd_rest = fwd_rest + ptype + " " + pname;
+            pi = pi + 1;
+        }
+        let b: mut StringBuilder = new StringBuilder();
+        // Receiver lives in the object's single field at offset 8.
+        let recv_load: string = "  %recv_slot = getelementptr i8, ptr %self, i64 8\n  %recv = load ptr, ptr %recv_slot\n";
+        let sret_type: mut string = "";
+        if (this.needs_sret(sig.ret_ir_type)) {
+            sret_type = this.get_sret_llvm_type(sig.ret_ir_type);
+            b.append("define void " + fwd + "(ptr sret(" + sret_type + ") %agg, " + params_sig + ") {\n");
+            b.append(recv_load);
+            if (string_length(fwd_rest) > 0) {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, ptr %recv, " + fwd_rest + ")\n");
+            } else {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, ptr %recv)\n");
+            }
+            b.append("  ret void\n");
+            b.append("}\n");
+        } else {
+            let ret_llvm: string = this.ir_type_to_llvm(sig.ret_ir_type);
+            if (ret_llvm == "void") {
+                b.append("define void " + fwd + "(" + params_sig + ") {\n");
+                b.append(recv_load);
+                if (string_length(fwd_rest) > 0) {
+                    b.append("  call void " + target + "(ptr %recv, " + fwd_rest + ")\n");
+                } else {
+                    b.append("  call void " + target + "(ptr %recv)\n");
+                }
+                b.append("  ret void\n");
+                b.append("}\n");
+            } else {
+                b.append("define " + ret_llvm + " " + fwd + "(" + params_sig + ") {\n");
+                b.append(recv_load);
+                if (string_length(fwd_rest) > 0) {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(ptr %recv, " + fwd_rest + ")\n");
+                } else {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(ptr %recv)\n");
+                }
+                b.append("  ret " + ret_llvm + " %r\n");
+                b.append("}\n");
+            }
+        }
+        // Creator: allocate { metadata, recv } — 16 bytes, receiver at
+        // offset 8, GC-traced via the metadata's field arrays.
+        b.append("define ptr " + creator + "(ptr %recv) {\n");
+        b.append("  %obj = call ptr @_emperor_alloc_impl(i32 16)\n");
+        b.append("  store ptr @__funval_bound_" + key + "_metadata, ptr %obj\n");
+        b.append("  %slot = getelementptr i8, ptr %obj, i64 8\n");
+        b.append("  store ptr %recv, ptr %slot\n");
+        b.append("  ret ptr %obj\n");
+        b.append("}\n");
+        // Metadata: field_offsets=[8], field_is_ptr=[1] so the GC traces the
+        // captured receiver; refmap null = conservative scan of both words.
+        this.ensure_funval_iface_id();
+        b.append("@__funval_bound_" + key + "_vtable = private constant [1 x ptr] [ptr " + fwd + "]\n");
+        b.append("@__funval_bound_" + key + "_iface_map = private constant [1 x { ptr, ptr }] [{ ptr, ptr } { ptr @.__FunVal_interface_id, ptr @__funval_bound_" + key + "_vtable }]\n");
+        b.append("@.__funval_bound_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
+        b.append("@__funval_bound_" + key + "_field_offsets = private constant [1 x i32] [i32 8]\n");
+        b.append("@__funval_bound_" + key + "_field_is_ptr = private constant [1 x i32] [i32 1]\n");
+        b.append("@__funval_bound_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        b.append("  ptr @.__funval_bound_" + key + "_name,\n");
+        b.append("  i32 16,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_bound_" + key + "_field_offsets,\n");
+        b.append("  ptr @__funval_bound_" + key + "_field_is_ptr,\n");
+        b.append("  ptr null,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_bound_" + key + "_iface_map,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null\n");
+        b.append("}\n");
+        this.pending_funvals.append(b.to_string());
+        return creator;
+    }
+
     fun emit_call_indirect(mut this, inst: IRCallIndirect) {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call_indirect(inst=" + inst.display() + ")");
  }
         this.emit_gc_poll();
-        let callee_resolved: string = this.resolve_value(inst.callee);
+        this.needs_vtable_lookup = true;
+        this.ensure_funval_iface_id();
+        // The callee is a callable OBJECT (a fun value): resolve slot 0 of
+        // its __FunVal interface entry and call it with the object prepended
+        // as argument 0 — the uniform fun-value ABI.
+        let obj_resolved: string = this.resolve_value(inst.callee);
+        let fn_ptr: string = this.next_tmp();
+        this.emit_line("  " + fn_ptr + " = call ptr @_emperor_vtable_lookup(ptr " + obj_resolved + ", ptr @.__FunVal_interface_id, i32 0)");
         let callee_sret_type: mut string = "";
         if (this.needs_sret(inst.ret_type)) {
             callee_sret_type = this.get_sret_llvm_type(inst.ret_type);
         }
+        // The callee's thunk / closure __invoke is emitted with the same
+        // parameter rules as any function (value-class params are ptr-ABI,
+        // >16-byte enums byval) — use the virtual-call argument emitter, not
+        // the plain emit_args (which passes struct VALUES and produced
+        // "'%t' defined with type '%class.X' but expected 'ptr'" link errors
+        // on fun-value calls with value-class arguments).
+        let rest_args: string = this.emit_args_virt(inst.args);
         if (callee_sret_type != "") {
             let sret_tmp: string = this.next_tmp();
             this.emit_entry_alloca(sret_tmp, callee_sret_type);
-            let args_str: string = this.emit_args(inst.args);
-            if (string_length(args_str) > 0) {
-                this.emit_line("  call void " + callee_resolved + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")");
+            if (string_length(rest_args) > 0) {
+                this.emit_line("  call void " + fn_ptr + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", ptr " + obj_resolved + ", " + rest_args + ")");
             } else {
-                this.emit_line("  call void " + callee_resolved + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")");
+                this.emit_line("  call void " + fn_ptr + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", ptr " + obj_resolved + ")");
             }
             let result_name: string = inst.result_value.display();
             this.emit_line("  " + result_name + " = load " + callee_sret_type + ", ptr " + sret_tmp);
@@ -4680,13 +4985,19 @@ class LLVMEmitter {
         if (inst.ret_type != "void") {
             let result_name: string = inst.result_value.display();
             let ret_llvm: string = this.ir_type_to_llvm(inst.ret_type);
-            let args_str: string = this.emit_args(inst.args);
-            this.emit_line("  " + result_name + " = call " + ret_llvm + " " + callee_resolved + "(" + args_str + ")");
+            if (string_length(rest_args) > 0) {
+                this.emit_line("  " + result_name + " = call " + ret_llvm + " " + fn_ptr + "(ptr " + obj_resolved + ", " + rest_args + ")");
+            } else {
+                this.emit_line("  " + result_name + " = call " + ret_llvm + " " + fn_ptr + "(ptr " + obj_resolved + ")");
+            }
             this.register_llvm_type(result_name, ret_llvm);
             return;
         }
-        let args_str2: string = this.emit_args(inst.args);
-        this.emit_line("  call void " + callee_resolved + "(" + args_str2 + ")");
+        if (string_length(rest_args) > 0) {
+            this.emit_line("  call void " + fn_ptr + "(ptr " + obj_resolved + ", " + rest_args + ")");
+        } else {
+            this.emit_line("  call void " + fn_ptr + "(ptr " + obj_resolved + ")");
+        }
     }
 
     fun emit_call_virt(mut this, inst: IRCallVirt) {
@@ -4865,7 +5176,19 @@ class LLVMEmitter {
                     let coerced: string = this.coerce_operand(resolved, llvm_type);
                     sb2.append(llvm_type + " " + coerced);
                 } else {
-                    sb2.append(llvm_type + " " + resolved);
+                    if (llvm_type == "ptr" && (this.string_starts_with(actual_type, "%class.") || this.string_starts_with(actual_type, "%enum."))) {
+                        // Value-class parameter (ref<X> -> ptr ABI, like any
+                        // emit_function callee) but the argument resolved to a
+                        // struct VALUE — pass a pointer to its storage, the
+                        // same struct_value_to_ptr rule as direct/ctor calls
+                        // (emit_args_coerced / emit_args_with_first). fun-value
+                        // indirect calls with a value-class argument produced
+                        // "ptr %struct-value" type errors before.
+                        let arg_ptr: string = this.struct_value_to_ptr(arg, actual_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(llvm_type + " " + resolved);
+                    }
                 }
             }
             i = i + 1;

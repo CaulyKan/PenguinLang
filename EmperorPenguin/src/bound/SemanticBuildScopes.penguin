@@ -635,6 +635,10 @@ class BuildScopesPass {
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
         }
+        // The unambiguous AST handle (see BoundFunctionDefinition.ast_source):
+        // bare-name AST lookups mis-resolve same-named methods of different
+        // classes (map/filter/... on every iterator class).
+        result.ast_source = new Option<Definition>.some(new Definition.function_def(def));
         scope.add_symbol(new BoundSymbol.function_sym(sym));
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
     }
@@ -1286,6 +1290,7 @@ class BuildScopesPass {
         // req5: record value (non-type) template param names for specialization substitution.
         this.extract_value_param_names(def.template_decl, result.value_param_names);
         result.is_exported = def.is_exported;
+        result.is_funval = def.is_funval;
         if (cast<i64>(result.generic_params.size()) > 0) {
             result.is_generic_template = true;
         }

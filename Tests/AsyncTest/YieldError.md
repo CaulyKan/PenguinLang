@@ -4,6 +4,7 @@ Compile error: yield in non-generator function.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```

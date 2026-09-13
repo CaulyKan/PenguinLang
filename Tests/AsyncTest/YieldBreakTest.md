@@ -1,14 +1,16 @@
 # YieldBreakTest
 ## Description
+EmperorPenguin implements generators on its stackful coroutines (synthesized __GenCtx ctx; yield publishes + parks until the next next()).
 Generator with return (break) stops yielding values.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
     initial {
-        let v: mut IGenerator<i64> = test();
+        let mut v = test();
         for (let i : i64 in v) {
             print(cast<string>(i));
         }
@@ -22,7 +24,7 @@ Generator with return (break) stops yielding values.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

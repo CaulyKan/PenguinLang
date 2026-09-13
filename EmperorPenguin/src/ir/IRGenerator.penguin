@@ -786,6 +786,31 @@ class IRGenerator {
         // virtual vtable lookup.
         let first_param_is_this: mut bool = false;
         if (let callee_expr := expr.callee.some) {
+            if (callee_expr is BoundExpression.identifier) {
+                // fun-typed VARIABLE call: `f(21)` where `f` is a local/param
+                // (or namespace global) of type `fun<...>` — load the callable
+                // object and dispatch through it (vtable slot 0, self as arg 0).
+                if (expr.callee_symbol.is_some()) {
+                    let vsym: BoundSymbol = expr.callee_symbol.some;
+                    if (vsym is BoundSymbol.variable) {
+                        let vftype: BoundType = vsym.variable.bound_type;
+                        if (vftype.kind is TypeKind.FunctionKind) {
+                            let vloc: SourceLocation = this.sym_loc(expr.callee_symbol);
+                            let fnval: IRValue = this.lower_expression(callee_expr);
+                            let vargs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                            let vai: mut i64 = 0;
+                            while (vai < cast<i64>(expr.arguments.size())) {
+                                vargs.push(this.lower_expression(expr.arguments.at(cast<u64>(vai)).some));
+                                vai = vai + 1;
+                            }
+                            let vret_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
+                            let vresult: Option<IRValue> = this.builder.emit_call_indirect(fnval, vargs, vret_type, vloc);
+                            if (vresult.is_some()) { return vresult.some; }
+                            return this.builder.void_value();
+                        }
+                    }
+                }
+            }
             if (callee_expr is BoundExpression.member_access) {
                 let ma: BoundMemberAccessExpression = callee_expr.member_access;
                 if (ma.base_expr.is_some() && expr.callee_symbol.is_some()) {
@@ -797,8 +822,15 @@ class IRGenerator {
                         let ftype: BoundType = sym.variable.bound_type;
                         if (ftype.kind is TypeKind.FunctionKind) {
                             let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
-                            let obj: IRValue = this.lower_expression(ma.base_expr.some);
-                            let fnptr: IRValue = this.builder.emit_rdmbr(obj, ma.member_name, this.bound_type_to_ir_type(ftype), loc);
+                            // A namespace-level fun GLOBAL called qualified
+                            // (`ns.g(...)`) is not a field read — load the global.
+                            let fnptr: IRValue = if (sym.variable.variable_kind is VariableSymbolKind.Global) {
+                                let gname: string = this.clean_function_name(sym.variable.full_name);
+                                this.builder.emit_global_load(gname, "funptr", loc)
+                            } else {
+                                let obj: IRValue = this.lower_expression(ma.base_expr.some);
+                                this.builder.emit_rdmbr(obj, ma.member_name, "funptr", loc)
+                            };
                             let args: mut _utils.List<IRValue> = new _utils.List<IRValue>();
                             let ai: mut i64 = 0;
                             while (ai < cast<i64>(expr.arguments.size())) {
@@ -1442,6 +1474,28 @@ class IRGenerator {
         return this.builder.void_value();
     }
 
+    // A member-access BASE that denotes a VALUE (object), not a type /
+    // namespace reference — decides bound vs unbound method-reference flavor.
+    fun member_base_bound_is_value(this, b: BoundExpression) -> bool {
+        if (b is BoundExpression.identifier) {
+            if (b.identifier.symbol.is_some()) {
+                let s: BoundSymbol = b.identifier.symbol.some;
+                if (s is BoundSymbol.type_sym) { return false; }
+                if (s is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        if (b is BoundExpression.member_access) {
+            if (b.member_access.member_symbol.is_some()) {
+                let s2: BoundSymbol = b.member_access.member_symbol.some;
+                if (s2 is BoundSymbol.type_sym) { return false; }
+                if (s2 is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        return true;
+    }
+
     fun lower_member_access(mut this, expr: BoundMemberAccessExpression) -> IRValue {
         _utils.trace_enter("Enter lower_member_access");
         let loc: SourceLocation = this.sym_loc(expr.member_symbol);
@@ -1464,6 +1518,36 @@ class IRGenerator {
                     let ir_type: string = this.bound_type_to_ir_type(sym.variable.bound_type);
                     return this.builder.emit_global_load(global_name, ir_type, loc);
                 }
+            }
+        }
+
+        // Method reference in VALUE position (x.call / Temp.call where the
+        // member is a function): produce the callable object.
+        if (expr.member_symbol.is_some()) {
+            let msym: BoundSymbol = expr.member_symbol.some;
+            if (msym is BoundSymbol.function_sym) {
+                let fs: BoundFunctionSymbol = msym.function_sym;
+                let is_method: bool = cast<i64>(fs.parameters.size()) > 0
+                    && fs.parameters.at(cast<u64>(0)).some.is_this;
+                let base_is_value: bool = expr.base_expr.is_some()
+                    && this.member_base_bound_is_value(expr.base_expr.some);
+                if (is_method && base_is_value) {
+                    // BOUND method reference: allocate the 2-word callable
+                    // object { metadata, recv } through the emitter-synthesized
+                    // creator function for this (class, method).
+                    let recv: IRValue = this.lower_expression(expr.base_expr.some);
+                    let bkey: string = this.clean_function_name(fs.full_name);
+                    let bargs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                    bargs.push(recv);
+                    let bres: Option<IRValue> = this.builder.emit_call("__funval_bound." + bkey, bargs, "funptr", loc);
+                    if (bres.is_some()) { return bres.some; }
+                    return this.builder.void_value();
+                }
+                // Static method or UNBOUND method reference (Temp.call): the
+                // per-function callable singleton — the thunk drops the self
+                // argument for statics and passes argument 0 through as the
+                // receiver for unbound method refs.
+                return this.builder.emit_const(this.clean_function_name(fs.full_name), "funptr", loc);
             }
         }
 
@@ -1522,15 +1606,48 @@ class IRGenerator {
         let loc: SourceLocation = this.make_loc(0, 0);
         if (expr.type_symbol.is_some()) {
             let type_name: mut string = expr.type_symbol.some.full_name;
-            if (cast<i64>(expr.bound_type.generic_args.size()) > 0) {
+            // A fun-typed NEW (lambda closure re-typed to its fun type) carries
+            // the FUN type's generic_args (ret + params) — those are not class
+            // type parameters; the closure class is non-generic.
+            let bt_is_fun: bool = expr.bound_type.kind is TypeKind.FunctionKind;
+            // Method-template bodies (`#template(C: type)` ... `new C()`): the
+            // type_symbol stays the FUNCTION-SCOPE type-param symbol (its
+            // full_name is a scope path like "...make$X.<body>.C", never a
+            // class name), while bound_type.type_definition carries the REAL
+            // substituted class/enum/interface def. Resolve the effective base
+            // from that def whenever present — the ctor symbol is keyed as
+            // "<ns>.<name>.new" off this name, not off the type-param symbol.
+            let td_full: mut string = "";
+            if (expr.bound_type.type_definition.is_some()) {
+                let td: BoundDefinition = expr.bound_type.type_definition.some;
+                if (td is BoundDefinition.class_def) {
+                    td_full = td.class_def.full_name;
+                } else if (td is BoundDefinition.enum_def) {
+                    td_full = td.enum_def.full_name;
+                } else if (td is BoundDefinition.interface_def) {
+                    td_full = td.interface_def.full_name;
+                }
+            }
+            if (!bt_is_fun && cast<i64>(expr.bound_type.generic_args.size()) > 0) {
                 // Full base feeds the mangle (encodes the qualified name); the
-                // SHORT name locates the position inside type_name for splicing.
-                let base_full: string = expr.type_symbol.some.full_name;
-                let base_short: string = expr.type_symbol.some.name;
+                // mangle emits only the SHORT base + hash payload, so the
+                // namespace prefix is re-attached below from the LAST dotted
+                // segment of the base (first-match splicing mislocates the
+                // short name when an outer segment starts with it,
+                // e.g. "a.Vec.Vec").
+                let base_full: mut string = expr.type_symbol.some.full_name;
+                if (string_length(td_full) > 0) {
+                    base_full = td_full;
+                }
                 let mangled: string = this.mangle_generic_name(base_full, expr.bound_type.generic_args);
-                let scope_dot: i64 = string_find(type_name, "." + base_short);
+                let scope_dot: mut i64 = -1;
+                let si: mut i64 = 0;
+                while (si < string_length(base_full)) {
+                    if (string_char_code_at(base_full, si) == 46) { scope_dot = si; }
+                    si = si + 1;
+                }
                 if (scope_dot >= 0) {
-                    let prefix: string = string_substring(type_name, 0, scope_dot);
+                    let prefix: string = string_substring(base_full, 0, scope_dot);
                     type_name = prefix + "." + mangled;
                 } else {
                     type_name = mangled;
@@ -1541,25 +1658,32 @@ class IRGenerator {
                 // template (A), so without this emit_new gets the template and the
                 // LLVM type has no layout → undefined register. Use the specialized
                 // def's name with the same prefix logic as the generic_args branch.
-                let spec_name: mut string = "";
-                if (expr.bound_type.type_definition.is_some()) {
-                    let td: BoundDefinition = expr.bound_type.type_definition.some;
-                    if (td is BoundDefinition.class_def) {
-                        if (td.class_def.is_specialized) { spec_name = td.class_def.name; }
-                    } else if (td is BoundDefinition.enum_def) {
-                        if (td.enum_def.is_specialized) { spec_name = td.enum_def.name; }
-                    } else if (td is BoundDefinition.interface_def) {
-                        if (td.interface_def.is_specialized) { spec_name = td.interface_def.name; }
+                // A NON-specialized type_definition (method-template `new C()` with
+                // a concrete class substituted for C) is the same shape: the def's
+                // full_name is exactly the ctor's emitter prefix.
+                if (!bt_is_fun && string_length(td_full) > 0) {
+                    type_name = td_full;
+                } else {
+                    let spec_name: mut string = "";
+                    if (expr.bound_type.type_definition.is_some()) {
+                        let td: BoundDefinition = expr.bound_type.type_definition.some;
+                        if (td is BoundDefinition.class_def) {
+                            if (td.class_def.is_specialized) { spec_name = td.class_def.name; }
+                        } else if (td is BoundDefinition.enum_def) {
+                            if (td.enum_def.is_specialized) { spec_name = td.enum_def.name; }
+                        } else if (td is BoundDefinition.interface_def) {
+                            if (td.interface_def.is_specialized) { spec_name = td.interface_def.name; }
+                        }
                     }
-                }
-                if (string_length(spec_name) > 0) {
-                    let base_name: string = expr.type_symbol.some.name;
-                    let scope_dot: i64 = string_find(type_name, "." + base_name);
-                    if (scope_dot >= 0) {
-                        let prefix: string = string_substring(type_name, 0, scope_dot);
-                        type_name = prefix + "." + spec_name;
-                    } else {
-                        type_name = spec_name;
+                    if (string_length(spec_name) > 0) {
+                        let base_name: string = expr.type_symbol.some.name;
+                        let scope_dot: i64 = string_find(type_name, "." + base_name);
+                        if (scope_dot >= 0) {
+                            let prefix: string = string_substring(type_name, 0, scope_dot);
+                            type_name = prefix + "." + spec_name;
+                        } else {
+                            type_name = spec_name;
+                        }
                     }
                 }
             }

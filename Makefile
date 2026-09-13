@@ -87,6 +87,9 @@ else
   TEE = 2>&1 | tee
 endif
 
+# Verbosity
+VERBOSE := -vv
+
 # ── Cross toolchain (linux -> win); forwarded to the emperor script ───
 export MINGW_PREFIX ?= /opt/llvm-mingw
 export WIN_CC    ?= $(MINGW_PREFIX)/bin/x86_64-w64-mingw32-clang
@@ -186,7 +189,7 @@ $(BS)/pass2.ll: $(BABY_CS) $(EP1_SRC) $(EP_STD)
 	dotnet run --configuration Release --project BabyPenguin -- \
 	    --backend=cs EmperorPenguin/EmperorPenguinPass1.penguins -- \
 	    EmperorPenguin/EmperorPenguinPass1.penguins EmperorPenguin/src/utils.penguin \
-	    --disable-dl -vv -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
+	    --disable-dl $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
 	} || { echo "Bootstrap FAILED at pass1 emission (BabyPenguin cs backend -> $(BS)/pass2.ll)" >&2; exit 1; }
 
 $(BS)/pass2: $(BS)/pass2.ll $(C_RT)
@@ -207,7 +210,7 @@ $(BS)/pass3.ll: $(BS)/pass2 $(EP2_SRC) $(EP_STD)
 	@echo "Bootstrap pass2: $(BS)/pass2 -> $@"
 	@set -o pipefail; { \
 	$(BS)/pass2 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
+	    $(VERBOSE) --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
 	} || { echo "Bootstrap FAILED at pass2 emission -> $(BS)/pass3.ll" >&2; exit 1; }
 
 $(BS)/pass3: $(BS)/pass3.ll $(C_RT)
@@ -230,7 +233,7 @@ $(BS)/pass4.d/libemperorpenguin.ll $(BS)/pass4.d/libemperorpenguin.libmeta \
 	@echo "Bootstrap pass3 (lib): $(BS)/pass3 -> $(BS)/pass4.d/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinLib.penguins \
-	    -vv -o $(BS)/pass4.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass3-lib.log; \
+	    $(VERBOSE) -o $(BS)/pass4.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass3-lib.log; \
 	} || { echo "Bootstrap FAILED at pass3 lib emission" >&2; exit 1; }
 
 $(BS)/pass4.d/libemperorpenguin.penguin-lib: $(BS)/pass4.d/libemperorpenguin.ll $(BS)/pass4.d/libemperorpenguin.libmeta $(C_RT)
@@ -246,7 +249,7 @@ $(BS)/pass4.d/pass4.ll: $(BS)/pass3 $(BS)/pass4.d/libemperorpenguin.penguin-lib 
 	@echo "Bootstrap pass3 (exe): $(BS)/pass3 -> $(BS)/pass4.d/pass4.ll"
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinExe.penguins \
-	    -vv --lib $(BS)/pass4.d/libemperorpenguin.penguin-lib \
+	    $(VERBOSE) --lib $(BS)/pass4.d/libemperorpenguin.penguin-lib \
 	    -o $(BS)/pass4.d/pass4 $(TEE) build/logs/pass3.log; \
 	} || { echo "Bootstrap FAILED at pass3 exe emission" >&2; exit 1; }
 
@@ -268,7 +271,7 @@ $(BS)/pass5.d/libemperorpenguin.ll $(BS)/pass5.d/libemperorpenguin.libmeta \
 	@echo "Bootstrap pass4 (lib, convergence): $(BS)/pass4 -> $(BS)/pass5.d/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinLib.penguins \
-	    -vv -o $(BS)/pass5.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass4-lib.log; \
+	    $(VERBOSE) -o $(BS)/pass5.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass4-lib.log; \
 	} || { echo "Bootstrap FAILED at pass4 lib emission" >&2; exit 1; }
 
 $(BS)/pass5.d/libemperorpenguin.penguin-lib: $(BS)/pass5.d/libemperorpenguin.ll $(BS)/pass5.d/libemperorpenguin.libmeta $(C_RT)
@@ -284,7 +287,7 @@ $(BS)/pass5.d/pass5.ll: $(BS)/pass4 $(BS)/pass5.d/libemperorpenguin.penguin-lib 
 	@echo "Bootstrap pass4 (exe, convergence): $(BS)/pass4 -> $(BS)/pass5.d/pass5.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinExe.penguins \
-	    -vv --lib $(BS)/pass5.d/libemperorpenguin.penguin-lib \
+	    $(VERBOSE) --lib $(BS)/pass5.d/libemperorpenguin.penguin-lib \
 	    -o $(BS)/pass5.d/pass5 $(TEE) build/logs/pass4.log; \
 	} || { echo "Bootstrap FAILED at pass4 exe emission" >&2; exit 1; }
 
@@ -329,7 +332,7 @@ $(BS)/pass2.ll: $(BABY_CS) $(EP1_SRC) $(EP_STD)
 	dotnet run --configuration Release --project BabyPenguin -- \
 	    --backend=cs EmperorPenguin/EmperorPenguinPass1.penguins -- \
 	    EmperorPenguin/EmperorPenguinPass1.penguins EmperorPenguin/src/utils.penguin \
-	    --disable-dl -vv -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
+	    --disable-dl $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
 	} || { echo "Bootstrap FAILED at pass1 emission (BabyPenguin cs backend -> $(BS)/pass2.ll)" >&2; exit 1; }
 
 $(BS)/pass2: $(BS)/pass2.ll $(C_RT)
@@ -343,7 +346,7 @@ $(BS)/pass3.ll: $(BS)/pass2 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	$(BS)/pass2 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
+	    $(VERBOSE) --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
 	} || { echo "Bootstrap FAILED at pass2 emission -> $(BS)/pass3.ll" >&2; exit 1; }
 
 $(BS)/pass3: $(BS)/pass3.ll $(C_RT)
@@ -357,7 +360,7 @@ $(BS)/pass4.ll: $(BS)/pass3 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv -o $(BS)/pass4 $(TEE) build/logs/pass3.log; \
+	    $(VERBOSE) -o $(BS)/pass4 $(TEE) build/logs/pass3.log; \
 	} || { echo "Bootstrap FAILED at pass3 emission -> $(BS)/pass4.ll" >&2; exit 1; }
 
 $(BS)/pass4: $(BS)/pass4.ll $(C_RT)
@@ -371,7 +374,7 @@ $(BS)/pass5.ll: $(BS)/pass4 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv -o $(BS)/pass5 $(TEE) build/logs/pass4.log; \
+	    $(VERBOSE) -o $(BS)/pass5 $(TEE) build/logs/pass4.log; \
 	} || { echo "Bootstrap FAILED at pass4 emission -> $(BS)/pass5.ll" >&2; exit 1; }
 
 $(BS)/pass5: $(BS)/pass5.ll $(C_RT)
@@ -411,7 +414,7 @@ $(REL)/emperor_penguin_llvm_emitter.ll $(REL)/emperor_penguin_llvm_emitter.def \
 	@echo "Release: emitting $(REL)/emperor_penguin_llvm_emitter.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    -vv -o $(REL)/emperor_penguin_llvm_emitter $(TEE) build/logs/release-emitter.log; \
+	    $(VERBOSE) -o $(REL)/emperor_penguin_llvm_emitter $(TEE) build/logs/release-emitter.log; \
 	} || { echo "Release FAILED: emitter emission" >&2; exit 1; }
 
 # The compiler-as-dynlib for the LSP (no meta — the consumer LSP exe carries
@@ -422,7 +425,7 @@ $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
 	@echo "Release: emitting $(REL)/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinLib.penguins \
-	    -vv -o $(REL)/libemperorpenguin.penguin-lib $(TEE) build/logs/release-lib.log; \
+	    $(VERBOSE) -o $(REL)/libemperorpenguin.penguin-lib $(TEE) build/logs/release-lib.log; \
 	} || { echo "Release FAILED: dynlib emission" >&2; exit 1; }
 
 build/linux/emperor_penguin_llvm_emitter: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
@@ -478,7 +481,7 @@ build/lsp.ll: $(BS)/pass4 build/libemperorpenguin.penguin-lib $(LSP_SRC) $(EP_ST
 	@echo "LSP: emitting build/lsp.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
-	    --lib build/libemperorpenguin.penguin-lib -vv -o build/lsp $(TEE) build/logs/lsp.log; \
+	    --lib build/libemperorpenguin.penguin-lib $(VERBOSE) -o build/lsp $(TEE) build/logs/lsp.log; \
 	} || { echo "LSP build FAILED at emission" >&2; exit 1; }
 
 # -enable-meta: the embedded compiler JITs `#fun` meta at didOpen/didChange
@@ -507,7 +510,7 @@ build/win/MagellanicPenguinLSP.ll: $(BS)/pass4 $(LSPWIN_SRC) $(EP_STD)
 	@echo "LSP (win): emitting build/win/MagellanicPenguinLSP.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins \
-	    --enable-coroutine -vv -o build/win/MagellanicPenguinLSP $(TEE) build/logs/lsp-win.log; \
+	    --enable-coroutine $(VERBOSE) -o build/win/MagellanicPenguinLSP $(TEE) build/logs/lsp-win.log; \
 	} || { echo "Windows LSP build FAILED at emission" >&2; exit 1; }
 
 build/win/MagellanicPenguinLSP.exe: build/win/MagellanicPenguinLSP.ll $(C_RT)

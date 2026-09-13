@@ -78,9 +78,12 @@ class BindBodiesPass {
             return bound_def;
         }
         if (bound_def is BoundDefinition.function_def) {
-            let bound_func: BoundFunctionDefinition = bound_def.function_def;
+            let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
             let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_func.name);
-            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, new Option<Definition>.none());
+            // Prefer the carried AST source: template_name is a bare name, and
+            // same-named methods of different classes (map/filter on the
+            // iterator classes) would replay the WRONG body.
+            let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_func.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.function_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
@@ -170,8 +173,22 @@ class BindBodiesPass {
                     ast_body = ast_func.body;
                 }
                 if (ast_body.is_some()) {
-                    let bound_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_body.some, func_scope);
-                    bound_func.body = bound_body;
+                    // Generator function: `-> IGenerator<T>` — rewrite the body
+                    // onto a synthesized coroutine ctx class (yield publishes +
+                    // parks, return delivers the final value) before binding;
+                    // the function itself just builds the generator object.
+                    if (m.bind_expressions_pass.is_generator_return_type(bound_func.return_type)) {
+                        let elem_bt: BoundType = arg_as_bound_type(bound_func.return_type.generic_args.at(cast<u64>(0)).some);
+                        let wrapped: Option<Expression> = m.bind_expressions_pass.bind_generator_function(ast_func, bound_func, elem_bt, func_scope);
+                        if (wrapped.is_none()) {
+                            return new BoundDefinition.function_def(bound_func);
+                        }
+                        let bound_gen: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(wrapped.some, func_scope);
+                        bound_func.body = bound_gen;
+                    } else {
+                        let bound_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_body.some, func_scope);
+                        bound_func.body = bound_body;
+                    }
                 }
             }
             BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
@@ -231,13 +248,30 @@ class BindBodiesPass {
                     while (j < cast<i64>(bound_cls.methods.size())) {
                         let bound_md: BoundDefinition = bound_cls.methods.at(cast<u64>(j)).some;
                         if (bound_md is BoundDefinition.function_def && bound_md.function_def.name == ast_member.function_def.name) {
-                            // req5/M3: substitute value-template params (N) -> their concrete
-                            // constants in the method body before binding, so `fun get() { return N; }`
-                            // specializes to `return 5`. Field initializers already do this (the
-                            // field-default block below); method bodies need it too. For non-value
-                            // templates value_param_names is empty → no-op (original returned).
-                            let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_member.function_def, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>());
-                            bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
+                            // Method-level TYPE templates (`#template(V: type) fun map(...)`)
+                            // bind ONLY at their call-site specializations. Binding the
+                            // unsubstituted template body here resolves V to the scope's
+                            // dummy param type, and any `new Foo<V>` in the body then
+                            // specializes Foo over a template-param ARGUMENT — a garbage
+                            // instantiation whose mangle embeds this class's specialized
+                            // name; the dynamic loop binds that spec, whose own template
+                            // methods spawn the next, longer-named level: unbounded
+                            // specialization growth (the iterator-combinator OOM). IR never
+                            // lowers template methods (lower_function_def skips
+                            // is_generic_template), so the body is dead weight anyway.
+                            // Value-template methods (N: i32, no bare type params) still
+                            // bind — their bodies substitute params to constants below.
+                            if (cast<i64>(bound_md.function_def.generic_params.size()) > 0 && cast<i64>(bound_md.function_def.value_param_names.size()) == 0) {
+                                BoundDefinition.set_pass_index(bound_md, this.model.some.current_pass_index);
+                            } else {
+                                // req5/M3: substitute value-template params (N) -> their concrete
+                                // constants in the method body before binding, so `fun get() { return N; }`
+                                // specializes to `return 5`. Field initializers already do this (the
+                                // field-default block below); method bodies need it too. For non-value
+                                // templates value_param_names is empty → no-op (original returned).
+                                let ast_to_bind: Definition = this.model.some.resolve_types_pass.substitute_function_body_value_params(ast_member.function_def, bound_cls.value_param_names, bound_cls.value_param_values, new _utils.List<string>(), new _utils.List<string>());
+                                bound_cls.methods.set(cast<u64>(j), this.bind_body_for_def(ast_to_bind, bound_md, result));
+                            }
                         }
                         j = j + 1;
                     }
@@ -1163,6 +1197,23 @@ class BindBodiesPass {
                             }
                         }
                     }
+                    // Function-type bindings are checked structurally: the
+                    // initializer's fun type must match the declared one
+                    // (`fun<i32>` into `fun<void>` is E_TYPE_MISMATCH). The
+                    // only widening allowed is fun -> async_fun with the same
+                    // signature (can_implicitly_cast rule).
+                    if (stmt.let_decl.type_spec.is_some()
+                        && decl_type.kind is TypeKind.FunctionKind
+                        && init_type.kind is TypeKind.FunctionKind) {
+                        if (!init_type.is_same_type(decl_type)
+                            && !this.model.some.type_registry.can_implicitly_cast(init_type, decl_type)) {
+                            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                                "Cannot initialize " + stmt.let_decl.variable_name + " of type "
+                                + decl_type.display_name() + " with a value of type "
+                                + init_type.display_name(),
+                                stmt.let_decl.location);
+                        }
+                    }
                     var_sym.bound_type = decl_type;
                     // E5 topology bookkeeping: a module (ported class)
                     // instantiated by a direct `let x = new C()` inside a
@@ -1489,6 +1540,16 @@ class BindBodiesPass {
             result.catch_var_symbol = new Option<BoundVariableSymbol>.some(csym);
             result.location = ts.location;
             return new Option<BoundStatement>.some(new BoundStatement.try_catch(result));
+        }
+        // yield outside a generator function: inside one, the generator rewrite
+        // replaces every yield before binding, so reaching here means the
+        // enclosing function does not return IGenerator<T> (previously this
+        // fell through and silently DROPPED the statement).
+        if (stmt is Statement.yield_stmt) {
+            this.model.some.report_error(new ErrorCode.E_YIELD_CONTEXT(),
+                "yield is only valid inside a generator function (a function returning IGenerator<T>)",
+                stmt.yield_stmt.location);
+            return new Option<BoundStatement>.none();
         }
         return new Option<BoundStatement>.none();
     }

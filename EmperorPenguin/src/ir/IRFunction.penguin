@@ -54,14 +54,37 @@ class IRFunction {
     // (including redeclarations of the same source name in a sibling scope) get a
     // distinct register.
     fun make_unique_reg_name(mut this, name: string) -> string {
-        let candidate: mut string = name;
+        // A name shaped like a TEMP register (`t` + digits — IRTempRegister
+        // displays as %tN) is unconditionally reshaped first: a user variable
+        // named t5 lowering to plain SSA `%t5` collides with temp registers
+        // in the same function (multiple definition at link).
+        let base: mut string = name;
+        if (this.is_temp_shaped_name(name)) {
+            base = name + "_v";
+        }
+        let candidate: mut string = base;
         let n: mut i64 = 1;
         while (this.reg_name_taken(candidate)) {
-            candidate = name + "_" + cast<string>(n);
+            candidate = base + "_" + cast<string>(n);
             n = n + 1;
         }
         this.used_reg_names.push(candidate);
         return candidate;
+    }
+
+    fun is_temp_shaped_name(this, name: string) -> bool {
+        let len: i64 = string_length(name);
+        if (len < 2) { return false; }
+        if (string_char_at(name, 0) != "t") { return false; }
+        let i: mut i64 = 1;
+        while (i < len) {
+            let c: string = string_char_at(name, i);
+            let is_digit: bool = c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+                || c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+            if (!is_digit) { return false; }
+            i = i + 1;
+        }
+        return true;
     }
 
     fun reg_name_taken(this, name: string) -> bool {

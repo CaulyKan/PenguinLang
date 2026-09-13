@@ -143,6 +143,19 @@ namespace __builtin {
         return t;
     }
 
+    // Generator: the iterable a `fun g() -> IGenerator<T>` returns. The
+    // compiler rewrites such a function into a synthesized ctx object
+    // implementing this interface — the body runs on its own coroutine
+    // (`yield v` publishes v and parks until the next next() call), and
+    // next() drives it (mirrors BabyPenguin's IGenerator<T>, which is an
+    // IIterator<T>; EP has no interface inheritance so IGenerator declares
+    // its own `next` and the for-in desugar accepts it structurally).
+    #template(T: type)
+    interface IGenerator {
+        impl IReferenceType;
+        fun next(mut this) -> Option<T>;
+    }
+
     // The future behind every `async f(args)` spawn: the synthesized ctx
     // class's __enter calls complete() with the function's result.
     #template(R: type)

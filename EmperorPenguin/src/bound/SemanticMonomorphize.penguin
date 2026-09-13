@@ -54,6 +54,19 @@ class MonomorphizePass {
     fun ensure_specialized_def(mut this, inst: BoundType, global_scope: mut BoundScope) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter ensure_specialized_def");
         if (inst.type_definition.is_none()) { return new Option<BoundDefinition>.none(); }
+        // Never specialize over unresolved template params (still-generic
+        // bodies): such instantiations are garbage, and self-referential ones
+        // (the arg is a dummy from THIS template's own scope) grow without
+        // bound — the pass-3 fixpoint re-collects each garbage spec's template
+        // method bodies, doubling specializations per iteration (the
+        // iterator-combinator OOM). See bound_type_is_template_param.
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(inst.generic_args.size())) {
+            if (bound_type_is_template_param(arg_as_bound_type(inst.generic_args.at(cast<u64>(gi)).some))) {
+                return new Option<BoundDefinition>.none();
+            }
+            gi = gi + 1;
+        }
         let template_def: BoundDefinition = inst.type_definition.some;
         // class
         if (template_def is BoundDefinition.class_def) {
@@ -160,8 +173,17 @@ class MonomorphizePass {
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
             let instantiations: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            // Speculative window: AST collection resolves method-body type
+            // args with the def's CLASS scope, where method-level template
+            // params are invisible — those resolve failures are expected
+            // (the instantiation is skipped below; pass 8 re-binds bodies
+            // with proper scopes and reports REAL errors there). Suppress
+            // error reporting for the collection phase only.
+            let saved_suppress: bool = m.suppress_report_errors;
+            m.suppress_report_errors = true;
             this.collect_generic_instantiations(result.definitions, instantiations);
             this.collect_generic_instantiations_from_ast(unit.definitions, result.global_scope, instantiations);
+            m.suppress_report_errors = saved_suppress;
             this.model.some.trace("monomorphize iteration " + cast<string>(iteration) + " start: " + cast<string>(instantiations.size()) + " instantiation(s) collected");
 
             let specialized_defs: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
@@ -219,15 +241,43 @@ class MonomorphizePass {
                 i = i + 1;
             }
 
-            // Collect function instantiations from AST
+            // Collect function instantiations from AST (same speculative
+            // window rationale as the type collection above).
             let func_instantiations: mut _utils.List<FunctionInstantiation> = new _utils.List<FunctionInstantiation>();
+            let saved_suppress2: bool = m.suppress_report_errors;
+            m.suppress_report_errors = true;
             this.collect_function_instantiations_from_ast(unit.definitions, result.global_scope, func_instantiations);
+            m.suppress_report_errors = saved_suppress2;
 
             let fi: mut i64 = 0;
             while (fi < cast<i64>(func_instantiations.size())) {
                 let inst: FunctionInstantiation = func_instantiations.at(cast<u64>(fi)).some;
+                // Skip instantiations carrying unresolved template params
+                // (collected out of still-generic template bodies) — same
+                // rationale as the ensure_specialized_def guard above.
+                let inst_has_tpl: mut bool = false;
+                let fig: mut i64 = 0;
+                while (fig < cast<i64>(inst.generic_args.size())) {
+                    if (bound_type_is_template_param(arg_as_bound_type(inst.generic_args.at(cast<u64>(fig)).some))) { inst_has_tpl = true; }
+                    fig = fig + 1;
+                }
+                if (inst_has_tpl) { fi = fi + 1; continue; }
                 // Full base name for the mangle (it encodes the qualified name).
                 let inst_tmpl: Option<BoundDefinition> = this.find_bound_function_def(result.definitions, inst.func_name);
+                // AMBIGUOUS METHOD NAMES: a generic method call collected from a
+                // member access carries only the bare method name — when several
+                // classes define the same-named method template (map/filter/
+                // reduce/into on every iterator class), picking any one of them
+                // here attaches the specialization to the WRONG class (garbage
+                // bodies: this resolves against another class, `new C` breaks).
+                // Skip here and let the pass-8 ensure path create it — that one
+                // infers the callee from the RECEIVER (infer_member_callee_sym).
+                if (inst_tmpl.is_some() && inst_tmpl.some is BoundDefinition.function_def) {
+                    if (this.is_ambiguous_method_template(result.definitions, inst.func_name)) {
+                        fi = fi + 1;
+                        continue;
+                    }
+                }
                 let inst_full_base: mut string = inst.func_name;
                 if (inst_tmpl.is_some() && inst_tmpl.some is BoundDefinition.function_def) {
                     inst_full_base = inst_tmpl.some.function_def.full_name;
@@ -1236,12 +1286,26 @@ class MonomorphizePass {
         let base_type: Option<BoundType> = this.resolve_new_base_type_from_ast(type_name, scope);
         if (base_type.is_none()) { return new Option<BoundType>.none(); }
 
+        // The collector runs with the def's CLASS/file scope, where a method's
+        // own template params (e.g. the `U` of RangeIterator.map's
+        // `new MapIterator<i64, U>`) are invisible — args can legitimately come
+        // back unresolved. Skip the whole instantiation when any arg does:
+        // specializing over unresolved/template-param args manufactures
+        // garbage specs (run() also suppresses the resolve-failure reports
+        // for this speculative window — pass 8 re-binds bodies with proper
+        // scopes and reports REAL errors there).
         let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
         let k: mut i64 = 0;
+        let arg_ok: mut bool = true;
         while (k < cast<i64>(generic_args.size())) {
-            args.push(this.model.some.resolve_types_pass.resolve_single_generic_arg(generic_args.at(cast<u64>(k)).some, scope));
+            let one_arg: BoundTypeArg = this.model.some.resolve_types_pass.resolve_single_generic_arg(generic_args.at(cast<u64>(k)).some, scope);
+            if (!arg_is_value(one_arg)) {
+                if (bound_type_is_template_param(arg_as_bound_type(one_arg))) { arg_ok = false; }
+            }
+            args.push(one_arg);
             k = k + 1;
         }
+        if (!arg_ok) { return new Option<BoundType>.none(); }
         return new Option<BoundType>.some(base_type.some.with_generic_args(args));
     }
 
@@ -1375,7 +1439,12 @@ class MonomorphizePass {
                     if (resolved.is_some() && resolved.some is BoundSymbol.type_sym) {
                         let spec_bt: BoundType = resolved.some.type_sym.bound_type;
                         if (spec_bt.type_definition.is_some()) {
-                            return spec_bt;
+                            // Preserve the ORIGINAL field type's mutability: a
+                            // `mut IIterator<T>` field (an iterator wrapper's src)
+                            // must stay mut after the rewrite, or every
+                            // `this.src.next()` (mut this) mis-binds as an
+                            // immutable receiver.
+                            return spec_bt.with_mutability(bt.mutability);
                         }
                     }
                 }
@@ -2248,9 +2317,50 @@ class MonomorphizePass {
         return new Option<BoundDefinition>.none();
     }
 
+    // True when more than one CLASS defines a same-named method — the
+    // bare-name template lookup in the pass-3 fixpoint cannot tell them
+    // apart (see the AMBIGUOUS METHOD NAMES comment in run()).
+    fun is_ambiguous_method_template(this, defs: _utils.List<BoundDefinition>, name: string) -> bool {
+        let count: mut i64 = this.count_class_methods_named(defs, name, 0);
+        return count > 1;
+    }
+
+    fun count_class_methods_named(this, defs: _utils.List<BoundDefinition>, name: string, acc: i64) -> i64 {
+        let n: mut i64 = acc;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let mi: mut i64 = 0;
+                let methods: _utils.List<BoundDefinition> = def.class_def.methods;
+                while (mi < cast<i64>(methods.size())) {
+                    let md: BoundDefinition = methods.at(cast<u64>(mi)).some;
+                    if (md is BoundDefinition.function_def) {
+                        if (md.function_def.name == name) { n = n + 1; }
+                    }
+                    mi = mi + 1;
+                }
+                n = this.count_class_methods_named(def.class_def.methods, name, n);
+            }
+            if (def is BoundDefinition.namespace_def) {
+                n = this.count_class_methods_named(def.namespace_def.children, name, n);
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
     fun specialize_function_def(mut this, tmpl: BoundFunctionDefinition, type_args: _utils.List<BoundTypeArg>, mangled_name: string, parent_scope: mut BoundScope, class_scope: Option<BoundScope>) -> Option<BoundDefinition> {
         _utils.trace_enter("Enter specialize_function_def");
-        let ast_def: Option<Definition> = this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name);
+        // Prefer the template's OWN AST def (unambiguous); the bare-name search
+        // returns the LAST same-named def — e.g. FilterIterator.map for ANY
+        // method named "map" — poisoning the specialization with another
+        // class's params/body.
+        let ast_def: Option<Definition> = if (tmpl.ast_source.is_some()) {
+            tmpl.ast_source
+        } else {
+            this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl.name)
+        };
         if (ast_def.is_none()) { return new Option<BoundDefinition>.none(); }
         if (!(ast_def.some is Definition.function_def)) { return new Option<BoundDefinition>.none(); }
 
@@ -2263,6 +2373,11 @@ class MonomorphizePass {
         let full_name: string = this.build_specialized_full_name(tmpl, mangled_name, class_scope);
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(mangled_name, full_name, ast_func.is_extern, ast_func.is_pure, ast_func.is_new, ast_func.is_extern);
         result.is_specialized = true;
+        // Carry the template's AST for body replay (bind_body_for_specialized_def
+        // prefers ast_source over the ambiguous bare-name search). Re-wrap the
+        // payload: the template binding is immutable, and its field read cannot
+        // feed a mutable slot directly.
+        result.ast_source = new Option<Definition>.some(ast_def.some);
 
         // D6: extract value-template params (is_template_value_arg args) into
         // result.value_param_names/values/texts so bind_body_for_def substitutes
@@ -2364,6 +2479,95 @@ class MonomorphizePass {
         }
 
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
+    }
+
+
+    // Bind-time (pass-8) function specialization for INFERRED generic call
+    // sites — no explicit <...> args at the call, so the pass-3 AST fixpoint
+    // never collected the instantiation. Mirrors the collection loop's body
+    // (mangle, dedupe, AST lookup, scopes, specialize, resolve_pair, this-fix)
+    // but runs the resolve at pass index 3 (the monomorphize protocol —
+    // resolving at 8 would stamp the def fully-processed and skip every
+    // catch-up sub-pass) and replays with the pass-8 catch-up so the body
+    // binds in the dynamic pass-8 window. Returns the specialized symbol.
+    fun ensure_function_specialization_now(mut this, tmpl_def: BoundDefinition, type_args: _utils.List<BoundTypeArg>, result: mut BoundCompilationUnit) -> Option<BoundFunctionSymbol> {
+        if (!(tmpl_def is BoundDefinition.function_def)) { return new Option<BoundFunctionSymbol>.none(); }
+        // Never specialize over unresolved template params (still-generic
+        // bodies): garbage instantiations, unbounded when self-referential
+        // (see bound_type_is_template_param).
+        let k: mut i64 = 0;
+        while (k < cast<i64>(type_args.size())) {
+            if (bound_type_is_template_param(arg_as_bound_type(type_args.at(cast<u64>(k)).some))) {
+                return new Option<BoundFunctionSymbol>.none();
+            }
+            k = k + 1;
+        }
+        let tmpl_func: BoundFunctionDefinition = tmpl_def.function_def;
+        let mangled: string = mangle_generic_name(tmpl_func.full_name, type_args);
+        let j: mut i64 = 0;
+        while (j < cast<i64>(result.definitions.size())) {
+            let sd: BoundDefinition = result.definitions.at(cast<u64>(j)).some;
+            if (sd is BoundDefinition.function_def) {
+                if (sd.function_def.name == mangled && sd.function_def.symbol.is_some()) {
+                    return new Option<BoundFunctionSymbol>.some(sd.function_def.symbol.some);
+                }
+            }
+            j = j + 1;
+        }
+        let ast_def: Option<Definition> = if (tmpl_func.ast_source.is_some()) {
+            tmpl_func.ast_source
+        } else {
+            this.find_ast_def_by_name(this.model.some.ast_definitions, tmpl_func.name)
+        };
+        if (ast_def.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        // Derive the method's class scope from the TEMPLATE DEF ITSELF (its
+        // function scope's parent is the class scope). The bare-name
+        // find_method_class_scope is ambiguous now that several classes carry
+        // same-named methods (map/filter/reduce/into on every iterator class)
+        // — it attaches the spec to the WRONG class, so `this` and the class
+        // type params never resolve.
+        let scope_parent_is_class: bool = tmpl_func.scope.is_some()
+            && tmpl_func.scope.some.parent.is_some()
+            && tmpl_func.scope.some.parent.some.kind is ScopeKind.ClassScope;
+        let method_class_scope: Option<BoundScope> = if (scope_parent_is_class) {
+            new Option<BoundScope>.some(tmpl_func.scope.some.parent.some)
+        } else {
+            this.find_method_class_scope(result.definitions, new _utils.List<BoundDefinition>(), tmpl_func.name)
+        };
+        let tmpl_parent_scope: mut BoundScope = def_lookup_scope(tmpl_def, result.global_scope);
+        let m8: mut SemanticModel = this.model.some;
+        let saved_idx: i64 = m8.current_pass_index;
+        m8.current_pass_index = 3;
+        let spec_result: Option<BoundDefinition> = this.specialize_function_def(tmpl_func, type_args, mangled, tmpl_parent_scope, method_class_scope);
+        if (spec_result.is_none()) {
+            m8.current_pass_index = saved_idx;
+            return new Option<BoundFunctionSymbol>.none();
+        }
+        let resolved_spec: mut BoundDefinition = this.resolve_spec_pair(m8, ast_def.some, spec_result.some, result.global_scope);
+        if (resolved_spec is BoundDefinition.function_def) {
+            let parent_cls: Option<BoundClassDefinition> = this.find_parent_class_for_method(result.definitions, new _utils.List<BoundDefinition>(), resolved_spec.function_def.full_name);
+            if (parent_cls.is_some()) {
+                this.fix_this_param_type(resolved_spec.function_def, parent_cls.some);
+            }
+        }
+        m8.current_pass_index = saved_idx;
+        result.definitions.push(resolved_spec);
+        m8.catch_up_def_before_bodies_as_pass8(resolved_spec, result);
+        if (resolved_spec is BoundDefinition.function_def && resolved_spec.function_def.symbol.is_some()) {
+            return new Option<BoundFunctionSymbol>.some(resolved_spec.function_def.symbol.some);
+        }
+        return new Option<BoundFunctionSymbol>.none();
+    }
+
+    // resolve_pair wrapper for ensure_function_specialization_now: picks the
+    // spec's own scope when it has one (method bodies resolve there).
+    fun resolve_spec_pair(mut this, m8: mut SemanticModel, ast_def: Definition, spec: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
+        if (spec is BoundDefinition.function_def) {
+            if (spec.function_def.scope.is_some()) {
+                return m8.resolve_types_pass.resolve_pair(ast_def, spec, spec.function_def.scope.some);
+            }
+        }
+        return m8.resolve_types_pass.resolve_pair(ast_def, spec, global_scope);
     }
 
     // Find the specialized class scope for a method, if its parent class has been specialized.
@@ -2481,28 +2685,32 @@ class MonomorphizePass {
         }
         if (last_dot >= 0) {
             let class_full_name: string = string_substring(func_full_name, 0, last_dot);
-            // Search in existing defs
-            let i: mut i64 = 0;
-            while (i < cast<i64>(defs.size())) {
-                let def: BoundDefinition = defs.at(cast<u64>(i)).some;
-                if (def is BoundDefinition.class_def) {
-                    if (def.class_def.full_name == class_full_name) {
-                        return new Option<BoundClassDefinition>.some(def.class_def);
-                    }
-                }
-                i = i + 1;
-            }
+            let hit: Option<BoundClassDefinition> = this.find_class_by_full_name(defs, class_full_name);
+            if (hit.is_some()) { return hit; }
             // Also search in new_defs (current batch)
-            let j: mut i64 = 0;
-            while (j < cast<i64>(new_defs.size())) {
-                let def: BoundDefinition = new_defs.at(cast<u64>(j)).some;
-                if (def is BoundDefinition.class_def) {
-                    if (def.class_def.full_name == class_full_name) {
-                        return new Option<BoundClassDefinition>.some(def.class_def);
-                    }
+            return this.find_class_by_full_name(new_defs, class_full_name);
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    // Class lookup by full_name, recursing into namespace children (stdlib
+    // classes live inside `namespace __builtin` — a flat top-level scan never
+    // finds them, leaving specialized methods' `this` unresolved/void). The
+    // def tree is acyclic, so plain recursion terminates.
+    fun find_class_by_full_name(this, defs: _utils.List<BoundDefinition>, class_full_name: string) -> Option<BoundClassDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                if (def.class_def.full_name == class_full_name) {
+                    return new Option<BoundClassDefinition>.some(def.class_def);
                 }
-                j = j + 1;
             }
+            if (def is BoundDefinition.namespace_def) {
+                let inner: Option<BoundClassDefinition> = this.find_class_by_full_name(def.namespace_def.children, class_full_name);
+                if (inner.is_some()) { return inner; }
+            }
+            i = i + 1;
         }
         return new Option<BoundClassDefinition>.none();
     }
@@ -2514,7 +2722,11 @@ class MonomorphizePass {
         while (pi < cast<i64>(func.parameters.size())) {
             let bp: mut BoundFunctionParameter = func.parameters.at(cast<u64>(pi)).some;
             if (bp.is_this) {
-                if (func.is_new) {
+                // Mirror resolve_class_method_pair's mutability rule: a `mut
+                // this` method keeps a MUTABLE receiver type, or every
+                // `this.next()`-style call inside the specialized body mis-binds
+                // as an immutable receiver.
+                if (func.is_new || bp.is_mutable) {
                     bp.bound_type = cls.bound_type.with_mutability(new Mutability.Mutable());
                 } else {
                     bp.bound_type = cls.bound_type;

@@ -152,6 +152,17 @@ class BoundTypeRegistry {
         if (from.kind is TypeKind.PrimitiveKind && to.kind is TypeKind.PrimitiveKind) {
             return this.can_widen_primitive(from.primitive, to.primitive);
         }
+        // fun<R, P...> and async_fun<R, P...> with the same signature are
+        // interchangeable in BOTH directions (BabyPenguin parity: they share
+        // the same layout and full name, differing only by the async flag —
+        // which affects spawn syntax, not the call ABI). Signature mismatches
+        // stay incompatible.
+        if (from.kind is TypeKind.FunctionKind && to.kind is TypeKind.FunctionKind) {
+            if (from.is_async_function != to.is_async_function) {
+                return this.function_signatures_equal(from, to);
+            }
+            return false;
+        }
         // A class or enum implicitly casts to an interface it implements
         // (e.g. `test(f, f)` where test's param is IFoo and f: Foo, Foo impls IFoo).
         if (to.kind is TypeKind.InterfaceKind && from.type_definition.is_some()) {
@@ -177,6 +188,22 @@ class BoundTypeRegistry {
             }
         }
         return false;
+    }
+
+    // Structural signature equality for function types: generic arg 0 is the
+    // return type, the rest are parameters (BabyPenguin convention). The
+    // async flag is deliberately NOT compared — callers decide its direction.
+    fun function_signatures_equal(this, a: BoundType, b: BoundType) -> bool {
+        if (a.kind is TypeKind.ErrorKind || b.kind is TypeKind.ErrorKind) { return true; }
+        if (cast<i64>(a.generic_args.size()) != cast<i64>(b.generic_args.size())) { return false; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(a.generic_args.size())) {
+            let ta: BoundType = arg_as_bound_type(a.generic_args.at(cast<u64>(i)).some);
+            let tb: BoundType = arg_as_bound_type(b.generic_args.at(cast<u64>(i)).some);
+            if (!ta.is_same_type(tb)) { return false; }
+            i = i + 1;
+        }
+        return true;
     }
 
     fun can_widen_primitive(this, from: PrimitiveType, to: PrimitiveType) -> bool {

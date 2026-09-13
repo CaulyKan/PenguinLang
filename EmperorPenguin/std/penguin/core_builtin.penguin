@@ -500,6 +500,52 @@ namespace __builtin {
         fun iter(this) -> RangeIterator {
             return this;
         }
+        #template(U: type)
+        fun map(mut this, f: mut fun<U, i64>) -> mut MapIterator<i64, U> {
+            let it: mut MapIterator<i64, U> = new MapIterator<i64, U>(cast<mut IIterator<i64>>(this), f);
+            return it;
+        }
+        fun filter(mut this, pred: mut fun<bool, i64>) -> mut FilterIterator<i64> {
+            let it: mut FilterIterator<i64> = new FilterIterator<i64>(cast<mut IIterator<i64>>(this), pred);
+            return it;
+        }
+        #template(R: type)
+        fun reduce(mut this, init: R, f: mut fun<R, R, i64>) -> R {
+            let mut acc = init;
+            let mut v = this.next();
+            while (v.is_some()) {
+                acc = f(acc, v.some);
+                v = this.next();
+            }
+            return acc;
+        }
+        fun all(mut this, pred: mut fun<bool, i64>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (!(pred(v.some))) { return false; }
+                v = this.next();
+            }
+            return true;
+        }
+        fun any(mut this, pred: mut fun<bool, i64>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (pred(v.some)) { return true; }
+                v = this.next();
+            }
+            return false;
+        }
+        #template(C: type)
+        fun into(mut this) -> C {
+            let mut c = new C();
+            let mut v = this.next();
+            while (v.is_some()) {
+                c.push(v.some);
+                v = this.next();
+            }
+            return c;
+        }
+
         impl IIterator<i64> {
             fun next(mut this) -> __builtin.Option<i64> {
                 if (this.current < this.end) {
@@ -512,7 +558,180 @@ namespace __builtin {
         }
     }
 
-    class Range {
+    // ---- iterator combinators (map/filter/reduce/all/any/into) ----
+    // Generic methods on the CONCRETE iterator classes: chaining works because
+    // `range()`/`iter()` return concrete iterator types (interface-typed
+    // IIterator values cannot dispatch generic methods through the vtable —
+    // the specialized slot set is not knowable per call site). map/reduce
+    // infer their type argument from the lambda/init argument; into takes an
+    // explicit container type argument (any type with a default constructor
+    // and push).
+
+    // MapIterator: applies f to every element of src (lazily, one next() at a
+    // time — the source is only pulled when the mapped iterator is pulled).
+    #template(T: type, U: type)
+    class MapIterator {
+        impl IReferenceType;
+        src: mut IIterator<T>;
+        f: mut fun<U, T>;
+
+        fun new(mut this, src: mut IIterator<T>, f: mut fun<U, T>) {
+            this.src = src;
+            this.f = f;
+        }
+
+        fun next(mut this) -> Option<U> {
+            let v: Option<T> = this.src.next();
+            if (v.is_none()) { return new Option<U>.none(); }
+            return new Option<U>.some(this.f(v.some));
+        }
+
+        // NOTE: no `iter()` here (nor on FilterIterator): its bare generic
+        // return type (`-> MapIterator`) resolves to the TEMPLATE, mismatching
+        // `this` in every specialization (E_RETURN_TYPE_MISMATCH), and for-in
+        // already treats iterator-typed operands as-is (is_iterator_type).
+
+        impl IIterator<U> {
+            fun next(mut this) -> Option<U> {
+                let v: Option<T> = this.src.next();
+                if (v.is_none()) { return new Option<U>.none(); }
+                return new Option<U>.some(this.f(v.some));
+            }
+        }
+
+        // NOTE: the method template is named V — a method-level `U` here would
+        // SHADOW the class's U (element/output type) and mis-sign the chain.
+        // Semantics: MapIterator<T,U> yields U; map(f: fun(U)->V) yields V, so
+        // the result is MapIterator<U, V> (fun<V, U> = return V, arg U).
+        #template(V: type)
+        fun map(mut this, f: mut fun<V, U>) -> mut MapIterator<U, V> {
+            let it: mut MapIterator<U, V> = new MapIterator<U, V>(cast<mut IIterator<U>>(this), f);
+            return it;
+        }
+        fun filter(mut this, pred: mut fun<bool, U>) -> mut FilterIterator<U> {
+            let it: mut FilterIterator<U> = new FilterIterator<U>(cast<mut IIterator<U>>(this), pred);
+            return it;
+        }
+        #template(R: type)
+        fun reduce(mut this, init: R, f: mut fun<R, R, U>) -> R {
+            let mut acc = init;
+            let mut v = this.next();
+            while (v.is_some()) {
+                acc = f(acc, v.some);
+                v = this.next();
+            }
+            return acc;
+        }
+        fun all(mut this, pred: mut fun<bool, U>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (!(pred(v.some))) { return false; }
+                v = this.next();
+            }
+            return true;
+        }
+        fun any(mut this, pred: mut fun<bool, U>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (pred(v.some)) { return true; }
+                v = this.next();
+            }
+            return false;
+        }
+        #template(C: type)
+        fun into(mut this) -> C {
+            let mut c = new C();
+            let mut v = this.next();
+            while (v.is_some()) {
+                c.push(v.some);
+                v = this.next();
+            }
+            return c;
+        }
+
+    }
+
+    // FilterIterator: yields only the elements matching pred (lazily).
+    #template(T: type)
+    class FilterIterator {
+        impl IReferenceType;
+        src: mut IIterator<T>;
+        pred: mut fun<bool, T>;
+
+        fun new(mut this, src: mut IIterator<T>, pred: mut fun<bool, T>) {
+            this.src = src;
+            this.pred = pred;
+        }
+
+        fun next(mut this) -> Option<T> {
+            while (true) {
+                let v: Option<T> = this.src.next();
+                if (v.is_none()) { return new Option<T>.none(); }
+                if (this.pred(v.some)) { return new Option<T>.some(v.some); }
+            }
+            return new Option<T>.none();
+        }
+
+        impl IIterator<T> {
+            fun next(mut this) -> Option<T> {
+                while (true) {
+                    let v: Option<T> = this.src.next();
+                    if (v.is_none()) { return new Option<T>.none(); }
+                    if (this.pred(v.some)) { return new Option<T>.some(v.some); }
+                }
+                return new Option<T>.none();
+            }
+        }
+
+        #template(U: type)
+        fun map(mut this, f: mut fun<U, T>) -> mut MapIterator<T, U> {
+            let it: mut MapIterator<T, U> = new MapIterator<T, U>(cast<mut IIterator<T>>(this), f);
+            return it;
+        }
+        fun filter(mut this, pred: mut fun<bool, T>) -> mut FilterIterator<T> {
+            let it: mut FilterIterator<T> = new FilterIterator<T>(cast<mut IIterator<T>>(this), pred);
+            return it;
+        }
+        #template(R: type)
+        fun reduce(mut this, init: R, f: mut fun<R, R, T>) -> R {
+            let mut acc = init;
+            let mut v = this.next();
+            while (v.is_some()) {
+                acc = f(acc, v.some);
+                v = this.next();
+            }
+            return acc;
+        }
+        fun all(mut this, pred: mut fun<bool, T>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (!(pred(v.some))) { return false; }
+                v = this.next();
+            }
+            return true;
+        }
+        fun any(mut this, pred: mut fun<bool, T>) -> bool {
+            let mut v = this.next();
+            while (v.is_some()) {
+                if (pred(v.some)) { return true; }
+                v = this.next();
+            }
+            return false;
+        }
+        #template(C: type)
+        fun into(mut this) -> C {
+            let mut c = new C();
+            let mut v = this.next();
+            while (v.is_some()) {
+                c.push(v.some);
+                v = this.next();
+            }
+            return c;
+        }
+
+    }
+
+class Range {
         start: i64 = 0;
         end: i64 = 0;
         fun new(mut this, start: i64, end: i64) {

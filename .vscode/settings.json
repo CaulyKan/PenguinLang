@@ -4,8 +4,7 @@
         "**/obj": true,
         "**/.antlr": true,
         "**/target": true,
-        "**/tmp": true,
-        "**/build": true
+        "**/tmp": true
     },
     "cmake.ignoreCMakeListsMissing": true,
     "files.watcherExclude": {

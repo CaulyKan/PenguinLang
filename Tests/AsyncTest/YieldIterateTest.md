@@ -1,14 +1,16 @@
 # YieldIterateTest
 ## Description
+EmperorPenguin implements generators on its stackful coroutines (synthesized __GenCtx ctx; yield publishes + parks until the next next()).
 Generator with multiple yield statements, including yield inside a loop.
 
 ## Apply To
 * BabyPenguin
+* EmperorPenguin Pass3
 
 ## Test Code
 ```
     initial {
-        let v: mut IGenerator<i64> = test();
+        let mut v = test();
         for (let i : i64 in v) {
             print(cast<string>(i));
         }
@@ -23,7 +25,7 @@ Generator with multiple yield statements, including yield inside a loop.
 ```
 
 ## Compile
-Args: ``
+Args: `--enable-coroutine`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

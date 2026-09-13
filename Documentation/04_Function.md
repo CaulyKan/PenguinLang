@@ -83,6 +83,36 @@ If 'wait' is used in function, or the function calls a stateful function, the fu
 If a function is a generator function, it is a stateful function.
 We will cover this topic in asynchonous chapter.
 
+### Iterator Combinators
+Every iterator (the concrete `RangeIterator` / `MapIterator` /
+`FilterIterator` classes, and `std.Vector`'s `_VectorIterator`) carries the
+combinator methods `map` / `filter` / `reduce` / `all` / `any` / `into`.
+Chaining works because `range()` and `iter()` return the CONCRETE iterator
+type — combinators on an `IIterator`-typed value are not dispatchable (the
+vtable slot set of a generic method is not knowable per call site), so keep
+the chain on the concrete type:
+
+```penguin
+initial {
+    let pull : mut Option<i64> = range(0, 6).map(fun (x: i64) -> i64 { return x * 2; })
+        .filter(fun (x: i64) -> bool { return x > 1; }).next();   // some(2)
+    let total : i64 = range(0, 4)
+        .map(fun (x: i64) -> i64 { return x + 1; })
+        .reduce(0, fun (acc: i64, x: i64) -> i64 { return acc + x; }); // 1+2+3+4 = 10
+    println(cast<string>(pull.some) + " " + cast<string>(total));
+}
+```
+
+*   `map<U>(f)` / `filter(pred)` are LAZY — the source is only pulled when the
+    resulting iterator's `next()` is called.
+*   `map` infers `U` from the lambda's return type; `reduce<R>(init, f)`
+    infers `R` from `init`; no explicit type arguments needed.
+*   `into<C>()` materializes the iterator into any container with a default
+    constructor and a `push` method — `C` is an EXPLICIT type argument:
+    `v.iter().map(f).into<std.Vector<i64>>()`.
+*   `for (let x : i64 in range(0, 3).map(f))` works too — for-in accepts any
+    iterator-typed operand as-is.
+
 ### Function in Class (Methods)
 Classes can define functions, which are also called methods.
 
@@ -138,7 +168,39 @@ fun foo() {
 ```
 
 
-### Block Expression
+### Function Values
+`fun<R, P1, P2, ...>` is a first-class function value type. The FIRST type
+argument is the RETURN type, the rest are the parameter types
+(`fun<i32, i32>` = takes one `i32`, returns `i32`; `fun<void>` = no params,
+returns nothing). `async_fun<R, P...>` is the suspending variant; `fun` and
+`async_fun` with equal signatures are interchangeable (calling either runs it
+inline on the current coroutine stack — the callee's `wait` suspends the
+caller). Function types nest inside generics (`Option<fun<void>>`,
+`List<fun<i32, i32>>`).
+
+Four sources of function values:
+
+1. **Function reference** — `let f : fun<i32, i32> = twice;`
+2. **Bound method reference** — `let g : fun<i32, i32> = x.call;` — the
+   receiver is fixed at reference time: `g(2)` ≡ `x.call(2)`
+3. **Unbound method reference** — `let h : fun<i32, Temp, i32> = ns.Temp.call;`
+   — the receiver stays the FIRST PARAMETER of the function type: `h(x, 2)`
+   ≡ `x.call(2)`. This completes the value form of the call sugar
+   `x.call(2) ≡ ns.Temp.call(x, 2)`. Interface methods (`I.b`) have no unique
+   implementation and cannot be referenced unbound.
+4. **Lambda** — `fun(x : i32) -> i32 { return x + 1; }` (or `async_fun(...)`
+   for the suspending variant); `fun { ... }` is the no-parameter shorthand.
+
+**Lambda captures are by-value snapshots** taken when the lambda expression is
+evaluated: modifying the captured variable afterwards does not change what the
+closure sees, and writes inside the lambda body only affect the closure's own
+copy. Closures escape their defining frame (returning them from the function
+is fine). Capturing `this` or class fields is not supported yet — copy the
+needed members into locals first. There is no runtime rebinding: a function
+value cannot be turned back into (function, receiver) parts, and `==` on
+function values is an identity comparison — references taken from the same
+source compare equal; per-evaluation values (fresh closures, bound-method
+invokers) may not.
 Block expression is a block of code that is evaluated as a value. 
 ```
 fun foo() -> i32 {

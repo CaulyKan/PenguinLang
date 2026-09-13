@@ -1207,6 +1207,10 @@ class ClassDefinition {
     location: mut SourceLocation = new SourceLocation("", 0, 0);
     source_file: mut string = "";
     is_exported: bool = false;
+    // fun-value closure class (synthesized from a lambda expression): its
+    // metadata carries a .__FunVal interface entry whose slot 0 is __call,
+    // making instances directly callable through the fun-value ABI.
+    is_funval: mut bool = false;
     impl IDefinition {
         fun build_text(this: IDefinition) -> string {
             _utils.trace_enter("Enter build_text");

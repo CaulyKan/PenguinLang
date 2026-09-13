@@ -39,7 +39,7 @@
 四种 fun 值来源共用这一表示：
 1. **顶层/静态函数引用**（`let f: fun<i32,i32> = twice;`）：每函数合成 thunk（丢弃第 0 参数、转发原函数）+ 常量单例对象 `@__funval_<fn>_obj = private constant { ptr @metadata }`（无字段类实例 = 仅元数据指针一个词，纯常量、零运行时分配）；现有 funptr 常量路径（`LLVMEmitter.penguin:2698-2711`）改映射到该单例
 2. **绑定方法引用**（`let func: fun<i32,i32> = x.call;`）：每 (类,方法) 首次引用时合成 invoker 类 `{ __recv 字段; fun __call(mut this, args...) { return this.__recv.m(args...); } }`，`new` 出的对象即 fun 值
-3. **无绑定方法引用**（`let h: fun<Temp, i32, i32> = ns.Temp.call;`，新语义，BabyPenguin 同步实现）：fun 类型**保留** this 参数（`fun<A, P...>`）；常量单例（同 1 的机制），thunk 不丢弃第 0 真实参数、原样作为 receiver 转发（`@__funval_thunk_A_b(ptr %self, ptr %a, ...) → A.b(%a, ...)`）
+3. **无绑定方法引用**（`let h: fun<i32, Temp, i32> = ns.Temp.call;`，新语义，BabyPenguin 同步实现）：fun 类型**保留** this 参数（参数序：返回类型在前，receiver 为第一个参数类型）；常量单例（同 1 的机制），thunk 不丢弃第 0 真实参数、原样作为 receiver 转发（`@__funval_thunk_A_b(ptr %self, ptr %a, ...) → A.b(%a, ...)`）
 4. **lambda**：闭包类（捕获字段 + `fun __call(mut this, params) { 体重写 }`），闭包对象本身就是 fun 值（不再包 invoker，避免双重间接）
 
 **语义等式**（贯穿设计，两编译器统一）：`a.b(x) ≡ A.b(a, x)`（直接调用今天已成立）；绑定引用 `g = a.b` 后 `g(x) ≡ A.b(a, x)`（receiver 取引用时固化）；无绑定引用 `h = A.b` 后 `h(a, x) ≡ A.b(a, x)`（receiver 由调用方作第一实参传入）。糖在语言可观察行为层面成立，不在 ABI 位级成立（无法从 fun 值反取函数地址/receiver，无运行时绑定/解绑定操作——BabyPenguin 同）。接口方法无绑定引用（`I.b`）报错：接口方法没有唯一实现。
@@ -61,7 +61,7 @@
 - 从 main 切 `feature/emperorpenguin-fun-values`（LSP 分支合并后）
 - 更新 `FunFieldMemberCall.md` 描述（字段路径已实现、已转绿；改述为锁定该路径的回归测试），清理 `SemanticBindExpressions.penguin:3014-3017` 过期注释
 - 按 AGENTS.md 红哨兵规范，把这些 BabyPenguin-only 测试的 Apply To 扩到 `EmperorPenguin Pass2, Pass3`（描述注明"should turn green once implemented"）：`LambdaBasicTest`、`LambdaBasicReturnTest`、`FunctionVariableTest`、`FunctionBindingTest`、`StaticFunctionBindingTest`、`AsyncFunctionBindingTest`、`AsyncFunctionVariableTest`、`WrongFunctionTypeTest`、`AsyncTest/ImplicitCastForFunToAsyncFunTest`（后两个 async 的在 M5 前保持红）
-- 新增 `Tests/LambdaTest/UnboundMethodBindingTest.md`（`let h: fun<Temp, i32, i32> = ns.Temp.call; h(x, 2)` → `3`，即在 `FunctionBindingTest` 的类上取无绑定引用、显式传 receiver 调用）——**双红哨兵**（BabyPenguin 与 EmperorPenguin 都还没有该语义），Apply To: BabyPenguin + Pass2/Pass3，随里程碑 3 转绿
+- 新增 `Tests/LambdaTest/UnboundMethodBindingTest.md`（`let h: fun<i32, Temp, i32> = ns.Temp.call; h(x, 2)` → `3`，即在 `FunctionBindingTest` 的类上取无绑定引用、显式传 receiver 调用）——**双红哨兵**（BabyPenguin 与 EmperorPenguin 都还没有该语义），Apply To: BabyPenguin + Pass2/Pass3，随里程碑 3 转绿
 
 ### 里程碑 1：语法补全（async_fun 类型 + 嵌套位置）
 

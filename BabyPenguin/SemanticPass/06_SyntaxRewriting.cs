@@ -395,13 +395,57 @@ namespace BabyPenguin.SemanticPass
 
             if (waitExpression.IsTickUnit)
             {
-                // wait <expr> tick -> __builtin._after(<expr>)
+                // wait <expr> tick -> __builtin._after(cast<i64>(<expr>))
+                // (cast<_> is the identity on i64; narrower integer operands
+                // ride it into _after's i64 parameter)
                 var callExp = waitExpression.Build<FunctionCallExpression>(e =>
                 {
-                    e.FromString($"__builtin._after({waitExpression.Expression.BuildText()})", Model.Reporter);
+                    e.FromString($"__builtin._after(cast<i64>({waitExpression.Expression.BuildText()}))", Model.Reporter);
                 });
                 waitExpression.Expression = callExp;
                 waitExpression.IsTickUnit = false;
+                AddRewritedSource(codeContainer.FullName(), Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
+                return;
+            }
+
+            // `wait <int>` — the short timer form: `wait n;` == `wait n tick;`.
+            // Any integer width (literal, variable, expression); the cast feeds
+            // _after's i64 deadline parameter.
+            // EXCEPT a CALL: `wait f()` waits on the CALL'S RESULT (implicit-wait
+            // for async callees, plain-value wait otherwise) — even when it
+            // returns an integer. Routing calls into the timer form regressed
+            // `wait test()` with `fun test() -> i32` into a timer (i64 payload,
+            // wrong semantics).
+            // EXCEPT a PORT member access: `wait this.x` is a transaction wait
+            // on the port's channel. An i64-payload port operand resolves to
+            // int here, but routing it into the timer form both misreads the
+            // channel as a deadline and re-parses `this.x` from the synthetic
+            // timer source (annoymous), where the input-port read matrix no
+            // longer sees the owning `this` — "Cannot read input port 'x' of
+            // another module" on the module's OWN port.
+            var waitType = codeContainer.ResolveExpressionType(waitExpression.Expression);
+            var operandIsCall = waitExpression.Expression is FunctionCallExpression;
+            var operandIsPort = false;
+            if (waitExpression.Expression.GetEffectiveExpression() is MemberAccessExpression portMa)
+            {
+                try
+                {
+                    codeContainer.ResolveMemberAccessExpressionSymbol(portMa, out var portOwnerType, out var portMember);
+                    if (portOwnerType != null && portMember != null
+                        && PortRegistry.Find(portOwnerType.WithMutability(Mutability.Auto).FullName(), portMember.Name) != null)
+                        operandIsPort = true;
+                }
+                catch (BabyPenguinException)
+                {
+                }
+            }
+            if (waitType.IsIntType && !operandIsCall && !operandIsPort)
+            {
+                var intCallExp = waitExpression.Build<FunctionCallExpression>(e =>
+                {
+                    e.FromString($"__builtin._after(cast<i64>({waitExpression.Expression.BuildText()}))", Model.Reporter);
+                });
+                waitExpression.Expression = intCallExp;
                 AddRewritedSource(codeContainer.FullName(), Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
                 return;
             }
@@ -410,7 +454,6 @@ namespace BabyPenguin.SemanticPass
 
             SyntaxNode futureExp;
 
-            var waitType = codeContainer.ResolveExpressionType(waitExpression.Expression);
             if (waitType.TypeNode!.GenericType != null && waitType.TypeNode!.GenericType.FullName() == "__builtin.Event<?>")
             {
                 var newExp = waitExpression.Build<NewExpression>(e =>
@@ -608,11 +651,19 @@ namespace BabyPenguin.SemanticPass
                         return true;
                     });
 
-                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlockExpression, func.Parameters, returnType, [], func.SourceLocation.StartLocation, false, func.IsAsync);
+                    // The generator's PARAMETERS are CAPTURES, not call arguments:
+                    // the synthesized class bakes them in at construction (snapshot
+                    // fields, body references rewritten to this.<name>) and `call`
+                    // takes only `this` — matching _DefaultRoutine<T>'s
+                    // fun<T>/async_fun<T> target signature. (Passing them as call
+                    // parameters typed owner.call fun<i64,i64> and the
+                    // cast<IGenerator<T>> failed with E_CAST_INVALID.)
+                    var lambdaClass = typeContainer.AddLambdaClass(func.Name, functionDefinition.CodeBlockExpression, [], returnType, [], func.SourceLocation.StartLocation, false, func.IsAsync, func.Parameters);
+                    var ctorArgs = string.Join(", ", func.Parameters.Where(p => p.Name != "this").Select(p => p.Name));
                     var cb = new CodeBlockExpression();
                     cb.FromString(@$"
                             {{
-                                let owner: mut {lambdaClass.Name} = new {lambdaClass.Name}();
+                                let owner: mut {lambdaClass.Name} = new {lambdaClass.Name}({ctorArgs});
                                 return cast<__builtin.IGenerator<{returnType.FullName()}>>(new __builtin._DefaultRoutine<{returnType.FullName()}>(owner.call, true));
                             }}
                         ", Model.Reporter);
