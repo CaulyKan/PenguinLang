@@ -1,0 +1,134 @@
+// `penguin-tools meta` — inspect a .penguin-lib's emperor-libmeta metadata.
+// The reader (emperor.read_meta, from the lib's dynlib module) supplies the
+// parsed table + the raw JSON document; this module only renders:
+//   default  a summary (name/version/deps/instances, symbols by kind,
+//            verbatim source files; instances pretty-printed via
+//            emperor.demangle_name)
+//   -s       every symbol entry (kind + ns + name)
+//   --json   the raw metadata document
+namespace tools {
+
+class MetaOptions {
+    #pos_arg("path to a .penguin-lib")
+    file: string = "";
+
+    #arg("print every symbol entry", "-s", "--symbols", false, "")
+    symbols: bool = false;
+
+    #arg("dump the raw metadata JSON", "", "--json", false, "")
+    json: bool = false;
+}
+
+fun meta_count_kind(doc: std.JsonValue, kind: string) -> i64 {
+    let sv: __builtin.Option<std.JsonValue> = doc.get("symbols");
+    if (sv.is_none()) { return 0; }
+    let arr: std.Vector<std.JsonValue> = sv.some.as_array();
+    let n: mut i64 = 0;
+    let i: mut u64 = 0;
+    while (i < arr.size()) {
+        let entry: std.JsonValue = arr.at(i).some;
+        let kv: __builtin.Option<std.JsonValue> = entry.get("kind");
+        if (kv.is_some()) {
+            if (kv.some.as_string() == kind) { n = n + 1; }
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+fun run_meta() {
+    let opts: mut tools.MetaOptions = std.parse_args_after_subcommand<tools.MetaOptions>();
+    if (string_length(opts.file) == 0) {
+        eprintln("error: missing required argument: <file>");
+        exit(2);
+    }
+    let meta: emperor.LibMeta = emperor.read_meta(opts.file);
+    if (string_length(meta.doc_json) == 0) {
+        eprintln("error: not a .penguin-lib (no emperor-libmeta footer): " + opts.file);
+        exit(2);
+    }
+    if (opts.json) {
+        println(meta.doc_json);
+        return;
+    }
+    let mut reader = new std.JsonReader(meta.doc_json);
+    let doc: std.JsonValue = reader.parse();
+    if (opts.symbols) {
+        let sv: __builtin.Option<std.JsonValue> = doc.get("symbols");
+        if (sv.is_some()) {
+            let arr: std.Vector<std.JsonValue> = sv.some.as_array();
+            let i: mut u64 = 0;
+            while (i < arr.size()) {
+                let entry: std.JsonValue = arr.at(i).some;
+                let kind: mut string = "?";
+                let name: mut string = "?";
+                let ns: mut string = "";
+                let kv: __builtin.Option<std.JsonValue> = entry.get("kind");
+                if (kv.is_some()) { kind = kv.some.as_string(); }
+                let nv: __builtin.Option<std.JsonValue> = entry.get("name");
+                if (nv.is_some()) { name = nv.some.as_string(); }
+                let nsv: __builtin.Option<std.JsonValue> = entry.get("ns");
+                if (nsv.is_some()) { ns = nsv.some.as_string(); }
+                if (kind == "source") {
+                    println("source      " + name);
+                } else {
+                    let pretty: mut string = emperor.demangle_name(name);
+                    if (string_length(ns) > 0) {
+                        println(kind + " " + ns + " :: " + pretty);
+                    } else {
+                        println(kind + " " + pretty);
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        return;
+    }
+    // default summary
+    println("lib:      " + meta.name + " (emperor-libmeta v" + cast<string>(meta.version) + ")");
+    let deps: mut string = "(none)";
+    if (meta.deps.size() > 0) {
+        deps = "";
+        let d: mut u64 = 0;
+        while (d < meta.deps.size()) {
+            if (d > 0) { deps = deps + ", "; }
+            deps = deps + meta.deps.at(d).some;
+            d = d + 1;
+        }
+    }
+    println("deps:     " + deps);
+    println("instances: " + cast<string>(meta.instances.size()));
+    let i2: mut u64 = 0;
+    while (i2 < meta.instances.size()) {
+        println("  " + emperor.demangle_name(meta.instances.at(i2).some));
+        i2 = i2 + 1;
+    }
+    let kinds: mut std.Vector<string> = new std.Vector<string>();
+    kinds.push("fun");
+    kinds.push("class");
+    kinds.push("enum");
+    kinds.push("iface");
+    kinds.push("global");
+    kinds.push("implfor");
+    kinds.push("ns");
+    kinds.push("source");
+    let counts: mut string = "";
+    let k: mut u64 = 0;
+    while (k < kinds.size()) {
+        let kd: string = kinds.at(k).some;
+        let c: i64 = meta_count_kind(doc, kd);
+        if (c > 0) {
+            if (string_length(counts) > 0) { counts = counts + ", "; }
+            counts = counts + kd + ": " + cast<string>(c);
+        }
+        k = k + 1;
+    }
+    println("symbols:  " + counts);
+    let f: mut u64 = 0;
+    while (f < meta.files.size()) {
+        println("source-file: " + meta.files.at(f).some.name);
+        f = f + 1;
+    }
+}
+
+}

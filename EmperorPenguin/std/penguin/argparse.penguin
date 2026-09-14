@@ -1,0 +1,643 @@
+// Stdlib argparse — clap-style command-line parsing driven by FIELD
+// ANNOTATIONS, built on the meta machinery.
+//
+// Usage (compile this file + vector.penguin alongside the program; needs
+// EmperorPenguin native Pass2/Pass3):
+//
+//     class Options {
+//         // help, short, long, required, default(display only)
+//         #arg("verbose output level", "-v", "--verbose", false, "0")
+//         verbose: i64 = 0;
+//
+//         #pos_arg("input files to process")
+//         files: mut std.Vector<string>;
+//     }
+//     initial {
+//         let opts: mut Options = std.parse_args<Options>();
+//     }
+//
+// Mechanics:
+//   - `#arg(...)` / `#pos_arg(...)` annotate the field declared directly
+//     after them via the GENERAL trailing-definition mechanism: the parser
+//     appends the field NAME as a `field: string` argument and delivers the
+//     field's raw text to the `unstructured_ast` last parameter. The #fun
+//     OWNS the field and re-emits it after the marker function it generates
+//     (`_parse_arg_<field>()` / `_parse_pos_<field>()`, returning a
+//     `std.ArgInfo` — the single source of metadata, no registry) via
+//     create_definition's multi-definition form.
+//   - `#class ArgInfo` is dual-unit: a real runtime class AND available to
+//     meta code.
+//   - `std.parse_args<T>()` new's a T and splices `#argparse_parse(T, "opts")`
+//     — a deferred meta call that JIT-runs when the generic specializes: it
+//     walks `t.fields()` (declaration order) + `t.methods()` to pair fields
+//     with their markers and emits the whole parse loop.
+//
+// Semantics (clap-style):
+//   - `--name val`, `--name=val`, `-x val`, `-x=val`; bool fields are pure
+//     switches (no value). std.Vector fields accept the option repeatedly
+//     (or collect the remaining positionals).
+//   - `--` stops option parsing; everything after is positional.
+//   - Scalar positional fields are implicitly required, in declaration
+//     order; a std.Vector positional collects everything left.
+//   - `#arg(..., required, ...)` options must be given or parsing fails.
+//   - `-h` / `--help` prints help (stdout) and exits 0. Parse errors report
+//     on stderr and exit 2.
+//
+// Notes / limitations:
+//   - default_text is display-only: the runtime default is the field's
+//     initializer (via the default constructor). Vector fields are RESET to
+//     a fresh vector by the generated code — give them no initializer.
+//   - Mutable collection fields should be declared `mut std.Vector<...>`.
+//   - Supported field types: bool, all i*/u* integers, f32/f64, string,
+//     std.Vector<scalar>. Duplicate short/long names are only detectable at
+//     runtime; the first spec in declaration order wins.
+//   - `-h` / `--help` are reserved. A token like "-5" parses as an option
+//     (use `--` to pass negative numbers as positionals).
+
+namespace std {
+
+// Dual-unit metadata record (one per annotated field). `name` is the field
+// name; `is_multi` marks std.Vector fields (patched by the generated code,
+// which sees the bound field types) so usage/help can spell `<name>...`.
+#class ArgInfo {
+    impl __builtin.IReferenceType;
+    name: string = "";
+    help: string = "";
+    short: string = "";
+    long: string = "";
+    required: bool = false;
+    positional: bool = false;
+    is_multi: bool = false;
+    default_text: string = "";
+
+    fun new(mut this, name: string, help: string, short: string, long: string,
+            required: bool, positional: bool, is_multi: bool, default_text: string) {
+        this.name = name;
+        this.help = help;
+        this.short = short;
+        this.long = long;
+        this.required = required;
+        this.positional = positional;
+        this.is_multi = is_multi;
+        this.default_text = default_text;
+    }
+}
+
+// The process command line (program args only, no argv[0]).
+export fun argv() -> mut std.Vector<string> {
+    let mut v = new std.Vector<string>();
+    let n: i64 = __builtin.__args_count();
+    let i: mut i64 = 0;
+    while (i < n) {
+        v.push(__builtin.__args_get(i));
+        i = i + 1;
+    }
+    return v;
+}
+
+// --- runtime helpers (shared by the generated code and help rendering) ----
+
+fun _arg_is_digit(c: string) -> bool {
+    let code: i64 = string_char_code(c);
+    return code >= 48 && code <= 57;
+}
+
+fun _arg_is_int(s: string) -> bool {
+    let n: i64 = string_length(s);
+    if (n == 0) { return false; }
+    let start: mut i64 = 0;
+    if (string_char_code_at(s, 0) == 45) {
+        if (n == 1) { return false; }
+        start = 1;
+    }
+    let i: mut i64 = start;
+    while (i < n) {
+        if (!_arg_is_digit(string_char_at(s, i))) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fun _arg_is_double(s: string) -> bool {
+    let n: i64 = string_length(s);
+    if (n == 0) { return false; }
+    let i: mut i64 = 0;
+    if (string_char_code_at(s, 0) == 45) {
+        if (n == 1) { return false; }
+        i = 1;
+    }
+    let dots: mut i64 = 0;
+    let exps: mut i64 = 0;
+    let digits: mut i64 = 0;
+    while (i < n) {
+        let code: i64 = string_char_code_at(s, i);
+        if (code >= 48 && code <= 57) { digits = digits + 1; }
+        else if (code == 46) {
+            dots = dots + 1;
+            if (dots > 1) { return false; }
+        }
+        else if (code == 101 || code == 69) {
+            exps = exps + 1;
+            if (exps > 1) { return false; }
+        }
+        else if (code == 43 || code == 45) {
+            // a sign is only valid directly after the exponent marker
+            if (i == 0) { return false; }
+            let prev: i64 = string_char_code_at(s, i - 1);
+            if (prev != 101 && prev != 69) { return false; }
+        }
+        else { return false; }
+        i = i + 1;
+    }
+    return digits > 0;
+}
+
+fun _arg_pad(s: string, width: i64) -> string {
+    let mut r = s;
+    while (string_length(r) < width) { r = r + " "; }
+    return r;
+}
+
+// The flag a spec is referred to by in messages (prefers the long form).
+fun _arg_flag_text(sp: std.ArgInfo) -> string {
+    if (string_length(sp.long) > 0) { return sp.long; }
+    return sp.short;
+}
+
+// Which spec (index into `specs`) does the option token `a` name?
+// Exact short/long match, or the `--long=value` / `-s=value` forms.
+// Positional specs never match. -1 when nothing matches.
+fun _arg_match_option(specs: std.Vector<std.ArgInfo>, a: string) -> i64 {
+    let i: mut u64 = 0;
+    while (i < specs.size()) {
+        let sp: std.ArgInfo = specs.at(i).some;
+        if (!sp.positional) {
+            if (string_length(sp.short) > 0) {
+                if (a == sp.short) { return cast<i64>(i); }
+                if (string_length(a) > string_length(sp.short)) {
+                    if (string_starts_with_at(a, 0, sp.short)) {
+                        if (string_char_at(a, string_length(sp.short)) == "=") { return cast<i64>(i); }
+                    }
+                }
+            }
+            if (string_length(sp.long) > 0) {
+                if (a == sp.long) { return cast<i64>(i); }
+                if (string_length(a) > string_length(sp.long)) {
+                    if (string_starts_with_at(a, 0, sp.long)) {
+                        if (string_char_at(a, string_length(sp.long)) == "=") { return cast<i64>(i); }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fun arg_usage_line(specs: std.Vector<std.ArgInfo>, prog: string) -> string {
+    let mut s = "Usage: " + prog;
+    let has_options: mut bool = false;
+    let i: mut u64 = 0;
+    while (i < specs.size()) {
+        if (!specs.at(i).some.positional) { has_options = true; }
+        i = i + 1;
+    }
+    if (has_options) { s = s + " [OPTIONS]"; }
+    i = 0;
+    while (i < specs.size()) {
+        let sp: std.ArgInfo = specs.at(i).some;
+        if (sp.positional) {
+            s = s + " <" + sp.name + ">";
+            if (sp.is_multi) { s = s + "..."; }
+        }
+        i = i + 1;
+    }
+    return s;
+}
+
+fun _arg_option_line(sp: std.ArgInfo) -> string {
+    let mut flag = "";
+    if (string_length(sp.short) > 0) {
+        flag = sp.short;
+        if (string_length(sp.long) > 0) { flag = flag + ", " + sp.long; }
+    } else {
+        flag = "    " + sp.long;
+    }
+    let mut text = sp.help;
+    if (string_length(sp.default_text) > 0) { text = text + " (default: " + sp.default_text + ")"; }
+    if (sp.required) { text = text + " (required)"; }
+    return "  " + _arg_pad(flag, 20) + text;
+}
+
+export fun print_arg_help(specs: std.Vector<std.ArgInfo>, prog: string) {
+    println(arg_usage_line(specs, prog));
+    println("");
+    println("Options:");
+    let i: mut u64 = 0;
+    while (i < specs.size()) {
+        let sp: std.ArgInfo = specs.at(i).some;
+        if (!sp.positional) { println(_arg_option_line(sp)); }
+        i = i + 1;
+    }
+    println("  " + _arg_pad("-h, --help", 20) + "show this help message");
+    let has_pos: mut bool = false;
+    i = 0;
+    while (i < specs.size()) {
+        if (specs.at(i).some.positional) { has_pos = true; }
+        i = i + 1;
+    }
+    if (has_pos) {
+        println("");
+        println("Positional arguments:");
+        i = 0;
+        while (i < specs.size()) {
+            let sp: std.ArgInfo = specs.at(i).some;
+            if (sp.positional) { println("  " + _arg_pad(sp.name, 20) + sp.help); }
+            i = i + 1;
+        }
+    }
+}
+
+// Report a parse error on stderr + the usage line, then exit(2).
+fun _arg_fail(msg: string, specs: std.Vector<std.ArgInfo>, prog: string) {
+    eprintln("error: " + msg);
+    eprintln(arg_usage_line(specs, prog));
+    exit(2);
+}
+
+// Post-loop check: every required (non-positional) option was seen.
+fun _arg_check_required(specs: std.Vector<std.ArgInfo>, seen: std.Vector<bool>, prog: string) {
+    let i: mut u64 = 0;
+    while (i < specs.size()) {
+        let sp: std.ArgInfo = specs.at(i).some;
+        if (!sp.positional) {
+            if (sp.required) {
+                if (!seen.at(i).some) {
+                    _arg_fail("missing required option: " + _arg_flag_text(sp), specs, prog);
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Post-loop check: the pos_index-th positional (0-based, declaration order)
+// was not supplied — report and exit.
+fun _arg_missing_arg(specs: std.Vector<std.ArgInfo>, pos_index: i64, prog: string) {
+    let seen_pos: mut i64 = 0;
+    let i: mut u64 = 0;
+    while (i < specs.size()) {
+        let sp: std.ArgInfo = specs.at(i).some;
+        if (sp.positional) {
+            if (seen_pos == pos_index) {
+                _arg_fail("missing required argument: <" + sp.name + ">", specs, prog);
+            }
+            seen_pos = seen_pos + 1;
+        }
+        i = i + 1;
+    }
+    _arg_fail("missing required argument", specs, prog);
+}
+
+// --- compile-time generators ------------------------------------------------
+
+// Escape a string for embedding inside a string literal in generated code.
+#fun _arg_escape(s: string) -> string {
+    let mut r = "";
+    let n: i64 = string_length(s);
+    let i: mut i64 = 0;
+    while (i < n) {
+        let c: string = string_char_at(s, i);
+        if (c == "\"") { r = r + "\\\""; }
+        else if (c == "\\") { r = r + "\\\\"; }
+        else if (c == "\n") { r = r + "\\n"; }
+        else if (c == "\t") { r = r + "\\t"; }
+        else { r = r + c; }
+        i = i + 1;
+    }
+    return r;
+}
+
+#fun _arg_str(s: string) -> string {
+    return "\"" + _arg_escape(s) + "\"";
+}
+
+// #arg(help, short, long, required, default_text) <field>;
+// The annotation hands the #fun the field NAME (`field`) and its raw text
+// (`field_src`, the `unstructured_ast` last parameter). After checking the
+// shape, it returns a MULTI-definition create_definition: the option marker
+// `fun _parse_arg_<field>() -> mut std.ArgInfo` followed by the re-emitted
+// field itself — both splice in place, in that order.
+#fun arg(help: string, short: string, long: string, required: bool, default_text: string, field: string, field_src: unstructured_ast) -> ast {
+    let probe: i64 = compiler().create_definition(field_src);
+    if (compiler().get_definition_kind(probe) != "class_field") {
+        compiler().error("#arg must annotate a field declaration");
+    }
+    let req: mut string = "false";
+    if (required) { req = "true"; }
+    return compiler().create_definition(
+        "fun _parse_arg_" + field + "() -> mut std.ArgInfo { "
+        + "return new std.ArgInfo(" + _arg_str(field) + ", " + _arg_str(help) + ", "
+        + _arg_str(short) + ", " + _arg_str(long) + ", " + req + ", false, false, "
+        + _arg_str(default_text) + "); } " + field_src);
+}
+
+// #pos_arg(help) <field>;
+// Same hand-off as #arg (positional=true), re-emitting the field after the
+// positional marker `fun _parse_pos_<field>() -> mut std.ArgInfo`.
+#fun pos_arg(help: string, field: string, field_src: unstructured_ast) -> ast {
+    let probe: i64 = compiler().create_definition(field_src);
+    if (compiler().get_definition_kind(probe) != "class_field") {
+        compiler().error("#pos_arg must annotate a field declaration");
+    }
+    return compiler().create_definition(
+        "fun _parse_pos_" + field + "() -> mut std.ArgInfo { "
+        + "return new std.ArgInfo(" + _arg_str(field) + ", " + _arg_str(help)
+        + ", \"\", \"\", false, true, false, \"\"); } " + field_src);
+}
+
+// Field-kind classification by display name: int / float / string / bool /
+// vector / unsupported. Primitives display bare (no mutability prefix), but
+// a class/generic type may be prefixed "mut " and spelled with ("std.Vector")
+// or without ("Vector") qualification depending on how the type was bound —
+// strip the prefix and accept both spellings.
+#fun _arg_kind_of(ft: type) -> string {
+    let dn: string = ft.display_name();
+    if (dn == "i8" || dn == "i16" || dn == "i32" || dn == "i64"
+        || dn == "u8" || dn == "u16" || dn == "u32" || dn == "u64") { return "int"; }
+    if (dn == "f32" || dn == "f64" || dn == "float" || dn == "double") { return "float"; }
+    if (dn == "string") { return "string"; }
+    if (dn == "bool") { return "bool"; }
+    let base: mut string = dn;
+    if (string_starts_with_at(base, 0, "mut ")) {
+        base = string_substring(base, 4, string_length(base) - 4);
+    }
+    let lt: i64 = string_find(base, "<");
+    if (lt >= 0) { base = string_substring(base, 0, lt); }
+    if (base == "std.Vector" || base == "Vector") { return "vector"; }
+    return "unsupported";
+}
+
+// Expression converting the string value `val` to the field/element type.
+#fun _arg_convert_expr(kind: string, dn: string, val: string) -> string {
+    if (kind == "int") {
+        if (dn == "i64") { return "string_to_int(" + val + ")"; }
+        return "cast<" + dn + ">(string_to_int(" + val + "))";
+    }
+    if (kind == "float") {
+        if (dn == "f64" || dn == "double") { return "string_to_double(" + val + ")"; }
+        return "cast<f32>(string_to_double(" + val + "))";
+    }
+    return val;
+}
+
+// Runtime validation call for an option value, or "" when none is needed.
+// (__ap_a — the option token — and __ap_specs/__ap_prog are always in scope
+// at the option dispatch sites where this is spliced.)
+#fun _arg_validate_expr(kind: string, val: string) -> string {
+    if (kind == "int") { return "if (!std._arg_is_int(" + val + ")) { std._arg_fail(\"invalid value for option '\" + __ap_a + \"': '\" + " + val + " + \"'\", __ap_specs, __ap_prog); } "; }
+    if (kind == "float") { return "if (!std._arg_is_double(" + val + ")) { std._arg_fail(\"invalid value for option '\" + __ap_a + \"': '\" + " + val + " + \"'\", __ap_specs, __ap_prog); } "; }
+    return "";
+}
+
+// The big generator, spliced as a statement inside parse_args<T>'s body:
+// builds the whole clap-style parse loop over `v` (the opts variable).
+// `skip` is the number of leading argv tokens to ignore (0 for parse_args;
+// 1 for parse_args_after_subcommand, which skips the subcommand word).
+#fun argparse_parse(t: type, v: string, skip: i64) -> ast {
+    let fs = t.fields();
+    let ms = t.methods();
+    let nf: i64 = cast<i64>(fs.size());
+    let nm: i64 = cast<i64>(ms.size());
+    let prog: string = t.display_name();
+
+    // Pair annotated fields with their marker methods (declaration order).
+    let mut names = new _utils.List<string>();
+    let mut markers = new _utils.List<string>();
+    let mut kinds = new _utils.List<string>();
+    let mut dns = new _utils.List<string>();
+    let mut elem_dns = new _utils.List<string>();
+    let mut pos_flags = new _utils.List<bool>();
+    let i: mut i64 = 0;
+    while (i < nf) {
+        let f = fs.at(cast<u64>(i)).some;
+        let opt_marker: string = "_parse_arg_" + f.name;
+        let pos_marker: string = "_parse_pos_" + f.name;
+        let found: mut string = "";
+        let j: mut i64 = 0;
+        while (j < nm) {
+            let mn: string = ms.at(cast<u64>(j)).some.name;
+            if (mn == opt_marker) { found = "opt"; }
+            if (mn == pos_marker) { found = "pos"; }
+            j = j + 1;
+        }
+        if (string_length(found) > 0) {
+            let kind: mut string = _arg_kind_of(f.bound_type);
+            let elem_dn: mut string = "";
+            if (kind == "unsupported") {
+                compiler().error("std.parse_args<" + prog + ">: field '" + f.name
+                    + "' has an unsupported type '" + f.bound_type.display_name()
+                    + "' (supported: bool, integers, floats, string, std.Vector<scalar>)");
+                kind = "string";
+            }
+            if (kind == "vector") {
+                let et = arg_as_bound_type(f.bound_type.generic_args.at(0).some);
+                let ek: string = _arg_kind_of(et);
+                if (ek != "int" && ek != "float" && ek != "string") {
+                    compiler().error("std.parse_args<" + prog + ">: vector field '" + f.name
+                        + "' has an unsupported element type '" + et.display_name() + "'");
+                }
+                elem_dn = et.display_name();
+            }
+            names.push(f.name);
+            if (found == "opt") { markers.push(opt_marker); } else { markers.push(pos_marker); }
+            kinds.push(kind);
+            dns.push(f.bound_type.display_name());
+            elem_dns.push(elem_dn);
+            if (found == "pos") { pos_flags.push(true); } else { pos_flags.push(false); }
+        }
+        i = i + 1;
+    }
+    let count: i64 = cast<i64>(names.size());
+    if (count == 0) {
+        compiler().error("std.parse_args<" + prog + ">: the class has no annotated fields (annotate members with #arg(...) / #pos_arg(...))");
+    }
+
+    let mut code = "";
+    code = code + "let __ap_argv: mut std.Vector<string> = std.argv(); ";
+    code = code + "let __ap_n: u64 = __ap_argv.size(); ";
+    code = code + "let __ap_i: mut u64 = " + cast<string>(skip) + "; ";
+    code = code + "let __ap_pos: mut u64 = 0; ";
+    code = code + "let __ap_only_pos: mut bool = false; ";
+    code = code + "let __ap_specs: mut std.Vector<std.ArgInfo> = new std.Vector<std.ArgInfo>(); ";
+    code = code + "let __ap_seen: mut std.Vector<bool> = new std.Vector<bool>(); ";
+    code = code + "let __ap_prog: string = " + _arg_str(prog) + "; ";
+
+    // Hoisted specs (declaration order), fresh vectors, seen flags.
+    let k: mut i64 = 0;
+    while (k < count) {
+        let fname: string = names.at(cast<u64>(k)).some;
+        let marker: string = markers.at(cast<u64>(k)).some;
+        let kind: string = kinds.at(cast<u64>(k)).some;
+        let ks: string = cast<string>(k);
+        code = code + "let __ap_s" + ks + ": mut std.ArgInfo = " + v + "." + marker + "(); ";
+        if (kind == "vector") {
+            code = code + "__ap_s" + ks + ".is_multi = true; ";
+            code = code + v + "." + fname + " = new std.Vector<" + elem_dns.at(cast<u64>(k)).some + ">(); ";
+        }
+        code = code + "__ap_specs.push(__ap_s" + ks + "); ";
+        code = code + "__ap_seen.push(false); ";
+        k = k + 1;
+    }
+
+    // Positional dispatch chain over the token `__ap_a`, shared by the
+    // only-pos mode and the bare-token branch of the main loop:
+    //   if (__ap_pos == 0) { <field0> __ap_pos = 1; }
+    //   else if (__ap_pos == 1) { <field1> __ap_pos = 2; }
+    //   else { <vector positional push | unexpected-argument error> }
+    // With no scalar positionals the chain degenerates to the final arm only.
+    let scalar_pos_count: mut i64 = 0;
+    let vector_pos_code: mut string = "";
+    k = 0;
+    while (k < count) {
+        let fname: string = names.at(cast<u64>(k)).some;
+        let kind: string = kinds.at(cast<u64>(k)).some;
+        let is_pos: bool = pos_flags.at(cast<u64>(k)).some;
+        if (is_pos && kind != "vector") { scalar_pos_count = scalar_pos_count + 1; }
+        if (is_pos && kind == "vector") {
+            let elem_dn: string = elem_dns.at(cast<u64>(k)).some;
+            let ek: string = _arg_kind_of_dn(elem_dn);
+            vector_pos_code = vector_pos_code + _arg_pos_validate_expr(ek, "__ap_a")
+                + v + "." + fname + ".push(" + _arg_convert_expr(ek, elem_dn, "__ap_a") + "); ";
+        }
+        k = k + 1;
+    }
+    let mut pos_code = "";
+    let next_pos: mut i64 = 0;
+    k = 0;
+    while (k < count) {
+        let fname: string = names.at(cast<u64>(k)).some;
+        let kind: string = kinds.at(cast<u64>(k)).some;
+        let is_pos: bool = pos_flags.at(cast<u64>(k)).some;
+        if (is_pos && kind != "vector") {
+            let dn: string = dns.at(cast<u64>(k)).some;
+            let head: mut string = "if (__ap_pos == " + cast<string>(next_pos) + ") { ";
+            if (next_pos > 0) { head = "else if (__ap_pos == " + cast<string>(next_pos) + ") { "; }
+            pos_code = pos_code + head + _arg_pos_validate_expr(kind, "__ap_a")
+                + v + "." + fname + " = " + _arg_convert_expr(kind, dn, "__ap_a") + "; "
+                + "__ap_pos = " + cast<string>(next_pos + 1) + "; } ";
+            next_pos = next_pos + 1;
+        }
+        k = k + 1;
+    }
+    if (string_length(vector_pos_code) > 0) {
+        if (next_pos == 0) { pos_code = vector_pos_code; }
+        else { pos_code = pos_code + "else { " + vector_pos_code + " } "; }
+    } else {
+        if (next_pos == 0) { pos_code = "std._arg_fail(\"unexpected argument: '\" + __ap_a + \"'\", __ap_specs, __ap_prog); "; }
+        else { pos_code = pos_code + "else { std._arg_fail(\"unexpected argument: '\" + __ap_a + \"'\", __ap_specs, __ap_prog); } "; }
+    }
+
+    // Option dispatch chain (matched spec index -> field assignment). The
+    // first branch is `if` (the first annotated field may be positional, so
+    // "first option" != index 0).
+    let mut opt_code = "";
+    let first_opt: mut bool = true;
+    k = 0;
+    while (k < count) {
+        let fname: string = names.at(cast<u64>(k)).some;
+        let kind: string = kinds.at(cast<u64>(k)).some;
+        let is_pos: bool = pos_flags.at(cast<u64>(k)).some;
+        if (!is_pos) {
+            let ks: string = cast<string>(k);
+            let head: mut string = "if (__ap_m == " + ks + ") { ";
+            if (!first_opt) { head = "else if (__ap_m == " + ks + ") { "; }
+            first_opt = false;
+            if (kind == "bool") {
+                opt_code = opt_code + head
+                    + "if (__ap_eq >= 0) { std._arg_fail(\"option '\" + __ap_a + \"' does not take a value\", __ap_specs, __ap_prog); } "
+                    + v + "." + fname + " = true; "
+                    + "__ap_seen.set(cast<u64>(" + ks + "), true); } ";
+            } else if (kind == "vector") {
+                let elem_dn: string = elem_dns.at(cast<u64>(k)).some;
+                let ek: string = _arg_kind_of_dn(elem_dn);
+                opt_code = opt_code + head + _arg_take_value()
+                    + _arg_validate_expr(ek, "__ap_val")
+                    + v + "." + fname + ".push(" + _arg_convert_expr(ek, elem_dn, "__ap_val") + "); "
+                    + "__ap_seen.set(cast<u64>(" + ks + "), true); } ";
+            } else {
+                let dn: string = dns.at(cast<u64>(k)).some;
+                opt_code = opt_code + head + _arg_take_value()
+                    + _arg_validate_expr(kind, "__ap_val")
+                    + v + "." + fname + " = " + _arg_convert_expr(kind, dn, "__ap_val") + "; "
+                    + "__ap_seen.set(cast<u64>(" + ks + "), true); } ";
+            }
+        }
+        k = k + 1;
+    }
+
+    // The main loop.
+    code = code + "while (__ap_i < __ap_n) { ";
+    code = code + "let __ap_a: string = __ap_argv.at(__ap_i).some; ";
+    code = code + "if (__ap_only_pos) { " + pos_code + " } ";
+    code = code + "else if (__ap_a == \"--\") { __ap_only_pos = true; } ";
+    code = code + "else if (__ap_a == \"-h\" || __ap_a == \"--help\") { std.print_arg_help(__ap_specs, __ap_prog); exit(0); } ";
+    code = code + "else if (string_length(__ap_a) > 1 && string_starts_with_at(__ap_a, 0, \"-\")) { ";
+    code = code + "let __ap_m: i64 = std._arg_match_option(__ap_specs, __ap_a); ";
+    code = code + "if (__ap_m < 0) { std._arg_fail(\"unknown option: '\" + __ap_a + \"'\", __ap_specs, __ap_prog); } ";
+    code = code + "let __ap_val: mut string = \"\"; ";
+    code = code + "let __ap_eq: i64 = string_find(__ap_a, \"=\"); ";
+    code = code + opt_code;
+    code = code + "} ";
+    code = code + "else { " + pos_code + " } ";
+    code = code + "__ap_i = __ap_i + 1; ";
+    code = code + "} ";
+
+    // Post-loop: scalar positionals all supplied, required options all seen.
+    if (scalar_pos_count > 0) {
+        code = code + "if (__ap_pos < " + cast<string>(scalar_pos_count) + ") { std._arg_missing_arg(__ap_specs, cast<i64>(__ap_pos), __ap_prog); } ";
+    }
+    code = code + "std._arg_check_required(__ap_specs, __ap_seen, __ap_prog); ";
+
+    return compiler().create_expression("{ " + code + " }");
+}
+
+// kind-of by display name (vectorless variant used for vector elements)
+#fun _arg_kind_of_dn(dn: string) -> string {
+    if (dn == "i8" || dn == "i16" || dn == "i32" || dn == "i64"
+        || dn == "u8" || dn == "u16" || dn == "u32" || dn == "u64") { return "int"; }
+    if (dn == "f32" || dn == "f64" || dn == "float" || dn == "double") { return "float"; }
+    return "string";
+}
+
+// Value acquisition for value-taking options: `=value` inline or the next
+// token (missing -> error).
+#fun _arg_take_value() -> string {
+    return "if (__ap_eq >= 0) { __ap_val = string_substring(__ap_a, __ap_eq + 1, string_length(__ap_a) - __ap_eq - 1); } "
+        + "else { __ap_i = __ap_i + 1; if (__ap_i >= __ap_n) { std._arg_fail(\"missing value for option '\" + __ap_a + \"'\", __ap_specs, __ap_prog); } __ap_val = __ap_argv.at(__ap_i).some; } ";
+}
+
+// Positional value validation (same messages as options).
+#fun _arg_pos_validate_expr(kind: string, val: string) -> string {
+    if (kind == "int") { return "if (!std._arg_is_int(" + val + ")) { std._arg_fail(\"invalid value for argument '\" + " + val + " + \"': '\" + " + val + " + \"'\", __ap_specs, __ap_prog); } "; }
+    if (kind == "float") { return "if (!std._arg_is_double(" + val + ")) { std._arg_fail(\"invalid value for argument '\" + " + val + " + \"': '\" + " + val + " + \"'\", __ap_specs, __ap_prog); } "; }
+    return "";
+}
+
+#template(T: type)
+export fun parse_args() -> mut T {
+    let opts: mut T = new T();
+    #argparse_parse(T, "opts", 0);
+    return opts;
+}
+
+// Like parse_args, but the FIRST argv token (a subcommand word) is skipped —
+// multi-command CLIs dispatch on argv[0] themselves and parse the rest.
+#template(T: type)
+export fun parse_args_after_subcommand() -> mut T {
+    let opts: mut T = new T();
+    #argparse_parse(T, "opts", 1);
+    return opts;
+}
+
+} // namespace std

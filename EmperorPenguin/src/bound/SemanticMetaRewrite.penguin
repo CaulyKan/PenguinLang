@@ -371,10 +371,31 @@ class MetaRewriter {
                         out.push(d);
                     }
                 }
+                // Annotation form (`#name(args) <field>;`): the parser handed
+                // the field to the callee #fun — its NAME as a trailing
+                // string argument, its raw text as the `unstructured_ast`
+                // last parameter. The #fun OWNS the field and re-emits it
+                // (together with any additional definitions) from its
+                // returned create_definition; nothing is pushed here, so a
+                // #fun that drops the text genuinely removes the field.
+                // try_splice_meta_fun_def stamps the calling file onto every
+                // spliced definition (create_definition parses under a
+                // synthetic "<meta_...>" filename).
             } else if (d is Definition.meta_if_def) {
                 this.splice_meta_if(d.meta_if_def, out);
             } else if (d is Definition.meta_while_def) {
                 this.splice_meta_while(d.meta_while_def, out);
+            } else if (d is Definition.meta_class_def) {
+                // `#class` is dual-unit: the prepass ALREADY collected it into
+                // meta_class_defs (run_prepass calls collect_meta_class_defs
+                // before this rewrite, so unit B availability is unchanged).
+                // Unwrap it into a normal class_def so it ALSO compiles as a
+                // real runtime class in unit A; it flows through all 9 passes
+                // from here. (BuildScopes keeps its placeholder branch as a
+                // fallback for meta_class_defs that never pass this rewrite.)
+                let cd: Definition = new Definition.class_def(d.meta_class_def);
+                this.rewrite_meta_in_def_container(cd);
+                out.push(cd);
             } else {
                 this.rewrite_meta_in_def_container(d);
                 out.push(d);

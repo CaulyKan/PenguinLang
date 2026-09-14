@@ -12,7 +12,7 @@ Workspace-config routing e2e against the prebuilt LSP server: initialize carries
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 140\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspcfg"}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 298\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspcfg/sub/cfgmain.penguin","languageId":"penguin","version":1,"text":"fun main() {\\n    let v: i64 = cfglib.cfg_target_fn(1);\\n    println(v);\\n}\\n"}}}Content-Length: 223\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspcfg/sub/cfgmain.penguin"},"position":{"line":1,"character":25}}}Content-Length: 190\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspcfg/sub/cfgmain.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

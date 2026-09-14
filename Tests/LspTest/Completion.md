@@ -12,7 +12,7 @@ textDocument/completion e2e against the prebuilt LSP server: language keywords (
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 194\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"class Point {\\n    x : i64 = 0;\\n}\\n"}}}Content-Length: 159\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin"},"position":{"line":2,"character":0}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

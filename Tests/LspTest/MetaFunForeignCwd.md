@@ -13,7 +13,7 @@ A document containing a `#fun` meta function and a `#dbl(21)` meta call exercise
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Cwd: `${WORKDIR}`
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 272\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/metafun_doc.penguin","languageId":"penguin","version":1,"text":"#fun dbl(x: i64) -> i64 { return x * 2; }\\nfun main() -> i64 {\\n    let r: i64 = #dbl(21);\\n    return r;\\n}\\n"}}}Content-Length: 131\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///tmp/metafun_doc.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`

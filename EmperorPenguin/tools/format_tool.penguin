@@ -1,0 +1,52 @@
+// `penguin-tools format` — whole-file formatter CLI over the compiler lib's
+// emperor.format_penguin_text (src/ast/Formatter.penguin, the same
+// implementation the LSP serves). Default writes the formatted text to
+// stdout; -o writes to a file; -i rewrites in place (-o and -i are
+// mutually exclusive).
+namespace tools {
+
+class FormatOptions {
+    #pos_arg("source file (.penguin)")
+    file: string = "";
+
+    #arg("write the result to PATH instead of stdout", "-o", "--output", false, "")
+    out_path: string = "";
+
+    #arg("rewrite the file in place", "-i", "--in-place", false, "")
+    in_place: bool = false;
+}
+
+fun run_format() {
+    let opts: mut tools.FormatOptions = std.parse_args_after_subcommand<tools.FormatOptions>();
+    if (string_length(opts.file) == 0) {
+        eprintln("error: missing required argument: <file>");
+        exit(2);
+    }
+    if (opts.in_place && string_length(opts.out_path) > 0) {
+        eprintln("error: -o/--output and -i/--in-place are mutually exclusive");
+        exit(2);
+    }
+    let text_opt: __builtin.Option<string> = std.io.read_text(opts.file);
+    if (text_opt.is_none()) {
+        eprintln("error: cannot read file: " + opts.file);
+        exit(2);
+    }
+    let formatted: string = emperor.format_penguin_text(text_opt.some);
+    if (opts.in_place) {
+        if (!std.io.write_text(opts.file, formatted)) {
+            eprintln("error: cannot write file: " + opts.file);
+            exit(2);
+        }
+        return;
+    }
+    if (string_length(opts.out_path) > 0) {
+        if (!std.io.write_text(opts.out_path, formatted)) {
+            eprintln("error: cannot write file: " + opts.out_path);
+            exit(2);
+        }
+        return;
+    }
+    print(formatted);
+}
+
+}

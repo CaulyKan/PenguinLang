@@ -32,15 +32,20 @@ The root `Makefile` drives everything, and all build artifacts live under `build
 make clean          # remove the build/ tree
 make bootstrap      # self-bootstrap EmperorPenguin -> build/bootstrap/pass2..pass4 (+ pass5 md5 convergence; host only)
 make release        # release the host platform's emitter + driver script (release_linux / release_win)
-make release_linux  # -> build/linux/emperor_penguin_llvm_emitter, build/linux/libemperorpenguin.penguin-lib, build/linux/emperor
+make release_linux  # -> build/linux/emperor_penguin_llvm_emitter, build/linux/libemperorpenguin.penguin-lib, build/linux/emperor_penguin
 make release_win    # -> build/win/emperor_penguin_llvm_emitter.exe, build/win/emperor.bat (linux host cross-compiles via emperor)
 make lsp            # LSP for the host platform (lsp_linux / lsp_win)
-make lsp_linux      # -> build/lsp + build/libemperorpenguin.penguin-lib (reuses the release dynlib)
+make lsp_linux      # -> build/linux/penguin-lsp (links the release dynlib in the same dir)
 make lsp_win        # -> build/win/MagellanicPenguinLSP.exe monolith
+make tools          # penguin-tools CLI for the host platform (tools_linux / tools_win)
+make tools_linux    # -> build/linux/penguin-tools (demangle|mangle|meta|format; links the release dynlib)
+make tools_win      # -> build/win/penguin-tools.exe monolith
+make tools-test     # penguin-tools golden tests (EmperorPenguin/tools/selftest.sh)
 make test           # cross-compiler markdown suite (Tests/*.md) via PenguinTestRunner; extra args via TEST_ARGS="..."
 make baseline_test  # same, but records the run as the new baseline (--baseline)
-make publish        # deploy release+LSP into the vscode extension (emitter+script+stdlib trees), dotnet self-contained publishes, vsix
-make all            # bootstrap + lsp + test, in that order (default goal)
+make unittest       # dotnet test (BabyPenguin.Tests + EmperorPenguin.Tests; logs to build/logs/unittest.log)
+make publish        # deploy release+LSP+tools into the vscode extension (emitter+script+stdlib trees), dotnet self-contained publishes, vsix
+make all            # bootstrap + lsp + tools + unittest + test, in that order (default goal)
 ```
 
 - **Per-platform targets** replace the old `TARGET=win` variable: `make release`/`make lsp` pick the host, `release_win`/`lsp_win` cross-compile (linux→win only; `MINGW_PREFIX`/`WIN_CC`/`WIN_CXX`/`WIN_AR`/`WIN_CLANG` overridable, defaults `/opt/llvm-mingw` — the emperor script owns the cross env). A Windows host builds natively (MSYS2 make/clang + the vendored `thirdparty/mingw-w64-x86_64-llvm-libs` package for `-enable-meta`; the bootstrap chain stays Full-monolith on win because the `.penguin-lib` pair is ELF-specific). `make publish` builds BOTH platforms on a linux host, win-only on a Windows host. `bootstrap` and `test` always target the host.
@@ -390,6 +395,8 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 | `core_builtin.penguin`                                                                                       | `__builtin` namespace: extern function declarations (exit, print, string ops), `Option<T>`, `Result<T,E>`, `Box<T>`, `StringBuilder`, `ICopy<T>`, `ICopy` impls for all primitives, `IHash`, `IUniqueMangleName`, `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`, `Pair<K,V>`, `Range`/`RangeIterator`                                                                                                               |
 | `io.penguin`                                                                                                 | `std.io` nested-namespace stdlib (auto-loaded with core_builtin; externs in `std.io` route to `std_io_*` via the universal extern→C rule — any namespaced extern maps to `<ns>_<name>`, bare top-level externs keep literal libc symbols): console (`std.io.read_line`/`read_all`/`stdin_lines`), `std.io.File` handles, whole-file/fs helpers, `std.io.lines`/`split_lines` iterators. See *io Standard Library* above |
 | `array.penguin`, `vector.penguin`, `hashmap.penguin`, `json.penguin`, `dynlib.penguin`, `metaconfig.penguin` | Pass3-only bootstrap-deferred stdlib modules — NOT auto-loaded; compiled into the compiler via `EmperorPenguinPass2.penguins` or passed per-test via `Compile.Args` (e.g. `std.Array<T,N>`)                                                                                                                                                                                                                             |
+| `argparse.penguin` | Clap-style command-line parsing from FIELD ANNOTATIONS (Pass2/Pass3 only; NOT auto-loaded — pass it + `vector.penguin` via `Compile.Args`). `#arg(help, short, long, required, default_text)` / `#pos_arg(help)` written directly before a field generate `_parse_arg_<field>()`/`_parse_pos_<field>()` marker functions returning `std.ArgInfo` (a dual-unit `#class`); `std.parse_args<T>()` / `std.parse_args_after_subcommand<T>()` splice `#argparse_parse` — a deferred meta call that JIT-generates the whole parse loop from `t.fields()`+`t.methods()`. Supported field types: bool, integers, f32/f64, string, `mut std.Vector<scalar>` (repeated option / rest positionals); `--` stops options; `-h/--help` prints help + exit(0); parse errors → stderr + exit(2); `std.argv()` wraps the process args. See Tests/StdlibTest/Argparse*.md |
+| `src/ast/Formatter.penguin`, `src/bound/Mangling.penguin` | Compiler-lib utilities exported from `libemperorpenguin.penguin-lib` (pass2+/Lib source sets only, NOT Pass1): `emperor.format_penguin_text(text)` — the whole-document formatter the LSP and `penguin-tools format` share; the mangle pair `emperor.demangle_name(sym)` / `emperor.mangle_name(display)` — pretty-print / rebuild generic-specialization names (`mangle(demangle(x)) == x`; non-mangled input passes through like c++filt) |
 
 (`_utils` with `List<T>`/`Queue<T>` and the file I/O externs lives in `EmperorPenguin/src/utils.penguin` — a compiler source, part of every bootstrap, not part of user-program compilations.)
 
@@ -399,6 +406,17 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 - `PenguinProject.load(path)`: Parse `.penguins` INI-style project files
 - `resolve_sources(project_dir)`: Expand glob patterns (`*`, `**`, `?`) to actual `.penguin` file paths
 - Helper functions: `string_ends_with`, `string_starts_with`, `string_trim`, `split_string`, `parse_string_array`, `path_combine`, `get_parent_dir`, `glob_match`, `expand_glob`, `collect_penguin_files`
+
+### penguin-tools (`EmperorPenguin/tools/`, linux `build/linux/penguin-tools`)
+
+A thin CLI over the compiler lib (`--lib build/linux/libemperorpenguin.penguin-lib` — the formatter, the mangle pair and the libmeta reader all come from the lib; the tools only add CLI glue and dogfood the argparse annotations for their own options):
+
+- `demangle|mangle [names...]` — pretty-print / rebuild generic-specialization names (`emperor.demangle_name`/`emperor.mangle_name`); reads stdin line-by-line when no names are given (c++filt-style)
+- `meta <file.penguin-lib>` — inspect emperor-libmeta metadata: default summary (lib name/version/deps/instances/symbol counts/verbatim sources), `-s/--symbols` full listing (instances demangled), `--json` raw document
+- `format <file>` — whole-document formatting via `emperor.format_penguin_text`: stdout by default, `-o/--output PATH` writes a file, `-i/--in-place` rewrites in place (mutually exclusive)
+- `help` — command list; unknown commands exit 2
+
+Golden tests: `make tools-test` → `EmperorPenguin/tools/selftest.sh` (includes the mangle/demangle round-trip over every real instance of the compiler lib's own libmeta).
 
 ### Verification Commands
 

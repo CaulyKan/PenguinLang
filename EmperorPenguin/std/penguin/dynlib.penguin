@@ -68,7 +68,7 @@ namespace emperor {
 // module: the compiler's own code is plain penguin.
 // ---------------------------------------------------------------------------
 
-class LibFooter {
+export class LibFooter {
     found: bool = false;
     offset: i64 = 0;
     size: i64 = 0;
@@ -85,7 +85,7 @@ export class LibFile {
     text: string = "";
 }
 
-class LibMeta {
+export class LibMeta {
     name: string = "";
     version: i64 = 0;
     deps: mut _utils.List<string> = new _utils.List<string>();
@@ -151,7 +151,7 @@ fun _string_list_contains(list: _utils.List<string>, value: string) -> bool {
 
 // Read the PENGUINLIB:<offset>:<size>\n footer from the last 128 bytes of the
 // file. Bootstrap-safe (uses only the binary file externs).
-fun read_lib_footer(path: string) -> LibFooter {
+export fun read_lib_footer(path: string) -> LibFooter {
     let footer: mut LibFooter = new LibFooter();
     let size: i64 = _utils.file_size(path);
     if (size <= 0) { return footer; }
@@ -1900,7 +1900,7 @@ class LibDeclMaterializer {
 // Parse the appended emperor-libmeta v1 metadata into a LibMeta. Empty name on
 // failure. Source entries become per-file LibFiles; the symbol table is
 // materialized into ONE declaration pseudo-file appended last.
-fun read_meta(path: string) -> LibMeta {
+export fun read_meta(path: string) -> LibMeta {
     let meta: mut LibMeta = new LibMeta();
     let footer: LibFooter = read_lib_footer(path);
     if (!footer.found) {

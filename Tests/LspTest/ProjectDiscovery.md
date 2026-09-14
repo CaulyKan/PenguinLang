@@ -12,7 +12,7 @@ Project-file discovery e2e against the prebuilt LSP server: didOpen of a real on
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 292\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspproj/main.penguin","languageId":"penguin","version":1,"text":"fun main() {\\n    let v: i64 = libx.lsp_proj_target(1);\\n    println(v);\\n}\\n"}}}Content-Length: 217\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspproj/main.penguin"},"position":{"line":1,"character":25}}}Content-Length: 184\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file://${PENGUIN_ROOT}/Tests/LspTest/fixtures/lspproj/main.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":4,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

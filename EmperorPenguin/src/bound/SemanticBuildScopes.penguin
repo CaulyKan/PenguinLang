@@ -318,11 +318,16 @@ class BuildScopesPass {
             return this.bind_meta_function_def(def.meta_function_def, scope);
         }
         if (def is Definition.meta_class_def) {
-            // Phase 6 v2: `#class` is meta-only — collected into unit B by
-            // collect_meta_class_defs (so #funs can use it); not emitted to runtime.
-            // Bind a placeholder slot (reusing the meta_function_def bound variant,
-            // which IRGenerator/LLVMEmitter skip) so pass_bind_expressions's parallel
-            // unit.definitions[i] <-> result.definitions[i] iteration stays aligned.
+            // Phase 6 v3: `#class` is dual-unit — collected into unit B by
+            // collect_meta_class_defs (so #funs can use it) AND unwrapped into a
+            // normal class_def by MetaRewriter.collect_resolved_definitions so it
+            // also compiles as a real runtime class. This branch is now only a
+            // FALLBACK for meta_class_defs that never passed through the rewrite
+            // (e.g. injected by def-splice paths); bind a placeholder slot
+            // (reusing the meta_function_def bound variant, which
+            // IRGenerator/LLVMEmitter skip) so pass_bind_expressions's parallel
+            // unit.definitions[i] <-> result.definitions[i] iteration stays
+            // aligned.
             let placeholder: mut BoundMetaFunctionDefinition = new BoundMetaFunctionDefinition(def.meta_class_def.name, def.meta_class_def.name);
             return new Option<BoundDefinition>.some(new BoundDefinition.meta_function_def(placeholder));
         }

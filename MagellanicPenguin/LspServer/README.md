@@ -59,7 +59,7 @@ and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 make bootstrap     # build build/bootstrap/pass4 first (one-time per compiler change)
 make lsp           # stage 1: pass4 EmperorPenguinLib.penguins -> build/libemperorpenguin.penguin-lib (via build/linux/)
                    # stage 2: pass4 --enable-coroutine LspServer.penguins --lib build/libemperorpenguin.penguin-lib
-                   #          then `emperor link -enable-meta --consumer-lib ...` -> build/lsp
+                   #          then `emperor link -enable-meta --consumer-lib ...` -> build/linux/penguin-lsp
 ```
 
 The exe is linked with `-enable-meta`: the embedded compiler JITs `#fun` meta
@@ -69,7 +69,7 @@ exe via `-rdynamic`. MetaEngine failures (no JIT, missing unit-B base sources)
 throw a catchable error instead of exit(1) — the server degrades to a
 diagnostic and survives (Tests/LspTest/MetaFun*.md, SelfHostProjectModeLibChain.md).
 
-The server links the compiler as a shared library: `build/lsp` contains only the 15 LSP
+The server links the compiler as a shared library: `build/linux/penguin-lsp` contains only the 15 LSP
 modules (~0.8 MB) and calls into `libemperorpenguin.penguin-lib` (~14 MB, built from
 `EmperorPenguinLib.penguins`) for all compiler work — `SONAME libemperorpenguin.penguin-lib`
 + `rpath $ORIGIN`, so the exe + lib pair in `build/` is relocatable and `make publish`
@@ -77,7 +77,7 @@ copies both into `server/linux/`. Both stages have content-addressed caches (key
 pass3 + the respective source sets; the lsp key includes the lib artifact). The test
 runner's **Prebuilt** backend runs the exe without recompiling: `Tests/LspTest/SessionLifecycle.md`
 feeds a full JSON-RPC session on stdin and asserts byte-exact frames + exit code
-(`Apply To: Prebuilt`, `Run Args: build/lsp`).
+(`Apply To: Prebuilt`, `Run Args: build/linux/penguin-lsp`).
 
 ### Windows
 
@@ -190,5 +190,5 @@ file-namespace semantics) — the fixtures under `Tests/LspTest/fixtures/` show 
 
 The extension client (`vscode/client/src/extension.ts`) starts `PENGUINLANG_LSPSERVER_PATH`
 if set, else `server/<platform>/MagellanicPenguinLSP(.exe)`. `make publish` copies
-`build/lsp` there (linux) together with the bundled stdlib; the windows server binary
+`build/linux/penguin-lsp` there (linux) together with the bundled stdlib; the windows server binary
 comes from `make lsp TARGET=win` (cross-compiled from linux or built natively).

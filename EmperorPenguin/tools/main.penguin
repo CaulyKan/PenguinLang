@@ -1,0 +1,46 @@
+// penguin-tools entry: subcommand dispatch (demangle | mangle | meta |
+// format | help). argv[0] selects the subcommand; each module parses the
+// REMAINING argv through std.parse_args_after_subcommand (dogfooding the
+// #arg/#pos_arg annotations of the argparse stdlib).
+namespace tools {
+
+fun print_tools_usage() {
+    println("penguin-tools — PenguinLang CLI utilities");
+    println("");
+    println("Usage: penguin-tools <command> [OPTIONS] [ARGS]...");
+    println("");
+    println("Commands:");
+    println("  demangle        pretty-print mangled specialization names (c++filt-like; reads stdin when no names given)");
+    println("  mangle          rebuild a mangled symbol from its demangled spelling");
+    println("  meta            inspect a .penguin-lib's emperor-libmeta metadata");
+    println("  format          format .penguin source files");
+    println("  help            show this help");
+    println("");
+    println("Run `penguin-tools <command> --help` for command details.");
+}
+
+initial {
+    let args: mut std.Vector<string> = std.argv();
+    if (args.size() == 0) {
+        print_tools_usage();
+        exit(2);
+    }
+    let sub: string = args.at(0).some;
+    if (sub == "demangle") {
+        run_demangle();
+    } else if (sub == "mangle") {
+        run_mangle();
+    } else if (sub == "meta") {
+        run_meta();
+    } else if (sub == "format") {
+        run_format();
+    } else if (sub == "help") {
+        print_tools_usage();
+    } else {
+        eprintln("error: unknown command: '" + sub + "'");
+        eprintln("Run `penguin-tools help` for the list of commands.");
+        exit(2);
+    }
+}
+
+}

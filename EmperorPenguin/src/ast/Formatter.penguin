@@ -1,0 +1,430 @@
+// Whole-document source formatter — the single implementation shared by the
+// LSP (textDocument/formatting) and the `penguin-tools format` subcommand.
+// Migrated from MagellanicPenguin/LspServer/LspQuery.penguin; the LSP now
+// calls emperor.format_penguin_text from the compiler lib instead of keeping
+// a private copy.
+//
+// The formatter is lexically faithful: it re-emits the token stream with
+// normalized spacing/indentation and preserves comments (pre-scanned from
+// the raw text — the lexer drops them) in source order.
+//
+// Two intentional non-normalizations:
+//   - generic type brackets glue: `std.Vector<string>`, `cast<Foo<T>>` — a
+//     bounded lookahead scan (_fmt_scan_generic) classifies each `<` as a
+//     TYPE bracket vs a comparison operator, so `while (i < n)` keeps its
+//     spaces while generics never gain any;
+//   - `#`-meta code is emitted VERBATIM, sliced from the original source
+//     (`#fun ... { }`, `#class ... { }`, `#specializing ... { }` and
+//     `#name(...)` calls incl. a trailing `{ ... }` block) — user intent
+//     inside meta code is hard to infer. Compile-time control flow
+//     (#if/#elif/#else/#for/#while/#break/#continue) and #template still
+//     format normally.
+//
+// NOT part of EmperorPenguinPass1.penguins (it is a pure utility, nothing in
+// the compiler calls it, and the `export` mark is not ANTLR-safe): it rides
+// the pass2+/Lib source sets, so the lib exports it for LSP/tools consumers.
+namespace emperor {
+
+export fun format_penguin_text(text: string) -> string {
+    // Merge lexer tokens and preserved comments in source order.
+    let items: mut _utils.List<FmtItem> = collect_comments(text);
+    let mut lexer = new Lexer(text, "");
+    let tokens: _utils.List<Token> = lexer.tokenize();
+    for (let t in tokens) {
+        if (t.token_type is TokenType.EOF) { continue; }
+        items.push(make_fmt_item(t.location.line, t.location.col, t.text, false));
+    }
+    fmt_items_sorted(items);
+
+    // 1-based line -> offset of its first character (verbatim meta slices).
+    let line_starts: mut _utils.List<i64> = new _utils.List<i64>();
+    line_starts.push(0);
+    let text_len: i64 = string_length(text);
+    let li: mut i64 = 0;
+    while (li < text_len) {
+        if (string_char_at(text, li) == "\n") { line_starts.push(li + 1); }
+        li = li + 1;
+    }
+
+    let sb: mut StringBuilder = new StringBuilder();
+    let depth: mut i64 = 0;
+    let paren_depth: mut i64 = 0;
+    // Angle-bracket suppression: inside the <...> of a TYPE bracket no
+    // spaces are emitted around < , > (openers classified per-token by the
+    // _fmt_scan_generic lookahead).
+    let angle_depth: mut i64 = 0;
+    let prev: mut string = "";
+    let prev_line: mut i64 = 0;
+    let at_line_start: mut bool = true;
+    let total: i64 = cast<i64>(items.size());
+    let i: mut i64 = 0;
+    while (i < total) {
+        let it: FmtItem = items.at(cast<u64>(i)).some;
+        let tok: string = it.text;
+
+        // Preserved `#`-meta region: emit the original source slice
+        // verbatim and skip its items.
+        if (tok == "#") {
+            let region_end: i64 = _fmt_meta_region_end(items, i);
+            if (region_end > i) {
+                // Blank-line preservation (same rule as the normal path).
+                if (!at_line_start && prev != "" && it.line >= prev_line + 2 && depth > 0 && prev != "{") {
+                    sb.append("\n\n");
+                    at_line_start = true;
+                }
+                if (at_line_start) {
+                    let k2: mut i64 = 0;
+                    while (k2 < depth) {
+                        sb.append("    ");
+                        k2 = k2 + 1;
+                    }
+                    at_line_start = false;
+                } else {
+                    // mid-expression join: `#` glues after punctuation
+                    // ((`#call(...)`), takes a space after words (= #call).
+                    let space: mut bool = prev != "" && !no_space_after(prev);
+                    if (space) { sb.append(" "); }
+                }
+                let start_off: i64 = _fmt_offset_at(line_starts, it);
+                let end_off: mut i64 = text_len;
+                if (region_end < total) {
+                    end_off = _fmt_offset_at(line_starts, items.at(cast<u64>(region_end)).some);
+                }
+                if (end_off < start_off) { end_off = start_off; }
+                let slice: string = string_slice(text, start_off, end_off - start_off);
+                // Drop trailing whitespace: if the slice runs into the next
+                // line, cut right after the last newline (the next token's
+                // indentation is re-emitted from `depth`); a single-line
+                // slice loses its trailing spaces (the join rules decide).
+                let cut: mut i64 = string_length(slice);
+                let k: mut i64 = cut - 1;
+                let saw_nl: mut bool = false;
+                while (k >= 0) {
+                    let ch: string = string_char_at(slice, k);
+                    if (ch == "\n") { saw_nl = true; cut = k + 1; break; }
+                    if (ch == " " || ch == "\t" || ch == "\r") { k = k - 1; continue; }
+                    break;
+                }
+                if (saw_nl) {
+                    sb.append(string_slice(slice, 0, cut));
+                    at_line_start = true;
+                } else {
+                    sb.append(slice);
+                    at_line_start = false;
+                }
+                let last: FmtItem = items.at(cast<u64>(region_end - 1)).some;
+                prev = last.text;
+                prev_line = last.line;
+                i = region_end;
+                continue;
+            }
+        }
+
+        // Comment classification is TEXT-based (the merged stream's only
+        // items starting with "//" or "/*" are the preserved comments).
+        let is_comment_item: bool = string_find(tok, "//") == 0 || string_find(tok, "/*") == 0;
+        let is_line_comment: bool = string_find(tok, "//") == 0;
+        // Blank-line preservation: a gap of >= 2 lines between items keeps
+        // one blank line (never right after an opening brace).
+        if (!at_line_start && prev != "" && it.line >= prev_line + 2 && depth > 0 && prev != "{") {
+            sb.append("\n\n");
+            at_line_start = true;
+        }
+        if (tok == "}") {
+            depth = depth - 1;
+            if (depth < 0) { depth = 0; }
+        }
+        // Hard newline before a closing brace / a column-0 comment.
+        if (!at_line_start && (tok == "}" || (is_comment_item && it.col == 1 && prev != "{" && prev != ""))) {
+            sb.append("\n");
+            at_line_start = true;
+        }
+        if (at_line_start) {
+            let k: mut i64 = 0;
+            while (k < depth) {
+                sb.append("    ");
+                k = k + 1;
+            }
+            at_line_start = false;
+        } else {
+            // Join spacing: glue punctuation and type brackets, space words.
+            let space: mut bool = prev != "" && !no_space_before(tok) && !no_space_after(prev);
+            if (space && tok == "(" && !space_before_lparen(prev)) { space = false; }
+            if (space && tok == "<" && _fmt_scan_generic(items, i)) { space = false; }
+            if (space && angle_depth > 0 && (tok == "<" || tok == ">" || tok == ",")) { space = false; }
+            if (space && prev == "<" && angle_depth > 0) { space = false; }
+            if (space && tok == ">" && angle_depth >= 1) { space = false; }
+            if (space) { sb.append(" "); }
+        }
+        sb.append(tok);
+        // Angle-bracket bookkeeping AFTER emitting (a `<` classified as a
+        // type bracket by the lookahead opens one; every `>` closes one).
+        if (angle_depth > 0 && tok == ">") { angle_depth = angle_depth - 1; }
+        if (tok == "<" && _fmt_scan_generic(items, i)) { angle_depth = angle_depth + 1; }
+        // Hard newline after braces / statement semicolons / line comments.
+        let force_nl: mut bool = false;
+        if (tok == "{") {
+            depth = depth + 1;
+            force_nl = true;
+        } else if (tok == "}") {
+            force_nl = true;
+        } else if (tok == ";" && paren_depth == 0) {
+            force_nl = true;
+        } else if (is_line_comment) {
+            force_nl = true;
+        }
+        if (force_nl && i + 1 < total) {
+            sb.append("\n");
+            at_line_start = true;
+        }
+        if (tok == "(") { paren_depth = paren_depth + 1; }
+        if (tok == ")") { paren_depth = paren_depth - 1; if (paren_depth < 0) { paren_depth = 0; } }
+        prev = tok;
+        prev_line = it.line;
+        i = i + 1;
+    }
+    if (!at_line_start) { sb.append("\n"); }
+    return sb.to_string();
+}
+
+// Bounded lookahead from the '<' at items[open_idx]: true when it opens a
+// TYPE bracket (generic args / cast<T>), false when it is a comparison
+// operator. The scan runs to the matching '>' at depth 0 and aborts on any
+// token that can never appear inside a type argument list (parens, braces,
+// statement separators, logical/comparison operators) — which resolves the
+// classic `if (a < b)` / `a < b && c > d` shapes to comparisons. Comments
+// are transparent. A `Foo<A, B>`-style comma continues the scan (the
+// pathological `f(a < b, c > d)` call classifies as a generic — the glued
+// output is still the same token stream).
+fun _fmt_scan_generic(items: _utils.List<FmtItem>, open_idx: i64) -> bool {
+    let n: i64 = cast<i64>(items.size());
+    let depth: mut i64 = 1;
+    let j: mut i64 = open_idx + 1;
+    let steps: mut i64 = 0;
+    while (j < n && steps < 128) {
+        let it: FmtItem = items.at(cast<u64>(j)).some;
+        if (!it.is_comment) {
+            let t: string = it.text;
+            if (t == "<") { depth = depth + 1; }
+            else if (t == ">") {
+                depth = depth - 1;
+                if (depth == 0) { return true; }
+            }
+            else if (t == "(" || t == ")" || t == ";" || t == "{" || t == "}"
+                || t == "&&" || t == "||" || t == "==" || t == "!=" || t == "<=" || t == ">=") {
+                return false;
+            }
+        }
+        j = j + 1;
+        steps = steps + 1;
+    }
+    return false;
+}
+
+// Index one past the last item of the verbatim-preserved meta region whose
+// '#' is at items[start]; -1 = format the construct normally.
+//   preserved: #fun ... { } | #fun ... ;   #class ... { }
+//              #specializing ... { }       #name(...) [ { ... } ]
+//   normal:    #if/#elif/#else/#for/#while/#break/#continue and #template
+fun _fmt_meta_region_end(items: _utils.List<FmtItem>, start: i64) -> i64 {
+    let n: i64 = cast<i64>(items.size());
+    let j: mut i64 = start + 1;
+    while (j < n && items.at(cast<u64>(j)).some.is_comment) { j = j + 1; }
+    if (j >= n) { return -1; }
+    let name: string = items.at(cast<u64>(j)).some.text;
+    if (name == "if" || name == "elif" || name == "else" || name == "for"
+        || name == "while" || name == "break" || name == "continue"
+        || name == "template") {
+        return -1;
+    }
+    if (name == "fun") {
+        // Skip the parameter list (a lambda default value's braces live
+        // inside it), then the body's '{ ... }' or the declaration ';'.
+        let k: mut i64 = j + 1;
+        while (k < n) {
+            if (items.at(cast<u64>(k)).some.is_comment) { k = k + 1; continue; }
+            let t: string = items.at(cast<u64>(k)).some.text;
+            if (t == "(") {
+                let after: i64 = _fmt_match_forward(items, k, "(", ")");
+                if (after < 0) { return -1; }
+                k = after;
+                continue;
+            }
+            if (t == "{") { return _fmt_match_forward(items, k, "{", "}"); }
+            if (t == ";") { return k + 1; }
+            k = k + 1;
+        }
+        return -1;
+    }
+    if (name == "class" || name == "specializing") {
+        let k2: mut i64 = j + 1;
+        while (k2 < n) {
+            if (items.at(cast<u64>(k2)).some.is_comment) { k2 = k2 + 1; continue; }
+            let t2: string = items.at(cast<u64>(k2)).some.text;
+            if (t2 == "{") { return _fmt_match_forward(items, k2, "{", "}"); }
+            if (t2 == ";" || t2 == "(" || t2 == ")") { return -1; }
+            k2 = k2 + 1;
+        }
+        return -1;
+    }
+    // Any other identifier: a meta call — '#name(' ... ')' plus an optional
+    // trailing '{ ... }' block directly after the call.
+    let nj: mut i64 = j + 1;
+    while (nj < n && items.at(cast<u64>(nj)).some.is_comment) { nj = nj + 1; }
+    if (nj >= n || items.at(cast<u64>(nj)).some.text != "(") { return -1; }
+    let end: i64 = _fmt_match_forward(items, nj, "(", ")");
+    if (end < 0) { return -1; }
+    let tb: mut i64 = end;
+    while (tb < n && items.at(cast<u64>(tb)).some.is_comment) { tb = tb + 1; }
+    if (tb < n && items.at(cast<u64>(tb)).some.text == "{") {
+        let end2: i64 = _fmt_match_forward(items, tb, "{", "}");
+        if (end2 > 0) { return end2; }
+    }
+    return end;
+}
+
+// Index one past the token matching the open at open_idx (comments are
+// transparent — their text may contain any brackets); -1 when the close
+// never comes.
+fun _fmt_match_forward(items: _utils.List<FmtItem>, open_idx: i64, open: string, close: string) -> i64 {
+    let n: i64 = cast<i64>(items.size());
+    let depth: mut i64 = 0;
+    let k: mut i64 = open_idx;
+    while (k < n) {
+        let it: FmtItem = items.at(cast<u64>(k)).some;
+        if (!it.is_comment) {
+            if (it.text == open) { depth = depth + 1; }
+            else if (it.text == close) {
+                depth = depth - 1;
+                if (depth == 0) { return k + 1; }
+            }
+        }
+        k = k + 1;
+    }
+    return -1;
+}
+
+// Raw-text offset of an item's first character (1-based line/col basis,
+// shared by the lexer and collect_comments).
+fun _fmt_offset_at(line_starts: _utils.List<i64>, it: FmtItem) -> i64 {
+    if (it.line < 1 || it.line > cast<i64>(line_starts.size())) { return 0; }
+    return line_starts.at(cast<u64>(it.line - 1)).some + it.col - 1;
+}
+
+// One formatting atom: either a lexer token or a preserved comment.
+class FmtItem {
+    line: i64 = 0;
+    col: i64 = 0;
+    text: string = "";
+    is_comment: bool = false;
+
+    fun new(mut this) {}
+}
+fun make_fmt_item(line: i64, col: i64, text: string, is_comment: bool) -> mut FmtItem {
+    let it: mut FmtItem = new FmtItem();
+    it.line = line;
+    it.col = col;
+    it.text = text;
+    it.is_comment = is_comment;
+    return it;
+}
+
+// Comment spans of the raw text (line + block), skipping string literals.
+// Positions are in the EP lexer basis (1-based line/col).
+fun collect_comments(text: string) -> mut _utils.List<FmtItem> {
+    let out: mut _utils.List<FmtItem> = new _utils.List<FmtItem>();
+    let n: i64 = string_length(text);
+    let i: mut i64 = 0;
+    let line: mut i64 = 1;
+    let col: mut i64 = 1;
+    while (i < n) {
+        let c: string = string_char_at(text, i);
+        if (c == "\"") {
+            i = i + 1;
+            col = col + 1;
+            while (i < n) {
+                let sc: string = string_char_at(text, i);
+                if (sc == "\\" && i + 1 < n) {
+                    i = i + 2;
+                    col = col + 2;
+                    continue;
+                }
+                if (sc == "\n") { line = line + 1; col = 1; } else { col = col + 1; }
+                i = i + 1;
+                if (sc == "\"") { break; }
+            }
+            continue;
+        }
+        if (c == "/" && i + 1 < n && string_char_at(text, i + 1) == "/") {
+            let start_col: i64 = col;
+            let start_line: i64 = line;
+            let sb: mut StringBuilder = new StringBuilder();
+            while (i < n && string_char_at(text, i) != "\n") {
+                sb.append(string_char_at(text, i));
+                i = i + 1;
+                col = col + 1;
+            }
+            out.push(make_fmt_item(start_line, start_col, sb.to_string(), true));
+            continue;
+        }
+        if (c == "/" && i + 1 < n && string_char_at(text, i + 1) == "*") {
+            let start_col: i64 = col;
+            let start_line: i64 = line;
+            let sb: mut StringBuilder = new StringBuilder();
+            while (i < n) {
+                let bc: string = string_char_at(text, i);
+                if (bc == "*" && i + 1 < n && string_char_at(text, i + 1) == "/") {
+                    sb.append("*/");
+                    i = i + 2;
+                    col = col + 2;
+                    break;
+                }
+                sb.append(bc);
+                if (bc == "\n") { line = line + 1; col = 1; } else { col = col + 1; }
+                i = i + 1;
+            }
+            out.push(make_fmt_item(start_line, start_col, sb.to_string(), true));
+            continue;
+        }
+        if (c == "\n") { line = line + 1; col = 1; } else { col = col + 1; }
+        i = i + 1;
+    }
+    return out;
+}
+
+fun fmt_items_sorted(items: mut _utils.List<FmtItem>) {
+    // Insertion sort (formatting inputs are small).
+    let n: i64 = cast<i64>(items.size());
+    let i: mut i64 = 1;
+    while (i < n) {
+        let key: mut FmtItem = items.at(cast<u64>(i)).some;
+        let j: mut i64 = i - 1;
+        while (j >= 0) {
+            let a: FmtItem = items.at(cast<u64>(j)).some;
+            let before: bool = a.line < key.line || (a.line == key.line && a.col < key.col);
+            if (before) { break; }
+            items.set(cast<u64>(j + 1), a);
+            j = j - 1;
+        }
+        items.set(cast<u64>(j + 1), key);
+        i = i + 1;
+    }
+}
+
+fun no_space_before(tok: string) -> bool {
+    return tok == ";" || tok == "," || tok == ")" || tok == "]" || tok == "}" || tok == ".";
+}
+
+fun no_space_after(tok: string) -> bool {
+    return tok == "(" || tok == "[" || tok == "." || tok == "#";
+}
+
+fun space_before_lparen(prev: string) -> bool {
+    // `if (`, `while (`, `for (`, `catch (`, `elif (` keep the space; calls,
+    // declarations and casts glue to their argument list.
+    return prev == "if" || prev == "while" || prev == "for" || prev == "catch"
+        || prev == "elif" || prev == "return" || prev == "wait" || prev == "connect"
+        || prev == "emit" || prev == "on";
+}
+
+}

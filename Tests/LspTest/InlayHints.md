@@ -12,7 +12,7 @@ textDocument/inlayHint e2e against the prebuilt LSP server: the document's `let`
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 360\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"fun compute() -> i64 {\\n    let total = 41;\\n    let name = \\"x\\";\\n    if (total < 100) {\\n        let inner = total + 1;\\n        return inner;\\n    }\\n    return 0;\\n}\\ninitial {\\n    compute();\\n}\\n"}}}Content-Length: 197\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin"},"range":{"start":{"line":0,"character":0},"end":{"line":20,"character":0}}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

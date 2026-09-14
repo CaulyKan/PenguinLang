@@ -1,0 +1,45 @@
+// `penguin-tools demangle|mangle` — thin CLI over the compiler lib's mangle
+// truth (emperor.demangle_name / emperor.mangle_name, src/bound/Mangling.
+// penguin, the inverse pair of BoundType's base62 mangle). Names come from
+// the positional args; with none, lines are read from stdin (c++filt
+// behavior, via std.io.stdin_lines).
+namespace tools {
+
+class NameOptions {
+    #pos_arg("mangled (or demangled) names; reads stdin when omitted")
+    names: mut std.Vector<string>;
+}
+
+fun collect_names() -> mut std.Vector<string> {
+    let opts: mut tools.NameOptions = std.parse_args_after_subcommand<tools.NameOptions>();
+    if (opts.names.size() > 0) {
+        return opts.names;
+    }
+    let mut from_stdin = new std.Vector<string>();
+    for (let line : string in std.io.stdin_lines()) {
+        if (string_length(line) > 0) {
+            from_stdin.push(line);
+        }
+    }
+    return from_stdin;
+}
+
+fun run_demangle() {
+    let names: mut std.Vector<string> = collect_names();
+    let i: mut u64 = 0;
+    while (i < names.size()) {
+        println(emperor.demangle_name(names.at(i).some));
+        i = i + 1;
+    }
+}
+
+fun run_mangle() {
+    let names: mut std.Vector<string> = collect_names();
+    let i: mut u64 = 0;
+    while (i < names.size()) {
+        println(emperor.mangle_name(names.at(i).some));
+        i = i + 1;
+    }
+}
+
+}

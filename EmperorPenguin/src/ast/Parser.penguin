@@ -2594,7 +2594,7 @@ fun _mark_ast_exported(def: Definition) {
             return new Statement.meta_continue_stmt(node);
         }
 
-        // metaCallDefinition: '#' identifier '(' expression? (',' expression)* ')' ';';
+        // metaCallDefinition: '#' identifier '(' expression? (',' expression)* ')' (classDeclaration)? ';';
         // Classification: Sequence
         fun parse_metaCallDefinition(this) -> Definition {
             let start_loc: SourceLocation = this.cur_loc();
@@ -2616,9 +2616,79 @@ fun _mark_ast_exported(def: Definition) {
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.capture_meta_trailing_block(mc);
             }
-            this.stream.expect(new TokenType.Semicolon());
+            // Annotation form: `#name(args) <field>;` — a class-member-level
+            // meta call written WITHOUT the `;` after the call (e.g.
+            // `#arg("help") verbose: i64 = 0;`). If the next token starts a
+            // field declaration (an identifier) instead of ending the call,
+            // parse the field and hand it to the callee #fun: the field NAME
+            // is appended as a string-literal argument (the #fun's signature
+            // has `field: string` just before its last parameter), and the
+            // field's raw token text goes into trailing_block_raw so an
+            // `unstructured_ast` last parameter receives it. The #fun then
+            // OWNS the field: it must re-emit it (typically together with the
+            // additional definition it generates) via create_definition's
+            // multi-definition form. Previously a parse error; the
+            // `#xxx();` / `#xxx(){...};` forms are unaffected.
+            let captured_annotation: mut bool = false;
+            if (this.stream.peek_type() is TokenType.Identifier && mc.trailing_block_raw.is_none()) {
+                let span_start: i64 = this.stream.pos;
+                let field_def: Definition = this.parse_classDeclaration();
+                if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); }
+                if (field_def is Definition.class_field) {
+                    captured_annotation = true;
+                    mc.trailing_definition = new Option<Definition>.some(field_def);
+                    let name_lit: StringLiteralExpression = new StringLiteralExpression("\"" + field_def.class_field.name + "\"");
+                    mc.arguments.push(new Expression.string_literal(name_lit));
+                    let raw_sb: mut StringBuilder = new StringBuilder();
+                    let ti: mut i64 = span_start;
+                    let raw_first: mut bool = true;
+                    while (ti < this.stream.pos) {
+                        let t: Token = this.stream.tokens.at(cast<u64>(ti)).some;
+                        if (!raw_first) { raw_sb.append(" "); }
+                        raw_sb.append(t.text);
+                        raw_first = false;
+                        ti = ti + 1;
+                    }
+                    mc.trailing_block_raw = new Option<string>.some(raw_sb.to_string());
+                }
+            }
+            if (!captured_annotation) {
+                this.stream.expect(new TokenType.Semicolon());
+            }
             node.call = new Option<Expression>.some(new Expression.meta_call(mc));
             return new Definition.meta_call_def(node);
+        }
+
+        // create_definition's entry: a compilation unit whose definition
+        // dispatcher ALSO accepts class-member-shaped definitions (a bare
+        // `name : type = init ;` field). Everything parse_compilationUnit
+        // accepts still parses identically; the Identifier branch is the only
+        // addition (top-level defs never start with a plain identifier —
+        // globals are `let`-led), so #create_definition can round-trip fields
+        // and mixed lists like "fun marker() ... field ;".
+        fun parse_definitions_unit(this) -> CompilationUnit {
+            let unit: CompilationUnit = new CompilationUnit();
+            let prev_pos: mut i64 = -1;
+            while (!(this.stream.is_at_end())) {
+                if (this.stream.peek_type() is TokenType.Semicolon) {
+                    this.stream.advance();
+                    continue;
+                }
+                if (this.stream.pos == prev_pos) {
+                    this.report_error("parser stuck at token: " + this.stream.peek().to_string());
+                    break;
+                }
+                prev_pos = this.stream.pos;
+                let next: Token = this.stream.peek();
+                if (next.token_type is TokenType.Identifier) {
+                    let d: Definition = this.parse_classDeclaration();
+                    if (this.stream.peek_type() is TokenType.Semicolon) { this.stream.advance(); }
+                    unit.definitions.push(d);
+                } else {
+                    unit.definitions.push(this.parse_namespaceDeclaration());
+                }
+            }
+            return unit;
         }
 
         // thisParameter: 'mut'? 'this';

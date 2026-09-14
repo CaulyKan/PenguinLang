@@ -12,7 +12,7 @@ textDocument/documentSymbol e2e against the prebuilt LSP server: the document's 
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 431\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"namespace demo {\\n    class Greeter {\\n        name : string = \\"\\";\\n        fun greet(this) -> string {\\n            return \\"hi \\" + this.name;\\n        }\\n    }\\n    enum Color { Red; Green; }\\n    fun hello() {\\n        let g : mut Greeter = new Greeter();\\n    }\\n}\\n"}}}Content-Length: 127\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin"}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

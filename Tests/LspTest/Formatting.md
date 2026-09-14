@@ -12,7 +12,7 @@ textDocument/formatting e2e against the prebuilt LSP server: whole-document lexi
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Env: ``
 Stdin: `Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}Content-Length: 52\r\n\r\n{"jsonrpc":"2.0","method":"initialized","params":{}}Content-Length: 320\r\n\r\n{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin","languageId":"penguin","version":1,"text":"namespace   fmt {\\nfun add(a: i64, b: i64) -> i64 {\\n    let s=a+b;  // keep me\\n    return s;\\n}\\n}\\ninitial {\\n        println(cast<string>(fmt.add(1,2)));\\n}\\n"}}}Content-Length: 167\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///tmp/lsp_doc.penguin"},"options":{"tabSize":4,"insertSpaces":true}}}Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":3,"method":"shutdown"}Content-Length: 33\r\n\r\n{"jsonrpc":"2.0","method":"exit"}`
 ExpectedExitCode: 0

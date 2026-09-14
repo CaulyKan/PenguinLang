@@ -32,6 +32,7 @@ interface ICompiler {
     fun parse_arguments(this, code: string) -> i64;           // FunctionCallArguments ast token
     fun get_ast(this, token: i64) -> Expression;              // real node (introspection)
     fun get_current_scope(this) -> BoundType;                 // enclosing class, empty outside
+    fun get_definition_kind(this, token: i64) -> string;      // Definition variant name; "" when not a definition
 }
 
 // The real proxy object. Stateless — every `compiler()` call mints a fresh
@@ -60,6 +61,7 @@ class CompilerContext {
         fun parse_arguments(this, code: string) -> i64 { return emperor.penguin_meta_parse_arguments(code); }
         fun get_ast(this, token: i64) -> Expression { return emperor.penguin_meta_get_ast_expression(token); }
         fun get_current_scope(this) -> BoundType { return emperor.penguin_meta_get_current_scope(); }
+        fun get_definition_kind(this, token: i64) -> string { return emperor.penguin_meta_get_definition_kind(token); }
     }
 }
 

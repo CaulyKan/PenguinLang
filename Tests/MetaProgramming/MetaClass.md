@@ -1,6 +1,6 @@
 # MetaClass
 ## Description
-Phase 6 v2 `#class`: a meta-only, full-capability class (`Acc`, with a mutable field + methods) declared in unit A, routed into unit B, and used by a `#fun` (`use_class`) which instantiates it, calls its methods, and returns an i64. `#class` is NOT emitted to runtime — it lives only in unit B for `#fun`s to use as a compile-time data structure. `#use_class(21)` → `Acc.total = 21 + 21 = 42`. Requires native Pass2/Pass3.
+Phase 6 `#class`: a full-capability class (`Acc`, with a mutable field + methods) declared in unit A and routed into unit B, where a `#fun` (`use_class`) instantiates it, calls its methods, and returns an i64. Since Phase 6 v3 `#class` is dual-unit — it ALSO compiles as a real runtime class (see MetaClassDualUnitA); this test only exercises the unit-B (compile-time) side, where the runtime copy is simply unused. `#use_class(21)` → `Acc.total = 21 + 21 = 42`. Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2

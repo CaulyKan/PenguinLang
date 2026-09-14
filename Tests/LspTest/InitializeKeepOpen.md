@@ -12,7 +12,7 @@ The vscode-shape regression lock for the fd-wake/pipeline scheduling stall: the 
 ```
 
 ## Run LSP
-Args: `build/lsp`
+Args: `build/linux/penguin-lsp`
 Stdin: `Content-Length: 107\n\n{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 44\n\n{"jsonrpc":"2.0","id":8,"method":"shutdown"}Content-Length: 33\n\n{"jsonrpc":"2.0","method":"exit"}`
 StdinClose: false
 ExpectedExitCode: 0

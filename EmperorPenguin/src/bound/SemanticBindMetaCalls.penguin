@@ -176,17 +176,23 @@ class BindMetaCallsPass {
                     }
                     let args: _utils.List<i64> = args_opt.some;
                     let result_i64: mut i64 = this.model.some.meta_engine.call_meta_function_stub(bmf, args);
-                    let def_opt: Option<Definition> = this.model.some.meta_engine.get_ast_definition(cast<u64>(result_i64));
-                    if (def_opt.is_some()) {
-                        let single: mut _utils.List<Definition> = new _utils.List<Definition>();
-                        single.push(def_opt.some);
+                    // The returned token may hold a definition GROUP (a
+                    // multi-definition #create_definition — e.g. an annotation
+                    // #fun returning "generated marker + re-emitted field");
+                    // expand every element in order.
+                    let defs_opt: Option<_utils.List<Definition>> = this.model.some.meta_engine.get_ast_definition_list(cast<u64>(result_i64));
+                    if (defs_opt.is_some()) {
+                        let single: _utils.List<Definition> = defs_opt.some;
+                        let stamp_from: i64 = cast<i64>(out.size());
                         this.model.some.meta_rewriter.collect_resolved_definitions(single, out);
                         // Stamp the CALLING file onto the spliced defs (they
                         // parsed with a synthetic "<meta_...>" filename, which
                         // would otherwise bind them into a synthetic file
-                        // namespace invisible to the user's file).
+                        // namespace invisible to the user's file). Only the
+                        // newly pushed range — earlier entries already carry
+                        // their own owner.
                         let owner_file: string = mc.location.filename;
-                        let oi2: mut i64 = 0;
+                        let oi2: mut i64 = stamp_from;
                         while (oi2 < cast<i64>(out.size())) {
                             let od: Definition = out.at(cast<u64>(oi2)).some;
                             set_def_source_file(od, owner_file);
@@ -213,6 +219,15 @@ class BindMetaCallsPass {
         let result: mut _utils.List<i64> = new _utils.List<i64>();
         let nparams: i64 = cast<i64>(bmf.parameters.size());
         let nargs: i64 = cast<i64>(expr.arguments.size());
+        // Too FEW arguments is a compile error (unless a trailing '{ ... }'
+        // block fills the last unstructured_ast parameter, checked below):
+        // the JIT caller-stub bakes exactly the given args, so a missing
+        // argument would reach the callee as garbage (observed as a segfault
+        // for a def-position call like `#g();` against `#fun g(s: string)`).
+        if (nargs < nparams && expr.trailing_block_raw.is_none()) {
+            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " has too few arguments (expected " + cast<string>(nparams) + ", got " + cast<string>(nargs) + ")", expr.location);
+            return new Option<_utils.List<i64>>.none();
+        }
         let pi: mut i64 = 0;
         while (pi < nargs) {
             if (pi >= nparams) {
@@ -228,9 +243,14 @@ class BindMetaCallsPass {
             result.push(v.some);
             pi = pi + 1;
         }
-        // Trailing `{ ... }` blocks are supported ONLY for an `unstructured_ast`
-        // last parameter — the block is captured as raw text and delivered as a
-        // string. `ast` parameters take their argument positionally instead.
+        // Trailing `{ ... }` blocks — and the annotation form's captured
+        // trailing DEFINITION — are delivered ONLY to an `unstructured_ast`
+        // last parameter, as raw text. `ast` parameters take their argument
+        // positionally instead. When the trailing text has no unfilled
+        // parameter to land in, that's an error, not a silent drop: an
+        // annotation #fun whose signature lacks the trailing
+        // `src: unstructured_ast` would otherwise consume the field without
+        // ever seeing (or re-emitting) it.
         if (expr.trailing_block_raw.is_some()) {
             if (nparams >= 1 && nargs < nparams) {
                 let last_kind: string = bmf.parameters.at(cast<u64>(nparams - 1)).some.kind;
@@ -242,6 +262,9 @@ class BindMetaCallsPass {
                     this.model.some.report_error(new ErrorCode.E_META(), "a trailing '{ ... }' block is only supported for an 'unstructured_ast' last parameter of #" + bmf.name + " (last param kind: '" + last_kind + "')", expr.location);
                     return new Option<_utils.List<i64>>.none();
                 }
+            } else {
+                this.model.some.report_error(new ErrorCode.E_META(), "trailing block/definition given to #" + bmf.name + " but no unfilled 'unstructured_ast' parameter remains to receive it", expr.location);
+                return new Option<_utils.List<i64>>.none();
             }
         }
         return new Option<_utils.List<i64>>.some(result);

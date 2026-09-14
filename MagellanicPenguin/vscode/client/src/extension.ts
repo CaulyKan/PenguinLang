@@ -40,7 +40,7 @@ const lspServerPath: Map<string, string> = new Map([
 // emitter binary that sits beside it). On windows a .bat, spawned through
 // the user's terminal.
 const emperorPenguinPath: Map<string, string> = new Map([
-	["linux", "server/linux/emperor"],
+	["linux", "server/linux/emperor_penguin"],
 	["win32", "server\\windows\\emperor.bat"]
 ]);
 

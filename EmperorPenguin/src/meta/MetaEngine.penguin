@@ -139,6 +139,7 @@ class MetaEngine {
             + "    extern fun penguin_meta_create_empty_ast() -> i64;\n"
             + "    extern fun penguin_meta_create_function_ast(name: string, return_type: BoundType, body: string) -> i64;\n"
             + "    extern fun penguin_meta_get_current_scope() -> BoundType;\n"
+            + "    extern fun penguin_meta_get_definition_kind(token: i64) -> string;\n"
             + "    extern fun penguin_meta_activate_impl(slot: i64);\n"
             // M1 (#template -> #fun desugar): the synthesized `_template_<name>`
             // meta functions (one per #template class/enum/interface) call this
@@ -1184,9 +1185,50 @@ class MetaEngine {
                 if (t.kind == "definition") {
                     return t.def;
                 }
+                // A multi-definition group used where a single definition is
+                // expected resolves to its FIRST element (the common case:
+                // a group whose later elements are the re-emitted originals).
+                if (t.kind == "definition_group") {
+                    if (cast<i64>(t.defs.size()) >= 1) {
+                        return new Option<Definition>.some(t.defs.at(cast<u64>(0)).some);
+                    }
+                }
             }
         }
         return new Option<Definition>.none();
+    }
+
+    // Multi-definition form: #create_definition parses a definition LIST
+    // (e.g. an annotation #fun returning "generated marker + re-emitted
+    // field") and registers all of it under one token; the def-position
+    // splice (try_splice_meta_fun_def) expands the whole group in order.
+    fun register_ast_definition_group(mut this, defs: _utils.List<Definition>) -> u64 {
+        let t: mut AstToken = new AstToken();
+        t.kind = "definition_group";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            t.defs.push(defs.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        this.ast_tokens.push(t);
+        return cast<u64>(this.ast_tokens.size());
+    }
+
+    fun get_ast_definition_list(this, token: u64) -> Option<_utils.List<Definition>> {
+        if (token >= 1) {
+            if (token <= cast<u64>(this.ast_tokens.size())) {
+                let t: AstToken = this.ast_tokens.at(token - 1).some;
+                if (t.kind == "definition_group") {
+                    return new Option<_utils.List<Definition>>.some(t.defs);
+                }
+                if (t.kind == "definition") {
+                    let single: mut _utils.List<Definition> = new _utils.List<Definition>();
+                    single.push(t.def.some);
+                    return new Option<_utils.List<Definition>>.some(single);
+                }
+            }
+        }
+        return new Option<_utils.List<Definition>>.none();
     }
 
     // -----------------------------------------------------------------
@@ -1599,13 +1641,16 @@ class MetaEngine {
 }
 
 // Phase 5c: a kind-tagged slot in MetaEngine's AST registry. Exactly one of
-// expr / def is some, identified by kind ("expression" | "definition"). The
-// shared registry gives globally-unique tokens so a splice-position mismatch
-// is detectable (the kind check fails) rather than silently wrong.
+// expr / def is some, identified by kind ("expression" | "definition" |
+// "definition_group" — the last carries `defs`, the whole list a multi-
+// definition #create_definition registered). The shared registry gives
+// globally-unique tokens so a splice-position mismatch is detectable (the
+// kind check fails) rather than silently wrong.
 class AstToken {
     kind: mut string = "";
     expr: mut Option<Expression> = new Option<Expression>.none();
     def: mut Option<Definition> = new Option<Definition>.none();
+    defs: mut _utils.List<Definition> = new _utils.List<Definition>();
 }
 
 // Locate one of the compiler's own source files for unit B. The historical

@@ -1,0 +1,364 @@
+// Demangle / re-mangle for the unified generic-specialization mangle
+// (see BoundType.penguin — THE truth source):
+//
+//   full name   <global>[.<ns>...].<Short>$<base62 payload>
+//   payload     = base62_encode_string("<global>[.<ns>...].Base<arg1,arg2,...>")
+//   arg forms   type: Base[..<..>] (recursive, no spaces)
+//               i64:<dec> | bool:t/f | string:<text> | double:<text> | obj:<name>
+//
+// demangle_name pretty-prints such a symbol (strips the "<global>." root,
+// humanizes value args: i64:5 -> 5, bool:t -> true, string:abc -> "abc");
+// non-mangled input is echoed unchanged (c++filt behavior). mangle_name
+// strictly accepts demangle_name's output form and rebuilds the symbol, so
+//   mangle_name(demangle_name(x)) == x
+// for every real specialization name (obj: value args are the exception —
+// their pretty form is indistinguishable from a type name and does not
+// round-trip; they are re-encoded as plain types).
+//
+// NOT part of EmperorPenguinPass1.penguins (pure utility, `export` mark is
+// not ANTLR-safe): it rides the pass2+/Lib source sets and is exported from
+// libemperorpenguin for LSP/tools consumers. base62_encode_string lives in
+// BoundType.penguin (same namespace) — the encode/decode pair stays split
+// beside the mangle implementation.
+namespace emperor {
+
+// Printable ASCII 32..126 as one lookup string (payload bytes are always in
+// this range; NUL only appears as trailing group padding).
+fun _mangle_ascii_char(code: i64) -> string {
+    let table: string = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    if (code < 32) { return ""; }
+    if (code > 126) { return ""; }
+    return string_char_at(table, code - 32);
+}
+
+fun _mangle_base62_digit(code: i64) -> i64 {
+    if (code >= 48 && code <= 57) { return code - 48; }
+    if (code >= 65 && code <= 90) { return code - 65 + 10; }
+    if (code >= 97 && code <= 122) { return code - 97 + 36; }
+    return 0;
+}
+
+// Decode fixed-width base62 groups back to the payload text: every 10 chars
+// -> u56 -> 7 little-endian bytes. A zero byte is padding (the serialization
+// alphabet is printable ASCII, so padding is unambiguous) — skip the rest of
+// the group. All arithmetic stays in i64 (56 bits fit comfortably).
+export fun base62_decode_string(s: string) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    let n: i64 = string_length(s);
+    let groups: i64 = n / 10;
+    let g: mut i64 = 0;
+    while (g < groups) {
+        let val: mut i64 = 0;
+        let j: mut i64 = 0;
+        while (j < 10) {
+            val = val * 62 + _mangle_base62_digit(string_char_code_at(s, g * 10 + j));
+            j = j + 1;
+        }
+        let b: mut i64 = 0;
+        while (b < 7) {
+            let code: i64 = rshift(val, b * 8) % 256;
+            if (code == 0) { b = 7; continue; }
+            sb.append(_mangle_ascii_char(code));
+            b = b + 1;
+        }
+        g = g + 1;
+    }
+    return sb.to_string();
+}
+
+// ---- demangle ----
+
+// Pretty one serialized argument.
+fun _mangle_pretty_arg(arg: string) -> string {
+    if (string_starts_with_at(arg, 0, "i64:")) {
+        return string_substring(arg, 4, string_length(arg) - 4);
+    }
+    if (string_starts_with_at(arg, 0, "bool:t")) { return "true"; }
+    if (string_starts_with_at(arg, 0, "bool:f")) { return "false"; }
+    if (string_starts_with_at(arg, 0, "string:")) {
+        let rest: string = string_substring(arg, 7, string_length(arg) - 7);
+        return "\"" + rest + "\"";
+    }
+    if (string_starts_with_at(arg, 0, "double:")) {
+        return string_substring(arg, 7, string_length(arg) - 7);
+    }
+    if (string_starts_with_at(arg, 0, "obj:")) {
+        return string_substring(arg, 4, string_length(arg) - 4);
+    }
+    return _mangle_pretty_ser(arg);
+}
+
+// Pretty one serialized type: strip the "<global>." root, recurse into args.
+// Malformed input passes through unchanged.
+fun _mangle_pretty_ser(ser: string) -> string {
+    let s: mut string = ser;
+    if (string_starts_with_at(s, 0, "<global>.")) {
+        s = string_substring(s, 9, string_length(s) - 9);
+    }
+    let lt: i64 = string_find(s, "<");
+    if (lt < 0) { return s; }
+    let base: string = string_substring(s, 0, lt);
+    let n: i64 = string_length(s);
+    let depth: mut i64 = 1;
+    let close: mut i64 = -1;
+    let i: mut i64 = lt + 1;
+    while (i < n) {
+        let c: string = string_char_at(s, i);
+        if (c == "<") { depth = depth + 1; }
+        if (c == ">") {
+            depth = depth - 1;
+            if (depth == 0) { close = i; }
+        }
+        if (close >= 0) { break; }
+        i = i + 1;
+    }
+    if (close < 0) { return s; }
+    let args_text: string = string_substring(s, lt + 1, close - lt - 1);
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(base);
+    sb.append("<");
+    let arg_depth: mut i64 = 0;
+    let start: mut i64 = 0;
+    let first: mut bool = true;
+    let k: mut i64 = 0;
+    while (k <= string_length(args_text)) {
+        let at_end: bool = k == string_length(args_text);
+        let is_split: bool = at_end || (arg_depth == 0 && string_char_at(args_text, k) == ",");
+        if (is_split) {
+            if (k > start) {
+                let one: string = string_substring(args_text, start, k - start);
+                if (!first) { sb.append(","); }
+                sb.append(_mangle_pretty_arg(one));
+                first = false;
+            }
+            start = k + 1;
+        } else {
+            let c2: string = string_char_at(args_text, k);
+            if (c2 == "<") { arg_depth = arg_depth + 1; }
+            if (c2 == ">") { arg_depth = arg_depth - 1; }
+        }
+        k = k + 1;
+    }
+    sb.append(">");
+    return sb.to_string();
+}
+
+// Demangle a dotted specialization name, e.g.
+//   <global>.std.Vector$2Fib...  ->  std.Vector<string>
+// The '$'-segment's payload carries the FULL name, so the dotted prefix
+// before it is dropped; following segments (a method suffix) are kept.
+// Input without any '$' segment is returned unchanged (c++filt behavior).
+export fun demangle_name(sym: string) -> string {
+    let n: i64 = string_length(sym);
+    // find the first '.'-segment containing '$'
+    let seg_start: mut i64 = 0;
+    let hit_seg: mut i64 = -1;
+    let hit_dollar: mut i64 = -1;
+    let i: mut i64 = 0;
+    let seg_idx: mut i64 = 0;
+    while (i <= n) {
+        let at_end: bool = i == n;
+        if (at_end || string_char_at(sym, i) == ".") {
+            let j: mut i64 = seg_start;
+            while (j < i) {
+                if (string_char_at(sym, j) == "$") {
+                    if (hit_seg < 0) {
+                        hit_seg = seg_idx;
+                        hit_dollar = j;
+                    }
+                }
+                j = j + 1;
+            }
+            if (hit_seg >= 0 && seg_idx >= hit_seg) {
+                // rebuild: pretty payload of the hit segment + the remaining
+                // segments after it
+                let payload: string = string_substring(sym, hit_dollar + 1, i - hit_dollar - 1);
+                let ser: string = base62_decode_string(payload);
+                let out: mut string = _mangle_pretty_ser(ser);
+                let rest: string = string_substring(sym, i, n - i);
+                return out + rest;
+            }
+            seg_start = i + 1;
+            seg_idx = seg_idx + 1;
+        }
+        i = i + 1;
+    }
+    return sym;
+}
+
+// ---- mangle (the inverse of demangle_name's output form) ----
+
+fun _mangle_is_int_text(t: string) -> bool {
+    let n: i64 = string_length(t);
+    if (n == 0) { return false; }
+    let start: mut i64 = 0;
+    if (string_char_code_at(t, 0) == 45) {
+        if (n == 1) { return false; }
+        start = 1;
+    }
+    let i: mut i64 = start;
+    while (i < n) {
+        let code: i64 = string_char_code_at(t, i);
+        if (code < 48 || code > 57) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fun _mangle_is_double_text(t: string) -> bool {
+    let n: i64 = string_length(t);
+    if (n == 0) { return false; }
+    let digits: mut i64 = 0;
+    let i: mut i64 = 0;
+    if (string_char_code_at(t, 0) == 45) {
+        if (n == 1) { return false; }
+        i = 1;
+    }
+    while (i < n) {
+        let code: i64 = string_char_code_at(t, i);
+        if (code >= 48 && code <= 57) { digits = digits + 1; }
+        else if (code == 46 || code == 101 || code == 69) { /* . or e/E */ }
+        else if (code == 43 || code == 45) {
+            // sign allowed only right after e/E
+            if (i == 0) { return false; }
+            let prev: i64 = string_char_code_at(t, i - 1);
+            if (prev != 101 && prev != 69) { return false; }
+        }
+        else { return false; }
+        i = i + 1;
+    }
+    return digits > 0;
+}
+
+// Primitive registry names serialize BARE (primitive_type_to_string); every
+// class/enum/interface spelling carries the "<global>." root.
+fun _mangle_is_primitive_name(name: string) -> bool {
+    return name == "i8" || name == "i16" || name == "i32" || name == "i64"
+        || name == "u8" || name == "u16" || name == "u32" || name == "u64"
+        || name == "f32" || name == "f64" || name == "float" || name == "double"
+        || name == "bool" || name == "string" || name == "char" || name == "void";
+}
+
+// Re-serialize one pretty argument (demangle_name's arg spelling). A TYPE
+// spelling re-attaches the "<global>." root — the serialization qualifies
+// every non-primitive type FULLY (nested args keep their own root: the
+// payload for Vector<JsonValue> is "<global>.std.Vector<<global>.std.JsonValue>",
+// while primitives ride bare: "…<u8>", "…<string>").
+fun _mangle_unpretty_arg(arg: string) -> string {
+    if (arg == "true") { return "bool:t"; }
+    if (arg == "false") { return "bool:f"; }
+    if (string_starts_with_at(arg, 0, "\"") && string_length(arg) >= 2) {
+        let inner: string = string_substring(arg, 1, string_length(arg) - 2);
+        return "string:" + inner;
+    }
+    if (_mangle_is_int_text(arg)) { return "i64:" + arg; }
+    if (_mangle_is_double_text(arg)) { return "double:" + arg; }
+    // a type: strip pretty ", " separators back to the dense serialization
+    let lt: i64 = string_find(arg, "<");
+    if (lt < 0) {
+        if (_mangle_is_primitive_name(arg)) { return arg; }
+        return "<global>." + arg;
+    }
+    let base: string = string_substring(arg, 0, lt);
+    let n: i64 = string_length(arg);
+    let depth: mut i64 = 1;
+    let close: mut i64 = -1;
+    let i: mut i64 = lt + 1;
+    while (i < n) {
+        let c: string = string_char_at(arg, i);
+        if (c == "<") { depth = depth + 1; }
+        if (c == ">") {
+            depth = depth - 1;
+            if (depth == 0) { close = i; }
+        }
+        if (close >= 0) { break; }
+        i = i + 1;
+    }
+    if (close < 0) {
+        if (_mangle_is_primitive_name(arg)) { return arg; }
+        return "<global>." + arg;
+    }
+    let args_text: string = string_substring(arg, lt + 1, close - lt - 1);
+    let sb: mut StringBuilder = new StringBuilder();
+    if (!_mangle_is_primitive_name(base)) { sb.append("<global>."); }
+    sb.append(base);
+    sb.append("<");
+    let arg_depth: mut i64 = 0;
+    let start: mut i64 = 0;
+    let first: mut bool = true;
+    let k: mut i64 = 0;
+    while (k <= string_length(args_text)) {
+        let at_end: bool = k == string_length(args_text);
+        let is_split: bool = at_end || (arg_depth == 0 && string_char_at(args_text, k) == ",");
+        if (is_split) {
+            if (k > start) {
+                let one: string = string_substring(args_text, start, k - start);
+                if (!first) { sb.append(","); }
+                sb.append(_mangle_unpretty_arg(one));
+                first = false;
+            }
+            start = k + 1;
+        } else {
+            let c2: string = string_char_at(args_text, k);
+            if (c2 == "<") { arg_depth = arg_depth + 1; }
+            if (c2 == ">") { arg_depth = arg_depth - 1; }
+        }
+        k = k + 1;
+    }
+    sb.append(">");
+    return sb.to_string();
+}
+
+// Rebuild the full dotted symbol from a demangle_name spelling, e.g.
+//   std.Vector<string>            ->  <global>.std.Vector$2Fib...
+//   std.Vector<string>.push       ->  <global>.std.Vector$2Fib....push
+export fun mangle_name(display: string) -> string {
+    // split off the optional ".method" suffix (after the matching '>')
+    let typename: mut string = display;
+    let suffix: mut string = "";
+    let lt: i64 = string_find(display, "<");
+    if (lt >= 0) {
+        let n: i64 = string_length(display);
+        let depth: mut i64 = 1;
+        let close: mut i64 = -1;
+        let i: mut i64 = lt + 1;
+        while (i < n) {
+            let c: string = string_char_at(display, i);
+            if (c == "<") { depth = depth + 1; }
+            if (c == ">") {
+                depth = depth - 1;
+                if (depth == 0) { close = i; }
+            }
+            if (close >= 0) { break; }
+            i = i + 1;
+        }
+        if (close >= 0 && close + 1 < n) {
+            typename = string_substring(display, 0, close + 1);
+            suffix = string_substring(display, close + 1, n - close - 1);
+        }
+    }
+    // payload: the fully-qualified serialization of the typename — every
+    // type (top and nested) re-attaches its "<global>." root inside
+    // _mangle_unpretty_arg; the input spelling itself comes from
+    // demangle_name, whose type spellings only differ by ", " separators.
+    let payload: string = _mangle_unpretty_arg(typename);
+    // short base = the segment after the last '.' of the (bare) base name
+    let bare: mut string = typename;
+    let bare_lt: i64 = string_find(typename, "<");
+    if (bare_lt >= 0) { bare = string_substring(typename, 0, bare_lt); }
+    let last_dot: mut i64 = string_find(bare, ".");
+    while (last_dot >= 0) {
+        let nxt: i64 = string_find_from(bare, ".", last_dot + 1);
+        if (nxt < 0) { break; }
+        last_dot = nxt;
+    }
+    let short: mut string = bare;
+    let prefix: mut string = "<global>.";
+    if (last_dot >= 0) {
+        short = string_substring(bare, last_dot + 1, string_length(bare) - last_dot - 1);
+        prefix = "<global>." + string_substring(bare, 0, last_dot + 1);
+    }
+    return prefix + short + "$" + base62_encode_string(payload) + suffix;
+}
+
+}

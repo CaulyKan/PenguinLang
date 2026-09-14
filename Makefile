@@ -10,14 +10,20 @@
 #                           (cross compiled from a linux host by the
 #                           emperor script; native on a windows host)
 #   make lsp                PenguinLang-native LSP server (host platform)
-#   make lsp_linux          build/lsp + build/libemperorpenguin.penguin-lib
+#   make lsp_linux          build/linux/penguin-lsp
 #                           (reuses the release dynlib)
 #   make lsp_win            build/win/MagellanicPenguinLSP.exe monolith
+#   make tools              penguin-tools CLI (host platform)
+#   make tools_linux        build/linux/penguin-tools (links the release dynlib)
+#   make tools_win          build/win/penguin-tools.exe monolith
+#   make tools-test         golden tests for penguin-tools (selftest.sh)
 #   make test               run the cross-compiler markdown suite (Tests/*.md)
 #   make baseline_test      like `test`, but record the run as the new baseline
-#   make publish            deploy release+LSP into the vscode extension,
+#   make unittest           dotnet unit tests (BabyPenguin.Tests + EmperorPenguin.Tests)
+#   make publish            deploy release+LSP+tools into the vscode extension,
 #                           dotnet self-contained publishes, vsix package
-#   make all                bootstrap + lsp + test, in that order (default)
+#   make all                bootstrap + lsp + tools + unittest + test, in that
+#                           order (default)
 #
 # Bootstrap and test always target the HOST (never cross). Cross compiling
 # is linux->win only and is expressed by the explicit *_win targets; the
@@ -68,8 +74,9 @@ else
 endif
 
 .DEFAULT_GOAL := all
-.PHONY: all clean bootstrap lsp release test baseline_test publish \
-        release_linux release_win lsp_linux lsp_win
+.PHONY: all clean bootstrap lsp release test baseline_test publish unittest \
+        release_linux release_win lsp_linux lsp_win tools tools_linux \
+        tools_win tools-test
 
 BS := build/bootstrap
 REL := build/release
@@ -162,13 +169,21 @@ LSP_SRC := MagellanicPenguin/LspServer/LspServer.penguins \
 LSPWIN_SRC := MagellanicPenguin/LspServer/LspServerWin.penguins \
            $(foreach f,$(call proj_sources,MagellanicPenguin/LspServer/LspServerWin.penguins),\
              $(if $(filter ../../%,$(f)),$(patsubst ../../%,%,$(f)),MagellanicPenguin/LspServer/$(f)))
+TOOLS_SRC := EmperorPenguin/tools/PenguinTools.penguins \
+           $(addprefix EmperorPenguin/tools/,$(call proj_sources,EmperorPenguin/tools/PenguinTools.penguins))
+# PenguinToolsWin mixes same-dir tool modules with ../../-relative EmperorPenguin sources.
+TOOLSWIN_SRC := EmperorPenguin/tools/PenguinToolsWin.penguins \
+           $(foreach f,$(call proj_sources,EmperorPenguin/tools/PenguinToolsWin.penguins),\
+             $(if $(filter ../../%,$(f)),$(patsubst ../../%,%,$(f)),EmperorPenguin/tools/$(f)))
 
 # ── all ──────────────────────────────────────────────────────────────
-# Recursive sub-makes give strict bootstrap -> lsp -> test ordering without
-# declaring false dependencies.
+# Recursive sub-makes give strict bootstrap -> lsp -> tools -> unittest ->
+# test ordering without declaring false dependencies.
 all:
 	@$(MAKE) bootstrap
 	@$(MAKE) lsp
+	@$(MAKE) tools
+	@$(MAKE) unittest
 	@$(MAKE) test
 
 # ── clean ────────────────────────────────────────────────────────────
@@ -443,11 +458,11 @@ build/linux/libemperorpenguin.penguin-lib: $(REL)/libemperorpenguin.ll $(REL)/li
 	    -o build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/release-linux-lib.log; \
 	} || { echo "Release FAILED: linux dynlib link" >&2; exit 1; }
 
-build/linux/emperor: EmperorPenguin/emperor
+build/linux/emperor_penguin: EmperorPenguin/emperor
 	@mkdir -p $(@D)
 	@cp -f EmperorPenguin/emperor $@
 
-release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/emperor
+release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/emperor_penguin
 
 build/win/emperor_penguin_llvm_emitter.exe: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
@@ -468,34 +483,30 @@ release: release_$(HOST)
 
 # ── lsp ──────────────────────────────────────────────────────────────
 # Linux: the LSP exe links the RELEASE dynlib (same compiler build as the
-# deployed emitter). The lib lands NEXT TO build/lsp (rpath $$ORIGIN + the
-# lib's basename SONAME), so the pair is relocatable and the shared
-# Tests/LspTest path (`Args: build/lsp`) keeps working — the test runner
-# copies any sibling *.penguin-lib beside the exe it stages.
-build/libemperorpenguin.penguin-lib: build/linux/libemperorpenguin.penguin-lib
-	@mkdir -p $(@D)
-	@cp -f $< $@
-
-build/lsp.ll: $(BS)/pass4 build/libemperorpenguin.penguin-lib $(LSP_SRC) $(EP_STD)
+# deployed emitter). The lib lands NEXT TO the exe in build/linux/ (rpath
+# $$ORIGIN + the lib's basename SONAME), so the pair is relocatable and the
+# shared Tests/LspTest path (`Args: build/linux/penguin-lsp`) keeps working —
+# the test runner copies any sibling *.penguin-lib beside the exe it stages.
+build/linux/penguin-lsp.ll: $(BS)/pass4 build/linux/libemperorpenguin.penguin-lib $(LSP_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
-	@echo "LSP: emitting build/lsp.ll"
+	@echo "LSP: emitting build/linux/penguin-lsp.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
-	    --lib build/libemperorpenguin.penguin-lib $(VERBOSE) -o build/lsp $(TEE) build/logs/lsp.log; \
+	    --lib build/linux/libemperorpenguin.penguin-lib $(VERBOSE) -o build/linux/penguin-lsp $(TEE) build/logs/lsp.log; \
 	} || { echo "LSP build FAILED at emission" >&2; exit 1; }
 
 # -enable-meta: the embedded compiler JITs `#fun` meta at didOpen/didChange
 # (the LSP's own sources use #impl_json_serializable, and any user document
 # may use #fun) — the exe must carry the ORC JIT for the lib's meta engine
 # (the .so's _emperor_penguin_jit_* refs bind from here via -rdynamic).
-build/lsp: build/lsp.ll build/libemperorpenguin.penguin-lib $(C_RT)
+build/linux/penguin-lsp: build/linux/penguin-lsp.ll build/linux/libemperorpenguin.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/lsp.ll -o build/lsp -enable-meta \
-	    --consumer-lib build/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
+	OPT=-O2 EmperorPenguin/emperor link build/linux/penguin-lsp.ll -o build/linux/penguin-lsp -enable-meta \
+	    --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
 	} || { echo "LSP build FAILED at link" >&2; exit 1; }
 
-lsp_linux: build/lsp
+lsp_linux: build/linux/penguin-lsp
 
 # Windows: the LspServerWin MONOLITH (LSP modules + the whole
 # EmperorPenguinLib source set) — the dyn-lib pair is ELF-specific
@@ -520,15 +531,75 @@ build/win/MagellanicPenguinLSP.exe: build/win/MagellanicPenguinLSP.ll $(C_RT)
 	    -o build/win/MagellanicPenguinLSP.exe -target=win64 $(TEE) build/logs/lsp-win-link.log; \
 	} || { echo "Windows LSP build FAILED at link" >&2; exit 1; }
 ifeq ($(HOST),win)
-	@# The shared Tests/LspTest path expects build/lsp (the md files name it
-	@# in Run Args); the monolith is self-contained, no .penguin-lib needed.
-	@cp -f build/win/MagellanicPenguinLSP.exe build/lsp
+	@# The shared Tests/LspTest path expects build/linux/penguin-lsp (the md
+	@# files name it in Run Args); the monolith is self-contained, no
+	@# .penguin-lib needed.
+	@mkdir -p build/linux
+	@cp -f build/win/MagellanicPenguinLSP.exe build/linux/penguin-lsp
 endif
 
 lsp_win: build/win/MagellanicPenguinLSP.exe
 
 lsp: lsp_$(HOST)
 	@echo "LSP build complete ($(HOST))"
+
+# ── tools (penguin-tools CLI) ────────────────────────────────────────
+# Linux: like the LSP, a thin consumer of the RELEASE dynlib — the emitter,
+# the formatter/mangle/libmeta implementations all come from
+# build/linux/libemperorpenguin.penguin-lib via --lib.
+build/tools/penguin-tools.ll: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib $(TOOLS_SRC) $(EP_STD)
+	@mkdir -p $(@D) build/logs
+	@echo "Tools: emitting build/tools/penguin-tools.ll"
+	@set -o pipefail; { \
+	build/linux/emperor_penguin_llvm_emitter EmperorPenguin/tools/PenguinTools.penguins \
+	    --lib build/linux/libemperorpenguin.penguin-lib $(VERBOSE) -o build/tools/penguin-tools $(TEE) build/logs/tools.log; \
+	} || { echo "Tools build FAILED at emission" >&2; exit 1; }
+
+# -enable-meta: the tools' own sources use #arg/#pos_arg annotations, so the
+# compiling emitter needs the JIT — and the exe carries it so the consumer
+# lib's meta engine refs bind (same -rdynamic pattern as the LSP).
+build/linux/penguin-tools: build/tools/penguin-tools.ll build/linux/libemperorpenguin.penguin-lib $(C_RT)
+	@mkdir -p $(@D) build/logs
+	@set -o pipefail; { \
+	OPT=-O2 EmperorPenguin/emperor link build/tools/penguin-tools.ll -o build/linux/penguin-tools \
+	    -enable-meta --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/tools-link.log; \
+	} || { echo "Tools build FAILED at link" >&2; exit 1; }
+
+tools_linux: build/linux/penguin-tools
+
+# Windows: the PenguinToolsWin MONOLITH (tool modules + the whole
+# EmperorPenguinLib source set) — same ELF-specific rationale as LspServerWin.
+build/win/penguin-tools.ll: $(BS)/pass4 $(TOOLSWIN_SRC) $(EP_STD)
+	@mkdir -p $(@D) build/logs
+	@echo "Tools (win): emitting build/win/penguin-tools.ll"
+	@set -o pipefail; { \
+	$(BS)/pass4 EmperorPenguin/tools/PenguinToolsWin.penguins \
+	    $(VERBOSE) -o build/win/penguin-tools $(TEE) build/logs/tools-win.log; \
+	} || { echo "Windows tools build FAILED at emission" >&2; exit 1; }
+
+build/win/penguin-tools.exe: build/win/penguin-tools.ll $(C_RT)
+	@mkdir -p $(@D) build/logs
+	@set -o pipefail; { \
+	OPT=-O2 EmperorPenguin/emperor link build/win/penguin-tools.ll \
+	    -o build/win/penguin-tools.exe -target=win64 $(TEE) build/logs/tools-win-link.log; \
+	} || { echo "Windows tools build FAILED at link" >&2; exit 1; }
+
+tools_win: build/win/penguin-tools.exe
+
+tools: tools_$(HOST)
+	@echo "penguin-tools build complete ($(HOST))"
+
+tools-test: build/linux/penguin-tools
+	@bash EmperorPenguin/tools/selftest.sh
+
+# ── unittest ─────────────────────────────────────────────────────────
+unittest:
+	@echo "Running dotnet unit tests ..."
+	@echo "============================================================"
+	@mkdir -p build/logs
+	@set -o pipefail; { \
+	dotnet test --verbosity minimal $(TEE) build/logs/unittest.log; \
+	} || { echo "Unit tests FAILED (full log: build/logs/unittest.log)" >&2; exit 1; }
 
 # ── test / baseline_test ─────────────────────────────────────────────
 test:
@@ -553,22 +624,23 @@ baseline_test:
 # vscode extension, runs smoke tests from a foreign cwd, then the dotnet
 # self-contained publishes and the vsix package.
 ifeq ($(HOST),linux)
-  PUBLISH_TARGETS := release_linux release_win lsp_linux lsp_win
+  PUBLISH_TARGETS := release_linux release_win lsp_linux lsp_win tools_linux tools_win
 else
-  PUBLISH_TARGETS := release_win lsp_win
+  PUBLISH_TARGETS := release_win lsp_win tools_win
 endif
 
 publish: $(PUBLISH_TARGETS)
 	@echo "Publishing self-contained executables + VSCode extension ..."
 	@echo "============================================================"
 ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
-	@# --- linux: emitter + driver script + LSP pair + stdlib (penguin for the
-	@# compilers, c sources for the script's runtime make) ---
+	@# --- linux: emitter + driver script + LSP pair + tools + stdlib (penguin
+	@# for the compilers, c sources for the script's runtime make) ---
 	@mkdir -p MagellanicPenguin/vscode/server/linux/EmperorPenguin/std
 	@cp build/linux/emperor_penguin_llvm_emitter MagellanicPenguin/vscode/server/linux/
-	@cp build/linux/emperor MagellanicPenguin/vscode/server/linux/
-	@cp build/lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
-	@cp build/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/
+	@cp build/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/
+	@cp build/linux/penguin-lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
+	@cp build/linux/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/
+	@cp build/linux/penguin-tools MagellanicPenguin/vscode/server/linux/
 	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin/
 	@cp -r EmperorPenguin/std/include/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/include/
 	@cp -r EmperorPenguin/std/c/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/
@@ -578,14 +650,14 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	@# embedded compile) needs this tree from a foreign cwd.
 	@cp -r EmperorPenguin/src/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/src/
 	@rm -f MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/*.o MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/c/*.a
-	@echo "Deployed linux emitter + emperor script + LSP + stdlib -> MagellanicPenguin/vscode/server/linux/"
+	@echo "Deployed linux emitter + emperor script + LSP + tools + stdlib -> MagellanicPenguin/vscode/server/linux/"
 	@# Smoke test the BUNDLED driver script from a foreign cwd (no repo): the
 	@# script must locate the std tree beside itself, drive the emitter, build
 	@# the C runtime and link — then the program must run.
 	@SMOKE_DIR=$$(mktemp -d); \
 	REPO_ROOT=$$PWD; \
 	printf 'let world : string = "wor"+"ld";\ninitial { println("Hello, " + world + "!"); }\n' > "$$SMOKE_DIR/t.penguin"; \
-	(cd "$$SMOKE_DIR" && "$$REPO_ROOT/MagellanicPenguin/vscode/server/linux/emperor" t.penguin -o t && ./t > out.bin 2> err.bin); \
+	(cd "$$SMOKE_DIR" && "$$REPO_ROOT/MagellanicPenguin/vscode/server/linux/emperor_penguin" t.penguin -o t && ./t > out.bin 2> err.bin); \
 	SMOKE_RC=$$?; \
 	if [ $$SMOKE_RC -ne 0 ] || ! grep -q "Hello, world!" "$$SMOKE_DIR/out.bin" 2>/dev/null; then \
 	    echo "Publish FAILED: bundled emperor script smoke test (exit=$$SMOKE_RC)" >&2; \
@@ -621,11 +693,12 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	echo "Bundled LSP smoke test passed (initialize + broken-doc survival + #fun compile + shutdown/exit from a foreign cwd)"
 endif
 ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
-	@# --- windows: emitter + emperor.bat + LSP monolith + stdlib trees ---
+	@# --- windows: emitter + emperor.bat + LSP monolith + tools + stdlib trees ---
 	@mkdir -p MagellanicPenguin/vscode/server/windows/EmperorPenguin/std
 	@cp build/win/emperor_penguin_llvm_emitter.exe MagellanicPenguin/vscode/server/windows/
 	@cp build/win/emperor.bat MagellanicPenguin/vscode/server/windows/
 	@cp build/win/MagellanicPenguinLSP.exe MagellanicPenguin/vscode/server/windows/
+	@cp build/win/penguin-tools.exe MagellanicPenguin/vscode/server/windows/
 	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin/
 	@cp -r EmperorPenguin/std/include/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/include/
 	@cp -r EmperorPenguin/std/c/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/

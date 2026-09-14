@@ -65,14 +65,56 @@ fun penguin_meta_create_definition(code: string) -> i64 {
     let lex: Lexer = new Lexer(code, "<meta_create_definition>");
     let toks: _utils.List<Token> = lex.tokenize();
     let p: Parser = new Parser(toks);
-    let unit: CompilationUnit = p.parse_compilationUnit();
+    // parse_definitions_unit (vs parse_compilationUnit) also accepts
+    // class-member-shaped definitions — a bare `name : type = init ;` field —
+    // and returns every definition in the text, so an annotation #fun can
+    // return "generated marker + re-emitted original field" as ONE token
+    // (registered as a definition_group and spliced in order).
+    let unit: CompilationUnit = p.parse_definitions_unit();
     if (!p.has_errors()) {
-        if (cast<i64>(unit.definitions.size()) == 1) {
+        let n: i64 = cast<i64>(unit.definitions.size());
+        if (n == 1) {
             let def: Definition = unit.definitions.at(cast<u64>(0)).some;
             return cast<i64>(active_meta.register_ast_definition(def));
         }
+        if (n > 1) {
+            return cast<i64>(active_meta.register_ast_definition_group(unit.definitions));
+        }
     }
     return 0;
+}
+
+// The Definition-variant name of a registered definition token ("class_field",
+// "function_def", ...) — a #fun's shape check for text it parsed via
+// create_definition (e.g. verifying an annotation's trailing definition is a
+// field). A definition_group reports its FIRST element; "" for an unknown
+// token or an expression-kind token.
+fun penguin_meta_get_definition_kind(token: i64) -> string {
+    let opt: Option<Definition> = active_meta.get_ast_definition(cast<u64>(token));
+    if (opt.is_none()) { return ""; }
+    let d: Definition = opt.some;
+    if (d is Definition.function_def) { return "function_def"; }
+    if (d is Definition.class_def) { return "class_def"; }
+    if (d is Definition.enum_def) { return "enum_def"; }
+    if (d is Definition.namespace_def) { return "namespace_def"; }
+    if (d is Definition.using_def) { return "using_def"; }
+    if (d is Definition.initial_routine) { return "initial_routine"; }
+    if (d is Definition.interface_def) { return "interface_def"; }
+    if (d is Definition.impl_def) { return "impl_def"; }
+    if (d is Definition.impl_for_def) { return "impl_for_def"; }
+    if (d is Definition.port_def) { return "port_def"; }
+    if (d is Definition.construct_def) { return "construct_def"; }
+    if (d is Definition.type_ref_def) { return "type_ref_def"; }
+    if (d is Definition.class_field) { return "class_field"; }
+    if (d is Definition.global_var) { return "global_var"; }
+    if (d is Definition.meta_function_def) { return "meta_function_def"; }
+    if (d is Definition.meta_class_def) { return "meta_class_def"; }
+    if (d is Definition.meta_if_def) { return "meta_if_def"; }
+    if (d is Definition.meta_for_def) { return "meta_for_def"; }
+    if (d is Definition.meta_while_def) { return "meta_while_def"; }
+    if (d is Definition.meta_call_def) { return "meta_call_def"; }
+    if (d is Definition.specializing_def) { return "specializing_def"; }
+    return "";
 }
 
 // R3c: parse a comma-separated argument list — e.g. the raw text of an

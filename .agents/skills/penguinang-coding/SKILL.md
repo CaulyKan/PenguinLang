@@ -445,6 +445,7 @@ for (let item : i32 in list) { ... }
 | `io.penguin` (`std.io` — File, read_line, stdin_lines, fs helpers) | auto-loaded, **EmperorPenguin native pass2+ only** (NOT in BabyPenguin VM) |
 | `_utils` (`List`, `Queue`) | everywhere for the compiler; user programs must compile `src/utils.penguin` in (Compile.Args) |
 | `std.Array<T,N>`, `std.Vector<T>`, `std.HashMap`, json | **pass3-only** bootstrap-deferred modules — NOT auto-loaded; pass via `Compile.Args` (they use `#sizeof`/`#fun` meta — EmperorPenguin-native only) |
+| `std.parse_args<T>()` (argparse.penguin) | **Pass2/Pass3 only** — NOT auto-loaded; pass `argparse.penguin` + `vector.penguin` via `Compile.Args`. Field-annotation CLI parsing: `#arg(...)` / `#pos_arg(...)` written directly BEFORE a field (no `;` after the call; the annotation `#fun` signature ends `field: string`). Field types: bool, integers, f32/f64, string, `mut std.Vector<scalar>`; `--` stops options; `-h/--help` prints help + exit(0); errors exit(2) |
 
 ## Namespaces, using, export, extern
 
