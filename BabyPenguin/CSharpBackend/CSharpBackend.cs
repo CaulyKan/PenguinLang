@@ -78,6 +78,24 @@ namespace BabyPenguin.CSharpBackend
                     }
                 }
             }
+            // Basic (primitive) type vtables live outside the namespace tree; their
+            // impl functions (e.g. IStringOps for string) are called through funptr
+            // dispatch, which reachability cannot see — seed them like class impls.
+            // Extern slots (ICopy's interface function) are skipped: they are never
+            // lowered here and dispatch through the FunctionLowerer special case.
+            foreach (var basicType in model.BasicTypeNodes.Nodes.Values)
+            {
+                foreach (var vt in basicType.VTables)
+                {
+                    foreach (var slot in vt.Slots)
+                    {
+                        var implName = slot.ImplementationSymbol?.FullName()?.Replace(".", "_") ?? "";
+                        if (string.IsNullOrEmpty(implName)) continue;
+                        if (externSet.Contains(Norm(implName))) continue;
+                        implSeeds.Add(Norm(implName));
+                    }
+                }
+            }
 
             var nsNews = (mainFunc != null ? ExtractNamespaceConstructors(mainFunc) : new List<string>())
                 .Select(Norm).Where(n => n != "__builtin_new" && n != "_utils_new").ToList();
@@ -155,6 +173,46 @@ namespace BabyPenguin.CSharpBackend
 
             // Generate __InitVtables: register all class/enum interface method implementations for virtual dispatch.
             var vtableRegs = new List<string>();
+            // Resolve the lowered C# method name of a vtable slot's implementation.
+            // Falls back to MangleName-equivalent sanitization for unreached impls.
+            string ResolveImplMethodName(string implFullName)
+            {
+                var implName = CSharpEmitter.Normalize(implFullName.Replace(".", "_"));
+                if (loweredNames.TryGetValue(implName, out var implMethodName))
+                    return implMethodName;
+                var sb = new StringBuilder();
+                foreach (var ch in implName)
+                    sb.Append((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                              (ch >= '0' && ch <= '9') || ch == '_' ? ch : '_');
+                implMethodName = sb.ToString();
+                if (implMethodName.Length > 0 && !((implMethodName[0] >= 'a' && implMethodName[0] <= 'z') ||
+                                                   (implMethodName[0] >= 'A' && implMethodName[0] <= 'Z') ||
+                                                   implMethodName[0] == '_'))
+                    implMethodName = "_" + implMethodName;
+                return implMethodName;
+            }
+            void AddVtableRegs(string csTypeName, IEnumerable<IVTableContainer> containers)
+            {
+                foreach (var container in containers)
+                {
+                    foreach (var vt in container.VTables)
+                    {
+                        foreach (var slot in vt.Slots)
+                        {
+                            var implNorm = Norm(slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                            // Extern slots (ICopy's interface function on primitives) are never
+                            // lowered here — registering them would NRE at __InitVtables. Their
+                            // dispatch goes through the FunctionLowerer ICopy special case.
+                            if (externSet.Contains(implNorm)) continue;
+                            var ifaceFullName = slot.InterfaceSymbol.Parent?.FullName() ?? "";
+                            var ifaceIrType = "ref<" + ifaceFullName + ">";
+                            var ifaceMethodKey = emitter.MethodCsName(ifaceIrType, slot.InterfaceSymbol.Name);
+                            var implMethodName = ResolveImplMethodName(slot.ImplementationSymbol.FullName());
+                            vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implMethodName}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
+                        }
+                    }
+                }
+            }
             foreach (var cls in model.Classes)
             {
                 var csTypeName = mangler.Mangle(CSharpEmitter.Normalize(cls.FullName()));
@@ -162,23 +220,12 @@ namespace BabyPenguin.CSharpBackend
                 {
                     foreach (var slot in vt.Slots)
                     {
+                        var implNorm = Norm(slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                        if (externSet.Contains(implNorm)) continue;
                         var ifaceFullName = slot.InterfaceSymbol.Parent?.FullName() ?? "";
                         var ifaceIrType = "ref<" + ifaceFullName + ">";
                         var ifaceMethodKey = emitter.MethodCsName(ifaceIrType, slot.InterfaceSymbol.Name);
-                        var implName = CSharpEmitter.Normalize(
-                            slot.ImplementationSymbol.FullName().Replace(".", "_"));
-                        if (!loweredNames.TryGetValue(implName, out var implMethodName))
-                        {
-                            var sb = new StringBuilder();
-                            foreach (var ch in implName)
-                                sb.Append((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                                          (ch >= '0' && ch <= '9') || ch == '_' ? ch : '_');
-                            implMethodName = sb.ToString();
-                            if (implMethodName.Length > 0 && !((implMethodName[0] >= 'a' && implMethodName[0] <= 'z') ||
-                                                               (implMethodName[0] >= 'A' && implMethodName[0] <= 'Z') ||
-                                                               implMethodName[0] == '_'))
-                                implMethodName = "_" + implMethodName;
-                        }
+                        var implMethodName = ResolveImplMethodName(slot.ImplementationSymbol.FullName());
                         vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implMethodName}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
                     }
                 }
@@ -190,26 +237,23 @@ namespace BabyPenguin.CSharpBackend
                 {
                     foreach (var slot in vt.Slots)
                     {
+                        var implNorm = Norm(slot.ImplementationSymbol.FullName().Replace(".", "_"));
+                        if (externSet.Contains(implNorm)) continue;
                         var ifaceFullName = slot.InterfaceSymbol.Parent?.FullName() ?? "";
                         var ifaceIrType = "ref<" + ifaceFullName + ">";
                         var ifaceMethodKey = emitter.MethodCsName(ifaceIrType, slot.InterfaceSymbol.Name);
-                        var implName = CSharpEmitter.Normalize(
-                            slot.ImplementationSymbol.FullName().Replace(".", "_"));
-                        if (!loweredNames.TryGetValue(implName, out var implMethodName))
-                        {
-                            var sb = new StringBuilder();
-                            foreach (var ch in implName)
-                                sb.Append((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                                          (ch >= '0' && ch <= '9') || ch == '_' ? ch : '_');
-                            implMethodName = sb.ToString();
-                            if (implMethodName.Length > 0 && !((implMethodName[0] >= 'a' && implMethodName[0] <= 'z') ||
-                                                               (implMethodName[0] >= 'A' && implMethodName[0] <= 'Z') ||
-                                                               implMethodName[0] == '_'))
-                                implMethodName = "_" + implMethodName;
-                        }
+                        var implMethodName = ResolveImplMethodName(slot.ImplementationSymbol.FullName());
                         vtableRegs.Add($"            BabyPenguin.CSharpBackend.Runtime.GlobalState.RegisterVtable(typeof({csTypeName}), \"{ifaceMethodKey}\", typeof(Generated).GetMethod(\"{implMethodName}\", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!);");
                     }
                 }
+            }
+            // Primitive interface impls (e.g. impl IStringOps for string): register under the
+            // CLR type the boxed value has at runtime (string/long/bool/...), so InvokeVirtual
+            // resolves the direct impl method.
+            foreach (var basicType in model.BasicTypeNodes.Nodes.Values)
+            {
+                var csTypeName = emitter.CsType(basicType.FullName());
+                AddVtableRegs(csTypeName, new[] { basicType });
             }
             if (vtableRegs.Count > 0)
             {

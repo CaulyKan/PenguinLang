@@ -20,20 +20,37 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: 8.0.x
-    - name: Install LLVM 22 (clang)
+    - name: Install LLVM 22 (clang + llvm tools + dev)
       # EmperorPenguin emits LLVM 22 IR (`#dbg_value` / `#dbg_declare` record form),
       # which needs clang >= 22 to assemble and link. ubuntu-24.04 ships clang-18, so
-      # install clang-22 from the official LLVM apt repo and expose it as `clang`
-      # via /usr/local/bin (ahead of /usr/bin on PATH, no system-clang clobbering).
+      # install 22 from the official LLVM apt repo and expose the tools as unversioned
+      # names via /usr/local/bin (ahead of /usr/bin on PATH, no system clang clobbering).
+      # What make all actually needs beyond clang:
+      #   llvm-ar     — C runtime archives (EmperorPenguin/std/c/Makefile defaults AR=llvm-ar)
+      #   llvm-config — every bootstrap/LSP/tools link passes -enable-meta, which builds
+      #                 libpenguin_jit.a against the host LLVM (llvm-22-dev) and dies
+      #                 without llvm-config on PATH (EmperorPenguin/emperor)
+      #   clang++     — compiles penguin_jit.cpp once the JIT is enabled
       run: |
         wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
           | sudo gpg --dearmor --yes -o /usr/share/keyrings/llvm-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
           | sudo tee /etc/apt/sources.list.d/llvm.list
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends clang-22
+        sudo apt-get install -y --no-install-recommends clang-22 llvm-22 llvm-22-dev
+        # Debian/Ubuntu ships versioned tool names (clang++-22, llvm-ar-22,
+        # llvm-config-22 in /usr/bin); expose them as the unversioned names the
+        # build expects, ahead of /usr/bin on PATH.
         sudo ln -sf /usr/bin/clang-22 /usr/local/bin/clang
+        for tool in clang++ llvm-ar llvm-config; do
+          src=$(command -v "$tool-22" || command -v "$tool") \
+            || { echo "toolchain tool not found: $tool" >&2; exit 1; }
+          sudo ln -sf "$src" "/usr/local/bin/$tool"
+        done
         clang --version
+        clang++ --version
+        llvm-ar --version | head -1
+        llvm-config --version
     - name: Restore dependencies
       run: dotnet restore
     - name: Build

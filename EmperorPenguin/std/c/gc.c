@@ -1131,6 +1131,10 @@ static void gc_refmap_walk(const int32_t* m, int32_t idx, char* base,
                            char* root, int root_size,
                            const char* type_name, int depth);
 
+/* Forensics: which collector phase is walking (set around every refmap walk
+ * entry point; printed by gc_refmap_abort). */
+static const char* _gc_walk_ctx = "?";
+
 static void gc_mark_frame_chain(void* head) {
     for (EmperorGcFrame* f = (EmperorGcFrame*)head; f; f = f->prev) {
         for (int32_t i = 0; i < f->slot_count; i++) {
@@ -1150,6 +1154,7 @@ static void gc_mark_frame_chain(void* head) {
             } else {
                 /* Entry-block alloca: its map's offsets are within the struct
                  * by construction — the size cap only guards corruption. */
+                _gc_walk_ctx = "frame-mark";
                 gc_refmap_walk(s->map, 1, (char*)s->addr, (char*)s->addr,
                                0x40000000, "gcframe", 0);
             }
@@ -1292,6 +1297,38 @@ static void* gc_young_owner_of_any(void* candidate) {
  * from raw superchunk mallocs that are never tracked, so a chunk-index
  * hit whose object walk misses (the never-allocated tail) owns nothing
  * and must NOT fall through. */
+/* Validate a tombstone forwarding target: it must be a real malloc old-gen
+ * block — an exact hit in the sorted index, or still in the pending array
+ * (promoted THIS collection, index not yet refreshed). A target that fails
+ * both is a STALE TOMBSTONE: its copy died in some later major, the memory
+ * was freed and reused (as container element storage — inline enums read as
+ * {metadata, tag, payload} triplets), and returning it as an "owner" makes
+ * marking walk reused memory as an object (the json/hashmap pass3
+ * corruption family: CORRUPT REF-MAP aborts on size-vs-map mismatches,
+ * SIGSEGVs dereferencing scalar body words as metadata, and semantic
+ * corruption reading reused bytes). Dead is dead: resolve to nothing.
+ *
+ * Interior words (enum-payload aliases, views into string bodies) are
+ * unrewritable and can outlive the promoted copy they alias — the demoted
+ * chunk's frozen bytes keep serving READS through the OLD address, so the
+ * only correct answer for the dead TARGET is NULL. Permissive while the
+ * index is unusable (stale after an append failure, or empty after a
+ * failed rebuild — those cycles retain everything anyway). */
+static int gc_forward_target_valid(char* tgt) {
+    if (_emperor_gc_sorted_stale || _emperor_gc_sorted_count == 0) return 1;
+    if (gc_resolve_block(tgt) == (void*)tgt) return 1;
+    /* Promoted THIS collection (index not yet refreshed): the pending
+     * membership mirror answers O(1) — mid-minor promotions are the common
+     * forwarded target, and a linear array scan per rewrite would be O(n²)
+     * across a promotion-heavy minor. The array stays as the fallback so a
+     * partial mirror (its calloc failed) can never judge a live copy dead. */
+    if (gc_pending_old_contains(tgt)) return 1;
+    for (size_t i = 0; i < _emperor_gc_pending_count; i++) {
+        if (_emperor_gc_pending[i] == (void*)tgt) return 1;
+    }
+    return 0;
+}
+
 static void* gc_resolve_any(void* candidate) {
     if (gc_maybe_nursery(candidate)) {
         YoungChunk* ch = gc_chunk_of(candidate);
@@ -1300,7 +1337,10 @@ static void* gc_resolve_any(void* candidate) {
             void* owner = gc_young_owner_of_any(candidate);
             if (!owner) return NULL;
             GCHeader* yh = (GCHeader*)((char*)owner - sizeof(GCHeader));
-            if (yh->next) return (void*)yh->next;
+            if (yh->next) {
+                return gc_forward_target_valid((char*)yh->next)
+                           ? (void*)yh->next : NULL;
+            }
             return owner;
         }
         /* Range pre-filter only: [lo,hi) can span unrelated allocations
@@ -1381,7 +1421,9 @@ static void gc_evacuate_slot(void** slot) {
     }
     GCHeader* h = (GCHeader*)((char*)p - sizeof(GCHeader));
     if (h->next) {
-        *slot = (void*)h->next; /* forwarded */
+        /* Forwarded tombstone: follow only LIVE copies — a dead target
+         * (freed + reused) must not be written into the slot. */
+        *slot = gc_forward_target_valid((char*)h->next) ? (void*)h->next : NULL;
         return;
     }
     if (ch->pinned || ch->demoted) {
@@ -1507,6 +1549,7 @@ static EMPEROR_NO_ASAN void gc_evacuate_body(void* user) {
     if (h->is_string || h->size < (int)sizeof(void*)) return;
     EmperorClassMetadata* meta = *(EmperorClassMetadata**)user;
     if (meta && meta->refmap) {
+        _gc_walk_ctx = "evac-body";
         gc_refmap_walk(meta->refmap, 1, (char*)user, (char*)user, h->size,
                        meta ? meta->name : NULL, 0);
         return;
@@ -1521,9 +1564,42 @@ static EMPEROR_NO_ASAN void gc_evacuate_body(void* user) {
 
 static void gc_refmap_abort(const char* what, const int32_t* m, const char* type_name, int32_t idx) {
     fprintf(stderr,
-            "emperor gc: CORRUPT REF-MAP (%s) in type %s map=%p node=%d — aborting\n",
-            what, type_name ? type_name : "?", (const void*)m, (int)idx);
+            "emperor gc: CORRUPT REF-MAP (%s) in type %s map=%p node=%d ctx=%s — aborting\n",
+            what, type_name ? type_name : "?", (const void*)m, (int)idx, _gc_walk_ctx);
     abort();
+}
+
+/* Forensics for the size/map mismatch family: dump the walked root's header,
+ * residence (nursery chunk / demoted / malloc old-gen), and the map program
+ * head, so an abort names WHAT was walked and HOW BIG it claims to be. */
+static void gc_walk_forensics(const int32_t* m, char* root, int root_size) {
+    fprintf(stderr, "emperor gc: WALK-FORENSICS root=%p root_size=%d", (void*)root, root_size);
+    if (gc_maybe_nursery(root)) {
+        YoungChunk* ch = gc_chunk_of(root);
+        fprintf(stderr, " home=nursery");
+        if (ch) {
+            fprintf(stderr, " chunk=%p demoted=%d pinned=%d", (void*)ch, ch->demoted, ch->pinned);
+            GCHeader* yh = (GCHeader*)(root - sizeof(GCHeader));
+            fprintf(stderr, " hdr(size=%d is_string=%d marked=%d fwd=%p)",
+                    yh->size, yh->is_string, yh->marked, (void*)yh->next);
+        } else {
+            fprintf(stderr, " chunk=MISS(range-hit-only)");
+        }
+    } else {
+        GCHeader* mh = (GCHeader*)(root - sizeof(GCHeader));
+        fprintf(stderr, " home=malloc hdr(size=%d is_string=%d marked=%d)",
+                mh->size, mh->is_string, mh->marked);
+    }
+    if (m) {
+        fprintf(stderr, " map=[");
+        for (int i = 0; i < 12 && i < m[0]; i++) fprintf(stderr, "%d ", m[i]);
+        fprintf(stderr, "]");
+    }
+    fprintf(stderr, " body=[");
+    for (int i = 0; i < 8 && (i + 1) * 8 <= root_size + 8; i++) {
+        fprintf(stderr, "%llx ", (unsigned long long)((void**)root)[i]);
+    }
+    fprintf(stderr, "]\n");
 }
 
 static EMPEROR_NO_ASAN void gc_refmap_walk(const int32_t* m, int32_t idx, char* base,
@@ -1545,6 +1621,9 @@ static EMPEROR_NO_ASAN void gc_refmap_walk(const int32_t* m, int32_t idx, char* 
             int32_t off = m[idx + 2 + 2 * i];
             int32_t sub = m[idx + 3 + 2 * i];
             if (off < 0 || (int32_t)(base - root) + off + (int32_t)sizeof(void*) > root_size) {
+                fprintf(stderr, "emperor gc: failing slot off=%d sub=%d sub-struct at +%td\n",
+                        off, sub, base - root);
+                gc_walk_forensics(m, root, root_size);
                 gc_refmap_abort("slot offset outside object", m, type_name, idx);
             }
             if (sub == -1) {
@@ -1567,7 +1646,10 @@ static EMPEROR_NO_ASAN void gc_refmap_walk(const int32_t* m, int32_t idx, char* 
                     owner = gc_young_owner_of_any(candidate);
                     if (owner) {
                         GCHeader* yh = (GCHeader*)((char*)owner - sizeof(GCHeader));
-                        if (yh->next) owner = (void*)yh->next;
+                        if (yh->next) {
+                            owner = gc_forward_target_valid((char*)yh->next)
+                                        ? (void*)yh->next : NULL;
+                        }
                     }
                 }
                 if (!owner) {
@@ -1666,6 +1748,7 @@ static void gc_mark_drain(void) {
         const int32_t* map = meta ? meta->refmap : NULL;
         if (map) {
             /* Precise walk: only the declared pointer locations are read. */
+            _gc_walk_ctx = "mark-drain";
             gc_refmap_walk(map, 1, user, user, cur->size,
                            meta ? meta->name : NULL, 0);
             continue;
@@ -1708,7 +1791,11 @@ static EMPEROR_NO_ASAN void _emperor_gc_mark_object(void* obj) {
             ch->mark_hit = 1;
             GCHeader* yh = (GCHeader*)((char*)obj - sizeof(GCHeader));
             if (yh->next) {
-                _emperor_gc_mark_object((void*)yh->next);
+                /* Forwarded tombstone: recurse only into LIVE copies (a
+                 * dead, freed-and-reused target is not an object). */
+                if (gc_forward_target_valid((char*)yh->next)) {
+                    _emperor_gc_mark_object((void*)yh->next);
+                }
                 return;
             }
             /* marked==2: finalized dead in a demoted chunk — a stale
@@ -1849,6 +1936,7 @@ static void gc_scan_regions_mark(void* raw_co_sp) {
         GCScanRegion* reg = &_emperor_gc_scan_regions[r];
         if (reg->elem_map) {
             _gc_walk_typed = 1;
+            _gc_walk_ctx = "typed-major";
             for (uint64_t i = 0; i < reg->elem_count; i++) {
                 gc_refmap_walk(reg->elem_map, 1, reg->base + i * reg->elem_stride,
                                reg->base + i * reg->elem_stride,
@@ -1906,6 +1994,7 @@ static void gc_scan_regions_minor(void* raw_co_sp) {
              * and downstream List.at corruption). */
             _gc_walk_typed = 1;
             _gc_walk_evacuate = 1;
+            _gc_walk_ctx = "typed-pins";
             for (uint64_t i = 0; i < reg->elem_count; i++) {
                 gc_refmap_walk(reg->elem_map, 1, reg->base + i * reg->elem_stride,
                                reg->base + i * reg->elem_stride,
@@ -2245,6 +2334,7 @@ static void gc_evacuate_frame_chain(void* head) {
             if (s->map == NULL) {
                 gc_evacuate_slot((void**)s->addr);
             } else {
+                _gc_walk_ctx = "frame-evac";
                 gc_refmap_walk(s->map, 1, (char*)s->addr, (char*)s->addr,
                                0x40000000, "gcframe", 0);
             }
@@ -2431,6 +2521,7 @@ static EMPEROR_NO_ASAN void gc_minor(int conservative_cover) {
             GCScanRegion* reg = &_emperor_gc_scan_regions[r];
             if (!reg->elem_map) continue;
             _gc_walk_typed = 1;
+            _gc_walk_ctx = "typed-rewrite";
             for (uint64_t i = 0; i < reg->elem_count; i++) {
                 gc_refmap_walk(reg->elem_map, 1, reg->base + i * reg->elem_stride,
                                reg->base + i * reg->elem_stride,

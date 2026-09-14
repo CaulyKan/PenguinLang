@@ -453,6 +453,318 @@ namespace __builtin {
     extern fun string_to_int(s: string) -> i64;
     extern fun string_to_double(s: string) -> double;
 
+    // IStringOps: the std string-operation surface, implemented for the
+    // primitive `string` via primitive interface-method dispatch (the IHash
+    // precedent: the impl's methods are mangled `<name>$$string` and
+    // `s.method()` resolves to a direct call). All operations are unit-based
+    // (byte units on the native runtime, UTF-16 units on the VM) and the
+    // case/trim tables are ASCII. This block is mirrored verbatim in
+    // BabyPenguin/Builtin.penguin (there the impl attaches a vtable to the
+    // string BasicTypeNode — BasicTypeNode is an IVTableContainer).
+    interface IStringOps {
+        fun length(this: string) -> i64;
+        fun is_empty(this: string) -> bool;
+        fun char_at(this: string, index: i64) -> string;
+        fun char_code(this: string) -> i64;
+        fun char_code_at(this: string, index: i64) -> i64;
+        fun substring(this: string, start: i64, length: i64) -> string;
+        fun slice(this: string, start: i64, length: i64) -> string;
+        fun find(this: string, sub: string) -> i64;
+        fun find_from(this: string, sub: string, start: i64) -> i64;
+        fun find_last(this: string, sub: string) -> i64;
+        fun contains(this: string, sub: string) -> bool;
+        fun starts_with(this: string, prefix: string) -> bool;
+        fun ends_with(this: string, suffix: string) -> bool;
+        fun equals_ignore_case(this: string, other: string) -> bool;
+        fun compare(this: string, other: string) -> i64;
+        fun count(this: string, sub: string) -> i64;
+        fun to_upper(this: string) -> string;
+        fun to_lower(this: string) -> string;
+        fun trim(this: string) -> string;
+        fun trim_start(this: string) -> string;
+        fun trim_end(this: string) -> string;
+        fun replace(this: string, from: string, to: string) -> string;
+        fun reverse(this: string) -> string;
+        fun repeat(this: string, n: i64) -> string;
+        fun pad_left(this: string, width: i64, ch: string) -> string;
+        fun pad_right(this: string, width: i64, ch: string) -> string;
+        fun split(this: string, sep: string) -> mut IIterator<string>;
+        fun to_int(this: string) -> i64;
+        fun to_double(this: string) -> double;
+    }
+
+    // Lazy separator-split iterator behind `s.split(sep)` — for-in ready
+    // (the in-expression is already an iterator, so it is used as-is).
+    // Semantics: pieces between non-overlapping occurrences of sep; a
+    // trailing separator yields one final empty piece (Python-like); an
+    // empty sep yields the whole string once (or nothing when empty).
+    class StringSplitIterator {
+        source: string = "";
+        sep: string = "";
+        pos: mut i64 = 0;
+        done: mut bool = false;
+
+        fun new(mut this, source: string, sep: string) {
+            this.source = source;
+            this.sep = sep;
+        }
+
+        impl IIterator<string> {
+            fun next(this: mut IIterator<string>) -> Option<string> {
+                let self: mut Self = cast<mut Self>(this);
+                if (self.done) {
+                    return new Option<string>.none();
+                }
+                let n: i64 = string_length(self.source);
+                let sep_len: i64 = string_length(self.sep);
+                if (sep_len == 0) {
+                    self.done = true;
+                    if (n == 0) {
+                        return new Option<string>.none();
+                    }
+                    return new Option<string>.some(self.source);
+                }
+                let idx: i64 = string_find_from(self.source, self.sep, self.pos);
+                if (idx < 0) {
+                    self.done = true;
+                    return new Option<string>.some(
+                        string_substring(self.source, self.pos, n - self.pos));
+                }
+                let piece: string =
+                    string_substring(self.source, self.pos, idx - self.pos);
+                self.pos = idx + sep_len;
+                return new Option<string>.some(piece);
+            }
+        }
+    }
+
+    impl IStringOps for string {
+        fun length(this: string) -> i64 { return string_length(this); }
+        fun is_empty(this: string) -> bool { return string_length(this) == 0; }
+        fun char_at(this: string, index: i64) -> string {
+            return string_char_at(this, index);
+        }
+        fun char_code(this: string) -> i64 { return string_char_code(this); }
+        fun char_code_at(this: string, index: i64) -> i64 {
+            return string_char_code_at(this, index);
+        }
+        fun substring(this: string, start: i64, length: i64) -> string {
+            return string_substring(this, start, length);
+        }
+        fun slice(this: string, start: i64, length: i64) -> string {
+            return string_slice(this, start, length);
+        }
+        fun find(this: string, sub: string) -> i64 {
+            return string_find(this, sub);
+        }
+        fun find_from(this: string, sub: string, start: i64) -> i64 {
+            return string_find_from(this, sub, start);
+        }
+        // Empty sub is ill-defined (every gap matches) — report "not found".
+        fun find_last(this: string, sub: string) -> i64 {
+            if (string_length(sub) == 0) { return -1; }
+            let result: mut i64 = -1;
+            let pos: mut i64 = 0;
+            while (true) {
+                let idx: i64 = string_find_from(this, sub, pos);
+                if (idx < 0) { break; }
+                result = idx;
+                pos = idx + 1;
+            }
+            return result;
+        }
+        fun contains(this: string, sub: string) -> bool {
+            return string_find(this, sub) >= 0;
+        }
+        fun starts_with(this: string, prefix: string) -> bool {
+            return string_starts_with_at(this, 0, prefix);
+        }
+        fun ends_with(this: string, suffix: string) -> bool {
+            let n: i64 = string_length(this);
+            let m: i64 = string_length(suffix);
+            if (m > n) { return false; }
+            return string_starts_with_at(this, n - m, suffix);
+        }
+        fun equals_ignore_case(this: string, other: string) -> bool {
+            if (string_length(this) != string_length(other)) { return false; }
+            let i: mut i64 = 0;
+            while (i < string_length(this)) {
+                let ca: mut i64 = string_char_code_at(this, i);
+                let cb: mut i64 = string_char_code_at(other, i);
+                if (ca >= 65 && ca <= 90) { ca = ca + 32; }
+                if (cb >= 65 && cb <= 90) { cb = cb + 32; }
+                if (ca != cb) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+        // Lexicographic unit-wise compare: negative / zero / positive.
+        fun compare(this: string, other: string) -> i64 {
+            let n: i64 = string_length(this);
+            let m: i64 = string_length(other);
+            let len: i64 = if (n < m) { n } else { m };
+            let i: mut i64 = 0;
+            while (i < len) {
+                let ca: i64 = string_char_code_at(this, i);
+                let cb: i64 = string_char_code_at(other, i);
+                if (ca != cb) { return ca - cb; }
+                i = i + 1;
+            }
+            return n - m;
+        }
+        // Non-overlapping occurrences; empty sub counts as zero.
+        fun count(this: string, sub: string) -> i64 {
+            if (string_length(sub) == 0) { return 0; }
+            let result: mut i64 = 0;
+            let pos: mut i64 = 0;
+            while (true) {
+                let idx: i64 = string_find_from(this, sub, pos);
+                if (idx < 0) { break; }
+                result = result + 1;
+                pos = idx + string_length(sub);
+            }
+            return result;
+        }
+        fun to_upper(this: string) -> string {
+            let lower: string = "abcdefghijklmnopqrstuvwxyz";
+            let upper: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let sb: mut StringBuilder = new StringBuilder();
+            let i: mut i64 = 0;
+            while (i < string_length(this)) {
+                let c: string = string_char_at(this, i);
+                let idx: i64 = string_find(lower, c);
+                if (idx >= 0) {
+                    sb.append(string_char_at(upper, idx));
+                } else {
+                    sb.append(c);
+                }
+                i = i + 1;
+            }
+            return sb.to_string();
+        }
+        fun to_lower(this: string) -> string {
+            let lower: string = "abcdefghijklmnopqrstuvwxyz";
+            let upper: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let sb: mut StringBuilder = new StringBuilder();
+            let i: mut i64 = 0;
+            while (i < string_length(this)) {
+                let c: string = string_char_at(this, i);
+                let idx: i64 = string_find(upper, c);
+                if (idx >= 0) {
+                    sb.append(string_char_at(lower, idx));
+                } else {
+                    sb.append(c);
+                }
+                i = i + 1;
+            }
+            return sb.to_string();
+        }
+        fun trim(this: string) -> string {
+            let ws: string = " \t\n\r";
+            let n: i64 = string_length(this);
+            let b: mut i64 = 0;
+            let e: mut i64 = n - 1;
+            while (b < n) {
+                if (string_find(ws, string_char_at(this, b)) < 0) { break; }
+                b = b + 1;
+            }
+            while (e >= b) {
+                if (string_find(ws, string_char_at(this, e)) < 0) { break; }
+                e = e - 1;
+            }
+            if (e < b) { return ""; }
+            return string_substring(this, b, e - b + 1);
+        }
+        fun trim_start(this: string) -> string {
+            let ws: string = " \t\n\r";
+            let n: i64 = string_length(this);
+            let b: mut i64 = 0;
+            while (b < n) {
+                if (string_find(ws, string_char_at(this, b)) < 0) { break; }
+                b = b + 1;
+            }
+            if (b >= n) { return ""; }
+            return string_substring(this, b, n - b);
+        }
+        fun trim_end(this: string) -> string {
+            let ws: string = " \t\n\r";
+            let n: i64 = string_length(this);
+            let e: mut i64 = n - 1;
+            while (e >= 0) {
+                if (string_find(ws, string_char_at(this, e)) < 0) { break; }
+                e = e - 1;
+            }
+            if (e < 0) { return ""; }
+            return string_substring(this, 0, e + 1);
+        }
+        fun replace(this: string, from: string, to: string) -> string {
+            if (string_length(from) == 0) { return this; }
+            let n: i64 = string_length(this);
+            let from_len: i64 = string_length(from);
+            let sb: mut StringBuilder = new StringBuilder();
+            let pos: mut i64 = 0;
+            while (true) {
+                let idx: i64 = string_find_from(this, from, pos);
+                if (idx < 0) { break; }
+                sb.append(string_substring(this, pos, idx - pos));
+                sb.append(to);
+                pos = idx + from_len;
+            }
+            sb.append(string_substring(this, pos, n - pos));
+            return sb.to_string();
+        }
+        fun reverse(this: string) -> string {
+            let sb: mut StringBuilder = new StringBuilder();
+            let i: mut i64 = string_length(this) - 1;
+            while (i >= 0) {
+                sb.append(string_char_at(this, i));
+                i = i - 1;
+            }
+            return sb.to_string();
+        }
+        fun repeat(this: string, n: i64) -> string {
+            if (n <= 0) { return ""; }
+            let sb: mut StringBuilder = new StringBuilder();
+            let i: mut i64 = 0;
+            while (i < n) {
+                sb.append(this);
+                i = i + 1;
+            }
+            return sb.to_string();
+        }
+        fun pad_left(this: string, width: i64, ch: string) -> string {
+            let n: i64 = string_length(this);
+            if (n >= width) { return this; }
+            let fill: string = if (string_length(ch) > 0) { string_char_at(ch, 0) } else { " " };
+            let sb: mut StringBuilder = new StringBuilder();
+            let i: mut i64 = n;
+            while (i < width) {
+                sb.append(fill);
+                i = i + 1;
+            }
+            sb.append(this);
+            return sb.to_string();
+        }
+        fun pad_right(this: string, width: i64, ch: string) -> string {
+            let n: i64 = string_length(this);
+            if (n >= width) { return this; }
+            let fill: string = if (string_length(ch) > 0) { string_char_at(ch, 0) } else { " " };
+            let sb: mut StringBuilder = new StringBuilder();
+            sb.append(this);
+            let i: mut i64 = n;
+            while (i < width) {
+                sb.append(fill);
+                i = i + 1;
+            }
+            return sb.to_string();
+        }
+        fun split(this: string, sep: string) -> mut IIterator<string> {
+            return cast<mut IIterator<string>>(new StringSplitIterator(this, sep));
+        }
+        fun to_int(this: string) -> i64 { return string_to_int(this); }
+        fun to_double(this: string) -> double { return string_to_double(this); }
+    }
+
     #template(T: type, E: type)
     enum Result {
         ok: T;

@@ -49,7 +49,7 @@ namespace BabyPenguin.VirtualMachine
 
         private void BuildCodeContainerIndex()
         {
-            foreach (var node in Model.FindAll(n => n is SemanticInterface.ICodeContainer))
+            foreach (var node in Model.FindAllIncludingBasicTypeVTables(n => n is SemanticInterface.ICodeContainer))
             {
                 var cc = (SemanticInterface.ICodeContainer)node;
                 var sanitized = SanitizeName(cc.FullName());

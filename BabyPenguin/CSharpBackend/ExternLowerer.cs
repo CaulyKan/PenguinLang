@@ -35,7 +35,7 @@ namespace BabyPenguin.CSharpBackend
             ["__builtin_string_find"] = (["string", "string"], "long", "int i = a_0.IndexOf(a_1); return i < 0 ? -1L : (long)i;"),
             ["__builtin_string_find_from"] = (["string", "string", "long"], "long", "int i = a_0.IndexOf(a_1, (int)a_2); return i < 0 ? -1L : (long)i;"),
             ["__builtin_string_substring"] = (["string", "long", "long"], "string", "{ int s=(int)a_1, l=(int)a_2; if (s<0) s=0; if (s+l>a_0.Length) l=a_0.Length-s; if (s>=a_0.Length || l<0) return \"\"; return a_0.Substring(s, l); }"),
-            ["__builtin_string_char_at"] = (["string", "long"], "string", "return a_0[(int)a_1].ToString();"),
+            ["__builtin_string_char_at"] = (["string", "long"], "string", "{ int i=(int)a_1; return (i>=0 && i<a_0.Length) ? a_0[i].ToString() : \"\"; }"),
             ["__builtin_string_char_code"] = (["string"], "long", "return a_0.Length == 0 ? -1L : (long)a_0[0];"),
             ["__builtin_string_starts_with_at"] = (["string", "long", "string"], "bool", "{ int at=(int)a_1; if (at<0) return false; for (int i=0;i<a_2.Length;i++) { if (at+i>=a_0.Length || a_0[at+i]!=a_2[i]) return false; } return true; }"),
             ["__builtin_string_char_code_at"] = (["string", "long"], "long", "{ int i=(int)a_1; return (i>=0 && i<a_0.Length) ? (long)a_0[i] : -1L; }"),

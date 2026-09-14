@@ -38,7 +38,7 @@ namespace BabyPenguin.VirtualMachine
         private void GenerateAllFunctions()
         {
             // Find all code containers with instructions
-            var codeContainers = _model.FindAll(node => node is ICodeContainer cc && cc.Instructions.Count > 0)
+            var codeContainers = _model.FindAllIncludingBasicTypeVTables(node => node is ICodeContainer cc && cc.Instructions.Count > 0)
                 .Cast<ICodeContainer>()
                 .ToList();
 

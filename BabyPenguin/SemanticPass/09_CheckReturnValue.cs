@@ -15,7 +15,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (ICodeContainer codeContainer in Model.FindAll(i => i is ICodeContainer).Cast<ICodeContainer>())
+            foreach (ICodeContainer codeContainer in Model.FindAllIncludingBasicTypeVTables(i => i is ICodeContainer).Cast<ICodeContainer>())
             {
                 bool returnVoid = false;
                 if (codeContainer is IFunction function)

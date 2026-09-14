@@ -7206,6 +7206,96 @@ class LLVMEmitter {
     // An instruction that reads NONE of them leaves every mirror alone; a
     // register with no reference at all (dead chain) keeps its mirror until
     // frame exit — same as before this pass existed.
+    // Every IRValue operand (USE) position an instruction's emission reads.
+    // The pin-mirror liveness scan MUST see all of them: a missed consumer
+    // nulls %reg.gcpin before the register's REAL last read, and the
+    // unpinned window lets a minor promote the target out from under the
+    // still-live SSA/gep copy — the next read/write through it then lands
+    // in recycled chunk memory (heap corruption surfacing as GC ref-map
+    // aborts, SIGSEGVs, or wrong compiler state; the json/hashmap pass3
+    // corruption family). Result registers are definitions, not uses. When
+    // a new IR instruction kind grows operand positions, extend this list —
+    // the clear pass is only as safe as this enumeration is complete.
+    fun gcpin_use_operands(mut this, inst: IRInstruction) -> _utils.List<IRValue> {
+        let out: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        if (inst is IRInstruction.assign) {
+            out.push(inst.assign.src);
+        } else if (inst is IRInstruction.cast_inst) {
+            out.push(inst.cast_inst.operand);
+        } else if (inst is IRInstruction.binop) {
+            out.push(inst.binop.left);
+            out.push(inst.binop.right);
+        } else if (inst is IRInstruction.unaryop) {
+            out.push(inst.unaryop.operand);
+        } else if (inst is IRInstruction.rdmbr) {
+            out.push(inst.rdmbr.obj);
+        } else if (inst is IRInstruction.wrmbr) {
+            out.push(inst.wrmbr.obj);
+            out.push(inst.wrmbr.value);
+        } else if (inst is IRInstruction.br_cond) {
+            out.push(inst.br_cond.cond);
+        } else if (inst is IRInstruction.ret) {
+            out.push(inst.ret.value);
+        } else if (inst is IRInstruction.call) {
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(inst.call.args.size())) {
+                out.push(inst.call.args.at(cast<u64>(ai)).some);
+                ai = ai + 1;
+            }
+        } else if (inst is IRInstruction.call_void) {
+            let ai2: mut i64 = 0;
+            while (ai2 < cast<i64>(inst.call_void.args.size())) {
+                out.push(inst.call_void.args.at(cast<u64>(ai2)).some);
+                ai2 = ai2 + 1;
+            }
+        } else if (inst is IRInstruction.call_indirect) {
+            out.push(inst.call_indirect.callee);
+            let ai3: mut i64 = 0;
+            while (ai3 < cast<i64>(inst.call_indirect.args.size())) {
+                out.push(inst.call_indirect.args.at(cast<u64>(ai3)).some);
+                ai3 = ai3 + 1;
+            }
+        } else if (inst is IRInstruction.call_virt) {
+            out.push(inst.call_virt.obj);
+            let ai4: mut i64 = 0;
+            while (ai4 < cast<i64>(inst.call_virt.args.size())) {
+                out.push(inst.call_virt.args.at(cast<u64>(ai4)).some);
+                ai4 = ai4 + 1;
+            }
+        } else if (inst is IRInstruction.new_inst) {
+            let ai5: mut i64 = 0;
+            while (ai5 < cast<i64>(inst.new_inst.args.size())) {
+                out.push(inst.new_inst.args.at(cast<u64>(ai5)).some);
+                ai5 = ai5 + 1;
+            }
+        } else if (inst is IRInstruction.new_enum) {
+            if (inst.new_enum.payload.is_some()) {
+                out.push(inst.new_enum.payload.some);
+            }
+        } else if (inst is IRInstruction.isenum) {
+            out.push(inst.isenum.enum_value);
+            out.push(inst.isenum.variant_idx);
+        } else if (inst is IRInstruction.rdenum) {
+            out.push(inst.rdenum.enum_value);
+        } else if (inst is IRInstruction.isinstance) {
+            out.push(inst.isinstance.obj);
+        } else if (inst is IRInstruction.box) {
+            out.push(inst.box.operand);
+        } else if (inst is IRInstruction.unbox) {
+            out.push(inst.unbox.operand);
+        } else if (inst is IRInstruction.global_store) {
+            out.push(inst.global_store.value);
+        } else if (inst is IRInstruction.address_of) {
+            out.push(inst.address_of.operand);
+        } else if (inst is IRInstruction.load_ptr) {
+            out.push(inst.load_ptr.addr);
+        } else if (inst is IRInstruction.store_ptr) {
+            out.push(inst.store_ptr.addr);
+            out.push(inst.store_ptr.value);
+        }
+        return out;
+    }
+
     fun scan_gcpin_clears(mut this, func: IRFunction) {
         this.gcpin_clear_idx = new _utils.List<i64>();
         this.gcpin_clear_name = new _utils.List<string>();
@@ -7216,32 +7306,7 @@ class LLVMEmitter {
         let ii: mut i64 = 0;
         while (ii < n) {
             let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            let ref_names: mut _utils.List<IRValue> = new _utils.List<IRValue>();
-            if (inst is IRInstruction.wrmbr) {
-                ref_names.push(inst.wrmbr.obj);
-            } else if (inst is IRInstruction.rdmbr) {
-                ref_names.push(inst.rdmbr.obj);
-            } else if (inst is IRInstruction.rdenum) {
-                ref_names.push(inst.rdenum.enum_value);
-            } else if (inst is IRInstruction.assign) {
-                ref_names.push(inst.assign.src);
-            } else if (inst is IRInstruction.unbox) {
-                ref_names.push(inst.unbox.operand);
-            } else if (inst is IRInstruction.call) {
-                let ai: mut i64 = 0;
-                while (ai < cast<i64>(inst.call.args.size())) {
-                    ref_names.push(inst.call.args.at(cast<u64>(ai)).some);
-                    ai = ai + 1;
-                }
-            } else if (inst is IRInstruction.call_void) {
-                let ai2: mut i64 = 0;
-                while (ai2 < cast<i64>(inst.call_void.args.size())) {
-                    ref_names.push(inst.call_void.args.at(cast<u64>(ai2)).some);
-                    ai2 = ai2 + 1;
-                }
-            } else if (inst is IRInstruction.call_virt) {
-                ref_names.push(inst.call_virt.obj);
-            }
+            let ref_names: _utils.List<IRValue> = this.gcpin_use_operands(inst);
             let ri: mut i64 = 0;
             while (ri < cast<i64>(ref_names.size())) {
                 let rv: IRValue = ref_names.at(cast<u64>(ri)).some;
@@ -7263,32 +7328,7 @@ class LLVMEmitter {
         ii = 0;
         while (ii < n) {
             let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
-            let ref_names2: mut _utils.List<IRValue> = new _utils.List<IRValue>();
-            if (inst is IRInstruction.wrmbr) {
-                ref_names2.push(inst.wrmbr.obj);
-            } else if (inst is IRInstruction.rdmbr) {
-                ref_names2.push(inst.rdmbr.obj);
-            } else if (inst is IRInstruction.rdenum) {
-                ref_names2.push(inst.rdenum.enum_value);
-            } else if (inst is IRInstruction.assign) {
-                ref_names2.push(inst.assign.src);
-            } else if (inst is IRInstruction.unbox) {
-                ref_names2.push(inst.unbox.operand);
-            } else if (inst is IRInstruction.call) {
-                let ai3: mut i64 = 0;
-                while (ai3 < cast<i64>(inst.call.args.size())) {
-                    ref_names2.push(inst.call.args.at(cast<u64>(ai3)).some);
-                    ai3 = ai3 + 1;
-                }
-            } else if (inst is IRInstruction.call_void) {
-                let ai4: mut i64 = 0;
-                while (ai4 < cast<i64>(inst.call_void.args.size())) {
-                    ref_names2.push(inst.call_void.args.at(cast<u64>(ai4)).some);
-                    ai4 = ai4 + 1;
-                }
-            } else if (inst is IRInstruction.call_virt) {
-                ref_names2.push(inst.call_virt.obj);
-            }
+            let ref_names2: _utils.List<IRValue> = this.gcpin_use_operands(inst);
             let ri2: mut i64 = 0;
             while (ri2 < cast<i64>(ref_names2.size())) {
                 let rn2: string = ref_names2.at(cast<u64>(ri2)).some.display();

@@ -81,6 +81,25 @@ namespace BabyPenguin
             return Namespaces.SelectMany(ns => (ns as ISemanticScope).FindChildrenIncludingSelf(predicate));
         }
 
+        /// <summary>
+        /// FindAll plus the vtable functions of the basic (primitive) types.
+        /// BasicTypeNodes live outside the namespace tree (05_InterfaceImplementation
+        /// concats them for the same reason), so primitive interface impls
+        /// (e.g. `impl IStringOps for string` with method bodies) attach their
+        /// vtables there — global passes and IR generation must see those
+        /// functions or calls to them find no code container at runtime.
+        /// </summary>
+        public IEnumerable<ISemanticScope> FindAllIncludingBasicTypeVTables(Predicate<ISemanticScope> predicate)
+        {
+            foreach (var s in FindAll(predicate))
+                yield return s;
+            foreach (var basicType in BasicTypeNodes.Nodes.Values)
+                foreach (var vtable in basicType.VTables)
+                    foreach (var function in vtable.Functions)
+                        if (predicate(function))
+                            yield return function;
+        }
+
         public void AddNamespace(Namespace ns)
         {
             if (Namespaces.Find(n => n.Name == ns.Name) is MergedNamespace existing)

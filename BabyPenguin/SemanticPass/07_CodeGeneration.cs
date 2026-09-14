@@ -10,7 +10,7 @@ namespace BabyPenguin.SemanticPass
 
         public void Process()
         {
-            foreach (var obj in Model.FindAll(o => o is ICodeContainer || o is ITypeNode).ToList())
+            foreach (var obj in Model.FindAllIncludingBasicTypeVTables(o => o is ICodeContainer || o is ITypeNode).ToList())
             {
                 Process(obj);
             }

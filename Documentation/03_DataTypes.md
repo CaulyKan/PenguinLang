@@ -24,6 +24,32 @@ Penguin-lang supports following built-in basic types:
 
 `string` is an **immutable reference type**: a string value is a pointer to a header-prefixed block (`metaptr + length + data`, see *EmperorPenguin LLVM* §2.4), contents can never be modified after creation (every builtin producing a string allocates a fresh one), and assignment/argument passing **shares the pointer** (safe precisely because contents are immutable — same model as C#). Compare with `==` (content equality), build with `StringBuilder`.
 
+### `IStringOps` — string methods
+
+The primitive `string` implements the `__builtin.IStringOps` interface (`impl IStringOps for string`, in `Builtin.penguin` / `core_builtin.penguin`), so every common string operation is available as a method call on any string:
+
+```penguin
+let s: string = "Hello, Penguin!";
+println(cast<string>(s.length()));        // 15
+println(s.substring(7, 7));                // "Penguin"
+println(s.to_upper());                     // "HELLO, PENGUIN!"
+println("  pad ".trim());                  // "pad"
+println("a-b-c".replace("-", "+"));        // "a+b+c"
+for (let part : string in "one,two".split(",")) { ... }
+```
+
+| Group | Methods |
+| ----- | ------- |
+| Query | `length() -> i64`, `is_empty() -> bool`, `char_at(index) -> string` (OOB → `""`), `char_code() -> i64` (first unit, −1 if empty), `char_code_at(index) -> i64` (−1 if OOB) |
+| Slicing | `substring(start, length)` (clamped), `slice(start, length)` (unclamped fast path) |
+| Search | `find(sub)`, `find_from(sub, start)`, `find_last(sub)` (all `-> i64`, −1 = not found; empty `sub` in `find_last` → −1), `contains(sub)`, `starts_with(prefix)`, `ends_with(suffix)`, `count(sub)` (non-overlapping; empty → 0) |
+| Compare | `equals_ignore_case(other)`, `compare(other)` (lexicographic, negative/zero/positive) |
+| Transform | `to_upper()`, `to_lower()` (ASCII), `trim()`, `trim_start()`, `trim_end()` (whitespace = space/tab/CR/LF), `replace(from, to)` (empty `from` → unchanged), `reverse()`, `repeat(n)` (n ≤ 0 → `""`), `pad_left(width, ch)`, `pad_right(width, ch)` (first unit of `ch`, space when empty; no-op when already ≥ width) |
+| Split | `split(sep) -> mut IIterator<string>` — lazy, for-in ready; pieces between non-overlapping separators, a trailing separator yields one final empty piece (Python-like), empty `sep` yields the whole string once |
+| Convert | `to_int() -> i64` (0 on failure), `to_double() -> double` |
+
+All operations are index/unit-based (byte units on the native runtime, UTF-16 units on the BabyPenguin VM — identical for ASCII) and the case/trim tables are ASCII. Method calls dispatch directly (vtable on the string basic type on BabyPenguin; mangled `$$string` direct calls on EmperorPenguin) — do not use `cast<IStringOps>`/`is IStringOps` on a string (interface-typed boxing of primitives is not supported).
+
 ## Reference Types and Value Types
 Penguin-lang supports both reference types and value types. A reference type is a type that holds a reference to an object, and can be passed to other functions as reference. A value type is a type that holds its own data, and can be copied when assigned to another variable.
 

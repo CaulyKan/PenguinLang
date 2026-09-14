@@ -248,6 +248,7 @@ BabyPenguin emits a register-based IR with 25+ instruction types:
 - `List<T>`: Linked list with `push()`, `at()`, `set()`, `pop()`, `remove()`, `size()`
 - `Queue<T>`: Linked queue with `enqueue()`, `dequeue()`, `peek()`, `size()`
 - `StringBuilder`: `append()`, `to_string()`
+- `IStringOps`: the std string-method surface implemented for the primitive `string` (`impl IStringOps for string`, in `BabyPenguin/Builtin.penguin` + `EmperorPenguin/std/penguin/core_builtin.penguin` — keep the two mirrored): `length/is_empty/char_at/char_code(_at)/substring/slice/find(_from/_last)/contains/starts_with/ends_with/equals_ignore_case/compare/count/to_upper/to_lower/trim(_start/_end)/replace/reverse/repeat/pad_left/pad_right/split/to_int/to_double`. `split(sep)` returns a lazy `StringSplitIterator` (for-in ready, Python-like trailing empty piece). ASCII/unit-based; direct dispatch only (no interface-typed boxing of primitives). See Documentation/03_DataTypes.md §IStringOps.
 - `Box<T>`: Simple wrapper class
 - `ICopy<T>`: Interface for value-type copy semantics (implemented for all primitives)
 - `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`: Iterator interfaces. `IIterable.iter()` is the read-only path (element type T as stored, callable on immutable containers); `iter_mut()` is the mutable path. For-loop desugaring picks `iter()`/`iter_mut()` by the loop variable's mutability (`let x` → `iter`, `let x : mut T`/`let mut x` → `iter_mut`); an `in` expression that is already an iterator is used as-is.
