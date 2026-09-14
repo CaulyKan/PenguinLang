@@ -55,5 +55,25 @@ jobs:
       run: dotnet restore
     - name: Build
       run: dotnet build --no-restore
-    - name: Test
-      run: make all 
+    - name: Bootstrap
+      # Self-host the compiler: pass1 (dotnet cs backend) -> pass2..pass5
+      # (md5 convergence). Everything downstream links through build/bootstrap/*.
+      run: make bootstrap
+    - name: Build LSP and tools
+      # Same phase order as `make all` (bootstrap -> lsp -> tools -> unittest
+      # -> test), split into steps so logs and failures stay attributable.
+      run: make lsp tools
+    - name: Unit tests
+      run: make unittest
+    - name: Cross-compiler test suite
+      # Tests/*.md matrix via PenguinTestRunner; each run writes a
+      # self-contained interactive report at build/testruns/<timestamp>/summary.html
+      # (uploaded below, also when the suite exits non-zero).
+      run: make test
+    - name: Upload test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-report
+        path: build/testruns/*/summary.html
+        if-no-files-found: ignore
