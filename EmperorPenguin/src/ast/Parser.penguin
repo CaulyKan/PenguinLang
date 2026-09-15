@@ -1,5 +1,48 @@
 namespace emperor {
 
+// Normalize an integer literal's token text to plain DECIMAL. Hex (0x/0X),
+// binary (0b/0B) and octal (leading-0) spellings parse to their u64 value and
+// re-render as decimal; decimal and non-integer-shaped text pass through
+// unchanged. Must happen at PARSE time, before any consumer: the bound layer's
+// float-shape test would misread the 'e'/'E' hex digits as a float literal
+// ("0xFE" bound as f64), and the LLVM emitter writes constant text verbatim
+// where "0x..." is FLOAT syntax ("add i32 0, 0xFF" is invalid IR) and "017"
+// would silently parse as decimal 17.
+fun normalize_int_literal(text: string) -> string {
+    let n: i64 = string_length(text);
+    if (n < 2) { return text; }
+    let c0: i64 = string_char_code_at(text, 0);
+    if (c0 < 48 || c0 > 57) { return text; }
+    let radix: mut i64 = 10;
+    let start: mut i64 = 0;
+    let c1: i64 = string_char_code_at(text, 1);
+    if ((c1 == 120 || c1 == 88) && n > 2) {
+        radix = 16;
+        start = 2;
+    } else if ((c1 == 98 || c1 == 66) && n > 2) {
+        radix = 2;
+        start = 2;
+    } else if (c0 == 48) {
+        radix = 8;
+        start = 1;
+    } else {
+        return text;
+    }
+    let value: mut u64 = 0;
+    let i: mut i64 = start;
+    while (i < n) {
+        let d: i64 = string_char_code_at(text, i);
+        let v: mut i64 = -1;
+        if (d >= 48 && d <= 57) { v = d - 48; }
+        else if (d >= 97 && d <= 102) { v = d - 97 + 10; }
+        else if (d >= 65 && d <= 70) { v = d - 65 + 10; }
+        if (v < 0 || v >= radix) { return text; }
+        value = value * cast<u64>(radix) + cast<u64>(v);
+        i = i + 1;
+    }
+    return cast<string>(value);
+}
+
 // Set is_exported on an AST definition after an `export` prefix is parsed.
 // An exported NAMESPACE cascades: every definition nested inside the exported
 // block is exported too (per-file, static — namespace merging across files is
@@ -67,7 +110,7 @@ fun _mark_ast_exported(def: Definition) {
             let token: Token = this.stream.peek();
             if (token.token_type is TokenType.Constant) {
                 let tok: Token = this.stream.advance();
-                return new Expression.constant(new ConstantExpression(tok.text));
+                return new Expression.constant(new ConstantExpression(normalize_int_literal(tok.text)));
             } else if (token.token_type is TokenType.Stringliteral) {
                 let tok: Token = this.stream.advance();
                 let str_expr: StringLiteralExpression = new StringLiteralExpression(tok.text);
@@ -1235,8 +1278,8 @@ fun _mark_ast_exported(def: Definition) {
             if (this.stream.peek_type() is TokenType.Constant) {
                 let val_token: Token = this.stream.advance();
                 ts.is_value_arg = true;
-                ts.value_arg_text = val_token.text;
-                ts.name = val_token.text;
+                ts.value_arg_text = normalize_int_literal(val_token.text);
+                ts.name = ts.value_arg_text;
                 ts.location = this.tok_loc(val_token);
                 return ts;
             }

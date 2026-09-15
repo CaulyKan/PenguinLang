@@ -159,6 +159,78 @@ class MetaEngine {
     // self-contained (~4271 lines: core_builtin + utils + bound type layer + AST
     // type layer + ErrorCode). Weak-dedup in penguin_jit means re-emitted defs
     // resolve to the host's strong exports (emperor_BoundType_fields, …).
+    // --meta-with-user-sources: user SourceInputs eligible for unit B
+    // (seeded by SemanticMetaRewrite from the host compilation). See
+    // user_sources_meta_safe for the inclusion heuristic.
+    with_user_sources: bool = false;
+    user_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+    // The host compilation's --enable-coroutine state: forwarded to the unit
+    // B compiler (included user sources may reference scheduler types).
+    host_coroutine: bool = false;
+
+    // A user file enters unit B ONLY when it opts in with a `// meta: unit-b`
+    // marker line — the file declares itself part of the compile-time library
+    // surface a #fun may call. This keeps the inclusion set EXPLICIT and
+    // minimal (transitively closed by the marker, not by dependency
+    // inference). A marked file must additionally be free of
+    // coroutine/topology constructs (initial blocks, construct/connect,
+    // async fun, wait forms, yield, port declarations): compiling those into
+    // the compile-time unit would trip unit B's coroutine gate and could
+    // re-enter the meta engine.
+    fun user_sources_meta_safe(this, src: string) -> bool {
+        if (string_find(src, "meta: unit-b") < 0) { return false; }
+        let code: string = this.strip_comments_for_gate(src);
+        if (string_find(code, "initial") >= 0) { return false; }
+        if (string_find(code, "construct") >= 0) { return false; }
+        if (string_find(code, "connect(") >= 0) { return false; }
+        if (string_find(code, "async fun") >= 0) { return false; }
+        if (string_find(code, "wait ") >= 0) { return false; }
+        if (string_find(code, "wait;") >= 0) { return false; }
+        if (string_find(code, "yield") >= 0) { return false; }
+        if (string_find(code, "input ") >= 0) { return false; }
+        if (string_find(code, "output ") >= 0) { return false; }
+        return true;
+    }
+
+    // Remove // line comments and /* */ block comments (string literals are
+    // preserved verbatim so their contents never trigger the gate). Only for
+    // the meta-safety scan — the real source text is compiled unchanged.
+    fun strip_comments_for_gate(this, src: string) -> string {
+        let sb: mut StringBuilder = new StringBuilder();
+        let n: i64 = string_length(src);
+        let i: mut i64 = 0;
+        while (i < n) {
+            let c: i64 = string_char_code_at(src, i);
+            if (c == 34) {
+                // string literal: copy verbatim with escapes
+                sb.append("\"");
+                i = i + 1;
+                while (i < n) {
+                    let sc: i64 = string_char_code_at(src, i);
+                    if (sc == 92 && i + 1 < n) {
+                        sb.append(string_char_at(src, i));
+                        sb.append(string_char_at(src, i + 1));
+                        i = i + 2;
+                        continue;
+                    }
+                    sb.append(string_char_at(src, i));
+                    i = i + 1;
+                    if (sc == 34) { break; }
+                }
+            } else if (c == 47 && i + 1 < n && string_char_code_at(src, i + 1) == 47) {
+                while (i < n && string_char_code_at(src, i) != 10) { i = i + 1; }
+            } else if (c == 47 && i + 1 < n && string_char_code_at(src, i + 1) == 42) {
+                i = i + 2;
+                while (i + 1 < n && !(string_char_code_at(src, i) == 42 && string_char_code_at(src, i + 1) == 47)) { i = i + 1; }
+                i = i + 2;
+            } else {
+                sb.append(string_char_at(src, i));
+                i = i + 1;
+            }
+        }
+        return sb.to_string();
+    }
+
     fun base_meta_sources(this) -> mut _utils.List<SourceInput> {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
         result.push(new SourceInput("core_builtin.penguin", read_compiler_source("EmperorPenguin/std/penguin/core_builtin.penguin")));
@@ -275,6 +347,91 @@ class MetaEngine {
         return synth.build_text();
     }
 
+    // Wrap synthesized #fun text in its enclosing (dotted) namespace so the
+    // body resolves sibling user definitions; flat single-level wrap is enough
+    // for v1 (nested paths pass through verbatim — nested namespace syntax is
+    // accepted by the front-end).
+    fun wrap_in_namespace(this, ns: string, usings: _utils.List<string>, text: string) -> string {
+        if (string_length(ns) == 0) { return text; }
+        let head: mut StringBuilder = new StringBuilder();
+        head.append("namespace ");
+        head.append(ns);
+        head.append(" {\n");
+        let i: mut i64 = 0;
+        while (i < usings.size()) {
+            head.append("    using ");
+            head.append(usings.at(cast<u64>(i)).some);
+            head.append(";\n");
+            i = i + 1;
+        }
+        head.append(text);
+        head.append("\n}");
+        return head.to_string();
+    }
+
+    // The namespace wrap applies ONLY under --meta-with-user-sources (the
+    // feature that needs sibling resolution inside the declaring namespace).
+    // Without the flag every #fun is synthesized at TOP LEVEL as before:
+    // namespaced #funs (e.g. std's json_deserializable_type) are called
+    // UNQUALIFIED from synthesized top-level trampolines, and wrapping them
+    // broke that resolution (pass2 bootstrap's __specializing_Option).
+    // Compiler-synthesized trampolines (_template_*, __specializing_*) are
+    // written for top-level synthesis and are never wrapped.
+    // `fun <name>(<params>) -> <ret> { return <ns>.<name>(<args>); }` —
+    // keeps the bare-name JIT lookup working for a namespace-wrapped #fun.
+    fun synthesize_top_level_forwarder(this, bmf: BoundMetaFunctionDefinition, synth: FunctionDefinition) -> string {
+        let sb: mut StringBuilder = new StringBuilder();
+        sb.append("fun ");
+        sb.append(bmf.name);
+        sb.append("(");
+        let pi: mut i64 = 0;
+        let argnames: mut StringBuilder = new StringBuilder();
+        while (pi < cast<i64>(synth.parameters.size())) {
+            let p: Parameter = synth.parameters.at(cast<u64>(pi)).some;
+            if (pi > 0) { sb.append(", "); argnames.append(", "); }
+            sb.append(p.name);
+            sb.append(": ");
+            if (p.type_spec.is_some()) {
+                let ts: TypeSpecifier = p.type_spec.some;
+                let qi: mut i64 = 0;
+                while (qi < cast<i64>(ts.qualified_parts.size())) {
+                    sb.append(ts.qualified_parts.at(cast<u64>(qi)).some);
+                    sb.append(".");
+                    qi = qi + 1;
+                }
+                sb.append(ts.name);
+                let gi: mut i64 = 0;
+                if (cast<i64>(ts.generic_args.size()) > 0) { sb.append("<"); }
+                while (gi < cast<i64>(ts.generic_args.size())) {
+                    if (gi > 0) { sb.append(", "); }
+                    sb.append(ts.generic_args.at(cast<u64>(gi)).some.build_text());
+                    gi = gi + 1;
+                }
+                if (cast<i64>(ts.generic_args.size()) > 0) { sb.append(">"); }
+            }
+            argnames.append(p.name);
+            pi = pi + 1;
+        }
+        sb.append(")");
+        let has_ret: bool = synth.return_type.is_some() && synth.return_type.some.name != "void";
+        if (synth.return_type.is_some() && synth.return_type.some.name != "void") {
+            sb.append(" -> ");
+            sb.append(synth.return_type.some.build_text());
+        }
+        sb.append(" { ");
+        if (has_ret) { sb.append("return "); }
+        sb.append(bmf.enclosing_ns + "." + bmf.name + "(" + argnames.to_string() + "); }");
+        return sb.to_string();
+    }
+
+    fun should_wrap_meta_fun(this, bmf: BoundMetaFunctionDefinition) -> bool {
+        if (!this.with_user_sources) { return false; }
+        if (string_length(bmf.enclosing_ns) == 0) { return false; }
+        if (string_starts_with(bmf.name, "_template_")) { return false; }
+        if (string_starts_with(bmf.name, "__specializing_")) { return false; }
+        return true;
+    }
+
     fun compile_meta_function(mut this, bmf: BoundMetaFunctionDefinition) -> bool {
         // ---- Step (a): synthesize a plain FunctionDefinition from bmf ----
         let synth: FunctionDefinition = new FunctionDefinition(bmf.name);
@@ -365,8 +522,18 @@ class MetaEngine {
         // Unqualified lookup no longer scans all namespaces, so import emperor
         // explicitly (like __builtin, it is always implicitly available; this
         // using just makes its members visible to the synthesized top-level
-        // functions).
-        let unit_b_source: mut string = "using emperor;\n" + synth.build_text();
+        // functions). A #fun declared inside a namespace is wrapped in that
+        // namespace so its body resolves the user's sibling functions (needed
+        // with --meta-with-user-sources; harmless otherwise).
+        let unit_b_source: mut string = "using emperor;\n" + (if (this.should_wrap_meta_fun(bmf)) {
+            // Wrapped for sibling resolution — but the JIT lookup and the
+            // caller-stub ABI address the BARE top-level name, so also emit a
+            // top-level forwarder delegating to the namespaced definition.
+            this.wrap_in_namespace(bmf.enclosing_ns, bmf.file_usings, synth.build_text())
+                + "\n" + this.synthesize_top_level_forwarder(bmf, synth)
+        } else {
+            synth.build_text()
+        });
         // req3+4: include every other #fun as a synthesized regular function so a
         // #fun body can call it by plain name (e.g. a value-template #fun foo
         // whose body calls #test — after rewrite_meta_calls_in_expr the body has
@@ -375,7 +542,12 @@ class MetaEngine {
         while (oi < cast<i64>(this.all_meta_function_defs.size())) {
             let other: BoundMetaFunctionDefinition = this.all_meta_function_defs.at(cast<u64>(oi)).some;
             if (other.name != bmf.name) {
-                unit_b_source = unit_b_source + "\n" + this.synthesize_meta_function_text(other);
+                let other_text: string = this.synthesize_meta_function_text(other);
+                if (this.should_wrap_meta_fun(other)) {
+                    unit_b_source = unit_b_source + "\n" + this.wrap_in_namespace(other.enclosing_ns, other.file_usings, other_text);
+                } else {
+                    unit_b_source = unit_b_source + "\n" + other_text;
+                }
             }
             oi = oi + 1;
         }
@@ -384,6 +556,23 @@ class MetaEngine {
         // core_builtin + utils + bound type layer + AST type layer + ErrorCode),
         // the token→ptr bridge extern, and the synthesized #fun.
         let inputs: mut _utils.List<SourceInput> = this.base_meta_sources();
+        // --meta-with-user-sources: append the compilation's coroutine-free
+        // user files so the #fun can call ordinary user functions.
+        if (this.with_user_sources) {
+            // Included user sources may use scheduler types (_ChanList,
+            // Event): give unit B the same stdlib the host loaded.
+            if (this.host_coroutine) {
+                inputs.push(new SourceInput("scheduler.penguin", read_compiler_source("EmperorPenguin/std/penguin/scheduler.penguin")));
+            }
+            let ui: mut i64 = 0;
+            while (ui < cast<i64>(this.user_inputs.size())) {
+                let uin: SourceInput = this.user_inputs.at(cast<u64>(ui)).some;
+                if (string_length(uin.source) > 0 && this.user_sources_meta_safe(uin.source)) {
+                    inputs.push(new SourceInput(uin.filename, uin.source));
+                }
+                ui = ui + 1;
+            }
+        }
         inputs.push(new SourceInput("<meta_externs>", this.meta_extern_decls()));
         if (string_length(this.meta_class_source) > 0) {
             inputs.push(new SourceInput("<meta_classes>", this.meta_class_source));
@@ -409,6 +598,8 @@ class MetaEngine {
         // base sources (arg_as_bound_type etc.) are called by bare name from
         // synthesized #funs — file namespaces would hide them.
         compiler.top_level_in_global = true;
+        compiler.is_unit_b = true;
+        compiler.enable_coroutine = this.host_coroutine;
         let unit_b: BoundCompilationUnit = compiler.compile_sources(inputs);
 
         if (unit_b.has_errors()) {

@@ -635,7 +635,17 @@ namespace __builtin {
 
             _last_round_quiet = (_sim_activity_count == _round_start_activity);
 
-            if (progress) {
+            // A round with transaction ACTIVITY (emit / channel write /
+            // resolved wait — every _sim_activity call site) still has
+            // same-time propagation in flight: delta-parked coroutines
+            // (bare `wait;`, emit's trailing yield) are owed their next
+            // round at the CURRENT tick before any timer-driven jump.
+            // Bare wait promises "one delta — without touching the tick
+            // counter" (08_TimingModel); without this gate the idle jump
+            // below skipped straight to the earliest pending timer and
+            // resumed the parked coroutine at the WRONG time (repro:
+            // emit/`wait;` + a concurrent `wait 100 tick` sleeper).
+            if (progress || _sim_activity_count != _round_start_activity) {
                 fp_valid = false;
                 continue;
             }

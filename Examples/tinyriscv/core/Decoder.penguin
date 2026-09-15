@@ -1,0 +1,44 @@
+// Decoder.penguin — pure RV32I subset decoder (word -> fields), tinyriscv
+// model. The op numbering is INTERNAL to the model (not the ISA encoding);
+// unsupported/undecodable words (including tinyriscv's NOP 0x00000001 and
+// the zero word from undecoded bus regions) decode to OP_NOP and execute as
+// bubbles, exactly like the RTL's default case.
+
+namespace tinyriscv {
+
+    using esl;
+
+    fun OP_NOP() -> u32 { return cast<u32>(0); }
+    fun OP_LUI() -> u32 { return cast<u32>(1); }
+    fun OP_ADDI() -> u32 { return cast<u32>(2); }
+    fun OP_ANDI() -> u32 { return cast<u32>(3); }
+    fun OP_LBU() -> u32 { return cast<u32>(4); }
+    fun OP_LW() -> u32 { return cast<u32>(5); }
+    fun OP_SW() -> u32 { return cast<u32>(6); }
+    fun OP_BEQ() -> u32 { return cast<u32>(7); }
+    fun OP_BNE() -> u32 { return cast<u32>(8); }
+    fun OP_JAL() -> u32 { return cast<u32>(9); }
+
+    fun is_mem_op(op: u32) -> bool {
+        return op == OP_LBU() || op == OP_LW() || op == OP_SW();
+    }
+
+    // Decoded instruction fields (reused scratch object — decode is
+    // allocation-free on the hot path).
+    class Dec {
+        impl __builtin.IReferenceType;
+        op: mut u32 = cast<u32>(0);
+        rd: mut u32 = cast<u32>(0);
+        rs1: mut u32 = cast<u32>(0);
+        rs2: mut u32 = cast<u32>(0);
+        imm: mut u32 = cast<u32>(0);
+
+        fun new(mut this) {}
+    }
+
+    // The decode MATCH ITSELF is GENERATED AT COMPILE TIME from the
+    // #class instruction table — see InsnTable.penguin (`#gen_decode();`
+    // splices in `fun decode(w: u32, d: mut Dec)` right after this file's
+    // definitions in the namespace).
+
+}

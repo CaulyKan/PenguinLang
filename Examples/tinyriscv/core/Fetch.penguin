@@ -1,0 +1,49 @@
+// Fetch.penguin — pc_reg + instruction fetch stage
+// (rtl/core/pc_reg.v + the fetch half of tinyriscv.v wiring).
+//
+// Per clock edge: apply the ctrl decision to pc (jump wins over freeze),
+// flush or load if_id, and fetch through the RIB's m1 port — which answers
+// a NOP bubble whenever the EX stage (m0, fixed priority) owns the bus.
+
+namespace tinyriscv {
+
+    using esl;
+
+    class Fetch {
+        impl __builtin.IReferenceType;
+
+        clk: Clock;
+        core: Core;
+        ctrl: Ctrl;
+        bus: Bus;
+
+        fun new(mut this, clk: mut Clock, core: mut Core, ctrl: mut Ctrl) {
+            this.clk = clk;
+            this.core = core;
+            this.ctrl = ctrl;
+            this.bus = core.bus;
+        }
+
+        initial {
+            while (true) {
+                wait this.clk.evt;
+                if (this.ctrl.jump_flag()) {
+                    // Hold_Id: pc <= target, if_id flushed to NOP.
+                    this.core.pc.write(this.ctrl.jump_target());
+                    this.core.if_inst.flush();
+                } else {
+                    let instr: u32 = this.bus.m1_fetch(this.core.pc.out());
+                    if (this.ctrl.m0_busy()) {
+                        // Hold_Pc: freeze only pc; if_id latches the NOP bubble.
+                        this.core.pc.freeze();
+                    } else {
+                        this.core.pc.write(this.core.pc.out() + cast<u32>(4));
+                    }
+                    this.core.if_inst.write(instr);
+                    this.core.if_pc.write(this.core.pc.out());
+                }
+            }
+        }
+    }
+
+}

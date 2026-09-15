@@ -1,0 +1,64 @@
+// MemMap.penguin — meta insertion point 2: the SoC's MEMORY MAP as #class
+// table entries, and the #fun that CODE-GENERATES the interconnect's slave
+// decode (`fun mmio_region_index(addr) -> i64`, an addr[31:28] if-chain).
+// The SoC attaches its slaves with attach_indexed in TABLE ORDER and
+// installs MmioDecoder — the region translation is compiled, not scanned.
+
+namespace tinyriscv {
+
+    using esl;
+
+    // One memory-mapped region: addr[31:28] == nibble selects it.
+    #class MemMapEntry {
+        name: string;
+        nibble: i64;
+        base: string;
+
+        fun new(mut this, name: string, nibble: i64, base: string) {
+            this.name = name;
+            this.nibble = nibble;
+            this.base = base;
+        }
+    }
+
+    #fun mem_map() -> mut _utils.List<MemMapEntry> {
+        let t: mut _utils.List<MemMapEntry> = new _utils.List<MemMapEntry>();
+        t.push(new MemMapEntry("ROM",  0, "0x00000000"));
+        t.push(new MemMapEntry("RAM",  1, "0x10000000"));
+        t.push(new MemMapEntry("UART", 3, "0x30000000"));
+        return t;
+    }
+
+    // Generate `fun mmio_region_index(addr: u32) -> i64` — the table's index
+    // for the region the address decodes to, -1 when undecoded.
+    #fun gen_bus_decode() -> ast {
+        let t: mut _utils.List<MemMapEntry> = mem_map();
+        let sb: mut StringBuilder = new StringBuilder();
+        sb.append("fun mmio_region_index(addr: u32) -> i64 {");
+        sb.append("let nib: i64 = cast<i64>(bits(addr, 31, 28));");
+        let i: mut i64 = 0;
+        while (i < t.size()) {
+            let e: mut MemMapEntry = t.at(cast<u64>(i)).some;
+            if (i > 0) { sb.append(" else"); }
+            sb.append(" if (nib == " + cast<string>(e.nibble) + ") { return " + cast<string>(i) + "; }");
+            i = i + 1;
+        }
+        sb.append(" return -1;");
+        sb.append("}");
+        return compiler().create_definition(sb.to_string());
+    }
+
+    #gen_bus_decode();
+
+    // Adapter installing the generated decode on the esl.Bus.
+    class MmioDecoder {
+        impl __builtin.IReferenceType;
+        impl IBusDecoder {
+            fun decode(this, addr: u32) -> i64 {
+                return mmio_region_index(addr);
+            }
+        }
+        fun new(mut this) {}
+    }
+
+}

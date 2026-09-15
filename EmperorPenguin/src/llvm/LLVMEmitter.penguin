@@ -299,6 +299,7 @@ class LLVMEmitter {
     needs_int_to_string: mut bool = false;
     needs_string_concat: mut bool = false;
     needs_bool_to_string: mut bool = false;
+    needs_char_to_string: mut bool = false;
     needs_double_to_string: mut bool = false;
     needs_string_equal: mut bool = false;
     needs_string_compare: mut bool = false;
@@ -771,6 +772,7 @@ class LLVMEmitter {
         this.gcscan_dbg = _utils.getenv("EMPEROR_GC_SCAN_DEBUG") != "";
         this.needs_string_concat = false;
         this.needs_bool_to_string = false;
+        this.needs_char_to_string = false;
         this.needs_double_to_string = false;
         this.needs_string_equal = false;
         this.needs_string_compare = false;
@@ -1128,6 +1130,9 @@ class LLVMEmitter {
         }
         if (this.needs_double_to_string) {
             target.append("declare ptr @_emperor_double_to_string(double)\n");
+        }
+        if (this.needs_char_to_string) {
+            target.append("declare ptr @_emperor_char_to_string(i32)\n");
         }
         if (this.needs_string_equal) {
             target.append("declare i32 @_emperor_string_equal(ptr, ptr)\n");
@@ -3819,6 +3824,16 @@ class LLVMEmitter {
         if (this.is_string_type(inst.to_type) && this.is_bool_type(inst.from_type)) {
             this.needs_bool_to_string = true;
             this.emit_line("  " + result_name + " = call ptr @_emperor_bool_to_string(i8 " + operand_resolved + ")");
+            return;
+        }
+
+        // char → string: the CHARACTER itself (reference semantics —
+        // BabyPenguin's C# char.ToString()), UTF-8 encoded by the runtime
+        // helper. "char" is not an is_int_type spelling, so without this arm
+        // the cast fell through every case and emitted garbage (segfault).
+        if (this.is_string_type(inst.to_type) && inst.from_type == "char") {
+            this.needs_char_to_string = true;
+            this.emit_line("  " + result_name + " = call ptr @_emperor_char_to_string(i32 " + operand_resolved + ")");
             return;
         }
 

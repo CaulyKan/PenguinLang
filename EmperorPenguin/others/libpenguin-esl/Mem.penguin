@@ -1,0 +1,149 @@
+// Mem.penguin — word-array ROM/RAM with byte/half/word access (libpenguin-esl).
+//
+// Backed by one raw _malloc buffer of WORDS u32 words, accessed through the
+// #__load/#__store intrinsics (same technique as std.Array, minus the generic
+// nesting). Byte/half STORES are read-modify-write on the containing word —
+// single-cycle, matching the RIB's one-cycle slave semantics. Addresses are
+// byte addresses; word ops align down, byte ops select the lane.
+//
+// Both memories implement IBusSlave (the RIB port): ROM serves word reads and
+// drops writes; RAM serves the full byte/half/word surface. Out-of-bounds
+// reads return 0 and out-of-bounds writes are ignored — the model's memories
+// are fixed-size (the real SoC's bus would simply not decode them).
+
+namespace esl {
+
+    #template(WORDS: u64)
+    class Rom {
+        impl IReferenceType;
+
+        buf: mut u64 = 0;
+        word_count: mut u64 = WORDS;
+
+        fun new(mut this) {
+            this.buf = __builtin._malloc(this.word_count * 4);
+        }
+
+        fun word_at(this, idx: u64) -> u32 {
+            if (idx >= this.word_count) { return 0; }
+            return #__load(u32, this.buf + idx * 4);
+        }
+
+        fun set_word(mut this, idx: u64, w: u32) {
+            if (idx >= this.word_count) { return; }
+            #__store(u32, this.buf + idx * 4, w);
+        }
+
+        fun size(this) -> u64 {
+            return this.word_count;
+        }
+
+        // Bus-facing word index: the full RIB address masked into this
+        // memory's capacity (power-of-two WORDS) — tinyriscv slaves decode
+        // addr[15:2] locally and simply wrap/ignore the upper bits.
+        fun bus_word_index(this, addr: u32) -> u64 {
+            let masked: u64 = cast<u64>(rshift(cast<i64>(addr), 2)) & (this.word_count - 1);
+            return masked;
+        }
+
+        fun read_word(this, addr: u32) -> u32 {
+            return this.word_at(this.bus_word_index(addr));
+        }
+
+        // RIB slave port: word reads; writes are dropped (read-only memory).
+        impl IBusSlave {
+            fun bus_read(this, addr: u32) -> u32 {
+                return this.read_word(addr);
+            }
+            fun bus_write(mut this, addr: u32, wdata: u32) {}
+        }
+    }
+
+    #template(WORDS: u64)
+    class Ram {
+        impl IReferenceType;
+
+        buf: mut u64 = 0;
+        word_count: mut u64 = WORDS;
+
+        fun new(mut this) {
+            this.buf = __builtin._malloc(this.word_count * 4);
+        }
+
+        fun word_at(this, idx: u64) -> u32 {
+            if (idx >= this.word_count) { return 0; }
+            return #__load(u32, this.buf + idx * 4);
+        }
+
+        fun set_word(mut this, idx: u64, w: u32) {
+            if (idx >= this.word_count) { return; }
+            #__store(u32, this.buf + idx * 4, w);
+        }
+
+        fun size(this) -> u64 {
+            return this.word_count;
+        }
+
+        // --- byte-addressable bus-facing ops (single cycle each) ---
+
+        // Bus-facing word index: the full RIB address masked into this
+        // memory's capacity (power-of-two WORDS) — tinyriscv slaves decode
+        // addr[15:2] locally and simply wrap/ignore the upper bits.
+        fun bus_word_index(this, addr: u32) -> u64 {
+            let masked: u64 = cast<u64>(rshift(cast<i64>(addr), 2)) & (this.word_count - 1);
+            return masked;
+        }
+
+        fun read_word(this, addr: u32) -> u32 {
+            return this.word_at(this.bus_word_index(addr));
+        }
+
+        fun write_word(mut this, addr: u32, w: u32) {
+            this.set_word(this.bus_word_index(addr), w);
+        }
+
+        fun read_byte(this, addr: u32) -> u32 {
+            let word: u32 = this.read_word(addr);
+            let lane: i64 = cast<i64>(addr & cast<u32>(3));
+            return bits(cast<u32>(rshift(cast<i64>(word), lane * 8)), 7, 0);
+        }
+
+        fun read_half(this, addr: u32) -> u32 {
+            let word: u32 = this.read_word(addr);
+            let lane16: i64 = cast<i64>(rshift(cast<i64>(addr & cast<u32>(2)), 1));
+            return bits(cast<u32>(rshift(cast<i64>(word), lane16 * 8)), 15, 0);
+        }
+
+        fun write_byte(mut this, addr: u32, v: u32) {
+            let idx: u64 = this.bus_word_index(addr);
+            let old: u32 = this.word_at(idx);
+            let lane: i64 = cast<i64>(addr & cast<u32>(3));
+            let shifted: i64 = lshift(cast<i64>(bits(v, 7, 0)), lane * 8);
+            let keep_mask: i64 = lshift(255, lane * 8) ^ 4294967295;
+            let merged: u32 = cast<u32>((cast<i64>(old) & keep_mask) | shifted);
+            this.set_word(idx, merged);
+        }
+
+        fun write_half(mut this, addr: u32, v: u32) {
+            let idx: u64 = this.bus_word_index(addr);
+            let old: u32 = this.word_at(idx);
+            let lane16: i64 = cast<i64>(rshift(cast<i64>(addr), 1) & 1);
+            let shifted: i64 = lshift(cast<i64>(bits(v, 15, 0)), lane16 * 16);
+            let keep_mask: i64 = lshift(65535, lane16 * 16) ^ 4294967295;
+            let merged: u32 = cast<u32>((cast<i64>(old) & keep_mask) | shifted);
+            this.set_word(idx, merged);
+        }
+
+        // RIB slave port: word granularity (byte/half via the helpers above,
+        // selected by the master's access-size signal).
+        impl IBusSlave {
+            fun bus_read(this, addr: u32) -> u32 {
+                return this.read_word(addr);
+            }
+            fun bus_write(mut this, addr: u32, wdata: u32) {
+                this.write_word(addr, wdata);
+            }
+        }
+    }
+
+}

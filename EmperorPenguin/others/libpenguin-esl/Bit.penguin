@@ -1,0 +1,113 @@
+// meta: unit-b — opted into the compile-time (unit B) library surface
+// Bit.penguin — bit-slicing / sign-extension / radix parsing helpers for
+// hardware ESL models. Pure functions over u32/i64, no state, no suspension.
+//
+// Part of libpenguin-esl (see Clock.penguin for the library overview). All
+// shifts go through the i64 lshift/rshift builtins (logical on non-negative
+// i64) so every width of int works uniformly; masks keep results in range.
+
+namespace esl {
+
+    // v[hi:lo] inclusive, 0 <= lo <= hi <= 31.
+    fun bits(v: u32, hi: i64, lo: i64) -> u32 {
+        let w: i64 = hi - lo + 1;
+        if (w >= 32) { return v; }
+        let shifted: i64 = rshift(cast<i64>(v), lo);
+        let mask: i64 = lshift(1, w) - 1;
+        return cast<u32>(shifted & mask);
+    }
+
+    // v[b] as 0/1.
+    fun bit(v: u32, b: i64) -> u32 {
+        return bits(v, b, b);
+    }
+
+    // Zero-extend the low `width` bits.
+    fun zext(v: u32, width: i64) -> u32 {
+        return bits(v, width - 1, 0);
+    }
+
+    // Sign-extend the low `width` bits to 32 bits (RV32I immediate semantics).
+    fun sext(v: u32, width: i64) -> u32 {
+        if (width >= 32) { return v; }
+        let low: i64 = cast<i64>(bits(v, width - 1, 0));
+        if (bit(v, width - 1) == 0) { return cast<u32>(low); }
+        let upper_mask: i64 = lshift(lshift(1, 32 - width) - 1, width);
+        return cast<u32>(low | upper_mask);
+    }
+
+    // The numeric value of one hex digit character, or -1.
+    fun hex_digit_value(c: string) -> i64 {
+        let x: i64 = string_char_code(c);
+        let d0: i64 = string_char_code("0");
+        let d9: i64 = string_char_code("9");
+        let la: i64 = string_char_code("a");
+        let lf: i64 = string_char_code("f");
+        let ua: i64 = string_char_code("A");
+        let uf: i64 = string_char_code("F");
+        if (x >= d0 && x <= d9) { return x - d0; }
+        if (x >= la && x <= lf) { return x - la + 10; }
+        if (x >= ua && x <= uf) { return x - ua + 10; }
+        return -1;
+    }
+
+    // Parse an optionally-signed integer: 0x/0X hex, 0b/0B binary, optional
+    // leading-0 octal, or decimal. Returns None on malformed input (used by
+    // the assembler's numeric operands).
+    fun parse_int(s: string) -> Option<i64> {
+        let n: i64 = string_length(s);
+        if (n == 0) { return new Option<i64>.none(); }
+        let neg: mut bool = false;
+        let body: mut string = s;
+        if (string_char_code_at(s, 0) == string_char_code("-")) {
+            neg = true;
+            body = string_substring(s, 1, n - 1);
+        }
+        let bn: i64 = string_length(body);
+        if (bn == 0) { return new Option<i64>.none(); }
+        let radix: mut i64 = 10;
+        let start: mut i64 = 0;
+        if (bn > 2 && string_char_code_at(body, 0) == string_char_code("0")) {
+            let c1: i64 = string_char_code_at(body, 1);
+            if (c1 == string_char_code("x") || c1 == string_char_code("X")) {
+                radix = 16;
+                start = 2;
+            } else if (c1 == string_char_code("b") || c1 == string_char_code("B")) {
+                radix = 2;
+                start = 2;
+            }
+        }
+        let value: mut i64 = 0;
+        let i: mut i64 = start;
+        while (i < bn) {
+            let d: mut i64 = -1;
+            let cc: i64 = string_char_code_at(body, i);
+            if (cc >= string_char_code("0") && cc <= string_char_code("9")) {
+                d = cc - string_char_code("0");
+            } else if (cc >= string_char_code("a") && cc <= string_char_code("f")) {
+                d = cc - string_char_code("a") + 10;
+            } else if (cc >= string_char_code("A") && cc <= string_char_code("F")) {
+                d = cc - string_char_code("A") + 10;
+            }
+            if (d < 0 || d >= radix) { return new Option<i64>.none(); }
+            value = value * radix + d;
+            i = i + 1;
+        }
+        if (neg) { value = -value; }
+        return new Option<i64>.some(value);
+    }
+
+    // Render a u32 as 8 uppercase hex digits (trace/dump helper).
+    fun hex8(v: u32) -> string {
+        let digits: string = "0123456789ABCDEF";
+        let out: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 7;
+        while (i >= 0) {
+            let d: u32 = bits(cast<u32>(rshift(cast<i64>(v), i * 4)), 3, 0);
+            out.append(string_char_at(digits, cast<i64>(d)));
+            i = i - 1;
+        }
+        return out.to_string();
+    }
+
+}

@@ -1,0 +1,10 @@
+// meta: unit-b — opted into the compile-time (unit B) library surface
+// (--meta-with-user-sources). A plain runtime function a #fun may call.
+
+fun trv_double(x: i64) -> i64 {
+    return x * 2;
+}
+
+fun trv_tag(s: string) -> string {
+    return "[" + s + "]";
+}

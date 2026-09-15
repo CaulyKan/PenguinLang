@@ -1,0 +1,138 @@
+// Bus.penguin — memory-mapped interconnect with fixed-priority arbitration
+// (libpenguin-esl), modeling tinyriscv's RIB.
+//
+// Faithful to the RIB's single-cycle COMBINATIONAL bus:
+//   - Slave select decodes addr[31:28] (ROM@0x0, RAM@0x1, UART@0x3, ... —
+//     the map lives in the SoC's wiring, not here).
+//   - Two masters, FIXED priority m0 > m1 (m0 = EX data access, m1 =
+//     instruction fetch). When m0 requests, m1's fetch is answered with the
+//     NOP bubble word (tinyriscv NOP = 32'h0000_0001) and the PC must be
+//     frozen by the SoC's ctrl logic so the instruction is refetched.
+//   - An m0 access is ALWAYS granted (top priority): it routes straight to
+//     the decoded slave.
+//
+// Wakeup-order independence: m1_fetch answers the arbitration question by
+// probing the m0 master's IBusMaster.bus_req(), which the master derives
+// ONLY from committed register state (never from same-cycle computation),
+// so the answer is identical whichever module evaluates first.
+//
+// No queueing anywhere: the RIB has no buffers, and a queued bus would
+// distort cycle timing. (Buffering belongs to the peripherals that really
+// have it, e.g. the UART serializer.)
+
+namespace esl {
+
+    interface IBusSlave {
+        impl __builtin.IReferenceType;
+        // Word-granularity slave port. Byte/half semantics live in the slave
+        // (see Ram.read_byte / write_byte) — the interconnect stays flat.
+        fun bus_read(this, addr: u32) -> u32;
+        fun bus_write(mut this, addr: u32, wdata: u32);
+    }
+
+    // Arbitration probe for the priority master. MUST be a pure function of
+    // committed register state (see the wakeup-order note above).
+    interface IBusMaster {
+        impl __builtin.IReferenceType;
+        fun bus_req(this) -> bool;
+    }
+
+    // Compile-time-generated slave decode (meta insertion point): maps an
+    // address to the index of its region in the wiring's table, or -1 for an
+    // undecoded region. Install with Bus.set_decoder + attach_indexed.
+    interface IBusDecoder {
+        impl __builtin.IReferenceType;
+        fun decode(this, addr: u32) -> i64;
+    }
+
+    fun nop_word() -> u32 {
+        return cast<u32>(1);
+    }
+
+    class Bus {
+        impl IReferenceType;
+
+        // Attached slaves in registration order + their address nibbles
+        // (addr[31:28]); slave_at scans the pairs. Undecoded addresses read
+        // 0 and drop writes.
+        slaves: mut _ChanList<IBusSlave> = new _ChanList<IBusSlave>();
+        nibbles: mut _ChanList<i64> = new _ChanList<i64>();
+        m0: mut Option<IBusMaster> = new Option<IBusMaster>.none();
+
+        fun new(mut this) {}
+
+        // Attach a slave to an address nibble (addr[31:28] == nibble).
+        fun attach(mut this, nibble: i64, s: IBusSlave) {
+            this.slaves.push(s);
+            this.nibbles.push(nibble);
+        }
+
+        fun set_m0(mut this, m: IBusMaster) {
+            this.m0 = new Option<IBusMaster>.some(m);
+        }
+
+        // Indexed attachment: slaves in the memory-map table's order, routed
+        // by an installed IBusDecoder (typically meta-generated from a #class
+        // map — the addr[31:28] decode is compiled, not scanned).
+        indexed: mut _ChanList<IBusSlave> = new _ChanList<IBusSlave>();
+        decoder: mut Option<IBusDecoder> = new Option<IBusDecoder>.none();
+
+        fun attach_indexed(mut this, s: IBusSlave) {
+            this.indexed.push(s);
+        }
+
+        fun set_decoder(mut this, d: IBusDecoder) {
+            this.decoder = new Option<IBusDecoder>.some(d);
+        }
+
+        fun slave_at(this, addr: u32) -> IBusSlave {
+            if (this.decoder.is_some()) {
+                let idx: i64 = this.decoder.some.decode(addr);
+                if (idx >= 0 && idx < this.indexed.size()) {
+                    return this.indexed.at(idx).some;
+                }
+                return cast<IBusSlave>(new _NullSlave());
+            }
+            let nibble: i64 = cast<i64>(bits(addr, 31, 28));
+            let i: mut i64 = 0;
+            while (i < this.slaves.size()) {
+                if (this.nibbles.at(i).some == nibble) {
+                    return this.slaves.at(i).some;
+                }
+                i = i + 1;
+            }
+            return cast<IBusSlave>(new _NullSlave());
+        }
+
+        // m0 (EX data) access — always granted.
+        fun m0_read(this, addr: u32) -> u32 {
+            return this.slave_at(addr).bus_read(addr);
+        }
+
+        fun m0_write(mut this, addr: u32, wdata: u32) {
+            let s: mut IBusSlave = cast<mut IBusSlave>(this.slave_at(addr));
+            s.bus_write(addr, wdata);
+        }
+
+        // m1 (instruction fetch) — NOP bubble while m0 owns the bus.
+        fun m1_fetch(this, addr: u32) -> u32 {
+            if (this.m0.is_some()) {
+                if (this.m0.some.bus_req()) {
+                    return nop_word();
+                }
+            }
+            return this.slave_at(addr).bus_read(addr);
+        }
+    }
+
+    // Undecoded region: reads 0, drops writes.
+    class _NullSlave {
+        impl IReferenceType;
+        impl IBusSlave {
+            fun bus_read(this: IBusSlave, addr: u32) -> u32 { return 0; }
+            fun bus_write(mut this: IBusSlave, addr: u32, wdata: u32) {}
+        }
+        fun new(mut this) {}
+    }
+
+}

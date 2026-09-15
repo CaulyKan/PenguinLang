@@ -322,6 +322,33 @@ _emperor_string* _emperor_double_to_string(double value) {
     return s;
 }
 
+/* char -> string: the CHARACTER itself (BabyPenguin reference semantics:
+ * C# char.ToString()), UTF-8 encoded — 1 byte for ASCII, up to 3 for BMP. */
+_emperor_string* _emperor_char_to_string(int32_t code) {
+    uint8_t buf[4];
+    int len;
+    if (code < 0) {
+        buf[0] = '?';
+        len = 1;
+    } else if (code < 0x80) {
+        buf[0] = (uint8_t)code;
+        len = 1;
+    } else if (code < 0x800) {
+        buf[0] = (uint8_t)(0xC0 | (code >> 6));
+        buf[1] = (uint8_t)(0x80 | (code & 0x3F));
+        len = 2;
+    } else {
+        buf[0] = (uint8_t)(0xE0 | (code >> 12));
+        buf[1] = (uint8_t)(0x80 | ((code >> 6) & 0x3F));
+        buf[2] = (uint8_t)(0x80 | (code & 0x3F));
+        len = 3;
+    }
+    _emperor_string* s = _emperor_string_alloc(len);
+    if (!s) return NULL;
+    memcpy(s->data, buf, (size_t)len);
+    return s;
+}
+
 /* --- Bitwise --- */
 
 long long _emperor_lshift(long long value, long long shift) {

@@ -3,6 +3,38 @@ namespace PenguinLangParser.SyntaxNodes
 
     public class PrimaryExpression : SyntaxNode, ISyntaxExpression
     {
+        /// <summary>
+        /// Normalize an integer literal's token text to plain DECIMAL (hex 0x/0X,
+        /// binary 0b/0B, octal leading-0 parse to their u64 value). Decimal and
+        /// non-integer-shaped text pass through unchanged. Must happen at PARSE
+        /// time, before any consumer: ResolveLiteralType/MakeValue only parse
+        /// decimal, and the C# backend emits constant text verbatim.
+        /// </summary>
+        public static string NormalizeIntegerLiteral(string text)
+        {
+            if (text.Length < 2 || !char.IsDigit(text[0]))
+                return text;
+            int radix;
+            int start;
+            if ((text[1] == 'x' || text[1] == 'X') && text.Length > 2) { radix = 16; start = 2; }
+            else if ((text[1] == 'b' || text[1] == 'B') && text.Length > 2) { radix = 2; start = 2; }
+            else if (text[0] == '0') { radix = 8; start = 1; }
+            else return text;
+            try
+            {
+                var value = Convert.ToUInt64(text[start..], radix);
+                return value.ToString();
+            }
+            catch (FormatException)
+            {
+                return text;
+            }
+            catch (OverflowException)
+            {
+                return text;
+            }
+        }
+
         public enum Type
         {
             Identifier,
@@ -32,7 +64,7 @@ namespace PenguinLangParser.SyntaxNodes
                 }
                 else if (context.Constant() != null)
                 {
-                    Literal = context.GetText();
+                    Literal = NormalizeIntegerLiteral(context.GetText());
                     PrimaryExpressionType = Type.Constant;
                 }
                 else if (context.StringLiteral().Length > 0)

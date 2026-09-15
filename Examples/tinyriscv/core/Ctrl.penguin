@@ -1,0 +1,60 @@
+// Ctrl.penguin — hold/jump aggregation (rtl/tinyriscv_ctrl.v), as PURE
+// functions of the Core's COMMITTED state. The RTL computes these
+// combinationally from id_ex outputs; the model recomputes them in each
+// process's evaluate phase from the same committed registers, which is what
+// makes the three-process split wakeup-order independent.
+//
+// Priority (ctrl.v):
+//   jump_flag (EX branch/jal taken) -> Hold_Id  : flush if_id AND id_ex to
+//                                                NOP, pc <= target
+//                                                (2-cycle taken-branch cost)
+//   rib hold (EX does a bus access) -> Hold_Pc  : freeze ONLY pc; the m1
+//                                                fetch is answered with a
+//                                                NOP bubble by the RIB model
+//                                                (1-cycle load/store bubble)
+//   otherwise                       -> Hold_None
+// (The RTL's further inputs — EX div_busy and CLINT/JTAG — are not modeled.)
+
+namespace tinyriscv {
+
+    using esl;
+
+    class Ctrl {
+        impl __builtin.IReferenceType;
+
+        core: Core;
+
+        fun new(mut this, core: mut Core) {
+            this.core = core;
+        }
+
+        // The register VALUES the EX stage would read this cycle (committed
+        // regfile). Used by the branch decision below.
+        fun ex_rs1v(this) -> u32 {
+            return this.core.regs.read(this.core.ex_rs1.out());
+        }
+
+        fun ex_rs2v(this) -> u32 {
+            return this.core.regs.read(this.core.ex_rs2.out());
+        }
+
+        // jump_flag_o: a taken branch / jal sits in EX this cycle.
+        fun jump_flag(this) -> bool {
+            let op: u32 = this.core.ex_op.out();
+            if (op == OP_BEQ()) { return this.ex_rs1v() == this.ex_rs2v(); }
+            if (op == OP_BNE()) { return this.ex_rs1v() != this.ex_rs2v(); }
+            if (op == OP_JAL()) { return true; }
+            return false;
+        }
+
+        fun jump_target(this) -> u32 {
+            return this.core.ex_pc.out() + this.core.ex_imm.out();
+        }
+
+        // hold_flag_rib_i: the EX stage drives the RIB this cycle.
+        fun m0_busy(this) -> bool {
+            return is_mem_op(this.core.ex_op.out());
+        }
+    }
+
+}

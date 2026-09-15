@@ -140,7 +140,17 @@ namespace BabyPenguin.VirtualMachine
                 // current time is settling (settle-point readers check this).
                 LastRoundQuiet = vm.Global.SimActivityCounter == activityAtRoundStart;
 
-                if (progress)
+                // A round with transaction ACTIVITY (emit / channel write /
+                // resolved wait — every SimActivityCounter tick) still has
+                // same-time propagation in flight: delta-parked jobs (bare
+                // `wait;`, emit's trailing yield) are owed their next round
+                // at the CURRENT tick before any timer-driven jump. Bare
+                // wait promises "one delta — without touching the tick
+                // counter" (08_TimingModel); without this gate the idle
+                // jump below either skipped straight to the earliest
+                // pending timer (resuming the parked job at the WRONG time)
+                // or lost the wakeup entirely behind the timer's exit.
+                if (progress || vm.Global.SimActivityCounter != activityAtRoundStart)
                 {
                     lastIdleSnapshot = null;
                     continue;

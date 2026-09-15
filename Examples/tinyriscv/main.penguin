@@ -1,0 +1,89 @@
+// main.penguin — tinyriscv SoC top level (Examples/tinyriscv).
+//
+// Memory map (addr[31:28] decode, faithful to rtl/tinyriscv_soc.v):
+//   0x0        ROM  (firmware, 4 KB)
+//   0x1        RAM  (16 KB)
+//   0x3        UART (0x30000000: CTRL/STATUS/BAUD/TXDATA)
+//
+// Elaboration wires the bus, loads the assembled firmware into ROM, and the
+// clock runs until the firmware sets x26=1 (testbench end convention). The
+// final report prints the cycle count and its 50 MHz wall-clock equivalent.
+
+using tinyriscv;
+using esl;
+
+class SimEnd {
+    impl ICycleHook;
+
+    clk: Clock;
+    regs: RegFile;
+    uart: Uart;
+    limit: mut i64 = 2000000;
+
+    fun new(mut this, clk: mut Clock, regs: mut RegFile, uart: mut Uart) {
+        this.clk = clk;
+        this.regs = regs;
+        this.uart = uart;
+    }
+
+    impl ICycleHook {
+        fun after_commit(this) -> bool {
+            if (this.regs.read(cast<u32>(26)) == cast<u32>(1)) {
+                let n: i64 = this.clk.cycles;
+                println("");
+                println("[tinyriscv] simulation end: " + cast<string>(n) +
+                    " cycles (" + cast<string>(n * 20) + " ns @ 50 MHz), " +
+                    cast<string>(this.uart.tx_count) + " chars sent");
+                return true;
+            }
+            if (this.clk.cycles >= this.limit) {
+                println("");
+                println("[tinyriscv] TIMEOUT after " + cast<string>(this.clk.cycles) + " cycles");
+                return true;
+            }
+            return false;
+        }
+    }
+}
+
+initial {
+    let clk: mut Clock = new Clock();
+
+    let regs: mut RegFile = new RegFile(clk);
+
+    let rom: mut Rom<1024> = new Rom<1024>();
+    // Meta: firmware_image() assembles AT COMPILE TIME (#fun JIT).
+    let image: string = #firmware_image();
+    let idx: mut i64 = 0;
+    for (let line: string in image.split("\n")) {
+        let v: Option<i64> = parse_int(line);
+        if (v.is_some()) {
+            rom.set_word(cast<u64>(idx), cast<u32>(v.some));
+            idx = idx + 1;
+        }
+    }
+
+    let ram: mut Ram<4096> = new Ram<4096>();
+    let uart: mut Uart = new Uart();
+
+    // Meta: the addr[31:28] -> region decode is GENERATED from the #class
+    // memory-map table (perips/MemMap.penguin); slaves attach in table order.
+    let bus: mut Bus = new Bus();
+    bus.attach_indexed(rom);
+    bus.attach_indexed(ram);
+    bus.attach_indexed(uart);
+    bus.set_decoder(new MmioDecoder());
+
+    // Core pipeline state + ctrl + the three stage processes (IF/ID/EX).
+    // Process spawn order is irrelevant: every decision each process makes
+    // derives from committed register state (see Ctrl.penguin).
+    let core: mut Core = new Core(clk, bus, regs);
+    bus.set_m0(core);
+    let ctrl: mut Ctrl = new Ctrl(core);
+    let fetch: mut Fetch = new Fetch(clk, core, ctrl);
+    let decode: mut Decode = new Decode(clk, core, ctrl);
+    let execute: mut Execute = new Execute(clk, core, ctrl);
+
+    let hook: mut SimEnd = new SimEnd(clk, regs, uart);
+    clk.set_hook(hook);
+}

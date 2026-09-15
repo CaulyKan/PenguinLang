@@ -1,0 +1,93 @@
+// Reg.penguin — two-phase clocked register (the ESL RTL primitive).
+//
+// Part of libpenguin-esl: cycle-accurate hardware models on the PenguinLang
+// timing/scheduler substrate. See Clock.penguin for the two-phase evaluate /
+// commit protocol; this file holds the stateful half.
+//
+// Semantics (mirrors Verilog non-blocking assignment, eliminating read/write
+// ordering races between modules woken by the same clock edge):
+//   - `write(v)`  loads the IN side only; the value becomes visible to every
+//     reader at the NEXT clock edge, whatever order modules woke in.
+//   - `out()`     always reads the committed (OUT) side.
+//   - `freeze()`  this cycle holds the old value (tinyriscv gen_pipe_dff
+//     ce=0 — used by pc_reg under Hold_Pc).
+//   - `flush()`   this cycle loads the DEFAULT value instead of the in side
+//     (gen_pipe_dff flush-to-NOP — used by if_id/id_ex under Hold_If/Hold_Id;
+//     for pipe registers the default IS the NOP word 0x00000001).
+//   - `do_reset()` schedules a one-shot load of the reset value.
+// The op is consumed by commit (resets to load), so a mode set during one
+// evaluate phase never leaks into later cycles.
+
+namespace esl {
+
+    enum RegOp {
+        load_op;
+        freeze_op;
+        flush_op;
+    }
+
+    // The commit-phase contract: every clocked cell implements this and is
+    // registered with its Clock at construction.
+    interface IReg {
+        impl __builtin.IReferenceType;
+        fun do_commit(mut this);
+    }
+
+    #template(T: type)
+    class Reg {
+        impl IReferenceType;
+
+        out_val: mut T;
+        in_val: mut T;
+        default_val: mut T;
+        op: mut RegOp = new RegOp.load_op();
+
+        fun new(mut this, clk: mut Clock, reset: T) {
+            this.out_val = reset;
+            this.in_val = reset;
+            this.default_val = reset;
+            clk.attach(cast<IReg>(this));
+        }
+
+        // Change what a FLUSH commits (pipe registers flush to NOP, not to
+        // their construction-time reset).
+        fun set_default(mut this, d: T) {
+            this.default_val = d;
+        }
+
+        fun out(this) -> T {
+            return this.out_val;
+        }
+
+        fun write(mut this, v: T) {
+            this.in_val = v;
+            this.op = new RegOp.load_op();
+        }
+
+        fun freeze(mut this) {
+            this.op = new RegOp.freeze_op();
+        }
+
+        fun flush(mut this) {
+            this.op = new RegOp.flush_op();
+        }
+
+        fun do_reset(mut this) {
+            this.op = new RegOp.flush_op();
+        }
+
+        impl IReg {
+            fun do_commit(mut this) {
+                if (this.op is RegOp.load_op) {
+                    this.out_val = this.in_val;
+                } else if (this.op is RegOp.freeze_op) {
+                    // hold the committed value
+                } else {
+                    this.out_val = this.default_val;
+                }
+                this.op = new RegOp.load_op();
+            }
+        }
+    }
+
+}

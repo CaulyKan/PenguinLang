@@ -1,0 +1,47 @@
+// meta: unit-b — opted into the compile-time (unit B) library surface
+// Firmware.penguin — the tinyriscv hello-world UART firmware, as assembly
+// source.
+//
+//   1. LUI the UART base 0x30000000, enable TX (CTRL = 1).
+//   2. Loop over the NUL-terminated string: poll STATUS.tx_busy, then write
+//      the byte to TXDATA. Every poll iteration flows through the pipeline —
+//      the busy wait costs REAL cycles, like on the RTL.
+//   3. x26 = 1: the testbench's simulation-end convention.
+//
+// Meta insertion point 3: `firmware_image()` runs the ASSEMBLER AT COMPILE
+// TIME via #fun (native pass3 JIT) — the two-pass assemble() executes
+// during compilation and the image words are spliced in as a string
+// LITERAL: the firmware is baked into the binary, zero runtime cost.
+
+namespace tinyriscv {
+
+    using esl;
+
+    fun firmware_source() -> string {
+        return "    lui  t0, 0x30000       # t0 = 0x30000000 (UART base)\n" +
+            "    addi t1, x0, 1\n" +
+            "    sw   t1, 0(t0)         # CTRL = tx_en\n" +
+            "    addi t1, x0, 0         # i = 0\n" +
+            "loop:\n" +
+            "    lbu  t2, str(t1)       # c = str[i]  (offset = str addr, base = i)\n" +
+            "    beqz t2, done\n" +
+            "poll:\n" +
+            "    lw   t3, 4(t0)         # STATUS\n" +
+            "    andi t3, t3, 1         # tx_busy\n" +
+            "    bnez t3, poll\n" +
+            "    sw   t2, 12(t0)        # TXDATA = c\n" +
+            "    addi t1, t1, 1\n" +
+            "    j    loop\n" +
+            "done:\n" +
+            "    li   x26, 1            # simulation end convention\n" +
+            "end:\n" +
+            "    j    end\n" +
+            "str:\n" +
+            "    .string \"hello world\\n\"\n";
+    }
+
+    #fun firmware_image() -> string {
+        return assemble(firmware_source());
+    }
+
+}

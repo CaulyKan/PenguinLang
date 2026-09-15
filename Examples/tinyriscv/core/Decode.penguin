@@ -1,0 +1,55 @@
+// Decode.penguin — the ID stage process: decode the committed if_id word
+// (pure decode in Decoder.penguin) and latch the fields into id_ex. A taken
+// branch in EX (Hold_Id) flushes id_ex to NOP instead — the second half of
+// the 2-cycle taken-branch penalty.
+
+namespace tinyriscv {
+
+    using esl;
+
+    class Decode {
+        impl __builtin.IReferenceType;
+
+        clk: Clock;
+        core: Core;
+        ctrl: Ctrl;
+        dec: mut Dec = new Dec();
+
+        fun new(mut this, clk: mut Clock, core: mut Core, ctrl: mut Ctrl) {
+            this.clk = clk;
+            this.core = core;
+            this.ctrl = ctrl;
+        }
+
+        fun write_ex(mut this, d: mut Dec) {
+            this.core.ex_op.write(d.op);
+            this.core.ex_rd.write(d.rd);
+            this.core.ex_rs1.write(d.rs1);
+            this.core.ex_rs2.write(d.rs2);
+            this.core.ex_imm.write(d.imm);
+            this.core.ex_pc.write(this.core.if_pc.out());
+        }
+
+        fun flush_ex(mut this) {
+            this.core.ex_op.write(OP_NOP());
+            this.core.ex_rd.write(cast<u32>(0));
+            this.core.ex_rs1.write(cast<u32>(0));
+            this.core.ex_rs2.write(cast<u32>(0));
+            this.core.ex_imm.write(cast<u32>(0));
+            this.core.ex_pc.write(cast<u32>(0));
+        }
+
+        initial {
+            while (true) {
+                wait this.clk.evt;
+                if (this.ctrl.jump_flag()) {
+                    this.flush_ex();
+                } else {
+                    decode(this.core.if_inst.out(), this.dec);
+                    this.write_ex(this.dec);
+                }
+            }
+        }
+    }
+
+}

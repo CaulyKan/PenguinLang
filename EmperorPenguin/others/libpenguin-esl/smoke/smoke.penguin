@@ -1,0 +1,243 @@
+using esl;
+
+// smoke.penguin — libpenguin-esl self-test (run with EmperorPenguin pass3,
+// --enable-coroutine; see the header of each library file for semantics).
+//
+// Verifies, with byte-exact expected output:
+//   1. Two-phase commit order independence — two writer modules on the same
+//      clock, one counting (r1 += 1), one copying the OTHER's committed value
+//      (r2 = r1.out): r2 must lag r1 by exactly one commit no matter which
+//      module the scheduler wakes first.
+//   2. Freeze mode (pc holds 0x100 for 3 evaluate rounds, then steps by 4).
+//   3. Flush-to-default mode (pipe reg: 2 rounds of 0xAA, one flush to the
+//      NOP default 1, then 0xBB).
+//   4. m0 > m1 fixed-priority arbitration — a bus master whose request is a
+//      pure function of committed state blocks instruction fetch (NOP bubble)
+//      on exactly the expected rounds.
+//   5. Cycle counting — the hook stops the clock at exactly cycle 10 and the
+//      report reflects 9 completed evaluate rounds.
+//
+// Expected output:
+//   cycles=10
+//   r1=9
+//   r2=8
+//   pc=280
+//   pipe=187
+//   fetches=305419896,1,305419896,1,305419896,1,305419896,1,305419896
+//   ram0=7
+
+class Counter {
+    clk: Clock;
+    r: mut Reg<u32>;
+
+    fun new(mut this, clk: mut Clock) {
+        this.clk = clk;
+        this.r = new Reg<u32>(clk, 0);
+    }
+
+    fun value(this) -> u32 { return this.r.out(); }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            this.r.write(this.r.out() + cast<u32>(1));
+        }
+    }
+}
+
+class Copier {
+    clk: Clock;
+    r: mut Reg<u32>;
+    src: Counter;
+
+    fun new(mut this, clk: mut Clock, src: mut Counter) {
+        this.clk = clk;
+        this.src = src;
+        this.r = new Reg<u32>(clk, 0);
+    }
+
+    fun value(this) -> u32 { return this.r.out(); }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            this.r.write(this.src.value());
+        }
+    }
+}
+
+class Freezer {
+    clk: Clock;
+    pc: mut Reg<u32>;
+    cnt: mut Reg<u32>;
+
+    fun new(mut this, clk: mut Clock) {
+        this.clk = clk;
+        this.pc = new Reg<u32>(clk, 0x100);
+        this.cnt = new Reg<u32>(clk, 0);
+    }
+
+    fun value(this) -> u32 { return this.pc.out(); }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            this.cnt.write(this.cnt.out() + cast<u32>(1));
+            if (this.cnt.out() < cast<u32>(3)) {
+                this.pc.freeze();
+            } else {
+                this.pc.write(this.pc.out() + cast<u32>(4));
+            }
+        }
+    }
+}
+
+class Piper {
+    clk: Clock;
+    pipe: mut Reg<u32>;
+    cnt: mut Reg<u32>;
+
+    fun new(mut this, clk: mut Clock) {
+        this.clk = clk;
+        this.pipe = new Reg<u32>(clk, cast<u32>(1));
+        this.pipe.set_default(cast<u32>(1));
+        this.cnt = new Reg<u32>(clk, 0);
+    }
+
+    fun value(this) -> u32 { return this.pipe.out(); }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            this.cnt.write(this.cnt.out() + cast<u32>(1));
+            let round: u32 = this.cnt.out();
+            if (round == cast<u32>(3)) {
+                this.pipe.flush();
+            } else if (round >= cast<u32>(4)) {
+                this.pipe.write(cast<u32>(0xBB));
+            } else {
+                this.pipe.write(cast<u32>(0xAA));
+            }
+        }
+    }
+}
+
+// The priority bus master: it requests the bus on evaluate rounds where bit0
+// of its committed counter is 1 (i.e. even rounds: the counter holds
+// rounds-1), and the granted access writes the counter value to RAM word 0.
+// Its request is a PURE function of committed state, so the fetcher's
+// arbitration probe returns the same answer whatever the wakeup order.
+class M0Master {
+    clk: Clock;
+    cnt: mut Reg<u32>;
+    bus: Bus;
+
+    fun new(mut this, clk: mut Clock, bus: mut Bus) {
+        this.clk = clk;
+        this.bus = bus;
+        this.cnt = new Reg<u32>(clk, 0);
+    }
+
+    fun value(this) -> u32 { return this.cnt.out(); }
+
+    impl IBusMaster {
+        fun bus_req(this) -> bool {
+            return bit(this.cnt.out(), 0) == 1;
+        }
+    }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            this.cnt.write(this.cnt.out() + cast<u32>(1));
+            if (bit(this.cnt.out(), 0) == 1) {
+                this.bus.m0_write(cast<u32>(0x10000000), this.cnt.out());
+            }
+        }
+    }
+}
+
+class Fetcher {
+    clk: Clock;
+    bus: Bus;
+    trace: mut StringBuilder;
+
+    fun new(mut this, clk: mut Clock, bus: mut Bus) {
+        this.clk = clk;
+        this.bus = bus;
+        this.trace = new StringBuilder();
+    }
+
+    fun report(this) -> string { return this.trace.to_string(); }
+
+    initial {
+        while (true) {
+            wait this.clk.evt;
+            let w: u32 = this.bus.m1_fetch(cast<u32>(0));
+            this.trace.append(cast<string>(cast<i64>(w)));
+            this.trace.append(",");
+        }
+    }
+}
+
+class SmokeHook {
+    clk: Clock;
+    counter: Counter;
+    copier: Copier;
+    freezer: Freezer;
+    piper: Piper;
+    m0: M0Master;
+    fetcher: Fetcher;
+    ram: Ram<16>;
+
+    fun new(mut this, clk: mut Clock, counter: mut Counter, copier: mut Copier,
+            freezer: mut Freezer, piper: mut Piper, m0: mut M0Master,
+            fetcher: mut Fetcher, ram: mut Ram<16>) {
+        this.clk = clk;
+        this.counter = counter;
+        this.copier = copier;
+        this.freezer = freezer;
+        this.piper = piper;
+        this.m0 = m0;
+        this.fetcher = fetcher;
+        this.ram = ram;
+    }
+
+    impl ICycleHook {
+        fun after_commit(this) -> bool {
+            if (this.clk.cycles >= 10) {
+                println("cycles=" + cast<string>(this.clk.cycles));
+                println("r1=" + cast<string>(cast<i64>(this.counter.value())));
+                println("r2=" + cast<string>(cast<i64>(this.copier.value())));
+                println("pc=" + cast<string>(cast<i64>(this.freezer.value())));
+                println("pipe=" + cast<string>(cast<i64>(this.piper.value())));
+                println("fetches=" + this.fetcher.report());
+                println("ram0=" + cast<string>(cast<i64>(this.ram.word_at(0))));
+                return true;
+            }
+            return false;
+        }
+    }
+}
+
+initial {
+    let clk: mut Clock = new Clock();
+    let counter: mut Counter = new Counter(clk);
+    let copier: mut Copier = new Copier(clk, counter);
+    let freezer: mut Freezer = new Freezer(clk);
+    let piper: mut Piper = new Piper(clk);
+
+    let rom: mut Rom<16> = new Rom<16>();
+    rom.set_word(0, cast<u32>(0x12345678));
+    let ram: mut Ram<16> = new Ram<16>();
+    let bus: mut Bus = new Bus();
+    bus.attach(0, rom);
+    bus.attach(1, ram);
+
+    let m0: mut M0Master = new M0Master(clk, bus);
+    bus.set_m0(m0);
+    let fetcher: mut Fetcher = new Fetcher(clk, bus);
+
+    let hook: mut SmokeHook = new SmokeHook(clk, counter, copier, freezer, piper, m0, fetcher, ram);
+    clk.set_hook(hook);
+}

@@ -1,0 +1,9 @@
+; tinyriscv.penguins — project file for the tinyriscv ESL model example.
+; Build & run (from the repo root, after `make bootstrap`):
+;   build/bootstrap/pass3 Examples/tinyriscv/tinyriscv.penguins \
+;       --enable-coroutine -o /tmp/tinyriscv
+;   EmperorPenguin/emperor link /tmp/tinyriscv.ll -o /tmp/tinyriscv && /tmp/tinyriscv
+
+[Project]
+sources=["main.penguin", "core/*.penguin", "perips/*.penguin", "sw/*.penguin", "../../EmperorPenguin/others/libpenguin-esl/*.penguin"]
+flags=["--enable-coroutine", "--meta-with-user-sources"]

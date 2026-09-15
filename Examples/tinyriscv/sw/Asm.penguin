@@ -1,0 +1,527 @@
+// meta: unit-b — opted into the compile-time (unit B) library surface
+// Asm.penguin — a miniature two-pass RV32I assembler (subset needed by the
+// tinyriscv hello-world firmware): LUI, ADDI, ANDI, LBU, LW, SW, BEQ, BNE,
+// JAL, plus pseudo-ops li / j / jal / beqz / bnez / nop and the data
+// directives .string / .word.
+//
+// Deliberately dependency-light (own generic linked list, no _ChanList — that
+// lives in the coroutine-gated scheduler stdlib) so the exact same functions
+// can run at RUNTIME and inside a #fun at COMPILE TIME (the M5 meta path
+// bakes the firmware into ROM constants).
+//
+// Interface:
+//   assemble(src) -> string   — newline-separated 8-hex-digit words, ready
+//                               for esl.Rom.load_image_hex / direct parsing.
+//
+// Encoding reference: RISC-V unprivileged spec (I-extension), little-endian
+// byte order when packed into memory.
+
+namespace tinyriscv {
+
+    using esl;
+
+    // ── tiny generic linked list (scheduler-free) ────────────────────────
+
+    #template(T: type)
+    class TNode {
+        impl __builtin.IReferenceType;
+        value: mut T;
+        next: mut Option<TNode<T>> = new Option<TNode<T>>.none();
+
+        fun new(mut this, v: mut T) {
+            this.value = v;
+        }
+    }
+
+    #template(T: type)
+    class TList {
+        impl __builtin.IReferenceType;
+        head: mut Option<TNode<T>> = new Option<TNode<T>>.none();
+        tail: mut Option<TNode<T>> = new Option<TNode<T>>.none();
+        count: mut i64 = 0;
+
+        fun new(mut this) {}
+
+        fun size(mut this) -> i64 {
+            return this.count;
+        }
+
+        fun push(mut this, v: mut T) {
+            let node: mut TNode<T> = new TNode<T>(v);
+            if (this.tail.is_some()) {
+                let t: mut TNode<T> = cast<mut TNode<T>>(this.tail.some);
+                t.next = new Option<TNode<T>>.some(node);
+                this.tail = new Option<TNode<T>>.some(node);
+            } else {
+                this.head = new Option<TNode<T>>.some(node);
+                this.tail = new Option<TNode<T>>.some(node);
+            }
+            this.count = this.count + 1;
+        }
+
+        fun at(mut this, index: i64) -> Option<T> {
+            if (index < 0 || index >= this.count) {
+                return new Option<T>.none();
+            }
+            let cur: mut TNode<T> = cast<mut TNode<T>>(this.head.some);
+            let i: mut i64 = 0;
+            while (i < index) {
+                cur = cast<mut TNode<T>>(cur.next.some);
+                i = i + 1;
+            }
+            return new Option<T>.some(cur.value);
+        }
+    }
+
+    // ── numeric helpers ──────────────────────────────────────────────────
+
+    // Arithmetic (floor) right shift — lshift/rshift builtins are used on
+    // non-negative values only; branches carry negative offsets.
+    fun floor_shift(v: i64, n: i64) -> i64 {
+        if (v >= 0) { return rshift(v, n); }
+        let a: i64 = -v;
+        let rem: i64 = a & (lshift(1, n) - 1);
+        let q: mut i64 = rshift(a, n);
+        if (rem > 0) { q = q + 1; }
+        return -q;
+    }
+
+    fun is_digit_ch(c: i64) -> bool {
+        return c >= 48 && c <= 57;
+    }
+
+    fun is_ident_start(c: i64) -> bool {
+        if (c >= 97 && c <= 122) { return true; }
+        if (c >= 65 && c <= 90) { return true; }
+        return c == 95;
+    }
+
+    fun is_ident_ch(c: i64) -> bool {
+        if (is_ident_start(c)) { return true; }
+        return is_digit_ch(c);
+    }
+
+    // ── register names ───────────────────────────────────────────────────
+
+    fun reg_num(name: string) -> i64 {
+        if (string_length(name) >= 2 && string_char_code_at(name, 0) == 120) {
+            let ok: mut bool = true;
+            let i: mut i64 = 1;
+            while (i < string_length(name)) {
+                if (!is_digit_ch(string_char_code_at(name, i))) { ok = false; }
+                i = i + 1;
+            }
+            if (ok && string_length(name) <= 3) {
+                let digits: string = string_substring(name, 1, string_length(name) - 1);
+                let v: Option<i64> = esl.parse_int(digits);
+                if (v.is_some() && v.some >= 0 && v.some <= 31) { return v.some; }
+            }
+        }
+        if (name == "zero") { return 0; }
+        if (name == "ra") { return 1; }
+        if (name == "sp") { return 2; }
+        if (name == "gp") { return 3; }
+        if (name == "tp") { return 4; }
+        if (name == "t0") { return 5; }
+        if (name == "t1") { return 6; }
+        if (name == "t2") { return 7; }
+        if (name == "s0" || name == "fp") { return 8; }
+        if (name == "s1") { return 9; }
+        if (name == "a0") { return 10; }
+        if (name == "a1") { return 11; }
+        if (name == "a2") { return 12; }
+        if (name == "a3") { return 13; }
+        if (name == "a4") { return 14; }
+        if (name == "a5") { return 15; }
+        if (name == "a6") { return 16; }
+        if (name == "a7") { return 17; }
+        if (name == "s2") { return 18; }
+        if (name == "s3") { return 19; }
+        if (name == "s4") { return 20; }
+        if (name == "s5") { return 21; }
+        if (name == "s6") { return 22; }
+        if (name == "s7") { return 23; }
+        if (name == "s8") { return 24; }
+        if (name == "s9") { return 25; }
+        if (name == "s10") { return 26; }
+        if (name == "s11") { return 27; }
+        if (name == "t3") { return 28; }
+        if (name == "t4") { return 29; }
+        if (name == "t5") { return 30; }
+        if (name == "t6") { return 31; }
+        return -1;
+    }
+
+    // ── instruction encoders ─────────────────────────────────────────────
+
+    fun enc_i(op: u32, rd: i64, f3: i64, rs1: i64, imm: i64) -> u32 {
+        let i12: i64 = imm & 4095;
+        return cast<u32>(lshift(i12, 20) | lshift(rs1, 15) | lshift(f3, 12) | lshift(rd, 7) | cast<i64>(op));
+    }
+
+    fun enc_s(op: u32, f3: i64, rs1: i64, rs2: i64, imm: i64) -> u32 {
+        let hi7: i64 = rshift(imm, 5) & 127;
+        let lo5: i64 = imm & 31;
+        return cast<u32>(lshift(hi7, 25) | lshift(rs2, 20) | lshift(rs1, 15) | lshift(f3, 12) | lshift(lo5, 7) | cast<i64>(op));
+    }
+
+    fun enc_b(op: u32, f3: i64, rs1: i64, rs2: i64, off: i64) -> u32 {
+        let b12: i64 = rshift(off, 12) & 1;
+        let b11: i64 = rshift(off, 11) & 1;
+        let hi6: i64 = rshift(off, 5) & 63;
+        let lo4: i64 = rshift(off, 1) & 15;
+        return cast<u32>(lshift(b12, 31) | lshift(hi6, 25) | lshift(rs2, 20) | lshift(rs1, 15) | lshift(f3, 12) | lshift(lo4, 8) | lshift(b11, 7) | cast<i64>(op));
+    }
+
+    fun enc_u(op: u32, rd: i64, imm20: i64) -> u32 {
+        return cast<u32>(lshift(imm20 & 1048575, 12) | lshift(rd, 7) | cast<i64>(op));
+    }
+
+    fun enc_j(op: u32, rd: i64, off: i64) -> u32 {
+        let b20: i64 = rshift(off, 20) & 1;
+        let b11: i64 = rshift(off, 11) & 1;
+        let hi10: i64 = rshift(off, 1) & 1023;
+        let lo8: i64 = rshift(off, 12) & 255;
+        return cast<u32>(lshift(b20, 31) | lshift(hi10, 21) | lshift(b11, 20) | lshift(lo8, 12) | lshift(rd, 7) | cast<i64>(op));
+    }
+
+    // ── assembled items ──────────────────────────────────────────────────
+
+    // kind 0 = instruction (mnem + up to 3 operands, 4 bytes),
+    // kind 1 = data (raw bytes packed little-endian, padded to words).
+    class AsmItem {
+        impl __builtin.IReferenceType;
+        kind: mut i64 = 0;
+        mnem: mut string = "";
+        a: mut string = "";
+        b: mut string = "";
+        c: mut string = "";
+        data: mut string = "";
+        addr: mut i64 = 0;
+
+        fun new(mut this) {}
+    }
+
+    // ── source helpers ───────────────────────────────────────────────────
+
+    fun strip_comment(line: string) -> string {
+        let h: i64 = string_find(line, "#");
+        if (h >= 0) { return string_substring(line, 0, h); }
+        return line;
+    }
+
+    fun trim(s: string) -> string {
+        let n: i64 = string_length(s);
+        let b: mut i64 = 0;
+        let e: mut i64 = n;
+        while (b < e) {
+            let c: i64 = string_char_code_at(s, b);
+            if (c == 32 || c == 9 || c == 13) { b = b + 1; } else { break; }
+        }
+        while (e > b) {
+            let c: i64 = string_char_code_at(s, e - 1);
+            if (c == 32 || c == 9 || c == 13) { e = e - 1; } else { break; }
+        }
+        return string_substring(s, b, e - b);
+    }
+
+    // Two-string out-result holder (core Pair has no constructor).
+    class StrPair {
+        impl __builtin.IReferenceType;
+        a: mut string = "";
+        b: mut string = "";
+
+        fun new(mut this, a: string, b: string) {
+            this.a = a;
+            this.b = b;
+        }
+    }
+
+    // First whitespace-delimited token + the trimmed rest.
+    fun split_first(s: string) -> mut StrPair {
+        let n: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < n) {
+            let c: i64 = string_char_code_at(s, i);
+            if (c == 32 || c == 9) { break; }
+            i = i + 1;
+        }
+        let head: string = string_substring(s, 0, i);
+        let rest: string = trim(string_substring(s, i, n - i));
+        return new StrPair(head, rest);
+    }
+
+    // Unescape a double-quoted payload (\n \t \r \0 \\ \" \').
+    fun unescape_string(s: string) -> string {
+        let out: mut StringBuilder = new StringBuilder();
+        let n: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < n) {
+            let c: i64 = string_char_code_at(s, i);
+            if (c == 92 && i + 1 < n) {
+                let e: i64 = string_char_code_at(s, i + 1);
+                if (e == 110) { out.append("\n"); }
+                else if (e == 116) { out.append("\t"); }
+                else if (e == 114) { out.append("\r"); }
+                else if (e == 48) { out.append(string_char_at("\0", 0)); }
+                else if (e == 92) { out.append("\\"); }
+                else if (e == 34) { out.append("\""); }
+                else if (e == 39) { out.append("'"); }
+                else { out.append(string_char_at(s, i + 1)); }
+                i = i + 2;
+            } else {
+                out.append(string_char_at(s, i));
+                i = i + 1;
+            }
+        }
+        return out.to_string();
+    }
+
+    // ── the assembler ────────────────────────────────────────────────────
+
+    fun push_instr(items: mut TList<AsmItem>, addr: i64, mnem: string, a: string, b: string, c: string) {
+        let it: mut AsmItem = new AsmItem();
+        it.kind = 0;
+        it.mnem = mnem;
+        it.a = a;
+        it.b = b;
+        it.c = c;
+        it.addr = addr;
+        items.push(it);
+    }
+
+    fun label_addr(names: mut TList<string>, addrs: mut TList<i64>, name: string) -> Option<i64> {
+        let i: mut i64 = 0;
+        while (i < names.size()) {
+            if (names.at(i).some == name) {
+                return new Option<i64>.some(addrs.at(i).some);
+            }
+            i = i + 1;
+        }
+        return new Option<i64>.none();
+    }
+
+    // Split "off(rs1)" into (off, rs1).
+    fun split_memop(s: string) -> mut StrPair {
+        let p: i64 = string_find(s, "(");
+        if (p < 0) { return new StrPair(trim(s), ""); }
+        let off: string = trim(string_substring(s, 0, p));
+        let reg: string = trim(string_substring(s, p + 1, string_length(s) - p - 2));
+        return new StrPair(off, reg);
+    }
+
+    // Resolve a branch/jump target operand: a label gives the relative
+    // offset from the instruction's own address; a number is used as the
+    // offset directly.
+    fun resolve_target(names: mut TList<string>, addrs: mut TList<i64>, op: string, from: i64) -> i64 {
+        let la: Option<i64> = label_addr(names, addrs, op);
+        if (la.is_some()) {
+            return la.some - from;
+        }
+        let v: Option<i64> = esl.parse_int(op);
+        if (v.is_some()) { return v.some; }
+        return 0;
+    }
+
+    // A load/store offset may be a LABEL (its absolute address — the
+    // firmware's `lbu t2, str(t1)` pattern: offset = string address, base
+    // register = the byte index) or a number.
+    fun resolve_memoff(names: mut TList<string>, addrs: mut TList<i64>, op: string) -> i64 {
+        let la: Option<i64> = label_addr(names, addrs, op);
+        if (la.is_some()) { return la.some; }
+        let v: Option<i64> = esl.parse_int(op);
+        if (v.is_some()) { return v.some; }
+        return 0;
+    }
+
+    fun encode_item(names: mut TList<string>, addrs: mut TList<i64>, it: mut AsmItem) -> u32 {
+        let m: string = it.mnem;
+        if (m == "lui") {
+            let imm: Option<i64> = esl.parse_int(it.b);
+            return enc_u(cast<u32>(0x37), reg_num(it.a), imm.some);
+        }
+        if (m == "addi") {
+            let imm: Option<i64> = esl.parse_int(it.c);
+            return enc_i(cast<u32>(0x13), reg_num(it.a), 0, reg_num(it.b), imm.some);
+        }
+        if (m == "andi") {
+            let imm: Option<i64> = esl.parse_int(it.c);
+            return enc_i(cast<u32>(0x13), reg_num(it.a), 7, reg_num(it.b), imm.some);
+        }
+        if (m == "lbu") {
+            let mem: mut StrPair = split_memop(it.b);
+            return enc_i(cast<u32>(0x03), reg_num(it.a), 4, reg_num(mem.b), resolve_memoff(names, addrs, mem.a));
+        }
+        if (m == "lw") {
+            let mem: mut StrPair = split_memop(it.b);
+            return enc_i(cast<u32>(0x03), reg_num(it.a), 2, reg_num(mem.b), resolve_memoff(names, addrs, mem.a));
+        }
+        if (m == "sw") {
+            let mem: mut StrPair = split_memop(it.b);
+            return enc_s(cast<u32>(0x23), 2, reg_num(mem.b), reg_num(it.a), resolve_memoff(names, addrs, mem.a));
+        }
+        if (m == "beq") {
+            return enc_b(cast<u32>(0x63), 0, reg_num(it.a), reg_num(it.b), resolve_target(names, addrs, it.c, it.addr));
+        }
+        if (m == "bne") {
+            return enc_b(cast<u32>(0x63), 1, reg_num(it.a), reg_num(it.b), resolve_target(names, addrs, it.c, it.addr));
+        }
+        if (m == "jal") {
+            return enc_j(cast<u32>(0x6F), reg_num(it.a), resolve_target(names, addrs, it.b, it.addr));
+        }
+        return cast<u32>(0);
+    }
+
+    // Assemble `src` into newline-separated 8-hex-digit words.
+    fun assemble(src: string) -> string {
+        let items: mut TList<AsmItem> = new TList<AsmItem>();
+        let names: mut TList<string> = new TList<string>();
+        let addrs: mut TList<i64> = new TList<i64>();
+        let off: mut i64 = 0;
+
+        // Pass A: labels + item layout (pseudo-ops expanded here so every
+        // item's size is known before offsets are consumed).
+        for (let raw : string in src.split("\n")) {
+            let line: mut string = trim(strip_comment(raw));
+            if (string_length(line) == 0) { continue; }
+            let colon: i64 = string_find(line, ":");
+            if (colon > 0 && is_ident_start(string_char_code_at(line, 0))) {
+                let ok: mut bool = true;
+                let ci: mut i64 = 0;
+                while (ci < colon) {
+                    if (!is_ident_ch(string_char_code_at(line, ci))) { ok = false; }
+                    ci = ci + 1;
+                }
+                if (ok) {
+                    names.push(string_substring(line, 0, colon));
+                    addrs.push(off);
+                    line = trim(string_substring(line, colon + 1, string_length(line) - colon - 1));
+                    if (string_length(line) == 0) { continue; }
+                }
+            }
+
+            let head_rest: mut StrPair = split_first(line);
+            let mnem: string = head_rest.a;
+            let rest: string = head_rest.b;
+
+            if (mnem == ".string") {
+                let payload: string = trim(rest);
+                let text: string = string_substring(payload, 1, string_length(payload) - 2);
+                let it: mut AsmItem = new AsmItem();
+                it.kind = 1;
+                it.data = unescape_string(text) + string_char_at("\0", 0);
+                it.addr = off;
+                items.push(it);
+                let nb: i64 = string_length(it.data);
+                off = off + ((nb + 3) / 4) * 4;
+                continue;
+            }
+            if (mnem == ".word") {
+                let it: mut AsmItem = new AsmItem();
+                it.kind = 2;
+                it.data = rest;
+                it.addr = off;
+                items.push(it);
+                off = off + 4;
+                continue;
+            }
+
+            // operand split: up to 3 comma-separated fields
+            let oa: mut string = "";
+            let ob: mut string = "";
+            let oc: mut string = "";
+            let p1: i64 = string_find(rest, ",");
+            if (p1 < 0) {
+                oa = trim(rest);
+            } else {
+                oa = trim(string_substring(rest, 0, p1));
+                let r2: string = string_substring(rest, p1 + 1, string_length(rest) - p1 - 1);
+                let p2: i64 = string_find(r2, ",");
+                if (p2 < 0) {
+                    ob = trim(r2);
+                } else {
+                    ob = trim(string_substring(r2, 0, p2));
+                    oc = trim(string_substring(r2, p2 + 1, string_length(r2) - p2 - 1));
+                }
+            }
+
+            // pseudo-op expansion (sizes fixed: li = 2 instructions)
+            if (mnem == "li") {
+                let imm: Option<i64> = esl.parse_int(ob);
+                let hi: i64 = floor_shift(imm.some + 2048, 12);
+                let lo: i64 = imm.some - lshift(hi, 12);
+                push_instr(items, off, "lui", oa, cast<string>(hi), "");
+                off = off + 4;
+                push_instr(items, off, "addi", oa, oa, cast<string>(lo));
+                off = off + 4;
+                continue;
+            }
+            if (mnem == "j") {
+                push_instr(items, off, "jal", "x0", oa, "");
+                off = off + 4;
+                continue;
+            }
+            if (mnem == "jal" && oc == "" && ob != "") {
+                // one-operand jal: link into ra
+                push_instr(items, off, "jal", "ra", ob, "");
+                off = off + 4;
+                continue;
+            }
+            if (mnem == "beqz") {
+                push_instr(items, off, "beq", oa, "x0", ob);
+                off = off + 4;
+                continue;
+            }
+            if (mnem == "bnez") {
+                push_instr(items, off, "bne", oa, "x0", ob);
+                off = off + 4;
+                continue;
+            }
+            if (mnem == "nop") {
+                push_instr(items, off, "addi", "x0", "x0", "0");
+                off = off + 4;
+                continue;
+            }
+
+            push_instr(items, off, mnem, oa, ob, oc);
+            off = off + 4;
+        }
+
+        // Pass B: encode.
+        let out: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < items.size()) {
+            let it: mut AsmItem = cast<mut AsmItem>(items.at(i).some);
+            if (it.kind == 0) {
+                out.append("0x" + esl.hex8(encode_item(names, addrs, it)));
+                out.append("\n");
+            } else if (it.kind == 1) {
+                // pack bytes little-endian into words, NUL-padded
+                let nb: i64 = string_length(it.data);
+                let words: i64 = (nb + 3) / 4;
+                let w: mut i64 = 0;
+                while (w < words) {
+                    let word: mut u32 = cast<u32>(0);
+                    let b: mut i64 = 3;
+                    while (b >= 0) {
+                        let idx: i64 = w * 4 + b;
+                        if (idx < nb) {
+                            word = cast<u32>(cast<i64>(word) | lshift(string_char_code_at(it.data, idx) & 255, b * 8));
+                        }
+                        b = b - 1;
+                    }
+                    out.append("0x" + esl.hex8(word));
+                    out.append("\n");
+                    w = w + 1;
+                }
+            } else {
+                let v: Option<i64> = esl.parse_int(it.data);
+                out.append("0x" + esl.hex8(cast<u32>(v.some)));
+                out.append("\n");
+            }
+            i = i + 1;
+        }
+        return out.to_string();
+    }
+
+}

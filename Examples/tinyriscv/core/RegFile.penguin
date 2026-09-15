@@ -1,0 +1,47 @@
+// RegFile.penguin — x0..x31 register file with one write port (tinyriscv
+// rtl/tinyriscv_regs.v). 32 u32 words in one raw buffer; the write is
+// submitted during the EX evaluate phase and committed at the clock edge
+// (esl.IReg) — so the ID stage reading in the SAME cycle still sees the old
+// value and the instruction two behind sees the new one, matching the RTL's
+// posedge-write semantics. x0 is hardwired to zero on both paths.
+
+namespace tinyriscv {
+
+    using esl;
+
+    class RegFile {
+        impl __builtin.IReferenceType;
+
+        buf: mut u64 = 0;
+        w_en: mut bool = false;
+        w_idx: mut i64 = 0;
+        w_val: mut u32 = cast<u32>(0);
+
+        fun new(mut this, clk: mut Clock) {
+            this.buf = __builtin._malloc(128);
+            clk.attach(cast<IReg>(this));
+        }
+
+        fun read(this, idx: u32) -> u32 {
+            if (idx == cast<u32>(0)) { return cast<u32>(0); }
+            return #__load(u32, this.buf + cast<u64>(idx) * 4);
+        }
+
+        fun submit_write(mut this, idx: u32, v: u32) {
+            if (idx == cast<u32>(0)) { return; }
+            this.w_en = true;
+            this.w_idx = cast<i64>(idx);
+            this.w_val = v;
+        }
+
+        impl IReg {
+            fun do_commit(mut this) {
+                if (this.w_en) {
+                    #__store(u32, this.buf + cast<u64>(this.w_idx) * 4, this.w_val);
+                    this.w_en = false;
+                }
+            }
+        }
+    }
+
+}

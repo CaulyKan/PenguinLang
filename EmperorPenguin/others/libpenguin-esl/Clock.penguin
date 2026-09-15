@@ -1,0 +1,84 @@
+// Clock.penguin — the two-phase simulation clock (libpenguin-esl core).
+//
+// libpenguin-esl models RTL on the PenguinLang scheduler with the standard
+// event-driven two-phase cycle:
+//
+//   clock loop, ONE iteration == ONE clock cycle (1 tick):
+//     1. evt.emit(void)      — "posedge": every module process parked on
+//                              `wait clk.evt` wakes and runs its EVALUATE
+//                              phase: read Reg.out() (committed state only),
+//                              compute, call Reg.write/freeze/flush. The
+//                              module then re-parks; it must not wait on
+//                              anything else inside evaluate (that is the
+//                              ESL contract).
+//     2. wait 0 tick         — let this time's propagation settle.
+//     3. commit_all()        — atomically commit every registered register
+//                              (in -> out / flush-default / hold). Because
+//                              evaluate only ever reads committed state and
+//                              writes the in side, module wakeup ORDER is
+//                              irrelevant — same non-blocking-assignment
+//                              determinism as an HDL simulator.
+//     4. cycles += 1; after_commit hook (stop check) ; wait 1 tick.
+//
+// Combinational paths are plain function calls during evaluate (e.g. the
+// Bus arbitration below); wakeup-order independence is guaranteed by deriving
+// every arbitration input from committed register state, never from values
+// computed earlier in the same evaluate phase.
+//
+// 1 tick models 1 clock cycle of the RTL reference (tinyriscv testbench:
+// 50 MHz -> 1 tick = 20 ns; see the example README for the mapping).
+
+namespace esl {
+
+    // Post-commit observer: return true to stop the clock (the simulation
+    // then reaches quiescence and the program exits 0).
+    interface ICycleHook {
+        impl __builtin.IReferenceType;
+        fun after_commit(this) -> bool;
+    }
+
+    class Clock {
+        impl IReferenceType;
+
+        evt: mut Event<void> = new Event<void>();
+        regs: mut _ChanList<IReg> = new _ChanList<IReg>();
+        cycles: mut i64 = 0;
+        hook: mut Option<ICycleHook> = new Option<ICycleHook>.none();
+
+        fun new(mut this) {}
+
+        // Called by Reg's constructor (self-registration).
+        fun attach(mut this, r: IReg) {
+            this.regs.push(r);
+        }
+
+        fun set_hook(mut this, h: ICycleHook) {
+            this.hook = new Option<ICycleHook>.some(h);
+        }
+
+        fun commit_all(mut this) {
+            for (let r : mut IReg in this.regs.iter_mut()) {
+                r.do_commit();
+            }
+        }
+
+        // The clock process. Cycle 1 is the (lost) reset edge: modules park
+        // after the first emit, so evaluate rounds start at cycle 2 — models
+        // see one full cycle of reset values before the first posedge work,
+        // matching the RTL testbench's reset hold.
+        initial {
+            while (true) {
+                this.evt.emit(void);
+                wait 0 tick;
+                this.commit_all();
+                this.cycles = this.cycles + 1;
+                if (this.hook.is_some()) {
+                    let stop: bool = this.hook.some.after_commit();
+                    if (stop) { return; }
+                }
+                wait 1 tick;
+            }
+        }
+    }
+
+}

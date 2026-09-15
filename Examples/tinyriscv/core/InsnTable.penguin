@@ -1,0 +1,110 @@
+// InsnTable.penguin — meta insertion point 1: the RV32I-subset INSTRUCTION
+// TABLE (#class instances) and the #fun that CODE-GENERATES the decoder's
+// match chain from it. `#gen_decode();` at namespace level splices in the
+// real `decode(w, d)` — adding an instruction to the model means adding one
+// table entry, not hand-writing a branch.
+
+namespace tinyriscv {
+
+    using esl;
+
+    // One supported instruction: (name, 7-bit opcode, funct3 (-1 = none for
+    // this opcode), encoding format U/I/S/B/J, the runtime op constant).
+    #class InsnEntry {
+        name: string;
+        opcode: i64;
+        f3: i64;
+        fmt: string;
+        op_const: string;
+
+        fun new(mut this, name: string, opcode: i64, f3: i64, fmt: string, op_const: string) {
+            this.name = name;
+            this.opcode = opcode;
+            this.f3 = f3;
+            this.fmt = fmt;
+            this.op_const = op_const;
+        }
+    }
+
+    #fun insn_table() -> mut _utils.List<InsnEntry> {
+        let t: mut _utils.List<InsnEntry> = new _utils.List<InsnEntry>();
+        t.push(new InsnEntry("LUI",  0x37, -1, "U", "OP_LUI()"));
+        t.push(new InsnEntry("ADDI", 0x13,  0, "I", "OP_ADDI()"));
+        t.push(new InsnEntry("ANDI", 0x13,  7, "I", "OP_ANDI()"));
+        t.push(new InsnEntry("LBU",  0x03,  4, "I", "OP_LBU()"));
+        t.push(new InsnEntry("LW",   0x03,  2, "I", "OP_LW()"));
+        t.push(new InsnEntry("SW",   0x23,  2, "S", "OP_SW()"));
+        t.push(new InsnEntry("BEQ",  0x63,  0, "B", "OP_BEQ()"));
+        t.push(new InsnEntry("BNE",  0x63,  1, "B", "OP_BNE()"));
+        t.push(new InsnEntry("JAL",  0x6F, -1, "J", "OP_JAL()"));
+        return t;
+    }
+
+    // Emit the field-extraction statements for one format.
+    #fun gen_field_stmts(e: mut InsnEntry) -> string {
+        if (e.fmt == "U") {
+            return "d.rd = bits(w, 11, 7); d.imm = cast<u32>(cast<i64>(w) & cast<i64>(0xFFFFF000));";
+        }
+        if (e.fmt == "I") {
+            return "d.rd = bits(w, 11, 7); d.rs1 = bits(w, 19, 15); d.imm = sext(bits(w, 31, 20), 12);";
+        }
+        if (e.fmt == "S") {
+            return "d.rs1 = bits(w, 19, 15); d.rs2 = bits(w, 24, 20); d.imm = sext(cast<u32>(lshift(cast<i64>(bits(w, 31, 25)), 5) | cast<i64>(bits(w, 11, 7))), 12);";
+        }
+        if (e.fmt == "B") {
+            return "d.rs1 = bits(w, 19, 15); d.rs2 = bits(w, 24, 20); d.imm = sext(cast<u32>(lshift(cast<i64>(bit(w, 31)), 12) | lshift(cast<i64>(bits(w, 30, 25)), 5) | lshift(cast<i64>(bits(w, 11, 8)), 1) | lshift(cast<i64>(bit(w, 7)), 11)), 13);";
+        }
+        return "d.rd = bits(w, 11, 7); d.imm = sext(cast<u32>(lshift(cast<i64>(bit(w, 31)), 20) | lshift(cast<i64>(bits(w, 30, 21)), 1) | lshift(cast<i64>(bit(w, 20)), 11) | lshift(cast<i64>(bits(w, 19, 12)), 12)), 21);";
+    }
+
+    // Generate the whole decode function: reset defaults, then an
+    // opcode-level if/else chain; opcodes with multiple funct3 slots get a
+    // nested funct3 chain. Anything unmatched stays OP_NOP (bubbles).
+    #fun gen_decode() -> ast {
+        let t: mut _utils.List<InsnEntry> = insn_table();
+        let sb: mut StringBuilder = new StringBuilder();
+        sb.append("fun decode(w: u32, d: mut Dec) {");
+        sb.append("d.op = OP_NOP(); d.rd = cast<u32>(0); d.rs1 = cast<u32>(0); d.rs2 = cast<u32>(0); d.imm = cast<u32>(0);");
+        sb.append("let op7: u32 = bits(w, 6, 0);");
+        let seen_ops: mut _utils.List<i64> = new _utils.List<i64>();
+        let oi: mut i64 = 0;
+        while (oi < t.size()) {
+            let e: mut InsnEntry = t.at(cast<u64>(oi)).some;
+            let opcode: i64 = e.opcode;
+            let seen: mut bool = false;
+            let si: mut i64 = 0;
+            while (si < seen_ops.size()) {
+                if (seen_ops.at(cast<u64>(si)).some == opcode) { seen = true; }
+                si = si + 1;
+            }
+            if (!seen) {
+                seen_ops.push(opcode);
+                if (oi > 0) { sb.append(" else"); }
+                sb.append(" if (op7 == cast<u32>(" + cast<string>(opcode) + ")) {");
+                // inner funct3 chain for this opcode
+                let first: mut bool = true;
+                let ii: mut i64 = 0;
+                while (ii < t.size()) {
+                    let f: mut InsnEntry = t.at(cast<u64>(ii)).some;
+                    if (f.opcode == opcode) {
+                        if (f.f3 < 0) {
+                            sb.append("d.op = " + f.op_const + "; " + gen_field_stmts(f));
+                        } else {
+                            if (!first) { sb.append(" else"); }
+                            sb.append(" if (bits(w, 14, 12) == cast<u32>(" + cast<string>(f.f3) + ")) { d.op = " + f.op_const + "; " + gen_field_stmts(f) + "; }");
+                        }
+                    }
+                    ii = ii + 1;
+                }
+                sb.append("}");
+            }
+            oi = oi + 1;
+        }
+        sb.append("}");
+        return compiler().create_definition(sb.to_string());
+    }
+
+    // Splice in the generated decoder (replaces a hand-written match chain).
+    #gen_decode();
+
+}

@@ -366,7 +366,15 @@ class MetaRewriter {
         let m: mut SemanticModel = this.model.some;
         for (let d in src) {
             if (d is Definition.meta_call_def) {
-                if (!this.try_consume_meta_define(d.meta_call_def)) {
+                if (m.is_unit_b) {
+                    // Unit B (meta compilation): a definition-position # call
+                    // inside an INCLUDED USER SOURCE belongs to the host
+                    // compilation — splicing it here would re-enter the meta
+                    // engine inside unit B. Skip (the host already spliced it).
+                    if (this.model.some.verbose >= 2) {
+                        __builtin.eprintln("[MetaEngine] unit B: skipping def-position meta call");
+                    }
+                } else if (!this.try_consume_meta_define(d.meta_call_def)) {
                     if (!m.bind_meta_calls_pass.try_splice_meta_fun_def(d.meta_call_def, out)) {
                         out.push(d);
                     }
@@ -440,6 +448,25 @@ class MetaRewriter {
     // them again later (duplicates harmless — find_meta_function returns first,
     // JIT compile cached by name).
     fun collect_meta_function_defs(mut this, defs: _utils.List<Definition>) {
+        // File-level `using X;` list (parallel filenames), used to give each
+        // synthesized #fun the same imports inside its namespace wrap.
+        let u_files: mut _utils.List<string> = new _utils.List<string>();
+        let u_names: mut _utils.List<string> = new _utils.List<string>();
+        for (let d0 in defs) {
+            if (d0 is Definition.using_def) {
+                u_files.push(d0.using_def.source_file);
+                u_names.push(d0.using_def.name);
+            }
+        }
+        this.collect_meta_function_defs_ns(defs, "", u_files, u_names);
+    }
+
+    // Path-tracking variant: a #fun declared inside `namespace X { ... }` is
+    // synthesized into unit B WRAPPED in the same namespace (compile_meta_function),
+    // so its body resolves sibling user functions when unit B includes the
+    // user sources (--meta-with-user-sources).
+    fun collect_meta_function_defs_ns(mut this, defs: _utils.List<Definition>, ns: string,
+                                       u_files: _utils.List<string>, u_names: _utils.List<string>) {
         for (let d in defs) {
             if (d is Definition.meta_function_def) {
                 let mfd: MetaFunctionDefinition = d.meta_function_def;
@@ -451,10 +478,20 @@ class MetaRewriter {
                     bmf.return_type = mfd.return_type;
                     bmf.body = mfd.body;
                     bmf.location = mfd.location;
+                    bmf.enclosing_ns = ns;
+                    let ui: mut i64 = 0;
+                    while (ui < u_files.size()) {
+                        if (u_files.at(cast<u64>(ui)).some == mfd.location.filename) {
+                            bmf.file_usings.push(u_names.at(cast<u64>(ui)).some);
+                        }
+                        ui = ui + 1;
+                    }
                     this.model.some.meta_function_defs.push(bmf);
                 }
             } else if (d is Definition.namespace_def) {
-                this.collect_meta_function_defs(d.namespace_def.children);
+                let child_ns: mut string = d.namespace_def.name;
+                if (string_length(ns) > 0) { child_ns = ns + "." + d.namespace_def.name; }
+                this.collect_meta_function_defs_ns(d.namespace_def.children, child_ns, u_files, u_names);
             } else if (d is Definition.class_def) {
                 // M1 (#template -> #fun desugar, representation layer): synthesize a
                 // `_template_<name>` meta function for a generic class template. It
@@ -782,6 +819,9 @@ class MetaRewriter {
         if (!this.model.some.meta_engine_seeded) {
             this.model.some.meta_engine_seeded = true;
             this.model.some.meta_engine.verbose = this.model.some.verbose;
+            this.model.some.meta_engine.with_user_sources = this.model.some.meta_with_user_sources;
+            this.model.some.meta_engine.user_inputs = this.model.some.meta_user_inputs;
+            this.model.some.meta_engine.host_coroutine = this.model.some.enable_coroutine;
             this.model.some.meta_engine.host_type_registry = this.model.some.type_registry;
             // Phase 6: give MetaEngine access to the global scope so it can resolve
             // user-defined types (BoundTypeRegistry only knows primitives). It's a

@@ -160,6 +160,10 @@ initial {
         if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] Merged lib source: " + src.filename); }
         si = si + 1;
     }
+    // --meta-with-user-sources: the USER sources (project files, direct
+    // files, merged lib sources — not the auto-loaded stdlib) the meta
+    // engine may compile into unit B.
+    let user_meta_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     let fi: mut i64 = 0;
     while (fi < cast<i64>(config.source_files.size())) {
         let file: string = config.source_files.at(cast<u64>(fi)).some;
@@ -172,6 +176,7 @@ initial {
                 let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
                 let source: string = _utils.file_read_text(proj_file);
                 inputs.push(new SourceInput(proj_file, source));
+                user_meta_inputs.push(new SourceInput(proj_file, source));
                 if (config.is_lib_mode()) {
                     let lf: mut LibFile = new LibFile();
                     lf.name = proj_file;
@@ -184,6 +189,7 @@ initial {
         } else {
             let source: string = _utils.file_read_text(file);
             inputs.push(new SourceInput(file, source));
+            user_meta_inputs.push(new SourceInput(file, source));
             if (config.is_lib_mode()) {
                 let lf2: mut LibFile = new LibFile();
                 lf2.name = file;
@@ -201,6 +207,8 @@ initial {
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = config.verbose;
     compiler.enable_coroutine = config.coroutine_enabled;
+    compiler.meta_with_user_sources = config.meta_with_user_sources;
+    compiler.meta_user_inputs = user_meta_inputs;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;
     // Dyn-lib routing data: shipped instances (the lib-source boundary is set

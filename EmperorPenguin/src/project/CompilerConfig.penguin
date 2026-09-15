@@ -74,6 +74,14 @@ export class CompilerConfig {
     // identical binaries for wait-free programs (bootstrap md5 convergence).
     // In the Makefile bootstrap the flag is passed only when pass2 compiles pass3.
     coroutine_enabled: bool = false;
+    // --meta-with-user-sources: include the compilation's own (coroutine-free)
+    // user source files in the meta engine's unit B, so a #fun body can call
+    // ORDINARY USER FUNCTIONS (e.g. compile-time assemblers). v1 filters by a
+    // keyword heuristic: any file containing coroutine/topology constructs
+    // (initial/construct/connect/async fun/wait/yield/input /output ) is
+    // excluded — those belong to the runtime program, not to compile-time
+    // evaluation, and would trip the coroutine gate in unit B.
+    meta_with_user_sources: bool = false;
 
     fun new(mut this) {}
 
@@ -147,6 +155,8 @@ export class CompilerConfig {
                 this.dl_enabled = false;
             } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {
                 this.coroutine_enabled = true;
+            } else if (arg == "--meta-with-user-sources" || arg == "-meta-with-user-sources") {
+                this.meta_with_user_sources = true;
             } else if (arg == "--lib" || arg == "-lib") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {

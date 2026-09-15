@@ -1,0 +1,76 @@
+// Uart.penguin — tinyriscv UART peripheral (rtl/perips/tinyriscv_uart.v).
+//
+// Register map (offset from 0x30000000, byte addresses):
+//   0x00 CTRL   bit0 tx_en (writes to TXDATA are dropped while 0)
+//   0x04 STATUS bit0 tx_busy (polled by the firmware)
+//   0x08 BAUD   bit period = (BAUD + 1) cycles; reset value 440
+//               (440 + 1 = 441 cycles @ 50 MHz ~= 115200 baud)
+//   0x0C TXDATA write -> transmit if tx_en && !tx_busy, else silently
+//               dropped (faithful to the RTL's gate on ctrl[0] | busy).
+//
+// TX timing: 10 bits (start + 8 data + stop) x (BAUD+1) cycles, modeled as
+// a busy window [start, start + 10*(BAUD+1)) on the simulation clock. The
+// transmitted character is printed to the HOST console by a waiter process
+// that fires exactly at the end of the stop bit — output appears at the
+// correct simulation time, and the firmware's STATUS polling naturally
+// consumes the real cycle count.
+
+namespace tinyriscv {
+
+    using esl;
+
+    async fun uart_emit(code: i64, at: i64) {
+        let dur: i64 = at - _sim_now();
+        if (dur > 0) {
+            wait dur tick;
+        }
+        print(cast<string>(cast<char>(code)));
+    }
+
+    class Uart {
+        impl __builtin.IReferenceType;
+
+        ctrl: mut u32 = cast<u32>(0);
+        baud: mut u32 = cast<u32>(440);
+        tx_end: mut i64 = -1;
+        tx_count: mut i64 = 0;
+
+        fun new(mut this) {}
+
+        fun busy(this) -> bool {
+            return _sim_now() < this.tx_end;
+        }
+
+        fun start_tx(mut this, v: u32) {
+            if ((this.ctrl & cast<u32>(1)) == cast<u32>(0)) { return; }
+            if (this.busy()) { return; }
+            this.tx_end = _sim_now() + 10 * (cast<i64>(this.baud) + 1);
+            this.tx_count = this.tx_count + 1;
+            let f: mut IFuture<void> = async uart_emit(cast<i64>(bits(v, 7, 0)), this.tx_end);
+        }
+
+        impl IBusSlave {
+            fun bus_read(this, addr: u32) -> u32 {
+                let r: u32 = bits(addr, 3, 0);
+                if (r == cast<u32>(4)) {
+                    if (this.busy()) { return cast<u32>(1); }
+                    return cast<u32>(0);
+                }
+                if (r == cast<u32>(0)) { return this.ctrl; }
+                if (r == cast<u32>(8)) { return this.baud; }
+                return cast<u32>(0);
+            }
+            fun bus_write(mut this, addr: u32, w: u32) {
+                let r: u32 = bits(addr, 3, 0);
+                if (r == cast<u32>(0)) {
+                    this.ctrl = w;
+                } else if (r == cast<u32>(8)) {
+                    this.baud = w;
+                } else if (r == cast<u32>(12)) {
+                    this.start_tx(w);
+                }
+            }
+        }
+    }
+
+}

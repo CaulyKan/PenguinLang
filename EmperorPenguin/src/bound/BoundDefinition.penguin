@@ -365,6 +365,13 @@ class BoundMetaFunctionDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
+    // Dotted namespace path the #fun was declared in ("" = file top level).
+    // compile_meta_function wraps the unit-B synthesis in this namespace so
+    // the body resolves sibling user functions.
+    enclosing_ns: mut string = "";
+    // `using X;` directives of the DECLARING FILE (rendered inside the
+    // namespace wrap so the synthesized body sees the same imports).
+    file_usings: mut _utils.List<string> = new _utils.List<string>();
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
     parameters: mut _utils.List<MetaParameter> = new _utils.List<MetaParameter>();
     return_type: Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
