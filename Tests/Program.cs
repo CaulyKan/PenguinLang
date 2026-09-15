@@ -727,6 +727,33 @@ public sealed record Expectation(string Mode, string? Operand)
             reason = DiffReason(expected, actual);
             return false;
         }
+        if (Mode == "MATCH")
+        {
+            // Full-stream regex match over the C-unescaped operand, mostly
+            // LITERAL: every character matches verbatim except the documented
+            // regex holes (\d+ \d* \s+ \s* \w+ \w* \d \s \w .* .+), which let a
+            // golden wildcard machine-dependent spans — LSP Content-Length
+            // counts vary with the expanded ${PENGUIN_ROOT} length, so the
+            // count positions are written as \d+ instead of hardcoding one
+            // machine's numbers. CUnescape first, exactly like ESCAPE: \r\n
+            // express real CR bytes and unknown escapes (\d, \s, \w) pass
+            // through verbatim for hole scanning.
+            var pattern = ToMatchPattern(CUnescape(Operand ?? ""));
+            Match m;
+            try
+            {
+                m = Regex.Match(actual, pattern, RegexOptions.Singleline | RegexOptions.CultureInvariant,
+                    TimeSpan.FromSeconds(10));
+            }
+            catch (RegexParseException e)
+            {
+                reason = $"invalid MATCH pattern after hole splicing: {e.Message}";
+                return false;
+            }
+            if (m.Success) { reason = ""; return true; }
+            reason = $"stream does not match MATCH pattern '{Render(pattern)}' — actual {Render(actual)}";
+            return false;
+        }
         if (Mode == "CONTAINS")
         {
             var op = Operand ?? "";
@@ -768,6 +795,36 @@ public sealed record Expectation(string Mode, string? Operand)
         var exp = Render(expected);
         var act = Render(actual);
         return $"expected {exp} but got {act}";
+    }
+
+    /// <summary>Regex hole syntax allowed inside a MATCH operand — everything
+    /// else in the operand is matched literally. \d/\s/\w with an optional
+    /// quantifier cover the counting/whitespace goldens; .* / .+ cover free
+    /// spans. (A literal '.' or '\' in the expected text is escaped like any
+    /// other character, so it can never start a hole by accident.)</summary>
+    private static readonly Regex MatchHole = new(@"\\[dsw][+*]?|\.[+*]",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>Compile a MATCH operand (post-CUnescape) into an anchored regex:
+    /// literal text with the hole fragments above spliced in verbatim.</summary>
+    public static string ToMatchPattern(string s)
+    {
+        var sb = new StringBuilder(s.Length + 8).Append(@"\A(?:");
+        for (var i = 0; i < s.Length; )
+        {
+            var hole = MatchHole.Match(s, i);
+            if (hole.Success && hole.Index == i)
+            {
+                sb.Append(hole.Value);
+                i += hole.Length;
+            }
+            else
+            {
+                sb.Append(Regex.Escape(s[i].ToString()));
+                i++;
+            }
+        }
+        return sb.Append(@")\z").ToString();
     }
 
     public static string Render(string s)
@@ -1592,6 +1649,53 @@ public static class EnvHelper
     }
 }
 
+/// <summary>LSP JSON-RPC byte-stream helpers.</summary>
+public static class LspFraming
+{
+    /// <summary>
+    /// Rewrite every `Content-Length: N` header in a framed STDIN stream so N
+    /// equals the real byte length of the frame body that follows it (up to the
+    /// next `Content-Length:` header or end of stream). Unlike the assertion
+    /// side — where MATCH goldens simply write \d+ at count positions — the
+    /// server consumes real bytes, so the frames the runner sends must be
+    /// well-formed no matter how long ${PENGUIN_ROOT} expanded: the hardcoded
+    /// counts in the .md cannot fit every machine. Byte length is UTF-8; a
+    /// stream without framing text is returned unchanged. Frames are located
+    /// by scanning for the literal `Content-Length:` header — a body that
+    /// embeds that literal itself would confuse the scan (none do).
+    /// </summary>
+    public static string FixContentLengths(string s)
+    {
+        if (string.IsNullOrEmpty(s) || !s.Contains("Content-Length:", StringComparison.Ordinal)) return s;
+        var starts = new List<int>();
+        for (var idx = s.IndexOf("Content-Length:", StringComparison.Ordinal); idx >= 0;
+             idx = s.IndexOf("Content-Length:", idx + 1, StringComparison.Ordinal))
+            starts.Add(idx);
+        var sb = new StringBuilder(s.Length);
+        sb.Append(s, 0, starts[0]);
+        for (var i = 0; i < starts.Count; i++)
+        {
+            // LSP mandates CRLF CRLF; the framer also accepts the lenient LF LF —
+            // keep whichever terminator the stream uses.
+            var crlf = s.IndexOf("\r\n\r\n", starts[i], StringComparison.Ordinal);
+            var lflf = s.IndexOf("\n\n", starts[i], StringComparison.Ordinal);
+            int sep, sepLen;
+            if (crlf >= 0 && (lflf < 0 || crlf < lflf)) { sep = crlf; sepLen = 4; }
+            else if (lflf >= 0) { sep = lflf; sepLen = 2; }
+            else return s; // header without a terminator — no complete frame; leave untouched
+            var bodyStart = sep + sepLen;
+            var bodyEnd = i + 1 < starts.Count ? starts[i + 1] : s.Length;
+            sb.Append("Content-Length: ").Append(Encoding.UTF8.GetByteCount(s[bodyStart..bodyEnd]));
+            // Skip the old count digits, then copy the original terminator through the body.
+            var sepText = starts[i] + 15;
+            while (sepText < s.Length && (s[sepText] == ' ' || char.IsDigit(s[sepText]))) sepText++;
+            sb.Append(s, sepText, bodyStart - sepText);
+            sb.Append(s, bodyStart, bodyEnd - bodyStart);             // body text, unchanged
+        }
+        return sb.ToString();
+    }
+}
+
 // ───────────────────────── Test runner ─────────────────────────
 
 public sealed class ComboResult
@@ -1894,6 +1998,13 @@ public static class TestRunner
             // sessions can open real files via file://${PENGUIN_ROOT}/... uris
             // (project-discovery tests need on-disk multi-file projects).
             var runStdin = EnvHelper.Expand(test.Run!.Stdin, workDir);
+            // The server consumes bytes, not patterns: expansion changed the
+            // body sizes (${PENGUIN_ROOT} is longer on CI than on the author's
+            // disk), so recompute the stdin framing counts — stale ones desync
+            // the server's framer and it silently drops every request past the
+            // first size-mismatched frame. (The ExpectedStdout side wildcards
+            // its counts with MATCH \d+ goldens instead.)
+            if (test.IsRunLsp) runStdin = LspFraming.FixContentLengths(runStdin);
             var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, opts.TimeoutRunSec * 1000, closeStdin: test.Run.StdinClose);
             runStage = new StageResult
             {

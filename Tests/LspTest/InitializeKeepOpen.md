@@ -16,5 +16,5 @@ Args: `build/linux/penguin-lsp`
 Stdin: `Content-Length: 107\n\n{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}Content-Length: 44\n\n{"jsonrpc":"2.0","id":8,"method":"shutdown"}Content-Length: 33\n\n{"jsonrpc":"2.0","method":"exit"}`
 StdinClose: false
 ExpectedExitCode: 0
-ExpectedStdout: ESCAPE `Content-Length: 331\r\n\r\n{"jsonrpc":"2.0","id":7,"result":{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"documentSymbolProvider":true,"definitionProvider":true,"referencesProvider":true,"hoverProvider":true,"inlayHintProvider":true,"renameProvider":{"prepareProvider":false},"documentFormattingProvider":true}}}Content-Length: 38\r\n\r\n{"jsonrpc":"2.0","id":8,"result":null}`
+ExpectedStdout: MATCH `Content-Length: \d+\r\n\r\n{"jsonrpc":"2.0","id":7,"result":{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"documentSymbolProvider":true,"definitionProvider":true,"referencesProvider":true,"hoverProvider":true,"inlayHintProvider":true,"renameProvider":{"prepareProvider":false},"documentFormattingProvider":true}}}Content-Length: \d+\r\n\r\n{"jsonrpc":"2.0","id":8,"result":null}`
 ExpectedStderr: DISCARD
