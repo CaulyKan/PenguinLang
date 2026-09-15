@@ -22,6 +22,8 @@
 
 namespace esl {
 
+    using std;
+
     interface IBusSlave {
         impl __builtin.IReferenceType;
         // Word-granularity slave port. Byte/half semantics live in the slave
@@ -55,8 +57,8 @@ namespace esl {
         // Attached slaves in registration order + their address nibbles
         // (addr[31:28]); slave_at scans the pairs. Undecoded addresses read
         // 0 and drop writes.
-        slaves: mut _ChanList<IBusSlave> = new _ChanList<IBusSlave>();
-        nibbles: mut _ChanList<i64> = new _ChanList<i64>();
+        slaves: mut Vector<IBusSlave> = new Vector<IBusSlave>();
+        nibbles: mut Vector<i64> = new Vector<i64>();
         m0: mut Option<IBusMaster> = new Option<IBusMaster>.none();
 
         fun new(mut this) {}
@@ -74,7 +76,7 @@ namespace esl {
         // Indexed attachment: slaves in the memory-map table's order, routed
         // by an installed IBusDecoder (typically meta-generated from a #class
         // map — the addr[31:28] decode is compiled, not scanned).
-        indexed: mut _ChanList<IBusSlave> = new _ChanList<IBusSlave>();
+        indexed: mut Vector<IBusSlave> = new Vector<IBusSlave>();
         decoder: mut Option<IBusDecoder> = new Option<IBusDecoder>.none();
 
         fun attach_indexed(mut this, s: IBusSlave) {
@@ -88,16 +90,16 @@ namespace esl {
         fun slave_at(this, addr: u32) -> IBusSlave {
             if (this.decoder.is_some()) {
                 let idx: i64 = this.decoder.some.decode(addr);
-                if (idx >= 0 && idx < this.indexed.size()) {
-                    return this.indexed.at(idx).some;
+                if (idx >= 0 && cast<u64>(idx) < this.indexed.size()) {
+                    return this.indexed.at(cast<u64>(idx)).some;
                 }
                 return cast<IBusSlave>(new _NullSlave());
             }
             let nibble: i64 = cast<i64>(bits(addr, 31, 28));
             let i: mut i64 = 0;
-            while (i < this.slaves.size()) {
-                if (this.nibbles.at(i).some == nibble) {
-                    return this.slaves.at(i).some;
+            while (cast<u64>(i) < this.slaves.size()) {
+                if (this.nibbles.at(cast<u64>(i)).some == nibble) {
+                    return this.slaves.at(cast<u64>(i)).some;
                 }
                 i = i + 1;
             }

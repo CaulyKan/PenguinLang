@@ -27,8 +27,17 @@
 //
 // 1 tick models 1 clock cycle of the RTL reference (tinyriscv testbench:
 // 50 MHz -> 1 tick = 20 ns; see the example README for the mapping).
+//
+// Clock fan-out: `evt` is an Event<i64> whose payload is the cycle number
+// the edge starts. Modules take the posedge through an INPUT PORT — declare
+// `input clk : i64` and wire `connect(clock.evt, m.clk)` — so
+// `wait this.clk` ≡ @(posedge clk); direct `wait clock.evt` subscribers and
+// connected port wires all see the same edges (each with its own delivery
+// cursor).
 
 namespace esl {
+
+    using std;
 
     // Post-commit observer: return true to stop the clock (the simulation
     // then reaches quiescence and the program exits 0).
@@ -40,8 +49,8 @@ namespace esl {
     class Clock {
         impl IReferenceType;
 
-        evt: mut Event<void> = new Event<void>();
-        regs: mut _ChanList<IReg> = new _ChanList<IReg>();
+        evt: mut Event<i64> = new Event<i64>();
+        regs: mut Vector<IReg> = new Vector<IReg>();
         cycles: mut i64 = 0;
         hook: mut Option<ICycleHook> = new Option<ICycleHook>.none();
 
@@ -62,13 +71,21 @@ namespace esl {
             }
         }
 
-        // The clock process. Cycle 1 is the (lost) reset edge: modules park
-        // after the first emit, so evaluate rounds start at cycle 2 — models
-        // see one full cycle of reset values before the first posedge work,
-        // matching the RTL testbench's reset hold.
+        // The clock process. Cycle 1 is the (lost) RESET EDGE: the first
+        // loop iteration emits NOTHING — direct `wait evt` subscribers see no
+        // edge (models observe one full cycle of reset values before the
+        // first posedge work, matching the RTL testbench's reset hold), and
+        // wire-connected inputs receive no transaction. The explicit skip
+        // matters: a connect-wired input BUFFERS every emit (a late consumer
+        // never loses transactions), so without it the first evaluate round
+        // would land on cycle 1 — one cycle earlier than the RTL. The emit
+        // payload is the cycle number this edge starts (the count of
+        // committed cycles so far).
         initial {
             while (true) {
-                this.evt.emit(void);
+                if (this.cycles > 0) {
+                    this.evt.emit(this.cycles);
+                }
                 wait 0 tick;
                 this.commit_all();
                 this.cycles = this.cycles + 1;

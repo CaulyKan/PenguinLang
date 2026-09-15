@@ -17,6 +17,8 @@
 #   make tools_linux        build/linux/penguin-tools (links the release dynlib)
 #   make tools_win          build/win/penguin-tools.exe monolith
 #   make tools-test         golden tests for penguin-tools (selftest.sh)
+#   make docs-site          build the mdBook documentation site (docs/ per
+#                           book.toml) -> build/book (needs mdbook)
 #   make test               run the cross-compiler markdown suite (Tests/*.md)
 #   make baseline_test      like `test`, but record the run as the new baseline
 #   make unittest           dotnet unit tests (BabyPenguin.Tests + EmperorPenguin.Tests)
@@ -76,7 +78,7 @@ endif
 .DEFAULT_GOAL := all
 .PHONY: all clean bootstrap lsp release test baseline_test publish unittest \
         release_linux release_win lsp_linux lsp_win tools tools_linux \
-        tools_win tools-test
+        tools_win tools-test docs-site
 
 BS := build/bootstrap
 REL := build/release
@@ -591,6 +593,17 @@ tools: tools_$(HOST)
 
 tools-test: build/linux/penguin-tools
 	@bash EmperorPenguin/tools/selftest.sh
+
+# ── docs-site ────────────────────────────────────────────────────────
+# Build the mdBook documentation site (docs/ per book.toml) into build/book.
+# The site Home page is the root README with its ./docs/-prefixed links
+# rewritten relative — generated here, never committed.
+docs-site:
+	@command -v mdbook >/dev/null 2>&1 || { echo "docs-site needs mdbook (https://rust-lang.github.io/mdBook/): cargo install mdbook" >&2; exit 1; }
+	@sed -e 's|](\./docs/|](./|g' -e 's|](\./docs)|](.)|g' README.md > docs/README.md
+	@mdbook build
+	@rm -f docs/README.md
+	@echo "Documentation site -> build/book/index.html"
 
 # ── unittest ─────────────────────────────────────────────────────────
 unittest:

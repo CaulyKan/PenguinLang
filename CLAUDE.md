@@ -205,7 +205,7 @@ The language has explicit types with mutability modifiers. The type system is de
 - Generic types
 - Type references (type alias)
 
-See `Documentation/03_DataTypes.md` for detailed type information.
+See `docs/specifications/03_DataTypes.md` for detailed type information.
 
 ## BabyPenguin Architecture (C# Implementation)
 
@@ -248,7 +248,7 @@ BabyPenguin emits a register-based IR with 25+ instruction types:
 - `List<T>`: Linked list with `push()`, `at()`, `set()`, `pop()`, `remove()`, `size()`
 - `Queue<T>`: Linked queue with `enqueue()`, `dequeue()`, `peek()`, `size()`
 - `StringBuilder`: `append()`, `to_string()`
-- `IStringOps`: the std string-method surface implemented for the primitive `string` (`impl IStringOps for string`, in `BabyPenguin/Builtin.penguin` + `EmperorPenguin/std/penguin/core_builtin.penguin` — keep the two mirrored): `length/is_empty/char_at/char_code(_at)/substring/slice/find(_from/_last)/contains/starts_with/ends_with/equals_ignore_case/compare/count/to_upper/to_lower/trim(_start/_end)/replace/reverse/repeat/pad_left/pad_right/split/to_int/to_double`. `split(sep)` returns a lazy `StringSplitIterator` (for-in ready, Python-like trailing empty piece). ASCII/unit-based; direct dispatch only (no interface-typed boxing of primitives). See Documentation/03_DataTypes.md §IStringOps.
+- `IStringOps`: the std string-method surface implemented for the primitive `string` (`impl IStringOps for string`, in `BabyPenguin/Builtin.penguin` + `EmperorPenguin/std/penguin/core_builtin.penguin` — keep the two mirrored): `length/is_empty/char_at/char_code(_at)/substring/slice/find(_from/_last)/contains/starts_with/ends_with/equals_ignore_case/compare/count/to_upper/to_lower/trim(_start/_end)/replace/reverse/repeat/pad_left/pad_right/split/to_int/to_double`. `split(sep)` returns a lazy `StringSplitIterator` (for-in ready, Python-like trailing empty piece). ASCII/unit-based; direct dispatch only (no interface-typed boxing of primitives). See docs/specifications/03_DataTypes.md §IStringOps.
 - `Box<T>`: Simple wrapper class
 - `ICopy<T>`: Interface for value-type copy semantics (implemented for all primitives)
 - `IIterator<T>`, `IIterable<T>`, `IMutIterator<T>`: Iterator interfaces. `IIterable.iter()` is the read-only path (element type T as stored, callable on immutable containers); `iter_mut()` is the mutable path. For-loop desugaring picks `iter()`/`iter_mut()` by the loop variable's mutability (`let x` → `iter`, `let x : mut T`/`let mut x` → `iter_mut`); an `in` expression that is already an iterator is used as-is.
@@ -472,5 +472,5 @@ All bound types live in the `bound` namespace. In test code (outside the namespa
 ### Known Limitations (from README)
 
 - **Concurrency/Coroutines**: Parser supports `event`, `emit`, `on`, `wait`, `async`, `folk` but LLVM emitter doesn't generate state machines for stackless coroutines yet
-- **Metaprogramming**: Implemented. `#if`/`#elif`/`#else`/`#while`/`#break`/`#continue` (hardcoded compile-time control flow); `#fun` JIT-executed via LLVM ORC (native pass2+); `#typeof`, `#create_expression`/`#create_definition`, `#define`/`#defined`/`#option`. **Reflection Phase 6 Round 1 shipped** (opaque type-tokens + host callbacks: `#field_count(t)`, `#field_name(t,i)`, `#type_name(t)`, `#is_class(t)`, …). **Phase 6 v2 in progress** (real-pointer reuse: `type = emperor.BoundType`, `t.fields()`/`t.methods()`/`t.variants()` direct; per-call-site caller-stub `#fun` ABI; `#class` meta-only data structures). See `Documentation/10_MetaProgramming.md` and `.claude/plans/meta_plan.md` §0.4. Meta JIT runs only in native pass2/pass3 (`make bootstrap`); `dotnet test` verifies `.penguin` compiles but not the JIT path.
+- **Metaprogramming**: Implemented. `#if`/`#elif`/`#else`/`#while`/`#break`/`#continue` (hardcoded compile-time control flow); `#fun` JIT-executed via LLVM ORC (native pass2+); `#typeof`, `#create_expression`/`#create_definition`, `#define`/`#defined`/`#option`. **Reflection Phase 6 Round 1 shipped** (opaque type-tokens + host callbacks: `#field_count(t)`, `#field_name(t,i)`, `#type_name(t)`, `#is_class(t)`, …). **Phase 6 v2 in progress** (real-pointer reuse: `type = emperor.BoundType`, `t.fields()`/`t.methods()`/`t.variants()` direct; per-call-site caller-stub `#fun` ABI; `#class` meta-only data structures). See `docs/specifications/10_MetaProgramming.md` and `.claude/plans/meta_plan.md` §0.4. Meta JIT runs only in native pass2/pass3 (`make bootstrap`); `dotnet test` verifies `.penguin` compiles but not the JIT path.
 - **Attributes/Indexers**: Not yet implemented at the Bound layer

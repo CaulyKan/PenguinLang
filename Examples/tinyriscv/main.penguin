@@ -5,9 +5,21 @@
 //   0x1        RAM  (16 KB)
 //   0x3        UART (0x30000000: CTRL/STATUS/BAUD/TXDATA)
 //
-// Elaboration wires the bus, loads the assembled firmware into ROM, and the
-// clock runs until the firmware sets x26=1 (testbench end convention). The
-// final report prints the cycle count and its 50 MHz wall-clock equivalent.
+// The wiring lives in a top-level construct block — it runs at ELABORATION
+// (before any initial routine spawns) and is statically audited (E_WIRING):
+// every module input is connected. Pipeline state flows through esl.Pipe
+// channels (if_id / id_ex), the writeback through Execute's wb output port,
+// and the posedge fans out from the clock's Event into each module's clk
+// INPUT PORT (connect(clk.evt, m.clk) ≡ @(posedge clk)). The firmware is
+// assembled at compile time (#fun) and loaded into ROM during elaboration,
+// before the first fetch. The clock runs until the firmware sets x26=1
+// (testbench end convention); the final report prints the cycle count and
+// its 50 MHz wall-clock equivalent.
+//
+// Combinational paths (regfile reads, the RIB bus) stay plain function
+// calls during evaluate — the SystemC convention; every arbitration input
+// derives from committed register/pipe state, so wakeup order stays
+// irrelevant.
 
 using tinyriscv;
 using esl;
@@ -46,12 +58,7 @@ class SimEnd {
     }
 }
 
-initial {
-    let clk: mut Clock = new Clock();
-
-    let regs: mut RegFile = new RegFile(clk);
-
-    let rom: mut Rom<1024> = new Rom<1024>();
+fun load_firmware(rom: mut Rom) {
     // Meta: firmware_image() assembles AT COMPILE TIME (#fun JIT).
     let image: string = #firmware_image();
     let idx: mut i64 = 0;
@@ -62,8 +69,16 @@ initial {
             idx = idx + 1;
         }
     }
+}
 
-    let ram: mut Ram<4096> = new Ram<4096>();
+construct {
+    let clk: mut Clock = new Clock();
+
+    let regs: mut RegFile = new RegFile(clk);
+
+    let rom: mut Rom = new Rom(1024);
+    load_firmware(rom);
+    let ram: mut Ram = new Ram(4096);
     let uart: mut Uart = new Uart();
 
     // Meta: the addr[31:28] -> region decode is GENERATED from the #class
@@ -74,15 +89,31 @@ initial {
     bus.attach_indexed(uart);
     bus.set_decoder(new MmioDecoder());
 
-    // Core pipeline state + ctrl + the three stage processes (IF/ID/EX).
-    // Process spawn order is irrelevant: every decision each process makes
-    // derives from committed register state (see Ctrl.penguin).
-    let core: mut Core = new Core(clk, bus, regs);
-    bus.set_m0(core);
-    let ctrl: mut Ctrl = new Ctrl(core);
-    let fetch: mut Fetch = new Fetch(clk, core, ctrl);
-    let decode: mut Decode = new Decode(clk, core, ctrl);
-    let execute: mut Execute = new Execute(clk, core, ctrl);
+    // Pipeline channels: if_id / id_ex as two-phase esl.Pipe registers
+    // (write during evaluate, publish at the clock's commit; a cycle with
+    // no write is the NOP bubble — the RTL's flush).
+    let if_pipe: mut Pipe<FetchPacket> = new Pipe<FetchPacket>(clk);
+    let id_pipe: mut Pipe<DecPacket> = new Pipe<DecPacket>(clk);
+
+    // Control: pure functions of the committed id_ex slot + regfile.
+    let ctrl: mut Ctrl = new Ctrl(id_pipe, regs);
+
+    let fetch: mut Fetch = new Fetch(clk, bus, if_pipe, ctrl);
+    let decode: mut Decode = new Decode(id_pipe, ctrl);
+    let execute: mut Execute = new Execute(regs, bus);
+
+    // Posedge fan-out (Event -> clk input ports), datapath channels, and
+    // the writeback wire (EX output -> RegFile input).
+    connect(clk.evt, fetch.clk);
+    connect(clk.evt, decode.clk);
+    connect(clk.evt, execute.clk);
+    connect(if_pipe, decode.if_in);
+    connect(id_pipe, execute.id_in);
+    connect(execute.wb, regs.wb_in);
+
+    // RIB m0 arbitration probe: the Bus asks EX (IBusMaster) whether it
+    // owns the bus this cycle.
+    bus.set_m0(execute);
 
     let hook: mut SimEnd = new SimEnd(clk, regs, uart);
     clk.set_hook(hook);

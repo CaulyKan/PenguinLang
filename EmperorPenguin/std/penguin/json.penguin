@@ -15,7 +15,7 @@
 // NOT auto-loaded — compile it explicitly (e.g. via a markdown test's
 // Compile.Args) along with its dependencies hashmap.penguin + vector.penguin.
 //
-// Known limitations (see Documentation): u64 serializes via %d (truncates above
+// Known limitations (see docs/tutorials/MetaProgrammingIntroduction.md §18): u64 serializes via %d (truncates above
 // 2^31 — use i64); f64 uses printf %g (6 significant digits — no exact double
 // round-trip); \uXXXX / \b / \f escapes are preserved verbatim (no code->char);
 // concrete top-level classes only (a generic-param field type cannot be

@@ -1,7 +1,7 @@
 # PenguinLang-native LSP Server
 
 A rewrite of the C# language server (`MagellanicPenguin/LSP/LSP.cs`) in PenguinLang itself,
-built on the ports/channels/coroutine runtime (`Documentation/11_PortsChannelsEvents.md`)
+built on the ports/channels/coroutine runtime (`docs/specifications/11_PortsChannelsEvents.md`)
 and embedding the whole EmperorPenguin compiler as its analysis engine. Plan:
 `.agents/plans/emperorpenguin-lsp-ports.md`.
 

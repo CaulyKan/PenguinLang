@@ -74,14 +74,15 @@ export class CompilerConfig {
     // identical binaries for wait-free programs (bootstrap md5 convergence).
     // In the Makefile bootstrap the flag is passed only when pass2 compiles pass3.
     coroutine_enabled: bool = false;
-    // --meta-with-user-sources: include the compilation's own (coroutine-free)
-    // user source files in the meta engine's unit B, so a #fun body can call
-    // ORDINARY USER FUNCTIONS (e.g. compile-time assemblers). v1 filters by a
-    // keyword heuristic: any file containing coroutine/topology constructs
-    // (initial/construct/connect/async fun/wait/yield/input /output ) is
-    // excluded — those belong to the runtime program, not to compile-time
-    // evaluation, and would trip the coroutine gate in unit B.
-    meta_with_user_sources: bool = false;
+    // --meta-src <path> (repeatable, like --lib) / meta-sources=[...] in a
+    // .penguins project: the EXPLICIT list of source files compiled into the
+    // meta engine's unit B, so a #fun body can call ORDINARY USER FUNCTIONS
+    // (e.g. compile-time assemblers). What you list is what unit B gets —
+    // no marker comments, no content heuristics. Listed files are compiled
+    // into unit B verbatim, so they must be meta-safe by construction (no
+    // coroutine/topology constructs: initial/construct/connect/async fun/
+    // wait/yield/ports would trip unit B's coroutine gate).
+    meta_source_files: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {}
 
@@ -155,8 +156,19 @@ export class CompilerConfig {
                 this.dl_enabled = false;
             } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {
                 this.coroutine_enabled = true;
+            } else if (arg == "--meta-src" || arg == "-meta-src") {
+                i = i + 1;
+                if (i < cast<i64>(args.size())) {
+                    this.meta_source_files.push(args.at(cast<u64>(i)).some);
+                }
+            } else if (string_length(arg) >= 11 && string_substring(arg, 0, 11) == "--meta-src=") {
+                this.meta_source_files.push(string_substring(arg, 11, string_length(arg) - 11));
             } else if (arg == "--meta-with-user-sources" || arg == "-meta-with-user-sources") {
-                this.meta_with_user_sources = true;
+                // Removed: the marker-comment + keyword-heuristic selection was
+                // replaced by the explicit --meta-src list. Fail loudly rather
+                // than silently treating the flag as a source file name.
+                __builtin.eprintln("[EmperorPenguin] Error: --meta-with-user-sources no longer exists; pass the unit-B files explicitly with --meta-src <file> (repeatable) or meta-sources=[...] in the .penguins project");
+                __builtin.exit(2);
             } else if (arg == "--lib" || arg == "-lib") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {

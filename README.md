@@ -21,17 +21,23 @@ Roadmap:
 * EmperorPenguin: A BabyPenguin implementation of Penguin-lang compiler, emits llvm IR (Not started)
 
 Get Started:
-* [Basic Introduction Slides](./Documentation/BasicIntroductionSlide/BasicIntroduction.md)
+* [Basic Introduction (Tutorial)](./docs/tutorials/BasicIntroduction.md)
+* [Meta Programming Tutorial (EmperorPenguin)](./docs/tutorials/MetaProgrammingIntroduction.md)
 
-Documents:
-* [Execution Flow And Events](./Documentation/02_ExecutionFlowAndEvents.md)
-* [Data Types](./Documentation/03_DataTypes.md)
-* [Function](./Documentation/04_Function.md)
-* [Enum](./Documentation/05_Enum.md)
-* [Interface](./Documentation/06_Interface.md)
-* [Asynchronization And Concurrency](./Documentation/07_AsynchronizationAndConcurrency.md)
-* [Timing Model](./Documentation/08_TimingModel.md)
-* [Namespace And Project](./Documentation/09_NamespaceAndProject.md)
+Documentation:
+* Online documentation site: https://caulykan.github.io/PenguinLang/ (built from [docs/](./docs) in this repo)
+* [Overview](./docs/specifications/01_Overview.md)
+* [Execution Flow And Events](./docs/specifications/02_ExecutionFlowAndEvents.md)
+* [Data Types](./docs/specifications/03_DataTypes.md)
+* [Function](./docs/specifications/04_Function.md)
+* [Enum](./docs/specifications/05_Enum.md)
+* [Interface](./docs/specifications/06_Interface.md)
+* [Asynchronization And Concurrency](./docs/specifications/07_AsynchronizationAndConcurrency.md)
+* [Timing Model](./docs/specifications/08_TimingModel.md)
+* [Namespace And Project](./docs/specifications/09_NamespaceAndProject.md)
+* [Meta Programming](./docs/specifications/10_MetaProgramming.md)
+* [Ports Channels Events](./docs/specifications/11_PortsChannelsEvents.md)
+* Implementation notes (compiler internals): [docs/impl-notes](./docs/impl-notes)
 
 Build And Run:
 * Install the .NET 8.0 SDK from https://dotnet.microsoft.com/download

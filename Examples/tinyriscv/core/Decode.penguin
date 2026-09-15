@@ -1,7 +1,9 @@
-// Decode.penguin — the ID stage process: decode the committed if_id word
-// (pure decode in Decoder.penguin) and latch the fields into id_ex. A taken
-// branch in EX (Hold_Id) flushes id_ex to NOP instead — the second half of
-// the 2-cycle taken-branch penalty.
+// Decode.penguin — the ID stage process: poll the if_id Pipe (none = bubble
+// ≡ NOP — reset value or a flush), decode the word (pure decode in
+// Decoder.penguin), and publish the fields into the id_ex Pipe. A taken
+// branch in EX (Hold_Id) publishes NOTHING instead — the pipe bubble next
+// cycle is the second half of the 2-cycle taken-branch penalty. Instructions
+// decoding to OP_NOP are not published at all: the bubble IS the NOP.
 
 namespace tinyriscv {
 
@@ -10,43 +12,39 @@ namespace tinyriscv {
     class Decode {
         impl __builtin.IReferenceType;
 
-        clk: Clock;
-        core: Core;
+        input clk : i64;
+        input if_in : FetchPacket;
+
+        id_out: mut Pipe<DecPacket>;
         ctrl: Ctrl;
         dec: mut Dec = new Dec();
 
-        fun new(mut this, clk: mut Clock, core: mut Core, ctrl: mut Ctrl) {
-            this.clk = clk;
-            this.core = core;
+        fun new(mut this, id_out: mut Pipe<DecPacket>, ctrl: mut Ctrl) {
+            this.id_out = id_out;
             this.ctrl = ctrl;
-        }
-
-        fun write_ex(mut this, d: mut Dec) {
-            this.core.ex_op.write(d.op);
-            this.core.ex_rd.write(d.rd);
-            this.core.ex_rs1.write(d.rs1);
-            this.core.ex_rs2.write(d.rs2);
-            this.core.ex_imm.write(d.imm);
-            this.core.ex_pc.write(this.core.if_pc.out());
-        }
-
-        fun flush_ex(mut this) {
-            this.core.ex_op.write(OP_NOP());
-            this.core.ex_rd.write(cast<u32>(0));
-            this.core.ex_rs1.write(cast<u32>(0));
-            this.core.ex_rs2.write(cast<u32>(0));
-            this.core.ex_imm.write(cast<u32>(0));
-            this.core.ex_pc.write(cast<u32>(0));
         }
 
         initial {
             while (true) {
-                wait this.clk.evt;
+                let cyc: i64 = wait this.clk;
                 if (this.ctrl.jump_flag()) {
-                    this.flush_ex();
+                    // Hold_Id: no id_out publication — EX polls a bubble.
                 } else {
-                    decode(this.core.if_inst.out(), this.dec);
-                    this.write_ex(this.dec);
+                    let fp: Option<FetchPacket> = this.if_in.try_poll();
+                    if (fp.is_some()) {
+                        decode(fp.some.inst, this.dec);
+                        if (this.dec.op != OP_NOP()) {
+                            let d: mut DecPacket = new DecPacket();
+                            d.op = this.dec.op;
+                            d.rd = this.dec.rd;
+                            d.rs1 = this.dec.rs1;
+                            d.rs2 = this.dec.rs2;
+                            d.imm = this.dec.imm;
+                            d.pc = fp.some.pc;
+                            this.id_out.write(d);
+                        }
+                    }
+                    // A polled bubble (reset / flush) latches nothing.
                 }
             }
         }

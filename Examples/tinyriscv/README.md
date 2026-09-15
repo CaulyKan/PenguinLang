@@ -11,7 +11,7 @@ the cycle count the RTL would take.
 
 ```bash
 build/bootstrap/pass3 Examples/tinyriscv/tinyriscv.penguins \
-    --enable-coroutine --meta-with-user-sources -o /tmp/tinyriscv
+    --enable-coroutine -o /tmp/tinyriscv
 EmperorPenguin/emperor link /tmp/tinyriscv.ll -o /tmp/tinyriscv
 /tmp/tinyriscv
 ```
@@ -35,23 +35,48 @@ two-phase evaluate/commit protocol (see `libpenguin-esl/Clock.penguin`):
 posedge wakes every module process, evaluate reads only COMMITTED register
 state and writes in-sides, then all registers commit atomically — module
 wakeup order is irrelevant, the non-blocking-assignment determinism of an
-HDL simulator.
+HDL simulator. Cycle 1 is the (lost) reset edge — the clock's first loop
+iteration emits nothing, so models see one full cycle of reset values before
+the first posedge work (matching the RTL testbench's reset hold).
+
+## Wiring (ports & channels)
+
+All cross-module communication goes through the port/connect surface, wired
+in `main.penguin`'s top-level `construct {}` (elaboration time, statically
+audited — `error[E_WIRING]` on an unconnected input):
+
+- **posedge fan-out**: `connect(clk.evt, m.clk)` wires the clock's
+  `Event<i64>` (payload = cycle number) into each module's `input clk : i64`
+  — `wait this.clk` ≡ `@(posedge clk)`.
+- **pipeline registers**: `if_id` / `id_ex` are `esl.Pipe<FetchPacket>` /
+  `esl.Pipe<DecPacket>` two-phase channels — write during evaluate,
+  publish at the clock's commit (exactly one cycle of delay); a cycle with
+  no write publishes a BUBBLE, which IS the RTL's NOP flush (`Hold_If` /
+  `Hold_Id` need no extra flush call). `Ctrl` and the RIB arbitration probe
+  read the pipe's `current()` — the registered (committed) view, stable
+  through the whole cycle.
+- **writeback**: Execute's `output wb : Writeback` port connects into
+  RegFile's `input wb_in` — a wire with same-tick delta delivery, and the
+  RegFile commits it at the clock edge (the RTL's posedge regfile write).
+- **combinational paths** (regfile reads, the RIB bus) stay plain function
+  calls during evaluate — the SystemC convention; every arbitration input
+  derives from committed state, so wakeup order stays irrelevant.
 
 ## Module map (rtl ↔ model)
 
 | tinyriscv rtl                     | model                                        |
 | --------------------------------- | -------------------------------------------- |
-| `rtl/core/pc_reg.v`               | `esl.Reg<u32>` pc in `core/Pipeline.penguin` |
-| `rtl/core/if_id.v`                | `if_inst` / `if_pc` regs (`Pipeline`)        |
+| `rtl/core/pc_reg.v`               | `esl.Reg<u32>` pc owned by `core/Fetch.penguin` |
+| `rtl/core/if_id.v`                | `Pipe<FetchPacket>` if_id channel (`Fetch` → `Decode`, value packets in `core/Pipeline.penguin`) |
 | `rtl/core/id.v`                   | `core/Decoder.penguin` + `core/Decode.penguin` (meta-generated match: `core/InsnTable.penguin`) |
-| `rtl/core/id_ex.v`                | `ex_*` regs (`Pipeline`)                     |
-| `rtl/core/ex.v`                   | `core/Execute.penguin`                       |
-| `rtl/core/ctrl.v`                 | `core/Ctrl.penguin` (pure functions of committed id_ex) |
-| `rtl/core/regs.v`                 | `core/RegFile.penguin` (single write port, committed at the edge) |
-| `rtl/core/rib.v`                  | `libpenguin-esl/Bus.penguin` (addr[31:28] decode, m0 > m1 fixed priority; generated decode: `perips/MemMap.penguin`) |
+| `rtl/core/id_ex.v`                | `Pipe<DecPacket>` id_ex channel (`Decode` → `Execute`) |
+| `rtl/core/ex.v`                   | `core/Execute.penguin` (+ `output wb : Writeback`) |
+| `rtl/core/ctrl.v`                 | `Ctrl` in `core/Pipeline.penguin` (pure functions of the committed id_ex slot) |
+| `rtl/core/regs.v`                 | `core/RegFile.penguin` (`input wb_in` port; single write port, committed at the edge) |
+| `rtl/core/rib.v`                  | `libpenguin-esl/Bus.penguin` (addr[31:28] decode, m0 > m1 fixed priority; generated decode: `perips/MemMap.penguin`; the m0 arbitration probe is `Execute`'s `IBusMaster`) |
 | `rtl/perips/rom/ram`              | `libpenguin-esl/Mem.penguin` (ROM@0x0, RAM@0x10000000) |
 | `rtl/perips/tinyriscv_uart.v`     | `perips/Uart.penguin` (CTRL/STATUS/BAUD/TXDATA; 10 bits × (BAUD+1) cycles busy window) |
-| `rtl/soc/tinyriscv_soc_top.v`     | `main.penguin` (wiring + ROM load + end report) |
+| `rtl/soc/tinyriscv_soc_top.v`     | `main.penguin` (construct wiring + ROM load + end report) |
 | testbench (x26=1 convention)      | `SimEnd` hook in `main.penguin`              |
 | firmware (C + toolchain)          | `sw/Firmware.penguin` (assembly source) + `sw/Asm.penguin` (mini assembler) |
 
@@ -92,8 +117,10 @@ Three meta insertion points, all compiled natively (pass3):
    firmware_image()` runs the full two-pass assembler inside the meta JIT;
    the image words are spliced into the program as a string literal.
 
-These use the `--meta-with-user-sources` compile flag (user files opt in
-with a `// meta: unit-b` marker — see `Documentation/10_MetaProgramming.md`).
+These use the compile-time (unit B) file list — `meta-sources=[...]` in
+`tinyriscv.penguins` (see `docs/specifications/10_MetaProgramming.md`): the
+assembler + firmware + `esl.Bit` helpers are compiled into the meta engine
+so the `#fun`s can call them.
 
 ## Test coverage
 

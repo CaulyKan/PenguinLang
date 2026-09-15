@@ -1,54 +1,120 @@
-// Pipeline.penguin — the shared pipeline STATE of the tinyriscv core
-// (pc_reg / if_id / id_ex register bundle), owned by Core and driven by the
-// Fetch / Decode / Execute processes (their own files). Every Reg commits
-// at the clock edge through esl.Clock, so each process's evaluate phase
-// reads only committed state — the processes are wakeup-order independent.
+// Pipeline.penguin — the pipeline DATAPATH CONTRACTS of the tinyriscv core
+// plus Ctrl (rtl/tinyriscv_ctrl.v). The shared mutable register bundle is
+// gone: pipeline state now flows as VALUE PACKETS through esl.Pipe channels
+// between the stage processes —
+//
+//   pc_reg     esl.Reg<u32>, owned by Fetch (read combinationally every
+//              cycle, written/frozen under ctrl's decision)
+//   if_id      Pipe<FetchPacket> (Fetch writes, Decode polls; no write =
+//              bubble — the RTL's Hold_If NOP flush)
+//   id_ex      Pipe<DecPacket>  (Decode writes, Execute polls; no write =
+//              bubble — Hold_Id)
+//   writeback  Execute's `output wb : Writeback` port (LatestChannel wire:
+//              same-tick delta delivery, RegFile commits it at the edge —
+//              the RTL's posedge regfile write)
+//
+// Ctrl remains PURE FUNCTIONS of the committed id_ex slot (the pipe's
+// published view, stable through the whole cycle) plus the committed
+// regfile — the same wakeup-order-independence contract as before: every
+// decision reads state that only the clock's commit phase changes.
 
 namespace tinyriscv {
 
     using esl;
 
-    class Core {
+    // if_id register bundle: the fetched word + its pc (for branch targets).
+    class FetchPacket {
+        impl ICopy<Self>;
+        inst: u32;
+        pc: u32;
+    }
+
+    // id_ex register bundle: decoded fields + register INDICES (values are
+    // read in EX). Instructions decoding to OP_NOP are never written to the
+    // pipe — the pipe's bubble IS the NOP, and both behave identically
+    // (no effects, not a bus access, not a branch).
+    class DecPacket {
+        impl ICopy<Self>;
+        op: u32;
+        rd: u32;
+        rs1: u32;
+        rs2: u32;
+        imm: u32;
+        pc: u32;
+    }
+
+    // RegFile write-port payload: one transaction per written instruction.
+    class Writeback {
+        impl ICopy<Self>;
+        rd: u32;
+        val: u32;
+    }
+
+    // Hold/jump aggregation (rtl/tinyriscv_ctrl.v), as PURE functions of
+    // the COMMITTED id_ex slot (Pipe.published()) + committed regfile:
+    //
+    //   jump_flag (EX branch/jal taken) -> Hold_Id  : pc <= target, if_id
+    //                                          AND id_ex latch bubbles
+    //                                          (2-cycle taken-branch cost)
+    //   rib hold (EX does a bus access)  -> Hold_Pc : freeze ONLY pc; the
+    //                                          m1 fetch is answered with a
+    //                                          NOP bubble by the RIB model
+    //                                          (1-cycle load/store bubble)
+    //   otherwise                        -> Hold_None
+    //
+    // (The RTL's further inputs — EX div_busy and CLINT/JTAG — are not
+    // modeled.)
+    class Ctrl {
         impl __builtin.IReferenceType;
 
-        clk: Clock;
-        bus: Bus;
+        id_ex: mut Pipe<DecPacket>;
         regs: RegFile;
 
-        // pc_reg
-        pc: mut Reg<u32>;
-        // if_id (instruction word + its pc, for branch target math)
-        if_inst: mut Reg<u32>;
-        if_pc: mut Reg<u32>;
-        // id_ex (decoded fields + register INDICES — values are read in EX)
-        ex_op: mut Reg<u32>;
-        ex_rd: mut Reg<u32>;
-        ex_rs1: mut Reg<u32>;
-        ex_rs2: mut Reg<u32>;
-        ex_imm: mut Reg<u32>;
-        ex_pc: mut Reg<u32>;
-
-        fun new(mut this, clk: mut Clock, bus: mut Bus, regs: mut RegFile) {
-            this.clk = clk;
-            this.bus = bus;
+        fun new(mut this, id_ex: mut Pipe<DecPacket>, regs: mut RegFile) {
+            this.id_ex = id_ex;
             this.regs = regs;
-            this.pc = new Reg<u32>(clk, cast<u32>(0));
-            this.if_inst = new Reg<u32>(clk, nop_word());
-            this.if_inst.set_default(nop_word());
-            this.if_pc = new Reg<u32>(clk, cast<u32>(0));
-            this.ex_op = new Reg<u32>(clk, OP_NOP());
-            this.ex_rd = new Reg<u32>(clk, cast<u32>(0));
-            this.ex_rs1 = new Reg<u32>(clk, cast<u32>(0));
-            this.ex_rs2 = new Reg<u32>(clk, cast<u32>(0));
-            this.ex_imm = new Reg<u32>(clk, cast<u32>(0));
-            this.ex_pc = new Reg<u32>(clk, cast<u32>(0));
         }
 
-        // RIB m0 arbitration probe: pure function of COMMITTED id_ex state.
-        impl IBusMaster {
-            fun bus_req(this) -> bool {
-                return is_mem_op(this.ex_op.out());
-            }
+        // The committed id_ex slot this cycle (none = bubble/NOP).
+        fun slot(this) -> Option<DecPacket> {
+            return this.id_ex.published();
+        }
+
+        // The register VALUES the EX stage would read this cycle (committed
+        // regfile). Used by the branch decision below.
+        fun ex_rs1v(this) -> u32 {
+            let s: Option<DecPacket> = this.slot();
+            if (s.is_none()) { return cast<u32>(0); }
+            return this.regs.read(s.some.rs1);
+        }
+
+        fun ex_rs2v(this) -> u32 {
+            let s: Option<DecPacket> = this.slot();
+            if (s.is_none()) { return cast<u32>(0); }
+            return this.regs.read(s.some.rs2);
+        }
+
+        // jump_flag_o: a taken branch / jal sits in EX this cycle.
+        fun jump_flag(this) -> bool {
+            let s: Option<DecPacket> = this.slot();
+            if (s.is_none()) { return false; }
+            if (s.some.op == OP_BEQ()) { return this.ex_rs1v() == this.ex_rs2v(); }
+            if (s.some.op == OP_BNE()) { return this.ex_rs1v() != this.ex_rs2v(); }
+            if (s.some.op == OP_JAL()) { return true; }
+            return false;
+        }
+
+        fun jump_target(this) -> u32 {
+            let s: Option<DecPacket> = this.slot();
+            if (s.is_none()) { return cast<u32>(0); }
+            return s.some.pc + s.some.imm;
+        }
+
+        // hold_flag_rib_i: the EX stage drives the RIB this cycle.
+        fun m0_busy(this) -> bool {
+            let s: Option<DecPacket> = this.slot();
+            if (s.is_none()) { return false; }
+            return is_mem_op(s.some.op);
         }
     }
 

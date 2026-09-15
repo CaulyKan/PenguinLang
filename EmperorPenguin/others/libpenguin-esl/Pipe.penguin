@@ -1,0 +1,126 @@
+// Pipe.penguin — the two-phase pipeline register channel (libpenguin-esl).
+//
+// The ESL pipeline register (rtl gen_pipe_dff as a channel): `write(v)`
+// during a module's evaluate phase loads the IN side only; the esl.Clock's
+// commit phase publishes it — the value becomes pollable to consumers at the
+// NEXT clock edge, exactly one cycle of delay. A cycle with no write
+// publishes a BUBBLE (`try_poll` -> none) — which is precisely the
+// NOP-flush semantics of ctrl.v's Hold_If/Hold_Id paths: to flush a pipeline
+// register, the producer simply writes nothing that cycle.
+//
+//   - write(v)    producer side (ISink): set the in-slot; a second write in
+//                 the same cycle overwrites (last wins, like a register
+//                 assigned twice before the edge). Never suspends.
+//   - try_poll()  consumer side (ISource): Some(v) once per published slot;
+//                 none on a bubble (or when this cycle's slot was already
+//                 consumed).
+//   - current()   the REGISTERED view (ISource): the slot published at the
+//                 last clock edge, whether or not it was consumed — the
+//                 committed state control/arbitration logic reads; stable
+//                 through the whole cycle, exactly like esl.Reg.out().
+//   - do_commit() (esl.IReg, registered with the Clock at construction):
+//                 publish the in-slot, or clear to a bubble.
+//
+// Wiring: hand the pipe to the producer (constructor reference) and
+// `connect(pipe, consumer.in_port)` — Pipe implements ISource/ISink/IChannel,
+// so it binds directly as a connect source (no intermediate hub).
+
+namespace esl {
+
+    #template(T: type)
+    class Pipe {
+        impl IReferenceType;
+
+        // IN side: written during evaluate, read only at commit.
+        in_slot: mut Option<T> = new Option<T>.none();
+        in_written: mut bool = false;
+        // OUT side: the slot published at the last clock edge;
+        // fresh = not yet consumed by try_poll this cycle.
+        out_slot: mut Option<T> = new Option<T>.none();
+        fresh: mut bool = false;
+
+        fun new(mut this, clk: mut Clock) {
+            clk.attach(cast<IReg>(this));
+        }
+
+        // The registered view: the slot published at the last clock edge,
+        // WITHOUT consuming (none = bubble / never written). Stable through
+        // the cycle regardless of consumers' try_poll — read this for
+        // control and arbitration decisions, like a Reg's committed out.
+        fun published(this) -> Option<T> {
+            return this.out_slot;
+        }
+
+        // Consume the fresh slot once (shared by try_poll and IFuture.poll).
+        fun take(mut this) -> Option<T> {
+            if (this.fresh) {
+                this.fresh = false;
+                return this.out_slot;
+            }
+            return new Option<T>.none();
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self: mut Pipe<T> = cast<mut Pipe<T>>(this);
+                self.in_slot = new Option<T>.some(v);
+                self.in_written = true;
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self: mut Pipe<T> = cast<mut Pipe<T>>(this);
+                self.in_slot = new Option<T>.some(v);
+                self.in_written = true;
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut Pipe<T> = cast<mut Pipe<T>>(this);
+                return self.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: Pipe<T> = cast<Pipe<T>>(this);
+                return self.out_slot;
+            }
+        }
+
+        // A pipeline register has no EOF — close (channel supervision) is a
+        // no-op; is_closed is always false.
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {}
+            fun is_closed(this: IChannel<T>) -> bool { return false; }
+        }
+
+        // `wait pipe` — park (delta rounds) until the next publication.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut Pipe<T> = cast<mut Pipe<T>>(this);
+                let v: Option<T> = self.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+
+        // Two-phase commit (the clock edge): publish the in-slot, or clear
+        // to a bubble when this cycle wrote nothing.
+        impl IReg {
+            fun do_commit(mut this) {
+                if (this.in_written) {
+                    this.out_slot = this.in_slot;
+                    this.fresh = true;
+                    this.in_slot = new Option<T>.none();
+                    this.in_written = false;
+                } else {
+                    this.out_slot = new Option<T>.none();
+                    this.fresh = false;
+                }
+            }
+        }
+    }
+
+}

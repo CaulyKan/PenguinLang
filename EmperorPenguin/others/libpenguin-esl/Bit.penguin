@@ -1,4 +1,3 @@
-// meta: unit-b — opted into the compile-time (unit B) library surface
 // Bit.penguin — bit-slicing / sign-extension / radix parsing helpers for
 // hardware ESL models. Pure functions over u32/i64, no state, no suspension.
 //

@@ -1,4 +1,3 @@
-// meta: unit-b — opted into the compile-time (unit B) library surface
 // Firmware.penguin — the tinyriscv hello-world UART firmware, as assembly
 // source.
 //

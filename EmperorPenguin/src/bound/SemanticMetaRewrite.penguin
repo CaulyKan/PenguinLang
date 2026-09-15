@@ -464,7 +464,7 @@ class MetaRewriter {
     // Path-tracking variant: a #fun declared inside `namespace X { ... }` is
     // synthesized into unit B WRAPPED in the same namespace (compile_meta_function),
     // so its body resolves sibling user functions when unit B includes the
-    // user sources (--meta-with-user-sources).
+    // listed user sources (--meta-src / meta-sources).
     fun collect_meta_function_defs_ns(mut this, defs: _utils.List<Definition>, ns: string,
                                        u_files: _utils.List<string>, u_names: _utils.List<string>) {
         for (let d in defs) {
@@ -819,7 +819,7 @@ class MetaRewriter {
         if (!this.model.some.meta_engine_seeded) {
             this.model.some.meta_engine_seeded = true;
             this.model.some.meta_engine.verbose = this.model.some.verbose;
-            this.model.some.meta_engine.with_user_sources = this.model.some.meta_with_user_sources;
+            this.model.some.meta_engine.with_user_sources = cast<i64>(this.model.some.meta_user_inputs.size()) > 0;
             this.model.some.meta_engine.user_inputs = this.model.some.meta_user_inputs;
             this.model.some.meta_engine.host_coroutine = this.model.some.enable_coroutine;
             this.model.some.meta_engine.host_type_registry = this.model.some.type_registry;

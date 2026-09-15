@@ -1,6 +1,6 @@
 # StringHeaderOps
 ## Description
-Locks in the header-prefixed string representation (`metaptr + length + data + '\0'`, emperor_string.h / Documentation/23 §2.4) across the whole builtin surface: a 75KB string built through StringBuilder growth (header length must stay synced on the raw `data` field), then length/find/find_from/substring/char_code_at/starts_with_at/char_at/char_code/concat/==/to_int — every value below depends on the +16 data offset and the O(1) header length being correct. Byte-exact on all compilers.
+Locks in the header-prefixed string representation (`metaptr + length + data + '\0'`, emperor_string.h / docs/impl-notes/23 §2.4) across the whole builtin surface: a 75KB string built through StringBuilder growth (header length must stay synced on the raw `data` field), then length/find/find_from/substring/char_code_at/starts_with_at/char_at/char_code/concat/==/to_int — every value below depends on the +16 data offset and the O(1) header length being correct. Byte-exact on all compilers.
 
 ## Apply To
 * BabyPenguin

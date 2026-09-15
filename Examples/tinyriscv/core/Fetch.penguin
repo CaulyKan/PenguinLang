@@ -1,9 +1,12 @@
 // Fetch.penguin — pc_reg + instruction fetch stage
 // (rtl/core/pc_reg.v + the fetch half of tinyriscv.v wiring).
 //
-// Per clock edge: apply the ctrl decision to pc (jump wins over freeze),
-// flush or load if_id, and fetch through the RIB's m1 port — which answers
-// a NOP bubble whenever the EX stage (m0, fixed priority) owns the bus.
+// Per clock edge (the clk INPUT PORT, wired from the esl.Clock's Event):
+// apply the ctrl decision to pc (jump wins over freeze), and publish the
+// fetched word + its pc into the if_id Pipe — or publish NOTHING on a taken
+// jump (the pipe's bubble next cycle IS the RTL's if_id NOP flush). The
+// fetch goes through the RIB's m1 port, which answers a NOP bubble whenever
+// the EX stage (m0, fixed priority) owns the bus.
 
 namespace tinyriscv {
 
@@ -12,35 +15,43 @@ namespace tinyriscv {
     class Fetch {
         impl __builtin.IReferenceType;
 
-        clk: Clock;
-        core: Core;
-        ctrl: Ctrl;
-        bus: Bus;
+        input clk : i64;
 
-        fun new(mut this, clk: mut Clock, core: mut Core, ctrl: mut Ctrl) {
-            this.clk = clk;
-            this.core = core;
+        // pc_reg — owned by the fetch stage, committed through esl.Clock.
+        pc: mut Reg<u32>;
+        bus: Bus;
+        if_out: mut Pipe<FetchPacket>;
+        ctrl: Ctrl;
+
+        fun new(mut this, clock: mut Clock, bus: mut Bus,
+                if_out: mut Pipe<FetchPacket>, ctrl: mut Ctrl) {
+            this.pc = new Reg<u32>(clock, cast<u32>(0));
+            this.bus = bus;
+            this.if_out = if_out;
             this.ctrl = ctrl;
-            this.bus = core.bus;
         }
 
         initial {
             while (true) {
-                wait this.clk.evt;
+                let cyc: i64 = wait this.clk;
                 if (this.ctrl.jump_flag()) {
-                    // Hold_Id: pc <= target, if_id flushed to NOP.
-                    this.core.pc.write(this.ctrl.jump_target());
-                    this.core.if_inst.flush();
+                    // Hold_Id: pc <= target; no if_out publication — the
+                    // if_id pipe latches a bubble (RTL: flush to NOP).
+                    this.pc.write(this.ctrl.jump_target());
                 } else {
-                    let instr: u32 = this.bus.m1_fetch(this.core.pc.out());
+                    let pc0: u32 = this.pc.out();
+                    let instr: u32 = this.bus.m1_fetch(pc0);
                     if (this.ctrl.m0_busy()) {
-                        // Hold_Pc: freeze only pc; if_id latches the NOP bubble.
-                        this.core.pc.freeze();
+                        // Hold_Pc: freeze only pc; if_id latches the NOP
+                        // bubble word the RIB answered the fetch with.
+                        this.pc.freeze();
                     } else {
-                        this.core.pc.write(this.core.pc.out() + cast<u32>(4));
+                        this.pc.write(pc0 + cast<u32>(4));
                     }
-                    this.core.if_inst.write(instr);
-                    this.core.if_pc.write(this.core.pc.out());
+                    let fp: mut FetchPacket = new FetchPacket();
+                    fp.inst = instr;
+                    fp.pc = pc0;
+                    this.if_out.write(fp);
                 }
             }
         }

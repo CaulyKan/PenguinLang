@@ -50,10 +50,9 @@ export class EmperorPenguinCompiler {
     // construct, connect, wait forms, try/catch, async). Off by default;
     // the Makefile bootstrap passes it only when pass2 compiles pass3.
     enable_coroutine: bool = false;
-    // --meta-with-user-sources: user SourceInputs (main.penguin fills this)
-    // handed to the SemanticModel so seed_meta_engine can give them to the
-    // MetaEngine for unit B inclusion.
-    meta_with_user_sources: bool = false;
+    // --meta-src / meta-sources: the explicit unit-B user file list
+    // (main.penguin reads the listed files; seed_meta_engine hands them to
+    // the MetaEngine for unit B inclusion).
     meta_user_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     // Set on the MetaEngine's unit B compilation (see SemanticModel.is_unit_b).
     is_unit_b: bool = false;
@@ -116,7 +115,6 @@ export class EmperorPenguinCompiler {
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
         model.enable_coroutine = this.enable_coroutine;
-        model.meta_with_user_sources = this.meta_with_user_sources;
         model.meta_user_inputs = this.meta_user_inputs;
         model.is_unit_b = this.is_unit_b;
         model.top_level_in_global = this.top_level_in_global;

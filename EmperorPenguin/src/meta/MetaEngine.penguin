@@ -159,77 +159,15 @@ class MetaEngine {
     // self-contained (~4271 lines: core_builtin + utils + bound type layer + AST
     // type layer + ErrorCode). Weak-dedup in penguin_jit means re-emitted defs
     // resolve to the host's strong exports (emperor_BoundType_fields, …).
-    // --meta-with-user-sources: user SourceInputs eligible for unit B
-    // (seeded by SemanticMetaRewrite from the host compilation). See
-    // user_sources_meta_safe for the inclusion heuristic.
+    // --meta-src / meta-sources: user SourceInputs the host compilation
+    // lists EXPLICITLY for unit B (seeded by SemanticMetaRewrite) — what you
+    // list is what unit B gets. The listed files must be meta-safe by
+    // construction (no coroutine/topology constructs).
     with_user_sources: bool = false;
     user_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     // The host compilation's --enable-coroutine state: forwarded to the unit
     // B compiler (included user sources may reference scheduler types).
     host_coroutine: bool = false;
-
-    // A user file enters unit B ONLY when it opts in with a `// meta: unit-b`
-    // marker line — the file declares itself part of the compile-time library
-    // surface a #fun may call. This keeps the inclusion set EXPLICIT and
-    // minimal (transitively closed by the marker, not by dependency
-    // inference). A marked file must additionally be free of
-    // coroutine/topology constructs (initial blocks, construct/connect,
-    // async fun, wait forms, yield, port declarations): compiling those into
-    // the compile-time unit would trip unit B's coroutine gate and could
-    // re-enter the meta engine.
-    fun user_sources_meta_safe(this, src: string) -> bool {
-        if (string_find(src, "meta: unit-b") < 0) { return false; }
-        let code: string = this.strip_comments_for_gate(src);
-        if (string_find(code, "initial") >= 0) { return false; }
-        if (string_find(code, "construct") >= 0) { return false; }
-        if (string_find(code, "connect(") >= 0) { return false; }
-        if (string_find(code, "async fun") >= 0) { return false; }
-        if (string_find(code, "wait ") >= 0) { return false; }
-        if (string_find(code, "wait;") >= 0) { return false; }
-        if (string_find(code, "yield") >= 0) { return false; }
-        if (string_find(code, "input ") >= 0) { return false; }
-        if (string_find(code, "output ") >= 0) { return false; }
-        return true;
-    }
-
-    // Remove // line comments and /* */ block comments (string literals are
-    // preserved verbatim so their contents never trigger the gate). Only for
-    // the meta-safety scan — the real source text is compiled unchanged.
-    fun strip_comments_for_gate(this, src: string) -> string {
-        let sb: mut StringBuilder = new StringBuilder();
-        let n: i64 = string_length(src);
-        let i: mut i64 = 0;
-        while (i < n) {
-            let c: i64 = string_char_code_at(src, i);
-            if (c == 34) {
-                // string literal: copy verbatim with escapes
-                sb.append("\"");
-                i = i + 1;
-                while (i < n) {
-                    let sc: i64 = string_char_code_at(src, i);
-                    if (sc == 92 && i + 1 < n) {
-                        sb.append(string_char_at(src, i));
-                        sb.append(string_char_at(src, i + 1));
-                        i = i + 2;
-                        continue;
-                    }
-                    sb.append(string_char_at(src, i));
-                    i = i + 1;
-                    if (sc == 34) { break; }
-                }
-            } else if (c == 47 && i + 1 < n && string_char_code_at(src, i + 1) == 47) {
-                while (i < n && string_char_code_at(src, i) != 10) { i = i + 1; }
-            } else if (c == 47 && i + 1 < n && string_char_code_at(src, i + 1) == 42) {
-                i = i + 2;
-                while (i + 1 < n && !(string_char_code_at(src, i) == 42 && string_char_code_at(src, i + 1) == 47)) { i = i + 1; }
-                i = i + 2;
-            } else {
-                sb.append(string_char_at(src, i));
-                i = i + 1;
-            }
-        }
-        return sb.to_string();
-    }
 
     fun base_meta_sources(this) -> mut _utils.List<SourceInput> {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
@@ -369,7 +307,7 @@ class MetaEngine {
         return head.to_string();
     }
 
-    // The namespace wrap applies ONLY under --meta-with-user-sources (the
+    // The namespace wrap applies ONLY under --meta-src / meta-sources (the
     // feature that needs sibling resolution inside the declaring namespace).
     // Without the flag every #fun is synthesized at TOP LEVEL as before:
     // namespaced #funs (e.g. std's json_deserializable_type) are called
@@ -524,7 +462,7 @@ class MetaEngine {
         // using just makes its members visible to the synthesized top-level
         // functions). A #fun declared inside a namespace is wrapped in that
         // namespace so its body resolves the user's sibling functions (needed
-        // with --meta-with-user-sources; harmless otherwise).
+        // with --meta-src / meta-sources; harmless otherwise).
         let unit_b_source: mut string = "using emperor;\n" + (if (this.should_wrap_meta_fun(bmf)) {
             // Wrapped for sibling resolution — but the JIT lookup and the
             // caller-stub ABI address the BARE top-level name, so also emit a
@@ -556,8 +494,9 @@ class MetaEngine {
         // core_builtin + utils + bound type layer + AST type layer + ErrorCode),
         // the token→ptr bridge extern, and the synthesized #fun.
         let inputs: mut _utils.List<SourceInput> = this.base_meta_sources();
-        // --meta-with-user-sources: append the compilation's coroutine-free
-        // user files so the #fun can call ordinary user functions.
+        // --meta-src: append the explicitly listed user files (verbatim —
+        // they must be meta-safe by construction) so the #fun can call
+        // ordinary user functions.
         if (this.with_user_sources) {
             // Included user sources may use scheduler types (_ChanList,
             // Event): give unit B the same stdlib the host loaded.
@@ -567,7 +506,7 @@ class MetaEngine {
             let ui: mut i64 = 0;
             while (ui < cast<i64>(this.user_inputs.size())) {
                 let uin: SourceInput = this.user_inputs.at(cast<u64>(ui)).some;
-                if (string_length(uin.source) > 0 && this.user_sources_meta_safe(uin.source)) {
+                if (string_length(uin.source) > 0) {
                     inputs.push(new SourceInput(uin.filename, uin.source));
                 }
                 ui = ui + 1;

@@ -1929,9 +1929,46 @@ class MonomorphizePass {
             m.resolve_types_pass.resolve_pair(ast_def2.some, spec, global_scope);
             m.current_pass_index = saved_rp;
         }
+        // The pass-3 fixpoint collects `impl IFoo<u8>` interface
+        // instantiations from every specialized class ("so the interface
+        // and its default methods get specialized", see run()'s impl walk).
+        // Close the same closure for the late pass-8 path BEFORE the
+        // catch-up: build_vtable_slots resolves a default-method slot
+        // against the SPECIALIZED interface def and falls back to the
+        // unemitted template method when it is missing — an undefined
+        // symbol at link time (e.g. a LatestChannel<W> wire spec created by
+        // connect desugaring whose IFuture vtable slot referenced
+        // __builtin_IFuture_do_wait instead of the IFuture<W> lift).
+        this.late_ensure_def_interface_impls(spec, global_scope);
         unit8.definitions.push(spec);
         m.catch_up_def_before_bodies_as_pass8(spec, unit8);
         this.late_ensure_def_signatures(spec, global_scope);
+    }
+
+    // Ensure every `impl X for <this def>` edge's INTERFACE specialization
+    // exists (created + completed through the late protocol), so vtable
+    // default-method slots can resolve to specialized defaults.
+    fun late_ensure_def_interface_impls(mut this, def: BoundDefinition, global_scope: mut BoundScope) {
+        if (def is BoundDefinition.class_def) {
+            let k: mut i64 = 0;
+            while (k < cast<i64>(def.class_def.interface_impls.size())) {
+                let impl_d: BoundDefinition = def.class_def.interface_impls.at(cast<u64>(k)).some;
+                if (impl_d is BoundDefinition.impl_def) {
+                    this.complete_late_specialization(impl_d.impl_def.interface_type, global_scope);
+                }
+                k = k + 1;
+            }
+        }
+        if (def is BoundDefinition.enum_def) {
+            let k2: mut i64 = 0;
+            while (k2 < cast<i64>(def.enum_def.interface_impls.size())) {
+                let impl_e: BoundDefinition = def.enum_def.interface_impls.at(cast<u64>(k2)).some;
+                if (impl_e is BoundDefinition.impl_def) {
+                    this.complete_late_specialization(impl_e.impl_def.interface_type, global_scope);
+                }
+                k2 = k2 + 1;
+            }
+        }
     }
 
     // Walk a def's method signatures (class methods/constructors/impl blocks,

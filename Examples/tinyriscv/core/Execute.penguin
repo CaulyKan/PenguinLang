@@ -1,8 +1,10 @@
-// Execute.penguin — the EX stage process (rtl/core/ex.v): combinational
-// execute of the committed id_ex — ALU, RIB m0 data access, regfile write
-// submission (committed at the edge by RegFile itself), link register.
-// The jump DECISION is made independently by Ctrl (same committed inputs);
-// this process only performs the state effects owned by EX.
+// Execute.penguin — the EX stage process (rtl/core/ex.v): poll the id_ex
+// Pipe (none = bubble, nothing to do), combinational execute — ALU, RIB m0
+// data access, regfile writeback through the `wb` OUTPUT PORT (the write
+// lands at this cycle's clock edge, like the RTL's posedge regfile write),
+// link register. The jump DECISION is made independently by Ctrl from the
+// same committed id_ex slot; this process only performs the state effects
+// owned by EX.
 
 namespace tinyriscv {
 
@@ -11,52 +13,66 @@ namespace tinyriscv {
     class Execute {
         impl __builtin.IReferenceType;
 
-        clk: Clock;
-        core: Core;
-        ctrl: Ctrl;
+        input clk : i64;
+        input id_in : DecPacket;
+        output wb : Writeback;
 
-        fun new(mut this, clk: mut Clock, core: mut Core, ctrl: mut Ctrl) {
-            this.clk = clk;
-            this.core = core;
-            this.ctrl = ctrl;
+        regs: RegFile;
+        bus: Bus;
+
+        fun new(mut this, regs: mut RegFile, bus: mut Bus) {
+            this.regs = regs;
+            this.bus = bus;
+        }
+
+        // RIB m0 arbitration probe: a pure function of the COMMITTED id_ex
+        // slot (current() — the registered view, unaffected by whether this
+        // cycle's poll already consumed it), so the answer is identical
+        // whichever module evaluates first.
+        impl IBusMaster {
+            fun bus_req(this) -> bool {
+                let s: Option<DecPacket> = this.id_in.current();
+                if (s.is_none()) { return false; }
+                return is_mem_op(s.some.op);
+            }
+        }
+
+        fun send_wb(mut this, rd: u32, val: u32) {
+            let w: mut Writeback = new Writeback();
+            w.rd = rd;
+            w.val = val;
+            this.wb.write(w);
         }
 
         initial {
             while (true) {
-                wait this.clk.evt;
-                this.step();
+                let cyc: i64 = wait this.clk;
+                let p: Option<DecPacket> = this.id_in.try_poll();
+                if (p.is_some()) {
+                    let d: DecPacket = p.some;
+                    if (d.op == OP_LUI()) {
+                        this.send_wb(d.rd, d.imm);
+                    } else if (d.op == OP_ADDI()) {
+                        this.send_wb(d.rd, this.regs.read(d.rs1) + d.imm);
+                    } else if (d.op == OP_ANDI()) {
+                        this.send_wb(d.rd, this.regs.read(d.rs1) & d.imm);
+                    } else if (d.op == OP_LBU()) {
+                        let addr: u32 = this.regs.read(d.rs1) + d.imm;
+                        let word: u32 = this.bus.m0_read(addr);
+                        let lane: i64 = cast<i64>(addr & cast<u32>(3));
+                        this.send_wb(d.rd, bits(cast<u32>(rshift(cast<i64>(word), lane * 8)), 7, 0));
+                    } else if (d.op == OP_LW()) {
+                        let addr: u32 = this.regs.read(d.rs1) + d.imm;
+                        this.send_wb(d.rd, this.bus.m0_read(addr));
+                    } else if (d.op == OP_SW()) {
+                        let addr: u32 = this.regs.read(d.rs1) + d.imm;
+                        this.bus.m0_write(addr, this.regs.read(d.rs2));
+                    } else if (d.op == OP_JAL()) {
+                        this.send_wb(d.rd, d.pc + cast<u32>(4));
+                    }
+                    // BEQ/BNE have no EX state effect beyond the ctrl decision.
+                }
             }
-        }
-
-        fun step(mut this) {
-            let eop: u32 = this.core.ex_op.out();
-            let erd: u32 = this.core.ex_rd.out();
-            let eimm: u32 = this.core.ex_imm.out();
-            let epc: u32 = this.core.ex_pc.out();
-            let ers1v: u32 = this.ctrl.ex_rs1v();
-            let ers2v: u32 = this.ctrl.ex_rs2v();
-
-            if (eop == OP_LUI()) {
-                this.core.regs.submit_write(erd, eimm);
-            } else if (eop == OP_ADDI()) {
-                this.core.regs.submit_write(erd, ers1v + eimm);
-            } else if (eop == OP_ANDI()) {
-                this.core.regs.submit_write(erd, ers1v & eimm);
-            } else if (eop == OP_LBU()) {
-                let addr: u32 = ers1v + eimm;
-                let word: u32 = this.core.bus.m0_read(addr);
-                let lane: i64 = cast<i64>(addr & cast<u32>(3));
-                this.core.regs.submit_write(erd, bits(cast<u32>(rshift(cast<i64>(word), lane * 8)), 7, 0));
-            } else if (eop == OP_LW()) {
-                let addr: u32 = ers1v + eimm;
-                this.core.regs.submit_write(erd, this.core.bus.m0_read(addr));
-            } else if (eop == OP_SW()) {
-                let addr: u32 = ers1v + eimm;
-                this.core.bus.m0_write(addr, ers2v);
-            } else if (eop == OP_JAL()) {
-                this.core.regs.submit_write(erd, epc + cast<u32>(4));
-            }
-            // BEQ/BNE have no EX state effect beyond the ctrl decision.
         }
     }
 

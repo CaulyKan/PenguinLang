@@ -82,14 +82,14 @@ class SemanticModel {
     primitive_impl_method_sym: mut _utils.List<BoundFunctionSymbol> = new _utils.List<BoundFunctionSymbol>();
     meta_engine: mut MetaEngine = new MetaEngine();
     meta_engine_seeded: mut bool = false;
-    // --meta-with-user-sources (see CompilerConfig): forwarded to the engine
-    // at seed time so #funs can call ordinary user functions.
-    meta_with_user_sources: bool = false;
+    // --meta-src / meta-sources (see CompilerConfig): the explicit unit-B user
+    // file list, forwarded to the engine at seed time so #funs can call
+    // ordinary user functions.
     meta_user_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     // True for the MetaEngine's unit B compilation: definition-position
-    // #fun-call splicing is skipped (user sources included via
-    // --meta-with-user-sources may carry their own # calls, which must not
-    // re-enter the meta engine inside unit B).
+    // #fun-call splicing is skipped (user sources included via --meta-src may
+    // carry their own # calls, which must not re-enter the meta engine inside
+    // unit B).
     is_unit_b: bool = false;
     verbose: mut i64 = 0;
     // Error-report suppression for speculative resolution: the pass-3 AST

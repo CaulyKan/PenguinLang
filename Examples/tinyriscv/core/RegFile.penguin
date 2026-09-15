@@ -1,43 +1,58 @@
 // RegFile.penguin — x0..x31 register file with one write port (tinyriscv
-// rtl/tinyriscv_regs.v). 32 u32 words in one raw buffer; the write is
-// submitted during the EX evaluate phase and committed at the clock edge
-// (esl.IReg) — so the ID stage reading in the SAME cycle still sees the old
-// value and the instruction two behind sees the new one, matching the RTL's
-// posedge-write semantics. x0 is hardwired to zero on both paths.
+// rtl/tinyriscv_regs.v). 32 u32 words in one std.Vector (zero-initialized).
+// The write arrives as a Writeback transaction on the `wb_in` INPUT PORT
+// (wired from Execute's wb output — same-tick delta delivery) and is
+// committed at the clock edge (esl.IReg) — so a read in the SAME cycle still
+// sees the old value and the instruction two behind sees the new one,
+// matching the RTL's posedge-write semantics. x0 is hardwired to zero on
+// both paths.
 
 namespace tinyriscv {
 
     using esl;
+    using std;
 
     class RegFile {
         impl __builtin.IReferenceType;
 
-        buf: mut u64 = 0;
+        input wb_in : Writeback;
+
+        buf: mut Vector<u32> = new Vector<u32>();
         w_en: mut bool = false;
         w_idx: mut i64 = 0;
         w_val: mut u32 = cast<u32>(0);
 
         fun new(mut this, clk: mut Clock) {
-            this.buf = __builtin._malloc(128);
+            let i: mut u64 = 0;
+            while (i < cast<u64>(32)) {
+                this.buf.push(cast<u32>(0));
+                i = i + 1;
+            }
             clk.attach(cast<IReg>(this));
         }
 
         fun read(this, idx: u32) -> u32 {
             if (idx == cast<u32>(0)) { return cast<u32>(0); }
-            return #__load(u32, this.buf + cast<u64>(idx) * 4);
+            return this.buf.at(cast<u64>(idx)).some;
         }
 
-        fun submit_write(mut this, idx: u32, v: u32) {
-            if (idx == cast<u32>(0)) { return; }
-            this.w_en = true;
-            this.w_idx = cast<i64>(idx);
-            this.w_val = v;
+        // Consume writebacks as they arrive (parked between transactions);
+        // the pending write commits at the clock edge.
+        initial {
+            while (true) {
+                let w: Writeback = wait this.wb_in;
+                if (w.rd != cast<u32>(0)) {
+                    this.w_en = true;
+                    this.w_idx = cast<i64>(w.rd);
+                    this.w_val = w.val;
+                }
+            }
         }
 
         impl IReg {
             fun do_commit(mut this) {
                 if (this.w_en) {
-                    #__store(u32, this.buf + cast<u64>(this.w_idx) * 4, this.w_val);
+                    this.buf.set(cast<u64>(this.w_idx), this.w_val);
                     this.w_en = false;
                 }
             }

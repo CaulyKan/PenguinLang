@@ -1,37 +1,47 @@
 // Mem.penguin — word-array ROM/RAM with byte/half/word access (libpenguin-esl).
 //
-// Backed by one raw _malloc buffer of WORDS u32 words, accessed through the
-// #__load/#__store intrinsics (same technique as std.Array, minus the generic
-// nesting). Byte/half STORES are read-modify-write on the containing word —
-// single-cycle, matching the RIB's one-cycle slave semantics. Addresses are
-// byte addresses; word ops align down, byte ops select the lane.
+// Backed by one std.Vector<u32> of WORDS words (zero-initialized at
+// construction — the simulation state must be deterministic). Byte/half
+// STORES are read-modify-write on the containing word — single-cycle,
+// matching the RIB's one-cycle slave semantics. Addresses are byte
+// addresses; word ops align down, byte ops select the lane.
 //
 // Both memories implement IBusSlave (the RIB port): ROM serves word reads and
 // drops writes; RAM serves the full byte/half/word surface. Out-of-bounds
 // reads return 0 and out-of-bounds writes are ignored — the model's memories
 // are fixed-size (the real SoC's bus would simply not decode them).
+//
+// NOTE: linking against this file requires std/penguin/vector.penguin on the
+// source list (it is NOT auto-loaded).
 
 namespace esl {
 
-    #template(WORDS: u64)
+    using std;
+
     class Rom {
         impl IReferenceType;
 
-        buf: mut u64 = 0;
-        word_count: mut u64 = WORDS;
+        buf: mut Vector<u32> = new Vector<u32>();
+        word_count: mut u64 = 0;
 
-        fun new(mut this) {
-            this.buf = __builtin._malloc(this.word_count * 4);
+        fun new(mut this, words: u64) {
+            let i: mut u64 = 0;
+            while (i < words) {
+                this.buf.push(cast<u32>(0));
+                i = i + 1;
+            }
+            this.word_count = words;
         }
 
         fun word_at(this, idx: u64) -> u32 {
-            if (idx >= this.word_count) { return 0; }
-            return #__load(u32, this.buf + idx * 4);
+            let v: Option<u32> = this.buf.at(idx);
+            if (v.is_none()) { return cast<u32>(0); }
+            return v.some;
         }
 
         fun set_word(mut this, idx: u64, w: u32) {
             if (idx >= this.word_count) { return; }
-            #__store(u32, this.buf + idx * 4, w);
+            this.buf.set(idx, w);
         }
 
         fun size(this) -> u64 {
@@ -59,25 +69,30 @@ namespace esl {
         }
     }
 
-    #template(WORDS: u64)
     class Ram {
         impl IReferenceType;
 
-        buf: mut u64 = 0;
-        word_count: mut u64 = WORDS;
+        buf: mut Vector<u32> = new Vector<u32>();
+        word_count: mut u64 = 0;
 
-        fun new(mut this) {
-            this.buf = __builtin._malloc(this.word_count * 4);
+        fun new(mut this, words: u64) {
+            let i: mut u64 = 0;
+            while (i < words) {
+                this.buf.push(cast<u32>(0));
+                i = i + 1;
+            }
+            this.word_count = words;
         }
 
         fun word_at(this, idx: u64) -> u32 {
-            if (idx >= this.word_count) { return 0; }
-            return #__load(u32, this.buf + idx * 4);
+            let v: Option<u32> = this.buf.at(idx);
+            if (v.is_none()) { return cast<u32>(0); }
+            return v.some;
         }
 
         fun set_word(mut this, idx: u64, w: u32) {
             if (idx >= this.word_count) { return; }
-            #__store(u32, this.buf + idx * 4, w);
+            this.buf.set(idx, w);
         }
 
         fun size(this) -> u64 {

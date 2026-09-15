@@ -1,5 +1,6 @@
-// meta: unit-b — opted into the compile-time (unit B) library surface
-// (--meta-with-user-sources). A plain runtime function a #fun may call.
+// A plain runtime function library for the --meta-src unit-B test
+// (MetaUserSources.md): this file is BOTH a compilation source and a
+// --meta-src entry, so its functions run at runtime AND inside a #fun.
 
 fun trv_double(x: i64) -> i64 {
     return x * 2;

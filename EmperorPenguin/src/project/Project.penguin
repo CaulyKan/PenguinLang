@@ -313,12 +313,19 @@ export class PenguinProject {
     // flags are parsed first). Only '-'-prefixed tokens are honored, so a
     // project file can never inject source files.
     flags: mut _utils.List<string> = new _utils.List<string>();
+    // meta-sources = ["sw/Asm.penguin", ...]: the compile-time (unit B) library
+    // surface — files the meta engine compiles so #fun bodies can call their
+    // ordinary functions. Same glob rules as sources (resolved against the
+    // project dir); unlike sources there is NO default fallback: empty stays
+    // empty, the list is exactly what unit B gets.
+    meta_sources: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {
 
         this.sources = new _utils.List<string>();
         this.libs = new _utils.List<string>();
         this.flags = new _utils.List<string>();
+        this.meta_sources = new _utils.List<string>();
     }
 
     fun load(path: string) -> mut PenguinProject {
@@ -393,6 +400,15 @@ export class PenguinProject {
                 }
             }
 
+            if (key == "meta-sources" || key == "meta_sources") {
+                let parsed: _utils.List<string> = parse_string_array(value);
+                let msi: mut i64 = 0;
+                while (msi < cast<i64>(parsed.size())) {
+                    this.meta_sources.push(parsed.at(cast<u64>(msi)).some);
+                    msi = msi + 1;
+                }
+            }
+
             if (key == "flags") {
                 let parsed: _utils.List<string> = parse_string_array(value);
                 let fi: mut i64 = 0;
@@ -425,6 +441,20 @@ export class PenguinProject {
             collect_penguin_files(project_dir, result);
         }
 
+        return result;
+    }
+
+    // Resolve the meta-sources= patterns against the project dir (same glob
+    // rules as sources). Deliberately NO default fallback: an empty
+    // meta-sources list means unit B gets no user files.
+    fun resolve_meta_sources(mut this, project_dir: string) -> mut _utils.List<string> {
+        let result: mut _utils.List<string> = new _utils.List<string>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_sources.size())) {
+            let pattern: string = this.meta_sources.at(cast<u64>(i)).some;
+            resolve_pattern(project_dir, pattern, result);
+            i = i + 1;
+        }
         return result;
     }
 }

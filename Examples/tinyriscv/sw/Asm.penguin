@@ -1,4 +1,3 @@
-// meta: unit-b — opted into the compile-time (unit B) library surface
 // Asm.penguin — a miniature two-pass RV32I assembler (subset needed by the
 // tinyriscv hello-world firmware): LUI, ADDI, ANDI, LBU, LW, SW, BEQ, BNE,
 // JAL, plus pseudo-ops li / j / jal / beqz / bnez / nop and the data

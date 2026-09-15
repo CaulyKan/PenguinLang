@@ -49,6 +49,29 @@ initial {
                     if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] applying project flags"); }
                     config.parse(pproj.flags);
                 }
+                // meta-sources=[...]: the compile-time (unit B) file list.
+                // Patterns resolve against the project dir (same glob rules
+                // as sources) and merge into --meta-src (exact-path dedup).
+                if (cast<i64>(pproj.meta_sources.size()) > 0) {
+                    let mres: mut _utils.List<string> = pproj.resolve_meta_sources(pdir);
+                    let rmi: mut i64 = 0;
+                    while (rmi < cast<i64>(mres.size())) {
+                        let mpath: string = mres.at(cast<u64>(rmi)).some;
+                        let dup: mut bool = false;
+                        let di: mut i64 = 0;
+                        while (di < cast<i64>(config.meta_source_files.size())) {
+                            if (config.meta_source_files.at(cast<u64>(di)).some == mpath) {
+                                dup = true;
+                            }
+                            di = di + 1;
+                        }
+                        if (!dup) {
+                            config.meta_source_files.push(mpath);
+                            if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Project] meta source: " + mpath); }
+                        }
+                        rmi = rmi + 1;
+                    }
+                }
             }
             pscan = pscan + 1;
         }
@@ -160,10 +183,24 @@ initial {
         if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Dynlib] Merged lib source: " + src.filename); }
         si = si + 1;
     }
-    // --meta-with-user-sources: the USER sources (project files, direct
-    // files, merged lib sources — not the auto-loaded stdlib) the meta
-    // engine may compile into unit B.
+    // --meta-src / meta-sources: the EXPLICIT unit-B file list. Read each
+    // listed file independently (it need not be one of the compilation's own
+    // sources); unreadable paths warn and are skipped so a typo never
+    // silently degrades a #fun into a resolve error.
     let user_meta_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+    {
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(config.meta_source_files.size())) {
+            let mfile: string = config.meta_source_files.at(cast<u64>(mi)).some;
+            let msource: string = _utils.file_read_text(mfile);
+            if (string_length(msource) > 0) {
+                user_meta_inputs.push(new SourceInput(mfile, msource));
+            } else {
+                __builtin.eprintln("[EmperorPenguin] Warning: --meta-src file not readable (skipped): " + mfile);
+            }
+            mi = mi + 1;
+        }
+    }
     let fi: mut i64 = 0;
     while (fi < cast<i64>(config.source_files.size())) {
         let file: string = config.source_files.at(cast<u64>(fi)).some;
@@ -176,7 +213,6 @@ initial {
                 let proj_file: string = resolved.at(cast<u64>(project_file_index)).some;
                 let source: string = _utils.file_read_text(proj_file);
                 inputs.push(new SourceInput(proj_file, source));
-                user_meta_inputs.push(new SourceInput(proj_file, source));
                 if (config.is_lib_mode()) {
                     let lf: mut LibFile = new LibFile();
                     lf.name = proj_file;
@@ -189,7 +225,6 @@ initial {
         } else {
             let source: string = _utils.file_read_text(file);
             inputs.push(new SourceInput(file, source));
-            user_meta_inputs.push(new SourceInput(file, source));
             if (config.is_lib_mode()) {
                 let lf2: mut LibFile = new LibFile();
                 lf2.name = file;
@@ -207,7 +242,6 @@ initial {
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = config.verbose;
     compiler.enable_coroutine = config.coroutine_enabled;
-    compiler.meta_with_user_sources = config.meta_with_user_sources;
     compiler.meta_user_inputs = user_meta_inputs;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;

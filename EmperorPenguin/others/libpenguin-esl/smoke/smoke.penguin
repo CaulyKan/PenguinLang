@@ -1,7 +1,17 @@
 using esl;
 
-// smoke.penguin — libpenguin-esl self-test (run with EmperorPenguin pass3,
-// --enable-coroutine; see the header of each library file for semantics).
+// smoke.penguin — libpenguin-esl self-test. Run (from the repo root, after
+// `make bootstrap`):
+//
+//   build/bootstrap/pass3 EmperorPenguin/others/libpenguin-esl/*.penguin \
+//       EmperorPenguin/std/penguin/vector.penguin \
+//       EmperorPenguin/others/libpenguin-esl/smoke/smoke.penguin \
+//       --enable-coroutine -o /tmp/esl-smoke
+//   EmperorPenguin/emperor link /tmp/esl-smoke.ll -o /tmp/esl-smoke
+//   /tmp/esl-smoke
+//
+// (vector.penguin is NOT auto-loaded; it backs esl.Rom/Ram and the Bus/Clock
+// attachment lists.) See the header of each library file for semantics.
 //
 // Verifies, with byte-exact expected output:
 //   1. Two-phase commit order independence — two writer modules on the same
@@ -188,11 +198,11 @@ class SmokeHook {
     piper: Piper;
     m0: M0Master;
     fetcher: Fetcher;
-    ram: Ram<16>;
+    ram: Ram;
 
     fun new(mut this, clk: mut Clock, counter: mut Counter, copier: mut Copier,
             freezer: mut Freezer, piper: mut Piper, m0: mut M0Master,
-            fetcher: mut Fetcher, ram: mut Ram<16>) {
+            fetcher: mut Fetcher, ram: mut Ram) {
         this.clk = clk;
         this.counter = counter;
         this.copier = copier;
@@ -227,9 +237,9 @@ initial {
     let freezer: mut Freezer = new Freezer(clk);
     let piper: mut Piper = new Piper(clk);
 
-    let rom: mut Rom<16> = new Rom<16>();
+    let rom: mut Rom = new Rom(16);
     rom.set_word(0, cast<u32>(0x12345678));
-    let ram: mut Ram<16> = new Ram<16>();
+    let ram: mut Ram = new Ram(16);
     let bus: mut Bus = new Bus();
     bus.attach(0, rom);
     bus.attach(1, ram);

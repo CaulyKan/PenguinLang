@@ -31,11 +31,11 @@ When uncertain about syntax or language features, consult these authoritative so
 
 1. `Tests/<Category>/*.md` — the cross-compiler test suite is the most up-to-date syntax reference; find a test in the relevant category and copy its style
 2. `EmperorPenguin/std/penguin/core_builtin.penguin` — canonical, current real-world penguin code (stdlib)
-3. `Documentation/` — `01_Overview` … `06_Interface`, `09_NamespaceAndProject`, `10_MetaProgramming` (most recent), `11_PortsChannelsEvents` (current concurrency model)
+3. `docs/` — `specifications/01_Overview` … `06_Interface`, `09_NamespaceAndProject`, `specifications/10_MetaProgramming` (most recent), `specifications/11_PortsChannelsEvents` (current concurrency model)
 4. `PenguinLangParser/PenguinLang.g4` — ANTLR grammar (BabyPenguin front-end; a SUBSET of the EmperorPenguin front-end)
 5. `EmperorPenguin/src/ast/Lexer.penguin` + `Parser.penguin` — the leading-edge front-end (has `using`, `export`, `unsafe_cast`, `#`-meta)
 
-**IMPORTANT**: Some `Documentation/*.md` snippets are STALE (they show `match/case`, printf-style `println("{}", x)`, `const` fields, `on` routines — none of these exist). When docs and `Tests/` disagree, trust `Tests/` and the grammar. If unsure about any syntax, READ the sources before writing code. Do not guess syntax.
+**IMPORTANT**: Some `docs/**/*.md` snippets are STALE (they show `match/case`, printf-style `println("{}", x)`, `const` fields, `on` routines — none of these exist). When docs and `Tests/` disagree, trust `Tests/` and the grammar. If unsure about any syntax, READ the sources before writing code. Do not guess syntax.
 
 **IMPORTANT**: `as`-style casts do NOT exist. There is NO string interpolation. See pitfalls below.
 

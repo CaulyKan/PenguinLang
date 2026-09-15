@@ -8,6 +8,7 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -77,3 +78,54 @@ jobs:
         name: test-report
         path: build/testruns/*/summary.html
         if-no-files-found: ignore
+
+  deploy-pages:
+    # Publish the documentation site (mdBook, `make docs-site`) plus the
+    # latest cross-compiler test report to GitHub Pages. One-shot setup in
+    # the repo: Settings -> Pages -> Source = "GitHub Actions". Runs only
+    # on pushes / manual dispatch (never on PRs), after build succeeded.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup mdBook
+      uses: peaceiris/actions-mdbook@v2
+      with:
+        mdbook-version: latest
+    - name: Build documentation site
+      # Root Makefile target: rewrites the root README's ./docs/ links to be
+      # relative, generates the site Home page from it, and runs mdbook
+      # (book.toml, src = docs/) -> build/book.
+      run: make docs-site
+    - name: Download test report
+      uses: actions/download-artifact@v4
+      with:
+        name: test-report
+        path: report
+    - name: Stage site
+      # Documentation at the root, the self-contained report at /test-report/
+      # (the sidebar's "Test Report" entry links there).
+      run: |
+        mkdir -p _site/test-report
+        cp -r build/book/. _site/
+        cp report/build/testruns/*/summary.html _site/test-report/index.html
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: _site
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4

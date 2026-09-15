@@ -1,0 +1,21 @@
+[book]
+title = "PenguinLang"
+authors = ["Cauly Kan"]
+description = "PenguinLang language documentation: tutorials, specifications and implementation notes"
+src = "docs"
+
+[build]
+build-dir = "build/book"
+
+[output.html]
+# Project pages are served at https://caulykan.github.io/PenguinLang/
+site-url = "/PenguinLang/"
+# Clean white style: light theme by default, even on dark-mode systems
+default-theme = "light"
+preferred-dark-theme = "light"
+git-repository-url = "https://github.com/CaulyKan/PenguinLang"
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 0
