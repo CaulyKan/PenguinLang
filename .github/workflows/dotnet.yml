@@ -115,11 +115,18 @@ jobs:
         path: report
     - name: Stage site
       # Documentation at the root, the self-contained report at /test-report/
-      # (the sidebar's "Test Report" entry links there).
+      # (the sidebar's "Test Report" entry links there). The summary lands
+      # somewhere under report/ (upload-artifact v4 re-roots the artifact at
+      # the least common ancestor of the glob, so the inner path is not
+      # stable) — resolve it and publish ONLY the latest testrun (dirs are
+      # stamped yyyyMMdd-HHmmss, so lexical order is chronological).
       run: |
         mkdir -p _site/test-report
         cp -r build/book/. _site/
-        cp report/build/testruns/*/summary.html _site/test-report/index.html
+        summary=$(find report -type f -name summary.html | sort | tail -1)
+        [ -n "$summary" ] || { echo "no summary.html found in the test-report artifact" >&2; exit 1; }
+        echo "Publishing test report: $summary"
+        cp "$summary" _site/test-report/index.html
     - name: Configure Pages
       uses: actions/configure-pages@v5
     - name: Upload Pages artifact
