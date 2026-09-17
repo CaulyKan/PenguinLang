@@ -41,6 +41,7 @@ make tools          # penguin-tools CLI for the host platform (tools_linux / too
 make tools_linux    # -> build/linux/penguin-tools (demangle|mangle|meta|format; links the release dynlib)
 make tools_win      # -> build/win/penguin-tools.exe monolith
 make tools-test     # penguin-tools golden tests (EmperorPenguin/tools/selftest.sh)
+make gc-bench       # GC benchmark harness (EmperorPenguin/std/c/gc_bench.sh; GC_BENCH_MODES/WORKLOADS overrides)
 make test           # cross-compiler markdown suite (Tests/*.md) via PenguinTestRunner; extra args via TEST_ARGS="..."
 make baseline_test  # same, but records the run as the new baseline (--baseline)
 make unittest       # dotnet test (BabyPenguin.Tests + EmperorPenguin.Tests; logs to build/logs/unittest.log)
@@ -385,7 +386,8 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 | File                    | Contents                                                                                                                                                                  |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core_builtin.c`        | All built-in function implementations: print, string operations, GC allocation, type conversions (int→string, bool→string), string concatenation, file I/O, StringBuilder |
-| `gc.c`                  | Conservative mark-sweep garbage collector with stack scanning. Root registration, automatic collection thresholds. Platform-specific (x86_64, aarch64)                    |
+| `gc.c`                  | GC v3 "green tea" collector (default): precise roots (frame chains, global roots, typed regions, meta pins, quarantine) + conservative stack cover; malloc large-object path with incremental sorted index; the `gc_collect_greentea` driver; `conservative` inline-collect fallback mode. Write-barrier symbols kept as ABI no-ops |
+| `gc_span.c`             | The green-tea span heap: 23 size classes (32..512B slots), 8KiB spans in aligned superchunks, bitmap slot management, gray/black span-batched marking (FIFO queue + representative fast path), bitmap sweep with wholesale span recycling; heap goal with garbage-rich amortization. Shared interface: `include/gc_internal.h` |
 | `penguinlang_interop.c` | Runtime support: `_emperor_vtable_lookup()` for virtual dispatch, `_emperor_isinstance()` for interface checks, `_emperor_check_class()` for class type checks            |
 | `Makefile`              | Builds `libcore_builtin.a` from the above sources. Accepts `OUTPUT_DIR` variable                                                                                          |
 

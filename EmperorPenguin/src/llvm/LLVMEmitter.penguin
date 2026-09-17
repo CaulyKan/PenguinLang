@@ -316,8 +316,6 @@ class LLVMEmitter {
     has_main: mut bool = false;
     needs_memset: mut bool = false;
     // GC v2 3b: generational write barriers + typed buffer tracking.
-    needs_gc_barrier: mut bool = false;
-    needs_gc_barrier_map: mut bool = false;
     needs_gc_track: mut bool = false;
     needs_gc_track_bare: mut bool = false;
     // GC v2 3c: PIN-mirror slots (scalar ref/string params + ref receivers)
@@ -764,8 +762,6 @@ class LLVMEmitter {
         this.tmp_counter = 0;
         this.has_iref_class = false;
         this.needs_int_to_string = false;
-        this.needs_gc_barrier = false;
-        this.needs_gc_barrier_map = false;
         this.needs_gc_track = false;
         this.needs_gc_track_bare = false;
         this.needs_gc_pin_refmap = false;
@@ -1193,12 +1189,6 @@ class LLVMEmitter {
         }
         if (this.needs_memset) {
             target.append("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n");
-        }
-        if (this.needs_gc_barrier) {
-            target.append("declare void @_emperor_gc_write_barrier(ptr, ptr)\n");
-        }
-        if (this.needs_gc_barrier_map) {
-            target.append("declare void @_emperor_gc_write_barrier_map(ptr, ptr, ptr)\n");
         }
         if (this.needs_gc_track) {
             target.append("declare void @_emperor_gc_track_buffer(ptr, i64, i64, ptr)\n");
@@ -1700,6 +1690,32 @@ class LLVMEmitter {
                     this.sb.append("  call void @_emperor_gc_scan_add(i64 " + addr_tmp + ", i64 " + cast<string>(vc_size) + ")\n");
                 } else if (this.is_string_type(gv.ir_type) || this.is_ref_type(gv.ir_type)) {
                     this.sb.append("  call void @_emperor_gc_add_root(ptr " + global_name + ")\n");
+                } else {
+                    // ENUM-typed global: storage is an inline {meta, tag,
+                    // payload} struct whose payload may hold references
+                    // (Option<T>/Result<T,E>/user enums) — register the whole
+                    // struct as a conservative scan region like value-class
+                    // globals. Without this the payload's referent is
+                    // unrooted; the v2 nursery masked it (promotion made the
+                    // closure effectively immortal), the single-generation
+                    // greentea collector judges it dead every cycle
+                    // (LambdaCaptureGcOptionPayload).
+                    let enum_lt: string = this.ir_type_to_llvm(gv.ir_type);
+                    if (this.string_starts_with(enum_lt, "%enum.")) {
+                        let enum_name: string = string_substring(enum_lt, 6, string_length(enum_lt) - 6);
+                        if (this.find_enum_layout(enum_name).is_none()) {
+                            this.ensure_gc_layout(enum_name, false);
+                        }
+                        let found_enum: Option<EnumLayout> = this.find_enum_layout(enum_name);
+                        if (found_enum.is_some()) {
+                            let enum_size: i64 = this.llvm_type_size(enum_lt);
+                            if (enum_size > 0) {
+                                let addr_tmp: string = this.next_tmp();
+                                this.sb.append("  " + addr_tmp + " = ptrtoint ptr " + global_name + " to i64\n");
+                                this.sb.append("  call void @_emperor_gc_scan_add(i64 " + addr_tmp + ", i64 " + cast<string>(enum_size) + ")\n");
+                            }
+                        }
+                    }
                 }
                 gi = gi + 1;
             }
@@ -4276,27 +4292,11 @@ class LLVMEmitter {
                 let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                 let coerced_value: string = this.coerce_operand(value_resolved, store_type);
                 this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
-                // Generational write barrier (GC v2 3b): an OLD object's field
-                // holding a YOUNG reference must enter the remembered set or the
-                // next minor would not rewrite it. Bare-ref stores take the plain
-                // barrier (the slot already holds the new value); whole-struct
-                // stores take the map form so the minor can walk the embedded
-                // references. Young writers (the churn common case) are a cheap
-                // two-compare no-op inside the C barrier; stack-alloca bases
-                // (value receivers) resolve to nothing and return too.
-                if (store_type == "ptr") {
-                    this.needs_gc_barrier = true;
-                    this.emit_line("  call void @_emperor_gc_write_barrier(ptr " + base_ptr + ", ptr " + field_ptr + ")");
-                } else {
-                    // "": the struct holds no embedded references (or no
-                    // layout is known — a mapless owner is covered by the
-                    // minor's conservative pin scan); no barrier needed.
-                    let mmap: string = this.gc_struct_refmap_operand(store_type);
-                    if (mmap != "") {
-                        this.needs_gc_barrier_map = true;
-                        this.emit_line("  call void @_emperor_gc_write_barrier_map(ptr " + base_ptr + ", ptr " + field_ptr + ", " + mmap + ")");
-                    }
-                }
+                // GC v3 (M4c): no write barrier — the collector is
+                // single-generation and stop-the-world on the only mutator
+                // (spec 25_EmperorPenguinGC.md §11). The runtime keeps
+                // no-op barrier symbols so previously emitted .ll still
+                // links and runs.
                 return;
             }
         }
@@ -4306,18 +4306,7 @@ class LLVMEmitter {
         // store needs the load (mirrors the layout branch's coerce_operand).
         let coerced_value: string = this.coerce_operand(value_resolved, llvm_type);
         this.emit_line("  store " + llvm_type + " " + coerced_value + ", ptr " + obj_resolved);
-        // Same barrier discipline for the layout-less store shape (enum payload
-        // slots through a bare base pointer).
-        if (llvm_type == "ptr") {
-            this.needs_gc_barrier = true;
-            this.emit_line("  call void @_emperor_gc_write_barrier(ptr " + obj_resolved + ", ptr " + obj_resolved + ")");
-        } else if (this.string_starts_with(llvm_type, "%")) {
-            let mmap2: string = this.gc_struct_refmap_operand(llvm_type);
-            if (mmap2 != "") {
-                this.needs_gc_barrier_map = true;
-                this.emit_line("  call void @_emperor_gc_write_barrier_map(ptr " + obj_resolved + ", ptr " + obj_resolved + ", " + mmap2 + ")");
-            }
-        }
+        // GC v3 (M4c): no write barrier — see the layout branch above.
     }
 
     // ADDRESS_OF: yield the storage address of a value-backed operand (u64).

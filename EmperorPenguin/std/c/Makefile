@@ -52,7 +52,7 @@ LLVM_LDFLAGS  := $(shell $(LLVM_CONFIG) --ldflags --libs core orcjit native 2>/d
 LLVM_WIN_PREFIX ?= $(abspath ../../../thirdparty/mingw-w64-x86_64-llvm-libs)
 LLVM_WIN_OK := $(strip $(if $(wildcard $(LLVM_WIN_PREFIX)/lib/libLLVM-22.dll.a),$(LLVM_WIN_PREFIX),))
 
-SRC = core_builtin.c gc.c penguinlang_interop.c scheduler.c
+SRC = core_builtin.c gc.c gc_span.c penguinlang_interop.c scheduler.c
 
 OUTPUT_DIR ?= .
 # Compile every object into $(OUTPUT_DIR), never the shared source directory:

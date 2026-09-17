@@ -60,6 +60,25 @@ public static class Program
             }
         }
 
+        // --env KEY=VAL overrides: layered over every stage's Env (after the
+        // markdown's own Env). Used to run an existing suite under a different
+        // runtime knob without forking the .md files (e.g. the whole GcTest
+        // suite under EMPEROR_GC_MODE=greentea for the GC v3 gates).
+        if (opts.EnvOverrides.Count > 0)
+        {
+            foreach (var t in tests)
+            {
+                var stages = new List<StageSpec>();
+                stages.Add(t.Compile);
+                if (t.Run != null) stages.Add(t.Run);
+                stages.AddRange(t.Builds);
+                if (t.IsRunLsp && t.Run != null) { /* already added */ }
+                foreach (var kv in opts.EnvOverrides)
+                    foreach (var st in stages)
+                        st.Env[kv.Key] = kv.Value;
+            }
+        }
+
         // Decide the effective compiler set.
         var requested = opts.Compilers; // null = use each test's Apply To
         var probe = opts.Probe;
@@ -548,6 +567,9 @@ public sealed class Options
     public int MemRegressionPct = 50;
     public string? Migrate;
     public bool MergeRegions;
+    /// <summary>--env KEY=VAL (repeatable): overrides layered onto every
+    /// stage's Env after markdown parsing (see Main).</summary>
+    public Dictionary<string, string> EnvOverrides = new();
 
     public static Options? Parse(string[] args)
     {
@@ -587,6 +609,14 @@ public sealed class Options
                 case "--mem-regression-pct": { var v = Val(); if (v == null || !int.TryParse(v, out o.MemRegressionPct)) { Console.Error.WriteLine("bad --mem-regression-pct"); return null; } break; }
                 case "--migrate": o.Migrate = Val(); if (o.Migrate == null) return null; break;
                 case "--merge-regions": o.MergeRegions = true; break;
+                case "--env":
+                    {
+                        var v = Val(); if (v == null) return null;
+                        var eq = v.IndexOf('=');
+                        if (eq <= 0) { Console.Error.WriteLine($"bad --env '{v}' (want KEY=VAL)"); return null; }
+                        o.EnvOverrides[v[..eq]] = v[(eq + 1)..];
+                        break;
+                    }
                 default:
                     if (a.StartsWith("-")) { o.Filter ??= a; }
                     else { o.Filter ??= a; }
@@ -642,6 +672,9 @@ public sealed class Options
                                   overwritten.
           --time-regression-pct <pct>   Flag duration regressions > pct (default 50).
           --mem-regression-pct <pct>    Flag memory regressions > pct (default 50).
+          --env KEY=VAL           (repeatable) Override an env var on every stage,
+                                  after the markdown's own Env (e.g. run the GcTest
+                                  suite under EMPEROR_GC_MODE=greentea).
           --migrate ep-e2e|bp-behaviorial|all [--merge-regions]
                                   (Phase B/C) Migrate legacy C# tests into Tests/*.md.
           --help                  Show this help.

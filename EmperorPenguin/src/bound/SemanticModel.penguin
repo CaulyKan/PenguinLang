@@ -331,6 +331,9 @@ class SemanticModel {
         let no_params: mut _utils.List<string> = new _utils.List<string>();
         this.register_builtin_extern_fun("gc_collect", no_params, "void");
         this.register_builtin_extern_fun("gc_info", no_params, "i64");
+        let one_i64: mut _utils.List<string> = new _utils.List<string>();
+        one_i64.push("i64");
+        this.register_builtin_extern_fun("gc_gt_stats", one_i64, "i64");
     }
 
     fun register_builtin_interface(mut this, name: string) {

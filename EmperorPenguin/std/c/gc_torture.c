@@ -9,7 +9,7 @@
  *  - explicit collect + threshold-triggered collect both behave.
  *
  * Build (from EmperorPenguin/std/c):
- *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c scheduler.c
+ *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c gc_span.c scheduler.c
  * (scheduler.c provides _emperor_gc_main_watermark / _emperor_gc_on_coroutine;
  *  pull core_builtin.c too if the link demands it.)
  */
@@ -22,6 +22,10 @@
 
 #define KEPT 5000
 #define CHURN 200000
+
+/* gc_span.c introspection (gc_internal.h — kept out of the public header
+ * on purpose; the torture TU declares just what it reads). */
+extern uint64_t _emperor_gc_gt_stats(int which);
 
 typedef struct Node {
     const void* meta;     /* runtime contract: offset 0 is metadata-or-NULL
@@ -134,7 +138,7 @@ static void scrub(void) {
 static void* track_alloc(int size, int is_string, size_t* live_sum) {
     void* p = _emperor_gc_alloc(size, is_string);
     if (!p) { fprintf(stderr, "FAIL: refmap-section alloc(%d) failed\n", size); exit(1); }
-    *live_sum += sizeof(void*) == 8 ? 24 + size : 0; /* GCHeader + body */
+    *live_sum += _emperor_gc_alloc_charge(size); /* mode-exact heap charge */
     return p;
 }
 
@@ -241,7 +245,7 @@ static int refmap_section(void) {
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
     uint64_t after2 = _emperor_gc_info();
-    size_t s3_total = 24 + 32;
+    size_t s3_total = _emperor_gc_alloc_charge(32);
     if (after2 != before2 - s3_total) {
         fprintf(stderr, "FAIL: stale payload retained after tag flip "
                 "(delta %lld, want -%zu)\n",
@@ -265,62 +269,9 @@ static int refmap_section(void) {
  * through precise global roots only. This is the shape the fd-parked md
  * test exercises: bug shows only at default budget scale, not at tiny
  * budgets (reproduced: EMPEROR_GC_YOUNG=64K hides it). */
-#define G8_KEPT 128
-static TOuter* g8_kept[G8_KEPT];
 
-static void setup_g8(void) {
-    for (int i = 0; i < G8_KEPT; i++) {
-        TOuter* o = (TOuter*)_emperor_gc_alloc((int)sizeof(TOuter), 0);
-        o->meta = &META_OUTER;
-        o->in.meta = &META_INNER;
-        o->in.name = NULL;
-        o->tag = 1000 + i;
-        o->s = _emperor_gc_alloc(32, 1);
-        ((char*)o->s)[0] = (char)('a' + (i % 26));
-        g8_kept[i] = o;
-    }
-}
 
-static int g8_check(void) {
-    for (int i = 0; i < G8_KEPT; i++) {
-        TOuter* o = g8_kept[i];
-        if (!o || o->tag != 1000 + i || !o->s || ((char*)o->s)[0] != (char)('a' + (i % 26))) {
-            fprintf(stderr, "FAIL G8: kept[%d] corrupted (tag=%lld)\n",
-                    i, o ? (long long)o->tag : -1);
-            return 1;
-        }
-    }
-    return 0;
-}
 
-static int auto_minor_section(void) {
-    const char* mode = getenv("EMPEROR_GC_MODE");
-    const char* nogen = getenv("EMPEROR_GC_NOGEN");
-    int gen = mode != NULL && strcmp(mode, "precise") == 0 &&
-              !(nogen && nogen[0] && nogen[0] != '0');
-    if (!gen) return 0;
-    for (int round = 0; round < 3; round++) {
-        setup_g8();
-        /* churn past the young budget; the poll drives the AUTO minor */
-        for (int i = 0; i < 200000; i++) {
-            void* junk = _emperor_gc_alloc(48, 0);
-            /* runtime contract: offset 0 is the metadata slot (NULL here);
-             * scribble only the payload — pinning a conservatively-seen
-             * half-initialized object must be survivable, but a forged
-             * metadata word is out of contract. */
-            ((char*)junk)[16] = 1;
-            _emperor_gc_poll();
-        }
-        if (g8_check()) return 1;
-        for (int i = 0; i < G8_KEPT; i++) g8_kept[i] = NULL;
-        scrub();
-        CLEAR_CALLEE_SAVED();
-        _emperor_gc_collect();
-    }
-    printf("auto-minor section: %d kept survive %d rounds at default budget\n",
-           G8_KEPT, 3);
-    return 0;
-}
 
 static Node* kept_head = NULL;
 
@@ -337,13 +288,6 @@ static uint64_t kept_checksum(void) {
  * collect's conservative cover would pin anything the active frames still
  * reference, and these tests assert MOVEMENT. */
 
-static TOuter* g_hold;
-static TOuter* g_old_h;
-static void* g_old_s;
-static void* g_old_in;
-static void* g_big;
-static void** g_pinbuf;
-static void** g_tbuf;
 static int g_dispose_ran = 0;
 
 static void torture_dispose(void* p) { (void)p; g_dispose_ran++; }
@@ -356,304 +300,382 @@ static const EmperorClassMetadata META_DISPOSE = {
  * explicit collect's conservative cover cannot pin the objects these tests
  * assert MOVEMENT for (a live-frame leftover would legitimately pin). */
 
-static void setup_g1(void) {
-    TOuter* h = (TOuter*)_emperor_gc_alloc((int)sizeof(TOuter), 0);
-    h->meta = &META_OUTER;
-    h->in.meta = &META_INNER;
-    h->in.name = NULL;
-    h->tag = 42;
-    h->s = NULL;
-    char* s1 = (char*)_emperor_gc_alloc(32, 1);
-    s1[0] = 'A'; s1[1] = '\0';
-    h->s = s1;
-    g_hold = h;
-    g_old_h = h;
-    g_old_s = s1;
+
+
+
+
+
+
+
+
+
+/* ---- Green-tea span heap section (GC v3) ----
+ * EMPEROR_GC_MODE=greentea only. Covers the span/malloc-path split at the
+ * 512B slot boundary: a mixed small<->large graph (span slot <-> malloc
+ * block, both directions) must survive churn + explicit collects byte-exact
+ * (M1's per-object marking resolves through BOTH heaps); dead span slots
+ * run their finalizers exactly once; and dropping the graph returns
+ * gc_info EXACTLY to the pre-section baseline (dead spans reclaimed
+ * wholesale, no slot leakage). Exact deltas hold because span slots are
+ * charged by size class via _emperor_gc_alloc_charge. */
+typedef struct GtSmallNode {
+    const void* meta;         /* NULL: conservative body scan, like Node */
+    struct GtBigNode* big;    /* span -> malloc edge (600B body: large)   */
+    uint64_t v[2];            /* 32B body -> 64B slot                    */
+} GtSmallNode;
+typedef struct GtBigNode {
+    const void* meta;
+    struct GtSmallNode* back; /* malloc -> span edge                     */
+    uint64_t v[73];           /* 592B body -> malloc (large) path        */
+} GtBigNode;
+
+static int gt_dispose_ran = 0;
+typedef struct BnNode {
+    const void* meta;         /* NULL: conservative body scan, like Node */
+    struct BnNode* next;
+    uint64_t v[6];            /* 64B body */
+} BnNode;
+
+static uint64_t bench_rng = 0x9E3779B97F4A7C15ULL;
+static uint64_t bench_next(void) {
+    bench_rng ^= bench_rng << 13; bench_rng ^= bench_rng >> 7; bench_rng ^= bench_rng << 17;
+    return bench_rng;
 }
 
-static void setup_g2(void) {
-    char* s2 = (char*)_emperor_gc_alloc(32, 1);
-    s2[0] = 'Z'; s2[1] = '\0';
-    g_hold->s = s2; /* old object's field store of a young value */
-    _emperor_gc_write_barrier(g_hold, &g_hold->s);
-    g_old_s = s2;
-}
+static void gt_dispose(void* p) { (void)p; gt_dispose_ran++; }
+static const EmperorClassMetadata META_GT_DISPOSE = {
+    "GtDispose", 40, 0, NULL, NULL, NULL, 0, NULL, gt_dispose, NULL};
 
-static void setup_g3(void) {
-    TInner in2;
-    in2.meta = &META_INNER;
-    char* s3 = (char*)_emperor_gc_alloc(32, 1);
-    s3[0] = 'M'; s3[1] = '\0';
-    in2.name = s3;
-    g_hold->in = in2; /* struct store: embedded ref lands in an old object */
-    _emperor_gc_write_barrier_map(g_hold, &g_hold->in, M_INNER);
-    g_old_s = s3;
-}
-
-static void setup_g4(void) {
-    void* d = _emperor_gc_alloc(40, 0);
-    *(EmperorClassMetadata**)d = (EmperorClassMetadata*)&META_DISPOSE;
-    g_dispose_ran = 0;
-}
-
-static void setup_g5(void) {
-    g_pinbuf = (void**)malloc(8 * sizeof(void*));
-    char* s5 = (char*)_emperor_gc_alloc(32, 1);
-    s5[0] = 'P'; s5[1] = '\0';
-    g_pinbuf[0] = s5;
-    _emperor_gc_scan_add(g_pinbuf, 8 * sizeof(void*));
-    g_old_s = s5;
-}
-
-static void setup_g6(void) {
-    g_tbuf = (void**)malloc(2 * sizeof(void*));
-    char* s6 = (char*)_emperor_gc_alloc(32, 1);
-    s6[0] = 'T'; s6[1] = '\0';
-    /* Registration BEFORE any element lands: _emperor_gc_track_buffer
-     * ZEROES the buffer (the 238ad821 malloc-residue guard), so storing
-     * first would erase the element — mirror the container contract
-     * (List._grow / vector / hashmap all register, then fill). */
-    _emperor_gc_track_buffer(g_tbuf, 2, 8, _emperor_gc_bare_refmap);
-    g_tbuf[0] = s6;
-    g_tbuf[1] = NULL;
-    g_old_s = s6;
-}
-
-/* G9 — CARD-TABLE granularity: the barrier'd store dirties the 512B card
- * of the slot, and the minor scans the WHOLE overlapping object — so a
- * young value written into a DIFFERENT slot of the same old object with
- * NO barrier at all (deliberate: this models a missed/omitted barrier) is
- * still rescued by the shared card. A slot-precise remembered set would
- * miss it; do not "fix" the unbarriered store away. The bare slot is also
- * stored twice (young value overwritten by a younger one) — the scan must
- * judge the CURRENT field value. */
-static void setup_g9(void) {
-    char* na = (char*)_emperor_gc_alloc(32, 1);
-    na[0] = 'N'; na[1] = '\0';
-    g_hold->in.name = na; /* NO barrier — rescued via the shared card only */
-    g_old_in = na;
-    char* dead = (char*)_emperor_gc_alloc(32, 1);
-    dead[0] = 'D'; dead[1] = '\0';
-    g_hold->s = dead; /* barrier'd ... */
-    _emperor_gc_write_barrier(g_hold, &g_hold->s);
-    char* live = (char*)_emperor_gc_alloc(32, 1);
-    live[0] = 'W'; live[1] = '\0';
-    g_hold->s = live; /* ... then overwritten before the collect */
-    _emperor_gc_write_barrier(g_hold, &g_hold->s);
-    g_old_s = live;
-}
-
-/* G10 — a barrier'd young store marks the card, then the slot is dropped
- * to NULL WITHOUT a barrier (a NULL store carries no edge): the dirty
- * card's scan must leave the NULL alone — no resurrect, no crash trying
- * to resolve the now-dead value through memory the minor recycles. */
-static void setup_g10(void) {
-    char* s10 = (char*)_emperor_gc_alloc(32, 1);
-    s10[0] = 'X'; s10[1] = '\0';
-    g_hold->s = s10;
-    _emperor_gc_write_barrier(g_hold, &g_hold->s);
-    g_hold->s = NULL;
-    g_old_s = NULL;
-}
-
-static int generational_section(void) {
+static int greentea_section(void) {
     const char* mode = getenv("EMPEROR_GC_MODE");
-    const char* nogen = getenv("EMPEROR_GC_NOGEN");
-    int gen = mode != NULL && strcmp(mode, "precise") == 0 &&
-              !(nogen && nogen[0] && nogen[0] != '0');
-    if (!gen) {
-        printf("generational section: skipped (not in generational mode)\n");
+    int gt = mode == NULL || mode[0] == '\0' ||
+             strcmp(mode, "greentea") == 0 || strcmp(mode, "default") == 0;
+    if (!gt) {
+        printf("greentea section: skipped (not in greentea mode)\n");
         return 0;
     }
 
-    /* Normalize to a quiet heap first. */
     scrub();
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
+    uint64_t before = _emperor_gc_info();
 
-    /* G1 — promotion moves survivors, rewrites rooted handles AND the
-     * references held inside promoted objects (the forwarding machinery). */
-    setup_g1();
+    /* Mixed-graph integrity across churn + explicit collects. */
+    GtSmallNode* sm = (GtSmallNode*)_emperor_gc_alloc((int)sizeof(GtSmallNode), 0);
+    GtBigNode* bg = (GtBigNode*)_emperor_gc_alloc((int)sizeof(GtBigNode), 0);
+    if (!sm || !bg) { fprintf(stderr, "FAIL gt: mixed-graph alloc failed\n"); return 1; }
+    char* st = (char*)_emperor_gc_alloc(24, 1);
+    sm->meta = NULL; sm->big = bg; sm->v[0] = 0xAA112233445566ULL; sm->v[1] = 2;
+    bg->meta = NULL; bg->back = sm; bg->v[0] = 0xBB778899AABBCCULL;
+    st[0] = 'g'; st[1] = '\0';
+    /* Root via the registry like the generational section's statics: a
+     * stack-local handle is only covered by the conservative scan up to
+     * _emperor_gc_init's anchor — locals above it are legitimately
+     * uncoverable (the emitted main passes llvm.frameaddress, the frame
+     * top; this C harness passes an arbitrary local). */
+    _emperor_gc_add_root((void**)&sm);
+    _emperor_gc_add_root((void**)&st);
+    for (int i = 0; i < 200000; i++) {
+        void* junk = _emperor_gc_alloc(24 + (i & 63), 0); /* 48..80B slots */
+        ((volatile char*)junk)[16] = 1;
+        _emperor_gc_poll();
+        if ((i & 16383) == 0) _emperor_gc_collect();
+    }
+    if (!sm->big || sm->big != bg || sm->big->back != sm ||
+        sm->v[0] != 0xAA112233445566ULL || sm->v[1] != 2 ||
+        sm->big->v[0] != 0xBB778899AABBCCULL || st[0] != 'g' || st[1] != '\0') {
+        fprintf(stderr, "FAIL gt: mixed span/malloc graph corrupted\n");
+        return 1;
+    }
+
+    /* Finalizers: dead span slots run dispose exactly once each. */
+    gt_dispose_ran = 0;
+    for (int i = 0; i < 5000; i++) {
+        void* d = _emperor_gc_alloc(40, 0);
+        *(EmperorClassMetadata**)d = (EmperorClassMetadata*)&META_GT_DISPOSE;
+    }
     scrub();
     CLEAR_CALLEE_SAVED();
-    uint64_t pins0 = _emperor_gc_debug_pin_count();
     _emperor_gc_collect();
-    if (g_hold == g_old_h) {
-        if (_emperor_gc_debug_pin_count() == pins0) {
-            fprintf(stderr, "FAIL G1: holder neither promoted nor pinned\n");
-            return 1;
+    if (gt_dispose_ran != 5000) {
+        fprintf(stderr, "FAIL gt: finalizer count %d != 5000\n", gt_dispose_ran);
+        return 1;
+    }
+
+    /* Queue wrap+grow regression: PAIRED graph — nodes are allocated in
+     * adjacent PAIRS (pair-mates share a span), and every node's four
+     * edges target two OTHER pairs (both mates of each): scanning any
+     * object grays TWO DISTINCT slots of each target span at once, so the
+     * first gray pends a representative and the second immediately flips
+     * REP_HIT and ENQUEUES — guaranteed queue growth of +2 spans per
+     * object scanned. A small rooted seed lets the drain's BFS frontier
+     * outrun consumption; the ring crosses its cap mid-drain (wrap,
+     * head > 0) and the next burst GROWS the queue mid-wrap. The pre-fix
+     * grow orphaned the wrapped prefix (cap doubling changed the ring
+     * modulus) and dequeue walked uninitialized slots — the pass3
+     * self-compile SIGSEGV under the greentea default. Sparse or
+     * group-crossing random edges do NOT fire this (the representative
+     * path dominates and consumption keeps pace — measured: queue never
+     * passed its first 256 growth). */
+    {
+        enum { WPAIRS = 100000, WSEED = 64 };
+        static void** wseed; /* typed buffer seeding the first pairs */
+        wseed = (void**)calloc(WSEED, sizeof(void*));
+        _emperor_gc_track_buffer(wseed, WSEED, 8, _emperor_gc_bare_refmap);
+        BnNode** all = (BnNode**)malloc((size_t)WPAIRS * 2 * sizeof(BnNode*));
+        for (int i = 0; i < WPAIRS * 2; i++) {
+            /* 88B body: word0 metadata(NULL), word1 stamp, words2..5 edges,
+             * words6..10 dead weight (span padding). Slot 112B. */
+            BnNode* n = (BnNode*)_emperor_gc_alloc(88, 0);
+            ((uint64_t*)n)[1] = (uint64_t)(i + 1);
+            all[i] = n;
         }
-        /* pinned at its address: valid conservative outcome */
-    }
-    if (g_hold->tag != 42 || g_hold->s == NULL) {
-        fprintf(stderr, "FAIL G1: promoted holder corrupted\n");
-        return 1;
-    }
-    if (g_hold->s == g_old_s) {
-        fprintf(stderr, "FAIL G1: indirect child slot not rewritten\n");
-        return 1;
-    }
-    if (((char*)g_hold->s)[0] != 'A') {
-        fprintf(stderr, "FAIL G1: child payload corrupted across promotion\n");
-        return 1;
-    }
-
-    /* G2 — bare write barrier: an OLD object's field store of a YOUNG value
-     * must survive the next minor with the slot rewritten. */
-    setup_g2();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    pins0 = _emperor_gc_debug_pin_count();
-    _emperor_gc_collect();
-    if (g_hold->s == g_old_s) {
-        if (_emperor_gc_debug_pin_count() == pins0) {
-            fprintf(stderr, "FAIL G2: barrier'd child neither promoted nor pinned\n");
-            return 1;
+        for (int p = 0; p < WPAIRS; p++) {
+            uint64_t** a = (uint64_t**)all[p * 2];
+            uint64_t** b = (uint64_t**)all[p * 2 + 1];
+            int ta = (int)(bench_next() % WPAIRS);
+            int tb = (int)(bench_next() % WPAIRS);
+            a[2] = (uint64_t*)all[ta * 2];
+            a[3] = (uint64_t*)all[ta * 2 + 1];
+            a[4] = (uint64_t*)all[tb * 2];
+            a[5] = (uint64_t*)all[tb * 2 + 1];
+            b[2] = (uint64_t*)all[ta * 2 + 1];
+            b[3] = (uint64_t*)all[ta * 2];
+            b[4] = (uint64_t*)all[tb * 2 + 1];
+            b[5] = (uint64_t*)all[tb * 2];
         }
-    }
-    if (((char*)g_hold->s)[0] != 'Z') {
-        fprintf(stderr, "FAIL G2: barrier'd child corrupted\n");
-        return 1;
-    }
-
-    /* G3 — map write barrier: whole-struct store embedding a reference. */
-    setup_g3();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    pins0 = _emperor_gc_debug_pin_count();
-    _emperor_gc_collect();
-    if (g_hold->in.name == g_old_s) {
-        if (_emperor_gc_debug_pin_count() == pins0) {
-            fprintf(stderr, "FAIL G3: embedded ref neither promoted nor pinned "
-                    "[hold=%p in.name=%p old_s=%p]\n",
-                    (void*)g_hold, g_hold->in.name, g_old_s);
-            return 1;
+        for (int s = 0; s < WSEED; s++) wseed[s] = all[s];
+        for (int rep = 0; rep < 3; rep++) {
+            _emperor_gc_collect();
+            for (int s = 0; s < WSEED; s += 2) {
+                if (!wseed[s] ||
+                    ((uint64_t*)wseed[s])[1] != (uint64_t)(s + 1)) {
+                    fprintf(stderr, "FAIL gt: wrap-grow seed %d freed/corrupted\n", s);
+                    return 1;
+                }
+            }
         }
-    }
-    if (((char*)g_hold->in.name)[0] != 'M') {
-        fprintf(stderr, "FAIL G3: embedded child corrupted\n");
-        return 1;
+        _emperor_gc_untrack_buffer(wseed);
+        free(wseed);
+        free(all);
     }
 
-    /* G4 — young-generation finalizer: a dead young object with a class
-     * destructor runs dispose_mem at the MINOR (before chunks recycle). */
-    setup_g4();
+    /* Wholesale reclaim: drop the graph, exact return to baseline. */
+    _emperor_gc_remove_root((void**)&sm);
+    _emperor_gc_remove_root((void**)&st);
+    sm = NULL; bg = NULL; st = NULL; /* locals: the conservative cover reads them */
     scrub();
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
-    if (g_dispose_ran == 0) {
-        fprintf(stderr, "FAIL G4: young dead object's finalizer never ran\n");
+    uint64_t after = _emperor_gc_info();
+    if (after != before) {
+        fprintf(stderr, "FAIL gt: post-drop managed %llu != baseline %llu "
+                "(span slot leak?)\n",
+                (unsigned long long)after, (unsigned long long)before);
         return 1;
     }
-
-    /* G5 — conservative pin: a young object referenced ONLY by a raw
-     * registered buffer keeps its ADDRESS across a minor. */
-    setup_g5();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    _emperor_gc_collect();
-    if (g_pinbuf[0] != g_old_s) {
-        fprintf(stderr, "FAIL G5: conservatively-held young object MOVED\n");
-        return 1;
-    }
-    if (((char*)g_pinbuf[0])[0] != 'P') {
-        fprintf(stderr, "FAIL G5: pinned object corrupted\n");
-        return 1;
-    }
-    _emperor_gc_scan_remove(g_pinbuf);
-    g_pinbuf[0] = NULL;
-    free(g_pinbuf);
-    g_pinbuf = NULL;
-
-    /* G6 — typed buffer: elements are REWRITTEN to the promoted address. */
-    setup_g6();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    pins0 = _emperor_gc_debug_pin_count();
-    _emperor_gc_collect();
-    if (g_tbuf[0] == g_old_s) {
-        if (_emperor_gc_debug_pin_count() == pins0) {
-            fprintf(stderr, "FAIL G6: typed element neither rewritten nor pinned\n");
-            return 1;
-        }
-    }
-    if (g_tbuf[0] == NULL || ((char*)g_tbuf[0])[0] != 'T') {
-        fprintf(stderr, "FAIL G6: typed-buffer element corrupted\n");
-        return 1;
-    }
-    _emperor_gc_untrack_buffer(g_tbuf);
-    free(g_tbuf);
-    g_tbuf = NULL;
-
-    /* G7 — large object goes straight to the old generation: never moves. */
-    g_big = _emperor_gc_alloc(20000, 0);
-    void* old_big = g_big;
-    _emperor_gc_add_root(&g_big);
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    _emperor_gc_collect();
-    if (g_big != old_big) {
-        fprintf(stderr, "FAIL G7: large object moved\n");
-        return 1;
-    }
-    _emperor_gc_remove_root(&g_big);
-    g_big = NULL;
-
-    /* G9 — card granularity: same old object, one barrier'd (twice-stored)
-     * slot and one deliberately UNbarrier'd slot — the shared dirty card
-     * must rescue both, judging current values. */
-    setup_g9();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    pins0 = _emperor_gc_debug_pin_count();
-    _emperor_gc_collect();
-    if (g_hold->in.name == g_old_in || g_hold->s == g_old_s) {
-        if (_emperor_gc_debug_pin_count() == pins0) {
-            fprintf(stderr, "FAIL G9: card-scanned slots neither promoted nor pinned "
-                    "[in.name=%p/%p s=%p/%p]\n",
-                    g_hold->in.name, g_old_in, g_hold->s, g_old_s);
-            return 1;
-        }
-    }
-    if (g_hold->in.name == NULL || ((char*)g_hold->in.name)[0] != 'N' ||
-        g_hold->s == NULL || ((char*)g_hold->s)[0] != 'W') {
-        fprintf(stderr, "FAIL G9: card-scanned children corrupted "
-                "(in.name=%p s=%p)\n", g_hold->in.name, g_hold->s);
-        return 1;
-    }
-
-    /* G10 — NULL overwrite after the card was marked: slot stays NULL. */
-    setup_g10();
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    _emperor_gc_collect();
-    if (g_hold->s != NULL) {
-        fprintf(stderr, "FAIL G10: NULL overwrite not honored by the card scan "
-                "(s=%p)\n", g_hold->s);
-        return 1;
-    }
-    if (g_hold->in.name == NULL || ((char*)g_hold->in.name)[0] != 'N') {
-        fprintf(stderr, "FAIL G10: unrelated slot disturbed by the card scan\n");
-        return 1;
-    }
-
-    /* Drop everything: after a full collect the nursery section's bytes are
-     * gone (managed drops back near the pre-section baseline). */
-    g_hold = NULL;
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    _emperor_gc_collect();
-
-    printf("generational section: promotion/forwarding/barriers/finalizers/pin/typed all pass\n");
+    printf("greentea section: span/malloc graph, finalizers, wholesale reclaim all pass\n");
+    printf("greentea stats: cycles=%llu wholesale=%llu rep=%llu live=%llu goal=%llu "
+           "full=%llu partial=%llu empty=%llu supers=%llu\n",
+           (unsigned long long)_emperor_gc_gt_stats(7),
+           (unsigned long long)_emperor_gc_gt_stats(5),
+           (unsigned long long)_emperor_gc_gt_stats(6),
+           (unsigned long long)_emperor_gc_gt_stats(0),
+           (unsigned long long)_emperor_gc_gt_stats(1),
+           (unsigned long long)_emperor_gc_gt_stats(2),
+           (unsigned long long)_emperor_gc_gt_stats(3),
+           (unsigned long long)_emperor_gc_gt_stats(4),
+           (unsigned long long)_emperor_gc_gt_stats(8));
     return 0;
 }
 
-int main(void) {
+/* ---- Benchmark workloads (driven by `make gc-bench` -> gc_bench.sh) ----
+ * `gc_torture bench <workload>` runs exactly one deterministic workload and
+ * exits; a no-arg invocation keeps the correctness sections untouched. With
+ * GC_PROFILE=1 in the environment the runtime prints a single-line
+ * machine-parseable phase summary (gc.c: _gc_st_report) at exit, which
+ * gc_bench.sh tabulates per collector mode. The *_WORKLOADS list at the end
+ * is duplicated in gc_bench.sh — keep them in sync.
+ *
+ *   churn       — infant-mortality churn (the v2 nursery's home turf)
+ *   ptrdense    — pointer-dense: persistent linked graph + relink churn
+ *   container   — typed-region (container buffer) element churn
+ *   deepsurvive — deep survival: a growing persistent forest + churn
+ *   finstorm    — finalizer storm: destructor-stamped objects dying in waves
+ *   mixed512    — bodies straddling the 512B span cutoff (200..600)
+ */
+static BnNode* pd_head = NULL;
+static BnNode* ds_chains[64];
+static void* mx_ring[32];
+
+static int bench_churn(void) {
+    for (int i = 0; i < 4000000; i++) {
+        void* junk = _emperor_gc_alloc(24 + (int)(bench_next() & 24), 0);
+        ((volatile char*)junk)[8] = (char)i;
+        if ((i & 3) == 0) {
+            char* s = (char*)_emperor_gc_alloc(24, 1);
+            s[0] = 'z'; s[1] = '\0';
+        }
+        _emperor_gc_poll();
+        if ((i & 262143) == 0) _emperor_gc_collect();
+    }
+    printf("bench churn done\n");
+    return 0;
+}
+
+static int bench_ptrdense(void) {
+    _emperor_gc_add_root((void**)&pd_head);
+    for (int i = 0; i < 30000; i++) {
+        BnNode* n = (BnNode*)_emperor_gc_alloc((int)sizeof(BnNode), 0);
+        for (int k = 0; k < 6; k++) n->v[k] = bench_next();
+        n->next = pd_head;
+        pd_head = n;
+    }
+    uint64_t sum = 0;
+    for (int i = 0; i < 2000000; i++) {
+        void* junk = _emperor_gc_alloc(24 + (int)(bench_next() & 16), 0);
+        ((volatile char*)junk)[8] = 1;
+        /* relink one near node to the head: pointer-dense rewrites */
+        if (pd_head && (i & 255) == 0) {
+            BnNode* n = pd_head;
+            int step = (int)(bench_next() & 63);
+            while (n->next && step--) n = n->next;
+            BnNode* nn = (BnNode*)_emperor_gc_alloc((int)sizeof(BnNode), 0);
+            nn->v[0] = n->v[0];
+            nn->next = pd_head;
+            pd_head = nn;
+            sum += nn->v[0];
+        }
+        _emperor_gc_poll();
+        if ((i & 131071) == 0) _emperor_gc_collect();
+    }
+    uint64_t got = 0;
+    for (BnNode* w = pd_head; w; w = w->next) got ^= w->v[0];
+    (void)got; (void)sum;
+    printf("bench ptrdense done\n");
+    return 0;
+}
+
+#define CT_BUFS 32
+#define CT_ELEMS 64
+static int bench_container(void) {
+    void*** bufs = (void***)malloc(CT_BUFS * sizeof(void**));
+    if (!bufs) return 1;
+    for (int b = 0; b < CT_BUFS; b++) {
+        bufs[b] = (void**)calloc(CT_ELEMS, sizeof(void*));
+        if (!bufs[b]) return 1;
+        _emperor_gc_track_buffer(bufs[b], CT_ELEMS, 8, _emperor_gc_bare_refmap);
+    }
+    for (int i = 0; i < 1500000; i++) {
+        int b = (int)(bench_next() % CT_BUFS);
+        int e = (int)(bench_next() % CT_ELEMS);
+        char* s = (char*)_emperor_gc_alloc(24 + (int)(bench_next() & 24), 1);
+        s[0] = (char)('a' + (i & 25)); s[1] = '\0';
+        bufs[b][e] = s;
+        _emperor_gc_poll();
+        if ((i & 131071) == 0) _emperor_gc_collect();
+    }
+    for (int b = 0; b < CT_BUFS; b++) {
+        _emperor_gc_untrack_buffer(bufs[b]);
+        free(bufs[b]);
+    }
+    free(bufs);
+    printf("bench container done\n");
+    return 0;
+}
+
+#define DS_CHAINS 64
+static int bench_deepsurvive(void) {
+    for (int c = 0; c < DS_CHAINS; c++)
+        _emperor_gc_add_root((void**)&ds_chains[c]);
+    for (int b = 0; b < 160; b++) {
+        for (int c = 0; c < DS_CHAINS; c++) {
+            for (int d = 0; d < 64; d++) {
+                BnNode* n = (BnNode*)_emperor_gc_alloc((int)sizeof(BnNode), 0);
+                n->v[0] = bench_next();
+                n->next = ds_chains[c];
+                ds_chains[c] = n;
+            }
+        }
+        for (int i = 0; i < 20000; i++) {
+            void* junk = _emperor_gc_alloc(24 + (int)(bench_next() & 24), 0);
+            ((volatile char*)junk)[8] = 1;
+            _emperor_gc_poll();
+        }
+        _emperor_gc_collect();
+    }
+    uint64_t chk = 0;
+    for (int c = 0; c < DS_CHAINS; c++)
+        for (BnNode* w = ds_chains[c]; w; w = w->next) chk ^= w->v[0];
+    (void)chk;
+    printf("bench deepsurvive done\n");
+    return 0;
+}
+
+static int bench_finstorm(void) {
+    for (int r = 0; r < 60; r++) {
+        for (int i = 0; i < 20000; i++) {
+            void* d = _emperor_gc_alloc(40, 0);
+            *(EmperorClassMetadata**)d = (EmperorClassMetadata*)&META_DISPOSE;
+            _emperor_gc_poll();
+        }
+        _emperor_gc_collect();
+        if (g_dispose_ran == 0) {
+            fprintf(stderr, "bench finstorm: no finalizers ran\n");
+            return 1;
+        }
+    }
+    printf("bench finstorm done\n");
+    return 0;
+}
+
+static int bench_mixed512(void) {
+    for (int r = 0; r < 32; r++) _emperor_gc_add_root((void**)&mx_ring[r]);
+    for (int i = 0; i < 1000000; i++) {
+        int sz = 200 + (int)(bench_next() % 401);   /* body 200..600 */
+        void* p = _emperor_gc_alloc(sz, 0);
+        /* runtime contract: body word 0 is the metadata slot — scribble
+         * only the payload (see the existing churn section's note). */
+        ((volatile char*)p)[16] = 1;
+        mx_ring[bench_next() & 31] = p;
+        _emperor_gc_poll();
+        if ((i & 131071) == 0) _emperor_gc_collect();
+    }
+    printf("bench mixed512 done\n");
+    return 0;
+}
+
+static const char* _WORKLOADS[] = {
+    "churn", "ptrdense", "container", "deepsurvive", "finstorm", "mixed512", NULL
+};
+
+static int bench_dispatch(const char* name) {
+    if (strcmp(name, "churn") == 0) return bench_churn();
+    if (strcmp(name, "ptrdense") == 0) return bench_ptrdense();
+    if (strcmp(name, "container") == 0) return bench_container();
+    if (strcmp(name, "deepsurvive") == 0) return bench_deepsurvive();
+    if (strcmp(name, "finstorm") == 0) return bench_finstorm();
+    if (strcmp(name, "mixed512") == 0) return bench_mixed512();
+    fprintf(stderr, "unknown workload '%s' (valid:", name);
+    for (int i = 0; _WORKLOADS[i]; i++) fprintf(stderr, " %s", _WORKLOADS[i]);
+    fprintf(stderr, ")\n");
+    return 2;
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 2 && strcmp(argv[1], "bench") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: gc_torture bench <workload>\n");
+            for (int i = 0; _WORKLOADS[i]; i++) fprintf(stderr, "  %s\n", _WORKLOADS[i]);
+            return 2;
+        }
+        int stack_anchor = 0;
+        _emperor_gc_init(&stack_anchor);
+        return bench_dispatch(argv[2]);
+    }
     int stack_anchor = 0;
     _emperor_gc_init(&stack_anchor);
     _emperor_gc_add_root((void**)&kept_head);
-    _emperor_gc_add_root((void**)&g_hold);
-    for (int gi = 0; gi < G8_KEPT; gi++) _emperor_gc_add_root((void**)&g8_kept[gi]);
 
     /* Build the kept chain with deterministic contents. */
     uint64_t seed = 88172645463325252ULL;
@@ -738,8 +760,7 @@ int main(void) {
     }
 
     if (refmap_section()) return 1;
-    if (generational_section()) return 1;
-    if (auto_minor_section()) return 1;
+    if (greentea_section()) return 1;
 
     printf("PASS: survivors intact, garbage reclaimed, index stable, ref-maps precise\n");
     return 0;

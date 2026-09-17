@@ -40,16 +40,11 @@ void _emperor_gc_track_buffer(void* base, uint64_t count, uint64_t stride,
 void _emperor_gc_untrack_buffer(void* base);
 extern const int32_t _emperor_gc_bare_refmap[5];
 
-/* Generational write barriers (GC v2): call AFTER storing into a heap
- * object field. OBJ is the object base (member store target), SLOT is the
- * field address (already holding the new value). No-op unless the runtime
- * is generational AND obj lives in the old generation; then the barrier
- * dirties the 512B CARD containing slot (card-table semantics, no value
- * check at the store) and the next minor scans every object overlapping
- * a dirty card, judging each field's CURRENT value. The _map form covers
- * whole-struct stores; the map itself is no longer recorded (the scan
- * walks the owner object's own ref-map, which includes the embedded
- * struct's slots) — NULL map = no embedded references, no-op. */
+/* Write barriers (GC v3): NO-OPS. The collector is single-generation and
+ * stop-the-world on the only mutator, so no remembered set exists. The
+ * symbols remain for ABI compatibility — emissions still carry the calls
+ * until the emitter change retires them (and previously emitted .ll and
+ * .penguin-lib consumers keep linking unchanged). */
 void _emperor_gc_write_barrier(void* obj, void** slot);
 void _emperor_gc_write_barrier_map(void* obj, void* slot, const int32_t* map);
 
@@ -59,6 +54,12 @@ void _emperor_gc_write_barrier_map(void* obj, void* slot, const int32_t* map);
  * conservative word — tests accept pin OR promotion as a valid outcome). */
 void _emperor_gc_info_split(uint64_t* old_bytes, uint64_t* young_bytes);
 uint64_t _emperor_gc_debug_pin_count(void);
+
+/* Debug introspection (test-only): the heap charge of a hypothetical
+ * tracked allocation of SIZE body bytes — the size-class slot under
+ * EMPEROR_GC_MODE=greentea, else header + round8(size). gc_torture's
+ * exact live/die delta assertions use this so they hold in every mode. */
+size_t _emperor_gc_alloc_charge(int size);
 
 /* Runtime ABI tag — consumers mixing emissions against foreign runtimes
  * compare this and refuse (see gc.c). */

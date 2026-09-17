@@ -17,6 +17,8 @@
 #   make tools_linux        build/linux/penguin-tools (links the release dynlib)
 #   make tools_win          build/win/penguin-tools.exe monolith
 #   make tools-test         golden tests for penguin-tools (selftest.sh)
+#   make gc-bench           GC benchmark harness (gc_torture workloads,
+#                           GC_BENCH_MODES/WORKLOADS overrides)
 #   make docs-site          build the mdBook documentation site (docs/ per
 #                           book.toml) -> build/book (needs mdbook)
 #   make test               run the cross-compiler markdown suite (Tests/*.md)
@@ -78,7 +80,7 @@ endif
 .DEFAULT_GOAL := all
 .PHONY: all clean bootstrap lsp release test baseline_test publish unittest \
         release_linux release_win lsp_linux lsp_win tools tools_linux \
-        tools_win tools-test docs-site
+        tools_win tools-test docs-site gc-bench
 
 BS := build/bootstrap
 REL := build/release
@@ -604,6 +606,13 @@ docs-site:
 	@mdbook build
 	@rm -f docs/README.md
 	@echo "Documentation site -> build/book/index.html"
+
+# ── gc-bench ─────────────────────────────────────────────────────────
+# GC benchmark harness (GC v3 green-tea milestone M0+): gc_torture bench
+# workloads under GC_PROFILE phase timing. Overrides: GC_BENCH_MODES,
+# GC_BENCH_WORKLOADS, GC_BENCH_OUT, GC_BENCH_BIN.
+gc-bench:
+	@bash EmperorPenguin/std/c/gc_bench.sh
 
 # ── unittest ─────────────────────────────────────────────────────────
 unittest:

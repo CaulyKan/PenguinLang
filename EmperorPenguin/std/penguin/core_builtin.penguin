@@ -11,6 +11,12 @@ namespace __builtin {
 
     extern fun gc_collect();
     extern fun gc_info() -> i64;
+    // GC v3 green-tea introspection (EmperorPenguin runtime only; greentea
+    // mode): which — 0 live span bytes, 1 heap goal, 2/3/4 full/partial/
+    // empty span counts, 5 wholesale-recycled spans (cumulative),
+    // 6 representative fast-path scans (cumulative), 7 completed cycles,
+    // 8 superchunks. 0 outside greentea mode.
+    extern fun gc_gt_stats(which : i64) -> i64;
     // Pin a compile-time object value (a raw i64 address baked into a meta
     // stub / template-arg environment) for the process lifetime — the GC
     // retains it as a root because integers are invisible to the marker.
