@@ -146,6 +146,15 @@ Each stage is a list of `Key: value` lines. Values may be wrapped in backticks
 | `Kind` | Build only | `exe` (default) or `lib` (→ `*.penguin-lib`). |
 | `Name` | Build only | Output artifact filename (default `out.exe`; `lib` builds must set it). |
 
+> **std sources vs `--enable-std`**: passing std source files via `Compile.Args`
+> (e.g. `EmperorPenguin/std/penguin/vector.penguin`) is what the Pass1/Pass2/Pass3
+> backends need — those binaries sit in `build/bootstrap/` with no
+> `libemperorpenguin-std.penguin-lib` beside them, so the compiler's auto-std
+> probe (`--enable-std`, default on) silently finds nothing. Released compilers
+> (the lib+exe pairs — bootstrap pass4+, `build/linux/emperor_penguin_llvm_emitter`)
+> have the std dyn-lib beside the exe and get `std.Vector`/json/argparse
+> automatically, no `Compile.Args` required; `--disable-std` opts out.
+
 ### Multi-stage builds (`## Build N`)
 
 A test may run **several compilations** before the run stage — e.g. build a
@@ -244,7 +253,7 @@ non-zero and skips the run stage.
 
 `Compile.Args` are placed in the backend-specific argument slot. The
 EmperorPenguin backends only EMIT LLVM IR (`<exe>.ll`); the runner then links
-it via `EmperorPenguin/emperor link/link-lib` (clang + the C runtime make):
+it via `EmperorPenguin/emperor_penguin link/link-lib` (clang + the C runtime make):
 
 | Backend | Compile command (cwd = repo root) |
 |---|---|

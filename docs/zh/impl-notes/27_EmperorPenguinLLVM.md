@@ -6,7 +6,7 @@
 
 **实现位置**: `EmperorPenguin/src/llvm/LLVMEmitter.penguin`（由 `LLVMCompiler.penguin` 串联 IRGenerator 调用）
 
-**输出格式**: LLVM IR 文本（`.ll` 文件），平台无关；链接（clang + C 运行时归档）由编译器外部的 `emperor`/`emperor.bat` 驱动脚本完成
+**输出格式**: LLVM IR 文本（`.ll` 文件），平台无关；链接（clang + C 运行时归档）由编译器外部的 `emperor`/`emperor_penguin.bat` 驱动脚本完成
 
 **核心设计决策**:
 - 通过 `ICopy`/`IRef` 标记接口区分值类型和引用类型 class

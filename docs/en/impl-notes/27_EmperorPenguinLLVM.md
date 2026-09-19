@@ -6,7 +6,7 @@ This document defines the strategy for lowering EmperorPenguin IR to LLVM IR, in
 
 **Implementation location**: `EmperorPenguin/src/llvm/LLVMEmitter.penguin` (driven by `LLVMCompiler.penguin`, which chains it after the IRGenerator)
 
-**Output format**: LLVM IR text (`.ll` files), platform-independent; linking (clang + the C runtime archive) is handled by the `emperor`/`emperor.bat` driver scripts outside the compiler
+**Output format**: LLVM IR text (`.ll` files), platform-independent; linking (clang + the C runtime archive) is handled by the `emperor`/`emperor_penguin.bat` driver scripts outside the compiler
 
 **Core design decisions**:
 - Value-type and reference-type classes are distinguished via the `ICopy`/`IRef` marker interfaces

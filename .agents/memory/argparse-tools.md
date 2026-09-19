@@ -55,3 +55,13 @@
 - **坑**:`let single: mut _utils.List<Definition> = defs_opt.some;` 是 E_MUTABILITY(Option 载荷不可变 → mut 绑定);不可变 List 直接传 `collect_resolved_definitions` 的不可变 `src` 参数即可。
 - **坑**:改编译器源后 `build/linux/penguin-lsp` 若不重编,LSP 测试全挂——unit B 在**运行时从磁盘读 meta_runtime.penguin**(read_compiler_source),新源码 + 旧二进制(缺响应器符号)= E_INTERNAL "Function call has no callee symbol"。改 meta_runtime/MetaHost 后必须 `make lsp`(以及 `make tools`)。
 - BabyPenguin.Tests 的 ComplexTest.LinkedListTest / ProjectTest_WithoutSources 偶发并发 flaky(全量跑挂、单独跑过、与 penguin 侧改动无关)——重跑即绿,勿误判。
+
+## win 版 tools 构建失败 + 未知 #fun 静默丢弃(2026-09-19)
+
+- **根因**:`PenguinToolsWin.penguins` 从 e71264fb 起就漏了 `argparse.penguin`(linux 版 PenguinTools.penguins 有)。`#arg`/`#pos_arg` 这类 def 位 #fun **拥有**尾随字段定义(#fun 经 create_definition 重发"marker 函数+原字段")——#fun 不存在时字段被静默丢弃,用户侧表现为 `Type 'mut NameOptions' has no member 'names'` 级联 + `std.argv()` 未解析(void→E_MUTABILITY)。修复 = win 项目源列表加 `"../../EmperorPenguin/std/penguin/argparse.penguin"`(Makefile TOOLSWIN_SRC 的 `../../%` 过滤自动归一)。**教训:往 linux 项目加 stdlib 源时必须同步 win 单体项目;两份源列表无单一真相,极易漂移。**
+- 附带现象:坏状态下编译 stderr 出现 `[EmperorPenguin Dynlib] warning: template def in non-shipped file (core_builtin.penguin)` ×9——未解析泛型经 monomorphize 走了 libmeta 表 build() 路径(collect_defs 对未 ship 的 core_builtin 模板告警);argparse 就位后消失。见到该告警 = 有泛型名没解析到,先查源列表。
+- **未知 #fun 语义收紧(用户指令:报错而非静默丢弃)**:
+  - def 位(`SemanticBindMetaCalls.try_splice_meta_fun_def`):`find_meta_function` 落空 → `E_RESOLVE_SYMBOL "unknown meta function '#name' (no #fun with this name is defined)"` 并消费(返回 true),尾随定义随之报错路径不再静默消失。unit B 的 def 位 skip 分支在其之前,不受影响。
+  - 表达式/语句位(`bind_meta_call` 落空分支):unit A 同样报 E_RESOLVE_SYMBOL;**unit B 保持 passthrough**(rewrite_meta_call_dispatch 的"unknown -> passthrough"是元地既定语义,`#typeof` 未解析穿透依赖它)。原先落空构造的 BoundMetaCallExpression 下游无任何 lowering,等于静默吞掉——现已删除该死代码。
+  - 守卫测试:`Tests/MetaProgramming/MetaFunUnknownDefPosition.md`(复刻 win tools 症状)与 `MetaFunUnknownCallPosition.md`,CONTAINS 断言错误消息,修复前红/修复后绿。
+- **BoundMetaTest(C# in-process)三个用例改契约**:`BindMetaCallTopLevel`/`BindMetaCallUnknownDefPositionErrors`(原 BindMetaCallBindsArguments)/`BindMetaCallInFunctionBody` 原本断言未知 #name 的 bound 透传保留(#derive_clone 属性预留)——与新契约冲突,改为断言 `result.errors.size()==1` + 透传 def 消失/initializer 为 none。注意 InitBoundBatch 是 Lazy 单编译批,一个 snippet 运行时崩(读空 definitions 的 .at)会炸掉整类 20 个测试,别被表象骗成"全类回归"。

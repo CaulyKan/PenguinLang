@@ -5,10 +5,14 @@
 #   make clean              remove the build/ tree
 #   make bootstrap          self-bootstrap EmperorPenguin (see layout below)
 #   make release            release the native .ll emitter (host platform)
-#   make release_linux      linux emitter+script+dynlib -> build/linux/
-#   make release_win        windows emitter+script -> build/win/
+#   make release_linux      linux emitter+script+dynlib+*.sh helpers -> build/linux/
+#   make release_win        windows emitter+script+*.bat helpers -> build/win/
 #                           (cross compiled from a linux host by the
 #                           emperor script; native on a windows host)
+#   make release_babypenguin        dotnet self-contained single-file publish
+#                                   of the BabyPenguin C# compiler+VM (host)
+#   make release_babypenguin_linux  build/linux/baby_penguin (+ data stdlib)
+#   make release_babypenguin_win    build/win/baby_penguin.exe (+ data stdlib)
 #   make lsp                PenguinLang-native LSP server (host platform)
 #   make lsp_linux          build/linux/penguin-lsp
 #                           (reuses the release dynlib)
@@ -26,13 +30,13 @@
 #   make baseline_test      like `test`, but record the run as the new baseline
 #   make unittest           dotnet unit tests (BabyPenguin.Tests + EmperorPenguin.Tests)
 #   make publish            deploy release+LSP+tools into the vscode extension,
-#                           dotnet self-contained publishes, vsix package
+#                           self-contained baby_penguin publishes, vsix package
 #   make all                bootstrap + lsp + tools + unittest + test, in that
 #                           order (default)
 #
 # Bootstrap and test always target the HOST (never cross). Cross compiling
 # is linux->win only and is expressed by the explicit *_win targets; the
-# `emperor` driver script owns the cross toolchain selection.
+# `emperor_penguin` driver script owns the cross toolchain selection.
 #
 # Variables (overridable via environment or make command line):
 #   TEST_ARGS="..."        extra args for `make test` / `make baseline_test`
@@ -49,7 +53,7 @@
 #                          windows host (every bootstrap stage links the JIT).
 #
 # Linking is external: the compiler binary only emits platform-independent
-# LLVM IR (build/**/<name>.ll + side files); EmperorPenguin/emperor runs
+# LLVM IR (build/**/<name>.ll + side files); EmperorPenguin/emperor_penguin runs
 # clang + the C-runtime make. The same .ll links for every platform, so
 # release_linux / release_win share build/release/*.ll and only differ in
 # the link and the C runtime archive.
@@ -81,7 +85,8 @@ endif
 .DEFAULT_GOAL := all
 .PHONY: all clean bootstrap lsp release test baseline_test publish unittest \
         release_linux release_win lsp_linux lsp_win tools tools_linux \
-        tools_win tools-test docs-site gc-bench
+        tools_win tools-test docs-site gc-bench \
+        release_babypenguin release_babypenguin_linux release_babypenguin_win
 
 BS := build/bootstrap
 REL := build/release
@@ -151,9 +156,9 @@ EP_STD := EmperorPenguin/std/penguin/core_builtin.penguin EmperorPenguin/std/pen
 C_RT := $(wildcard EmperorPenguin/std/c/*.c EmperorPenguin/std/c/*.cpp EmperorPenguin/std/c/*.h) \
         EmperorPenguin/std/c/Makefile \
         $(wildcard EmperorPenguin/std/include/*) \
-        EmperorPenguin/emperor
+        EmperorPenguin/emperor_penguin
 ifeq ($(HOST),win)
-  C_RT += EmperorPenguin/emperor.bat
+  C_RT += EmperorPenguin/emperor_penguin.bat
 endif
 
 BABY_CS := $(shell find BabyPenguin PenguinLangParser -name '*.cs' -not -path '*/bin/*' -not -path '*/obj/*' 2>/dev/null) \
@@ -168,6 +173,8 @@ EPLIB_SRC := EmperorPenguin/EmperorPenguinLib.penguins \
            $(addprefix EmperorPenguin/,$(call proj_sources,EmperorPenguin/EmperorPenguinLib.penguins))
 EPEXE_SRC := EmperorPenguin/EmperorPenguinExe.penguins \
            $(addprefix EmperorPenguin/,$(call proj_sources,EmperorPenguin/EmperorPenguinExe.penguins))
+EPSTD_SRC := EmperorPenguin/EmperorPenguinStd.penguins \
+           $(addprefix EmperorPenguin/,$(call proj_sources,EmperorPenguin/EmperorPenguinStd.penguins))
 LSP_SRC := MagellanicPenguin/LspServer/LspServer.penguins \
            $(addprefix MagellanicPenguin/LspServer/,$(call proj_sources,MagellanicPenguin/LspServer/LspServer.penguins))
 # LspServerWin mixes same-dir LSP modules with ../../-relative EmperorPenguin sources.
@@ -201,7 +208,10 @@ ifeq ($(HOST),linux)
 
 # pass1 (dotnet cs backend) emits pass2.ll; the emperor script links it.
 # -enable-meta is a LINK flag (JIT archives into the produced binary) — the
-# emission itself is target- and link-independent.
+# emission itself is target- and link-independent. --disable-coroutine/
+# --disable-std: the VM cannot bind the scheduler externs, pass1 has no
+# dyn-lib capability, and every Makefile-driven compile passes its semantic
+# flags explicitly (never relying on the --enable-* defaults).
 $(BS)/pass2.ll: $(BABY_CS) $(EP1_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass1: BabyPenguin --backend=cs -> $@"
@@ -209,13 +219,13 @@ $(BS)/pass2.ll: $(BABY_CS) $(EP1_SRC) $(EP_STD)
 	dotnet run --configuration Release --project BabyPenguin -- \
 	    --backend=cs EmperorPenguin/EmperorPenguinPass1.penguins -- \
 	    EmperorPenguin/EmperorPenguinPass1.penguins EmperorPenguin/src/utils.penguin \
-	    --disable-dl $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
+	    --disable-dl --disable-coroutine --disable-std $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
 	} || { echo "Bootstrap FAILED at pass1 emission (BabyPenguin cs backend -> $(BS)/pass2.ll)" >&2; exit 1; }
 
 $(BS)/pass2: $(BS)/pass2.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass2.ll -o $(BS)/pass2 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass2.ll -o $(BS)/pass2 \
 	    -enable-meta $(TEE) build/logs/pass1-link.log; \
 	} || { echo "Bootstrap FAILED at pass1 link -> $(BS)/pass2" >&2; exit 1; }
 
@@ -224,97 +234,133 @@ $(BS)/pass2: $(BS)/pass2.ll $(C_RT)
 # dyn-lib-capable compiler. --enable-coroutine is passed ONLY here: pass3 is
 # the first coroutine-capable compiler (ports/channels/scheduler syntax
 # accepted). Wait-free programs (the compiler itself included) emit identical
-# binaries with or without the flag.
+# binaries with or without the flag. --disable-std: the Full monolith carries
+# the std sources itself (pass3 sits in $(BS)/ with no std lib beside it, but
+# explicit beats probed).
 $(BS)/pass3.ll: $(BS)/pass2 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass2: $(BS)/pass2 -> $@"
 	@set -o pipefail; { \
 	$(BS)/pass2 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    $(VERBOSE) --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
+	    $(VERBOSE) --enable-coroutine --disable-std -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
 	} || { echo "Bootstrap FAILED at pass2 emission -> $(BS)/pass3.ll" >&2; exit 1; }
 
 $(BS)/pass3: $(BS)/pass3.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass3.ll -o $(BS)/pass3 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass3.ll -o $(BS)/pass3 \
 	    -enable-meta $(TEE) build/logs/pass2-link.log; \
 	} || { echo "Bootstrap FAILED at pass2 link -> $(BS)/pass3" >&2; exit 1; }
 
-# pass3 -> pass4: split lib+exe (EmperorPenguinLib/Exe projects). The whole
-# compiler is a libemperorpenguin.penguin-lib and the CLI driver links it,
-# making dyn-lib load-bearing at compiler scale — every bootstrap exercises
-# the .penguin-lib build/consume path on the compiler's own 16k lines. The
-# exe finds its lib via rpath $$ORIGIN (SONAME = lib basename); $(BS)/pass4
+# pass3 -> pass4: split lib+exe (EmperorPenguinLib/Exe projects), with the STD
+# MODULES factored out into their own dyn-lib (EmperorPenguinStd.penguins ->
+# libemperorpenguin-std.penguin-lib). pass3 is the last stage that compiles
+# the std sources directly (pass2 has no dyn-lib capability; pass3 has it);
+# from pass4 on everything consumes the std lib via --lib. The whole compiler
+# is a libemperorpenguin.penguin-lib and the CLI driver links it, making
+# dyn-lib load-bearing at compiler scale — every bootstrap exercises the
+# .penguin-lib build/consume path on the compiler's own 16k lines. The exe
+# finds its libs via rpath $$ORIGIN (SONAME = lib basename); $(BS)/pass4
 # is a symlink into pass4.d so the conventional path keeps working from any
 # cwd. Lib-mode emission writes .ll + .libmeta (grouped target).
+$(BS)/pass4.d/libemperorpenguin-std.ll $(BS)/pass4.d/libemperorpenguin-std.libmeta \
+        &: $(BS)/pass3 $(EPSTD_SRC) $(EP_STD)
+	@mkdir -p $(@D) build/logs
+	@echo "Bootstrap pass3 (std lib): $(BS)/pass3 -> $(BS)/pass4.d/libemperorpenguin-std.ll"
+	@set -o pipefail; { \
+	$(BS)/pass3 EmperorPenguin/EmperorPenguinStd.penguins \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    -o $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(TEE) build/logs/pass3-stdlib.log; \
+	} || { echo "Bootstrap FAILED at pass3 std-lib emission" >&2; exit 1; }
+
+$(BS)/pass4.d/libemperorpenguin-std.penguin-lib: $(BS)/pass4.d/libemperorpenguin-std.ll $(BS)/pass4.d/libemperorpenguin-std.libmeta $(C_RT)
+	@mkdir -p $(@D) build/logs
+	@set -o pipefail; { \
+	EmperorPenguin/emperor_penguin link-lib $(BS)/pass4.d/libemperorpenguin-std.ll \
+	    $(BS)/pass4.d/libemperorpenguin-std.libmeta \
+	    -o $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(TEE) build/logs/pass3-stdliblink.log; \
+	} || { echo "Bootstrap FAILED at pass3 std-lib link" >&2; exit 1; }
+
 $(BS)/pass4.d/libemperorpenguin.ll $(BS)/pass4.d/libemperorpenguin.libmeta \
-        &: $(BS)/pass3 $(EPLIB_SRC) $(EP_STD)
+        &: $(BS)/pass3 $(EPLIB_SRC) $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass3 (lib): $(BS)/pass3 -> $(BS)/pass4.d/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinLib.penguins \
-	    $(VERBOSE) -o $(BS)/pass4.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass3-lib.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib $(BS)/pass4.d/libemperorpenguin-std.penguin-lib \
+	    -o $(BS)/pass4.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass3-lib.log; \
 	} || { echo "Bootstrap FAILED at pass3 lib emission" >&2; exit 1; }
 
 $(BS)/pass4.d/libemperorpenguin.penguin-lib: $(BS)/pass4.d/libemperorpenguin.ll $(BS)/pass4.d/libemperorpenguin.libmeta $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link-lib $(BS)/pass4.d/libemperorpenguin.ll \
+	EmperorPenguin/emperor_penguin link-lib $(BS)/pass4.d/libemperorpenguin.ll \
 	    $(BS)/pass4.d/libemperorpenguin.libmeta \
 	    -o $(BS)/pass4.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass3-liblink.log; \
 	} || { echo "Bootstrap FAILED at pass3 lib link" >&2; exit 1; }
 
-$(BS)/pass4.d/pass4.ll: $(BS)/pass3 $(BS)/pass4.d/libemperorpenguin.penguin-lib $(EPEXE_SRC) $(EP_STD)
+$(BS)/pass4.d/pass4.ll: $(BS)/pass3 $(BS)/pass4.d/libemperorpenguin.penguin-lib $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(EPEXE_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass3 (exe): $(BS)/pass3 -> $(BS)/pass4.d/pass4.ll"
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinExe.penguins \
-	    $(VERBOSE) --lib $(BS)/pass4.d/libemperorpenguin.penguin-lib \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib $(BS)/pass4.d/libemperorpenguin.penguin-lib \
 	    -o $(BS)/pass4.d/pass4 $(TEE) build/logs/pass3.log; \
 	} || { echo "Bootstrap FAILED at pass3 exe emission" >&2; exit 1; }
 
-$(BS)/pass4: $(BS)/pass4.d/pass4.ll $(BS)/pass4.d/libemperorpenguin.penguin-lib $(C_RT)
+$(BS)/pass4: $(BS)/pass4.d/pass4.ll $(BS)/pass4.d/libemperorpenguin.penguin-lib $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass4.d/pass4.ll -o $(BS)/pass4.d/pass4 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass4.d/pass4.ll -o $(BS)/pass4.d/pass4 \
 	    -enable-meta --consumer-lib $(BS)/pass4.d/libemperorpenguin.penguin-lib \
 	    $(TEE) build/logs/pass3-exelink.log; \
 	} || { echo "Bootstrap FAILED at pass3 exe link" >&2; exit 1; }
 	@ln -sf pass4.d/pass4 $(BS)/pass4
 
-# pass4 -> pass5: convergence-only repeat of the lib+exe stage. Kept after a
-# successful check so a repeat bootstrap with unchanged inputs re-verifies
-# md5s without recompiling.
+# pass4 -> pass5: convergence-only repeat of the lib+exe stage (the std lib
+# is a FIXED input both rounds: pass5.d/ gets a copy of pass4.d's file — same
+# bytes, so exe4==exe5 && lib4==lib5 remains a pure compiler-determinism
+# check). Kept after a successful check so a repeat bootstrap with unchanged
+# inputs re-verifies md5s without recompiling.
+$(BS)/pass5.d/libemperorpenguin-std.penguin-lib: $(BS)/pass4.d/libemperorpenguin-std.penguin-lib
+	@mkdir -p $(@D)
+	@cp -f $< $@
+
 $(BS)/pass5.d/libemperorpenguin.ll $(BS)/pass5.d/libemperorpenguin.libmeta \
-        &: $(BS)/pass4 $(EPLIB_SRC) $(EP_STD)
+        &: $(BS)/pass4 $(EPLIB_SRC) $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass4 (lib, convergence): $(BS)/pass4 -> $(BS)/pass5.d/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinLib.penguins \
-	    $(VERBOSE) -o $(BS)/pass5.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass4-lib.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib $(BS)/pass4.d/libemperorpenguin-std.penguin-lib \
+	    -o $(BS)/pass5.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass4-lib.log; \
 	} || { echo "Bootstrap FAILED at pass4 lib emission" >&2; exit 1; }
 
 $(BS)/pass5.d/libemperorpenguin.penguin-lib: $(BS)/pass5.d/libemperorpenguin.ll $(BS)/pass5.d/libemperorpenguin.libmeta $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link-lib $(BS)/pass5.d/libemperorpenguin.ll \
+	EmperorPenguin/emperor_penguin link-lib $(BS)/pass5.d/libemperorpenguin.ll \
 	    $(BS)/pass5.d/libemperorpenguin.libmeta \
 	    -o $(BS)/pass5.d/libemperorpenguin.penguin-lib $(TEE) build/logs/pass4-liblink.log; \
 	} || { echo "Bootstrap FAILED at pass4 lib link" >&2; exit 1; }
 
-$(BS)/pass5.d/pass5.ll: $(BS)/pass4 $(BS)/pass5.d/libemperorpenguin.penguin-lib $(EPEXE_SRC) $(EP_STD)
+$(BS)/pass5.d/pass5.ll: $(BS)/pass4 $(BS)/pass5.d/libemperorpenguin.penguin-lib $(BS)/pass5.d/libemperorpenguin-std.penguin-lib $(EPEXE_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Bootstrap pass4 (exe, convergence): $(BS)/pass4 -> $(BS)/pass5.d/pass5.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinExe.penguins \
-	    $(VERBOSE) --lib $(BS)/pass5.d/libemperorpenguin.penguin-lib \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib $(BS)/pass5.d/libemperorpenguin.penguin-lib \
 	    -o $(BS)/pass5.d/pass5 $(TEE) build/logs/pass4.log; \
 	} || { echo "Bootstrap FAILED at pass4 exe emission" >&2; exit 1; }
 
-$(BS)/pass5: $(BS)/pass5.d/pass5.ll $(BS)/pass5.d/libemperorpenguin.penguin-lib $(C_RT)
+$(BS)/pass5: $(BS)/pass5.d/pass5.ll $(BS)/pass5.d/libemperorpenguin.penguin-lib $(BS)/pass5.d/libemperorpenguin-std.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass5.d/pass5.ll -o $(BS)/pass5.d/pass5 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass5.d/pass5.ll -o $(BS)/pass5.d/pass5 \
 	    -enable-meta --consumer-lib $(BS)/pass5.d/libemperorpenguin.penguin-lib \
 	    $(TEE) build/logs/pass4-exelink.log; \
 	} || { echo "Bootstrap FAILED at pass4 exe link" >&2; exit 1; }
@@ -352,27 +398,28 @@ $(BS)/pass2.ll: $(BABY_CS) $(EP1_SRC) $(EP_STD)
 	dotnet run --configuration Release --project BabyPenguin -- \
 	    --backend=cs EmperorPenguin/EmperorPenguinPass1.penguins -- \
 	    EmperorPenguin/EmperorPenguinPass1.penguins EmperorPenguin/src/utils.penguin \
-	    --disable-dl $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
+	    --disable-dl --disable-coroutine --disable-std $(VERBOSE) -o $(BS)/pass2 $(TEE) build/logs/pass1.log; \
 	} || { echo "Bootstrap FAILED at pass1 emission (BabyPenguin cs backend -> $(BS)/pass2.ll)" >&2; exit 1; }
 
 $(BS)/pass2: $(BS)/pass2.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass2.ll -o $(BS)/pass2 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass2.ll -o $(BS)/pass2 \
 	    -enable-meta -target=win64 $(TEE) build/logs/pass1-link.log; \
 	} || { echo "Bootstrap FAILED at pass1 link -> $(BS)/pass2" >&2; exit 1; }
 
 $(BS)/pass3.ll: $(BS)/pass2 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
+	@echo "Bootstrap pass2: $(BS)/pass2 -> $@"
 	@set -o pipefail; { \
 	$(BS)/pass2 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    $(VERBOSE) --enable-coroutine -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
+	    $(VERBOSE) --enable-coroutine --disable-std -o $(BS)/pass3 $(TEE) build/logs/pass2.log; \
 	} || { echo "Bootstrap FAILED at pass2 emission -> $(BS)/pass3.ll" >&2; exit 1; }
 
 $(BS)/pass3: $(BS)/pass3.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass3.ll -o $(BS)/pass3 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass3.ll -o $(BS)/pass3 \
 	    -enable-meta -target=win64 $(TEE) build/logs/pass2-link.log; \
 	} || { echo "Bootstrap FAILED at pass2 link -> $(BS)/pass3" >&2; exit 1; }
 
@@ -380,13 +427,13 @@ $(BS)/pass4.ll: $(BS)/pass3 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	$(BS)/pass3 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    $(VERBOSE) -o $(BS)/pass4 $(TEE) build/logs/pass3.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std -o $(BS)/pass4 $(TEE) build/logs/pass3.log; \
 	} || { echo "Bootstrap FAILED at pass3 emission -> $(BS)/pass4.ll" >&2; exit 1; }
 
 $(BS)/pass4: $(BS)/pass4.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass4.ll -o $(BS)/pass4 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass4.ll -o $(BS)/pass4 \
 	    -enable-meta -target=win64 $(TEE) build/logs/pass3-link.log; \
 	} || { echo "Bootstrap FAILED at pass3 link -> $(BS)/pass4" >&2; exit 1; }
 
@@ -394,13 +441,13 @@ $(BS)/pass5.ll: $(BS)/pass4 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    $(VERBOSE) -o $(BS)/pass5 $(TEE) build/logs/pass4.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std -o $(BS)/pass5 $(TEE) build/logs/pass4.log; \
 	} || { echo "Bootstrap FAILED at pass4 emission -> $(BS)/pass5.ll" >&2; exit 1; }
 
 $(BS)/pass5: $(BS)/pass5.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	EmperorPenguin/emperor link $(BS)/pass5.ll -o $(BS)/pass5 \
+	EmperorPenguin/emperor_penguin link $(BS)/pass5.ll -o $(BS)/pass5 \
 	    -enable-meta -target=win64 $(TEE) build/logs/pass4-link.log; \
 	} || { echo "Bootstrap FAILED at pass4 link -> $(BS)/pass5" >&2; exit 1; }
 
@@ -424,67 +471,142 @@ endif
 # release_linux and release_win; each platform only re-links against its own
 # C runtime archive.
 #
-# The deployed compiler is the emitter binary + the emperor driver script:
-# the script locates the tree (EmperorPenguin/std) beside itself, checks the
-# LLVM environment, runs the emitter and links.
+# The deployed compiler is the emitter binary + the emperor driver script +
+# (linux) the compiler dyn-lib pair: the script locates the tree
+# (EmperorPenguin/std) beside itself, checks the LLVM environment, runs the
+# emitter and links. On linux the emitter is a thin exe over
+# libemperorpenguin.penguin-lib + libemperorpenguin-std.penguin-lib (rpath
+# $$ORIGIN); auto-std (--enable-std, default on) loads the std lib beside the
+# emitter, so user programs get std.Vector/json/argparse with no flags. On
+# windows the emitter stays the Full monolith (.penguin-lib is ELF-only) and
+# --enable-std is a silent no-op.
 
+# Full-monolith emitter .ll: std sources compiled in, ELF dyn-libs unknown —
+# the WINDOWS release layout only (the linux emitter is the lib+exe pair
+# below; the .penguin-lib mechanism is ELF-specific).
 $(REL)/emperor_penguin_llvm_emitter.ll $(REL)/emperor_penguin_llvm_emitter.def \
         &: $(BS)/pass4 $(EP2_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
-	@echo "Release: emitting $(REL)/emperor_penguin_llvm_emitter.ll"
+	@echo "Release: emitting $(REL)/emperor_penguin_llvm_emitter.ll (Full monolith, win)"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinPass2.penguins \
-	    $(VERBOSE) -o $(REL)/emperor_penguin_llvm_emitter $(TEE) build/logs/release-emitter.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    -o $(REL)/emperor_penguin_llvm_emitter $(TEE) build/logs/release-emitter.log; \
 	} || { echo "Release FAILED: emitter emission" >&2; exit 1; }
 
-# The compiler-as-dynlib for the LSP (no meta — the consumer LSP exe carries
-# no JIT either, matching the pre-split LSP builds).
+# The compiler-as-dynlib for LSP/tools/emitter-exe: built by pass4 from the
+# (std-free) Lib project consuming the bootstrap's std dyn-lib — the release
+# lib's libmeta records deps=[libemperorpenguin-std], so every consumer pulls
+# the std lib through the dep chain (resolved from the lib's directory).
 $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
-        &: $(BS)/pass4 $(EPLIB_SRC) $(EP_STD)
+        &: $(BS)/pass4 $(EPLIB_SRC) $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Release: emitting $(REL)/libemperorpenguin.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/EmperorPenguinLib.penguins \
-	    $(VERBOSE) -o $(REL)/libemperorpenguin.penguin-lib $(TEE) build/logs/release-lib.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib $(BS)/pass4.d/libemperorpenguin-std.penguin-lib \
+	    -o $(REL)/libemperorpenguin.penguin-lib $(TEE) build/logs/release-lib.log; \
 	} || { echo "Release FAILED: dynlib emission" >&2; exit 1; }
 
-build/linux/emperor_penguin_llvm_emitter: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
+# The deployed (linux) emitter = thin exe (main.penguin driver) linked against
+# the release compiler lib, the std lib riding the dep chain — the same shape
+# as bootstrap pass4 (EmperorPenguinExe.penguins --lib libemperorpenguin).
+$(REL)/emperor_penguin_exe.ll $(REL)/emperor_penguin_exe.def \
+        &: $(BS)/pass4 $(EPEXE_SRC) build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(EP_STD)
+	@mkdir -p $(@D) build/logs
+	@echo "Release: emitting $(REL)/emperor_penguin_exe.ll"
+	@set -o pipefail; { \
+	$(BS)/pass4 EmperorPenguin/EmperorPenguinExe.penguins \
+	    $(VERBOSE) --disable-coroutine --disable-std \
+	    --lib build/linux/libemperorpenguin.penguin-lib \
+	    -o $(REL)/emperor_penguin_exe $(TEE) build/logs/release-exe.log; \
+	} || { echo "Release FAILED: emitter exe emission" >&2; exit 1; }
+
+build/linux/emperor_penguin_llvm_emitter: $(REL)/emperor_penguin_exe.ll build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvm_emitter.ll \
+	OPT=-O2 EmperorPenguin/emperor_penguin link $(REL)/emperor_penguin_exe.ll \
 	    -o build/linux/emperor_penguin_llvm_emitter \
-	    -enable-meta $(TEE) build/logs/release-linux.log; \
+	    -enable-meta --consumer-lib build/linux/libemperorpenguin.penguin-lib \
+	    $(TEE) build/logs/release-linux.log; \
 	} || { echo "Release FAILED: linux emitter link" >&2; exit 1; }
 
 build/linux/libemperorpenguin.penguin-lib: $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link-lib $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
+	OPT=-O2 EmperorPenguin/emperor_penguin link-lib $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
 	    -o build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/release-linux-lib.log; \
 	} || { echo "Release FAILED: linux dynlib link" >&2; exit 1; }
 
-build/linux/emperor_penguin: EmperorPenguin/emperor
+# The std dyn-lib deployed beside the compiler lib (dep-chain resolution +
+# auto-std probing both look here).
+build/linux/libemperorpenguin-std.penguin-lib: $(BS)/pass4.d/libemperorpenguin-std.penguin-lib
 	@mkdir -p $(@D)
-	@cp -f EmperorPenguin/emperor $@
+	@cp -f $< $@
 
-release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/emperor_penguin
+build/linux/emperor_penguin: EmperorPenguin/emperor_penguin
+	@mkdir -p $(@D)
+	@cp -f EmperorPenguin/emperor_penguin $@
+
+release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib build/linux/emperor_penguin
+	@# Helper scripts (dependency installers etc.) ride along with the release.
+	@mkdir -p build/linux
+	@for f in EmperorPenguin/scripts/*.sh; do if [ -f "$$f" ]; then cp -f "$$f" build/linux/; fi; done
 
 build/win/emperor_penguin_llvm_emitter.exe: $(REL)/emperor_penguin_llvm_emitter.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link $(REL)/emperor_penguin_llvm_emitter.ll \
+	OPT=-O2 EmperorPenguin/emperor_penguin link $(REL)/emperor_penguin_llvm_emitter.ll \
 	    -o build/win/emperor_penguin_llvm_emitter.exe \
 	    -enable-meta -target=win64 $(TEE) build/logs/release-win.log; \
 	} || { echo "Release FAILED: windows emitter link" >&2; exit 1; }
 
-build/win/emperor.bat: EmperorPenguin/emperor.bat
+build/win/emperor_penguin.bat: EmperorPenguin/emperor_penguin.bat
 	@mkdir -p $(@D)
-	@cp -f EmperorPenguin/emperor.bat $@
+	@cp -f EmperorPenguin/emperor_penguin.bat $@
 
-release_win: build/win/emperor_penguin_llvm_emitter.exe build/win/emperor.bat
+release_win: build/win/emperor_penguin_llvm_emitter.exe build/win/emperor_penguin.bat
+	@# Helper scripts (*.bat) ride along with the release.
+	@mkdir -p build/win
+	@for f in EmperorPenguin/scripts/*.bat; do if [ -f "$$f" ]; then cp -f "$$f" build/win/; fi; done
 
 release: release_$(HOST)
 	@echo "Release complete ($(HOST))"
+
+# ── release_babypenguin ──────────────────────────────────────────────
+# Self-contained single-file dotnet publish of the BabyPenguin C#
+# compiler+VM. The exe lands as baby_penguin / baby_penguin.exe; the data
+# stdlib (Builtin.penguin / Utils.penguin) is copied beside it — a
+# single-file bundle cannot carry content files in a location the runtime
+# resolves (see SemanticModel.ResolveDataFile), so the pair travels along.
+BABY_DATA := BabyPenguin/Builtin.penguin BabyPenguin/Utils.penguin
+BABY_PUB_FLAGS := -c Release --self-contained -p:PublishSingleFile=true
+
+build/linux/baby_penguin: $(BABY_CS) $(BABY_DATA)
+	@mkdir -p $(@D) build/logs build/tmp/babypenguin-linux
+	@set -o pipefail; { \
+	dotnet publish BabyPenguin -r linux-x64 $(BABY_PUB_FLAGS) -o build/tmp/babypenguin-linux $(TEE) build/logs/babypenguin-linux.log; \
+	} || { echo "release_babypenguin FAILED: linux-x64 publish (log: build/logs/babypenguin-linux.log)" >&2; exit 1; }
+	@cp -f build/tmp/babypenguin-linux/BabyPenguin $@
+	@cp -f $(BABY_DATA) build/linux/
+	@rm -rf build/tmp/babypenguin-linux
+
+build/win/baby_penguin.exe: $(BABY_CS) $(BABY_DATA)
+	@mkdir -p $(@D) build/logs build/tmp/babypenguin-win
+	@set -o pipefail; { \
+	dotnet publish BabyPenguin -r win-x64 $(BABY_PUB_FLAGS) -o build/tmp/babypenguin-win $(TEE) build/logs/babypenguin-win.log; \
+	} || { echo "release_babypenguin FAILED: win-x64 publish (log: build/logs/babypenguin-win.log)" >&2; exit 1; }
+	@cp -f build/tmp/babypenguin-win/BabyPenguin.exe $@
+	@cp -f $(BABY_DATA) build/win/
+	@rm -rf build/tmp/babypenguin-win
+
+release_babypenguin_linux: build/linux/baby_penguin
+
+release_babypenguin_win: build/win/baby_penguin.exe
+
+release_babypenguin: release_babypenguin_$(HOST)
+	@echo "BabyPenguin release complete ($(HOST))"
 
 # ── lsp ──────────────────────────────────────────────────────────────
 # Linux: the LSP exe links the RELEASE dynlib (same compiler build as the
@@ -492,11 +614,11 @@ release: release_$(HOST)
 # $$ORIGIN + the lib's basename SONAME), so the pair is relocatable and the
 # shared Tests/LspTest path (`Args: build/linux/penguin-lsp`) keeps working —
 # the test runner copies any sibling *.penguin-lib beside the exe it stages.
-build/linux/penguin-lsp.ll: $(BS)/pass4 build/linux/libemperorpenguin.penguin-lib $(LSP_SRC) $(EP_STD)
+build/linux/penguin-lsp.ll: $(BS)/pass4 build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(LSP_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "LSP: emitting build/linux/penguin-lsp.ll"
 	@set -o pipefail; { \
-	$(BS)/pass4 --enable-coroutine MagellanicPenguin/LspServer/LspServer.penguins \
+	$(BS)/pass4 --enable-coroutine --disable-std MagellanicPenguin/LspServer/LspServer.penguins \
 	    --lib build/linux/libemperorpenguin.penguin-lib $(VERBOSE) -o build/linux/penguin-lsp $(TEE) build/logs/lsp.log; \
 	} || { echo "LSP build FAILED at emission" >&2; exit 1; }
 
@@ -504,10 +626,10 @@ build/linux/penguin-lsp.ll: $(BS)/pass4 build/linux/libemperorpenguin.penguin-li
 # (the LSP's own sources use #impl_json_serializable, and any user document
 # may use #fun) — the exe must carry the ORC JIT for the lib's meta engine
 # (the .so's _emperor_penguin_jit_* refs bind from here via -rdynamic).
-build/linux/penguin-lsp: build/linux/penguin-lsp.ll build/linux/libemperorpenguin.penguin-lib $(C_RT)
+build/linux/penguin-lsp: build/linux/penguin-lsp.ll build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/linux/penguin-lsp.ll -o build/linux/penguin-lsp -enable-meta \
+	OPT=-O2 EmperorPenguin/emperor_penguin link build/linux/penguin-lsp.ll -o build/linux/penguin-lsp -enable-meta \
 	    --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
 	} || { echo "LSP build FAILED at link" >&2; exit 1; }
 
@@ -526,13 +648,13 @@ build/win/MagellanicPenguinLSP.ll: $(BS)/pass4 $(LSPWIN_SRC) $(EP_STD)
 	@echo "LSP (win): emitting build/win/MagellanicPenguinLSP.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 MagellanicPenguin/LspServer/LspServerWin.penguins \
-	    --enable-coroutine $(VERBOSE) -o build/win/MagellanicPenguinLSP $(TEE) build/logs/lsp-win.log; \
+	    --enable-coroutine --disable-std $(VERBOSE) -o build/win/MagellanicPenguinLSP $(TEE) build/logs/lsp-win.log; \
 	} || { echo "Windows LSP build FAILED at emission" >&2; exit 1; }
 
 build/win/MagellanicPenguinLSP.exe: build/win/MagellanicPenguinLSP.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/win/MagellanicPenguinLSP.ll \
+	OPT=-O2 EmperorPenguin/emperor_penguin link build/win/MagellanicPenguinLSP.ll \
 	    -o build/win/MagellanicPenguinLSP.exe -target=win64 $(TEE) build/logs/lsp-win-link.log; \
 	} || { echo "Windows LSP build FAILED at link" >&2; exit 1; }
 ifeq ($(HOST),win)
@@ -552,21 +674,22 @@ lsp: lsp_$(HOST)
 # Linux: like the LSP, a thin consumer of the RELEASE dynlib — the emitter,
 # the formatter/mangle/libmeta implementations all come from
 # build/linux/libemperorpenguin.penguin-lib via --lib.
-build/tools/penguin-tools.ll: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib $(TOOLS_SRC) $(EP_STD)
+build/tools/penguin-tools.ll: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(TOOLS_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Tools: emitting build/tools/penguin-tools.ll"
 	@set -o pipefail; { \
 	build/linux/emperor_penguin_llvm_emitter EmperorPenguin/tools/PenguinTools.penguins \
+	    --disable-coroutine --disable-std \
 	    --lib build/linux/libemperorpenguin.penguin-lib $(VERBOSE) -o build/tools/penguin-tools $(TEE) build/logs/tools.log; \
 	} || { echo "Tools build FAILED at emission" >&2; exit 1; }
 
 # -enable-meta: the tools' own sources use #arg/#pos_arg annotations, so the
 # compiling emitter needs the JIT — and the exe carries it so the consumer
 # lib's meta engine refs bind (same -rdynamic pattern as the LSP).
-build/linux/penguin-tools: build/tools/penguin-tools.ll build/linux/libemperorpenguin.penguin-lib $(C_RT)
+build/linux/penguin-tools: build/tools/penguin-tools.ll build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/tools/penguin-tools.ll -o build/linux/penguin-tools \
+	OPT=-O2 EmperorPenguin/emperor_penguin link build/tools/penguin-tools.ll -o build/linux/penguin-tools \
 	    -enable-meta --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/tools-link.log; \
 	} || { echo "Tools build FAILED at link" >&2; exit 1; }
 
@@ -579,13 +702,13 @@ build/win/penguin-tools.ll: $(BS)/pass4 $(TOOLSWIN_SRC) $(EP_STD)
 	@echo "Tools (win): emitting build/win/penguin-tools.ll"
 	@set -o pipefail; { \
 	$(BS)/pass4 EmperorPenguin/tools/PenguinToolsWin.penguins \
-	    $(VERBOSE) -o build/win/penguin-tools $(TEE) build/logs/tools-win.log; \
+	    $(VERBOSE) --disable-coroutine --disable-std -o build/win/penguin-tools $(TEE) build/logs/tools-win.log; \
 	} || { echo "Windows tools build FAILED at emission" >&2; exit 1; }
 
 build/win/penguin-tools.exe: build/win/penguin-tools.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
-	OPT=-O2 EmperorPenguin/emperor link build/win/penguin-tools.ll \
+	OPT=-O2 EmperorPenguin/emperor_penguin link build/win/penguin-tools.ll \
 	    -o build/win/penguin-tools.exe -target=win64 $(TEE) build/logs/tools-win-link.log; \
 	} || { echo "Windows tools build FAILED at link" >&2; exit 1; }
 
@@ -651,12 +774,14 @@ baseline_test:
 # ── publish ──────────────────────────────────────────────────────────
 # Builds every platform's release + LSP (win -> linux cross compiling is not
 # supported, so a windows host publishes win only), deploys them into the
-# vscode extension, runs smoke tests from a foreign cwd, then the dotnet
-# self-contained publishes and the vsix package.
+# vscode extension, runs smoke tests from a foreign cwd, then the
+# self-contained baby_penguin publishes (release_babypenguin_*) and the vsix
+# package.
 ifeq ($(HOST),linux)
-  PUBLISH_TARGETS := release_linux release_win lsp_linux lsp_win tools_linux tools_win
+  PUBLISH_TARGETS := release_linux release_win lsp_linux lsp_win tools_linux tools_win \
+                     release_babypenguin_linux release_babypenguin_win
 else
-  PUBLISH_TARGETS := release_win lsp_win tools_win
+  PUBLISH_TARGETS := release_win lsp_win tools_win release_babypenguin_win
 endif
 
 publish: $(PUBLISH_TARGETS)
@@ -670,6 +795,7 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	@cp build/linux/emperor_penguin MagellanicPenguin/vscode/server/linux/
 	@cp build/linux/penguin-lsp MagellanicPenguin/vscode/server/linux/MagellanicPenguinLSP
 	@cp build/linux/libemperorpenguin.penguin-lib MagellanicPenguin/vscode/server/linux/
+	@cp build/linux/libemperorpenguin-std.penguin-lib MagellanicPenguin/vscode/server/linux/
 	@cp build/linux/penguin-tools MagellanicPenguin/vscode/server/linux/
 	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/penguin/
 	@cp -r EmperorPenguin/std/include/. MagellanicPenguin/vscode/server/linux/EmperorPenguin/std/include/
@@ -723,10 +849,10 @@ ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
 	echo "Bundled LSP smoke test passed (initialize + broken-doc survival + #fun compile + shutdown/exit from a foreign cwd)"
 endif
 ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
-	@# --- windows: emitter + emperor.bat + LSP monolith + tools + stdlib trees ---
+	@# --- windows: emitter + emperor_penguin.bat + LSP monolith + tools + stdlib trees ---
 	@mkdir -p MagellanicPenguin/vscode/server/windows/EmperorPenguin/std
 	@cp build/win/emperor_penguin_llvm_emitter.exe MagellanicPenguin/vscode/server/windows/
-	@cp build/win/emperor.bat MagellanicPenguin/vscode/server/windows/
+	@cp build/win/emperor_penguin.bat MagellanicPenguin/vscode/server/windows/
 	@cp build/win/MagellanicPenguinLSP.exe MagellanicPenguin/vscode/server/windows/
 	@cp build/win/penguin-tools.exe MagellanicPenguin/vscode/server/windows/
 	@cp -r EmperorPenguin/std/penguin/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/penguin/
@@ -735,7 +861,7 @@ ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
 	@# Compiler sources for MetaEngine unit B (see the linux deploy note).
 	@cp -r EmperorPenguin/src/. MagellanicPenguin/vscode/server/windows/EmperorPenguin/src/
 	@rm -f MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/*.o MagellanicPenguin/vscode/server/windows/EmperorPenguin/std/c/*.a
-	@echo "Deployed windows emitter + emperor.bat + LSP + stdlib -> MagellanicPenguin/vscode/server/windows/"
+	@echo "Deployed windows emitter + emperor_penguin.bat + LSP + stdlib -> MagellanicPenguin/vscode/server/windows/"
 	@# LSP smoke session (initialize, broken-document didOpen exercising the
 	@# Windows sjlj landing pad, shutdown/exit) from a foreign cwd — under
 	@# wine on a linux host (WINE=<path> or wine on PATH), natively on
@@ -777,12 +903,17 @@ ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
 	    cp thirdparty/mingw-w64-x86_64-llvm-libs/bin/*.dll MagellanicPenguin/vscode/server/windows/; \
 	fi
 endif
-	@# Publish native, self-contained dotnet executables for the selected targets.
+	@# (the self-contained baby_penguin publishes live in the
+	@# release_babypenguin_* targets — see the PUBLISH_TARGETS prerequisites).
+	@# The vsix bundles the self-contained dotnet DAP/LSP publishes (see the
+	@# "package" script in MagellanicPenguin/vscode/package.json) — produce
+	@# exactly the set it copies.
 ifeq ($(findstring linux,$(PUBLISH_TARGETS)),linux)
-	@dotnet publish -r linux-x64 --self-contained || { echo "Publish FAILED: linux-x64 self-contained" >&2; exit 1; }
+	@dotnet publish MagellanicPenguin/DAP -c Release -r linux-x64 --self-contained || { echo "Publish FAILED: DAP linux-x64 self-contained" >&2; exit 1; }
 endif
 ifeq ($(findstring win,$(PUBLISH_TARGETS)),win)
-	@dotnet publish -r win-x64 --self-contained || { echo "Publish FAILED: win-x64 self-contained" >&2; exit 1; }
+	@dotnet publish MagellanicPenguin/DAP -c Release -r win-x64 --self-contained || { echo "Publish FAILED: DAP win-x64 self-contained" >&2; exit 1; }
+	@dotnet publish MagellanicPenguin/LSP -c Release -r win-x64 --self-contained || { echo "Publish FAILED: LSP win-x64 self-contained" >&2; exit 1; }
 endif
 	@# Build the VSCode extension package (subshell keeps this makefile's cwd intact).
 	@(cd MagellanicPenguin/vscode && npm run package) || { echo "Publish FAILED: vscode extension (npm run package)" >&2; exit 1; }

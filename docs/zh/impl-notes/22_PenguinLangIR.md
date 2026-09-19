@@ -730,4 +730,4 @@ Source Code → Lexer → Parser → AST → SemanticModel → Bound Tree → IR
                                                                                   └→ LLVMEmitter.lower() → LLVM IR text (.ll)
 ```
 
-IR 是编译器后端的起点。它接收 Bound 树（携带完整语义信息的中间表示），生成抽象、平台无关的指令序列。`src/llvm/LLVMCompiler.penguin` 串联后端两个阶段：`build_ll()` 先用 `IRGenerator.generate()` 生成 IRModule，再由 `LLVMEmitter.lower()` 下降为 LLVM IR 文本并写出 `.ll` 文件。`.ll` 与平台无关；链接（clang + C 运行时库）由编译器之外的 `emperor`/`emperor.bat` 驱动脚本完成。
+IR 是编译器后端的起点。它接收 Bound 树（携带完整语义信息的中间表示），生成抽象、平台无关的指令序列。`src/llvm/LLVMCompiler.penguin` 串联后端两个阶段：`build_ll()` 先用 `IRGenerator.generate()` 生成 IRModule，再由 `LLVMEmitter.lower()` 下降为 LLVM IR 文本并写出 `.ll` 文件。`.ll` 与平台无关；链接（clang + C 运行时库）由编译器之外的 `emperor`/`emperor_penguin.bat` 驱动脚本完成。

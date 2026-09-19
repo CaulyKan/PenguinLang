@@ -8,17 +8,17 @@
 |---|---|---|
 | **BabyPenguin** | C# | 参考编译器与解释器（VM）。直接运行 `.penguin`；也可输出 C#（`--backend=cs`）。用来构建 EmperorPenguin。 |
 | **PenguinLangParser** | C#/ANTLR4 | BabyPenguin 使用的语法与解析器库。 |
-| **EmperorPenguin** | PenguinLang | 自举编译器。用 PenguinLang 编写、编译自身，输出 LLVM IR（`.ll`）；链接由 `emperor` 脚本驱动。 |
+| **EmperorPenguin** | PenguinLang | 自举编译器。用 PenguinLang 编写、编译自身，输出 LLVM IR（`.ll`）；链接由 `emperor_penguin` 脚本驱动。 |
 | **MagellanicPenguin** | PenguinLang/C#/TypeScript | 语言服务器（LSP）、调试适配器（DAP）与 VSCode 扩展。 |
 | **penguin-tools** | PenguinLang | 命令行工具：`demangle` / `mangle` / `meta` / `format`。 |
 
-自举关系是关键：BabyPenguin（C#）把 EmperorPenguin 的源码编译成原生编译器；此后 EmperorPenguin 编译它自己。任何 EmperorPenguin 编译出的程序都是 LLVM IR 文本；bash/bat 驱动脚本（`EmperorPenguin/emperor`）负责构建 C 运行时并调用 `clang` 链接出可执行文件。
+自举关系是关键：BabyPenguin（C#）把 EmperorPenguin 的源码编译成原生编译器；此后 EmperorPenguin 编译它自己。任何 EmperorPenguin 编译出的程序都是 LLVM IR 文本；bash/bat 驱动脚本（`EmperorPenguin/emperor_penguin`）负责构建 C 运行时并调用 `clang` 链接出可执行文件。
 
 ## 前置条件
 
 * **.NET SDK 10**——BabyPenguin、测试运行器与单元测试都面向 `net10.0`。
 * **LLVM/clang 22 及以上**——`clang`、`llvm-ar`、`llvm-config` 需在 `PATH` 上。EmperorPenguin 输出 LLVM 22 IR（其调试记录形式要求 clang ≥ 22）；带 `-enable-meta`（JIT 运行时）链接时需要 `llvm-config`。
-* **make + bash**——C 运行时构建与 `emperor` 驱动脚本。
+* **make + bash**——C 运行时构建与 `emperor_penguin` 驱动脚本。
 * 可选：`make docs-site` 需要 **mdbook 0.4.52**；VSCode 扩展打包需要 **npm**；Linux 上的 Windows 发布冒烟测试需要 **wine**；交叉编译 Windows 二进制需要 **llvm-mingw** 工具链（默认 `/opt/llvm-mingw`）。
 
 ## 用 BabyPenguin（解释器）运行程序
@@ -43,8 +43,8 @@ make bootstrap
 
 1. **pass1**——不保留为二进制；BabyPenguin 的 C# 后端把 `EmperorPenguinPass1.penguins`（标准库中不含 `#` 元构造的 EmperorPenguin）直接编译为 LLVM IR。
 2. **pass2**——该 IR 经 `-enable-meta`（支持 JIT）链接为原生编译器。
-3. **pass3**——pass2 编译 `EmperorPenguinPass2.penguins`（带元编程的完整编译器），得到第一个完整能力的原生编译器。
-4. **pass4 / pass5**——pass3 把编译器重建为共享库（`libemperorpenguin.penguin-lib`）加一个小可执行文件；pass5 重复构建，Makefile 校验 **pass4 与 pass5 的 md5 收敛**——编译器逐字节复现自身。
+3. **pass3**——pass2 编译 `EmperorPenguinPass2.penguins`（带元编程的完整编译器），得到第一个完整能力的原生编译器。pass3 随后构建**标准库动态库**（`libemperorpenguin-std.penguin-lib`——utils/json/vector/hashmap/array/dynlib/argparse）——这是最后一个直接编译 std 源码的阶段。
+4. **pass4 / pass5**——pass3 把编译器重建为共享库（`libemperorpenguin.penguin-lib`，经 `--lib` 消费 std 库）加一个小可执行文件；pass5 重复构建，Makefile 校验 **pass4 与 pass5 的 md5 收敛**——编译器逐字节复现自身。
 
 Makefile 的每个阶段都是带文件级依赖的文件目标，因此未变化的目录树不会重编——重复 `make bootstrap` 只重新校验 md5。直接使用产出的编译器：
 
@@ -55,24 +55,38 @@ build/bootstrap/pass3 file.penguin -o out        # 输出 out.ll
 
 编译器**只输出 LLVM IR**（`out.ll` 及附属文件），从不链接。
 
-## emperor 驱动脚本
+## emperor_penguin 驱动脚本
 
-`EmperorPenguin/emperor`（bash；Windows 上为 `emperor.bat`）检查 LLVM 环境、构建 C 运行时（`make -C EmperorPenguin/std/c`）并驱动 clang：
+`EmperorPenguin/emperor_penguin`（bash；Windows 上为 `emperor_penguin.bat`）检查 LLVM 环境、构建 C 运行时（`make -C EmperorPenguin/std/c`）并驱动 clang：
 
 ```bash
 # 全流程：编译 + 构建 C 运行时 + 链接，一条命令
-./build/linux/emperor hello.penguin -o hello
+./build/linux/emperor_penguin hello.penguin -o hello
 ./hello
 
 # 或分两步（测试运行器就是这样做的）
 build/bootstrap/pass3 hello.penguin -o hello.ll-out
-./build/linux/emperor link hello.ll-out.ll -o hello
+./build/linux/emperor_penguin link hello.ll-out.ll -o hello
 
 # 构建共享库而不是可执行文件
-./build/linux/emperor link-lib foo.ll foo.libmeta -o foo.penguin-lib
+./build/linux/emperor_penguin link-lib foo.ll foo.libmeta -o foo.penguin-lib
 ```
 
-常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--enable-coroutine` 启用 async/wait 语言支持；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。环境变量：`EMPEROR_PENGUIN_ROOT`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
+常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--disable-coroutine` 关闭 async/wait 支持（默认开启）；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。`--help` 打印完整选项表（模式、脚本 flag、全部转发的语义 flag、环境变量）。环境变量：`EMPEROR_EMITTER`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
+
+### std 动态库（`--enable-std`，默认开）
+
+标准库模块（`std.Vector`、`std.Hashmap`、`std.Array`、JSON、argparse……）以独立动态库 `libemperorpenguin-std.penguin-lib` 发布，与编译器可执行文件**放在同一目录**。具备 dyn-lib 能力的编译器会自动加载它（`--enable-std`，默认开；`--disable-std` 关闭），用户程序无需任何 flag、无需 `Compile.Args` 即可使用 std 模块：
+
+```penguin
+fun main() -> i64 {
+    let mut v = new std.Vector<i64>();
+    v.push(42);
+    return 0;
+}
+```
+
+文件不存在时（自举各 pass、BabyPenguin VM、Windows 单体构建——`.penguin-lib` 机制为 ELF 专属）auto-std 静默跳过。注意：auto-std 下编译的程序（连 hello world 也是）在运行期依赖 std 动态库（`Option`/迭代器等所有程序都用的泛型实例随库分发），因此驱动脚本在链接后会把实际产生 `DT_NEEDED` 的 `.penguin-lib` 自动复制到产物可执行文件旁——exe + 复制的 lib 成对即可原地运行。若要改为显式以 std 源码编译（例如使用旁边没有 std 库的 pass1/pass2/pass3），可像测试套件那样把 std 源文件作为输入传入。
 
 输出的 `.ll` 与平台无关：一次输出可以链接为 Linux、Windows 或 `.penguin-lib`。
 
@@ -80,7 +94,7 @@ build/bootstrap/pass3 hello.penguin -o hello.ll-out
 
 | 目标 | 产物 |
 |---|---|
-| `make release` | `build/linux/emperor_penguin_llvm_emitter`（编译器）、`build/linux/libemperorpenguin.penguin-lib`（库形态的编译器）、`build/linux/emperor_penguin`（驱动脚本）。`make release_win` 交叉构建 Windows 一对。 |
+| `make release` | `build/linux/emperor_penguin_llvm_emitter`（薄编译器 exe）、`build/linux/libemperorpenguin.penguin-lib`（库形态的编译器）+ `build/linux/libemperorpenguin-std.penguin-lib`（std 动态库）、`build/linux/emperor_penguin`（驱动脚本）。`make release_win` 交叉构建 Windows 单体 emitter + `.bat` 一对。 |
 | `make lsp` | `build/linux/penguin-lsp`——语言服务器，与 release 库链接。 |
 | `make tools` | `build/linux/penguin-tools`——`demangle` / `mangle` / `meta` / `format`。`make tools-test` 跑其金测试。 |
 | `make test` | 跨编译器 markdown 测试套件（`Tests/*.md`，约 600 例）。快速循环：`dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin`。 |
@@ -114,11 +128,11 @@ EOF
 
 ```bash
 build/bootstrap/pass3 hello.penguin -o hello.exe      # 输出 hello.exe.ll
-EMPEROR_PENGUIN_ROOT=$PWD ./build/linux/emperor link hello.exe.ll -o hello
+./build/linux/emperor_penguin link hello.exe.ll -o hello
 ./hello
 ```
 
-只有从仓库目录之外调用驱动脚本时才需要 `EMPEROR_PENGUIN_ROOT`（它用于定位 C 运行时所需的 `EmperorPenguin/std`）；`make release` 的副本会自行解析自身位置。
+驱动脚本按自身位置解析 C 运行时所需的 `EmperorPenguin/std`（自身目录或其父目录——覆盖开发目录树与发布的 `server/<platform>/` 布局）；`make release` 的副本会自行解析自身位置。
 
 ## VSCode 扩展与语言服务器
 

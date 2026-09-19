@@ -15,6 +15,11 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    permissions:
+      # The date-versioned release upload at the end of the pipeline
+      # (gh release create/upload) needs contents:write.
+      contents: write
+
     steps:
     - uses: actions/checkout@v4
     - name: Setup .NET
@@ -30,7 +35,7 @@ jobs:
       #   llvm-ar     — C runtime archives (EmperorPenguin/std/c/Makefile defaults AR=llvm-ar)
       #   llvm-config — every bootstrap/LSP/tools link passes -enable-meta, which builds
       #                 libpenguin_jit.a against the host LLVM (llvm-22-dev) and dies
-      #                 without llvm-config on PATH (EmperorPenguin/emperor)
+      #                 without llvm-config on PATH (EmperorPenguin/emperor_penguin)
       #   clang++     — compiles penguin_jit.cpp once the JIT is enabled
       run: |
         wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -78,6 +83,67 @@ jobs:
         name: test-report
         path: build/testruns/*/summary.html
         if-no-files-found: ignore
+
+    # ── release flow (pushes / manual dispatch only, never on PRs) ──────
+    # Everything below runs only after the FULL pipeline above succeeded
+    # (bootstrap -> lsp/tools -> unittest -> cross-compiler suite).
+
+    - name: Install llvm-mingw cross toolchain
+      if: github.event_name != 'pull_request'
+      # make publish cross-compiles the windows emitter/LSP/tools
+      # (linux -> win) through the emperor_penguin script, which expects the
+      # llvm-mingw toolchain at MINGW_PREFIX (default /opt/llvm-mingw).
+      # Pinned to the LLVM 22.1.x series the project links against.
+      run: |
+        wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz
+        sudo tar -xf llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz -C /opt
+        sudo mv /opt/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64 /opt/llvm-mingw
+        /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang --version | head -1
+    - name: Install vscode extension dependencies
+      if: github.event_name != 'pull_request'
+      # make publish ends with `npm run package` in MagellanicPenguin/vscode
+      # (cpy / vsce / esbuild come from devDependencies).
+      run: npm ci
+      working-directory: MagellanicPenguin/vscode
+    - name: Publish release artifacts
+      if: github.event_name != 'pull_request'
+      # Full release flow on top of the passing pipeline: both platforms'
+      # emitter + driver script + LSP + tools + dynlib, the self-contained
+      # single-file baby_penguin publishes, the vscode extension deploy +
+      # smoke tests + vsix. NOTE: thirdparty/mingw-w64-x86_64-llvm-libs (the
+      # Windows meta JIT runtime, ~180 MB) is not committed, so the windows
+      # emitter links with no-op JIT stubs here — it compiles non-meta
+      # programs fine; local `make publish` with the vendored package
+      # produces the full-meta binaries.
+      run: make publish
+    - name: Package release zips
+      if: github.event_name != 'pull_request'
+      run: |
+        VER=$(date -u +%Y%m%d)
+        echo "VERSION=$VER" >> "$GITHUB_ENV"
+        # The meta-enabled windows emitter loads libLLVM-22.dll at process
+        # start; stage the vendored runtime DLLs beside it when the package
+        # exists (CI checkouts don't carry thirdparty/ — those win binaries
+        # ship with no-op JIT stubs and need no DLLs).
+        if [ -f thirdparty/mingw-w64-x86_64-llvm-libs/bin/libLLVM-22.dll ]; then
+          cp thirdparty/mingw-w64-x86_64-llvm-libs/bin/*.dll build/win/
+        fi
+        (cd build && zip -qr "penguinlang-linux-$VER.zip" linux)
+        (cd build && zip -qr "penguinlang-win-$VER.zip" win)
+        ls -la build/penguinlang-*.zip
+    - name: Upload to GitHub release
+      if: github.event_name != 'pull_request'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        TAG="v$VERSION"
+        gh release create "$TAG" --title "PenguinLang $TAG" \
+            --notes "Automated date-versioned snapshot build (${{ github.sha }})." \
+            --target "$GITHUB_SHA" || echo "release $TAG already exists — updating assets"
+        gh release upload "$TAG" \
+            "build/penguinlang-linux-$VERSION.zip" \
+            "build/penguinlang-win-$VERSION.zip" --clobber
+        echo "Release: $(gh release view "$TAG" --json url -q .url)"
 
   deploy-pages:
     # Publish the bilingual documentation site (mdBook, `make docs-site`:

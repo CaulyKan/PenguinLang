@@ -41,7 +41,7 @@ const lspServerPath: Map<string, string> = new Map([
 // the user's terminal.
 const emperorPenguinPath: Map<string, string> = new Map([
 	["linux", "server/linux/emperor_penguin"],
-	["win32", "server\\windows\\emperor.bat"]
+	["win32", "server\\windows\\emperor_penguin.bat"]
 ]);
 
 // Command to restart the language server

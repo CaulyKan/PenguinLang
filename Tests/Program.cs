@@ -1408,15 +1408,15 @@ public interface ICompilerBackend
 
 /// <summary>
 /// Links the .ll (+ .libmeta) an EmperorPenguin backend emitted, via the
-/// external emperor / emperor.bat driver script — the compiler itself no
-/// longer invokes clang or builds the C runtime.
+/// external emperor_penguin / emperor_penguin.bat driver script — the
+/// compiler itself no longer invokes clang or builds the C runtime.
 /// </summary>
 public static class EmperorLink
 {
     public static string ScriptPath(string repoRoot) =>
         OperatingSystem.IsWindows()
-            ? Path.Combine(repoRoot, "EmperorPenguin", "emperor.bat")
-            : Path.Combine(repoRoot, "EmperorPenguin", "emperor");
+            ? Path.Combine(repoRoot, "EmperorPenguin", "emperor_penguin.bat")
+            : Path.Combine(repoRoot, "EmperorPenguin", "emperor_penguin");
 
     public static ProcessStartInfo Build(string repoRoot, string outFile, string compileArgs, string workDir)
     {

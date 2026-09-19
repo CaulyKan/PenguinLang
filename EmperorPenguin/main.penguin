@@ -4,18 +4,36 @@ namespace emperor {
 // LLVMCompiler; the .penguin-lib loading/validation/metadata in Dynlib. This
 // file only orchestrates: parse -> load lib chain -> assemble sources ->
 // compile -> validate (lib) -> emit LLVM IR (.ll). LINKING is external (the
-// emperor / emperor.bat driver scripts run clang + the C runtime make) so the
+// emperor / emperor_penguin.bat driver scripts run clang + the C runtime make) so the
 // emitted IR is platform-independent and each platform just links it.
 initial {
     let args: _utils.List<string> = _utils.args();
     if (args.size() == 0) {
-        __builtin.eprintln("Usage: EmperorPenguin [-v|-vv|-vvv] [-o output] <file.penguins | file1.penguin [file2.penguin ...]>");
+        __builtin.eprintln("Usage: EmperorPenguin [options] <file.penguins | file1.penguin [file2.penguin ...]>");
         __builtin.eprintln("       Emits LLVM IR only: -o X -> X.ll (+ X.def); -o X.penguin-lib -> X.ll + X.libmeta.");
+        __builtin.eprintln("       Run with --help for the option list (or emperor_penguin --help for the full");
+        __builtin.eprintln("       driver documentation, incl. link modes).");
         __builtin.exit(1);
     }
 
     let mut config = new CompilerConfig();
     config.parse(args);
+    if (config.help_requested) {
+        __builtin.eprintln("Usage: EmperorPenguin [options] <file.penguins | file1.penguin [file2.penguin ...]>");
+        __builtin.eprintln("Options:");
+        __builtin.eprintln("  -o <output>       output base; X.penguin-lib triggers dyn-lib (lib) mode");
+        __builtin.eprintln("  -v / -vv / -vvv   verbosity");
+        __builtin.eprintln("  --enable-coroutine / --disable-coroutine   concurrency syntax + scheduler stdlib (default: on)");
+        __builtin.eprintln("  --enable-std / --disable-std               auto-load libemperorpenguin-std.penguin-lib beside the compiler (default: on)");
+        __builtin.eprintln("  --enable-dl / --disable-dl                 dyn-lib build/consume (default: on)");
+        __builtin.eprintln("  --lib <file.penguin-lib>                   consume a dyn-lib (repeatable; deps resolved recursively)");
+        __builtin.eprintln("  --libmeta=text|direct                      libmeta ingestion mode (default: direct)");
+        __builtin.eprintln("  --define A=B / --meta-src <file>           compile-time option store / explicit unit-B meta sources");
+        __builtin.eprintln("  --enable-meta, -target=, -llvm-win=        link-time flags (parsed here, honored by the external driver)");
+        __builtin.eprintln("Emits LLVM IR only: -o X -> X.ll (+ X.def/.libs); -o X.penguin-lib -> X.ll + X.libmeta.");
+        __builtin.eprintln("Linking is external (emperor_penguin / emperor_penguin.bat; see their --help).");
+        __builtin.exit(0);
+    }
     if (config.source_files.size() == 0) {
         __builtin.eprintln("Error: no source files specified");
         __builtin.exit(1);
@@ -87,6 +105,32 @@ initial {
     if (config.lib_paths.size() > 0 && (!config.dl_enabled || !dynlib_available())) {
         __builtin.eprintln("[EmperorPenguin] Error: --lib requires --enable-dl and a dyn-lib-capable compiler (pass3+ built from EmperorPenguinPass2.penguins)");
         __builtin.exit(1);
+    }
+
+    // Auto-std: with std enabled (default) and this binary dyn-lib-capable,
+    // load the std dynlib sitting beside the compiler executable — the
+    // released layout ships emitter + libemperorpenguin.penguin-lib +
+    // libemperorpenguin-std.penguin-lib together, so plain user invocations
+    // get json/vector/hashmap/array/argparse without listing sources. Skipped
+    // silently when the file is absent (bootstrap passes, the BabyPenguin VM,
+    // Windows monoliths) or when a --lib entry already names it (explicit
+    // paths win; the loader dedups by lib name anyway).
+    if (config.std_enabled && config.dl_enabled && dynlib_available()) {
+        let std_lib: string = compiler_exe_dir() + "/libemperorpenguin-std.penguin-lib";
+        if (_utils.file_exists(std_lib)) {
+            let std_named: mut bool = false;
+            let sai: mut i64 = 0;
+            while (sai < cast<i64>(config.lib_paths.size())) {
+                if (_get_base_name(config.lib_paths.at(cast<u64>(sai)).some) == "libemperorpenguin-std.penguin-lib") {
+                    std_named = true;
+                }
+                sai = sai + 1;
+            }
+            if (!std_named) {
+                config.lib_paths.push(std_lib);
+                if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Auto-std: " + std_lib); }
+            }
+        }
     }
 
     // Load the --lib chain (deps recursively, deps-first). On any unresolvable

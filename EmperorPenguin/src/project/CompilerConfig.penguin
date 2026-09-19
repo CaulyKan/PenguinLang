@@ -20,19 +20,21 @@ fun _get_stem(path: string) -> string {
 }
 
 // Parsed CLI state for a compiler invocation. Owns the argument loop (formerly
-// in main.penguin) plus the dyn-lib flags --enable-dl/--disable-dl, --lib, and
-// --lib-export. dl_enabled is a plain bool (default on) checked with ordinary
-// `if` in the driver — no meta/#option anywhere in the compiler's own code.
-// Whether the compiler BINARY actually has the json-backed Dynlib code is a
-// build-time property (DynlibStub in the default project vs the json-backed
-// Dynlib in EmperorPenguinPass2.penguins, see make bootstrap).
+// in main.penguin) plus the dyn-lib flags (--enable-dl/--disable-dl, --lib),
+// the semantic feature toggles (--enable/--disable-coroutine, --enable/--
+// disable-std) and --help. dl_enabled/std_enabled are plain bools (defaults
+// on) checked with ordinary `if` in the driver — no meta/#option anywhere in
+// the compiler's own code. Whether the compiler BINARY actually has the
+// json-backed Dynlib code is a build-time property (DynlibStub in the default
+// project vs the json-backed Dynlib in EmperorPenguinPass2.penguins, see
+// make bootstrap).
 export class CompilerConfig {
     output_name: mut string = "";
     verbose: mut i64 = 0;
     // ── Link-only flags ────────────────────────────────────────────────
     // The compiler emits platform-independent LLVM IR (.ll) only; linking
     // (and everything these flags steer) lives in the external driver
-    // scripts (EmperorPenguin/emperor / emperor.bat). They are still PARSED
+    // scripts (EmperorPenguin/emperor_penguin / emperor_penguin.bat). They are still PARSED
     // here purely so passing them does not fall through to source_files.
     // enable_meta: link libpenguin_jit.a + LLVM into the produced binary
     // (runtime #fun JIT).
@@ -65,15 +67,30 @@ export class CompilerConfig {
     // parse/rebind); "text" materializes bodyless declaration text and runs
     // the ordinary pipeline — the debug/parity path.
     libmeta_mode: mut string = "direct";
-    // --enable-coroutine (default off): gates the RTL-port/concurrency syntax
-    // (input/output ports, construct, connect, wait forms, try/catch, async
-    // expressions). Without it those constructs are compile errors and the
-    // emitted main() calls initial routines sequentially (no scheduler). With
-    // it, codegen still only uses the coroutine scheduler when the compiled
-    // module actually contains suspension points, so flag on/off produce
-    // identical binaries for wait-free programs (bootstrap md5 convergence).
-    // In the Makefile bootstrap the flag is passed only when pass2 compiles pass3.
-    coroutine_enabled: bool = false;
+    // Advanced semantic features default ON for plain user invocations; the
+    // Makefile-driven bootstrap/release builds pass the explicit --disable-*
+    // forms so every stage stays deterministic regardless of defaults.
+    // --enable-coroutine / --disable-coroutine (default on): gates the
+    // RTL-port/concurrency syntax (input/output ports, construct, connect,
+    // wait forms, try/catch, async expressions). Without it those constructs
+    // are compile errors and the emitted main() calls initial routines
+    // sequentially (no scheduler). With it, codegen still only uses the
+    // coroutine scheduler when the compiled module actually contains
+    // suspension points, so flag on/off produce identical binaries for
+    // wait-free programs (bootstrap md5 convergence).
+    coroutine_enabled: bool = true;
+    // --enable-std / --disable-std (default on): auto-load the std dynlib
+    // (libemperorpenguin-std.penguin-lib) found beside the compiler
+    // executable — json/vector/hashmap/array/dynlib/argparse without listing
+    // their sources. Requires a dyn-lib-capable compiler (--enable-dl) and
+    // the lib file actually sitting there; otherwise silently skipped (the
+    // bootstrap passes, the BabyPenguin VM and the Windows monoliths ship no
+    // std lib).
+    std_enabled: bool = true;
+    // --help / -h: print the usage summary and exit 0 (the full option table
+    // lives in the emperor_penguin driver script; this is the bare-emitter
+    // form so a stray --help is never treated as a source file name).
+    help_requested: bool = false;
     // --meta-src <path> (repeatable, like --lib) / meta-sources=[...] in a
     // .penguins project: the EXPLICIT list of source files compiled into the
     // meta engine's unit B, so a #fun body can call ORDINARY USER FUNCTIONS
@@ -156,6 +173,14 @@ export class CompilerConfig {
                 this.dl_enabled = false;
             } else if (arg == "--enable-coroutine" || arg == "-enable-coroutine") {
                 this.coroutine_enabled = true;
+            } else if (arg == "--disable-coroutine" || arg == "-disable-coroutine") {
+                this.coroutine_enabled = false;
+            } else if (arg == "--enable-std" || arg == "-enable-std") {
+                this.std_enabled = true;
+            } else if (arg == "--disable-std" || arg == "-disable-std") {
+                this.std_enabled = false;
+            } else if (arg == "--help" || arg == "-help" || arg == "-h") {
+                this.help_requested = true;
             } else if (arg == "--meta-src" || arg == "-meta-src") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {
@@ -163,13 +188,7 @@ export class CompilerConfig {
                 }
             } else if (string_length(arg) >= 11 && string_substring(arg, 0, 11) == "--meta-src=") {
                 this.meta_source_files.push(string_substring(arg, 11, string_length(arg) - 11));
-            } else if (arg == "--meta-with-user-sources" || arg == "-meta-with-user-sources") {
-                // Removed: the marker-comment + keyword-heuristic selection was
-                // replaced by the explicit --meta-src list. Fail loudly rather
-                // than silently treating the flag as a source file name.
-                __builtin.eprintln("[EmperorPenguin] Error: --meta-with-user-sources no longer exists; pass the unit-B files explicitly with --meta-src <file> (repeatable) or meta-sources=[...] in the .penguins project");
-                __builtin.exit(2);
-            } else if (arg == "--lib" || arg == "-lib") {
+            }  else if (arg == "--lib" || arg == "-lib") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {
                     this.lib_paths.push(args.at(cast<u64>(i)).some);

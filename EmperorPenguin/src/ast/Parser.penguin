@@ -176,11 +176,7 @@ fun _mark_ast_exported(def: Definition) {
                 mc.func_name = name_token.text;
                 mc.location = this.tok_loc(name_token);
                 this.stream.expect(new TokenType.LParen());
-                while (!(this.stream.peek_type() is TokenType.RParen)) {
-                    let arg = this.parse_meta_argument();
-                    mc.arguments.push(arg);
-                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
-                }
+                this.parse_meta_call_arguments(mc);
                 this.stream.expect(new TokenType.RParen());
                 if (this.stream.peek_type() is TokenType.LBrace) {
                     this.capture_meta_trailing_block(mc);
@@ -242,6 +238,42 @@ fun _mark_ast_exported(def: Definition) {
                 return new Expression.identifier(new IdentifierExpression(tok.text));
             }
             return this.parse_expression();
+        }
+
+        // Shared `(...)` argument-list loop for every `#name(...)` call site
+        // (expression / type-specifier / definition-annotation forms). Two
+        // guards keep a malformed list from spinning forever: the argument
+        // parsers return a constant WITHOUT consuming on tokens they do not
+        // recognize (parse_primaryExpression's fallback branch), so a shape
+        // like the named argument `help: "h"` used to wedge the loop at the
+        // `:` — the stream never advanced and the process spun at 100% CPU
+        // pushing empty arguments (the #typeof(i32) keyword hang was the same
+        // zero-progress shape, special-cased per keyword back then).
+        // (1) an identifier directly followed by `:` is diagnosed as the
+        //     unsupported named-argument form;
+        // (2) any iteration that consumed nothing is reported and
+        //     force-stepped — or, at end of input (where advance() throws),
+        //     reported and the loop ends.
+        fun parse_meta_call_arguments(this, mc: mut MetaCallExpression) {
+            while (!(this.stream.peek_type() is TokenType.RParen)) {
+                let pos_before: i64 = this.stream.pos;
+                let arg_tok: Token = this.stream.peek();
+                if (arg_tok.token_type is TokenType.Identifier && this.stream.pos + 1 < cast<i64>(this.stream.tokens.size()) && (this.stream.tokens.at(cast<u64>(this.stream.pos + 1)).some).token_type is TokenType.Colon) {
+                    this.report_error("E_PARSE: named arguments are not supported in #" + mc.func_name + "(...) - pass arguments positionally");
+                    this.stream.advance();
+                }
+                let arg: Expression = this.parse_meta_argument();
+                mc.arguments.push(arg);
+                if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
+                if (this.stream.pos == pos_before) {
+                    if (this.stream.is_at_end()) {
+                        this.report_error("E_PARSE: unterminated #" + mc.func_name + "(...) argument list (reached end of input)");
+                        return;
+                    }
+                    this.report_error("E_PARSE: #" + mc.func_name + "(...) argument parsing made no progress at '" + this.stream.peek().text + "'");
+                    this.stream.advance();
+                }
+            }
         }
 
         // Meta-call trailing block `{ ... }`: capture it two ways. (1) Raw inner
@@ -1086,11 +1118,7 @@ fun _mark_ast_exported(def: Definition) {
                 node.location = this.tok_loc(name_token);
                 node.name = name_token.text;
                 this.stream.expect(new TokenType.LParen());
-                while (!(this.stream.peek_type() is TokenType.RParen)) {
-                    let arg = this.parse_meta_argument();
-                    mc.arguments.push(arg);
-                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
-                }
+                this.parse_meta_call_arguments(mc);
                 this.stream.expect(new TokenType.RParen());
                 if (this.stream.peek_type() is TokenType.LBrace) {
                     this.capture_meta_trailing_block(mc);
@@ -1298,11 +1326,7 @@ fun _mark_ast_exported(def: Definition) {
                 ts.location = this.tok_loc(name_token);
                 ts.name = name_token.text;
                 this.stream.expect(new TokenType.LParen());
-                while (!(this.stream.peek_type() is TokenType.RParen)) {
-                    let arg = this.parse_meta_argument();
-                    mc.arguments.push(arg);
-                    if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
-                }
+                this.parse_meta_call_arguments(mc);
                 this.stream.expect(new TokenType.RParen());
                 if (this.stream.peek_type() is TokenType.LBrace) {
                     this.capture_meta_trailing_block(mc);
@@ -2650,11 +2674,7 @@ fun _mark_ast_exported(def: Definition) {
             mc.func_name = name_token.text;
             mc.location = start_loc;
             this.stream.expect(new TokenType.LParen());
-            while (!(this.stream.peek_type() is TokenType.RParen)) {
-                let arg = this.parse_expression();
-                mc.arguments.push(arg);
-                if (this.stream.peek_type() is TokenType.Comma) { this.stream.advance(); }
-            }
+            this.parse_meta_call_arguments(mc);
             this.stream.expect(new TokenType.RParen());
             if (this.stream.peek_type() is TokenType.LBrace) {
                 this.capture_meta_trailing_block(mc);

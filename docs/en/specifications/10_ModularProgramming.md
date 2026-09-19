@@ -160,10 +160,10 @@ Beyond single-process modules, a program can be split into shared libraries. A `
 
 ```bash
 # build a library (export-marked defs become its public surface)
-emperor libsrc.penguin -o libfoo.penguin-lib
+emperor_penguin libsrc.penguin -o libfoo.penguin-lib
 
 # compile a consumer against it, then link exe+lib together
-emperor app.penguin --lib libfoo.penguin-lib -o app
+emperor_penguin app.penguin --lib libfoo.penguin-lib -o app
 ```
 
 Rules in brief:

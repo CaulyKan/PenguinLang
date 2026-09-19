@@ -3,7 +3,7 @@ namespace emperor {
 // The output pipeline: IR generation + LLVM lowering, written as a
 // platform-independent .ll file. Linking (clang, the C runtime archive, the
 // meta/JIT archives, stack flags) lives OUTSIDE the compiler — in the
-// `emperor` / `emperor.bat` driver scripts — so one .ll serves every link
+// `emperor` / `emperor_penguin.bat` driver scripts — so one .ll serves every link
 // target (linux native, linux->win cross, native windows).
 export class LLVMCompiler {
     verbose: mut i64 = 0;

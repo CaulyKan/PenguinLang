@@ -1,19 +1,22 @@
 @echo off
 rem ============================================================================
-rem emperor.bat — external driver for the EmperorPenguin compiler (Windows).
+rem emperor_penguin.bat — external driver for the EmperorPenguin compiler (Windows).
 rem
-rem Mirror of the `emperor` bash driver. The compiler binary
+rem Mirror of the `emperor_penguin` bash driver. The compiler binary
 rem (emperor_penguin_llvm_emitter.exe) only emits platform-independent LLVM
 rem IR (.ll files); this script owns the LLVM environment checks, the C
 rem runtime build (make -C EmperorPenguin/std/c) and the final clang link.
 rem
 rem Usage:
-rem   emperor.bat [--emitter <path>] <src...> [flags] -o <out>
-rem   emperor.bat link <file.ll> -o <out> [-enable-meta] [-llvm-win <dir>]
+rem   emperor_penguin.bat [--emitter <path>] <src...> [flags] -o <out>
+rem   emperor_penguin.bat link <file.ll> -o <out> [-enable-meta] [-llvm-win <dir>]
 rem                   [--consumer-lib <so>]...
-rem   emperor.bat link-lib <file.ll> <file.libmeta> -o <out.penguin-lib>
+rem   emperor_penguin.bat link-lib <file.ll> <file.libmeta> -o <out.penguin-lib>
+rem   emperor_penguin.bat --help    (full option table)
 rem
 rem Requires make + clang + llvm-ar on PATH (MSYS2-style environment).
+rem Environment overrides: EMPEROR_EMITTER, CLANG, LLVM_WIN_PREFIX, MINGW_PREFIX /
+rem WIN_CC / WIN_CXX / WIN_AR / WIN_CLANG (linux -^> win cross toolchain).
 rem ============================================================================
 setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
@@ -23,11 +26,10 @@ if defined CLANG ( set "SEL_CLANG=%CLANG%" ) else set "SEL_CLANG=clang"
 
 rem ── locate the PenguinLang tree (dir containing EmperorPenguin\) ─────
 set "ROOT="
-if defined EMPEROR_PENGUIN_ROOT if exist "!EMPEROR_PENGUIN_ROOT!\EmperorPenguin\std" set "ROOT=!EMPEROR_PENGUIN_ROOT!"
-if not defined ROOT if exist "%SCRIPT_DIR%\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%"
+if exist "%SCRIPT_DIR%\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%"
 if not defined ROOT if exist "%SCRIPT_DIR%\..\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%\.."
 if not defined ROOT (
-    echo [emperor] error: cannot locate EmperorPenguin\std relative to %SCRIPT_DIR%; set EMPEROR_PENGUIN_ROOT >&2
+    echo [emperor] error: cannot locate EmperorPenguin\std relative to %SCRIPT_DIR% ^(expected ^<dir^>\EmperorPenguin\std or ^<dir^>\..\EmperorPenguin\std^) >&2
     exit /b 1
 )
 for %%i in ("%ROOT%") do set "ROOT=%%~fi"
@@ -51,7 +53,44 @@ set "POS2="
 
 if /i "%~1"=="link" ( set "MODE=link" & shift & goto parse_opts )
 if /i "%~1"=="link-lib" ( set "MODE=link-lib" & shift & goto parse_opts )
+if /i "%~1"=="-h" goto help
+if /i "%~1"=="--help" goto help
+if /i "%~1"=="help" goto help
 goto parse_full
+
+:help
+echo emperor_penguin.bat - external driver for the EmperorPenguin compiler (Windows mirror of `emperor_penguin`) >&2
+echo. >&2
+echo MODES >&2
+echo   emperor_penguin.bat [options] ^<src...^> -o ^<out^>       full pipeline (emit + C runtime + link; -o X.penguin-lib builds a dyn-lib) >&2
+echo   emperor_penguin.bat link ^<file.ll^> -o ^<out^> [options]  link a prebuilt .ll (platform-independent IR) >&2
+echo   emperor_penguin.bat link-lib ^<file.ll^> ^<file.libmeta^> -o ^<out.penguin-lib^> >&2
+echo                                                          link a dyn-lib and append metadata + PENGUINLIB footer >&2
+echo. >&2
+echo SCRIPT OPTIONS (all modes) >&2
+echo   -o, --output ^<path^>        output path (exe or .penguin-lib) >&2
+echo   -enable-meta               link the meta JIT (libpenguin_jit.a + LLVM) in >&2
+echo   -target ^<t^> / -target=^<t^>  link target: native or win64 (default win64 here) >&2
+echo   -llvm-win ^<dir^>            Windows LLVM for the meta JIT (lib\libLLVM-22.dll.a + include\) >&2
+echo   --consumer-lib ^<so^>        consumer dyn-lib to link (repeatable; the ^<out^>.libs closure is linked too) >&2
+echo   --emitter ^<path^>           emitter binary (default: beside this script or %%EMPEROR_EMITTER%%; full mode) >&2
+echo   --lib ^<file.penguin-lib^>   dyn-lib consumed by the emitter AND linked as a consumer shared object (full mode) >&2
+echo. >&2
+echo FORWARDED SEMANTIC FLAGS (full mode only - passed to the emitter verbatim) >&2
+echo   -v / -vv / -vvv                       verbosity >&2
+echo   --enable-coroutine / --disable-coroutine   concurrency syntax + scheduler stdlib (default: on) >&2
+echo   --enable-dl / --disable-dl            dyn-lib build/consume (default: on) >&2
+echo   --enable-std / --disable-std          auto-load libemperorpenguin-std.penguin-lib beside the compiler (default: on; no-op on windows monoliths) >&2
+echo   --libmeta=text^|direct                libmeta ingestion mode (default: direct) >&2
+echo   --define A=B                          seed the compile-time option store >&2
+echo   --meta-src ^<file^>                    explicit unit-B meta sources (repeatable) >&2
+echo. >&2
+echo ENVIRONMENT >&2
+echo   EMPEROR_EMITTER  emitter binary (alternative to --emitter) >&2
+echo   CLANG            clang to use (default: clang) >&2
+echo   LLVM_WIN_PREFIX  dir with a Windows LLVM for the meta JIT >&2
+echo   MINGW_PREFIX, WIN_CC/WIN_CXX/WIN_AR/WIN_CLANG  cross toolchain (linux -^> win) >&2
+exit /b 0
 
 :parse_opts
 if "%~1"=="" goto opts_done
@@ -288,8 +327,11 @@ if exist "!LIBSFILE!" (
 )
 
 rem Dyn-lib consumer: link the .penguin-lib shared objects and export this
-rem exe's runtime symbols so the lib's undefined refs bind.
-if not "!LIBS!"=="" set "LARGS=!LARGS! !LIBS! -Wl,--export-all-symbols"
+rem exe's runtime symbols so the lib's undefined refs bind. --as-needed keeps
+rem a program that references none of a lib's symbols self-contained (no
+rem DT_NEEDED for it); lib-consumer exes reference their libs, so their
+rem DT_NEEDED survives.
+if not "!LIBS!"=="" set "LARGS=!LARGS! -Wl,--as-needed !LIBS! -Wl,--export-all-symbols"
 
 rem 32MB stack, linker-flavored (GNU ld vs lld-link /STACK:).
 if "!IS_MINGW!"=="1" ( set "LARGS=!LARGS! -Wl,--stack,33554432" ) else set "LARGS=!LARGS! -Wl,/STACK:33554432"

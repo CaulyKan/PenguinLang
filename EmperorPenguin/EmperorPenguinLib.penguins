@@ -1,15 +1,23 @@
 [Project]
-# The compiler as a SHARED LIBRARY (.penguin-lib): the full EmperorPenguinFull
-# source set minus main.penguin (the exe driver). Built with
-#   <compiler> EmperorPenguin/EmperorPenguinLib.penguins -o <dir>/libemperorpenguin.penguin-lib
-# (lib mode triggers on the .penguin-lib output name). The lib embeds its whole
+# The compiler as a SHARED LIBRARY (.penguin-lib): the EmperorPenguinFull
+# source set minus main.penguin (the exe driver) minus most std modules
+# (utils/metaconfig/json/vector/hashmap/array/argparse) — those now live in
+# libemperorpenguin-std.penguin-lib (EmperorPenguinStd.penguins) and are
+# consumed via --lib, so this lib's libmeta records deps=[libemperorpenguin-
+# std]. dynlib.penguin STAYS here: its libmeta builder/injector operates on
+# the compiler's bound tree (BoundCompilationUnit/SemanticModel), and the
+# consumer side (load_lib_chain) is part of every compiler binary. Built with
+#   <compiler> EmperorPenguin/EmperorPenguinLib.penguins \
+#       --lib <dir>/libemperorpenguin-std.penguin-lib -o <dir>/libemperorpenguin.penguin-lib
+# (lib mode triggers on the .penguin-lib output name). The lib embeds its own
 # source in the appended metadata, so consumers (EmperorPenguinExe.penguins,
 # MagellanicPenguin/LspServer) declare-not-define the compiler's defs and
 # monomorphize NEW generic instances locally — linking one lib instead of
-# recompiling 16k lines into every tool. Consumed via
+# recompiling the compiler into every tool. Consumed via
 #   <consumer project> --lib <dir>/libemperorpenguin.penguin-lib
+# (the std lib resolves through the dep chain from the lib's directory).
 # The lib carries no C runtime / JIT: its _emperor_* refs bind from the
 # consumer exe (-rdynamic). Same source-set rules as EmperorPenguinFull.penguins:
 # native parser only (pass2+), never BabyPenguin.
 name="EmperorPenguinLib"
-sources=["src/ast/AST.penguin", "src/ast/Lexer.penguin", "src/ast/Parser.penguin", "src/ast/SourceLocation.penguin", "src/ast/Token.penguin", "src/ast/Formatter.penguin", "src/bound/BoundCompilationUnit.penguin", "src/bound/BoundDefinition.penguin", "src/bound/BoundExpression.penguin", "src/bound/BoundScope.penguin", "src/bound/BoundStatement.penguin", "src/bound/BoundSymbol.penguin", "src/bound/BoundTreePrinter.penguin", "src/bound/BoundType.penguin", "src/bound/BoundTypeRegistry.penguin", "src/bound/Mangling.penguin", "src/bound/EmperorPenguinCompiler.penguin", "src/bound/SemanticModel.penguin", "src/bound/SemanticShared.penguin", "src/bound/SemanticMetaRewrite.penguin", "src/bound/SemanticBuildScopes.penguin", "src/bound/SemanticMonomorphize.penguin", "src/bound/SemanticResolveTypes.penguin", "src/bound/SemanticBindSymbols.penguin", "src/bound/SemanticConstructors.penguin", "src/bound/SemanticInterfaces.penguin", "src/bound/SemanticClassifyValueTypes.penguin", "src/bound/SemanticBindBodies.penguin", "src/bound/SemanticBindExpressions.penguin", "src/bound/SemanticBindMetaCalls.penguin", "src/bound/SemanticValidateControlFlow.penguin", "src/ir/IRBuilder.penguin", "src/ir/IRFunction.penguin", "src/ir/IRGenerator.penguin", "src/ir/IRInstruction.penguin", "src/ir/IRModule.penguin", "src/ir/IRPrinter.penguin", "src/ir/IRSourceLocation.penguin", "src/ir/IRValue.penguin", "src/llvm/LLVMCompiler.penguin", "src/llvm/LLVMEmitter.penguin", "src/meta/MetaEngine.penguin", "src/meta/MetaHost.penguin", "std/penguin/metaconfig.penguin", "src/project/CompilerConfig.penguin", "src/project/ErrorCode.penguin", "src/project/Project.penguin", "src/utils.penguin", "std/penguin/json.penguin", "std/penguin/vector.penguin", "std/penguin/hashmap.penguin", "std/penguin/array.penguin", "std/penguin/dynlib.penguin"]
+sources=["src/ast/AST.penguin", "src/ast/Lexer.penguin", "src/ast/Parser.penguin", "src/ast/SourceLocation.penguin", "src/ast/Token.penguin", "src/ast/Formatter.penguin", "src/bound/BoundCompilationUnit.penguin", "src/bound/BoundDefinition.penguin", "src/bound/BoundExpression.penguin", "src/bound/BoundScope.penguin", "src/bound/BoundStatement.penguin", "src/bound/BoundSymbol.penguin", "src/bound/BoundTreePrinter.penguin", "src/bound/BoundType.penguin", "src/bound/BoundTypeRegistry.penguin", "src/bound/Mangling.penguin", "src/bound/EmperorPenguinCompiler.penguin", "src/bound/SemanticModel.penguin", "src/bound/SemanticShared.penguin", "src/bound/SemanticMetaRewrite.penguin", "src/bound/SemanticBuildScopes.penguin", "src/bound/SemanticMonomorphize.penguin", "src/bound/SemanticResolveTypes.penguin", "src/bound/SemanticBindSymbols.penguin", "src/bound/SemanticConstructors.penguin", "src/bound/SemanticInterfaces.penguin", "src/bound/SemanticClassifyValueTypes.penguin", "src/bound/SemanticBindBodies.penguin", "src/bound/SemanticBindExpressions.penguin", "src/bound/SemanticBindMetaCalls.penguin", "src/bound/SemanticValidateControlFlow.penguin", "src/ir/IRBuilder.penguin", "src/ir/IRFunction.penguin", "src/ir/IRGenerator.penguin", "src/ir/IRInstruction.penguin", "src/ir/IRModule.penguin", "src/ir/IRPrinter.penguin", "src/ir/IRSourceLocation.penguin", "src/ir/IRValue.penguin", "src/llvm/LLVMCompiler.penguin", "src/llvm/LLVMEmitter.penguin", "src/meta/MetaEngine.penguin", "src/meta/MetaHost.penguin", "src/project/CompilerConfig.penguin", "src/project/ErrorCode.penguin", "src/project/Project.penguin", "std/penguin/dynlib.penguin"]

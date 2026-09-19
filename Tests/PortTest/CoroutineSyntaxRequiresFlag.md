@@ -1,6 +1,6 @@
 # CoroutineSyntaxRequiresFlag
 ## Description
-RTL-port/concurrency syntax without --enable-coroutine is a compile error on every EmperorPenguin native pass: the gate reports E_UNSUPPORTED ("requires the --enable-coroutine option") instead of silently dropping or partially compiling. Verified shape: a port declaration plus a `wait <expr> tick` in an initial. BabyPenguin is not in Apply To (its VM implements the feature unconditionally).
+RTL-port/concurrency syntax under --disable-coroutine is a compile error on every EmperorPenguin native pass: the gate reports E_UNSUPPORTED ("requires the --enable-coroutine option") instead of silently dropping or partially compiling. Verified shape: a port declaration plus a `wait <expr> tick` in an initial. The flag defaults ON since the std-dynlib split (2026-09-19), so the gate is exercised through the explicit --disable-coroutine form. BabyPenguin is not in Apply To (its VM implements the feature unconditionally).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -29,7 +29,8 @@ initial {
 ```
 
 ## Compile
-Args: ``
+Args: `--disable-coroutine`
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD
 ExpectedStderr: CONTAINS `requires the --enable-coroutine option`
+

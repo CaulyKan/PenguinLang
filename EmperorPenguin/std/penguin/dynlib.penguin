@@ -2014,6 +2014,12 @@ fun load_lib_recursive(lib_path: string, exe_dir: string, state: mut LibLoadStat
         state.has_error = true;
         return;
     }
+    // Name-level dedup: the same lib can be reached twice under different
+    // path strings — an explicit absolute --lib AND a by-name dep resolution
+    // from another directory (or the auto-std probe beside the exe). The
+    // first load wins; a second sighting of the same name injects nothing
+    // (double injection would duplicate every definition).
+    if (_string_list_contains(state.lib_names, meta.name)) { return; }
     let referencing_dir: string = _path_dir(lib_path);
     let di: mut i64 = 0;
     while (di < cast<i64>(meta.deps.size())) {

@@ -160,10 +160,10 @@ for (let src : mut ISource<i64> in this.inputs.iter()) {
 
 ```bash
 # 构建库（export 标记的定义成为其公共面）
-emperor libsrc.penguin -o libfoo.penguin-lib
+emperor_penguin libsrc.penguin -o libfoo.penguin-lib
 
 # 以它为编译目标编译消费者，然后把 exe+lib 链到一起
-emperor app.penguin --lib libfoo.penguin-lib -o app
+emperor_penguin app.penguin --lib libfoo.penguin-lib -o app
 ```
 
 规则要点：

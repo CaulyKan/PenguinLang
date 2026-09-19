@@ -42,33 +42,34 @@ class BindMetaCallsPass {
         // compile time and splice the result (integer literal, or a returned ast
         // re-bound at the call site). Only the JIT is reached in native pass2+
         // (--enable-meta); #funs are registered in collect_meta_function_defs
-        // (pre-rewrite) and pass_build_scopes. If func_name is not a #fun, fall
-        // through to a plain BoundMetaCallExpression (e.g. unknown #attribute, or
-        // built-in meta like #defined/#option which are resolved elsewhere).
+        // (pre-rewrite) and pass_build_scopes. A func_name that is not a #fun
+        // and not a handled intrinsic has no splice and no lowering —
+        // reporting beats the silent no-op a plain BoundMetaCallExpression
+        // would get downstream.
         let bmf_opt: Option<BoundMetaFunctionDefinition> = this.find_meta_function(expr.func_name);
-        if (bmf_opt.is_some()) {
-            let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
-            // req1: if a type-typed argument is a template type parameter that is not
-            // yet specialized (it resolves in scope to its dummy placeholder), the call
-            // cannot be JIT-evaluated in this — still generic — body. Defer it: emit a
-            // zero placeholder so the (never-mononmorphized) generic body binds without
-            // error. The specialized body, where T is concrete, re-binds and splices the
-            // real result.
-            if (this.meta_call_has_deferred_type_arg(expr, bmf, scope)) {
-                return this.deferred_meta_call_placeholder(bmf);
-            }
-            let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf, expr, scope);
-            if (spliced.is_some()) {
-                return spliced;
+        if (bmf_opt.is_none()) {
+            // Unit A only: unit B's rewrite_meta_call_dispatch documents
+            // "unknown -> passthrough" for its own meta-land reasons.
+            if (!this.model.some.is_unit_b) {
+                this.model.some.report_error(new ErrorCode.E_RESOLVE_SYMBOL(), "unknown meta function '#" + expr.func_name + "' (no #fun with this name is defined)", expr.location);
             }
             return new Option<BoundExpression>.none();
         }
-        let bound_args: mut _utils.List<BoundExpression> = this.model.some.bind_expressions_pass.bind_arguments(expr.arguments, scope);
-        // ast params take their argument positionally now — trailing blocks are
-        // only supported for an `unstructured_ast` last param (raw text, bound in
-        // bind_meta_args), so the parsed trailing-block slot is always empty.
-        let result: mut BoundMetaCallExpression = new BoundMetaCallExpression(expr.func_name, bound_args, new Option<Expression>.none(), expr.trailing_definition, expr.location);
-        return new Option<BoundExpression>.some(new BoundExpression.meta_call(result));
+        let bmf: BoundMetaFunctionDefinition = bmf_opt.some;
+        // req1: if a type-typed argument is a template type parameter that is not
+        // yet specialized (it resolves in scope to its dummy placeholder), the call
+        // cannot be JIT-evaluated in this — still generic — body. Defer it: emit a
+        // zero placeholder so the (never-mononmorphized) generic body binds without
+        // error. The specialized body, where T is concrete, re-binds and splices the
+        // real result.
+        if (this.meta_call_has_deferred_type_arg(expr, bmf, scope)) {
+            return this.deferred_meta_call_placeholder(bmf);
+        }
+        let spliced: Option<BoundExpression> = this.try_splice_meta_fun_call(bmf, expr, scope);
+        if (spliced.is_some()) {
+            return spliced;
+        }
+        return new Option<BoundExpression>.none();
     }
 
 
@@ -203,6 +204,15 @@ class BindMetaCallsPass {
                     this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #" + bmf.name + " did not return a definition ast in definition position", mc.location);
                     return true;
                 }
+                // Unknown #name at definition position. The parser attached any
+                // trailing definition (the `#name(args) <def>;` annotation form)
+                // to THIS call, and the callee #fun would have owned and
+                // re-emitted it via create_definition. Falling through would
+                // push the raw def downstream, where nothing consumes it —
+                // silently dropping the call AND its trailing definition.
+                // Report and consume instead.
+                this.model.some.report_error(new ErrorCode.E_RESOLVE_SYMBOL(), "unknown meta function '#" + mc.func_name + "' (no #fun with this name is defined)", mc.location);
+                return true;
             }
         }
         return false;

@@ -29,7 +29,7 @@ Get Started:
 * [Types and Templates](./docs/en/tutorials/TypesAndTemplates.md)
 * [Metaprogramming](./docs/en/tutorials/MetaProgramming.md)
 * [Async, Timing and Modules](./docs/en/tutorials/AsyncTimingAndModularity.md)
-* Online documentation site: https://caulykan.github.io/PenguinLang/ (built from [docs/](./docs) in this repo, English + 简体中文 with a language switcher)
+* Online documentation site: [https://caulykan.github.io/PenguinLang/](https://caulykan.github.io/PenguinLang/) (built from [docs/](./docs) in this repo, English + 简体中文 with a language switcher)
 * [Overview](./docs/en/specifications/01_Overview.md)
 * [Basic Execution Flow](./docs/en/specifications/02_BasicExecutionFlow.md)
 * [Data Types](./docs/en/specifications/03_DataTypes.md)
@@ -51,8 +51,9 @@ Build And Run:
 
 Build the native self-hosting compiler & tooling with the root Makefile (all artifacts land in `build/`):
 * make bootstrap — self-bootstrap EmperorPenguin (build/bootstrap/pass2..pass4 + convergence check; host only)
-* make release — native .ll emitter + emperor driver script (make release_linux / make release_win per platform; cross compiling is linux→win only, handled by EmperorPenguin/emperor, and everything also works natively on Windows)
+* make release — native .ll emitter + emperor driver script (make release_linux / make release_win per platform; cross compiling is linux→win only, handled by EmperorPenguin/emperor_penguin, and everything also works natively on Windows)
+* make release_babypenguin — the C# compiler as a self-contained single-file binary (make release_babypenguin_linux → build/linux/baby_penguin, make release_babypenguin_win → build/win/baby_penguin.exe)
 * make lsp — the PenguinLang-native LSP server (make lsp_linux / make lsp_win per platform)
 * make test — the cross-compiler markdown test suite (make baseline_test records a new baseline)
-* make publish — release artifacts: emitters, LSP servers, self-contained dotnet executables, VSCode extension package (both platforms on a linux host, win only on Windows)
+* make publish — release artifacts: emitters, LSP servers, baby_penguin single-file binaries, VSCode extension package (both platforms on a linux host, win only on Windows)
 * make all — bootstrap + lsp + test

@@ -30,6 +30,38 @@ namespace BabyPenguin
         /// <summary>Counter for hidden hub symbol names (__net_&lt;n&gt;_x).</summary>
         public int VariableNetCounter { get; set; }
 
+        /// <summary>
+        /// Resolve a bundled data file (Builtin.penguin / Utils.penguin): env
+        /// override first, then the assembly directory, the app base
+        /// directory and the cwd. AppContext.BaseDirectory is the one that
+        /// keeps working when the assembly runs from a .NET single-file
+        /// bundle, where Assembly.Location is the empty string.
+        /// </summary>
+        internal static string ResolveDataFile(string envVariable, string fileName, bool required)
+        {
+            var envPath = Environment.GetEnvironmentVariable(envVariable);
+            if (!string.IsNullOrEmpty(envPath))
+                return Path.GetFullPath(envPath);
+
+            var assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            var searched = new List<string>();
+            foreach (var dir in new[] { assemblyDir, AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                if (string.IsNullOrEmpty(dir))
+                    continue;
+                var candidate = Path.Combine(dir, fileName);
+                if (File.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+                searched.Add(candidate);
+            }
+
+            if (required)
+                throw new FileNotFoundException(
+                    $"Required data file '{fileName}' was not found next to the BabyPenguin executable; " +
+                    $"searched:\n  {string.Join("\n  ", searched)}\n(or point {envVariable} at the file).");
+            return Path.GetFullPath(fileName);
+        }
+
         public SemanticModel(bool addBuiltin = true, ErrorReporter? reporter = null)
         {
             Reporter = reporter ?? new ErrorReporter();
@@ -37,13 +69,11 @@ namespace BabyPenguin
 
             if (addBuiltin)
             {
-                var builtinFile = Path.GetFullPath(Environment.GetEnvironmentVariable("PENGUINLANG_BUILTIN") ??
-                    (Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/Builtin.penguin"));
+                var builtinFile = ResolveDataFile("PENGUINLANG_BUILTIN", "Builtin.penguin", required: true);
                 var builtinCode = File.ReadAllText(builtinFile);
                 this.AddSource(builtinCode, builtinFile);
 
-                var utilsFile = Path.GetFullPath(Environment.GetEnvironmentVariable("PENGUINLANG_UTILS") ??
-                    (Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/Utils.penguin"));
+                var utilsFile = ResolveDataFile("PENGUINLANG_UTILS", "Utils.penguin", required: false);
                 if (File.Exists(utilsFile))
                 {
                     var utilsCode = File.ReadAllText(utilsFile);

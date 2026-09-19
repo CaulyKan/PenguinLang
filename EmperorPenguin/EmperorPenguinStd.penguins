@@ -1,0 +1,22 @@
+[Project]
+# The PenguinLang STANDARD LIBRARY as a dyn-lib (libemperorpenguin-std):
+# the std modules that previously compiled into the compiler itself
+# (metaconfig/json/vector/hashmap/array/argparse) plus src/utils.penguin
+# (List/Queue — argparse references _utils, and core_builtin's #specializing
+# blocks target _utils.List; it ships in this lib as verbatim source).
+# NOT here: std/penguin/dynlib.penguin — the libmeta builder/injector operates
+# on the compiler's bound tree (BoundCompilationUnit/SemanticModel/...), so it
+# is a COMPILER module and stays in EmperorPenguinLib.penguins; the consumer
+# side (load_lib_chain etc.) lives there too, compiled into every compiler.
+# Built with
+#   <pass3+ compiler> EmperorPenguin/EmperorPenguinStd.penguins -o <dir>/libemperorpenguin-std.penguin-lib
+# (lib mode triggers on the .penguin-lib output name). Consumers get all of it
+# via --lib (or automatically: --enable-std probes for
+# libemperorpenguin-std.penguin-lib beside the compiler exe, the default).
+# The #template/#fun files (utils/json/vector/hashmap/array/argparse) ship as
+# VERBATIM SOURCE so consumers monomorphize NEW generic instances locally;
+# metaconfig ships as an export-marked symbol-table entry. Any project that
+# consumes this lib must NOT also list these files in its own sources
+# (double definition).
+name="EmperorPenguinStd"
+sources=["src/utils.penguin", "std/penguin/metaconfig.penguin", "std/penguin/json.penguin", "std/penguin/vector.penguin", "std/penguin/hashmap.penguin", "std/penguin/array.penguin", "std/penguin/argparse.penguin"]

@@ -8,7 +8,11 @@ namespace emperor {
 // libpenguin_jit via -enable-meta, so reporting the JIT available activates
 // `_template_X` synthesis (M1) + M4 use-site routing there. The default project
 // ships src/meta/MetaConfigStub.penguin (returns false) instead.
-fun meta_runtime_available() -> bool {
+// export: since the std-dynlib split this file ships in
+// libemperorpenguin-std.penguin-lib's symbol table; the compiler
+// (libemperorpenguin.penguin-lib) consumes it via --lib, so the gate must be
+// export-marked to be visible across the lib boundary.
+export fun meta_runtime_available() -> bool {
     return true;
 }
 

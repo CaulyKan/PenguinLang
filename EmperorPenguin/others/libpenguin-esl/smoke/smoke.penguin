@@ -7,7 +7,7 @@ using esl;
 //       EmperorPenguin/std/penguin/vector.penguin \
 //       EmperorPenguin/others/libpenguin-esl/smoke/smoke.penguin \
 //       --enable-coroutine -o /tmp/esl-smoke
-//   EmperorPenguin/emperor link /tmp/esl-smoke.ll -o /tmp/esl-smoke
+//   EmperorPenguin/emperor_penguin link /tmp/esl-smoke.ll -o /tmp/esl-smoke
 //   /tmp/esl-smoke
 //
 // (vector.penguin is NOT auto-loaded; it backs esl.Rom/Ram and the Bus/Clock

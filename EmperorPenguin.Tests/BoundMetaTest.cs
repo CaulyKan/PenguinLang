@@ -252,26 +252,18 @@ initial {
     public void BindMetaForWhileTopLevel() => _batch.Value.Assert();
 
     [Fact]
+    // Unknown def-position #name: E_RESOLVE_SYMBOL, call + trailing def dropped,
+    // remaining defs still bound (was: silent passthrough of a bound meta_call_def).
     [BatchBoundTest(@"
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""#derive_clone(T); fun after();"");
+    println(""errors="" + cast<string>(cast<i64>(result.errors.size())));
     println(""count="" + cast<string>(cast<i64>(result.definitions.size())));
     let d0 = result.definitions.at(cast<u64>(0)).some;
-    println(""d0_type="" + d0.get_name());
-    if (d0 is emperor.BoundDefinition.meta_call_def) {
-        let mc = d0.meta_call_def;
-        if (mc.call.is_some()) {
-            let call_expr = mc.call.some;
-            if (call_expr is emperor.BoundExpression.meta_call) {
-                println(""call_name="" + call_expr.meta_call.func_name);
-            }
-        }
-    }
-    let d1 = result.definitions.at(cast<u64>(1)).some;
-    println(""d1_name="" + d1.get_name());
+    println(""d0_name="" + d0.get_name());
 }
-", "count=2\nd0_type=<meta_call>\ncall_name=derive_clone\nd1_name=after")]
+", "errors=1\ncount=1\nd0_name=after")]
     public void BindMetaCallTopLevel() => _batch.Value.Assert();
 
     [Fact]
@@ -279,32 +271,20 @@ initial {
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""#derive_clone(10); fun x();"");
+    println(""errors="" + cast<string>(cast<i64>(result.errors.size())));
+    println(""count="" + cast<string>(cast<i64>(result.definitions.size())));
     let d0 = result.definitions.at(cast<u64>(0)).some;
-    if (d0 is emperor.BoundDefinition.meta_call_def) {
-        let mc = d0.meta_call_def;
-        if (mc.call.is_some()) {
-            let call_expr = mc.call.some;
-            if (call_expr is emperor.BoundExpression.meta_call) {
-                let meta_call = call_expr.meta_call;
-                println(""arg_count="" + cast<string>(cast<i64>(meta_call.arguments.size())));
-                if (cast<i64>(meta_call.arguments.size()) > 0) {
-                    let arg0 = meta_call.arguments.at(cast<u64>(0)).some;
-                    if (arg0 is emperor.BoundExpression.literal) {
-                        println(""arg0="" + arg0.literal.value);
-                    }
-                }
-            }
-        }
-    }
+    println(""d0_name="" + d0.get_name());
 }
-", "arg_count=1\narg0=10")]
-    public void BindMetaCallBindsArguments() => _batch.Value.Assert();
+", "errors=1\ncount=1\nd0_name=x")]
+    public void BindMetaCallUnknownDefPositionErrors() => _batch.Value.Assert();
 
     [Fact]
     [BatchBoundTest(@"
 initial {
     let mut compiler = new emperor.EmperorPenguinCompiler();
     let result = compiler.compile(""fun f() -> void { let x = #foo(1); }"");
+    println(""errors="" + cast<string>(cast<i64>(result.errors.size())));
     let def = result.definitions.at(cast<u64>(0)).some;
     if (def is emperor.BoundDefinition.function_def) {
         let func = def.function_def;
@@ -315,25 +295,13 @@ initial {
                 let s0 = stmts.at(cast<u64>(0)).some;
                 if (s0 is emperor.BoundStatement.let_decl) {
                     let let_stmt = s0.let_decl;
-                    if (let_stmt.initializer.is_some()) {
-                        let init = let_stmt.initializer.some;
-                        if (init is emperor.BoundExpression.meta_call) {
-                            let mc = init.meta_call;
-                            println(""call_name="" + mc.func_name);
-                            if (cast<i64>(mc.arguments.size()) > 0) {
-                                let arg0 = mc.arguments.at(cast<u64>(0)).some;
-                                if (arg0 is emperor.BoundExpression.literal) {
-                                    println(""arg0="" + arg0.literal.value);
-                                }
-                            }
-                        }
-                    }
+                    println(""has_init="" + cast<string>(let_stmt.initializer.is_some()));
                 }
             }
         }
     }
 }
-", "call_name=foo\narg0=1")]
+", "errors=1\nhas_init=false")]
     public void BindMetaCallInFunctionBody() => _batch.Value.Assert();
 
     [Fact]

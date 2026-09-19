@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# emperor — external driver for the EmperorPenguin compiler.
+# emperor_penguin — external driver for the EmperorPenguin compiler.
 #
 # The compiler binary (emperor_penguin_llvm_emitter) only emits
 # platform-independent LLVM IR (.ll files). This script owns everything that
@@ -8,21 +8,23 @@
 # exe or .penguin-lib, with or without the meta JIT).
 #
 # Usage:
-#   emperor [--emitter <path>] <src...> [flags] -o <out>
+#   emperor_penguin [--emitter <path>] <src...> [flags] -o <out>
 #       Full pipeline: run the emitter, build the C runtime, link.
 #       Semantic flags (-vv, --enable-coroutine, --disable-dl, --define, ...)
-#       are forwarded to the emitter verbatim.
-#   emperor link <file.ll> -o <out> [-enable-meta] [-target=win64]
+#       are forwarded to the emitter verbatim (see --help for the list).
+#   emperor_penguin link <file.ll> -o <out> [-enable-meta] [-target=win64]
 #                [-llvm-win <dir>] [--consumer-lib <so>]...
 #       Link a prebuilt .ll (the .ll is platform-independent, so one file can
 #       be linked for every target). <file.def> beside the .ll feeds the
 #       native-MSVC meta export table when needed.
-#   emperor link-lib <file.ll> <file.libmeta> -o <out.penguin-lib> [-target=win64]
+#   emperor_penguin link-lib <file.ll> <file.libmeta> -o <out.penguin-lib> [-target=win64]
 #       Link a dyn-lib .so from the .ll and append the JSON metadata +
 #       PENGUINLIB footer.
+#   emperor_penguin --help
+#       Print the full option table (modes, script flags, forwarded semantic
+#       flags, environment overrides).
 #
-# Environment overrides: EMPEROR_PENGUIN_ROOT (tree containing
-# EmperorPenguin/std), EMPEROR_EMITTER, CLANG, LLVM_CONFIG, OPT (passed
+# Environment overrides: EMPEROR_EMITTER, CLANG, LLVM_CONFIG, OPT (passed
 # through to the C runtime make), MINGW_PREFIX / WIN_CC / WIN_CXX / WIN_AR /
 # WIN_CLANG (linux -> win cross toolchain), LLVM_WIN_PREFIX (dir with
 # lib/libLLVM-22.dll.a + include/ for the Windows meta JIT).
@@ -34,15 +36,62 @@ CALLER_CWD=$PWD
 die() { echo "[emperor] error: $*" >&2; exit 1; }
 info() { echo "[emperor] $*" >&2; }
 
+print_help() {
+    cat >&2 <<'EOF'
+emperor_penguin — external driver for the EmperorPenguin compiler
+
+MODES
+  emperor_penguin [options] <src...> -o <out>
+      Full pipeline: run the emitter, build the C runtime (make -C
+      EmperorPenguin/std/c), link. -o X.penguin-lib builds a dyn-lib.
+  emperor_penguin link <file.ll> -o <out> [link options]
+      Link a prebuilt .ll (platform-independent IR; native or win64).
+  emperor_penguin link-lib <file.ll> <file.libmeta> -o <out.penguin-lib>
+      Link a dyn-lib .so and append the JSON metadata + PENGUINLIB footer.
+
+SCRIPT OPTIONS (all modes)
+  -o, --output <path>       output path (exe or .penguin-lib)
+  -enable-meta              link the meta JIT (libpenguin_jit.a + LLVM) in
+  -target <t> / -target=<t> link target: "" (native) or win64
+  -llvm-win <dir>           Windows LLVM for the meta JIT (needs
+                            lib/libLLVM-22.dll.a + include/)
+  --consumer-lib <so>       consumer dyn-lib to link (repeatable; the
+                            emitter's <out>.libs closure is linked too)
+  --emitter <path>          emitter binary (default: beside this script or
+                            $EMPEROR_EMITTER; full mode only)
+  --lib <file.penguin-lib>  dyn-lib consumed by the emitter AND linked as a
+                            consumer shared object (full mode, repeatable)
+
+FORWARDED SEMANTIC FLAGS (full mode only — passed to the emitter verbatim)
+  -v / -vv / -vvv                     verbosity
+  --enable-coroutine / --disable-coroutine
+                                      concurrency syntax + scheduler stdlib
+                                      (default: on)
+  --enable-dl / --disable-dl          dyn-lib build/consume (default: on)
+  --enable-std / --disable-std        auto-load libemperorpenguin-std.penguin-lib
+                                      beside the compiler (default: on)
+  --libmeta=text|direct               libmeta ingestion mode (default: direct)
+  --define A=B                        seed the compile-time option store
+  --meta-src <file>                   explicit unit-B meta sources (repeatable)
+
+ENVIRONMENT
+  EMPEROR_EMITTER   emitter binary (alternative to --emitter)
+  CLANG             native clang (default: clang)
+  LLVM_CONFIG       llvm-config for the meta JIT (default: llvm-config)
+  OPT               -O flag passed through to the C runtime make
+  MINGW_PREFIX      llvm-mingw cross toolchain prefix (default: /opt/llvm-mingw)
+  WIN_CC/CXX/AR/CLANG  cross tools (default: derived from MINGW_PREFIX)
+  LLVM_WIN_PREFIX   dir with a Windows LLVM for the meta JIT
+EOF
+}
+
 # ── locate the PenguinLang tree (dir containing EmperorPenguin/) ──────
-if [ -n "${EMPEROR_PENGUIN_ROOT:-}" ] && [ -d "${EMPEROR_PENGUIN_ROOT}/EmperorPenguin/std" ]; then
-    ROOT=$EMPEROR_PENGUIN_ROOT
-elif [ -d "$SCRIPT_DIR/EmperorPenguin/std" ]; then
+if [ -d "$SCRIPT_DIR/EmperorPenguin/std" ]; then
     ROOT=$SCRIPT_DIR                       # released layout: server/<platform>/
 elif [ -d "$SCRIPT_DIR/../EmperorPenguin/std" ]; then
     ROOT=$(cd "$SCRIPT_DIR/.." && pwd)     # dev layout: <repo>/EmperorPenguin/
 else
-    die "cannot locate EmperorPenguin/std relative to $SCRIPT_DIR; set EMPEROR_PENGUIN_ROOT"
+    die "cannot locate EmperorPenguin/std relative to $SCRIPT_DIR (expected <dir>/EmperorPenguin/std or <dir>/../EmperorPenguin/std)"
 fi
 
 case "$(uname -s)" in
@@ -211,8 +260,14 @@ link_exe() {
 
     # Dyn-lib consumer: link the loaded .penguin-lib shared objects and export
     # this exe's runtime symbols so the lib's undefined refs bind.
+    # --as-needed: a program that references none of a lib's symbols (e.g.
+    # hello world under auto-std, whose .libs closure still lists the std lib)
+    # gets NO DT_NEEDED for it — the exe stays self-contained instead of
+    # demanding the .so beside it at runtime. Lib-consumer exes DO reference
+    # their libs' symbols (directly, or via the re-defined globals pulling in
+    # the lib's impl edges), so their DT_NEEDED survives.
     if [ ${#libs[@]} -gt 0 ]; then
-        args+=("${libs[@]}")
+        args+=(-Wl,--as-needed "${libs[@]}")
         if [ -n "$is_win" ]; then
             args+=(-Wl,--export-all-symbols)
         else
@@ -242,7 +297,37 @@ link_exe() {
     info "linking: $clang ${args[*]}"
     "$clang" "${args[@]}" || die "clang link failed"
     info "linked $out"
+    place_needed_libs "$out" ${libs[@]+"${libs[@]}"}
     rm -rf "$tmp"
+}
+
+# After a successful link, copy every linked .penguin-lib the output actually
+# DT_NEEDs to the output's directory (unless a file with that basename is
+# already there). A lib-consumer exe built beside its libs (bootstrap pass4.d,
+# build/linux) is a no-op; a USER exe produced anywhere else becomes runnable
+# in place — auto-std means even hello world NEEDs libemperorpenguin-std (the
+# std lib ships the core_builtin generic instances every program uses), so
+# bringing the needed libs beside the output is part of the relocatable-pair
+# deployment, not a nicety. --as-needed keeps the copied set minimal.
+place_needed_libs() {  # $1 = out exe, rest = the linked .penguin-lib paths
+    local out=$1
+    shift
+    local out_dir out_base needed
+    [ -f "$out" ] || return 0
+    out_dir=$(dirname "$out")
+    out_base=$(basename "$out")
+    # LC_ALL=C: readelf's NEEDED label is locale-translated (e.g. 共享库),
+    # which would defeat the sed below.
+    needed=$(LC_ALL=C readelf -d "$out" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+    [ -n "$needed" ] || return 0
+    local l b
+    for l in "$@"; do
+        b=$(basename "$l")
+        if printf '%s\n' "$needed" | grep -qxF "$b" && [ ! -e "$out_dir/$b" ]; then
+            cp -f "$l" "$out_dir/$b"
+            info "copied $b beside $out_base (DT_NEEDED)"
+        fi
+    done
 }
 
 # Link a shared-object .penguin-lib and append the JSON metadata + PENGUINLIB
@@ -336,6 +421,10 @@ parse_link_opts() {
 
 # ── dispatch ──────────────────────────────────────────────────────────
 case "${1:-}" in
+-h|--help|help)
+    print_help
+    exit 0
+    ;;
 link|link-lib)
     MODE=$1
     shift

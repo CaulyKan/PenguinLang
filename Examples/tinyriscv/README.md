@@ -12,7 +12,7 @@ the cycle count the RTL would take.
 ```bash
 build/bootstrap/pass3 Examples/tinyriscv/tinyriscv.penguins \
     --enable-coroutine -o /tmp/tinyriscv
-EmperorPenguin/emperor link /tmp/tinyriscv.ll -o /tmp/tinyriscv
+EmperorPenguin/emperor_penguin link /tmp/tinyriscv.ll -o /tmp/tinyriscv
 /tmp/tinyriscv
 ```
 

@@ -4,10 +4,11 @@
 # penguin_text), the mangle truth (emperor.demangle_name / mangle_name) and
 # the libmeta reader (emperor.read_meta) all come from the prebuilt
 # libemperorpenguin.penguin-lib via --lib — the only local sources are the
-# four tool modules and the argparse stdlib (compiled from source; its
-# std.Vector dependency rides the lib's shipped vector.penguin source).
+# four tool modules. argparse rides the lib's dep chain
+# (libemperorpenguin.penguin-lib -> libemperorpenguin-std.penguin-lib), so the
+# #arg/#pos_arg annotations resolve without listing argparse as a source.
 # Build (see make tools):
 #   build/linux/emperor_penguin_llvm_emitter EmperorPenguin/tools/PenguinTools.penguins \
 #       --lib build/linux/libemperorpenguin.penguin-lib -o build/tools/penguin-tools
 name="PenguinTools"
-sources=["main.penguin", "mangle_tool.penguin", "libmeta_dump.penguin", "format_tool.penguin", "../std/penguin/argparse.penguin"]
+sources=["main.penguin", "mangle_tool.penguin", "libmeta_dump.penguin", "format_tool.penguin"]
