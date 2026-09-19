@@ -755,14 +755,14 @@ namespace BabyPenguin.VirtualMachine
             // __builtin._sim_now() -> i64 : returns current simulation tick
             vm.Global.RegisterExternFunction("__builtin._sim_now", (result, args) =>
             {
-                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = SimScheduler.Instance.CurrentTick;
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = vm.Global.Scheduler.CurrentTick;
             });
 
             // __builtin._sim_delta() -> i64 : monotonic delta-round counter
             // (wires merge same-round writes into the final value).
             vm.Global.RegisterExternFunction("__builtin._sim_delta", (result, args) =>
             {
-                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = SimScheduler.Instance.CurrentRound;
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = vm.Global.Scheduler.CurrentRound;
             });
 
             // __builtin._sim_settled() -> bool : true when the previous
@@ -771,7 +771,7 @@ namespace BabyPenguin.VirtualMachine
             // park (bare `wait`) until this holds, then read the slot.
             vm.Global.RegisterExternFunction("__builtin._sim_settled", (result, args) =>
             {
-                var scheduler = SimScheduler.Instance;
+                var scheduler = vm.Global.Scheduler;
                 result!.As<BasicRuntimeSymbol>().BasicValue.BoolValue =
                     scheduler.LastRoundQuiet && vm.Global.SimActivityCounter == scheduler.RoundStartActivity;
             });
@@ -780,7 +780,7 @@ namespace BabyPenguin.VirtualMachine
             vm.Global.RegisterExternFunction("__builtin._after", (result, args) =>
             {
                 var n = args[0].As<BasicRuntimeValue>().I64Value;
-                var deadlineTick = SimScheduler.Instance.CurrentTick + n;
+                var deadlineTick = vm.Global.Scheduler.CurrentTick + n;
 
                 // Create a _TimerWait object (ref type implementing IFuture<i64>)
                 var timerWaitType = vm.Model.ResolveTypeNode("__builtin._TimerWait");
@@ -816,7 +816,7 @@ namespace BabyPenguin.VirtualMachine
                     finVal.BoolValue = false;
 
                 // Register timer
-                SimScheduler.Instance.EnqueueTimerFuture(deadlineTick, timerWaitObj);
+                vm.Global.Scheduler.EnqueueTimerFuture(deadlineTick, timerWaitObj);
 
                 result!.AssignFrom(timerWaitObj);
             });
@@ -824,12 +824,12 @@ namespace BabyPenguin.VirtualMachine
             // __builtin._run() : drive the simulation scheduler to completion
             vm.Global.RegisterExternFunction("__builtin._run", (frame, result, args) =>
             {
-                SimScheduler.Instance.Run(vm, frame);
+                vm.Global.Scheduler.Run(vm, frame);
                 // A job's __builtin.exit sets Global.ExitCode and stops the
                 // scheduler (the Exited break is consumed there). Unwind the
                 // same way the direct-execution path does so Run() returns the
                 // program's exit code instead of swallowing it as 0.
-                if (SimScheduler.Instance.Exited)
+                if (vm.Global.Scheduler.Exited)
                     throw new ProgramExitException();
                 return [];
             });

@@ -19,8 +19,9 @@
 #   make tools-test         golden tests for penguin-tools (selftest.sh)
 #   make gc-bench           GC benchmark harness (gc_torture workloads,
 #                           GC_BENCH_MODES/WORKLOADS overrides)
-#   make docs-site          build the mdBook documentation site (docs/ per
-#                           book.toml) -> build/book (needs mdbook)
+#   make docs-site          build the bilingual mdBook documentation site
+#                           (docs/en per book.toml -> build/book, docs/zh via
+#                           env overrides -> build/book-zh; needs mdbook)
 #   make test               run the cross-compiler markdown suite (Tests/*.md)
 #   make baseline_test      like `test`, but record the run as the new baseline
 #   make unittest           dotnet unit tests (BabyPenguin.Tests + EmperorPenguin.Tests)
@@ -597,15 +598,22 @@ tools-test: build/linux/penguin-tools
 	@bash EmperorPenguin/tools/selftest.sh
 
 # ── docs-site ────────────────────────────────────────────────────────
-# Build the mdBook documentation site (docs/ per book.toml) into build/book.
-# The site Home page is the root README with its ./docs/-prefixed links
-# rewritten relative — generated here, never committed.
+# Build the bilingual mdBook documentation site: English book from docs/en
+# per book.toml -> build/book, Chinese mirror from docs/zh -> build/book-zh
+# (identical layout via mdBook env overrides, so every page has a 1:1
+# counterpart and docs/lang-switcher.js can swap the /zh/ URL prefix).
+# Each site Home page is the matching root README (README.md / README.zh-CN.md)
+# with its ./docs/<lang>/-prefixed links rewritten relative — generated here,
+# never committed. The GitHub-style `English | 简体中文` link line is dropped:
+# on the site the toolbar switcher (docs/lang-switcher.js) does that job.
 docs-site:
 	@command -v mdbook >/dev/null 2>&1 || { echo "docs-site needs mdbook (https://rust-lang.github.io/mdBook/): cargo install mdbook" >&2; exit 1; }
-	@sed -e 's|](\./docs/|](./|g' -e 's|](\./docs)|](.)|g' README.md > docs/README.md
+	@sed -e '/^\[English\](README.md) | \[简体中文\](README.zh-CN.md)$$/d' -e 's|](\./docs/en/|](./|g' -e 's|](\./docs/en)|](.)|g' README.md > docs/en/README.md
+	@sed -e '/^\[English\](README.md) | \[简体中文\](README.zh-CN.md)$$/d' -e 's|](\./docs/zh/|](./|g' -e 's|](\./docs/zh)|](.)|g' README.zh-CN.md > docs/zh/README.md
 	@mdbook build
-	@rm -f docs/README.md
-	@echo "Documentation site -> build/book/index.html"
+	@MDBOOK_BOOK__SRC=docs/zh MDBOOK_BOOK__TITLE='PenguinLang（中文文档）' MDBOOK_BOOK__LANGUAGE=zh MDBOOK_BOOK__DESCRIPTION='PenguinLang 语言文档：教程、规范与实现笔记' mdbook build --dest-dir build/book-zh
+	@rm -f docs/en/README.md docs/zh/README.md
+	@echo "Documentation site -> build/book/index.html (EN), build/book-zh/index.html (ZH)"
 
 # ── gc-bench ─────────────────────────────────────────────────────────
 # GC benchmark harness (GC v3 green-tea milestone M0+): gc_torture bench

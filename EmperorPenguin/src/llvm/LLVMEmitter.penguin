@@ -5499,6 +5499,13 @@ class LLVMEmitter {
             this.register_llvm_type(result_name, "ptr");
             return;
         }
+
+        // Neither a class nor an enum layout: falling through silently would
+        // leave the result register undefined (a verifier error at link time,
+        // far from the cause). BOX only fires for value types, which always
+        // have a layout — fail loudly at the emitter instead.
+        __builtin.eprintln("error[E_INTERNAL]: emit_box: no class or enum layout found for '" + type_name + "'");
+        __builtin.exit(1);
     }
 
     fun emit_unbox(mut this, inst: IRUnbox) {

@@ -1,4 +1,7 @@
 ## Penguin Language
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Penguin language (or 'penguin-lang') is designed to be a programming language that is easy-to-use, easy-to-understand, and concurrent-friendly. 
 
 Following is a minimal hello-world examle:
@@ -21,23 +24,24 @@ Roadmap:
 * EmperorPenguin: A BabyPenguin implementation of Penguin-lang compiler, emits llvm IR (Not started)
 
 Get Started:
-* [Basic Introduction (Tutorial)](./docs/tutorials/BasicIntroduction.md)
-* [Meta Programming Tutorial (EmperorPenguin)](./docs/tutorials/MetaProgrammingIntroduction.md)
-
-Documentation:
-* Online documentation site: https://caulykan.github.io/PenguinLang/ (built from [docs/](./docs) in this repo)
-* [Overview](./docs/specifications/01_Overview.md)
-* [Execution Flow And Events](./docs/specifications/02_ExecutionFlowAndEvents.md)
-* [Data Types](./docs/specifications/03_DataTypes.md)
-* [Function](./docs/specifications/04_Function.md)
-* [Enum](./docs/specifications/05_Enum.md)
-* [Interface](./docs/specifications/06_Interface.md)
-* [Asynchronization And Concurrency](./docs/specifications/07_AsynchronizationAndConcurrency.md)
-* [Timing Model](./docs/specifications/08_TimingModel.md)
-* [Namespace And Project](./docs/specifications/09_NamespaceAndProject.md)
-* [Meta Programming](./docs/specifications/10_MetaProgramming.md)
-* [Ports Channels Events](./docs/specifications/11_PortsChannelsEvents.md)
-* Implementation notes (compiler internals): [docs/impl-notes](./docs/impl-notes)
+* [Basic Introduction (Tutorial)](./docs/en/tutorials/BasicIntroduction.md)
+* [Compiler Usage (build, bootstrap, run)](./docs/en/tutorials/CompilerUsage.md)
+* [Types and Templates](./docs/en/tutorials/TypesAndTemplates.md)
+* [Metaprogramming](./docs/en/tutorials/MetaProgramming.md)
+* [Async, Timing and Modules](./docs/en/tutorials/AsyncTimingAndModularity.md)
+* Online documentation site: https://caulykan.github.io/PenguinLang/ (built from [docs/](./docs) in this repo, English + 简体中文 with a language switcher)
+* [Overview](./docs/en/specifications/01_Overview.md)
+* [Basic Execution Flow](./docs/en/specifications/02_BasicExecutionFlow.md)
+* [Data Types](./docs/en/specifications/03_DataTypes.md)
+* [Function](./docs/en/specifications/04_Function.md)
+* [Class](./docs/en/specifications/05_Class.md)
+* [Enum](./docs/en/specifications/06_Enum.md)
+* [Interface](./docs/en/specifications/07_Interface.md)
+* [Namespace & Project](./docs/en/specifications/08_NamespaceAndProject.md)
+* [Async & Timing Model](./docs/en/specifications/09_AsyncAndTimingModel.md)
+* [Modular Programming](./docs/en/specifications/10_ModularProgramming.md)
+* [Meta Programming](./docs/en/specifications/11_MetaProgramming.md)
+* Implementation notes (compiler internals): [docs/en/impl-notes](./docs/en/impl-notes)
 
 Build And Run:
 * Install the .NET 8.0 SDK from https://dotnet.microsoft.com/download

@@ -5545,6 +5545,28 @@ class BindExpressionsPass {
     fun get_concrete_type_name(this, bt: BoundType) -> string {
         _utils.trace_enter("Enter get_concrete_type_name");
         if (bt.type_definition.is_some()) {
+            // A template+args bound type (e.g. the annotation `let p : mut Pair<i32>`)
+            // carries the TEMPLATE def — its bare name resolves no layout at the
+            // emitter, so BOX/UNBOX of a specialized generic value class found
+            // neither a class nor an enum layout and emitted NOTHING (undefined
+            // result register). Resolve the SPECIALIZED def and use its mangled
+            // name — the same key ensure_class_layout registers layouts under.
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                let td_gc: BoundDefinition = bt.type_definition.some;
+                let full_base: mut string = "";
+                if (td_gc is BoundDefinition.class_def) { full_base = td_gc.class_def.full_name; }
+                else if (td_gc is BoundDefinition.enum_def) { full_base = td_gc.enum_def.full_name; }
+                else if (td_gc is BoundDefinition.interface_def) { full_base = td_gc.interface_def.full_name; }
+                if (string_length(full_base) > 0) {
+                    let mangled_gc: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
+                    let spec_sym_gc: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_in_scope(mangled_gc);
+                    if (spec_sym_gc.is_some() && spec_sym_gc.some is BoundSymbol.type_sym) {
+                        if (let spec_td_gc := spec_sym_gc.some.type_sym.bound_type.type_definition.some) {
+                            return spec_td_gc.get_name();
+                        }
+                    }
+                }
+            }
             return bt.type_definition.some.get_name();
         }
         return bt.display_name();
@@ -5800,6 +5822,33 @@ class BindExpressionsPass {
                         args.push(bound_arg.some);
                     }
                     i = i + 1;
+                }
+                // Constructor arity check: `new P(3,4)` on a class whose only
+                // ctor is the synthesized default `new(mut this)` must fail
+                // here — without it the extra arguments are silently dropped
+                // and the object is constructed with zeroed fields. The ctor
+                // def (template or specialized — the parameter COUNT is
+                // identical either way) carries the call contract.
+                if (bt.type_definition.is_some()) {
+                    let td_check: BoundDefinition = bt.type_definition.some;
+                    if (td_check is BoundDefinition.class_def) {
+                        let cls_check: mut BoundClassDefinition = td_check.class_def;
+                        if (cls_check.constructor.is_some()) {
+                            let ctor_check: BoundFunctionDefinition = cls_check.constructor.some;
+                            let param_count: i64 = cast<i64>(ctor_check.parameters.size());
+                            let expected_args: mut i64 = param_count;
+                            if (param_count > 0 && ctor_check.parameters.at(cast<u64>(0)).some.name == "this") {
+                                expected_args = param_count - 1;
+                            }
+                            let provided_args: i64 = cast<i64>(expr.arguments.size());
+                            if (provided_args != expected_args) {
+                                this.model.some.report_error(new ErrorCode.E_CALL_ARITY(),
+                                    "Constructor '" + cls_check.name + ".new' expects " + cast<string>(expected_args)
+                                    + " arguments but " + cast<string>(provided_args) + " were provided",
+                                    new SourceLocation("", 0, 0));
+                            }
+                        }
+                    }
                 }
                 let result: mut BoundNewExpression = new BoundNewExpression(bt.with_mutability(new Mutability.Mutable()), new Option<BoundTypeSymbol>.some(type_sym.some.type_sym), new Option<BoundFunctionSymbol>.none(), args);
                 return new Option<BoundExpression>.some(new BoundExpression.new_expr(result));

@@ -42,6 +42,7 @@ make tools_linux    # -> build/linux/penguin-tools (demangle|mangle|meta|format;
 make tools_win      # -> build/win/penguin-tools.exe monolith
 make tools-test     # penguin-tools golden tests (EmperorPenguin/tools/selftest.sh)
 make gc-bench       # GC benchmark harness (EmperorPenguin/std/c/gc_bench.sh; GC_BENCH_MODES/WORKLOADS overrides)
+make docs-site      # bilingual mdBook site: EN (docs/en) -> build/book + ZH (docs/zh) -> build/book-zh (needs mdbook)
 make test           # cross-compiler markdown suite (Tests/*.md) via PenguinTestRunner; extra args via TEST_ARGS="..."
 make baseline_test  # same, but records the run as the new baseline (--baseline)
 make unittest       # dotnet test (BabyPenguin.Tests + EmperorPenguin.Tests; logs to build/logs/unittest.log)
@@ -53,6 +54,18 @@ make all            # bootstrap + lsp + tools + unittest + test, in that order (
 - Because the `.ll` is platform-independent, `build/release/*.ll` is emitted ONCE and only re-linked per platform (`build/linux/`, `build/win/`).
 - The pass5 convergence artifacts are kept after a successful check — a repeat `make bootstrap` with unchanged inputs only re-verifies md5s.
 - `WINE=<path>` supplies the wine binary for the windows publish smoke test on a linux host.
+
+## Documentation (bilingual, mdBook)
+
+`docs/` holds two PARALLEL trees — `docs/en/` (English) and `docs/zh/` (简体中文) — with IDENTICAL file names, so every page has a 1:1 counterpart at the same relative path. The site is built by `make docs-site` (mdbook pinned to 0.4.52 in CI):
+
+- `book.toml` (repo root) builds the English book (`src = docs/en` → `build/book`).
+- The Chinese mirror is built from the SAME config via mdBook env overrides: `MDBOOK_BOOK__SRC=docs/zh MDBOOK_BOOK__TITLE='PenguinLang（中文文档）' MDBOOK_BOOK__LANGUAGE=zh mdbook build --dest-dir build/book-zh`.
+- Each Home page is generated from the matching root README (`README.md` / `README.zh-CN.md`) with its `./docs/<lang>/`-prefixed links rewritten relative; the GitHub-style `English | 简体中文` link line is dropped (the site toolbar covers it).
+- `docs/lang-switcher.js` is injected into BOTH books via `output.html.additional-js`. It locates the site root from the script's own URL and renders a toolbar EN⇄ZH button that swaps the `/zh/` URL prefix.
+- CI (`deploy-pages` job in `.github/workflows/dotnet.yml`) publishes `build/book` at the site root, `build/book-zh` under `/zh/`, and the latest test report at `/test-report/`.
+
+Adding a documentation page means adding it to BOTH trees and BOTH `SUMMARY.md`s (`docs/en/SUMMARY.md`, `docs/zh/SUMMARY.md`), keeping the file names identical.
 
 ## Build and Development Commands
 

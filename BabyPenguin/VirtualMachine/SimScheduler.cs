@@ -4,8 +4,6 @@ namespace BabyPenguin.VirtualMachine
 {
     public class SimScheduler
     {
-        public static SimScheduler Instance { get; } = new SimScheduler();
-
         private long _currentTick = 0;
         private readonly List<TimerEntry> _timers = new();
         private readonly Queue<IRuntimeValue> _readyQueue = new();
@@ -73,8 +71,9 @@ namespace BabyPenguin.VirtualMachine
 
         public void Run(BabyPenguinVM vm, RuntimeFrame? frame)
         {
-            // The singleton persists across runs (e.g. multiple tests in one
-            // process); reset all simulation state for a fresh execution.
+            // The scheduler is owned by the VM's RuntimeGlobal (fresh per
+            // execution); reset all simulation state defensively for a fresh
+            // run in case Run is invoked twice on the same VM.
             _vm = vm;
             _exited = false;
             _currentTick = 0;

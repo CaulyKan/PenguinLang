@@ -2,14 +2,25 @@
 title = "PenguinLang"
 authors = ["Cauly Kan"]
 description = "PenguinLang language documentation: tutorials, specifications and implementation notes"
-src = "docs"
+# English is the primary book (src = docs/en). The Chinese mirror (docs/zh,
+# identical file layout) is built from the SAME config by `make docs-site`
+# via mdBook environment overrides:
+#   MDBOOK_BOOK__SRC=docs/zh MDBOOK_BOOK__TITLE='PenguinLang（中文文档）' \
+#   MDBOOK_BOOK__LANGUAGE=zh mdbook build --dest-dir build/book-zh
+src = "docs/en"
 
 [build]
 build-dir = "build/book"
 
 [output.html]
 # Project pages are served at https://caulykan.github.io/PenguinLang/
+# (English book at the root, Chinese book under /zh/)
 site-url = "/PenguinLang/"
+# Shared EN/ZH toolbar language switcher. The path is relative to the book
+# root (this directory), so both builds carry it at docs/lang-switcher.js
+# inside their own output tree — the switcher locates the site root from the
+# script's own URL and swaps the /zh/ prefix.
+additional-js = ["docs/lang-switcher.js"]
 # Clean white style: light theme by default, even on dark-mode systems
 default-theme = "light"
 preferred-dark-theme = "light"
@@ -18,4 +29,6 @@ no-section-label = true
 
 [output.html.fold]
 enable = true
-level = 0
+# Expand all sidebar sections on page load (255 = no depth limit); chapters
+# stay individually collapsible.
+level = 255

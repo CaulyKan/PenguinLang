@@ -136,6 +136,14 @@ namespace BabyPenguin.VirtualMachine
     {
         public enum StepModeEnum { StepIn, StepOver, StepOut, Run }
 
+        /// <summary>
+        /// Per-VM simulation scheduler (drives initial routines, coroutines
+        /// and timers via __builtin._run). Owned by the RuntimeGlobal so
+        /// concurrent VMs — e.g. parallel test classes in one process —
+        /// never share or clobber each other's scheduler state.
+        /// </summary>
+        public SimScheduler Scheduler { get; } = new();
+
         public Dictionary<ulong, ReferenceRuntimeValue> AllObjects { get; } = [];
 
         private ulong _refIdCounter = 0;
@@ -244,12 +252,12 @@ namespace BabyPenguin.VirtualMachine
                     stack.Push(sym.Value);
 
             // Root: SimScheduler timer futures
-            foreach (var future in SimScheduler.Instance.GetTimerFutures())
+            foreach (var future in Scheduler.GetTimerFutures())
                 stack.Push(future);
 
             // Root: jobs parked in the C# ready queue (they are no longer
             // reachable from the Penguin-level pending_jobs queue)
-            foreach (var job in SimScheduler.Instance.GetReadyJobs())
+            foreach (var job in Scheduler.GetReadyJobs())
                 stack.Push(job);
 
             // Root: frame chain (current frame → parent → ... → root)

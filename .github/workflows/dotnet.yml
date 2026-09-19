@@ -80,10 +80,12 @@ jobs:
         if-no-files-found: ignore
 
   deploy-pages:
-    # Publish the documentation site (mdBook, `make docs-site`) plus the
-    # latest cross-compiler test report to GitHub Pages. One-shot setup in
-    # the repo: Settings -> Pages -> Source = "GitHub Actions". Runs only
-    # on pushes / manual dispatch (never on PRs), after build succeeded.
+    # Publish the bilingual documentation site (mdBook, `make docs-site`:
+    # English book + Chinese mirror under /zh/ with a toolbar language
+    # switcher) plus the latest cross-compiler test report to GitHub Pages.
+    # One-shot setup in the repo: Settings -> Pages -> Source = "GitHub
+    # Actions". Runs only on pushes / manual dispatch (never on PRs), after
+    # build succeeded.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
@@ -102,11 +104,15 @@ jobs:
     - name: Setup mdBook
       uses: peaceiris/actions-mdbook@v2
       with:
-        mdbook-version: latest
+        # Pinned so local `make docs-site` verification and CI agree on the
+        # generated HTML (the toolbar language switcher relies on it).
+        mdbook-version: "0.4.52"
     - name: Build documentation site
-      # Root Makefile target: rewrites the root README's ./docs/ links to be
-      # relative, generates the site Home page from it, and runs mdbook
-      # (book.toml, src = docs/) -> build/book.
+      # Root Makefile target: generates each language's Home page from its
+      # root README (README.md / README.zh-CN.md, ./docs/<lang>/ links
+      # rewritten relative) and builds the English book (book.toml, docs/en)
+      # -> build/book plus the Chinese mirror (docs/zh via env overrides)
+      # -> build/book-zh.
       run: make docs-site
     - name: Download test report
       uses: actions/download-artifact@v4
@@ -114,15 +120,17 @@ jobs:
         name: test-report
         path: report
     - name: Stage site
-      # Documentation at the root, the self-contained report at /test-report/
-      # (the sidebar's "Test Report" entry links there). The summary lands
-      # somewhere under report/ (upload-artifact v4 re-roots the artifact at
-      # the least common ancestor of the glob, so the inner path is not
-      # stable) — resolve it and publish ONLY the latest testrun (dirs are
-      # stamped yyyyMMdd-HHmmss, so lexical order is chronological).
+      # English documentation at the root, the Chinese mirror at /zh/, the
+      # self-contained report at /test-report/ (both books' sidebar "Test
+      # Report" entries link there). The summary lands somewhere under
+      # report/ (upload-artifact v4 re-roots the artifact at the least
+      # common ancestor of the glob, so the inner path is not stable) —
+      # resolve it and publish ONLY the latest testrun (dirs are stamped
+      # yyyyMMdd-HHmmss, so lexical order is chronological).
       run: |
-        mkdir -p _site/test-report
+        mkdir -p _site/test-report _site/zh
         cp -r build/book/. _site/
+        cp -r build/book-zh/. _site/zh/
         summary=$(find report -type f -name summary.html | sort | tail -1)
         [ -n "$summary" ] || { echo "no summary.html found in the test-report artifact" >&2; exit 1; }
         echo "Publishing test report: $summary"

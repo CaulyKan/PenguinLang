@@ -219,6 +219,13 @@ namespace BabyPenguin.VirtualMachine
                             var obj = ResolveReg(cmd.MemberOwnerSymbol);
                             var value = ResolveReg(cmd.Value);
                             builder.EmitWrmbr(obj, cmd.Member.Name, value, loc);
+                            // GLOBAL_LOAD shares the storage object for classes
+                            // but ENUM globals get a clone at every GLOBAL_STORE
+                            // (EnumRuntimeSymbol.AssignFrom); an in-place member
+                            // write on the register object (enum tag `_value`)
+                            // must be stored back or the global keeps the stale
+                            // clone (tag/payload writes in `new E.v()` initializers).
+                            SyncGlobalIfNeeded(cmd.MemberOwnerSymbol.FullName(), obj, loc);
                         }
                         break;
 
@@ -238,6 +245,13 @@ namespace BabyPenguin.VirtualMachine
                             var enumVar = ResolveReg(cmd.TargetEnum);
                             var value = ResolveReg(cmd.Value);
                             builder.EmitWrmbr(enumVar, "_containing_value", value, loc);
+                            // Same as WriteMemberInstruction: the payload write
+                            // mutates the register's enum object in place; a
+                            // global enum's storage is a clone, so store the
+                            // mutated object back (global enum initializers
+                            // `let g = new Option<i32>.some(42)` would otherwise
+                            // leave the payload unreadable).
+                            SyncGlobalIfNeeded(cmd.TargetEnum.FullName(), enumVar, loc);
                         }
                         break;
 
